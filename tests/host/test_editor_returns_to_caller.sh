@@ -132,6 +132,85 @@ if (clickFromList.length !== 0) {
     bad++;
 }
 
+/*
+ * The FOURTH door: a STRING cell opens the on-screen keyboard, and the keyboard
+ * is not a view either -- it is an overlay whose onConfirm / onCancel ARE its
+ * two exits. So there is no close function to drive; the test reaches in
+ * through openTextEntry, keeps the options object it was handed, and fires the
+ * callbacks itself.
+ *
+ * Both exits return, including CANCEL: backing out of the keyboard undoes the
+ * hand-off rather than completing it, so it lands where confirm lands.
+ *
+ * setView is spied even though the helper never calls it, so that a future
+ * rewrite which sends the keyboard to the hierarchy list directly fails here
+ * rather than passing for want of an assertion.
+ */
+function runStringEditor(which, openedFromGrid) {
+    const log = [];
+    let opts = null;
+    const deps = {
+        hierEditorEditMode: false,
+        hierEditorSlot: 0,
+        paramEditorOpenedFromGrid: openedFromGrid,
+        buildHierarchyParamKey: (k) => "synth:" + k,
+        getSlotParam: () => "before",
+        setSlotParam: () => log.push("write"),
+        refreshHierarchyVisibility: () => {},
+        announceParameter: () => {},
+        announce: () => {},
+        openTextEntry: (o) => { opts = o; },
+        setView: (v) => log.push("view:" + v),
+        VIEWS: { HIERARCHY_EDITOR: "hierarch" },
+        returnToParamPagesFromEditor: () => log.push("grid"),
+        needsRedraw: false,
+    };
+    const names = Object.keys(deps);
+    const preamble = names.map((n, i) => "let " + n + " = __d[" + i + "];").join("\n");
+    const f = new Function("__d", "__box",
+        preamble + "\n" + lift("closeOwnViewEditorToCaller") + "\n" +
+        lift("openHierarchyParamEditor") + "\n" +
+        "openHierarchyParamEditor(\"preset_name\", { type: \"string\", name: \"Name\" }, true);");
+    try {
+        f(names.map(n => deps[n]), null);
+        if (!opts) { log.push("no-keyboard"); return log; }
+        if (which === "confirm") opts.onConfirm("typed");
+        else opts.onCancel();
+    } catch (e) { log.push("threw:" + e.message); }
+    return log;
+}
+
+for (const which of ["confirm", "cancel"]) {
+    const fromGrid = runStringEditor(which, true);
+    if (!fromGrid.includes("grid")) {
+        console.log("FAIL: string " + which + " from the grid did not return to it: " +
+                    JSON.stringify(fromGrid));
+        bad++;
+    }
+    if (fromGrid.includes("view:hierarch")) {
+        console.log("FAIL: string " + which + " from the grid ALSO fell into the list: " +
+                    JSON.stringify(fromGrid));
+        bad++;
+    }
+    const fromList = runStringEditor(which, false);
+    if (fromList.includes("grid")) {
+        console.log("FAIL: string " + which + " from the list teleported to the grid: " +
+                    JSON.stringify(fromList));
+        bad++;
+    }
+}
+
+/* Confirm still WRITES -- a return that skipped the write would satisfy every
+ * assertion above and lose the text the user typed. */
+if (!runStringEditor("confirm", true).includes("write")) {
+    console.log("FAIL: string confirm returned to the grid without writing the value");
+    bad++;
+}
+if (runStringEditor("cancel", true).includes("write")) {
+    console.log("FAIL: string cancel wrote a value");
+    bad++;
+}
+
 if (bad === 0) console.log("PASS: own-view editors return to their caller");
 process.exit(bad === 0 ? 0 : 1);
 ' || FAIL=1
