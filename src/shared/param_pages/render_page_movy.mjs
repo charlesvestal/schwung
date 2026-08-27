@@ -1675,9 +1675,30 @@ export function drawOpaqueBox(ctx, kx, ky, value, override) {
     const budget = w - 9;
     let t = String(shown == null ? "" : shown).toUpperCase();
     while (t.length > 1 && fontWidth4x5(t) > budget) t = t.slice(0, -1);
-    if (fontWidth4x5(t) <= budget) {
-        fontPrint4x5(ctx, x + 3, ky + Math.floor((h - FONT4_HEIGHT) / 2), t, 1);
-    }
+    if (fontWidth4x5(t) > budget) return;
+
+    /*
+     * A PLACEHOLDER is CENTRED; a value is set left.
+     *
+     * Left is right for a filename: it is truncated from the tail, so the
+     * start is the part worth showing and a ragged right edge is the
+     * truncation being honest. `NONE` and `--` are neither — they are a state,
+     * the whole string is present, and set left they sit hard against the
+     * frame with a gap to the chevron, which reads as a value that failed to
+     * fill rather than as a marker. Reported from the device: "not centered by
+     * the way".
+     *
+     * Centred in the space BEFORE the chevron, not in the box: the chevron
+     * occupies the right edge, so centring on the full width would push the
+     * word into it.
+     */
+    const placeholder = (override === null || override === undefined)
+        && (value === null || value === undefined || value === "");
+    const tw = fontWidth4x5(t);
+    const tx = placeholder
+        ? x + 3 + Math.max(0, Math.floor((budget - tw) / 2))
+        : x + 3;
+    fontPrint4x5(ctx, tx, ky + Math.floor((h - FONT4_HEIGHT) / 2), t, 1);
 }
 
 /*
