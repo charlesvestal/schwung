@@ -1508,6 +1508,14 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
         const char *target = inst->knob_mappings[i].target;
         const char *param = inst->knob_mappings[i].param;
 
+        /* "Nothing sent to the controller yet" is -1, but the rows we just
+         * copied came from a patch_info_t whose parser clears each row with
+         * memset — so they arrive claiming they have already sent CC 0, and a
+         * knob genuinely sitting at 0 would then never be emitted. Today the
+         * bulk dump forces -1 before it emits and hides this; a future
+         * per-knob emit that does not go through the dump would not. */
+        inst->knob_mappings[i].last_cc_out = -1;
+
         char val_buf[64];
         int got = -1;
         /* Indexed rather than enumerated: the old fx1/fx2 + midi_fx1/midi_fx2

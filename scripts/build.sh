@@ -245,6 +245,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
     src/host/shadow_overtake_midi.c src/host/shadow_overtake_midi.h \
+    src/host/ext_midi_ring.h \
     src/host/unified_log.c src/host/shim_worker.c \
     src/host/rt_thread_audit.c src/host/rt_thread_audit.h \
     src/host/spi_tally.c src/host/spi_tally.h \
