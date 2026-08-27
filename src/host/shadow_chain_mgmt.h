@@ -127,6 +127,12 @@ typedef struct {
      * Pushes the changed value to the web param notify ring for real-time
      * browser updates. May be NULL if web ring is not available. */
     void (*on_param_changed)(uint8_t slot, const char *key, const char *value);
+
+    /* Queue a 4-byte USB-MIDI packet for the external port (cable 2).
+     * Audio-thread safe: enqueues into the shim's lock-free ROUTE_EXTERNAL
+     * ring, drained into the mailbox once per block. May be NULL on hosts
+     * that have no external port — always guard. */
+    int (*midi_send_external)(const uint8_t *msg, int len);
 } chain_mgmt_host_t;
 
 /* ============================================================================

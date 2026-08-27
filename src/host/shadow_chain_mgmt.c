@@ -1361,6 +1361,11 @@ int shadow_inprocess_load_chain(void) {
     shadow_host_api.get_beat_position = host.get_beat_position;  /* transport phase for LFO sync */
     shadow_host_api.midi_inject_to_move = shadow_chain_midi_inject;
     shadow_host_api.slot_recv_channel = shadow_chain_slot_recv_channel;
+    /* Outbound external MIDI. Previously left NULL by the memset above, which
+     * is why chain knobs could be driven from a controller but never answered
+     * one. Routed to the shim's ROUTE_EXTERNAL ring — the same audio-thread-safe
+     * path overtake DSPs already use. */
+    shadow_host_api.midi_send_external = host.midi_send_external;
 
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(
         shadow_dsp_handle, MOVE_PLUGIN_INIT_V2_SYMBOL);

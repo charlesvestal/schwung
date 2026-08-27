@@ -368,6 +368,36 @@ console.log(msg)              // Routed to the unified logger when enabled
 | 118 | Sample            | Also acts as Record on some firmwares; LED is RGB |
 | 119 | Delete            |                                |
 
+### Chain Knob CC Out (answering a control surface)
+
+CC 102-109 above are the *inbound* half: they drive a chain slot's eight knob
+mappings. A slot can also send them, so a motorised controller follows values
+changed anywhere else — Move's own encoder, or a patch load.
+
+Off by default. Enable per slot with the `knob_cc_out` patch field (or
+`set_param("knob_cc_out", "1")`):
+
+```json
+{ "receive_channel": 1, "knob_cc_out": 1 }
+```
+
+When on, the slot emits `CC 102-109` on its **receive channel**, to the
+external port (USB-A), whenever a mapped knob's value changes. Details worth
+knowing:
+
+- The value is the exact inverse of the inbound scaling, so a round trip
+  through a controller does not drift.
+- Change is detected at CC resolution — a parameter sweep too small to move the
+  0-127 value sends nothing.
+- An **inbound** CC 102-109 is deliberately **not** echoed. The sender already
+  has that value, and a controller that hears its own output would fight the
+  user mid-turn. Inbound CC 71-78 (relative) *is* answered, because a sender
+  moving by a delta has no way to know where it landed.
+- A slot whose receive channel is `All` emits nothing — there is no single
+  channel to answer on.
+- A patch load re-sends every mapped knob, since nothing else would tell a
+  control surface that all eight moved at once.
+
 ### Knob Touch (Capacitive)
 Notes 0-9 are generated when knobs are touched. Filter these if you don't need them:
 ```javascript

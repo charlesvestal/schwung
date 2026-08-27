@@ -835,6 +835,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->loaded_receive_channel = temp_patch.receive_channel;
             inst->loaded_forward_channel = temp_patch.forward_channel;
             inst->midi_fx_pre_mode = temp_patch.midi_fx_pre_mode ? 1 : 0;
+            inst->knob_cc_out = temp_patch.knob_cc_out ? 1 : 0;
+            knob_emit_cc_out_all(inst);
             /* Check for "modified" field to restore dirty state */
             FILE *mf = fopen(val, "r");
             if (mf) {
@@ -878,6 +880,19 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         inst->current_patch = -1;
         inst->dirty = 0;
         malloc_trim(0);
+    }
+    else if (strcmp(key, "knob_cc_out") == 0) {
+        int new_mode = (val && atoi(val)) ? 1 : 0;
+        if (new_mode != inst->knob_cc_out) {
+            inst->knob_cc_out = new_mode;
+            inst->dirty = 1;
+            /* Turning it on owes the controller a full picture; turning it off
+             * clears our record so a later re-enable re-sends everything. */
+            for (int i = 0; i < inst->knob_mapping_count; i++) {
+                inst->knob_mappings[i].last_cc_out = -1;
+            }
+            if (new_mode) knob_emit_cc_out_all(inst);
+        }
     }
     else if (strcmp(key, "midi_fx_pre_mode") == 0) {
         int new_mode = (val && atoi(val)) ? 1 : 0;
@@ -1153,6 +1168,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         inst->knob_mappings[found].target[sizeof(inst->knob_mappings[found].target) - 1] = '\0';
                         strncpy(inst->knob_mappings[found].param, param, sizeof(inst->knob_mappings[found].param) - 1);
                         inst->knob_mappings[found].param[sizeof(inst->knob_mappings[found].param) - 1] = '\0';
+                        /* Remapped: this knob now means something else. */
+                        inst->knob_mappings[found].last_cc_out = -1;
+                        knob_emit_cc_out(inst, found);
                     } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
@@ -1166,6 +1184,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         } else {
                             inst->knob_mappings[i].current_value = 0.5f;
                         }
+                        inst->knob_mappings[i].last_cc_out = -1;
+                        knob_emit_cc_out(inst, i);
                     }
                 }
                 inst->dirty = 1;
@@ -1242,6 +1262,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         }
 
                         knob_forward_value(inst, target, param, val_str);
+                        /* Move's own encoder moved this knob. Nothing else
+                         * tells an external control surface that happened. */
+                        knob_emit_cc_out(inst, i);
                         inst->dirty = 1;
                         break;
                     }
@@ -1313,6 +1336,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
         if (v == PATCH_CHANNEL_UNSET) return 0;  /* absent — caller skips */
         return snprintf(buf, buf_len, "%d", v);
+    }
+    if (strcmp(key, "knob_cc_out") == 0) {
+        return snprintf(buf, buf_len, "%d", inst->knob_cc_out ? 1 : 0);
     }
     if (strcmp(key, "midi_fx_pre_mode") == 0) {
         return snprintf(buf, buf_len, "%d", inst->midi_fx_pre_mode ? 1 : 0);

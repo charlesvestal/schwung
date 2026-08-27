@@ -4549,6 +4549,7 @@ static void shim_init_subsystems(void)
             .get_bpm = shim_get_bpm,
             .get_beat_position = shadow_transport_beat_position,
             .on_param_changed = web_param_notify_push,
+            .midi_send_external = overtake_midi_send_external,
         };
         chain_mgmt_init(&cm_host);
     }

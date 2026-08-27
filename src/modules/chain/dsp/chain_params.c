@@ -959,6 +959,79 @@ void knob_forward_value(chain_instance_t *inst, const char *target, const char *
 }
 
 
+/* ---- Chain-knob CC out ---------------------------------------------------
+ *
+ * The input half has shipped for a long time: CC 102-109 on a slot's receive
+ * channel drive that slot's eight chain knobs (see chain_midi.c). Nothing went
+ * the other way, so a motorised control surface went stale the moment a value
+ * changed anywhere else — the Move's own encoder, or a patch load — and the
+ * next touch of a knob jumped the parameter to wherever the stale knob sat.
+ *
+ * Opt-in per patch via knob_cc_out, off by default: a slot that is not driving
+ * a control surface has no business adding eight CC streams to the external
+ * port, where they would land on whatever else is plugged in.
+ *
+ * REALTIME: reached from set_param, on_midi and patch load, all of which ARE
+ * the SPI callback. No allocation, no I/O, no locks — midi_send_external is a
+ * lock-free ring enqueue that drops on full.
+ */
+
+/* Inverse of the inbound scaling in chain_midi.c. Returns -1 when the range is
+ * degenerate or dynamic (max_val < 0), where there is no meaningful 0-127. */
+static int knob_value_to_cc(float val, const chain_param_info_t *pinfo) {
+    if (!pinfo) return -1;
+    float span = pinfo->max_val - pinfo->min_val;
+    if (!(span > 0.0f)) return -1;
+    int cc_val = (int)(((val - pinfo->min_val) / span) * 127.0f + 0.5f);
+    if (cc_val < 0) cc_val = 0;
+    if (cc_val > 127) cc_val = 127;
+    return cc_val;
+}
+
+void knob_emit_cc_out(chain_instance_t *inst, int idx) {
+    if (!inst || !inst->knob_cc_out) return;
+    if (idx < 0 || idx >= inst->knob_mapping_count) return;
+    if (!inst->host || !inst->host->midi_send_external) return;
+
+    knob_mapping_t *km = &inst->knob_mappings[idx];
+    int knob = km->cc - KNOB_CC_START;              /* 0-7 */
+    if (knob < 0 || knob > (KNOB_CC_END - KNOB_CC_START)) return;
+
+    /* Answer on the channel the slot listens on, so in and out are symmetric.
+     * -1 (All) gives us no channel to answer on and -2 means the instance is
+     * not slot-registered (master FX); emit nothing rather than guess. */
+    if (!inst->host->slot_recv_channel) return;
+    int recv_ch = inst->host->slot_recv_channel((void *)inst);
+    if (recv_ch < 0 || recv_ch > 15) return;
+
+    chain_param_info_t *pinfo = knob_find_param(inst, km->target, km->param);
+    int cc_val = knob_value_to_cc(km->current_value, pinfo);
+    if (cc_val < 0) return;
+    if (cc_val == km->last_cc_out) return;          /* change detection at CC resolution */
+    km->last_cc_out = cc_val;
+
+    /* USB-MIDI: cable 2 (external), CIN 0x0B (CC). */
+    const uint8_t msg[4] = {
+        (uint8_t)((2 << 4) | 0x0B),
+        (uint8_t)(0xB0 | (uint8_t)recv_ch),
+        (uint8_t)(KNOB_ABS_CC_START + knob),
+        (uint8_t)cc_val
+    };
+    inst->host->midi_send_external(msg, 4);
+}
+
+void knob_emit_cc_out_all(chain_instance_t *inst) {
+    if (!inst || !inst->knob_cc_out) return;
+    for (int i = 0; i < inst->knob_mapping_count; i++) {
+        /* Force a send even when the quantised value is unchanged: after a
+         * patch load the controller's motors reflect the previous patch, so
+         * "same as last time we spoke" says nothing about where they sit. */
+        inst->knob_mappings[i].last_cc_out = -1;
+        knob_emit_cc_out(inst, i);
+    }
+}
+
+
 float dsp_value_to_float(const char *val_str, chain_param_info_t *pinfo, float fallback) {
     char *endptr;
     float v = strtof(val_str, &endptr);

@@ -1298,6 +1298,9 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     /* Parse midi_fx_pre_mode (top-level; absence = Post). */
     json_get_int(json, "midi_fx_pre_mode", &patch->midi_fx_pre_mode);
 
+    /* Parse knob_cc_out (top-level; absence = off). */
+    json_get_int(json, "knob_cc_out", &patch->knob_cc_out);
+
     /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
     const char *lfos_pos = strstr(json, "\"lfos\"");
     if (lfos_pos) {
@@ -1576,6 +1579,11 @@ int v2_load_patch(chain_instance_t *inst, int patch_idx) {
     if (rc == 0) {
         inst->current_patch = patch_idx;
         inst->midi_fx_pre_mode = inst->patches[patch_idx].midi_fx_pre_mode ? 1 : 0;
+        inst->knob_cc_out = inst->patches[patch_idx].knob_cc_out ? 1 : 0;
+        /* A patch load moves every mapped knob at once, with no per-knob event
+         * for a control surface to have observed. Without this the motors keep
+         * showing the previous patch until each one is touched. */
+        knob_emit_cc_out_all(inst);
         inst->dirty = 0;
     }
     return rc;
