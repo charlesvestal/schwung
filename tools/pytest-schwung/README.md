@@ -319,3 +319,38 @@ Modules with no `dsp` in their manifest never request a load, so
 `__ready` reads `"1"` throughout and the helper returns as soon as the
 mode flips. Hosts predating the param error on the GET, which is treated
 as ready — matching shadow_ui's own fallback.
+
+#### Opening a SECOND module: the mode never leaves 2
+
+`unloadModuleUi()` does not reset the overtake mode, and the
+`open_tool_cmd` handler's unload+load pair runs inside **one synchronous
+shadow_ui tick** — so a module → module switch presents no observable
+`2 → x → 2` transition. Gate 1 would pass on the outgoing module's mode
+and `__ready` would still read `"1"`, giving back the same lost first
+press by a different route.
+
+So when the mode is already `2` on the first poll, the helper first
+waits (bounded, `reload_settle`, 0.5 s) for `__ready` to go `"0"` — the
+only observable marker that a load actually started — before treating
+the mode as meaningful.
+
+**Known gap:** a module with *no* `dsp.so` never drives `__ready` to
+`"0"`, so on a reload it is indistinguishable from a stale mode. That
+case waits out the settle and proceeds, degrading to the old behaviour
+rather than hanging. Closing it properly needs the `open_tool_cmd` edge
+— shadow_ui auto-clears that byte when it picks the command up, which is
+exactly the signal, but the daemon exposes no way to read it back.
+
+If your test opens one module per test and uses `fresh_move`, none of
+this applies. It matters precisely when you skip `fresh_move` to save
+the 3 s, which the fixture explicitly invites.
+
+#### Timeouts
+
+Each gate has its own budget — `timeout` for the mode, `ready_timeout`
+(defaulting to `timeout`) for the DSP — so worst case is the sum. They
+are deliberately not one shared deadline: with one, a slow mode flip
+could consume the whole budget and leave the helper raising *"DSP still
+loading … may have failed to load"* without ever having issued a single
+`__ready` GET. A read that never happened is now reported as such
+rather than blamed on the module.
