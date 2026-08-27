@@ -289,3 +289,33 @@ it out and the next test sees a stale socket. Use:
 ```
 ssh -o ServerAliveInterval=30 -L 47777:localhost:47777 ableton@move.local -N
 ```
+
+### Opening a module: `overtake_mode == 2` does not mean it can play
+
+The overtake DSP load runs on the shim worker, not the SPI thread
+(`dlopen()` + `create_instance()` was stalling the audio callback
+~11.5ms on every module open). So the mode flips when the load is
+**requested**, and the instance appears up to ~200ms later. A test that
+does `set_open_tool(...)` → poll for `overtake_mode == 2` → press a pad
+will intermittently lose that first press: the shim drops injected MIDI
+against its `overtake_dsp_gen && overtake_dsp_gen_inst` guards while the
+instance is missing.
+
+Polling the `overtake_dsp:__ready` param instead is not sufficient on
+its own either. It answers `"1"` whenever *nothing* is loading, which
+includes the window before the load starts — `loadOvertakeModule` sets
+the overtake mode several statements before it requests the DSP load, so
+a bare `__ready` poll can pass against the previous module's state.
+
+Use `wait_for_overtake_dsp()`, which gates on both in the right order:
+
+```py
+bus.set_open_tool("overwork")
+bus.wait_for_overtake_dsp()   # mode == 2, then __ready != "0"
+bus.press_step(16)            # now guaranteed to reach the module
+```
+
+Modules with no `dsp` in their manifest never request a load, so
+`__ready` reads `"1"` throughout and the helper returns as soon as the
+mode flips. Hosts predating the param error on the GET, which is treated
+as ready — matching shadow_ui's own fallback.
