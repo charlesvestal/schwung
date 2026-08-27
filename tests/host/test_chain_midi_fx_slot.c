@@ -70,6 +70,12 @@ CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *targe
                                        const char *param, const char *val_str) {
     (void)inst; (void)target; (void)param; (void)val_str;
 }
+/* The relative-CC path answers the sender with the absolute value it landed
+ * on. That is chain_params.c's job and this file does not link it; whether the
+ * echo is emitted is proved in test_chain_knob_cc_out. */
+CHAIN_INTERNAL void knob_emit_cc_out(chain_instance_t *inst, int idx) {
+    (void)inst; (void)idx;
+}
 /* chain_reorder.c reaches the audio-FX unloader on its remove path; this file
  * only drives the MIDI side, and the audio loader lives in the one TU that
  * cannot be compiled natively. */
