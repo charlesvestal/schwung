@@ -21,6 +21,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
 	$(BUILD_DIR)/test_master_fx_saved_state \
+	$(BUILD_DIR)/test_master_fx_snapshot \
 	$(BUILD_DIR)/test_spi_tally \
 	$(BUILD_DIR)/test_align_capture
 
@@ -60,6 +61,9 @@ $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUI
 
 $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_capture.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_master_fx_snapshot: test_master_fx_snapshot.c ../../src/host/master_fx_snapshot.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)

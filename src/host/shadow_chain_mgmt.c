@@ -16,6 +16,7 @@
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "shim_worker.h"   /* shim_rt_audit_note_module */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
+#include "master_fx_snapshot.h" /* master_fx_snapshot_* — likewise */
 #include "master_fx_saved_state.h" /* object or opaque-string state at boot */
 #include "fx_midi_filter.h"   /* fx_midi_channel_accepts — header-only so tests/host can run it */
 #include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
@@ -3047,6 +3048,53 @@ void shadow_inprocess_handle_param_request(void) {
                     /* Read-only: the count is a consequence of the verbs, and
                      * a writable length could name a position past what is
                      * loaded, or hide one that is. */
+                    shadow_param->error = 14;
+                    shadow_param->result_len = -1;
+                }
+                shadow_param_publish_response(req_id);
+                return;
+            }
+
+            /* The whole chain's ids and paths in ONE answer.
+             *
+             * The alternative the saver used first was `fxN:name` and
+             * `fxN:module` per position: 8 + N round trips at ~2.8ms, landing
+             * on the autosave frame. It also made the id and the path two
+             * independent reads, and a state file that pairs one position's id
+             * with another's path restores the wrong module without a word —
+             * the boot loader parses module_path and never reads module_id.
+             *
+             * Read-only for the same reason fx_count is: what is loaded is a
+             * consequence of the module writes, not a thing to assign. */
+            if (strcmp(param_key, "modules") == 0) {
+                if (req_type == 2) {  /* GET */
+                    size_t len = 0;
+                    int ok = master_fx_snapshot_begin(shadow_param->value,
+                                                      SHADOW_PARAM_VALUE_LEN, &len);
+                    for (int i = 0; ok && i < MASTER_FX_SLOTS; i++) {
+                        /* module_id / module_path UNGATED, exactly as fxN:name
+                         * and fxN:module answer them — slot_unload clears both,
+                         * so `instance` adds nothing here except a second
+                         * definition of "loaded" that could drift from theirs. */
+                        const master_fx_slot_t *s = &shadow_master_fx_slots[i];
+                        ok = master_fx_snapshot_append(shadow_param->value,
+                                                       SHADOW_PARAM_VALUE_LEN, &len,
+                                                       i, s->module_id, s->module_path);
+                    }
+                    if (ok) ok = master_fx_snapshot_end(shadow_param->value,
+                                                        SHADOW_PARAM_VALUE_LEN, &len);
+                    if (ok) {
+                        shadow_param->error = 0;
+                        shadow_param->result_len = (int)len;
+                    } else {
+                        /* Refuse rather than truncate. A short array parses
+                         * fine and reads as "these positions are empty", which
+                         * is the erase this whole path exists to prevent. */
+                        shadow_param->value[0] = '\0';
+                        shadow_param->error = 12;
+                        shadow_param->result_len = -1;
+                    }
+                } else {
                     shadow_param->error = 14;
                     shadow_param->result_len = -1;
                 }
