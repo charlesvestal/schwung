@@ -51,6 +51,7 @@
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
+#include "host/spi_tally.h"
 #include "host/shadow_dbus.h"
 #include "host/shadow_chain_mgmt.h"
 #include "host/shadow_link_audio.h"
@@ -63,6 +64,7 @@
 #include "host/shadow_xmos_audio.h"
 #include "host/shadow_midi.h"
 #include "host/shadow_midi_filter.h"
+#include "host/fx_midi_filter.h"
 #include "host/shadow_shm_util.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
@@ -4340,6 +4342,35 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
             return 1;
         }
+        /* master_fx:midi_channel — which MIDI channel Master FX listens on.
+         * -1 (FX_MIDI_CHANNEL_ALL) = every channel, the default and the
+         * behaviour before this setting existed. 0-15 = that channel only;
+         * the UI shows 1-16. Enforced in shadow_master_fx_forward_midi. */
+        if (strcmp(fx_key, "midi_channel") == 0) {
+            if (req_type == 1) {
+                int val = atoi(shadow_param->value);
+                /* Anything out of range stores as All rather than being
+                 * clamped to a channel the user did not pick. */
+                master_fx_midi_channel =
+                    (val >= 0 && val <= 15) ? val : FX_MIDI_CHANNEL_ALL;
+                {
+                    char msg[64];
+                    if (master_fx_midi_channel < 0)
+                        snprintf(msg, sizeof(msg), "Master FX MIDI channel: All");
+                    else
+                        snprintf(msg, sizeof(msg), "Master FX MIDI channel: %d",
+                                 master_fx_midi_channel + 1);
+                    shadow_log(msg);
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+            } else if (req_type == 2) {
+                shadow_param->result_len = snprintf(shadow_param->value,
+                    SHADOW_PARAM_VALUE_LEN, "%d", master_fx_midi_channel);
+                shadow_param->error = 0;
+            }
+            return 1;
+        }
         /* master_fx:usbc_out_persist — whether to restore Move's USB-C
          * audio-out source after boot. */
         if (strcmp(fx_key, "usbc_out_persist") == 0) {
@@ -5087,8 +5118,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                 xmos_audio_build(&xmos_audio_observed, replay, pending[0], pending[1]);
                 pending_count = 2;
                 pending_next = 0;
-                shadow_log(replay ? "USB-C out: boot re-assert Main Out"
-                                  : "USB-C out: boot re-assert Mic");
+                /* Neutral wording on purpose: this path serves the boot replay
+                 * AND the monitor-loss defence, and the shim cannot tell them
+                 * apart — the worker arms both through the same variable. It
+                 * logs the specific reason before arming, so saying "boot"
+                 * here mislabelled every mid-session re-assert. */
+                shadow_log(replay ? "USB-C out: re-asserting Main Out"
+                                  : "USB-C out: re-asserting Mic");
             } else if (shim_pending_sysex_inject >= 0) {
                 int val_byte = shim_pending_sysex_inject;
                 shim_pending_sysex_inject = -1;
@@ -5258,6 +5294,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * observed change (see shim_worker.c's tick >= 35 gate). */
     if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
         shim_usbc_out_persist = xmos_audio_observed.usbc_out;
+
+    /* Republish both bits as levels every frame. scan() only reports an
+     * out-source EDGE, and Move's sampling page changes nothing about the out
+     * source — it emits a lone 37 12 that clears monitoring, which reverts the
+     * hardware to Mic with no edge to report. Two stores; the worker polls
+     * them at 5 Hz and decides (see usbc_gate_tick_monitor). */
+    shim_usbc_out_level = xmos_audio_observed.usbc_out;
+    shim_usbc_monitor   = xmos_audio_observed.monitor;
 
     /* Ensure subsystems are initialized on first call */
     if (!shim_subsystems_initialized) {
@@ -6310,6 +6354,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
+
+    /* SPI frame telemetry from the kernel's own counters. One aligned 8-byte
+     * load of the transfer time ablspi already stamped at the end of the page
+     * (see spi_tally.h) — no syscall, no /proc, nothing added to the wire.
+     * The worker pairs it with irq_count and reports at ~1 Hz.
+     * Dormant unless /data/UserData/schwung/spi_tally_on exists. */
+    if ((shim_debug_flags & SHIM_FLAG_SPI_TALLY) && hw) {
+        uint64_t tx_ns;
+        memcpy(&tx_ns, hw + SCHWUNG_OFF_SPI_TX_TIME, sizeof(tx_ns));
+        /* Clamp rather than truncate: a bogus wide value must not alias to a
+         * plausible-looking microsecond figure. */
+        spi_tally_record(&shim_spi_tally,
+                         tx_ns > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)tx_ns);
+    }
 
     /*
      * Knob-touch ground truth, UNCONDITIONALLY.
@@ -7847,8 +7905,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                 /* Broadcast internal MIDI to ALL active slots for audio FX (e.g. ducker).
                  * FX_BROADCAST only forwards to audio FX, not synth/MIDI FX, so this
-                 * is safe even for the focused slot that received normal dispatch. */
-                if (d1 >= 10 && shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
+                 * is safe even for the focused slot that received normal dispatch.
+                 *
+                 * PADS ONLY. This is Move's own surface (cable 0 is enforced at the
+                 * top of the loop), so a note number here is a physical control, not
+                 * a pitch — and the old `d1 >= 10` guard let step buttons (16-31) and
+                 * track buttons (40-43) through as if they were played notes. See
+                 * fx_midi_filter.h. A channel setting cannot substitute for this:
+                 * pads and steps share the surface, so no channel separates them. */
+                if (move_surface_note_is_pad(d1) && shadow_plugin_v2 && shadow_plugin_v2->on_midi) {
                     for (int si = 0; si < SHADOW_CHAIN_INSTANCES; si++) {
                         if (!shadow_chain_slots[si].active || !shadow_chain_slots[si].instance)
                             continue;
@@ -7858,8 +7923,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
-                /* Forward note events to master FX (e.g. ducker) */
-                if (d1 >= 10) {
+                /* Forward note events to master FX (e.g. ducker).
+                 * Pads only, for the reason given on the slot broadcast above.
+                 * The listen-channel filter is applied inside
+                 * shadow_master_fx_forward_midi, not here. */
+                if (move_surface_note_is_pad(d1)) {
                     uint8_t msg[3] = { status, d1, d2 };
                     shadow_master_fx_forward_midi(msg, 3, MOVE_MIDI_SOURCE_INTERNAL);
                 }
@@ -8128,8 +8196,24 @@ post_timing:
     if (ioctl_us > spi_ioctl_max) spi_ioctl_max = ioctl_us;
     if (post_us > spi_post_max) spi_post_max = post_us;
 
-    /* Track overruns (no I/O — just update snapshot) */
-    if (total_us > 2000) {
+    /* Track overruns (no I/O — just update snapshot).
+     *
+     * The threshold is the frame PERIOD, not some fraction of it. `total_us` is
+     * the whole loop iteration and the loop is paced by the blocking ioctl, so
+     * it sits at the period (~2710-2830 us measured) no matter how much or how
+     * little work we do — our work grows, the wait inside the ioctl shrinks by
+     * the same amount. It only exceeds the period when we genuinely blew it.
+     *
+     * The old threshold here was 2000 us, i.e. BELOW the 2902 us period, so it
+     * counted every frame as an overrun: 43,986 of them in two minutes on an
+     * idle device with three empty slots. A counter that fires on 100% of
+     * frames reads as catastrophic and carries no information. Matches
+     * OVERRUN_THRESHOLD_US, which was already calibrated this way (2850 =
+     * "98% of budget", where budget means the period).
+     *
+     * Arm the SPI frame tally for the number this one cannot give you: how
+     * much of the period is the transfer, and whether IRQs are queueing. */
+    if (total_us > OVERRUN_THRESHOLD_US) {
         static uint32_t hook_overrun_count = 0;
         hook_overrun_count++;
         spi_snap.overrun_count = hook_overrun_count;

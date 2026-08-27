@@ -38,7 +38,17 @@ pushes are blocked** — work on a branch and open a PR (see `CONTRIBUTING.md`;
 install the fast local checks with `./scripts/install-hooks.sh`). The broader
 `tests/{shadow,store,build}` suites are **not** run by CI — ~20 stale failures pin
 since-moved code (see the cleanup review doc). On-hardware behavior is verified
-manually. Enable the unified logger:
+manually.
+
+**`gh pr merge` reports a failure it did not have when `main` is checked out in
+a worktree.** The merge lands on GitHub, then `gh` tries to update the local
+checkout and dies with `fatal: 'main' is already used by worktree at ...` —
+which also skips `--delete-branch`, leaving the remote branch behind. Confirm
+with `gh pr view <n> --json state,mergeCommit` rather than the exit status, and
+delete the branch yourself. Re-running the merge on the strength of that error
+is the actual hazard.
+
+Enable the unified logger:
 
 ```bash
 ssh ableton@move.local "touch /data/UserData/schwung/debug_log_on"
@@ -64,6 +74,53 @@ JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("
   grid is up. Draws vs ticks separates the two causes of "dropped frames":
   draws << ticks means something gates the redraw; draws == ticks and both low
   means the tick is slow or its pacing is wrong.
+
+**SPI frame tally** (`touch /data/UserData/schwung/spi_tally_on`, off by
+default) reports at ~1 Hz:
+
+```
+spi-tally: 345 frames / 345 irq  tx avg 389us (max 447us)  headroom 2513us  backlog 8
+spi-tally: LATE 1 irq(s) arrived while busy — frames queued, not dropped (backlog 8, worst window 1)
+```
+
+(345/s is right: the block rate is **344.5 Hz**, not 44 — 128 frames per block
+at 44.1 kHz, 2.902 ms per block.)
+
+Both numbers come from ablspi itself, which ships in Ableton's GPL source drop
+(see `docs/SPI_PROTOCOL.md`). `tx` is the driver's own `spi_tx_time`, stamped
+after every transfer into `struct ablspi_sys_info` at the END of the mmap'd page
+— one aligned 8-byte load of memory the shim already maps, no syscall. `irq` is
+`/proc/ableton/ablspi0.0/irq_count`, read on the worker because it is file I/O.
+
+**The gap between them is the point, and it exists because ablspi's IRQ is a
+counting semaphore rather than a flag** (`atomic_inc` in the ISR, `atomic_dec`
+in the wait). Overrun the budget and the frame is **not dropped** — it queues,
+and the next waits return immediately, replaying back-to-back. So a late frame
+never appears as a gap; it appears as a **burst**, which is exactly the shape
+that gets attributed to somebody else's producer misbehaving. `backlog` is that
+queue. Point it at the Link Audio dropouts before blaming Move's `Link Main`.
+
+**Measured 2026-08-26, and it corrects the budget below.** The ioctl takes
+2569µs but only **389µs of that is the transfer** — the other ~2180µs is
+`wait_event_interruptible` blocking for the next XMOS IRQ, i.e. frame pacing,
+not work and not the wire. With ~140µs of our own compute (`pre` 97 + `post`
+43), real slack is **~2370µs, not ~900µs**. See docs/REALTIME_SAFETY.md.
+
+A corollary worth holding: **`total_us` is not a load signal.** Our work
+growing shrinks the driver's wait by the same amount, so the loop total sits
+near the period whatever we do. The old overrun counter compared it against
+2000µs — below the 2902µs period — and so counted *every* frame: 43,986
+"overruns" in two minutes on an idle device. Now `OVERRUN_THRESHOLD_US`.
+
+Pure accumulator in `src/host/spi_tally.c` (no I/O, so `spi_tally_record` is
+SPI-callback-safe and the whole thing is host-tested by
+`tests/host/test_spi_tally.c`); `/proc` read and reporting in `shim_worker.c`.
+**Arming gotchas, the measured table, and the two experiments still owed are in
+`docs/plans/2026-08-26-spi-tally-followups.md`** — read it before re-measuring;
+the tally stays silent for ~20 s after arming, which looks like a broken build.
+The IRQ delta is a **32-bit** subtraction on purpose — that counter is printed
+from an `int`, goes negative past 2^31 (~72 days) and wraps at 2^32, and only
+modular arithmetic survives both. Widening it is the regression the test fails on.
 
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
@@ -221,7 +278,16 @@ half an event, and never stabilised for reasons it recorded as unknown.
 
 ## Realtime Safety
 
-SPI callback runs SCHED_FIFO 90 on core 3. Budget ~900µs/frame after the ~2ms transfer.
+SPI callback runs on core 3. Budget ~900µs/frame after the ~2ms transfer.
+
+**Priority: FIFO 70, not 90.** Measured 2026-08-22 with the RT-thread audit —
+nothing anywhere in the MoveOriginal process is above 70. This file said 90
+here and "the shim runs in MoveOriginal's FIFO 70 threads" two lines down; the
+second one is right. What the hardware runs, with no module loaded, is 23
+threads of which 11 are realtime: `MoveOriginal` at 10, **`Link Main` at 35**,
+three `Audio Worker` at 70, and six threads named `Audio Main/SPI` at 70 (one
+at 45). Arm it and look before reasoning about priorities:
+`touch /data/UserData/schwung/rt_thread_audit_on`.
 
 **Never in the SPI callback path:** `unified_log()`, `fprintf()`, `fopen()`, any file I/O; allocation; locks held by non-RT threads.
 
@@ -240,8 +306,12 @@ lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
 rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
 Two consequences worth remembering: `pthread_create` from those entry points
-inherits **FIFO 90** (at least 14 modules do this; Move's own `Link Main` is
-FIFO 35, so it starves), and a **`get_param` that scans a directory is served
+inherits the callback's priority — **FIFO 70** (Move's own `Link Main` is FIFO
+35, so it starves). A source audit put this at seven modules; measuring it
+found five, and not the same five — see
+`docs/plans/2026-08-22-rt-thread-audit-findings.md`. **Existence is not the
+harm**: a worker that parks on a condvar starves nobody, so the number that
+matters is CPU burned at realtime priority, which is what the audit reports, and a **`get_param` that scans a directory is served
 once per repaint**, which makes it worse than the equivalent `set_param`.
 
 ## Deployment Layout
@@ -499,6 +569,187 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### The knob grid is the DEFAULT param view, and it reflows to stay drawable
+
+`paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
+under Global Settings → Display → Param View, and it remains the better view for
+the 11 modules that publish no `ui_hierarchy` at all — a knob grid over a flat
+paginated param list is worse than a list of them.
+
+`param_view.json` is written **only by the toggle**. That is what lets the
+default change at all: a device that never touched the setting has no file and
+follows the new default, and one where the user explicitly chose List keeps
+List. Save it anywhere else — init, a load, an autosave — and every existing
+install is pinned to whatever it booted with, forever.
+`tests/host/test_param_view_default.sh` asserts the call COUNT, because a
+second call site *is* the whole failure.
+
+**A graphic must sit inside ONE ROW.** Row 0's knobs draw at y=10 with their
+LABELS at y=25..32 and row 1 starts at y=33, so a shape spanning both would
+draw straight through the label band. That is geometry, not a tunable.
+
+The consequence was not acceptable: 26 fleet groups were rejected for LAYOUT
+alone — the ADSR on the Main page of obxd, hush1, minijv, moog, surge, rex and
+osirus, plus twelve surge LFO pages. An author writing attack/decay/sustain/
+release in the obvious order lands on slots 3..6 and gets four separate dials.
+`planPages` now moves such a block into a row (`alignGroupsToRows`), 24 pages
+across the fleet.
+
+Three rules keep that from being vandalism:
+
+- **it is a permutation WITHIN a page.** No knob is pushed to another page and
+  no orphan page holding one control is created. Max group span is 4 and a row
+  is 4 wide, so a group always fits.
+- **row two is preferred, but only for a block that must move.** "Always put
+  the envelope on row two" is wrong: 29 envelopes already sit inside row one
+  and draw correctly, many on pages that exist FOR that envelope
+  (obxd/Filter Env, hera/Envelope, tablor/Env) where row two would leave the
+  top half empty. An always-rule makes 29 pages worse to fix 24. For a block
+  that IS straddling, moving it DOWN leaves the head of the page alone —
+  minijv keeps `macro_cutoff` on knob 1, where a nearest-fit rule pushed it
+  to knob 5.
+- **the real detector confirms the result**, and a move that loses a group
+  that already drew is rejected.
+
+An earlier version scored by keys covered with no cost bound and did what that
+invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
+displaced on a FILTER module — to pull one `mode` key into a group that already
+drew. It was also 37ms on minijv, twelve times the rest of the plan. Driving
+the search from the counterfactual "what would group if the row rule were
+lifted?" is both correct and 6.5ms.
+
+**A detector role is OPTIONAL or REQUIRED, and the difference is a whole
+group.** `detectFilter` built its slot run from cutoff, resonance AND whichever
+of mode/slope it found, then required the lot to be contiguous — so a Mode knob
+parked at the far end of the page deleted the corroborated pair. Optionals are
+now dropped when they do not fit; `detectEnvelope` takes the longest adjacent
+RUN rather than demanding every role found be adjacent.
+
+**`present` is filtered by ROLE and must never be assumed to contain any
+particular one.** `drawPartialEnv` computed its attack rise unconditionally, so
+surge's twelve hold/sustain/release LFO pages — no attack at all — produced NaN
+coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
+satisfied. A HANG, not a wrong picture, and unreachable until alignment made
+those pages drawable.
+
+### A turn PEEKS the list; a cell that is already big does not
+
+Turning a divable enum raises its option list over the grid for ~700ms
+(`ENUM_PEEK_MS`), header `TURNING`, footer `TURN SET`. It is the same screen
+the picker draws (`enum_list.mjs`) with the opposite commit semantics: the
+detent has ALREADY written, so there is nothing to confirm and nothing to
+cancel. It never calls `setView` — a Back that "cancelled" it would be a lie.
+
+Three things take it down: the timeout, turning a NEIGHBOUR (left up it would
+describe a knob your hand has left), and Back. **Back closes the peek and stops
+there** — it used to fall through to the view exit and throw you out of the
+module, which is a wildly disproportionate answer to a panel about to vanish on
+its own. It is a layer like the picker and the entered menu, and Back takes one
+at a time. `dismissPeek` goes through `enumPeek()` so an EXPIRED peek is not a
+layer: swallowing one press is a layer, swallowing two is a trap, and this
+screen has no other way out.
+
+**A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
+The peek exists because a 30px cell cannot show a list; once the picture has
+the room, a panel over the top hides the rest of the row to show nothing new.
+Not hypothetical — 12 enum cells in the fleet sit inside a wide graphic, every
+one a filter type or an LFO shape, where turning the knob already redraws the
+curve better than a list of words can.
+
+### The sample cell draws the file it HAS, or nothing
+
+The envelope is the file's real peaks (`wav_peaks.mjs`, streamed and bounded,
+advanced from the tick — never from the draw path). When there are none there
+is no envelope, just the baseline, the cursor and the brackets.
+
+There used to be a fallback shape, `sin(t*PI)*(0.55+0.35*sin(t*23))`, drawn
+whenever the peaks were missing. It is the tri-state read rule in a different
+costume — **a read that did not answer must never become a picture** — and it
+cost the flagship granular module a waveform for a sample that was never
+loaded. granny declares `sample_path` in its hierarchy and on NO knobs list, so
+every page carrying `position` searched the page, found no file and drew the
+synthetic one.
+
+So `detectSample` resolves the file from the whole contract, not from the page,
+and returns it as `extraKeys`. Those are **not** `keys`: keys claim cells, and
+an off-page key has no cell to claim. The controller reads them as one extra
+stop in the value rotation, the same bargain the preset-name read takes.
+
+**`gatherGroupMembers` seats scattered members together** so the picture gets
+the width its controls warrant. `alignGroupsToRows` rescues a group that is
+already contiguous but straddles the row break; this is the other half, for
+members that are simply not next to each other. It carries the same guarantees,
+because it is the same kind of reorder behind an author's back: WHICH keys are
+on the page never changes, the result stays inside ONE ROW, and the real
+detector verifies the outcome. Measured over the fleet fixture **3 of 489 pages
+move** — granny/root 1→2, granny/main 1→2, mrsample/sample 1→3 — and that
+narrowness is the feature. A pass that re-seated every page would be a layout
+engine, which is a much larger decision. `tests/host/test_viz_gather.sh` pins
+the count.
+
+Spray is claimable for that reason. The old rule — it modifies the cursor
+rather than being a position, so it never takes a cell — described the
+parameter correctly and the layout wrongly: the fences drew on `position`'s
+cell while spray sat elsewhere with an arc that looked unrelated. Adjacency
+keeps it safe; where the two are apart the run rule still gives span 1.
+
+(A module may declare the same marker on two levels — granny declares
+`position` on both `root` and `main` — and the graphic then appears on both.
+That is the contract, not the detector.)
+
+### Small ints are BIG NUMBERS, not framed ones
+
+`shouldDrawBigNumber` / `bigNumberText` / `drawBigNumber` in
+`render_page_movy.mjs`: an int with a declared range spanning ≤24 (≤48 if
+bipolar) draws its value in the device 6x7 font instead of an arc, with a sign
+only where the range has a negative side.
+
+It used to draw inside the enum square's box. **The box is the ENUM
+affordance** — every enum declaring options is divable, and the square plus its
+corner brackets are what say a list is behind the cell. A small int has no list
+and can never have one, so the frame advertised a door that does not open.
+
+The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
+params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
+which are sweeps where an arc is the honest picture.
+
+### Knob ring LEDs, and giving them back
+
+`knob_leds.mjs` paints CC 71-78 — knobs 1-4 white, 5-8 amber, brightness
+tracking value, colour 0 reserved for "nothing is bound here". CC 71-78 carries
+encoder rotation IN and the ring colour OUT; notes 0-7 are touch sensors, input
+only.
+
+**A ramp is one hue's `dark` → `dim` → full.** The palette header in
+`constants.mjs` gives every hue those variants, and it is the authority —
+picking constants by NAME produced `DarkBrown2 → Mustard → Ochre →
+BrightOrange`, i.e. `#250E05 → #876700 → #491804 → #C93C00`, whose third step
+is DARKER than its second: a sweep went dim, bright, dark, bright.
+`tests/host/test_knob_leds.sh` parses the hex out of that header and requires
+luminance to rise at every step, which is the assertion that catches it; the
+older tests only checked that a sweep walks the ramp in the order it is
+WRITTEN, which was true of the broken one too. Step boundaries are derived from
+ramp length, never written beside it.
+
+**Leaving the grid RESTORES the rings, it does not turn them off.** Move writes
+an LED only when its value changes, so going dark left Move's own rings dark
+indefinitely. `shadow_control_t.restore_knob_leds` (a JS-set edge the shim
+consumes and clears) arms `led_queue_restore_move_sysex_leds()` — the same call
+overtake exit makes.
+
+**The colour is in the SYSEX, not the CC.** `move_cc_led_state[71..78]` looks
+like the right cache and is not: Move drives the rings via
+`F0 00 21 1D 01 01 3B <subcmd> <idx> <6 rgb bytes> F7`, and the CC packets are
+latch triggers. Restoring the CC cache restored a latch or a zero and every
+ring came back blank. (That sysex is also the way to drive true per-LED RGB —
+brightness as `hue x value` rather than a walk through palette entries — but
+the encoder `<idx>` mapping is recorded nowhere in this tree and
+`led_queue_set_capture_enabled` has no caller and no dump path, so the restore
+replays the whole surface instead.)
+
+`invalidateLedCache()` is called with it: `input_filter`'s cache suppresses a
+write matching what it believes the hardware shows, which is only sound while
+it is the only writer — and the shim is about to repaint underneath it.
 ### A door you were SENT to opens; one you PAGED past stays shut
 
 Preset browsers, items lists and menu pages are **doors**: the jog pages until
@@ -533,6 +784,35 @@ rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
 three modules declare `navigate_to` at all, and new vocabulary repeats the
 `options_as_string` lesson: documented for months, set by nobody.
 
+### An editor returns to whoever OPENED it, through EVERY door
+
+Diving into a parameter from the knob grid can land you in three different
+places — the filepath browser, the canvas view, or the hierarchy editor with
+the row opened (edit mode). Each of those has to hand the screen back to the
+grid, and each has more than one way out. Miss one and the user comes back
+somewhere they did not ask for, one Back away from where they were.
+
+`closeOwnViewEditorToCaller()` is the single answer: it consults
+`paramEditorOpenedFromGrid` and returns true if it handled the return. All the
+exits go through it — `closeHierarchyFilepathBrowser`, `closeCanvasPreview`,
+and **both** ways out of edit mode.
+
+That last one is the trap. **Edit mode is not a view**, so it has no close
+function to fix; it is the hierarchy editor with the row opened, and for a
+float carrying a waveform strip that strip IS what a user calls "the wave
+editor" (granny's `position`). Back out of it already returned to the grid;
+the jog-click TOGGLE in `openHierarchyParamEditor` did not — so the gesture
+that OPENS the editor was the one that could not close it back. Fixing the two
+real views first changed nothing observable, which read as "not deployed".
+
+`tests/host/test_editor_returns_to_caller.sh` drives all three under both flag
+states. For the toggle it deliberately leaves the identifiers past the early
+return undeclared, so falling through throws instead of passing quietly.
+
+The LFO/knob-mapping target picker is **not** part of this: it is not opened
+through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
+`returnToSlotGridFromLfoTarget`. Do not merge the two.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
@@ -543,6 +823,36 @@ unreachable v1 plugin path.)
 ## Shadow Mode
 
 Shim intercepts hardware I/O to mix shadow audio with Move's output.
+
+### Whatever is drawn LAST must be fed FIRST
+
+`onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
+of the per-view switch, and the draw path is a switch with the overlays painted
+after it. **The two orders are the reverse of each other**, so an overlay added
+to the bottom of the draw path has to be added to the TOP of the input path, and
+nothing about either site says so.
+
+The knob grid's early-out is the one that bites, because it is first and it
+claims the jog. Text entry sits ~100 lines below it. That was safe only while no
+keyboard could be raised over `PARAM_PAGES` — and then User Presets became a
+trailing page INSIDE the grid, `enterPresetSaveAs` opened the keyboard without
+calling `setView` (its sibling `enterPresetDeleteConfirm` does), so `view` stayed
+`PARAM_PAGES` and the grid ate the jog while the keyboard was drawn on top of it.
+
+**The symptom pointed at the wrong subsystem.** Pad typing kept working, so it
+read as a keyboard bug: `decodeInput` (`shared/param_pages/page_input.mjs`)
+returns `null` for notes 68–99, so pads fall through, but it decodes CC 14 as
+navigation and consumes it. A half-working overlay is the signature of a
+dispatch-order bug, not a broken handler — check what is *upstream* of the
+handler before reading the handler.
+
+Guard the grid block (`&& !isTextEntryActive()`) rather than hoisting the
+overlay to the top: the feedback-gate and canvas-steal blocks sit between the
+two, and the feedback gate is a safety modal that must keep outranking
+everything. Precedence among overlays is deliberate, so moving one is a change
+in its own right. `tests/host/test_text_entry_outranks_grid.sh` pins the order,
+and pins the `decodeInput` jog-vs-pads asymmetry separately so a future change
+that starts claiming pad notes fails loudly instead of silently.
 
 ### A param read has THREE answers, not two
 
@@ -580,6 +890,123 @@ means absent. The tri-state exists only where the wire is visible.
 (granny's read fails because it loads a WAV synchronously inside `set_param`, on
 the SPI thread that serves param requests. That realtime violation lives in its
 own repo and is not fixed here.)
+
+### Global Settings is a SYNTHESISED CONTRACT, not a screen
+
+It runs on the same page engine as a module, a slot's settings and Master FX's
+settings — one list, one chrome, one set of widgets. The declaration is
+`src/shadow/shadow_ui_global_grid.mjs` (pure, no host globals, tested with no
+device by `tests/host/test_global_settings_contract.sh`); the concrete backends
+and the cache-var writes that cannot leave `shadow_ui.js` are `globalGridIoFor()`
+there. Entry is `enterGlobalSettingsGrid()`, modelled on
+`enterMasterFxSettingsGrid`.
+
+**Seven sections are seven PAGES**, jogged through on one axis with the section
+picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
+Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
+load-bearing: a ninth param in any section paginates silently and the bank bar
+takes over a split nobody chose. Audio sits at exactly eight. The contract test
+pins the per-section counts rather than trusting the shapes.
+
+Three consequences worth knowing:
+
+- **`[Help...]` lives on the Updates page**, one row under `[Module Store]`. It
+  used to be a peer of the sections; it cannot be a page of its own (that is an
+  eighth page, pinned against twice) and a one-entry menu page is the shape
+  Master FX already records as a mistake. See `UPDATES_ACTIONS`.
+- **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
+  list, the in-section list, the four `globalSettings*` state vars and the three
+  switch arms that drove them are gone. `runGlobalActionFromGrid` /
+  `maybeReturnToGlobalGrid` are the third instance of the slot / Master FX modal
+  hand-off, and reconcile the same way rather than hooking each exit.
+- **The screen reader forces the LIST layout** (`paramPagesLayout()`), because
+  Global Settings enters the page chrome even with TTS on — it has no hierarchy
+  editor behind it, and it is the screen you go to to turn TTS off.
+  `paramPagesEnabled()` still refuses the chrome for every *component*; that
+  seam is unchanged.
+
+Persistence is **three** things and conflating them loses a write silently: a
+shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
+hand-listed), a key-specific saver welded to the assignment, or backend-owned.
+Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
+
+### A timed-out read empties NOTHING, and latches nothing
+
+`loadChainConfigFromSlot`'s `readPosition` was `moduleId && moduleId !== ""`,
+which puts `null` (the read did not complete) in the same branch as `""` (the
+position is empty) — the comment there said so, having considered only the
+unserved case. Loading a module blocks the SPI callback (the thread that also
+serves param requests) and `applyComponentSelectionConfirmed` re-syncs
+**immediately after its fire-and-forget module write**, i.e. inside that
+window. So the position read `null`, was recorded as EMPTY, and
+`chainConfigFresh[slot] = true` declared it authoritative — *"clean by
+definition once it returns"* was true of the call, not of the answer.
+
+An empty box in the diagram is a `+`, so the position the user had just filled
+opened the **module picker** instead of the editor.
+
+**It takes a SECOND defect to make that permanent**, and this is the part worth
+remembering: the module signature is a separate set of reads taken milliseconds
+later, and they straddled the end of the load. The config read stale-empty; the
+signature read the real module. `applySlotModuleSignature` reloads the config
+only when the signature **changes** — so the *correct* read is what did the
+damage, by matching, and a correct signature never changes again. Osirus logged
+a clean 124 ms load at 13:48:53.700–.824 and the editor still drew the position
+empty fifteen seconds later, while slot settings — same key, different path —
+said "Synth Virus".
+
+Now: a failed read keeps the position it had, leaves the slot **un-fresh** so
+the next frame re-reads, and `getSlotModuleSignature` answers **null** rather
+than inventing an empty chain (`applySlotModuleSignature` refuses null). A
+failed `*_count` keeps the section length — 0 from a timeout truncates the whole
+section, not one position.
+
+Falling out of it for free: the picker writes the chosen module into
+`chainConfigs` **before** the DSP write, so "what we already had" during the
+load window *is* the module just picked — the box shows it throughout, and
+there is no loading state to maintain. `tests/host/test_chain_config_read_failure.sh`
+lifts the real functions and drives that sequence, reads failing on frame 1 and
+landing on frame 2.
+
+### A component editor WAITS; it does not decide from one read
+
+Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
+`if (!hierarchy) enterComponentEditFallback(...)` — which is the three-answers
+defect one layer above the controller that solves it, and the fallback is
+irreversible. For MiniJV and Osirus, the two slowest things in the fleet to
+come up, that drew an editor with **nothing in it**: neither ships a
+`ui_chain.js`, so the fallback lands on the bare preset browser, and the preset
+reads it makes there fail for the same reason the hierarchy read did.
+
+What made the entry the wrong place to give up is that **everything which knows
+how to wait is behind it** — the grid's `Loading...` hold, its bounded contract
+retry, its ten-second recovery probe, the list editor's `is_loading` re-fetch.
+
+`src/shared/component_load_gate.mjs` answers **ENTER / HOLD / FALLBACK**, and
+`openComponentEditor` (`shadow_ui.js`) is the one gate both editors — slot
+chain and Master FX — enter through. HOLD raises `VIEWS.COMPONENT_LOADING`
+("Loading...", `Back: exit`) and asks again: ~0.5 s apart for ~20 s, then every
+ten seconds for as long as the screen is up. **There is no give-up-and-show-the
+-fallback ending**, on purpose — a blank editor is the failure being fixed.
+
+**The empty answer needs a second question.** A module that declares no
+hierarchy and a position whose module has not finished arriving BOTH answer
+`""`. `<prefix>_module` separates them: the chain host publishes the name only
+after `create_instance` returns (`chain_host.c:504`). Named + no hierarchy
+falls back **immediately**, so the well-behaved fleet never sees the hold, and
+entering still costs the one read it always did (`module` and `is_loading` are
+read lazily, on the ambiguous branch only).
+
+The wait is view-agnostic — it sits in front of the destination choice, so it
+works with Param View on Knobs or List and with the screen reader on — and it
+is drawn and serviced on **both** draw paths, main and co-run. The probe runs
+*before* the dispatch, so a probe that lands opens the editor on that frame.
+`tests/host/test_component_load_hold_wiring.sh` pins all of that from source;
+`test_component_load_gate.sh` unit-tests the decision, including that a named
+module with no hierarchy is **not** held.
+
+Not a regression: the old gate is byte-identical at `v0.11.6`. What changed is
+how long these two modules take to answer.
 
 ### Shortcuts
 
@@ -652,6 +1079,28 @@ Out reaches USB-C (the XMOS mutes the speakers while it's set, to prevent
 feedback). `37 14` is the dedicated out-source bit. This resolves open question
 Q2 in the movesniff findings doc, which listed `0x14` as unreversed.
 
+**Move's sampling page emits a LONE `37 12`, and it clears bit1.** Captured
+2026-08-26: changing the sampling source sent `37 12 01` then `37 12 00`, with
+no `37 14` anywhere near either. The original 2026-08-18 capture recorded bit0
+as `0` throughout and concluded "the pair is atomic" — true of the *out-source*
+control, false of the sampling page, which that capture never exercised.
+Because bit1 is what actually routes Main Out to USB-C, a sampling-source
+change silently reverted USB-C out to Mic while `37 14` still read Main Out, so
+nothing re-asserted. That is the **in-session** half of "sometimes reverts to
+the microphone"; the boot gate below is the across-reboot half.
+
+`xmos_audio_state_t.monitor` therefore tracks bit1 in its own right (it is
+deliberately NOT folded into `scan`'s `changed` return — that flag means "the
+out-source selection moved", and this is not a selection), and
+`usbc_gate_tick_monitor` re-asserts on `usbc_out == 1 && monitor == 0`. The
+`37 14` half of that test is what keeps it off a deliberate Mic selection,
+which moves both. **The debounce is load-bearing**: the pair can split across
+SPI frames (16 of 20 MIDI_OUT slots), so acting on a single tick would fight
+the leading half of a split Mic selection. Two consecutive worker ticks
+(~400 ms) against ~3 ms frames settles that. Verified on hardware — Move's
+`37 12 01` at f75529, our `37 12 03` at f75635 (**bit0 preserved, bit1
+restored**), then quiet.
+
 Flow: the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
 worker persists the value to `/data/UserData/schwung/usbc_out_state`; ~5 s after
 boot the worker arms a replay, which the SPI callback emits one message per
@@ -660,11 +1109,30 @@ nothing to correct and nothing goes on the wire.
 
 Two behaviours worth knowing:
 
-- **Persistence is gated for ~7 s after boot.** Move asserts its Mic default at
-  ~0.6 s, and the shim observes its *own* replay too (emit runs earlier in the
-  same `pre_transfer` than scan). Persisting either would clobber the stored
-  preference on every reboot. Trade-off: a change made in the first ~7 s of boot
-  is not persisted.
+- **Persistence is gated CAUSALLY, not on a deadline** (`src/host/usbc_out_gate.c`).
+  Move asserts its Mic default at ~0.6 s, and the shim observes its *own* replay
+  too (emit runs earlier in the same `pre_transfer` than scan) — neither carries
+  user intent and persisting either clobbers the stored preference.
+
+  This was a ~7 s deadline, and **that deadline was a bug**. The worker's clock
+  starts when MoveOriginal opens the SPI device; Move's assert floats with boot
+  load. A slow boot put the assert on the trusting side of the line, so Mic was
+  written over a stored Main Out — reverting in session *and* forgetting across
+  the reboot, one mechanism producing both halves of the symptom, intermittent
+  by construction. Confirmed on hardware: one boot logging `USB-C out: boot
+  re-assert Main Out` and the state file later reading `0` with no user action.
+
+  The discriminator is not time. **We only ever re-assert Main Out, so during
+  the boot window an observed Mic can only have come from Move.** The gate
+  stays closed until Move has had its say *and* we have re-asserted over it —
+  pre-replay observations are recorded but never persisted; while defending, an
+  observed Mic is countered (bounded by `USBC_GATE_MAX_REPLAYS`) rather than
+  believed; an observed Main Out only settles the gate once Move has actually
+  asserted Mic this boot, so our own echo cannot settle it early on a slow boot.
+  A ~60 s `usbc_gate_force_settle` backstop covers a boot where Move never
+  speaks (opening the gate persists nothing by itself). Trade-off, unchanged in
+  kind but now bounded by events: a change made before the ~5 s re-assert is not
+  persisted. Unit tests: `tests/host/test_usbc_out_gate.sh`.
 - **Move's own Settings screen keeps reading "Mic"** even when the hardware is on
   Main Out — Move doesn't adopt the replayed value into its UI state. The audio
   is correct; the screen is not. Selecting "Main Out" there is harmless;
@@ -683,7 +1151,10 @@ before the ~5 s replay and the restore needs no runtime propagation.
 Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
 so it is both SPI-callback-safe and host-testable; unit tests in
 `tests/host/test_xmos_audio.sh`), observed and emitted in `schwung_shim.c`'s
-pre-transfer callback, persisted and armed in `src/host/shim_worker.c`.
+pre-transfer callback, persisted and armed in `src/host/shim_worker.c`. The
+boot arbitration is split out as `src/host/usbc_out_gate.c` — also pure state,
+with no clock of its own, which is what makes the boot orderings testable
+without a device.
 
 `xmos_audio_emit` is also the only sanctioned way to put SysEx into MIDI_OUT: it
 requires a **contiguous** run of free slots, refuses while any cable-0 SysEx is
@@ -711,7 +1182,129 @@ Each of the 4 slots has:
 
 ### User Presets
 
-Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse). Scrolling the list **auditions live** (debounced); Back reverts to the slot's original state, the detail screen's Load commits. Autosave is suppressed while auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view module). Developer state-contract notes in `docs/MODULES.md`.
+Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module, or the component's own knob-grid "My Presets" page's `Load…` action. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
+
+**The browser is exactly ONE thing: choose a preset.** Picking a row LOADS it
+immediately and commits — there is no per-preset Load/Delete detail screen.
+Save, Save As and Delete are not offered here at all; they live on the
+component's own "My Presets" grid page (see below). This was three separate
+hardware reports, one cause: the verbs had moved to the grid page but the
+browser still offered its own copies — *"loading a preset shouldnt show
+load/delete, it should just load it (delete is on the main menu)"*, *"after
+deleting i get to a menu of [save current] not the preset (none) page"*,
+*"i also see [save current] if i load without saving"*. Scrolling the list
+**auditions live** (debounced) **when Global Settings → Audition is on**;
+Back reverts to the slot's original state. That gate (`browser_preview`,
+shared with the file browser's WAV preview) **defaults to OFF**: auditioning
+applies state to the live slot, and this list stopped being hard to reach the
+moment it became reachable from a page at the end of every component. Off
+disables the audition, not the list — a pick still loads, and with it off the
+browser pays no `:state` read on entry. Autosave is suppressed while
+auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never
+persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view
+module). Developer state-contract notes in `docs/MODULES.md`.
+
+A committed Load, or a completed Delete (still reached exclusively from the
+grid's My Presets page, via `enterPresetDeleteConfirm` — the SAME
+confirm-delete screen as before, just with no detail screen left in front of
+it), both exit through `VIEWS.CHAIN_EDIT`. `maybeReturnToComponentGrid` (see
+below) is what routes a grid-driven arrival back onto the My Presets page
+specifically, by NAME; a `[User Presets]`-row arrival (no grid open) lands
+plainly on the chain editor, as it always did.
+
+### Every component's knob grid ends with two pages it never declared
+
+Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
+sequence ends with two pages neither the module nor its author put there:
+**My Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
+then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
+always) and **Module** (`Swap Module`, `Remove Module`). Both are doors: a
+`PAGE_MENU` must be entered before an entry fires, so jogging past the end
+cannot fire Remove Module by accident.
+
+**Named "My Presets", not "User Presets"** — the header's right side is a
+MEASURED share against a `HEADER_MIN_LEFT` floor (70px), and "USER PRESETS"
+(56px) is past it and truncates to "USER PRESE". "My Presets" (46px) fits.
+"Presets" alone would be worse: 27 modules in the fleet already plan a page
+called that (obxd, sfz, hush1, minijv, sf2, hera, tablor, noisemaker, …), so
+`claimName` would dedupe this one to "Presets - 2". Reported from hardware —
+rendered PNGs, not text art, are what actually showed the truncation.
+
+**The `*` follows a knob write within one settle, not just a page
+re-entry.** Turning a knob on any OTHER page of the same component changes
+the live `<prefix>:state` blob the mark compares against, and nothing used to
+notice until the page was re-entered — *"changed a knob and * didnt appear
+until i exited and re entered the module"*. Fixed without adding a
+draw-path read: `componentParamPagesIo`'s `setParam` marks the write pending
+(`markComponentParamWrite`); `tickUserPresetStale`, driven from the main
+tick (never a draw function) alongside `tickParamPages`, waits out
+`CONTRACT_SETTLE_MS` and then asks ONCE — via `paramPagesRefreshTrailing()`,
+the same call Save/Load/Delete already use — and only when the grid is still
+open on the exact `(slot, component)` that wrote. One read per settle, never
+per detent, none once the user has moved on.
+
+**The header shows the loaded USER preset, with the same mark, on every
+page of the component** — `S1 > tst` clean, `S1 > * tst` dirty — falling
+back to the module's own patch name and then its abbreviation exactly as
+before when no user preset is loaded. Asked for on hardware and shipped:
+*"should we change the preset in the header from the system preset to the
+user preset? (Init -> tst) and then show the * there too?"*. Reads a CACHE
+(`userPresetLiveBlobCache`, keyed per slot+prefix), never the DSP —
+`userPresetHeaderMark` in `shadow_ui.js`, wired through `ctx` to
+`headerTitle()` in `shadow_ui_param_pages.mjs` — so this costs nothing beyond
+the read the My Presets page already pays for, and it answers `null`
+harmlessly for a synthesised contract (Slot/Master FX/Global Settings) or a
+Master FX component, none of which populate a record for their key.
+
+**They are appended by the PLANNER, after the whole walk — not injected into
+a level's hierarchy — because injection cannot work for this fleet.** A
+level's own `menu:` field (the same PAGE_MENU kind) lands right after that
+level's OWN grids, not last: Slot Settings dodges that by giving its menu a
+level of its own, which only works because it synthesises its whole
+hierarchy end to end. We do not own a module's. And three fleet shapes rule
+out injection outright: 11 of the 95 modules in
+`tests/fixtures/module-contracts.json` publish no `levels` object at all
+(chain_params pagination fallback), minijv has `levels` but no `root`, and
+with `modes` present the walk root is whichever mode is active. There is no
+level guaranteed to exist that "append to the end" could target.
+`planPages({ trailingMenus })` in `src/shared/param_pages/page_plan.mjs`
+appends after the walk instead — see `buildTrailingPages`/`appendTrailing`
+there and `io.trailingMenus()`/`refreshTrailing()` in
+`src/shared/param_pages/page_controller.mjs`.
+
+**A failed contract read cannot manufacture them.** `planPages` returns no
+pages at all when `unresolved`, so the append only ever lands on a resolved
+plan — the same rule as "a plan is a statement about what a module declares"
+above.
+
+**Scope is exactly the 4 chain slots' real components.** Master FX chain
+components are excluded — `__user_presets__` is injected in
+`enterComponentSelect` only, so Master FX has no user presets today and this
+inherits that gap rather than widening it. Slot Settings and Master FX
+Settings are excluded because they are settings, not modules: no module id to
+key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
+`componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
+component `enterParamPages` site, so a new call site cannot silently opt
+Master FX in. Grid view only — the list view (`param_view = 0`) is a separate
+code path with no pages to jog through and keeps its existing Shift+Click
+route.
+
+**The `*` leads the name**, e.g. `* Fat Brass` not `Fat Brass *`, because the
+list renderer truncates the TAIL: rendered on obxd, `"Fat Brass *"` drew as
+`"Fat Br…"` and the one character carrying the information was the first
+thing lost. See `presetRowValue` in `src/shared/param_pages/current_preset.mjs`.
+It costs no draw-path read — it compares the live `<prefix>:state` blob
+against a stored hash at PLAN time and on explicit refresh, never per frame
+(`trailingMenus()` has exactly 4 call sites, none inside `render()`).
+
+**Save overwrites; Save As does not.** `overwriteUserPreset` refuses when the
+`:state` read returns `null` — a FAILED read, not empty state — because
+writing it would replace a good preset with nothing. **Remove Module IS the
+picker's `None`**: it goes through `applyChainComponentPick`, the same
+function the picker uses, because removal is not one write — it closes the
+gap and renumbers everything downstream via a `remove` verb that permutes the
+DSP arrays rather than reloading modules (see "Chain shape edits are a
+PERMUTATION" above).
 
 ### MIDI Cable Filtering
 
@@ -759,6 +1352,65 @@ Master FX still has **no insert, remove or move** — removal is picking `None`,
 which unloads in place and leaves a hole. Adding those (and the permutation
 that must come with them) is residual 2.2 Step 4, and it is a new feature, not
 a port of `chain_reorder.c`.
+
+### A STEP button is not a note, and audio FX were told it was
+
+Audio FX are fed from **three** places, and the only guard any of them had was
+`d1 >= 10` — which exists solely to drop the capacitive knob-touch notes 0–9,
+and was never a claim about what counts as musical input:
+
+```
+src/schwung_shim.c   MIDI_IN cable 0 (Move's own surface)   notes, d1 >= 10
+src/host/shadow_midi.c   shadow_chain_dispatch_midi_to_slots    ALL voice msgs, no guard
+src/host/shadow_midi.c   shadow_dispatch_direct_external_midi   cable-2 THRU, d1 >= 10
+```
+
+So on Move's own surface the **step buttons (16–31) and track buttons (40–43)
+reached every loaded audio FX as played notes.** Found with an FX whose note
+handler fires a one-shot action (capicola's forced re-slice): in Master FX it
+fired on essentially any button press. The ducker had the identical exposure
+and merely read as "sensitive". Both `shadow_master_fx_forward_midi` and the
+slot `FX_BROADCAST` were affected — the asymmetry is **not** master-vs-slot, it
+is broadcast-vs-dispatch: `chain_midi.c:720` handles `FX_BROADCAST` by
+forwarding to every audio FX and returning *before* any channel logic, so only
+the non-broadcast dispatch was ever channel-matched.
+
+Two guards fix it, in `src/host/fx_midi_filter.h`, and **the split is the
+point**:
+
+- `move_surface_note_is_pad(d1)` — cable-0 sites ONLY, where a note number is a
+  physical control identity. Replaces `d1 >= 10` at both shim broadcasts.
+- `fx_midi_channel_accepts(ch, status)` — applied **inside**
+  `shadow_master_fx_forward_midi`, not at its callers, so all three feeds are
+  gated by construction and a fourth cannot be added ungated.
+
+Never apply the note-range guard to the external sites: there a note number is
+a **pitch**, and clamping to 68–99 silences five octaves of a keyboard.
+`tests/host/test_fx_midi_filter_call_sites.sh` asserts that as an *absence* —
+a test that only checked "the guard exists" would pass with it wrongly applied.
+
+**Master FX → Settings → MIDI Ch** (`master_fx_midi_channel` in
+`shadow_config.json`; param `master_fx:midi_channel`, −1 = All) selects the
+listen channel. It lives on `MASTER_FX_SETTINGS_ITEMS_BASE` and in
+`MASTER_GRID_PARAMS`, **not** in Global Settings — the first cut put it under
+Global → Audio beside the other `master_fx:*` shim settings, which is where the
+*plumbing* lives but not where a Master FX setting is looked for, and it was
+reported missing from the device. Note the two representations: the wire
+(`master_fx:midi_channel`, the config key, and the shim's variable) carries the
+REAL channel (−1 = All, 0–15), while an enum cell is addressed by OPTION INDEX
+(0–16). They are off by one and disagree about All, so the conversion is pinned
+to `createMasterGridIo`'s `getParam`/`setParam` in `shadow_ui_slot_grid.mjs`
+(`mfxMidiChannelToIndex` / `…FromIndex`) rather than repeated per call site.
+
+**Default All**, deliberately: Master FX heard everything
+before this existed, so any other default silently kills every sidechain in
+the field — and a user whose ducker stopped after an update cannot connect
+that to a setting they never saw. Note that the channel setting **cannot**
+substitute for the pad guard: pads and steps share one cable-0 surface, so no
+channel value separates them. Persisted like `usbc_out_persist` and parsed by
+the shim at init (`shadow_resample.c`), so the filter is in force before the
+first SPI frame. An out-of-range stored value fails **open** (All) rather than
+muting every FX with no visible cause.
 
 ### Overtake Modules
 

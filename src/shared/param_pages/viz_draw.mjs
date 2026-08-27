@@ -33,6 +33,7 @@ import {
     VIZ_ENVELOPE, VIZ_FILTER, VIZ_LFO, VIZ_WAVEFORM, VIZ_FADER, VIZ_SWITCH, VIZ_EQ, VIZ_SAMPLE,
 } from "./viz.mjs";
 import { enumIndexOf } from "./param_meta.mjs";
+import { wavPeaks, resamplePeaks } from "./wav_peaks.mjs";
 
 /* -------------------------------------------------------------- primitives */
 
@@ -425,13 +426,23 @@ function optionText(metaIndex, key, values) {
  * envelopes (2-3 roles) use Movy's span-relative formula directly.
  */
 export function drawEnvelope(ctx, rect, roles, values, metaIndex) {
-    const present = ["attack", "decay", "sustain", "release"].filter((r) => roles[r]);
+    /* Time order, which is draw order. HOLD is here because an AHR envelope is
+     * a real shape, not a degenerate ADSR: gate and ducker both declare
+     * attack/hold/release and nothing else. Leaving hold out of this list did
+     * not drop the group -- it drew the group WITHOUT its middle segment, so
+     * the knob was in the span, turning it moved nothing on screen, and the
+     * curve quietly lied about the shape. */
+    const present = ["attack", "hold", "decay", "sustain", "release"].filter((r) => roles[r]);
     if (present.length < 2) return;
 
     const x0 = rect.x, x1 = rect.x + rect.w;
     const { topY, botY: bodyBottom } = band(rect);
 
-    if (present.length === 4) {
+    /* drawFullAdsr is Movy's fixed ADSR reference geometry -- four named
+     * segments, no room for a fifth. Anything else, including a 4-role set
+     * that contains hold, goes to the span-relative builder. */
+    const isPlainAdsr = present.length === 4 && !roles.hold;
+    if (isPlainAdsr) {
         drawFullAdsr(ctx, x0, x1, topY, bodyBottom, roles, values, metaIndex);
     } else {
         drawPartialEnv(ctx, x0, x1, topY, bodyBottom, present, roles, values, metaIndex);
@@ -487,10 +498,41 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
     for (const r of present) val[r] = frac(metaIndex, roles[r], values);
     const susY = has("sustain") ? baseY - Math.round(val.sustain * usableH) : baseY;
 
-    const pts = [[leftX, baseY]];
-    const peakX = Math.min(rightX - 2, leftX + 4 + Math.round(val.attack * span * 0.4));
-    pts.push([peakX, topY]);
-    let cur = peakX;
+    /*
+     * ATTACK IS NOT GUARANTEED.
+     *
+     * The rise was drawn unconditionally from `val.attack`, and an envelope
+     * with no attack role makes that `undefined` -- so peakX is NaN, the NaN
+     * reaches line()'s `for(;;)` and its equality break is never satisfied.
+     * Not a wrong picture: a HANG, the same one CLAUDE.md records for a
+     * partial GRID_GEOM freezing the shadow_ui tick.
+     *
+     * It was unreachable until knob alignment made these pages drawable:
+     * surge declares twelve LFO pages carrying hold/sustain/release and no
+     * attack at all, and every one of them was blocked by the row constraint
+     * before. A latent renderer bug, exposed rather than caused by the
+     * alignment -- and the reason `present` is filtered by ROLE and must never
+     * be assumed to contain any particular one.
+     *
+     * With no attack the shape simply starts at full level, which is what an
+     * envelope with no rise means.
+     */
+    const pts = [];
+    let cur;
+    if (has("attack")) {
+        pts.push([leftX, baseY]);
+        cur = Math.min(rightX - 2, leftX + 4 + Math.round(val.attack * span * 0.4));
+        pts.push([cur, topY]);
+    } else {
+        cur = leftX;
+        pts.push([cur, topY]);
+    }
+    /* Hold is a plateau AT THE PEAK, between the attack rise and whatever
+     * falls next -- for an AHR (gate, ducker) that is the release. */
+    if (has("hold")) {
+        const holdEnd = Math.min(rightX - 2, cur + Math.round(val.hold * span * 0.3));
+        if (holdEnd > cur) { pts.push([holdEnd, topY]); cur = holdEnd; }
+    }
     if (has("decay")) {
         cur = Math.min(rightX - 2, cur + 4 + Math.round(val.decay * span * 0.35));
         pts.push([cur, susY]);
@@ -1046,19 +1088,49 @@ export function drawSwitch(ctx, rect, key, values, metaIndex) {
  * as a separate line — which stays the highest-contrast thing in the column
  * whether the sample is loud or quiet there.
  *
- * No decoded audio is available here (see docs/plans/2026-08-16-next-sessions.md
- * item 7 — WAV/AIFF parsing is its own, larger task), so `points` is a
- * representative envelope shape rather than the real waveform; the marker
- * technique itself is real Movy, not a placeholder.
+ * The envelope is the file's real peaks, decoded by wav_peaks.mjs and advanced
+ * from the tick. When there are none, there is no envelope — see below.
  */
 export function drawSample(ctx, rect, roles, values, metaIndex) {
     const x0 = rect.x, w = rect.w;
     const { topY, botY, midY, amp } = band(rect);
 
+    /*
+     * REAL PEAKS OR NOTHING. There is no representative shape.
+     *
+     * There used to be one: `sin(t*PI) * (0.55 + 0.35*sin(t*23))`, a
+     * waveform-shaped thing drawn whenever the peaks were missing. It was
+     * justified as degrading gracefully — the cursor and brackets are still
+     * true, so why blank the cell — and that reasoning is wrong in the way
+     * this codebase has a standing rule about: a read that did not produce an
+     * answer must never produce a PICTURE. The rule is written down for
+     * parameter reads (see the tri-state contract) and it is the same rule
+     * here.
+     *
+     * What it cost: granny declares `sample_path` in its hierarchy but puts it
+     * on no knob, so the sample cell had no file to point at on ANY page and
+     * drew the synthetic envelope every time — a picture of a sample that was
+     * never loaded, on the flagship granular module. Reported from the device
+     * as "no sample was loaded, not sure why it was showing a waveform".
+     *
+     * A missing envelope now draws the baseline only (halfAt = 0 lights one
+     * pixel per column), which is honest and still carries the cursor and the
+     * brackets. It also self-corrects: wavPeaks fills in progressively, so the
+     * flicker the fallback existed to hide is a few ticks of a centre line.
+     *
+     * Normalised against the running PEAK, not against full scale, so a quiet
+     * sample still uses the full height of the cell. Guarded, because peak is
+     * 0 until the first block lands.
+     *
+     * No I/O here: wavPeaks never reads, and the job is advanced from the tick.
+     */
+    const file = roles.value && values ? values[roles.value] : null;
+    const pk = file ? wavPeaks(String(file)) : null;
+    const pts = (pk && !pk.error && pk.points.length) ? resamplePeaks(pk.points, w) : null;
+    const scale = (pk && pk.peak > 0) ? 1 / pk.peak : 1;
     const halfAt = (i) => {
-        const t = i / Math.max(1, w);
-        const v = Math.abs(Math.sin(t * Math.PI)) * (0.55 + 0.35 * Math.sin(t * 23));
-        return Math.round(clamp01(v) * amp);
+        if (!pts) return 0;
+        return Math.round(clamp01(pts[Math.min(pts.length - 1, i)] * scale) * amp);
     };
     /*
      * SCH-50 `ghost-fill`, and this is the set where the AXIS IS INVERTED: the
@@ -1086,10 +1158,88 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     drawStepCurve(ctx, x0, x0 + w, crestAt, 1);
     drawStepCurve(ctx, x0, x0 + w, troughAt, 1);
 
-    if (roles.position && values && values[roles.position] !== undefined) {
-        const posMeta = metaIndex.getOrGuess(roles.position);
-        const posFrac = clamp01(fractionOf(posMeta, values[roles.position]));
-        const mi = Math.min(w - 1, Math.floor(posFrac * w));
+    /* Column i covers frames [i/w, (i+1)/w), so a marker belongs in
+     * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all
+     * positions and lands a pixel off the column that will actually play. */
+    const colOf = (p) => Math.min(w - 1, Math.floor(clamp01(p) * w));
+    const posOf = (role) => {
+        const k = roles[role];
+        if (!k || !values || values[k] === undefined || values[k] === null) return undefined;
+        return clamp01(fractionOf(metaIndex.getOrGuess(k), values[k]));
+    };
+
+    /*
+     * LOOP BOUNDS FIRST, so the playback cursor draws on top of them — the
+     * cursor is the thing that moves and the thing you are usually looking
+     * for, and a bound sitting on the same column would otherwise hide it
+     * exactly when the two matter most.
+     *
+     * Tips point INWARD, at the region that repeats. That is how you tell a
+     * start from an end with no room for a label, and it is invisible in code
+     * review: reversing `dir` still draws two brackets and still satisfies any
+     * "are there brackets" check, while reading as a loop that excludes the
+     * part it actually plays. test_viz_sample.sh pins the tip COLUMNS.
+     */
+    const bracket = (p, opening) => {
+        if (p === undefined) return;
+        const bx = x0 + colOf(p);
+        ctx.fillRect(bx, topY, 1, botY - topY + 1, 1);          /* the stem */
+        const tipX = bx + (opening ? 1 : -1);
+        if (tipX >= x0 && tipX < x0 + w) {
+            ctx.fillRect(tipX, topY, 1, 2, 1);
+            ctx.fillRect(tipX, botY - 1, 1, 2, 1);
+        }
+    };
+    bracket(posOf("loopStart"), true);
+    bracket(posOf("loopEnd"), false);
+
+    const pos = posOf("position");
+
+    /*
+     * GRANULAR SPREAD: the region grains are actually drawn from, as a dotted
+     * fence either side of the cursor. Dotted rather than solid so it reads as
+     * a boundary the cursor may wander past, not as a second cursor.
+     *
+     * Two behaviours copied from granny's engine rather than guessed:
+     *   max_offset = spray * (sample_len - 1)   -> the WHOLE file, not a window
+     *   start_idx wraps into [0, len)           -> so the fence wraps too
+     * and because the offset is symmetric, ±0.5 already reaches every frame:
+     * past that the region cannot grow, so the fences stop at the file edges
+     * instead of drifting on and implying a spread the DSP never applies.
+     */
+    const spray = posOf("spray");
+    /* `spray > 0` is inert in every reachable case -- at 0 both fences land on
+     * the cursor column and the cursor, drawn last as a solid full-height
+     * complement, overwrites them. Kept for intent and to skip the work; the
+     * mutation that removes it is an EQUIVALENT mutant, not an untested gap. */
+    if (pos !== undefined && spray !== undefined && spray > 0) {
+        const wrap = (f) => f - Math.floor(f);
+        const full = spray >= 0.5;
+        for (const side of [-1, 1]) {
+            const at = full ? (side < 0 ? 0 : 1 - 1 / w) : wrap(pos + side * spray);
+            const fx = x0 + colOf(at);
+            const fh = halfAt(fx - x0);
+            for (let yy = topY; yy <= botY; yy++) {
+                if (((yy + fx) & 1) !== 0) continue;
+                /* Inside the waveform body the fence must be CUT, not added: a
+                 * lit pixel over a lit body is invisible. Same complement
+                 * technique the cursor uses just below. */
+                const inWave = yy >= midY - fh && yy <= midY + fh;
+                ctx.fillRect(fx, yy, 1, 1, inWave ? 0 : 1);
+            }
+        }
+    }
+
+    /*
+     * The cursor is the envelope's COMPLEMENT in its own column: the sample is
+     * cleared there and the space around it is lit. That inverts it over the
+     * waveform without ever reading the framebuffer back — and it is
+     * self-correcting, which is the point. Through a quiet passage it is a tall
+     * bright line; through a loud one it becomes a dark notch cut into the
+     * body. Either way it is the highest-contrast thing in the column.
+     */
+    if (pos !== undefined) {
+        const mi = colOf(pos);
         const h = halfAt(mi), mx = x0 + mi;
         ctx.fillRect(mx, midY - h, 1, 2 * h + 1, 0);
         if (midY - h > topY) ctx.fillRect(mx, topY, 1, (midY - h) - topY, 1);

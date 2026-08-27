@@ -50,6 +50,20 @@
 #define SCHWUNG_OFF_IN_DISP_STAT   (SCHWUNG_OFF_IN_BASE + 248)
 #define SCHWUNG_OFF_IN_AUDIO       (SCHWUNG_OFF_IN_BASE + 256)
 
+// Kernel-maintained transfer telemetry — `struct ablspi_sys_info`, which
+// ablspi_open() places at the very END of the page:
+//
+//     spidev->sysinfo = page_address(buffer) + PAGE_SIZE - sizeof(struct ablspi_sys_info);
+//     struct ablspi_sys_info { u64 spi_tx_time; };
+//
+// The driver stamps spi_tx_time (nanoseconds, trace_clock_local) after each
+// completed transfer. Note it OVERLAPS the last 8 bytes of the nominal RX
+// region — rx_buffer is PAGE_SIZE/2 long but the sysinfo block sits inside its
+// tail, so RX is only safely (PAGE_SIZE/2 - 8) bytes. Harmless at Move's
+// 768-byte frames, which reach nowhere near it.
+#define SCHWUNG_OFF_SYSINFO        (SCHWUNG_PAGE_SIZE - 8)
+#define SCHWUNG_OFF_SPI_TX_TIME    SCHWUNG_OFF_SYSINFO
+
 // MIDI limits
 #define SCHWUNG_MIDI_IN_MAX        31
 #define SCHWUNG_MIDI_OUT_MAX       20
@@ -57,7 +71,14 @@
 // Display
 #define SCHWUNG_DISPLAY_SIZE       1024
 
-// ioctl command numbers
+// ioctl command numbers.
+//
+// ablspi dispatches on `_IOC_NR(cmd)` and defines only these five:
+//   6 GET_STATE, 7 CAN_SEND, 10 WAIT_AND_SEND_MESSAGE_WITH_SIZE,
+//   11 SET_SPEED, 12 GET_SPEED.
+// The rest below are ours and are not driver commands — nothing may assume the
+// kernel implements them. Speed range is 5 MHz (the driver default) to 25 MHz;
+// Move selects 20.
 enum schwung_ioctl_cmd {
     SCHWUNG_IOCTL_FILL_TX        = 0,
     SCHWUNG_IOCTL_FILL_RX        = 1,

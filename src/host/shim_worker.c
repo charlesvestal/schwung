@@ -10,10 +10,15 @@
 #include <pthread.h>
 #include <sched.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include "shim_worker.h"
+#include "rt_thread_audit.h"
+#include "spi_tally.h"
 #include "shadow_set_pages.h"
 #include "unified_log.h"
+#include "usbc_out_gate.h"
+#include "shadow_resample.h"   /* usbc_out_persist_enabled */
 
 volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
@@ -21,6 +26,8 @@ volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
 volatile int shim_usbc_out_persist = -1;
 volatile int shim_usbc_out_replay = -1;
+volatile int shim_usbc_out_level = -1;
+volatile int shim_usbc_monitor = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
  * re-assert it to Move at boot — XMOS doesn't report jack-in at boot, so an
@@ -95,7 +102,242 @@ static const flag_spec_t FLAGS[] = {
     { "/data/UserData/schwung/slot_fx_dump_trigger", SHIM_FLAG_SLOT_FX_DUMP, 1 },
     { "/data/UserData/schwung/align_dump_trigger",   SHIM_FLAG_ALIGN_DUMP,   1 },
     { "/data/UserData/schwung/main_fx_dump_trigger", SHIM_FLAG_MAIN_FX_DUMP, 1 },
+    { "/data/UserData/schwung/rt_thread_audit_on",   SHIM_FLAG_RT_AUDIT,     0 },
+    { "/data/UserData/schwung/spi_tally_on",         SHIM_FLAG_SPI_TALLY,    0 },
 };
+
+/* ---- SPI frame tally --------------------------------------------------- */
+
+/* Pairs the kernel's per-transfer spi_tx_time (accumulated on the SPI callback,
+ * see spi_tally.h) with /proc/ableton/<dev>/irq_count, which only the worker
+ * may read — it is file I/O. Off unless armed:
+ *     touch /data/UserData/schwung/spi_tally_on
+ */
+
+#define ABLSPI_IRQ_COUNT_PATH "/proc/ableton/ablspi0.0/irq_count"
+
+/* Returns 0 and fills *out on success. The counter is printed from an int that
+ * only ever increments, so it eventually prints negative; parse it wide, then
+ * narrow to exactly 32 bits so spi_tally_fold's modular subtraction sees the
+ * same width the kernel counts in. */
+static int ablspi_irq_count_read(uint32_t *out)
+{
+    FILE *f = fopen(ABLSPI_IRQ_COUNT_PATH, "r");
+    if (!f) return -1;
+    long v = 0;
+    int got = (fscanf(f, "%ld", &v) == 1);
+    fclose(f);
+    if (!got) return -1;
+    *out = (uint32_t)v;
+    return 0;
+}
+
+static void spi_tally_tick(void)
+{
+    static spi_tally_state_t state;
+    static int armed = 0;
+
+    if (!(shim_debug_flags & SHIM_FLAG_SPI_TALLY)) {
+        /* Disarmed: drop the accumulator so a later session does not inherit
+         * this one's peak transfer time or backlog. */
+        if (armed) {
+            spi_tally_reset(&shim_spi_tally, &state);
+            armed = 0;
+        }
+        return;
+    }
+
+    /* Same rule as the RT-thread audit: do not start measuring into a log that
+     * is still dropping writes, or the whole session reads as "armed, nothing
+     * found" — which is indistinguishable from a clean result. */
+    if (!unified_log_enabled()) return;
+
+    if (!armed) {
+        spi_tally_reset(&shim_spi_tally, &state);
+        armed = 1;
+    }
+
+    uint32_t irqs = 0;
+    if (ablspi_irq_count_read(&irqs) != 0) {
+        /* A tally that cannot read the counter must SAY so — reporting frames
+         * with no IRQ side would look like a clean zero-backlog result while
+         * measuring only half of the comparison that is the entire point. */
+        static int moaned = 0;
+        if (!moaned) {
+            moaned = 1;
+            unified_log("shim", LOG_LEVEL_ERROR,
+                        "spi-tally: armed but " ABLSPI_IRQ_COUNT_PATH
+                        " is unreadable — NO backlog measurement is running");
+        }
+        return;
+    }
+
+    spi_tally_sample_t s;
+    spi_tally_fold(&state, &shim_spi_tally, irqs, &s);
+
+    char line[256];
+    if (s.late) {
+        spi_tally_format_late(&s, line, sizeof(line));
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+    spi_tally_format(&s, line, sizeof(line));
+    unified_log("shim", LOG_LEVEL_INFO, line);
+}
+
+/* ---- realtime-thread audit ------------------------------------------- */
+
+/* Module entry points run on the SPI callback at SCHED_FIFO 90, and POSIX
+ * inherits scheduling by default — so a pthread_create from create_instance or
+ * set_param yields a worker born at FIFO 90 that starves Move's Link Main
+ * (FIFO 35). It also inherits the parent's `comm`, so it reports as
+ * "Audio Main/SPI" and is invisible in top or any thread list. See
+ * rt_thread_audit.h; the detector is a set diff over tids for that reason.
+ *
+ * Reading /proc is file I/O, which is why this lives on the worker and not in
+ * the callback. Off unless armed:
+ *     touch /data/UserData/schwung/rt_thread_audit_on
+ */
+
+static char rt_audit_module[64];
+static volatile int rt_audit_module_seq;
+
+void shim_rt_audit_note_module(const char *id)
+{
+    /* RT-safe: bounded copy, no allocation, no lock. */
+    if (!id || !id[0]) {
+        rt_audit_module[0] = '\0';
+    } else {
+        size_t n = strnlen(id, sizeof(rt_audit_module) - 1);
+        memcpy(rt_audit_module, id, n);
+        rt_audit_module[n] = '\0';
+    }
+    __sync_fetch_and_add(&rt_audit_module_seq, 1);
+}
+
+static void rt_audit_tick(void)
+{
+    static rt_thread_info_t prev[RT_AUDIT_MAX_THREADS];
+    static int prev_n = 0;
+    static int have_baseline = 0;
+    /* The pre-module snapshot, kept separately from `prev`: Move's own audio
+     * threads are permanently busy at FIFO 70 and would otherwise be reported
+     * as burners on every single tick, burying the finding. */
+    static rt_thread_info_t base[RT_AUDIT_MAX_THREADS];
+    static int base_n = 0;
+    static long clk_hz = 0;
+
+    /* CPU accounting is in whole clock ticks (10 ms at the usual USER_HZ 100),
+     * so the floor cannot usefully go below one tick. 20 ms in a ~1 s window is
+     * 2% of a core — well under what starves `Link Main`, and high enough that
+     * an idle thread never trips it. */
+    const int RT_BURN_FLOOR_MS = 20;
+    const int RT_BURN_WINDOW_MS = 1000;   /* nominal; the tick is ~1 Hz */
+
+    if (!(shim_debug_flags & SHIM_FLAG_RT_AUDIT)) {
+        /* Disarmed: drop the baseline so re-arming starts clean rather than
+         * diffing against a snapshot from minutes ago. */
+        have_baseline = 0;
+        prev_n = 0;
+        return;
+    }
+
+    /* Do not latch a baseline the log will not accept.
+     *
+     * The baseline is emitted ONCE and is the whole report for anything
+     * already loaded, so losing it loses the finding. unified_log only starts
+     * accepting after it notices debug_log_on, which it rechecks every 100
+     * calls — so arming both flags together, or leaving rt_thread_audit_on in
+     * place across a reboot, latched the baseline into a log that was still
+     * dropping writes. The audit then ran for twelve minutes reporting
+     * nothing, which is indistinguishable from a clean result. Wait for the
+     * log instead; the audit is a diagnostic and has nothing to do until
+     * someone can read it. */
+    if (!unified_log_enabled()) return;
+
+    rt_thread_info_t cur[RT_AUDIT_MAX_THREADS];
+    int cur_n = rt_thread_audit_scan(cur, RT_AUDIT_MAX_THREADS);
+
+    char line[256];
+
+    /* A scan that cannot read /proc must SAY so. Returning quietly here reads
+     * downstream as "armed, nothing realtime found" — a false all-clear, which
+     * is the one answer this tool must never give. */
+    if (cur_n < 0) {
+        static int moaned = 0;
+        if (!moaned) {
+            moaned = 1;
+            snprintf(line, sizeof(line),
+                     "rt-audit: armed but /proc/self/task is unreadable (errno=%d) — NO audit is running",
+                     errno);
+            unified_log("shim", LOG_LEVEL_ERROR, line);
+        }
+        return;
+    }
+
+    if (!have_baseline) {
+        /* Report the whole realtime set once. Arming mid-session cannot
+         * retroactively see a thread inherited at boot, so the baseline IS the
+         * finding for anything already loaded — printing only the diff would
+         * silently exonerate every module in the current set. */
+        snprintf(line, sizeof(line),
+                 "rt-audit: armed — %d thread(s), %d realtime (baseline)",
+                 cur_n, rt_thread_count_realtime(cur, cur_n));
+        unified_log("shim", LOG_LEVEL_INFO, line);
+
+        for (int i = 0; i < cur_n; i++) {
+            if (!rt_thread_is_realtime(&cur[i])) continue;
+            char desc[224];
+            rt_thread_format(&cur[i], NULL, desc, sizeof(desc));
+            snprintf(line, sizeof(line), "rt-audit: baseline %s", desc);
+            unified_log("shim", LOG_LEVEL_INFO, line);
+        }
+
+        if (cur_n >= RT_AUDIT_MAX_THREADS)
+            unified_log("shim", LOG_LEVEL_WARN,
+                        "rt-audit: thread table full — some threads not scanned");
+
+        memcpy(prev, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+        prev_n = cur_n;
+        memcpy(base, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+        base_n = cur_n;
+        clk_hz = sysconf(_SC_CLK_TCK);
+        if (clk_hz <= 0) clk_hz = 100;
+        have_baseline = 1;
+        return;
+    }
+
+    rt_thread_info_t found[RT_AUDIT_MAX_THREADS];
+    int n = rt_thread_new_realtime(prev, prev_n, cur, cur_n,
+                                   found, RT_AUDIT_MAX_THREADS);
+    for (int i = 0; i < n; i++) {
+        char desc[224];
+        rt_thread_format(&found[i],
+                         rt_audit_module[0] ? rt_audit_module : NULL,
+                         desc, sizeof(desc));
+        snprintf(line, sizeof(line), "rt-audit: NEW realtime thread %s", desc);
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+
+    /* WHICH threads exist is the suspect list; how much CPU they BURN at
+     * realtime priority is the harm. `Link Main` runs at FIFO 35 and only gets
+     * what a FIFO 70 thread leaves it, so a parked worker costs nothing and a
+     * sample loader costs everything. Report the second. */
+    rt_thread_burn_t burn[RT_AUDIT_MAX_THREADS];
+    int bn = rt_thread_burners(base, base_n, prev, prev_n, cur, cur_n,
+                               (int)clk_hz, RT_BURN_FLOOR_MS,
+                               burn, RT_AUDIT_MAX_THREADS);
+    for (int i = 0; i < bn; i++) {
+        char desc[224];
+        rt_thread_format_burn(&burn[i],
+                              rt_audit_module[0] ? rt_audit_module : NULL,
+                              RT_BURN_WINDOW_MS, desc, sizeof(desc));
+        snprintf(line, sizeof(line), "rt-audit: %s", desc);
+        unified_log("shim", LOG_LEVEL_WARN, line);
+    }
+
+    memcpy(prev, cur, sizeof(rt_thread_info_t) * (size_t)cur_n);
+    prev_n = cur_n;
+}
 
 /* Knob-touch ground truth — see the touch trace block in schwung_shim.c.
  * A plain int rather than a shim_debug_flags bit because the SPI callback
@@ -260,8 +502,14 @@ static void *worker_main(void *arg) {
     int last_persisted = boot_jack;
     int boot_reasserted = 0;
 
-    int boot_usbc_out = usbc_out_state_read();  /* -1 if never persisted */
-    int last_usbc_out = boot_usbc_out;
+    /* USB-C audio-out arbitration. The gate decides what is Move's boot
+     * default and what is the user; see usbc_out_gate.h for why that cannot be
+     * a deadline. `usbc_last_fed` is the edge detector for the level the RT
+     * path publishes — it only ever writes on a change, so feeding the gate
+     * once per distinct value is exactly one call per real transition. */
+    usbc_gate_t usbc_gate;
+    usbc_gate_init(&usbc_gate, usbc_out_state_read());  /* -1 if never persisted */
+    int usbc_last_fed = -1;
 
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
@@ -275,24 +523,55 @@ static void *worker_main(void *arg) {
             jack_state_write(jp);
         }
 
-        /* Persist the USB-C audio-out source when the RT path reports a change —
-         * but only once the boot window has fully settled. Two things put
-         * unintended values on the wire early: (1) Move's own firmware asserts
-         * its Mic default at ~0.6 s into every boot, regardless of what the
-         * user last chose; (2) our own boot re-assert (armed below, ~5 s) is
-         * itself observed by the same scan() that feeds this variable, since
-         * the shim's SysEx emit runs earlier in the same pre_transfer than its
-         * scan (see the scan call site in schwung_shim.c). Persisting either
-         * would silently clobber the stored preference on every reboot. Gate
-         * on tick >= 35 (~7 s) — after both Move's assert and our own replay
-         * echo — so only genuine post-boot user changes are written. Known,
-         * accepted trade-off: a setting change made in the first ~7 s of boot
-         * is not persisted. */
+        /* Feed the USB-C arbitration gate. Two things put values on the wire
+         * that carry no user intent: Move's own Mic default at boot, and our
+         * re-assert echoing back (the shim's SysEx emit runs earlier in the
+         * same pre_transfer than its scan, so scan cannot tell our bytes from
+         * Move's). Neither may reach the state file.
+         *
+         * This used to be a ~7 s deadline, which raced Move's assert: the
+         * worker's clock starts when MoveOriginal opens the SPI device, while
+         * Move's assert floats with boot load, so a slow boot landed it on the
+         * trusting side and wrote Mic over a stored Main Out — reverting in
+         * session and forgetting across the reboot. The gate replaces the
+         * deadline with the one thing that genuinely separates the two: we
+         * only ever re-assert Main Out, so during the boot window an observed
+         * Mic can only have come from Move. */
         int up = shim_usbc_out_persist;
-        if (tick >= 35 && up >= 0 && up != last_usbc_out) {
-            last_usbc_out = up;
-            usbc_out_state_write(up);
+        if (up >= 0 && up != usbc_last_fed) {
+            usbc_last_fed = up;
+            usbc_gate_out_t act = {0};
+            usbc_gate_observe(&usbc_gate, up, &act);
+            if (act.replay) {
+                shim_usbc_out_replay = act.replay_value;
+                unified_log("shim", LOG_LEVEL_DEBUG,
+                            "USB-C out: Move asserted Mic over a stored Main Out (boot) — re-asserting");
+            }
+            if (act.persist) usbc_out_state_write(act.persist_value);
         }
+
+        /* Defend against Move's sampling page clearing monitoring behind our
+         * back. It emits a lone 37 12 to set bit0 (the USB-C input select) and
+         * carries bit1 from its own stale "Mic" UI state, which reverts the
+         * hardware while 37 14 still reads Main Out — so there is no edge for
+         * the observe path above to see. Debounced inside the gate so the
+         * leading half of a split 37 12 / 37 14 Mic selection is not mistaken
+         * for it. */
+        {
+            usbc_gate_out_t act = {0};
+            usbc_gate_tick_monitor(&usbc_gate, shim_usbc_out_level,
+                                   shim_usbc_monitor, &act);
+            if (act.replay && usbc_out_persist_enabled) {
+                shim_usbc_out_replay = act.replay_value;
+                unified_log("shim", LOG_LEVEL_DEBUG,
+                            "USB-C out: monitoring cleared by a lone 37 12 — re-asserting Main Out");
+            }
+        }
+
+        /* Backstop: on a boot where Move never asserts at all, the gate would
+         * otherwise stay closed and silently swallow every user change for the
+         * rest of the session. Opening it persists nothing by itself. */
+        if (tick == 300) usbc_gate_force_settle(&usbc_gate);   /* ~60 s */
 
         /* Re-assert jack state to Move once, ~5 s after start (Move's firmware
          * is up by then). Prefer the value XMOS actually reported THIS boot
@@ -304,19 +583,29 @@ static void *worker_main(void *arg) {
             int v = (shim_jack_persist >= 0) ? shim_jack_persist : boot_jack;
             if (v >= 0) shim_inject_boot_jack = v;
 
-            /* Re-assert the USB-C audio-out source too. Skip entirely when the
-             * stored value is Mic — that's Move's own boot default, so there is
-             * nothing to correct and no reason to put SysEx on the wire. */
-            if (boot_usbc_out == 1) shim_usbc_out_replay = 1;
-
-            /* Discard anything observed during the boot window before the
-             * persistence gate (tick >= 35) opens — Move's own boot-default
-             * assert and, shortly, our own replay echo have no user intent
-             * behind them and must not be queued up to write the file. */
-            shim_usbc_out_persist = -1;
+            /* Re-assert the USB-C audio-out source too. The gate puts nothing
+             * on the wire when the stored value is Mic — that's Move's own
+             * boot default, so there is nothing to correct.
+             *
+             * With restore switched off in Global Settings the shim drops the
+             * replay, so defending would mean guarding a re-assert that never
+             * reaches the wire: the gate would spend its whole budget on
+             * Move's assert and stay shut meanwhile. Restore-off still
+             * *remembers* (the setting governs only whether we re-assert), so
+             * open the gate instead and let the ordinary differs-from-stored
+             * test run from the start. */
+            if (usbc_out_persist_enabled) {
+                usbc_gate_out_t act = {0};
+                usbc_gate_boot_replay(&usbc_gate, &act);
+                if (act.replay) shim_usbc_out_replay = act.replay_value;
+            } else {
+                usbc_gate_force_settle(&usbc_gate);
+            }
         }
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
+        if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
+        if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
     }

@@ -35,8 +35,9 @@
             },
             // Track which component sections are collapsed (true = collapsed).
             collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true },
-            // Custom web UI URL for synth component (null = use auto-generated UI).
-            customUI: null,
+            // Custom web UI URLs, keyed by component ("synth", "fx1", …).
+            // A component absent from this map uses the auto-generated UI.
+            customUI: {},
             // When true, ignore customUI and show the auto-generated parameter
             // UI even though a module web_ui.html is available. Session-only.
             useDefaultUI: false
@@ -82,11 +83,11 @@
     var isConnected = false;
     var waitingForData = false; // True after subscribe, before first data arrives
 
-    // Custom module web UI state.
-    var customUIIframe = null; // Reference to active custom UI iframe element
-    var customUISubscribed = false; // Whether the iframe has subscribed to param updates
-    var customUILoadingEl = null; // Loading overlay shown until the module UI is ready
-    var customUILoadingTimer = null; // Fallback timer to clear the overlay
+    // Custom module web UI state. A slot can show more than one at once (a
+    // synth panel plus a panel for each audio FX), so frames are tracked per
+    // component rather than as a single active iframe.
+    //   customUIFrames[component] = { iframe, subscribed, overlay, timer }
+    var customUIFrames = {};
 
     // Knob drag state.
     var dragging = null; // { component, key, startY, startValue, min, max, step, type, slot }
@@ -278,14 +279,20 @@
 
     function handleSlotInfo(slot, msg) {
         var s = slots[slot];
-        // Clear custom UI if synth module changed.
-        var prevSynth = s.components.synth.module;
-        s.components.synth.module = msg.synth || "";
-        s.components.fx1.module = msg.fx1 || "";
-        s.components.fx2.module = msg.fx2 || "";
-        s.components.midi_fx1.module = msg.midi_fx1 || "";
-        if (prevSynth !== s.components.synth.module) {
-            s.customUI = null;
+        // A component's custom UI belongs to the module that supplied it, so
+        // drop it when that particular component's module changes.
+        var incoming = {
+            synth: msg.synth || "",
+            fx1: msg.fx1 || "",
+            fx2: msg.fx2 || "",
+            midi_fx1: msg.midi_fx1 || ""
+        };
+        for (var ci = 0; ci < COMPONENT_KEYS.length; ci++) {
+            var ck = COMPONENT_KEYS[ci];
+            if (s.components[ck].module !== incoming[ck]) {
+                s.components[ck].module = incoming[ck];
+                delete s.customUI[ck];
+            }
         }
         if (slot === activeSlot) renderSlot();
     }
@@ -293,7 +300,10 @@
     function handleCustomUI(slot, msg) {
         if (slot < 0 || slot > 3) return;
         var s = slots[slot];
-        s.customUI = { component: msg.component || "synth", url: msg.url || "" };
+        var comp = msg.component || "synth";
+        var url = msg.url || "";
+        if (s.customUI[comp] === url) return;   // avoid reloading a live iframe
+        s.customUI[comp] = url;
         if (slot === activeSlot) renderSlot();
     }
 
@@ -324,7 +334,7 @@
             }
         }
         // Forward live updates to the tool iframe if it's the active view.
-        if (activeSlot === "tool" && customUISubscribed && customUIIframe) {
+        if (activeSlot === "tool") {
             postToIframe({ type: "paramUpdate", params: msg.params });
         }
     }
@@ -435,7 +445,7 @@
             updateParamValues(slot, msg.params);
         }
         // Forward to custom UI iframe if subscribed.
-        if (customUISubscribed && customUIIframe && slot === activeSlot) {
+        if (slot === activeSlot) {
             postToIframe({ type: "paramUpdate", params: msg.params });
         }
     }
@@ -1407,6 +1417,25 @@
 
         if (isCollapsed) return section;
 
+        // A component that ships its own web_ui.html draws it here instead of
+        // the generated rows. Honour the slot's Default override so the
+        // generated controls stay reachable.
+        var slotState = slots[activeSlot];
+        var compCustomUrl = (typeof activeSlot === "number" && slotState)
+            ? (slotState.customUI[compKey] || "") : "";
+        if (compCustomUrl && compKey !== "synth" && !slotState.useDefaultUI) {
+            var popOut = makePopOutButton(customUIUrlFor(compCustomUrl, compKey), activeSlot);
+            popOut.classList.add("component-popout");
+            popOut.onclick = (function (orig) {
+                return function (ev) { ev.stopPropagation(); return orig.apply(this, arguments); };
+            })(popOut.onclick);
+            header.appendChild(popOut);
+            section.appendChild(
+                buildCustomUIFrame(compKey, compCustomUrl,
+                                   (COMPONENT_LABELS[compKey] || compKey) + " UI"));
+            return section;
+        }
+
         // Body
         var body = document.createElement("div");
         body.className = "component-body";
@@ -1501,10 +1530,11 @@
         if (slotHeaderControlsEl) slotHeaderControlsEl.innerHTML = "";
 
         // Clear custom UI iframe state on re-render.
-        customUIIframe = null;
-        customUISubscribed = false;
-        customUILoadingEl = null;
-        if (customUILoadingTimer) { clearTimeout(customUILoadingTimer); customUILoadingTimer = null; }
+        // The DOM is about to be rebuilt, so every registered frame is stale.
+        for (var fk in customUIFrames) {
+            if (customUIFrames[fk] && customUIFrames[fk].timer) clearTimeout(customUIFrames[fk].timer);
+        }
+        customUIFrames = {};
 
         if (activeSlot === "master") {
             renderMasterFx();
@@ -1536,16 +1566,26 @@
             return;
         }
 
-        // When the synth ships a custom web UI, put the Interface toggle and
-        // the pop-out button inline next to the slot label (compact, both modes).
-        var hasCustomUI = !!(s.customUI && s.customUI.url && hasAnyModule);
-        if (hasCustomUI && slotHeaderControlsEl) {
+        // Two separate questions. The Interface toggle is slot-wide — it flips
+        // every panel in the slot, which is what renderComponentSection already
+        // assumes by reading useDefaultUI — so it has to appear whenever ANY
+        // component has a panel. Gating it on the synth left an FX-only slot
+        // with no way back to the generated controls.
+        var synthCustomUrl = s.customUI.synth || "";
+        var hasAnyCustomUI = hasAnyModule && COMPONENT_KEYS.some(function (k) {
+            return s.customUI[k];
+        });
+        if (hasAnyCustomUI && slotHeaderControlsEl) {
             slotHeaderControlsEl.appendChild(renderUiModeToggle(s));
-            slotHeaderControlsEl.appendChild(makePopOutButton(s.customUI.url, activeSlot));
+            // Pop-out stays synth-only; an FX section carries its own.
+            if (synthCustomUrl) {
+                slotHeaderControlsEl.appendChild(
+                    makePopOutButton(customUIUrlFor(synthCustomUrl, "synth"), activeSlot));
+            }
         }
 
-        // Render the custom web UI unless the user opted out for this slot.
-        if (hasCustomUI && !s.useDefaultUI) {
+        // Only a synth panel takes over the slot view.
+        if (synthCustomUrl && !s.useDefaultUI) {
             renderCustomUI(s);
             return;
         }
@@ -2051,64 +2091,66 @@
             slotHeaderControlsEl.appendChild(makePopOutButton(tool.customUI.url, "tool"));
         }
 
+        slotContentEl.appendChild(buildCustomUIFrame("tool", tool.customUI.url, "Tool UI"));
+    }
+
+    /** Tag a module UI URL with the component it is driving, so the page can
+     *  address the right parameter prefix ("fx1:mix" rather than "synth:mix")
+     *  and a popped-out window can ask for the right metadata. */
+    function customUIUrlFor(url, comp) {
+        if (!url) return url;
+        return url + (url.indexOf("?") >= 0 ? "&" : "?") + "component=" + encodeURIComponent(comp);
+    }
+
+    /** Build the iframe + loading overlay for one component's custom UI and
+     *  register it so messages can be routed back to the right component. */
+    function buildCustomUIFrame(comp, url, title) {
         var container = document.createElement("div");
         container.className = "custom-ui-container";
 
         var iframe = document.createElement("iframe");
         iframe.className = "custom-ui-iframe";
-        iframe.src = tool.customUI.url;
+        iframe.src = customUIUrlFor(url, comp);
         iframe.sandbox = "allow-scripts allow-same-origin";
-        iframe.setAttribute("title", "Tool UI");
+        iframe.setAttribute("title", title || "Custom Module UI");
         container.appendChild(iframe);
 
+        // Cleared when the iframe subscribes (module JS ran), on load, or after
+        // a timeout — whichever comes first.
         var overlay = document.createElement("div");
         overlay.className = "custom-ui-loading";
         overlay.innerHTML = '<span class="loading-spinner"></span> Loading module…';
         container.appendChild(overlay);
-        customUILoadingEl = overlay;
-        iframe.addEventListener("load", hideCustomUILoading);
-        customUILoadingTimer = setTimeout(hideCustomUILoading, 10000);
 
-        slotContentEl.appendChild(container);
-        customUIIframe = iframe;
-        customUISubscribed = false;
+        var entry = { iframe: iframe, subscribed: false, overlay: overlay, timer: null };
+        customUIFrames[comp] = entry;
+        iframe.addEventListener("load", function () { hideCustomUILoading(comp); });
+        entry.timer = setTimeout(function () { hideCustomUILoading(comp); }, 10000);
+        return container;
+    }
+
+    /** Which component owns the iframe a postMessage came from. */
+    function componentForSource(source) {
+        for (var comp in customUIFrames) {
+            var e = customUIFrames[comp];
+            if (e && e.iframe && e.iframe.contentWindow === source) return comp;
+        }
+        return null;
     }
 
     function renderCustomUI(s) {
-        var url = s.customUI.url;
+        slotContentEl.appendChild(
+            buildCustomUIFrame("synth", s.customUI.synth, "Custom Module UI"));
 
-        // Create iframe container.
-        var container = document.createElement("div");
-        container.className = "custom-ui-container";
-
-        var iframe = document.createElement("iframe");
-        iframe.className = "custom-ui-iframe";
-        iframe.src = url;
-        iframe.sandbox = "allow-scripts allow-same-origin";
-        iframe.setAttribute("title", "Custom Module UI");
-        container.appendChild(iframe);
-
-        // Loading overlay shown over the iframe until the module UI is ready.
-        // Cleared when the iframe subscribes (module JS ran), or on iframe
-        // onload, or after a timeout — whichever comes first.
-        var overlay = document.createElement("div");
-        overlay.className = "custom-ui-loading";
-        overlay.innerHTML = '<span class="loading-spinner"></span> Loading module…';
-        container.appendChild(overlay);
-        customUILoadingEl = overlay;
-        iframe.addEventListener("load", hideCustomUILoading);
-        customUILoadingTimer = setTimeout(hideCustomUILoading, 10000);
-
-        slotContentEl.appendChild(container);
-
-        // Also render FX sections below the iframe if any are loaded.
+        // The other components still render below the synth panel. Each one
+        // draws its own custom UI inside its section if it ships one.
         for (var k = 0; k < COMPONENT_KEYS.length; k++) {
             var compKey = COMPONENT_KEYS[k];
             if (compKey === "synth") continue; // synth is replaced by iframe
             var compState = s.components[compKey];
             if (!compState.module) continue;
-            var section = renderComponentSection(compKey, compState, s.collapsed[compKey]);
-            slotContentEl.appendChild(section);
+            slotContentEl.appendChild(
+                renderComponentSection(compKey, compState, s.collapsed[compKey]));
         }
 
         // Slot settings (volume, sends, channels, LFO, …) are module-independent
@@ -2116,43 +2158,52 @@
         // appends them at the bottom, so do the same here.
         var settingsSection = renderSlotSettings(s);
         if (settingsSection) slotContentEl.appendChild(settingsSection);
-
-        customUIIframe = iframe;
-        customUISubscribed = false;
     }
 
     // Listen for postMessage from custom UI iframes.
     window.addEventListener("message", function (e) {
-        if (!customUIIframe) return;
-        // Only accept messages from our iframe.
-        if (e.source !== customUIIframe.contentWindow) return;
+        // Only accept messages from a registered module iframe, and remember
+        // which component it speaks for.
+        var srcComp = componentForSource(e.source);
+        if (!srcComp) return;
 
         var msg = e.data;
         if (!msg || !msg.type) return;
 
         switch (msg.type) {
+            case "height":
+                // The panel measured itself, so stop guessing at 60vh. Clamped
+                // both ways: a module that mis-measures should look wrong, not
+                // produce a 40000px frame or collapse to a sliver.
+                var hf = customUIFrames[srcComp];
+                var h = Number(msg.height);
+                if (hf && hf.iframe && isFinite(h) && h > 0) {
+                    hf.iframe.style.height =
+                        Math.min(Math.max(Math.round(h), 200), 4000) + "px";
+                }
+                break;
             case "getParam":
-                handleIframeGetParam(msg);
+                handleIframeGetParam(msg, srcComp);
                 break;
             case "setParam":
-                handleIframeSetParam(msg);
+                handleIframeSetParam(msg, srcComp);
                 break;
             case "subscribe":
-                customUISubscribed = true;
+                customUIFrames[srcComp].subscribed = true;
                 // Module JS has run — clear the loading overlay.
-                hideCustomUILoading();
+                hideCustomUILoading(srcComp);
                 // Bulk-seed: push every param value the parent has already
                 // cached (from the host's initial fetch) in one message, so the
                 // iframe paints real values immediately instead of pulling them
                 // back one-by-one via getParam. Late-arriving values still flow
                 // through the normal param_update path below.
-                seedCustomUI();
+                seedCustomUI(srcComp);
                 break;
             case "getHierarchy":
-                handleIframeGetHierarchy(msg);
+                handleIframeGetHierarchy(msg, srcComp);
                 break;
             case "getChainParams":
-                handleIframeGetChainParams(msg);
+                handleIframeGetChainParams(msg, srcComp);
                 break;
             case "resubscribe":
                 // Iframe asked for a fresh device read (e.g. tool polling for the
@@ -2167,13 +2218,13 @@
         }
     });
 
-    function handleIframeGetParam(msg) {
+    function handleIframeGetParam(msg, comp) {
         if (!msg.key || !msg.id) return;
         var slot = activeSlot;
 
         // Tool view: params come from the overtake tool's cache (overtake_dsp:*).
         if (slot === "tool") {
-            postToIframe({ type: "paramResult", id: msg.id, value: tool.params[msg.key] || "" });
+            postToIframe({ type: "paramResult", id: msg.id, value: tool.params[msg.key] || "" }, comp);
             return;
         }
         if (typeof slot !== "number") return;
@@ -2184,10 +2235,14 @@
         var compState = slots[slot].components[parts.comp];
         var value = compState ? (compState.params[msg.key] || "") : "";
 
-        postToIframe({ type: "paramResult", id: msg.id, value: value });
+        // Targeted: request ids come from a per-page counter in
+        // schwung-remote-api.js ("req_<n>_<ms>"), so two panels can mint the
+        // same id in the same millisecond and a broadcast reply would resolve
+        // in the wrong one with another component's value.
+        postToIframe({ type: "paramResult", id: msg.id, value: value }, comp);
     }
 
-    function handleIframeSetParam(msg) {
+    function handleIframeSetParam(msg, comp) {   // comp unused: no reply is sent
         if (!msg.key) return;
         var slot = activeSlot;
 
@@ -2208,53 +2263,64 @@
         });
     }
 
-    function handleIframeGetHierarchy(msg) {
+    function handleIframeGetHierarchy(msg, comp) {
         var slot = activeSlot;
         if (typeof slot !== "number") return;
-        var compState = slots[slot].components.synth;
+        var compState = slots[slot].components[comp || "synth"];
         postToIframe({
             type: "hierarchy",
             id: msg.id || null,
+            component: comp || "synth",
             data: compState ? compState.hierarchy : null
-        });
+        }, comp);
     }
 
-    function handleIframeGetChainParams(msg) {
+    function handleIframeGetChainParams(msg, comp) {
         var slot = activeSlot;
         if (typeof slot !== "number") return;
-        var compState = slots[slot].components.synth;
+        var compState = slots[slot].components[comp || "synth"];
         postToIframe({
             type: "chainParams",
             id: msg.id || null,
+            component: comp || "synth",
             data: compState ? compState.chainParams : null
-        });
+        }, comp);
     }
 
-    function postToIframe(msg) {
-        if (customUIIframe && customUIIframe.contentWindow) {
-            customUIIframe.contentWindow.postMessage(msg, "*");
+    /** Post to one component's iframe, or to every live one when comp is omitted. */
+    function postToIframe(msg, comp) {
+        if (comp) {
+            var one = customUIFrames[comp];
+            if (one && one.iframe && one.iframe.contentWindow)
+                one.iframe.contentWindow.postMessage(msg, "*");
+            return;
+        }
+        for (var k in customUIFrames) {
+            var e = customUIFrames[k];
+            if (e && e.subscribed && e.iframe && e.iframe.contentWindow)
+                e.iframe.contentWindow.postMessage(msg, "*");
         }
     }
 
-    // Remove the custom-UI loading overlay (idempotent).
-    function hideCustomUILoading() {
-        if (customUILoadingTimer) { clearTimeout(customUILoadingTimer); customUILoadingTimer = null; }
-        if (customUILoadingEl && customUILoadingEl.parentNode) {
-            customUILoadingEl.parentNode.removeChild(customUILoadingEl);
-        }
-        customUILoadingEl = null;
+    // Remove one component's loading overlay (idempotent).
+    function hideCustomUILoading(comp) {
+        var e = customUIFrames[comp];
+        if (!e) return;
+        if (e.timer) { clearTimeout(e.timer); e.timer = null; }
+        if (e.overlay && e.overlay.parentNode) e.overlay.parentNode.removeChild(e.overlay);
+        e.overlay = null;
     }
 
     // Push all params the parent has already cached for the active slot to the
     // custom UI iframe in a single paramUpdate. Called when the iframe first
     // subscribes so it can seed its controls without a round-trip per param.
-    function seedCustomUI() {
-        if (!customUIIframe) return;
+    function seedCustomUI(comp) {
+        if (!customUIFrames[comp]) return;
 
         // Tool view: seed from the overtake tool's cached params.
         if (activeSlot === "tool") {
             var keys = Object.keys(tool.params);
-            if (keys.length > 0) postToIframe({ type: "paramUpdate", params: tool.params });
+            if (keys.length > 0) postToIframe({ type: "paramUpdate", params: tool.params }, comp);
             return;
         }
 
@@ -2272,7 +2338,7 @@
                 }
             }
         }
-        if (any) postToIframe({ type: "paramUpdate", params: params });
+        if (any) postToIframe({ type: "paramUpdate", params: params }, comp);
     }
 
     function renderMasterFx() {

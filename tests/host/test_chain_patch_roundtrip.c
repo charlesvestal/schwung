@@ -423,8 +423,59 @@ static void test_midi_fx_state_forms(chain_instance_t *inst, patch_info_t *patch
           "a state was sent to the MIDI FX that had none [%s]", fake_midi_fx[2].log);
 }
 
+/* ---- 2d. JSON escapes in opaque state are decoded before restore ----
+ *
+ * Aphex uses newline-delimited key=value state. JSON.stringify necessarily
+ * writes those separators as `\\n`; copying the file bytes verbatim makes its
+ * restore parser see one giant line and recall only the first parameter.
+ * Exercise every JSON escape class that can occur in module state, in all
+ * three chain positions, plus a BMP and surrogate-pair Unicode escape. */
+static void test_opaque_state_json_decoding(chain_instance_t *inst, patch_info_t *patch) {
+    const char *json =
+        "{\n  \"name\": \"escaped-state\",\n"
+        "  \"synth\": {\"module\": \"synth-opaque\", \"config\": {\"state\": "
+        "\"drive=0.5\\nmode=wide\\tpath=C:\\\\kits\\\\a\\\"b\\u00e9\\ud834\\udd1e\"}},\n"
+        "  \"audio_fx\": [{\"type\": \"audio-opaque\", \"params\": {\"state\": "
+        "\"a=1\\nb=2\\r\\nslash=\\/\\\\\"}}],\n"
+        "  \"midi_fx\": [{\"type\": \"midi-opaque\", \"params\": {\"state\": "
+        "\"step=1\\nstep=2\\b\\f\"}}]\n}\n";
+
+    write_patch(json);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0,
+          "escaped opaque state parse failed");
+    CHECK(strcmp(patch->synth_state,
+                 "drive=0.5\nmode=wide\tpath=C:\\kits\\a\"b\xc3\xa9\xf0\x9d\x84\x9e") == 0,
+          "synth opaque escapes came back as [%s]", patch->synth_state);
+    CHECK(patch->audio_fx_count == 1 &&
+          strcmp(patch->audio_fx[0].state, "a=1\nb=2\r\nslash=/\\") == 0,
+          "audio opaque escapes came back as [%s]", patch->audio_fx[0].state);
+    CHECK(patch->midi_fx_count == 1 &&
+          strcmp(patch->midi_fx[0].state, "step=1\nstep=2\b\f") == 0,
+          "MIDI opaque escapes came back as [%s]", patch->midi_fx[0].state);
+
+    CHECK(v2_load_from_patch_info(inst, patch) == 0, "escaped state load failed");
+    CHECK(strstr(fake_synth.log, "state=drive=0.5\nmode=wide") != NULL,
+          "decoded synth state did not reach plugin [%s]", fake_synth.log);
+
+    /* Unknown JSON escapes are invalid. Keep the module but do not hand it a
+     * corrupt partial snapshot. */
+    const char *invalid =
+        "{\"name\":\"bad-escape\",\"audio_fx\":[{\"type\":\"fx\","
+        "\"params\":{\"state\":\"a=1\\qbroken\"}}]}";
+    write_patch(invalid);
+    reset_state(inst);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0,
+          "invalid escape should not invalidate whole patch");
+    CHECK(patch->audio_fx_count == 1, "invalid state escape dropped the module");
+    CHECK(patch->audio_fx[0].state[0] == '\0',
+          "invalid escape yielded partial state [%s]", patch->audio_fx[0].state);
+}
+
 /*
- * ---- 2d. A knob mapped to fx4+ survives the reload, and a dead one stays dead
+ * ---- 2e. A knob mapped to fx4+ survives the reload, and a dead one stays dead
  *
  * "Knob on a high slot" has failed silently three separate times -- the
  * metadata ladder stopped at fx3, the live-value read at fx2, the patch layer
@@ -773,6 +824,7 @@ int main(int argc, char **argv) {
     test_legacy_two_fx(inst, patch);
     test_hostile_json(inst, patch);
     test_midi_fx_state_forms(inst, patch);
+    test_opaque_state_json_decoding(inst, patch);
     test_knob_high_slots(inst, patch);
     test_knob_rejected_row_does_not_bleed(inst, patch);
     test_target_lookup(inst);
