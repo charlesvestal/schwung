@@ -7,6 +7,7 @@
 #include "shadow_midi.h"
 #include "shadow_midi_filter.h"   /* SHADOW_MIDI_IN_* geometry */
 #include "shadow_midi_inject_writer.h"
+#include "shadow_overtake_midi.h"
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
@@ -197,6 +198,7 @@ void midi_routing_init(const midi_host_t *host)
     host_slot_fx_idle = host->slot_fx_idle;
     host_slot_fx_silence_frames = host->slot_fx_silence_frames;
 
+    shadow_overtake_midi_init();
     shadow_chain_transpose_reset();
 }
 
@@ -574,13 +576,16 @@ static void shadow_deliver_pending_to_move(uint8_t *midi_in, int stride, int max
     if (host_log) host_log("MIDI inject: delivered shim packet to Move MIDI_IN");
 }
 
-/* Drain MIDI inject buffer into Move's MIDI_IN (post-ioctl).
- * Copies USB-MIDI packets from SHM into empty slots in shadow_mailbox+MIDI_IN_OFFSET,
- * making Move process them as if they came from physical hardware.
- * Rate-limited to 16 packets per tick to avoid flooding. */
+/* Drain MIDI inject buffers into Move's MIDI_IN (post-ioctl).
+ * Active overtake DSP output uses a dedicated in-process ring so it can reach
+ * Move while the shared SHM ring is owned by the overtake test-bus publisher.
+ * Outside overtake, the dedicated ring drains first and the shared ring uses
+ * the remaining mailbox capacity. At most 31 packets fit in one frame. */
 void shadow_drain_midi_inject(void)
 {
     shadow_midi_inject_t *inject_shm = *host_shadow_midi_inject_shm;
+    shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
+    int overtake_active = sc ? (int)sc->overtake_mode != 0 : 0;
     /* MIDI_IN events are 8 bytes each (4 USB-MIDI + 4 timestamp). Scanning
      * at 4-byte stride would land mid-event and corrupt Move's parse (Move
      * terminates the scan at the first zero slot, so any gap loses all
@@ -594,25 +599,6 @@ void shadow_drain_midi_inject(void)
      * the ring below belongs to someone else. */
     shadow_deliver_pending_to_move(host_shadow_mailbox + MIDI_IN_OFFSET,
                                    MIDI_IN_EVT_STRIDE, MIDI_IN_MAX_BYTES);
-
-    if (!inject_shm) return;
-
-    /* In OVERTAKE mode the queue belongs to the overtake publisher in
-     * schwung_shim.c, not to us.
-     *
-     * The two consumers are mutually exclusive by necessity: this ring is
-     * documented single-consumer, and popping from both would corrupt it. The
-     * split is also what makes injection reach an overtake module at all —
-     * this function writes into Move's MAILBOX MIDI_IN, which Move's firmware
-     * reads, while an overtake module is fed from the raw HARDWARE buffer. An
-     * injected packet written here could therefore never reach the module, and
-     * with the firmware suppressed during overtake it had nowhere useful to go
-     * either. Measured on device 2026-07-29: injected pads moved neither a
-     * parameter nor any of the 32 pad LEDs. */
-    {
-        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
-        if (sc && sc->overtake_mode != 0) return;
-    }
 
     /* Hold the inject drain for a few frames after an overtake module exits
      * (Back-to-suspend or full exit) before draining anything into Move's
@@ -636,7 +622,6 @@ void shadow_drain_midi_inject(void)
         static int prev_overtake_for_hold = 0;
         static int exit_hold_frames = 0;
         const int OVERTAKE_EXIT_HOLD_FRAMES = 3;  /* 2 also verified clean; 1 not */
-        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
         int cur_overtake = sc ? (int)sc->overtake_mode : 0;
         if (prev_overtake_for_hold != 0 && cur_overtake == 0)
             exit_hold_frames = OVERTAKE_EXIT_HOLD_FRAMES;
@@ -675,55 +660,15 @@ void shadow_drain_midi_inject(void)
         return;
     }
 
-    /* Peek the next published packet, place it in an empty MIDI_IN slot,
-     * and only then pop it. Packets we can't place this pass (MIDI_IN full,
-     * or hardware events appeared mid-drain) stay in the ring untouched and
-     * are retried next frame — no snapshot, no reset, no carryover writeback.
-     * The consumer touches only its own read_pos and the per-slot seq it
-     * frees; it never resets producer state or memsets the buffer. */
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
-    int hw_offset = 0;
-    int injected = 0;
-    uint8_t pkt[4];
-    /* Drain up to the MIDI_IN mailbox capacity (31 slots) per frame, not a
-     * fixed 16. A dense polyphonic burst (e.g. several ROUTE_MOVE tracks
-     * landing a chord on the same step) exceeds 16 simultaneous events; at
-     * the old cap the remainder dribbled out over later frames, smearing the
-     * chord's attack. 31 is the hardware slot count, so this cannot overflow,
-     * and the empty-slot / saw_existing race guard below is unchanged. */
-    while (injected < MIDI_IN_MAX_EVTS && shadow_midi_inject_peek(inject_shm, pkt)) {
-        /* Find an empty 8-byte slot (byte 0 == 0 means no cable/CIN, unused) */
-        int saw_existing = 0;
-        while (hw_offset < MIDI_IN_MAX_BYTES) {
-            if (midi_in[hw_offset] == 0) break;
-            saw_existing = 1;
-            hw_offset += MIDI_IN_EVT_STRIDE;
-        }
-        if (hw_offset >= MIDI_IN_MAX_BYTES) break;  /* MIDI_IN full — retry next frame */
-        /* If we'd have to write past pre-existing events, bail and leave the
-         * packet in the ring for next frame. The defer guard has a narrow
-         * race window: events can appear in MIDI_IN between the guard check
-         * and the write. Injecting alongside hardware events (at a non-zero
-         * offset) races Move's firmware MIDI read path and causes SIGABRT —
-         * empirically the crash always fires at a non-zero offset. */
-        if (saw_existing) break;
-
-        /* Write the 4-byte USB-MIDI packet + zero its 4-byte timestamp.
-         * Cable nibble in pkt[0] is preserved — callers choose cable:
-         * 0 for internal hardware (pads/buttons, Move-prefix protocol),
-         * 2 for external USB (general MIDI, routed to tracks by channel). */
-        memcpy(&midi_in[hw_offset], pkt, 4);
-        memset(&midi_in[hw_offset + 4], 0, 4);
-        hw_offset += MIDI_IN_EVT_STRIDE;
-        shadow_midi_inject_pop(inject_shm);   /* consume only after a successful inject */
-        injected++;
-    }
+    int injected = shadow_overtake_midi_drain(inject_shm, overtake_active,
+                                               midi_in, MIDI_IN_MAX_EVTS);
 
     if (host_log && injected > 0) {
         char dbg[128];
         snprintf(dbg, sizeof(dbg),
                  "MIDI inject: drained %d pkts at offset %d",
-                 injected, hw_offset - injected * MIDI_IN_EVT_STRIDE);
+                 injected, 0);
         host_log(dbg);
     }
 }
@@ -737,10 +682,9 @@ void shadow_drain_midi_inject(void)
  * instrument; cable 0 is reserved for Move's pad/button prefix protocol and
  * won't reach track instruments for pitched notes.
  *
- * The drain rate-limits to 8 packets/tick; callers should not burst more
- * than that per render block. Same-thread as the drain (both run in the
- * shim's SPI loop), so no extra synchronization is needed beyond the
- * existing ring pattern. */
+ * The shared queue is not drained into Move while overtake is active because
+ * its single consumer is then the overtake test-bus publisher. Overtake DSPs
+ * use shadow_overtake_midi_send instead. */
 int shadow_chain_midi_inject(const uint8_t *msg, int len)
 {
     if (!msg || len != 4) return 0;

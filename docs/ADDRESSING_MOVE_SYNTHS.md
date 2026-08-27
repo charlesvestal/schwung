@@ -141,6 +141,13 @@ internal prefix protocol (pads 68–99, steps 16–31, track CCs 40–43 —
 see `docs/SPI_PROTOCOL.md`) — injecting pitched notes there won't reach
 track instruments.
 
+Overtake DSPs use a dedicated bounded queue for this callback. It drains
+directly into Move's MIDI input while the takeover is active. The shared JS
+injection queue remains owned by the takeover test-bus publisher during that
+time, so DSP output cannot loop back into its own `on_midi` input. A tool UI
+can check for `shadow_overtake_move_inject_active()` when it needs to support
+older hosts where this separation is not available.
+
 ### 4. Timing from `render_block`
 
 `render_block` fires every 128-sample audio block (~2.9 ms at 44.1
@@ -276,5 +283,9 @@ Silent drains + no sound usually means either:
 - **`midi_inject_to_move` is NULL** — the host wasn't a shadow-mode
   Schwung host (check your test environment) or the overtake
   `host_api` wasn't wired for injection (fixed for all overtake DSPs
-  as of `3e307a66`; but custom host setups may need to wire
-  `shadow_chain_midi_inject` themselves).
+  as of `3e307a66`; current hosts wire overtake DSPs to
+  `shadow_overtake_midi_send`).
+- **Works only after leaving the takeover** — Schwung 0.12.0 and 0.12.1
+  diverted the shared inject queue to the takeover publisher. Upgrade to a
+  host exposing `shadow_overtake_move_inject_active()` so DSP output uses the
+  dedicated Move queue.
