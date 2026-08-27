@@ -594,6 +594,24 @@ void shadow_drain_midi_inject(void)
     const int MIDI_IN_MAX_EVTS   = 31;              /* SCHWUNG_MIDI_IN_MAX */
     const int MIDI_IN_MAX_BYTES  = MIDI_IN_EVT_STRIDE * MIDI_IN_MAX_EVTS;
 
+    /* WHAT THE OVERTAKE EARLY RETURN USED TO PROTECT, kept because deleting it
+     * is what invites it back. Measured on device 2026-07-29: injecting PADS
+     * here during overtake moved neither a parameter nor any of the 32 pad
+     * LEDs. That is true and it is about CABLE 0 -- Move's pad/button prefix
+     * protocol, which cannot reach a track instrument at all -- so it says
+     * nothing about the pitched cable-2 notes an overtake DSP sends, which do
+     * arrive. The dedicated ring below carries those; the shared ring stays
+     * off-limits during overtake because its consumer is the test-bus
+     * publisher in schwung_shim.c and this ring is documented single-consumer.
+     *
+     * OPEN, and worth knowing before trusting this path: the DEFER guard below
+     * requires three consecutive frames with an entirely empty MIDI_IN, reset
+     * by a non-zero slot on ANY cable. Move's own surface is filtered out of
+     * the mailbox during overtake, but cable 2 is not -- so an external USB
+     * keyboard played into an overtake module may hold the counter at zero and
+     * stall the dedicated ring for as long as you play. Not measured on
+     * hardware. Check it before relying on injection under live external MIDI. */
+
     /* Shim-originated packets first, and independent of the ring: they must
      * still reach Move while an overtake module is up, which is precisely when
      * the ring below belongs to someone else. */
@@ -619,6 +637,13 @@ void shadow_drain_midi_inject(void)
      * occupancy), so it also covers the case where MIDI_IN is idle at exit —
      * which the cable-0 occupancy defer below does not catch. */
     {
+        /* This block was DEAD until the overtake early return was removed:
+         * prev_overtake_for_hold is updated inside it, and the return made it
+         * unreachable during overtake, so the latch never armed. It is live
+         * again, which is what its own comment always intended. Safe direction
+         * -- it holds more, never less -- but it now also delays the dedicated
+         * ring for three frames at exit, which is why the shared ring drains
+         * first below. */
         static int prev_overtake_for_hold = 0;
         static int exit_hold_frames = 0;
         const int OVERTAKE_EXIT_HOLD_FRAMES = 3;  /* 2 also verified clean; 1 not */
@@ -662,13 +687,16 @@ void shadow_drain_midi_inject(void)
 
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
     int injected = shadow_overtake_midi_drain(inject_shm, overtake_active,
-                                               midi_in, MIDI_IN_MAX_EVTS);
+                                              midi_in, MIDI_IN_MAX_EVTS,
+                                              MIDI_IN_MAX_BYTES);
 
     if (host_log && injected > 0) {
+        /* No offset field. It used to distinguish the safe offset-0 injects
+         * from the SIGABRT-inducing non-zero ones, but the drain now always
+         * starts at slot 0 -- so the number is a constant, and a constant
+         * printed in the shape of a measurement is worse than no field. */
         char dbg[128];
-        snprintf(dbg, sizeof(dbg),
-                 "MIDI inject: drained %d pkts at offset %d",
-                 injected, 0);
+        snprintf(dbg, sizeof(dbg), "MIDI inject: drained %d pkts", injected);
         host_log(dbg);
     }
 }

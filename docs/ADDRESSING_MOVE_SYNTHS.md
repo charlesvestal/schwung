@@ -148,6 +148,13 @@ time, so DSP output cannot loop back into its own `on_midi` input. A tool UI
 can check for `shadow_overtake_move_inject_active()` when it needs to support
 older hosts where this separation is not available.
 
+**Anything still queued when your module unloads is discarded**, so the next
+module to load does not replay your notes into Move. What is NOT undone is
+anything that already went out: packets reach Move immediately during the
+takeover, so a note-on you sent and did not match with a note-off leaves a note
+ringing after you exit. **Send your own all-notes-off before you exit** — the
+host does not synthesise one for you.
+
 ### 4. Timing from `render_block`
 
 `render_block` fires every 128-sample audio block (~2.9 ms at 44.1
