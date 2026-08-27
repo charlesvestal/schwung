@@ -1688,6 +1688,10 @@ function showKnobFeedback(knobIndex, name, value, raw, cardName) {
 let knobEditorSlot = 0;          // Which slot we're editing knobs for
 let knobEditorIndex = 0;         // Selected knob (0-7) in editor
 let knobEditorAssignments = [];  // Array of 8 {target, param} for current slot
+let knobEditorCcOut = 0;         // Cached knob_cc_out for the slot being edited.
+                                 // Cached rather than read per repaint: a
+                                 // get_param is served once per draw, and this
+                                 // row would otherwise pay that on every frame.
 let knobParamPickerFolder = null; // null = main (targets), string = target name for params
 let knobParamPickerIndex = 0;    // Selected index in param picker
 let knobParamPickerParams = [];  // Available params in current folder
@@ -7374,6 +7378,12 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     const preMode = getSlotParam(slotIndex, "midi_fx_pre_mode");
     if (preMode !== null) patch.midi_fx_pre_mode = parseInt(preMode) ? 1 : 0;
 
+    /* Include Knob CC Out. Without this the setting is runtime-only and does
+     * not survive a reboot or a patch load, which makes it useless for the
+     * controller rig it exists to serve. */
+    const knobCcOut = getSlotParam(slotIndex, "knob_cc_out");
+    if (knobCcOut !== null) patch.knob_cc_out = parseInt(knobCcOut) ? 1 : 0;
+
     /* Include knob mappings */
     const knobMappingsJson = getSlotParam(slotIndex, "knob_mappings");
     if (knobMappingsJson) {
@@ -10972,6 +10982,9 @@ function loadKnobAssignments(slot) {
         const param = getSlotParam(slot, `knob_${i + 1}_param`) || "";
         knobEditorAssignments.push({ target, param });
     }
+    /* Absent on a chain DSP older than this feature — treat as Off. */
+    const ccOut = getSlotParam(slot, "knob_cc_out");
+    knobEditorCcOut = (ccOut !== null && parseInt(ccOut)) ? 1 : 0;
 }
 
 /* Get available targets for knob assignment (components with modules loaded) */
@@ -15379,13 +15392,17 @@ function handleJog(delta, shift = isShiftHeld()) {
             }
             break;
         case VIEWS.KNOB_EDITOR:
-            /* Navigate knob list (8 knobs) */
-            knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS - 1, knobEditorIndex + delta));
-            /* Announce knob and current assignment */
-            const knobNum = knobEditorIndex + 1;
-            const assignment = knobEditorAssignments[knobEditorIndex];
-            const assignLabel = assignment ? `${assignment.target}: ${assignment.label}` : "Unassigned";
-            announceMenuItem(`Knob ${knobNum}`, assignLabel);
+            /* Navigate the 8 knobs plus the trailing Knob CC Out toggle. */
+            knobEditorIndex = Math.max(0, Math.min(NUM_KNOBS, knobEditorIndex + delta));
+            if (knobEditorIndex === NUM_KNOBS) {
+                announceMenuItem("Knob CC Out", knobEditorCcOut ? "On" : "Off");
+            } else {
+                /* Announce knob and current assignment */
+                const knobNum = knobEditorIndex + 1;
+                const assignment = knobEditorAssignments[knobEditorIndex];
+                const assignLabel = assignment ? `${assignment.target}: ${assignment.label}` : "Unassigned";
+                announceMenuItem(`Knob ${knobNum}`, assignLabel);
+            }
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
@@ -16114,8 +16131,17 @@ function handleSelect() {
             }
             break;
         case VIEWS.KNOB_EDITOR:
-            /* Edit this knob's assignment */
-            enterKnobParamPicker();
+            if (knobEditorIndex === NUM_KNOBS) {
+                /* Flip Knob CC Out. Turning it on makes the DSP dump every
+                 * mapped knob, so the controller starts in sync. */
+                knobEditorCcOut = knobEditorCcOut ? 0 : 1;
+                setSlotParam(knobEditorSlot, "knob_cc_out", String(knobEditorCcOut));
+                announceMenuItem("Knob CC Out", knobEditorCcOut ? "On" : "Off");
+                needsRedraw = true;
+            } else {
+                /* Edit this knob's assignment */
+                enterKnobParamPicker();
+            }
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
@@ -17207,7 +17233,7 @@ function drawKnobEditor() {
     clear_screen();
     drawHeader(`S${knobEditorSlot + 1} Knobs`);
 
-    /* List all 8 knobs */
+    /* List all 8 knobs, then the slot-wide CC-out toggle. */
     const items = [];
     for (let i = 0; i < NUM_KNOBS; i++) {
         items.push({
@@ -17216,6 +17242,11 @@ function drawKnobEditor() {
             assignment: knobEditorAssignments[i]
         });
     }
+    /* Echo this slot's knob values out as CC 102-109 on its receive channel,
+     * so a motorised controller follows changes made here. Off by default: a
+     * slot not driving a control surface should not add eight CC streams to a
+     * port shared with whatever else is plugged in. */
+    items.push({ type: "toggle", label: "Knob CC Out" });
 
     /* No editMode: the knob editor has no in-place editing state -- a click
      * opens the param picker instead. */
@@ -17225,7 +17256,7 @@ function drawKnobEditor() {
         getLabel: (item) => item.label,
         getValue: (item) => item.type === "knob"
             ? truncateText(getKnobAssignmentLabel(item.assignment), 12)
-            : "",
+            : (item.type === "toggle" ? (knobEditorCcOut ? "On" : "Off") : ""),
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         valueAlignRight: true,
         prioritizeSelectedValue: true

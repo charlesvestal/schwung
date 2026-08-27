@@ -374,12 +374,17 @@ CC 102-109 above are the *inbound* half: they drive a chain slot's eight knob
 mappings. A slot can also send them, so a motorised controller follows values
 changed anywhere else — Move's own encoder, or a patch load.
 
-Off by default. Enable per slot with the `knob_cc_out` patch field (or
-`set_param("knob_cc_out", "1")`):
+Off by default. Enable it per slot on the device at **Slot Settings > Knobs >
+Knob CC Out**, at the bottom of the knob list. Turning it on immediately sends
+every mapped knob, so the controller starts in sync. The setting is saved with
+the slot patch:
 
 ```json
 { "receive_channel": 1, "knob_cc_out": 1 }
 ```
+
+It is also reachable as a plain param — `set_param("knob_cc_out", "1")` — for
+the web UI and automation.
 
 When on, the slot emits `CC 102-109` on its **receive channel**, to the
 external port (USB-A), whenever a mapped knob's value changes. Details worth
