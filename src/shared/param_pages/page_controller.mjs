@@ -29,7 +29,8 @@
 
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
-import { resolveChildKey } from "./child_key.mjs";
+import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire }
+    from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
@@ -705,6 +706,21 @@ export function createController(io = {}) {
     const childIndexFor = (level) => {
         const at = s.childIndex[level];
         return (typeof at === "number" && at >= 0) ? at : 0;
+    };
+    /*
+     * The level DEFINITION behind a level name.
+     *
+     * Pages carry `childLevel` (the object, for resolveChildKey) and `childOf`
+     * (the name, for the index cache), and the picker only has the name. Found
+     * from the pages rather than from the hierarchy so it cannot disagree with
+     * what was actually planned.
+     */
+    const childLevelDef = (name) => {
+        if (!name) return null;
+        for (const pg of s.pages) {
+            if (pg.level === name && pg.childLevel) return pg.childLevel;
+        }
+        return null;
     };
     /*
      * Resolve a child-level key against a page — the CURRENT one unless another
@@ -1414,6 +1430,55 @@ export function createController(io = {}) {
         return reads;
     }
 
+    /**
+     * Drop everything cached for a child level, because it belonged to the
+     * instance we just left.
+     *
+     * The same cell now addresses a different pad, so its cached value, its
+     * pending write and its knob state are all about the previous one. Leaving
+     * them puts the old instance's numbers under the new instance's labels,
+     * which is the bug this exists to prevent -- and the pending write is the
+     * dangerous one: it would land on the NEW instance.
+     */
+    function dropChildLevelCache(levelName) {
+        for (const pg of s.pages) {
+            if (pg.level !== levelName || !Array.isArray(pg.keys)) continue;
+            for (const k of pg.keys) {
+                delete s.values[k];
+                delete s.pendingWrite[k];
+                delete s.knobStates[k];
+            }
+        }
+        s.cursor = 0;
+    }
+
+    /**
+     * Adopt the instance the MODULE says is focused.
+     *
+     * Only for a level that declares `child_index_param` -- otherwise the
+     * index is local UI state and there is nothing to read. Costs no stop of
+     * its own; it rides on the preset-name stop.
+     *
+     * Deliberately NOT gated on a settle window. A settle means a KNOB is being
+     * turned, and turning a knob does not change which pad you are editing;
+     * playing one does. Gating this would mean the grid refused to follow the
+     * pad you just hit for as long as your hand was on a knob, which is
+     * precisely the moment it matters.
+     */
+    function syncChildIndexFromModule(p) {
+        const name = p && p.level;
+        const def = p && p.childLevel;
+        if (!name || !def) return;
+        const idxParam = childIndexParam(def);
+        if (!idxParam) return;
+        const raw = getParam(`${s.prefix}:${idxParam}`);
+        const i = childIndexFromWire(def, raw);
+        if (i === null) return;                 /* tri-state: not an answer */
+        if (i === childIndexFor(name)) return;  /* already there */
+        s.childIndex[name] = i;
+        dropChildLevelCache(name);
+    }
+
     function neighbourPrefetch(cur) {
         if (s.tickCount < (s.prefetchHoldUntil || 0)) return null;
         for (const k in s.settleUntil) {
@@ -1565,6 +1630,19 @@ export function createController(io = {}) {
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;
+            /*
+             * ...and, on the same stop, which instance the MODULE says is
+             * focused. Folded in here rather than given a stop of its own so a
+             * child level costs the rotation nothing extra -- the same bargain
+             * the preset name takes, and the reason both live on one stop.
+             *
+             * A NULL answer changes nothing. childIndexFromWire refuses a
+             * failed read, an empty one, a non-number and an out-of-range
+             * index, and adopting 0 from any of those would silently move the
+             * user off the instance they were editing -- re-keying every page
+             * and dropping its cached values -- because a read timed out.
+             */
+            syncChildIndexFromModule(p);
             return null;
         }
         if (at > p.keys.length) {
@@ -1829,15 +1907,23 @@ export function createController(io = {}) {
              * the old part's numbers sitting under the new part's labels.
              */
             s.childIndex[p.childOf] = it.index;
-            for (const pg of s.pages) {
-                if (pg.level !== p.childOf || !Array.isArray(pg.keys)) continue;
-                for (const k of pg.keys) {
-                    delete s.values[k];
-                    delete s.pendingWrite[k];
-                    delete s.knobStates[k];
-                }
+            /*
+             * ...and tell the MODULE, when it owns the focus. The param is the
+             * single source of truth in both directions, so a pick is the same
+             * write the module itself would make -- which is what stops a user
+             * choosing from this list and a module auto-following the pad you
+             * played from ever disagreeing.
+             *
+             * Written through the level, NOT through childResolve: this key
+             * names the level, not an instance of it, so resolving it would ask
+             * for `p01_focused_pad`.
+             */
+            const idxParam = childIndexParam(childLevelDef(p.childOf));
+            if (idxParam) {
+                setParam(`${s.prefix}:${idxParam}`,
+                         childIndexToWire(childLevelDef(p.childOf), it.index));
             }
-            s.cursor = 0;
+            dropChildLevelCache(p.childOf);
         } else if (p.selectParam) {
             setParam(fullKey(p.selectParam), String(it.index));
         }

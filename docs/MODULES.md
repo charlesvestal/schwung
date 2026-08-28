@@ -1385,6 +1385,7 @@ These optional fields declare the real shape instead:
 | `child_index_base` | First instance number — pads are usually 1..16 | `0` |
 | `child_index_digits` | Zero-pad the index to this width (`p01_` not `p1_`) | none |
 | `child_key_overrides` | Per-key template overrides, for the odd key that breaks the pattern | none |
+| `child_index_param` | A param through which **your module** owns which instance is focused | none (UI-local) |
 
 ```json
 "pad_settings": {
@@ -1405,6 +1406,45 @@ the UI — with no per-module configuration file anywhere.
 
 `child_prefix` continues to mean exactly what it always did, so existing
 declarations are unaffected.
+
+#### `child_index_param` — when the MODULE owns the focus
+
+By default the focused instance is UI state, changed only by picking from the
+instance list. That is right for a synth, where "Part 2" is a deliberate
+navigation choice, and wrong for a drum module, where **hitting a pad** is how
+you choose what you are editing.
+
+Declare `child_index_param` and the param becomes the single source of truth in
+both directions: the UI reads it and follows, and picking from the list writes
+it. So a module that moves the focus itself and a user who picks from the list
+can never disagree — they are the same write.
+
+```json
+"pad_settings": {
+  "child_count": 16, "child_label": "Pad",
+  "child_key_template": "p{index}_{key}",
+  "child_index_base": 1, "child_index_digits": 2,
+  "child_index_param": "focused_pad",
+  "knobs": ["vol", "pan", "tune", "start"]
+}
+```
+
+The value is the instance number **in your own numbering** — with
+`child_index_base: 1`, pad 1 is `"1"`. Serve it from `get_param` and accept it
+in `set_param`.
+
+Two things the host guarantees, which you can rely on:
+
+- **A read that does not answer never moves the focus.** An empty, non-numeric
+  or out-of-range value is ignored rather than treated as instance 0 — moving
+  the user off the pad they were editing because a read timed out would re-key
+  every page on screen.
+- **It costs no extra IPC.** The read shares a rotation stop with the preset
+  name, and a level that does not declare it reads nothing at all.
+
+Without this, adding a child level to a module that already follows the played
+pad would *cost* that behaviour — the grid would sit on the instance the picker
+last chose. With it, the declaration is purely additive.
 
 ### Example: Chord MIDI FX Hierarchy
 

@@ -94,6 +94,66 @@ export function childKeysFor(level, i) {
 }
 
 /**
+ * The param through which the MODULE owns which instance is focused, or null.
+ *
+ *   "pads": { …, "child_index_param": "focused_pad" }
+ *
+ * Without this the index is UI-only state, written in exactly one place: a
+ * pick from the instance list. That is fine for a synth whose "Part 2" is a
+ * deliberate navigation choice, and wrong for a drum module, where hitting a
+ * pad is how you choose the thing you are editing. mrdrums is the case --
+ * `ui_auto_select_pad` follows the pad you play, so with the index owned by
+ * the UI the grid would sit on Pad 1 while the module moved on, and declaring
+ * a child level at all would COST that behaviour. This is what makes the
+ * declaration additive for such a module instead of a trade.
+ *
+ * The param is the single source of truth in BOTH directions: a pick writes
+ * it, and reading it back is what moves the UI. So there is no third copy of
+ * the index to disagree, and a module that moves the focus itself and a user
+ * who picks from the list cannot fight -- they are the same write.
+ *
+ * OPTIONAL, and its absence is the existing behaviour exactly: a level with no
+ * `child_index_param` keeps a purely local index, so nothing that works today
+ * changes.
+ */
+export function childIndexParam(level) {
+    if (!hasChildren(level)) return null;
+    const k = level && level.child_index_param;
+    return (typeof k === "string" && k.length) ? k : null;
+}
+
+/**
+ * The wire value naming instance `i` — in the MODULE's numbering.
+ *
+ * `i` is zero-based everywhere inside the page engine; the module counts from
+ * `child_index_base` (pads are 1..16). Converting in one place, next to
+ * formatIndex which already does it for key templates, is what stops the two
+ * spellings drifting.
+ */
+export function childIndexToWire(level, i) {
+    return String((i | 0) + indexBase(level));
+}
+
+/**
+ * The zero-based instance a wire value names, or NULL if it does not name one.
+ *
+ * Null for a failed read, an empty answer, a non-number, or an index outside
+ * the declared count — never a fallback to 0. The caller uses this to decide
+ * whether to MOVE the user's focus, and moving it to the first instance
+ * because a read timed out would re-key every page on screen and drop the
+ * cached values with it. Same tri-state rule the read cursor follows.
+ */
+export function childIndexFromWire(level, raw) {
+    if (!hasChildren(level)) return null;
+    if (raw === null || raw === undefined || raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return null;
+    const i = Math.round(n) - indexBase(level);
+    if (i < 0 || i >= childCount(level)) return null;
+    return i;
+}
+
+/**
  * Every concrete key a child level can address across all its instances.
  * Used by the contract validator to stop reporting per-instance keys as
  * unreachable once a template covers them.
