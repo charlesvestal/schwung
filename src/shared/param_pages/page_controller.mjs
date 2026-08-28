@@ -1482,15 +1482,51 @@ export function createController(io = {}) {
         /* The borrowed metadata belonged to the instance we just left -- above
          * all filepath_param, which still names the previous pad's file. */
         installChildAliases();
+        /*
+         * ...EXCEPT THE SELECTOR ITSELF.
+         *
+         * `child_index_param` is not per-instance data -- it is the control
+         * that CHOOSES the instance, and it holds the same value before and
+         * after the change it just caused. Clearing it destroys the state of
+         * the knob under the user's hand mid-gesture: the accumulator and the
+         * cached value both vanish, so the next detent has no value to step
+         * from and writes nothing.
+         *
+         * The symptom is exact and was reproduced before it was fixed: eight
+         * detents on Current Pad produced ONE write. You could move one pad and
+         * then the control was dead. Reported from the device as not being able
+         * to reach other pads.
+         *
+         * `pendingWrite` is the sharpest edge of the three: the write that is
+         * still in flight IS the one that moved the focus, so dropping it
+         * cancels the user's own gesture.
+         */
+        const idxParam = childIndexParam(childLevelDef(levelName));
         for (const pg of s.pages) {
             if (pg.level !== levelName || !Array.isArray(pg.keys)) continue;
             for (const k of pg.keys) {
+                if (k === idxParam) continue;
                 delete s.values[k];
                 delete s.pendingWrite[k];
                 delete s.knobStates[k];
             }
         }
         s.cursor = 0;
+        /*
+         * ...and read the new instance NOW, before anything is drawn.
+         *
+         * Dropping the values is right -- they belong to the pad we just left
+         * -- but the rotation refills one key per tick, so every cell rendered
+         * `--` for ~10 ticks after each pad change. That is the "a page arrives
+         * with its values, not without them" problem in miniature, and
+         * warmCurrentPage already solves it: reported from the device as a
+         * flash of `--` between pads.
+         *
+         * Bounded the same way as the entry warm -- it stops at the first
+         * failed read -- so a module that has stopped answering costs one
+         * timeout per pad change rather than a page of them.
+         */
+        warmCurrentPage();
     }
 
     /**
