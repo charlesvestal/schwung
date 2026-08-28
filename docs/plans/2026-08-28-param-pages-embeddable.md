@@ -207,17 +207,37 @@ visible restyle of movy, not a drop-in. `test8` is the clearest single case:
 identical params, movy draws four discrete knob arcs, Schwung resolves a
 graphic across the row.
 
-**The bigger finding is not pixels — it is that 7 of 18 pages carry DIFFERENT
-PARAMS.** Schwung paginates overflow (`knobs[]` is the author's chosen eight,
-not their parameter set; rendering only those hides 28% of the fleet's declared
-params relative to the list editor), while movy renders the eight. So adopting
-Schwung's grid moves which parameter is on which page and in which cell. For a
-sequencer that is not cosmetic: parameter locks and automation lanes are
-addressed by page and slot.
+**7 of 18 pages carry DIFFERENT PARAMS.** Schwung paginates overflow (`knobs[]`
+is the author's chosen eight, not their parameter set; rendering only those
+hides 28% of the fleet's declared params relative to the list editor), while
+movy renders the eight. So adopting Schwung's grid moves which parameter is on
+which page and in which cell.
 
-That question — does movy adopt Schwung's pagination, or does Schwung learn to
-render a page movy planned — has to be answered before any renderer swap, and
-it is a bigger conversation with megadake than the restyle is.
+### CORRECTION: that is not a blocker, and the reason I gave was wrong
+
+This section originally said the move was unsafe "for a sequencer" because
+"parameter locks and automation lanes are addressed by page and slot". **They
+are not.** movy's `src/app/tick.ts` resolves a lane through `targetParam` —
+`componentKey + ':' + concreteKey(...)` — and searches the lane registry by that
+string. `slot` appears only as the transient input coordinate of the gesture
+that creates a lane. Nothing persists a page or a slot.
+
+So re-pagination moves no lane: a lane follows its PARAMETER onto whatever page
+Schwung puts it on, and a lane whose parameter is not on the visible page
+matches nothing and shows no dot — the same rule the drum-pad scoping already
+relies on.
+
+Measured, not argued (`scripts/schwung-pagination-check.mjs` on the movy
+branch): 9 parameters across the mock presets sit at a different page/slot under
+Schwung's planner — obxd_like's `octave_transpose` moves from movy's page 1 slot
+7 to Schwung's page 1 slot 3, because `alignGroupsToRows` reflows a row to keep
+a graphic inside it — and a lane on that parameter still resolves there, lights
+that cell's corner, and marks no other page.
+
+I raised this as the thing to settle with megadake before any swap. It was a
+guess presented as a finding, and it cost a round trip. The lesson is the one
+already in this file twice over: **check what the code stores before describing
+what would break.**
 
 Both numbers came out of probes that were wrong twice first: without `settle()`
 every preset rendered the same unloaded page and reported an identical 91 ink
