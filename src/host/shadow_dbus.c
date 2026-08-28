@@ -206,8 +206,37 @@ static void shadow_dbus_handle_text(const char *text)
             *host.display_mode = 0;
             ctrl->display_mode = 0;
         }
-        /* Clear overtake mode so jog click reaches Move for shutdown confirm */
-        ctrl->overtake_mode = 0;
+        /* The jog click has to reach Move to confirm, so the tool must let go
+         * of the surface either way. The question is whether it is TORN DOWN
+         * or PARKED — and Back from this prompt is the common outcome, not the
+         * rare one, because the prompt is also what a mis-hold produces.
+         *
+         * A full overtake module (mode 2) is suspended, exactly as
+         * Shift+Vol+Back does it (schwung_shim.c, "suspend overtake"): raise
+         * suspend_overtake + JUMP_TO_OVERTAKE and let the JS side act. Its
+         * suspendOvertakeMode() parks the module in `suspendedOvertakes` with
+         * its callbacks alive and then calls shadow_set_overtake_mode(0)
+         * itself, so the wheel still reaches Move — and the tool resumes from
+         * the Tools menu instead of reloading from scratch.
+         *
+         * DO NOT clear overtake_mode here as well. The shim CONSUMES
+         * suspend_overtake on the mode -> 0 edge (see shim_post_transfer,
+         * "Skip if suspend_overtake is set"), so clearing it from this thread
+         * eats the flag before the JS tick reads it, and the JS falls through
+         * to exitOvertakeMode() — the teardown this exists to avoid, with no
+         * symptom other than the module being gone.
+         *
+         * Mode 1 is the overtake MENU, which has nothing to park; the JS
+         * branch for JUMP_TO_OVERTAKE outside VIEWS.OVERTAKE_MODULE opens the
+         * Tools menu, which is not what a shutdown prompt should do. It keeps
+         * the plain clear. */
+        if (ctrl->overtake_mode >= 2) {
+            host.log("Shutdown prompt: suspending overtake module (not exiting)");
+            ctrl->suspend_overtake = 1;
+            ctrl->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
+        } else {
+            ctrl->overtake_mode = 0;
+        }
     }
 
     /* Track native Move sampler source from stock announcements. */
