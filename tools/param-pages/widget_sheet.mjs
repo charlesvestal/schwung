@@ -162,16 +162,37 @@ function cellLabels(ctx, g, n, labels) {
  * `hold` extra copies of the last frame, so a 160ms animation does not loop so
  * tightly that it reads as a flicker.
  */
-function clip(nFrames, dtMs, w, h, drawFrame, { hold = 6, scale = 4 } = {}) {
+function clip(nFrames, dtMs, w, h, drawFrame,
+              { slowdown = 5, holdMs = 900, scale = 4 } = {}) {
     const anim = createAnimState();
     const frames = [];
     for (let i = 0; i < nFrames; i++) {
         const fb = createFramebuffer(w, h);
+        /* SAMPLED at real time -- what is slowed is playback, not the
+         * animation. The frames are the ones the device draws at 0, dt, 2dt;
+         * stretching dt instead would sample a different set and show a
+         * different curve, which for an eased transition is a different
+         * picture rather than the same one slower. */
         drawFrame(drawContext(fb), i * dtMs, anim, fb);
         frames.push(fb);
     }
-    for (let i = 0; i < hold; i++) frames.push(frames[frames.length - 1 - i * 0]);
-    return encodeGif(frames, { delayMs: dtMs, scale });
+    /*
+     * PLAYED at 1/slowdown speed, and held at the end.
+     *
+     * At real time these are unreadable: the longest is 160ms, so the clip is
+     * over before the eye lands on it and the loop restarts immediately --
+     * "those gifs play too fast". A GIF cannot be scrubbed, so the only way to
+     * make a 160ms transition legible in a document is to stretch it, and the
+     * page says it is stretched rather than implying the device is this slow.
+     *
+     * The hold is what separates one play from the next. Without it a short
+     * clip reads as a stutter rather than as a gesture that happens and then
+     * settles.
+     */
+    const delay = dtMs * slowdown;
+    const last = frames[frames.length - 1];
+    for (let held = 0; held < holdMs; held += delay) frames.push(last);
+    return encodeGif(frames, { delayMs: delay, scale });
 }
 
 /* --------------------------------------------------------------- the sheet */
@@ -556,8 +577,10 @@ it.
 
 ## Motion
 
-Four widgets move when their value changes. The movement is the point: it
-tells you something changed, and which way.
+Four widgets move when their value changes. The movement is the point: it tells
+you something changed, and which way.
+
+*Slowed 5x — on the device these take between a tenth and a third of a second.*
 
 | | |
 |---|---|

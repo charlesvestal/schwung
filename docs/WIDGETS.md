@@ -129,8 +129,10 @@ it.
 
 ## Motion
 
-Four widgets move when their value changes. The movement is the point: it
-tells you something changed, and which way.
+Four widgets move when their value changes. The movement is the point: it tells
+you something changed, and which way.
+
+*Slowed 5x — on the device these take between a tenth and a third of a second.*
 
 | | |
 |---|---|
