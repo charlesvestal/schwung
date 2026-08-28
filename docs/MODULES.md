@@ -1809,18 +1809,38 @@ reports an error:
 Prefer accepting both conventions and rejecting anything else loudly enough to
 show up in a log.
 
-#### `divable` vs `divable_mark`
+#### Divability, and the two cell marks
 
 Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
-Divability is not the same as the corner-bracket **mark**, which stays on the
-opaque types only (`filepath`/`file`, `string`, `canvas`, `wav_position`, the
-two picker types). With ~135
-enums in the fleet against ~5 opaque params, bracketing every enum would erase
-what the mark means. The affordance for an enum is the footer's `CLK OPEN`.
-Module authors influence this only through `type` and `options`.
+**The cell marks do not mean "divable."** Measured over the fleet: 967 divable
+cells on knob pages, and **953 of them (99%) wear no mark at all**, because
+almost every divable cell is an enum. Divability is announced by the **footer**
+— hold the knob and it reads `CLK OPEN`. Marking 135 enums would erase what a
+mark means.
+
+The two marks you *will* see distinguish something narrower, with no overlap
+anywhere in the fleet:
+
+| mark | cells | knob turns it? | means |
+|---|---|---|---|
+| corner brackets | 7 | always | the knob works, **and** it opens something |
+| chevron box | 7 | never | there is no knob here — only a door |
+
+The **chevron is not a mark at all**: it is the *widget*. An opaque param
+(`filepath`/`file`, `string`, `canvas`, non-ranged `wav_position`, the two
+picker types) has no value-shape to draw, so `drawOpaqueBox`'s notched frame
+with a chevron in its broken edge is simply what that cell looks like.
+
+The **brackets** are an annotation on a working widget, and in practice mean
+one thing: a **ranged `wav_position`** — a number a knob turns perfectly well
+that *also* has a waveform editor behind it. The predicate is `alsoOpens()` in
+`param_meta.mjs`; the underlying declaration fact is `meta.opaque_type`.
+
+Module authors influence all of this only through `type`, `options`, and
+whether a `wav_position` declares `min`/`max`.
 
 ### Knob Acceleration
 
