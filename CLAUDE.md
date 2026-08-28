@@ -6,6 +6,13 @@ Schwung is a framework for custom JavaScript and native DSP modules on Ableton M
 
 Keep this file, `docs/API.md`, `docs/MODULES.md`, and the user manual in `../schwung-catalog-site/manual.html` in sync with code changes (see Release Checklist).
 
+**Four subsystems live in their own files and are NOT summarised here** — the knob
+grid (`docs/PARAM_PAGES.md`), the shadow UI (`docs/SHADOW_UI.md`), the chain
+contract (`docs/CHAIN.md`) and device measurement (`docs/DIAGNOSTICS.md`). What is
+left behind for each is a short list of its most surprising rules, so that you know
+to go and read the file **before** touching that code, not after. See Documentation
+Index.
+
 ## Code Style
 
 **C**: snake_case. Prefix module manager fns `mm_`, JS host bindings `js_`. Log with `mm:`, `host:`, `shim:` prefixes.
@@ -56,72 +63,17 @@ ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log"
 ```
 
 JS: `console.log()` (auto-routed) or import `shared/logger.mjs`. C: `LOG_DEBUG("source", "msg")` from `host/unified_log.h`. See `docs/LOGGING.md`.
+**Device diagnostics — `docs/DIAGNOSTICS.md`.** On-device E2E
+(`tools/pytest-schwung/`), OTLP span tracing, the param tally and the SPI frame
+tally, each with its arming file. Read it before measuring anything on hardware:
 
-**On-device E2E tests** (opt-in, not in CI): `tools/pytest-schwung/` is a pip-installable pytest plugin that drives a real Move end-to-end through `schwung-testd`, an opt-in test-bus daemon (TCP loopback, started manually over SSH; built into the tarball but not auto-started). Tests inject MIDI, wait for SPI frames, snapshot pad LEDs, capture MIDI_OUT, and reset to a known-empty set (`pristine_set`). Run `pytest tests/e2e` against attached hardware. Full protocol, fixtures, and hardware pitfalls in `tools/pytest-schwung/README.md`.
-
-**OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes **both** the shim and the `shadow_ui` process emit realtime-safe spans as OTLP/JSONL to `/data/UserData/schwung/traces/`, one file per service (`schwung-shim-*` / `schwung-shadow-ui-*`). Shim: `spi.pre`/`spi.post` roots + `shadow.mix_audio`, `midi.process`, `param.serve` children. shadow_ui: `js.tick` + `param.get`. Spans correlate **cross-process by trace_id** — the shim's `param.serve` is emitted as a child of shadow_ui's `param.get` (context propagated through `shadow_param_t`), so Tempo/Jaeger stitch the two files into one trace. JS modules (overtake/chain, incl. ion) can add spans via `host_trace_begin(name) -> handle` / `host_trace_end(handle)` (shadow_ui context only); balance the pair within one `tick()` (handles come from a 16-entry table reset each `js.tick`). `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
-
-**Two more UI perf diagnostics** (both off by default):
-
-- `touch /data/UserData/schwung/param_tally_on` — wraps `shadow_get_param` /
-  `shadow_set_param` and reports once a second: reads and writes per tick, the
-  keys by frequency with a sampled caller, any single call over 24 ms, and each
-  key's value RANGE (`MOVING synth:timbre 0.115 .. 1.000`) so you can tell
-  whether a value is actually moving — which is how the idle-LFO fix was
-  confirmed. Needs a `shadow_ui` restart to install (it wraps at init). Writes
-  `param_tally.txt` once per window. See `src/shared/param_tally.mjs`.
-- `param_pages fps: 55 draws / 55 ticks / 1004ms` in `debug.log` while the knob
-  grid is up. Draws vs ticks separates the two causes of "dropped frames":
-  draws << ticks means something gates the redraw; draws == ticks and both low
-  means the tick is slow or its pacing is wrong.
-
-**SPI frame tally** (`touch /data/UserData/schwung/spi_tally_on`, off by
-default) reports at ~1 Hz:
-
-```
-spi-tally: 345 frames / 345 irq  tx avg 389us (max 447us)  headroom 2513us  backlog 8
-spi-tally: LATE 1 irq(s) arrived while busy — frames queued, not dropped (backlog 8, worst window 1)
-```
-
-(345/s is right: the block rate is **344.5 Hz**, not 44 — 128 frames per block
-at 44.1 kHz, 2.902 ms per block.)
-
-Both numbers come from ablspi itself, which ships in Ableton's GPL source drop
-(see `docs/SPI_PROTOCOL.md`). `tx` is the driver's own `spi_tx_time`, stamped
-after every transfer into `struct ablspi_sys_info` at the END of the mmap'd page
-— one aligned 8-byte load of memory the shim already maps, no syscall. `irq` is
-`/proc/ableton/ablspi0.0/irq_count`, read on the worker because it is file I/O.
-
-**The gap between them is the point, and it exists because ablspi's IRQ is a
-counting semaphore rather than a flag** (`atomic_inc` in the ISR, `atomic_dec`
-in the wait). Overrun the budget and the frame is **not dropped** — it queues,
-and the next waits return immediately, replaying back-to-back. So a late frame
-never appears as a gap; it appears as a **burst**, which is exactly the shape
-that gets attributed to somebody else's producer misbehaving. `backlog` is that
-queue. Point it at the Link Audio dropouts before blaming Move's `Link Main`.
-
-**Measured 2026-08-26, and it corrects the budget below.** The ioctl takes
-2569µs but only **389µs of that is the transfer** — the other ~2180µs is
-`wait_event_interruptible` blocking for the next XMOS IRQ, i.e. frame pacing,
-not work and not the wire. With ~140µs of our own compute (`pre` 97 + `post`
-43), real slack is **~2370µs, not ~900µs**. See docs/REALTIME_SAFETY.md.
-
-A corollary worth holding: **`total_us` is not a load signal.** Our work
-growing shrinks the driver's wait by the same amount, so the loop total sits
-near the period whatever we do. The old overrun counter compared it against
-2000µs — below the 2902µs period — and so counted *every* frame: 43,986
-"overruns" in two minutes on an idle device. Now `OVERRUN_THRESHOLD_US`.
-
-Pure accumulator in `src/host/spi_tally.c` (no I/O, so `spi_tally_record` is
-SPI-callback-safe and the whole thing is host-tested by
-`tests/host/test_spi_tally.c`); `/proc` read and reporting in `shim_worker.c`.
-**Arming gotchas, the measured table, and the two experiments still owed are in
-`docs/plans/2026-08-26-spi-tally-followups.md`** — read it before re-measuring;
-the tally stays silent for ~20 s after arming, which looks like a broken build.
-The IRQ delta is a **32-bit** subtraction on purpose — that counter is printed
-from an `int`, goes negative past 2^31 (~72 days) and wraps at 2^32, and only
-modular arithmetic survives both. Widening it is the regression the test fails on.
-
+- A late SPI frame is **never a gap — it is a BURST.** ablspi's IRQ is a counting
+  semaphore, so an overrun queues and the next waits return immediately, replaying
+  back-to-back. That shape gets attributed to somebody else's producer misbehaving.
+- **`total_us` is not a load signal** — our work shrinks the driver's wait by the
+  same amount. The old overrun counter fired on *every* frame: 43,986 in two
+  minutes on an idle device.
+- The tally stays **silent for ~20 s after arming**, which looks like a broken build.
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter
@@ -443,1148 +395,42 @@ Now 64 blocks (**186 ms**), with `LINK_AUDIO_IN_CATCHUP_SAMPLES` **derived** fro
 ```
 
 Modules declare chainability in module.json: `capabilities.chainable: true` + `component_type: sound_generator|audio_fx|midi_fx`.
-
-### Shadow UI Parameter Hierarchy
-
-Modules expose `ui_hierarchy` (menu structure + knob mappings) via get_param:
-
-```json
-{
-  "modes": null,
-  "levels": {
-    "root": {
-      "label": "SF2", "list_param": "preset", "count_param": "preset_count", "name_param": "preset_name",
-      "knobs": ["octave_transpose", "gain"],
-      "params": [
-        {"key": "octave_transpose", "label": "Octave"},
-        {"key": "gain", "label": "Gain"},
-        {"level": "soundfont", "label": "Choose Soundfont"}
-      ]
-    },
-    "soundfont": {"label": "Soundfont", "items_param": "soundfont_list", "select_param": "soundfont_index"}
-  }
-}
-```
-
-- `knobs`: array of param-key **strings** mapped to physical knobs 1–8
-- `params` items: string (param key), `{key, label}` (editable), or `{level, label}` (navigation)
-- Preset levels use `list_param`/`count_param`/`name_param`; selection levels use `items_param`/`select_param`
-- **Use `key`, not `param`**, for editable entries. Metadata comes from `chain_params`.
-
-### Chain Parameters
-
-`chain_params` (get_param JSON array) is **required** for Shadow UI to know step sizes, ranges, enum options:
-
-```c
-"[{\"key\":\"cutoff\",\"name\":\"Cutoff\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01},"
- "{\"key\":\"mode\",\"name\":\"Mode\",\"type\":\"enum\",\"options\":[\"LP\",\"HP\",\"BP\"]}]"
-```
-
-Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `default`, `unit`, `display_format`.
-
-### Chain Architecture
-
-Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch,reorder}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.
-
-### Chain shape edits are a PERMUTATION, never a reload
-
-Adding, removing or reordering a position used to be expressed as a run of
-`<id>:module` writes, and each of those unloads the position and dlopen()s a
-fresh instance — so inserting at the head rebuilt every module behind it and
-removing a mid-chain FX rebuilt everything downstream. A running arp lost its
-phase; a reverb lost its tail. Three set_param verbs replace that, **1-based to
-match the ids**:
-
-```
-fx:insert = "1"     midi_fx:insert = "1"    open an empty position, shift the rest along
-fx:remove = "3"     midi_fx:remove = "2"    unload that position and close the gap
-fx:move   = "1>3"   midi_fx:move   = "3>1"  rotate the span between two positions
-```
-
-`chain_reorder.c` shifts every per-position array together (`chain_permute.h`)
-and re-aims the three tables that name a position by string — modulation targets,
-the two LFOs, the knob mappings. Instances keep running, so **nothing is
-carried**: state, modulation base and routing are still the originals.
-
-**Two kinds of per-position array, and the difference is a crash.** A VALUE
-array is vacated by zeroing its bytes (`PERM_FIELD`). An OWNED-BUFFER array
-holds a pointer to a block allocated once per position by
-`chain_alloc_position_storage` and **never null** — `fx_params`,
-`midi_fx_params`, and the two `ui_hierarchy` caches (`PERM_OWNED`). Those are
-**rotated**: the vacated position gets the buffer displaced off the end of the
-shift and its *contents* are cleared. Zeroing the pointer instead left a NULL
-that `v2_load_midi_fx_slot` parsed a param table through — SIGSEGV on the SPI
-callback, loading a MIDI FX in front of an existing one — and leaked the
-allocation the shift overwrote.
-
-`tests/host/test_chain_permute.sh` pins both: a new
-`[MAX_AUDIO_FX]`/`[MAX_MIDI_FX]` member not in a collector fails, and the
-owned/value split is derived from `chain_alloc_position_storage` rather than
-trusted. `tests/host/test_chain_midi_fx_slot.sh` drives the crashing sequence
-against a real `chain_instance_t` with the real loader.
-
-Insert only opens the hole — the caller follows with the ordinary
-`<id>:module` write. Both chain walks skip a hole per position, so the frame in
-between renders correctly.
-
-**Thread safety is free**: parameter requests are serviced from
-`shim_pre_transfer` on the SPI audio thread, after `shadow_mix_audio`, and
-nothing else touches a chain instance — a permutation cannot interleave with a
-render. (That same property is what lets module loading `dlopen()` from this
-thread, which *is* a pre-existing realtime violation.)
-
-In the shadow UI, `writeChainShape` emits these verbs. It replaced
-`writeChainOrder`, whose state / modulation-base / LFO-remap carries are all
-deleted. `clearLfoRoutingForComponent` stays: a picker **swap** genuinely does
-destroy and create a module.
-
-The two `+` boxes add **where they are drawn** — the MIDI one at the head of the
-chain (index 0), the audio one appended. Backing out of a `+` picker, or picking
-`None` in one, writes nothing at all.
-
-### Chain editor knob feedback is a CARD
-
-Touching a knob in the chain editor raises a bordered card
-(`src/shared/param_pages/knob_card.mjs`) showing the four cells of that knob's
-row, drawn with the knob grid's own widgets via `drawKnobRow` at a 29px cell
-instead of the grid's 32. Touch raises it, release drops it; a turn with no
-touch raises it too and decays after ~700ms, so a cap sensor that misses cannot
-strand the feature. With no component selected the slot's global mappings serve
-a name and a value but no type metadata, so that case gets a header-only card.
-
-The card consumes no TURN. A jog-click while it is up is swallowed — it fires
-the parameter if that parameter is a trigger, and otherwise does nothing.
-
-It used to be dismiss-and-descend: the click fell through and opened the
-focused component. That was deliberate and it was wrong. The card is a panel
-over the diagram and the component behind it is only incidentally selected, so
-descending acted on something the user could not see — *"when the overlay is
-active clicking shouldn't take you into the module, it's a hidden element that
-it's still selected"*. Releasing the knob drops the card, so there is already a
-way out that does not also do something.
-
-**The 1px black gap between the border and the header band is load-bearing.**
-Both are white, so where they touch the border stops existing and the card reads
-as a stripe across the diagram. **The divable brackets are load-bearing too** —
-nothing dives from the card, so dropping `drawDivableMark` looks like an obvious
-simplification, but `drawOpaqueBox` has no frame of its own and the brackets ARE
-its frame. Both are asserted on the pixel buffer in
-`tests/host/test_knob_card.sh`, with the outermost cell touched, because neither
-is visible in code review.
-
-**Every value is read on touch-down, never on the draw path** (`knobCardOpen` in
-`shadow_ui.js`) — a read is ~2.8ms against a 1.68ms whole-page render. Two tests
-pin it: `test_chain_knob_card_reads.sh` for the renderer, and
-`test_chain_edit_read_budget.sh` for `drawChainEdit` itself. The latter LIFTS
-`drawChainEdit` with `new Function` and a fixed dependency list, so the card
-reaches it through a single `knobCardDrawState()` accessor — nine free
-identifiers there is nine chances for a `typeof` guard to make the block
-unreachable and leave the budget measured with the card switched off, which is
-what happened the first time. Consequence of the read budget: a modulated
-NEIGHBOUR does not animate while a knob is held; only the touched knob carries a
-modulation mark, because that read is one `showKnobOverlay` already pays for.
-
-`render_page_movy.mjs`'s cell geometry is a parameter (`GRID_GEOM`,
-`drawKnobRow`'s optional `geom`), so the card and the grid share one row
-renderer. `geom` is **all-or-nothing** — a partial `{cellW}` makes every cell
-origin `NaN`, which reaches `line()`'s `for(;;)` and never satisfies its
-equality break: a frozen `shadow_ui` tick. The default path is pinned
-byte-identical against `tests/fixtures/movy-geom-baseline.txt`
-(`UPDATE_GEOM_BASELINE=1` to refresh).
-
-Preview it without deploying: `node tools/param-pages/preview_knob_card.mjs
-<module-id> --knob N [--short] [--png DIR --scale 4]`.
-
-### Every enum opens a LIST — except at TWO options, where the click FLIPS it
-
-A picker over two items is a menu whose entire content is the value already
-visible in the cell and the one other value there is, and it charges two
-gestures for a state one gesture can describe. So a two-option enum WRITES THE
-OTHER VALUE on click and never raises the list. Reported from the device
-against Global Settings' Mirror Display and Move->Schwung — *"if an option has
-two values, clicking it should change the option ... we dont need a whole menu
-for two items"*.
-
-**Deliberately NOT limited to booleans, and that is the interesting part.**
-`drawnAsSwitch` splits Off/On (212 fleet cells) from a two-way CHOICE —
-`Mix/Reverb`, `Saw/Square`, `Legato/Trig` (134 cells) — and that split is right
-for the PEEK, which exists to show a word the cell has no room for. It is wrong
-here: what the flip removes is the SECOND GESTURE, and a choice pays that
-exactly as a boolean does. Two rules over the same population, disagreeing on
-purpose.
-
-`flipsOnClick` (`param_meta.mjs`) is ONE definition serving two questions that
-must not disagree — what the click does (`page_controller.onClick`) and what
-the footer promises while the knob is held (`CLK FLIP`, not `CLK OPEN`). The
-divable/opaque pair beside it is written up as exactly that failure three times
-over: a cell became a door and the footer had to be told separately, so it
-advertised `CLK MENU` over a click that opened an editor. **The FLIP branch
-must precede the divable OPEN branch** — a two-option enum is still divable, so
-OPEN claims it otherwise.
-
-**It requires `divable`, which is what keeps TRIGGERS out.** A trigger is a
-two-option enum in the wire format (`["—","Rnd!"]`), so a predicate written on
-the option count alone turns every momentary in the fleet into a latch —
-euclidrum randomises a kit on the way past. Readouts are excluded the same way.
-
-**THE FLIP IS THE GRID'S ANSWER. A LIST FOCUSES INSTEAD.** Both list surfaces
-— `knobsAsList` (Param View: List, and whatever the screen reader forces) and
-the hierarchy editor — put a two-option enum into EDIT MODE on click and let
-the jog step it, exactly like a float row. The flip needs a knob under your
-hand to be the saving it claims; a list has none, so a row that changed value
-the instant you clicked it would be the one row on the page with no focus
-state. Reported from the device: *"just show it focus and let jog change it.
-then it's the same gesture for each row. otherwise it's invisible."*
-
-`flipsOnClick` is still what both consult — it is the definition of "this enum
-is a two-way", not of "flip". The grid flips that set and the list focuses it,
-so the two can differ about what a two-way DOES without ever drifting about
-WHICH params are two-way. In `page_controller` it is the term that WIDENS the
-knobsAsList edit gate past `!divable`; the hierarchy editor restates the count
-instead, because its meta is the RAW `chain_params` declaration (`type`, not
-`kind`, and no `divable` at all) and the two exclusions `divable` carries are
-its own two early returns immediately above.
-
-`tests/host/test_two_option_enum_flip.sh` pins the grid half and the picker
-skip; `test_list_layout_footer.sh` drives the focus for real, clicking a
-two-option row and jogging it both ways — a footer assertion alone would pass
-with EDIT advertised over a row the jog does nothing to. The flip test's
-list-editor probe was anchored on the first `type === "enum"` in
-`shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
-and stayed GREEN with the branch deleted.
-
-### Two values means the DETENT TOGGLES, once per flick
-
-There were three spellings of one control and two of them had a dead
-direction: an Off/On (or int 0..1) boolean was direction-ABSOLUTE — right meant
-On, left meant Off, so at Off a left turn did nothing forever — while a two-way
-CHOICE like Mix/Reverb fell to the enum branch and CLAMPED behind the
-four-detent gate, so at Mix a left turn did nothing forever and a right turn
-took four detents to do anything.
-
-Reported from the device: *"if there are only two, why not let it wrap
-otherwise you have to know which way is off and which way is on, in which case
-you need some knowledge you dont have."* There is no way to acquire it — the
-cell shows a STATE, not a direction. Same argument that makes a trigger fire in
-either direction.
-
-**WRAPPING ALONE WOULD NOT DO, and that is the part worth keeping.** With two
-values, "wrap" and "toggle on every detent" are the same thing, and one flick
-of an encoder is a dozen detents — so a flick would land on whichever value the
-detent count happened to be even or odd about. `isTwoWayMeta` in
-`knob_engine.mjs` therefore pairs the toggle with a LATCH at
-`TWO_WAY_GESTURE_GAP_MS`, the same number and the same rule as
-`TRIGGER_KNOB_GESTURE_GAP_MS`: **one flick is one gesture.** And it is a latch
-rather than a rate limit — the stamp is the last **DETENT**, so the clock runs
-on STILLNESS. That distinction shipped wrong once already on the trigger and
-was reported from hardware; `test_two_way_knob_toggle.sh` pins it as a
-sequence, and pins the two constants EQUAL by number, because a user cannot
-learn two flick lengths for two controls that look alike.
-
-**It lives in the ENGINE, so every surface inherits it** — knob grid, knob
-card, list edit mode, the hierarchy editor and the patches screen all reach
-`knobStep`. A TRIGGER is excluded there by `access: "write"`, not by option
-count: it is a two-option enum on the wire, and toggling it writes "do nothing"
-on every other flick, which for euclidrum is the write that destroys a kit.
-Three or more options are untouched — they keep the gate and they CLAMP, because
-wrapping a 47-model list makes the end of it unreachable by feel.
-
-Consequence worth knowing: the jog in list edit mode routes through
-`knobEditStep` -> `onKnobTurn` -> `knobStep`, so it inherits the latch too. A
-deliberate jog detent is 1:1 everywhere else, so flipping a two-way twice in
-under ~270 ms from the jog is swallowed. Deliberate, and the cheapest place to
-revisit if it ever reads wrong.
-
-### A knob page drawn as a LIST has three states, and said none of them
-
-`footerHints()` had no branch for `knobsAsList` at all and fell through to the
-GRID's answer, `JOG PAGE / CLK MENU`, which is wrong outside the list, inside
-it and while editing a row. With Param View on List — or the screen reader on,
-which forces the layout — that is the only footer there is, and Global Settings
-is driven entirely by the jog. Now `JOG PAGE / CLK ENTER`, then
-`JOG SEL / CLK <row verb> / BACK OUT`, then `JOG ADJ / CLK DONE / BACK OUT`.
-
-The row verb is the ROW's, mirroring `onClick`'s ladder: `FIRE` a trigger,
-`EDIT` anything turnable that is not a longer enum (which now includes a
-two-option one), `OPEN` anything else divable. A readout gets **no** click pair
-— an absence is the truth and a verb would be a promise.
-
-**It must precede the held-knob branch**, and not for tidiness: in this layout
-`onClick` takes its param from the ROW CURSOR and overrides whatever knob is
-under your hand, so the held-knob footer describes a cell the click will not
-act on. Same promise-versus-behaviour bug that branch's own comments record
-twice, reached from the other side. Pinned as an ordering, and the seek loops
-in the test are BOUNDED because the row cursor clamps rather than wrapping.
-
-Past two options, the list is unchanged. Any enum that declares `options` is
-divable: hold its knob, click, pick from a scrolling list, Back cancels. The knob still steps it one detent at a time —
-the list is the other half, for a Recv Ch with seventeen options or a Braids
-model with forty-seven. `VIEWS.ENUM_PICKER`, `drawEnumPicker` in
-`src/shadow/shadow_ui.js`, hints `JOG SEL` / `CLK SET` / `BACK EXIT`
-(`enumPickerFooterHints` in `shadow_ui_param_pages.mjs` — the hint vocabulary is
-a canon, so the wording is built there and not at the draw site).
-
-**THE CELL MARKS DO NOT MEAN "DIVABLE."** Measured over the fleet: **967
-divable cells on knob pages, 953 of them (99%) wearing NO mark at all** —
-because almost every divable cell is an enum. Divability is a FOOTER fact:
-hold the knob and it reads `CLK OPEN`. Marking 135 enums would erase what a
-mark means.
-
-The two marks split something narrower, cleanly, with zero overlap:
-
-| mark | cells | turnable? | means |
-|---|---|---|---|
-| corner brackets | 7 | always | the knob works, AND it opens something |
-| chevron box | 7 | never | there is no knob here — only a door |
-
-So **the chevron is not a mark, it is the WIDGET**: an opaque cell has no
-value-shape to draw, so `drawOpaqueBox`'s notched frame with a chevron in its
-broken edge is what that cell looks like. The brackets are an annotation on a
-working widget, and in practice mean exactly one thing — a **ranged
-`wav_position`**, a number a knob turns that also has a waveform editor behind
-it.
-
-That is why they must never be unified. Bracketing the opaque cells puts two
-frames on one rect (a doubled border) and still leaves 953 enums unmarked, so
-it unifies nothing; putting the chevron on every divable cell puts it on 953
-enums. Reported as *"is it confusing we have brackets and carats that both mean
-divable"* — the answer is that they never meant the same thing, but the flag
-name said they did.
-
-Hence the naming, which is the fix: `meta.opaque_type` is a fact about the
-DECLARATION, and `alsoOpens()` in `param_meta.mjs` is the bracket rule,
-single-sourced. It used to be open-coded as `divable_mark && kind !==
-KIND_OPAQUE` at each draw site — three terms of subtlety repeated per caller,
-and one site is the per-cell mark while the other is a whole viz group's, so
-they drifted the moment either was touched. `alsoOpens` also requires
-`divable`, so a read-only declaration cannot wear a mark promising a door that
-`onClick` will refuse to open (21 fleet params either way, so provably a
-no-op today — it is there so the mark cannot start lying).
-
-**The picker wears the movy chrome from BOTH entry points** — the knob grid, and
-a jog-click on an enum row in the hierarchy list editor — and reuses the one
-shared `drawMenuList`. Following the caller's chrome instead would be a
-`cameFromGrid` branch inside a shared draw, which is the exact thing
-`chain_editor_chrome.mjs` records the module picker doing before ("the module
-select here is different than the module select in slots", reported from the
-device). Entry-point chrome is that branch coming back.
-
-**The list rect starts at y=9, not `MENU_LIST_Y`.** `MENU_LIST_Y` (10) leaves
-44px, which at a 9px line is FOUR options where the old chrome showed FIVE. 9 is
-safe only because this header is not inverted — the glyphs stop at row 5, so the
-selected row's highlight at row 8 still has air above it. **A menu page cannot
-do the same: its bank bar owns row 7.** `tests/host/test_enum_picker_chrome.sh`
-pins it as `CAPACITY === OLD_CAPACITY` and `clipped() === 0`, because the device
-clips silently and losing the last option to a band drawn over it is a failure
-this codebase has already had.
-
-Nothing is written on the way in or while scrolling, so Back is a real cancel
-and the draw path costs no IPC. The grid path keeps its controller alive and
-commits through `controller.commitEnum` — that is what makes the picker work on
-Slot Settings and Master FX Settings, which are synthesised contracts with no
-`ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
-MPE's compound write) applied rather than bypassed.
-
-### A filepath param opens a browser, and the knob scrolls THAT too
-
-Diving a `filepath` param from the grid — mrsample's Sample cell is the case —
-lands in `VIEWS.FILEPATH_BROWSER`, and the gesture that got you there leaves
-your hand on the knob. It now scrolls the file list through the same
-`listKnobStep` accumulator the enum picker uses, and a knob TOUCH raises
-nothing over it, for the same reason: the card covers the rows being scrolled.
-
-**This was not a missing affordance, it was a write.** With no route, the turn
-fell through `adjustKnobAndShow` (which returns false — `buildKnobContextForKnob`
-matches no view here) to `handleKnobTurn`, which writes `knob_N_adjust` into the
-**selected slot's global knob mapping**. Behind a full-screen browser, so the
-only visible symptom was the legacy "Knob 1" overlay drawn over the file list —
-which reads as a cosmetic glitch and is not one. Identical in kind to the bug
-the picker's branch fixed, and the filepath browser was the last list dived into
-from the grid that still leaked.
-
-`filepathBrowserJog(delta)` is shared by the jog case and the knob branch on
-purpose: the live-preview arm and the `announceMenuItem` live in it, and two
-copies is how a knob ends up scrolling without auditioning or speaking.
-`tests/host/test_filepath_browser_knob.sh` pins the routing order from source
-*and* lifts the helper to drive it — scroll, audition, announce, clamp, and
-clearing the pending audition when the highlight lands on a directory.
-
-Still unrouted, and each is its own decision: `TOOL_FILE_BROWSER`,
-`KNOB_PARAM_PICKER`, `LFO_TARGET_*` and `DYNAMIC_PARAM_PICKER` are all lists
-whose knob turns still reach `handleKnobTurn`.
-
-### The knob grid is the DEFAULT param view, and it reflows to stay drawable
-
-`paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
-under Global Settings → Display → Param View, and it remains the better view for
-the 11 modules that publish no `ui_hierarchy` at all — a knob grid over a flat
-paginated param list is worse than a list of them.
-
-`param_view.json` is written **only by the toggle**. That is what lets the
-default change at all: a device that never touched the setting has no file and
-follows the new default, and one where the user explicitly chose List keeps
-List. Save it anywhere else — init, a load, an autosave — and every existing
-install is pinned to whatever it booted with, forever.
-`tests/host/test_param_view_default.sh` asserts the call COUNT, because a
-second call site *is* the whole failure.
-
-**A graphic must sit inside ONE ROW.** Row 0's knobs draw at y=10 with their
-LABELS at y=25..32 and row 1 starts at y=33, so a shape spanning both would
-draw straight through the label band. That is geometry, not a tunable.
-
-The consequence was not acceptable: 26 fleet groups were rejected for LAYOUT
-alone — the ADSR on the Main page of obxd, hush1, minijv, moog, surge, rex and
-osirus, plus twelve surge LFO pages. An author writing attack/decay/sustain/
-release in the obvious order lands on slots 3..6 and gets four separate dials.
-`planPages` now moves such a block into a row (`alignGroupsToRows`), 24 pages
-across the fleet.
-
-Three rules keep that from being vandalism:
-
-- **it is a permutation WITHIN a page.** No knob is pushed to another page and
-  no orphan page holding one control is created. Max group span is 4 and a row
-  is 4 wide, so a group always fits.
-- **row two is preferred, but only for a block that must move.** "Always put
-  the envelope on row two" is wrong: 29 envelopes already sit inside row one
-  and draw correctly, many on pages that exist FOR that envelope
-  (obxd/Filter Env, hera/Envelope, tablor/Env) where row two would leave the
-  top half empty. An always-rule makes 29 pages worse to fix 24. For a block
-  that IS straddling, moving it DOWN leaves the head of the page alone —
-  minijv keeps `macro_cutoff` on knob 1, where a nearest-fit rule pushed it
-  to knob 5.
-- **the real detector confirms the result**, and a move that loses a group
-  that already drew is rejected.
-
-An earlier version scored by keys covered with no cost bound and did what that
-invites: schwung-filter moved cutoff from knob 1 to knob 6 — five knobs
-displaced on a FILTER module — to pull one `mode` key into a group that already
-drew. It was also 37ms on minijv, twelve times the rest of the plan. Driving
-the search from the counterfactual "what would group if the row rule were
-lifted?" is both correct and 6.5ms.
-
-**A detector role is OPTIONAL or REQUIRED, and the difference is a whole
-group.** `detectFilter` built its slot run from cutoff, resonance AND whichever
-of mode/slope it found, then required the lot to be contiguous — so a Mode knob
-parked at the far end of the page deleted the corroborated pair. Optionals are
-now dropped when they do not fit; `detectEnvelope` takes the longest adjacent
-RUN rather than demanding every role found be adjacent.
-
-**`present` is filtered by ROLE and must never be assumed to contain any
-particular one.** `drawPartialEnv` computed its attack rise unconditionally, so
-surge's twelve hold/sustain/release LFO pages — no attack at all — produced NaN
-coordinates, and NaN reaches `line()`'s `for(;;)` whose equality break is never
-satisfied. A HANG, not a wrong picture, and unreachable until alignment made
-those pages drawable.
-
-### A turn PEEKS the list; a cell that is already big does not
-
-Turning a divable enum raises its option list over the grid for ~700ms
-(`ENUM_PEEK_MS`), header `TURNING`, footer `TURN SET`. It is the same screen
-the picker draws (`enum_list.mjs`) with the opposite commit semantics: the
-detent has ALREADY written, so there is nothing to confirm and nothing to
-cancel. It never calls `setView` — a Back that "cancelled" it would be a lie.
-
-Three things take it down: the timeout, turning a NEIGHBOUR (left up it would
-describe a knob your hand has left), and Back. **Back closes the peek and stops
-there** — it used to fall through to the view exit and throw you out of the
-module, which is a wildly disproportionate answer to a panel about to vanish on
-its own. It is a layer like the picker and the entered menu, and Back takes one
-at a time. `dismissPeek` goes through `enumPeek()` so an EXPIRED peek is not a
-layer: swallowing one press is a layer, swallowing two is a trap, and this
-screen has no other way out.
-
-**A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
-The peek exists because a 30px cell cannot show a list; once the picture has
-the room, a panel over the top hides the rest of the row to show nothing new.
-Not hypothetical — 12 enum cells in the fleet sit inside a wide graphic, every
-one a filter type or an LFO shape, where turning the knob already redraws the
-curve better than a list of words can.
-
-**Nor does a SWITCH** (`drawnAsSwitch`) — a separate predicate on purpose:
-`drawnWide` is about a graphic having enough ROOM, this is about the graphic
-already BEING the list. A switch draws both of its states (the track is one and
-its inversion is the other, which is why `drawSwitch` exists instead of a
-two-item enum square), so a full-screen Off/On says what the cell already says,
-on the control most likely to be flipped repeatedly.
-
-**Suppressed on the WIDGET, never on the option count.** "Two options" is the
-obvious test and is wrong for **134 cells** in the fleet — every two-way CHOICE
-that is not a boolean: `Mix/Reverb`, `Saw/Square`, `Legato/Trig`, `Time/Rate`,
-`Bipolar/Unipolar`. Those draw as enum squares showing ONE word, so the other
-word is exactly what a peek is for. 212 are switches and stop; 134 keep peeking.
-`tests/host/test_enum_peek.sh` pins both sides.
-
-Known and not fixed: 933 of 958 enum cells peek, and the peek is instant while
-the enum square's resize and the waveform morph take ~100ms — so those two
-animations are covered by the list at the moment they play. A short delay before
-raising the peek would let a single detent show the morph while a sustained
-scroll still gets the names.
-
-### The sample cell draws the file it HAS, or nothing
-
-The envelope is the file's real peaks (`wav_peaks.mjs`, streamed and bounded,
-advanced from the tick — never from the draw path). When there are none there
-is no envelope, just the baseline, the cursor and the brackets.
-
-There used to be a fallback shape, `sin(t*PI)*(0.55+0.35*sin(t*23))`, drawn
-whenever the peaks were missing. It is the tri-state read rule in a different
-costume — **a read that did not answer must never become a picture** — and it
-cost the flagship granular module a waveform for a sample that was never
-loaded. granny declares `sample_path` in its hierarchy and on NO knobs list, so
-every page carrying `position` searched the page, found no file and drew the
-synthetic one.
-
-So `detectSample` resolves the file from the whole contract, not from the page,
-and returns it as `extraKeys`. Those are **not** `keys`: keys claim cells, and
-an off-page key has no cell to claim. The controller reads them as one extra
-stop in the value rotation, the same bargain the preset-name read takes.
-
-**`gatherGroupMembers` seats scattered members together** so the picture gets
-the width its controls warrant. `alignGroupsToRows` rescues a group that is
-already contiguous but straddles the row break; this is the other half, for
-members that are simply not next to each other. It carries the same guarantees,
-because it is the same kind of reorder behind an author's back: WHICH keys are
-on the page never changes, the result stays inside ONE ROW, and the real
-detector verifies the outcome. Measured over the fleet fixture **3 of 489 pages
-move** — granny/root 1→2, granny/main 1→2, mrsample/sample 1→3 — and that
-narrowness is the feature. A pass that re-seated every page would be a layout
-engine, which is a much larger decision. `tests/host/test_viz_gather.sh` pins
-the count.
-
-Spray is claimable for that reason. The old rule — it modifies the cursor
-rather than being a position, so it never takes a cell — described the
-parameter correctly and the layout wrongly: the fences drew on `position`'s
-cell while spray sat elsewhere with an arc that looked unrelated. Adjacency
-keeps it safe; where the two are apart the run rule still gives span 1.
-
-(A module may declare the same marker on two levels — granny declares
-`position` on both `root` and `main` — and the graphic then appears on both.
-That is the contract, not the detector.)
-
-### The sample graphic is ONE door, and the FILE is not part of it
-
-Four reports in a row, each falsifying the fix for the one before. The end
-state is small; the path to it is the part worth keeping.
-
-1. *"empty sample selection is indistinguishable from the spray control"* —
-   `sample_path` was **swallowed** by granny's waveform. `divable_mark` excludes
-   `KIND_OPAQUE` because `drawOpaqueBox` draws its own notched frame and
-   chevron, but a viz group suppresses that widget entirely, so the cell had no
-   frame, no chevron, no brackets and no filename.
-2. *"shouldn't the whole thing be divable?"* — `spray` opened nothing, so one
-   picture had a door on the left third and nothing in the middle.
-3. *"sample file isn't part of the continuum because it goes to a different
-   editor"* and *"why is there a line that spans between them?"* — the real
-   one, and it retires most of 1 and 2.
-
-**The file no longer claims a cell** (`detectSample`). It is still
-`roles.value` — the waveform is drawn FROM it, never ON it — and the value is
-still read, because the page cursor walks `page.keys`, not `group.keys`.
-Released, the cell draws as the ordinary opaque box: notched frame, chevron,
-and **the filename**, which is information the graphic was throwing away. That
-is the honest answer to report 1: the fix was never to bracket the cell, it was
-to stop swallowing it.
-
-**`spray` dives to the graphic's anchor** (`vizDiveTarget`), so a click
-anywhere in the picture opens the waveform editor. Derived, never named — the
-rule is "a member of the picture with nothing behind it", so the `self.divable`
-bail is what keeps the filepath's own door. Scoped to `VIZ_SAMPLE`: an envelope
-has no editor behind it, so a redirect there would invent a destination. ONE
-definition, three consumers — the click, the footer hint and the brackets.
-
-**One bracket per graphic**, drawn across the span in the viz loop; covered
-cells take no per-cell mark. Rendered per-cell first and it read as three boxes
-butted together (four on mrsample). Keyed on **mark-worthiness, not
-`divable`** — every enum declaring options is divable, and keying off that
-framed mrsample's Loop *switch*.
-
-**`gatherGroupMembers` had to learn the same thing, and its failure was
-silent.** `scattered` was built from every role, which after the change
-overstated `wantSpan` by one — and since the widened result is verified against
-that number by the real detector, the check could never pass, so the gather was
-abandoned *entirely* and granny's "Main - 2" collapsed to a one-cell waveform
-with the spray arc back three knobs away. Nothing about the failure said "the
-file"; the group simply stopped widening. Caught only by the fleet snapshot.
-
-Fleet effect is exactly two lines of `param_pages_viz.txt` (granny, mrsample)
-and three pages of the pixel baseline.
-
-**`displayValue` now separates "no file" from "no answer".** Both were `"--"`,
-which is the tri-state collapsed in the most visible place: an empty slot
-looked identical to a slot whose name had not arrived. `""` → `NONE`, `null` →
-`--`. It reads **NONE and not EMPTY**, which is the word that was asked for and
-does not fit — 23px in the box's 4x5 face against a 21px budget, rendering as
-`EMPT` with the chevron jammed against it. The budget exists so the value
-clears the chevron; widening it for one word narrows that clearance on every
-opaque cell in the fleet. `NONE` is 19px and is already this tree's word for an
-empty selection (`none_label || "(none)"`, the preset row's `(none)`).
-
-**A FILE-ONLY graphic with no file is not drawn; one with MARKERS still is.**
-*"You should see the loaded break, but not an empty waveform"* was reported
-against breakbeat, whose `A SMP`/`B SMP` cells are built from a filepath ALONE
-— nothing loaded means nothing to draw, so they were a bracketed rectangle
-containing nothing. Those are **suppressed** in `renderPageMovy`'s viz loop and
-fall back to the opaque box reading `NONE`.
-
-Suppressing *every* empty sample graphic was too broad, and granny is the case
-that shows why: its graphic is `position` + `spray`, two real controls whose
-picture is the track they act on. Empty, the two-cell widget is still the right
-drawing — it is where the cursor and the fences live, and those values are
-yours to set before a file is chosen. *"When no sample is loaded it should be
-the empty two column widget."* So the test is **markers, not emptiness**.
-
-`""` **only**. `null`/`undefined` is a read that has not landed, and
-suppressing that changes the cell's whole WIDGET rather than its contents — a
-knob would appear and be replaced by a waveform a frame later, on every page
-entry. The file is frequently off-page (granny and mrdrums declare it on no
-knob, so it arrives through the extra-key rotation), which makes the unanswered
-window the common case, not an edge one. `drawSample` keeps the same early
-return for callers that do not suppress.
-
-`tests/host/test_sample_cell_doors.sh` pins the lot, and **three of its probes
-were wrong first** — all three looked right, which is the point:
-
-- the "no spanning line" probe measured ink at midY in the file cell. The
-  chevron and the filename glyphs both live there. Then it measured the length
-  of the run starting in the waveform — a spray fence breaks that around x=35,
-  long before the boundary, so it **passed under the mutation**. What works is
-  the single gutter column between the graphic and the box.
-- "brackets vs frame" used the middle of the top edge. An arc knob's curve
-  reaches the top of its cell too, so a bracketed KNOB failed for having a
-  widget in it. The column just past the bracket arm is outside the knob (17px
-  centred in 32) and on any frame that spans the cell.
-- the framebuffer **must honour colour 0 as an erase**: brackets and the opaque
-  frame occupy the identical rect, and only `notchCorners` distinguishes them.
-
-### The wave editor draws the spray fences
-
-Once a click on `spray` opens the fullscreen `wav_position` editor, that editor
-has to show it — diving from a control onto a screen that does not contain it
-is the blank-editor failure in miniature. The word `spray` previously appeared
-nowhere in `shadow_ui.js`.
-
-Same two dotted columns `viz_draw.mjs` draws in the cell, same semantics:
-wrapping, and clamped to the file edges at `spray >= 0.5` (past that ±0.5
-already reaches every frame, and a wrapped fence would crawl back *inward* as
-the region grew). Drawn **before** the cursor so the solid cursor wins where
-they coincide, and gated on the spray value alone rather than on `preview.ok` —
-the cursor draws unconditionally, and two marks describing one playhead must
-appear and vanish together.
-
-**Read ONCE, on the way in** (`seedWavEditorSpray`, from
-`beginHierarchyParamEdit`), then maintained from the writes — the editor frame
-is already the most expensive screen here and a draw-path IPC read is ~2.8ms.
-The knob write updates it, or the fences freeze at their entry value and read
-as a dead knob. `isSprayMeta` is **imported** from `viz.mjs`: a second
-predicate would disagree with the cell the user just clicked out of the first
-time either is widened.
-
-Pinned functionally in `test_shadow_param_editor_routing.sh`, which captures
-`set_pixel` and separates dotted from solid. **The cursor sits at ratio 0
-there** — no real WAV, so no duration to map a position against — which puts
-the case squarely on the *wrapping* path, the arithmetic most likely to be
-wrong. Driven at two spray values, because one is satisfied by a hard-coded
-pair.
-
-### Small ints are BIG NUMBERS, not framed ones
-
-`shouldDrawBigNumber` / `bigNumberText` / `drawBigNumber` in
-`render_page_movy.mjs`: an int with a declared range spanning ≤24 (≤48 if
-bipolar) draws its value in the device 6x7 font instead of an arc, with a sign
-only where the range has a negative side.
-
-It used to draw inside the enum square's box. **The box is the ENUM
-affordance** — every enum declaring options is divable, and the square plus its
-corner brackets are what say a list is behind the cell. A small int has no list
-and can never have one, so the frame advertised a door that does not open.
-
-The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
-params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
-which are sweeps where an arc is the honest picture.
-
-### A momentary fires from the KNOB too, and it LATCHES per gesture
-
-A trigger is `access: "write"` on an ordinary enum — there is no `trigger` type
-— and it draws as a push button (`drawButton`), because the module reports a
-constant idle spelling that is meaningless as a value (euclidrum's is an
-em-dash the 5x7 atlas cannot draw at all).
-
-Turning its knob used to do **nothing**: `isTurnable` is false for `writeOnly`,
-so `onKnobTurn` swallowed the motion silently and the button did not even
-flicker. The stated reason was that turning walks THROUGH the fire value — but
-that is a fact about the enum STEPPER, not about the gesture. A momentary has
-no value to walk past, so the only thing the refusal achieved was forcing the
-hand off the knob and onto the jog. Now a **detent fires it, in EITHER
-direction** — a direction-sensitive momentary would make half of every spin
-read as a dead knob.
-
-**A LATCH, not a rate limit, and that distinction IS the bug.** The first cut
-was "at most once per 250ms", which still fires eight times across a two-second
-spin — reported from the device as *"gesture test fires repeatedly on detent"*.
-The docs already promised the right behaviour ("a whole flick of the encoder
-counts as one press"), so the implementation was what disagreed.
-
-The stamp is therefore the last **detent**, not the last fire: every detent
-extends the gesture, and the latch clears once the knob has been still for
-`TRIGGER_KNOB_GESTURE_GAP_MS` (270). Written *before* the early return, which is
-what makes the clock run on stillness rather than on elapsed time.
-
-It was 400 first and felt sluggish on hardware — *"the cooldown needs to be a
-bit shorter, try 2/3 the length"*. The floor is set by the SLOWEST deliberate
-turn that should still count as one gesture, so there is room to come down
-further. The tests deliberately do **not** pin the value: they assert "clearly
-inside" at 100ms and "clearly outside" at a second, so any gap from ~150 to
-~900ms passes and a broken latch still fails. Pinning 300/500 meant retuning
-the constant broke the suite for no behavioural reason.
-
-**A RELEASE clears it immediately**, on both surfaces. The gap is only a
-fallback for a cap sensor that never registered — letting go is the real
-gesture boundary, and without it you fire, let go, take hold again and the next
-detent is swallowed for up to 400ms, which reads as a broken control rather
-than as a safety.
-
-**The footer says `CLK FIRE` / `KNB FIRE`.** It said `CLK PUSH`, deliberately —
-"name the GESTURE the picture is asking for", and the picture is a push button.
-That held while the click was the only way to fire it, and stopped holding when
-a detent started firing it too: you do not push a knob you are turning, so no
-single gesture-name covers both keys and the honest word is the consequence.
-Two pairs rather than a compound `CLK/KNB` key, which measures 3px narrower and
-reads well but is new vocabulary — `FOOTER_CANON.keys` name a PHYSICAL control
-and `test_footer_canon.sh` enforces it. `KNB PUSH` does **not** fit: the face is
-proportional, PUSH is wider than FIRE, and the third pair was silently dropped.
-"If it fits" had to be answered by rendering it.
-
-**It is KNOB-ONLY.** A click is one gesture per press and may repeat as fast as
-a finger can manage. One flick of an encoder is a dozen detents, and a trigger
-is by definition something that DOES a thing: magneto's `["Play","Save"]` would
-write a file per detent. Applied at the knob CALLER, never inside the fire, so
-a click can never be gated by a knob's latch.
-
-**Both knob surfaces do this and the constant is duplicated, so it is pinned
-against drift.** `page_controller.mjs` (the knob grid) and `shadow_ui.js`
-(chain editor knob card, Master FX, hierarchy list editor) drive the same
-physical encoder against the same parameter, and which one is on screen is a
-Param View setting the user can flip — two copies of the number is two
-behaviours, noticed only as "it fires differently in List view", which nobody
-would think to report as a constant.
-`tests/host/test_knob_surfaces_access.sh` requires the two declarations to be
-byte-identical, that the window is checked BEFORE the write, and that neither
-click path mentions the constant at all. `tests/host/test_param_access.sh`
-drives the real controller and asserts the SEQUENCE — one fire, then eight
-swallowed detents, then a fire past the window, then the reverse direction,
-then two ungated clicks — because each half passes a shorter test alone, and a
-RATE LIMIT passes any test whose detents are spaced wider than its window. The
-spin in the test is 2 seconds of detents 30ms apart for exactly that reason.
-
-A **readout** (`access: "read"`) still refuses the turn: there is nothing to
-set. Both guards must precede the enum stepper's value read, which is asserted
-as a line ORDER.
-
-### Knob ring LEDs, and giving them back
-
-`knob_leds.mjs` paints CC 71-78 — knobs 1-4 white, 5-8 amber, brightness
-tracking value, colour 0 reserved for "nothing is bound here". CC 71-78 carries
-encoder rotation IN and the ring colour OUT; notes 0-7 are touch sensors, input
-only.
-
-**A ramp is one hue's `dark` → `dim` → full.** The palette header in
-`constants.mjs` gives every hue those variants, and it is the authority —
-picking constants by NAME produced `DarkBrown2 → Mustard → Ochre →
-BrightOrange`, i.e. `#250E05 → #876700 → #491804 → #C93C00`, whose third step
-is DARKER than its second: a sweep went dim, bright, dark, bright.
-`tests/host/test_knob_leds.sh` parses the hex out of that header and requires
-luminance to rise at every step, which is the assertion that catches it; the
-older tests only checked that a sweep walks the ramp in the order it is
-WRITTEN, which was true of the broken one too. Step boundaries are derived from
-ramp length, never written beside it.
-
-**Leaving the grid RESTORES the rings, it does not turn them off.** Move writes
-an LED only when its value changes, so going dark left Move's own rings dark
-indefinitely. `shadow_control_t.restore_knob_leds` (a JS-set edge the shim
-consumes and clears) arms `led_queue_restore_move_sysex_leds()` — the same call
-overtake exit makes.
-
-**The colour is in the SYSEX, not the CC.** `move_cc_led_state[71..78]` looks
-like the right cache and is not: Move drives the rings via
-`F0 00 21 1D 01 01 3B <subcmd> <idx> <6 rgb bytes> F7`, and the CC packets are
-latch triggers. Restoring the CC cache restored a latch or a zero and every
-ring came back blank. (That sysex is also the way to drive true per-LED RGB —
-brightness as `hue x value` rather than a walk through palette entries — but
-the encoder `<idx>` mapping is recorded nowhere in this tree and
-`led_queue_set_capture_enabled` has no caller and no dump path, so the restore
-replays the whole surface instead.)
-
-`invalidateLedCache()` is called with it: `input_filter`'s cache suppresses a
-write matching what it believes the hardware shows, which is only sound while
-it is the only writer — and the shim is about to repaint underneath it.
-### A door you were SENT to opens; one you PAGED past stays shut
-
-Preset browsers, items lists and menu pages are **doors**: the jog pages until
-you click in. That rule is load-bearing — a preset browser auditions live, so
-browsing past one must not audition every preset it goes by.
-
-It does not apply to arrivals you asked for. **Choosing** a page enters it:
-`navigate_to` after picking from a list, and naming a section in the jog-click
-picker. Reported from the device both times — *"factory does dump me to
-presets, but shouldn't presets be already active? I have to click into it"*, and
-for airwindows, whose entire picker is Presets / Main / Jump to Category, two of
-them doors. One deliberate gesture should not need a second to take effect.
-
-The switch is `goToPage(index, { enterIfDoor: true })`, and **it belongs there,
-not at the call sites**: with `remember` on, `restoreSection` can land you on a
-different page of the section than the index passed in, so only `goToPage` knows
-what you actually arrived at. Entering writes nothing — a browser auditions on
-*turn* — so this hands over the jog without loading anything. Landing on a knob
-grid is unchanged; there is nothing to enter.
-
-`onJog` does not route through `goToPage`, which is what keeps paging inert.
-`tests/host/test_param_pages_controller.sh` pins both halves, and mutating
-`enterIfDoor` away in either direction fails it: dropping the picker opt-in
-breaks the new case, and making *every* `goToPage` enter breaks the existing
-"jog pages off an un-entered preset page".
-
-**A `navigate_to` naming a level that plans BOTH pages means the browser.** obxd
-is the case: its `banks` level names `root`, and root carries
-`list_param`/`count_param` *and* `knobs`. The lookup used to filter to
-`PAGE_KNOBS`, so choosing a bank landed on the sliders. Preferring the browser
-rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
-three modules declare `navigate_to` at all, and new vocabulary repeats the
-`options_as_string` lesson: documented for months, set by nobody.
-
-### An editor inherits the KNOB ROW of the page you came from
-
-A level's declared `knobs` array is not the order the user was just looking at.
-The grid re-seats keys for LAYOUT — `gatherGroupMembers` pulls granny's `spray`
-next to `position` so the waveform can span both cells — so diving into the
-wave editor silently changed which physical knob was which, **one click
-apart**. In the grid spray is knob 2; in the editor it was knob 4.
-
-Reported as *"the editor should be using the same knobs as the entered page.
-using main is confusing, it's a hidden order no one has reference to"* — and
-that is the argument: the declared order is invisible, and the page on screen a
-moment ago is the only reference a user has.
-
-`hierEditorKnobsFromPage` captures the page's keys in `openParamEditorFromGrid`
-(alongside `level`, and for the same reason — `exitParamPages` tears the
-controller down). Taken **verbatim**: no visibility filter, because the grid
-already applied one when it planned the page, and **no compaction**, because a
-hole means "this knob does nothing" and closing it would shift every knob after
-it — the same class of surprise this fixes. The level's own
-`hierEditorAllKnobs.filter(...)` path does compact, which is a latent version
-of the same bug for any level whose knobs are not all visible.
-
-Gated on the level it was captured from, so navigating elsewhere inside the
-editor hands the row back, and cleared in `exitHierarchyEditor` so it cannot
-survive into a later list-originated session.
-
-**But the entry performs a level hop of its own, and the first cut mistook that
-for navigation.** granny's `root` lists only navigation entries, so `position`
-is not in `root.params` and `openParamEditorFromGrid` relocates the editor to
-`main` on the way in. The override applied at root and was discarded at main:
-
-```
-knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
-knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
-```
-
-So the row is **rebound to the level actually landed on**, once the entry has
-settled; anything after that point is the user moving, and the gate is right
-for that. The knob-context cache keys on the LEVEL, which has not changed at
-that moment, so the rebind must invalidate it or the stale row survives.
-
-The original test could not see this: its fixture put the param in the page's
-own level, so there was no hop. `position2` exists in that fixture purely to
-create one.
-
-**It took a hardware log to find, and that is the point.** Turning what looked
-like the spray knob resolved to `synth:size_ms` in `adjustKnobAndShow`'s debug
-line. The mapping was not observable from outside `shadow_ui.js` — the same
-gap the routing comment blames for three shipped bugs — so `ctx.knobParamKey(i)`
-now exposes it, and `test_shadow_param_editor_routing.sh` asserts the MAPPING
-rather than the array.
-
-### An editor returns to whoever OPENED it, through EVERY door
-
-Diving into a parameter from the knob grid can land you in three different
-places — the filepath browser, the canvas view, or the hierarchy editor with
-the row opened (edit mode). Each of those has to hand the screen back to the
-grid, and each has more than one way out. Miss one and the user comes back
-somewhere they did not ask for, one Back away from where they were.
-
-`closeOwnViewEditorToCaller()` is the single answer: it consults
-`paramEditorOpenedFromGrid` and returns true if it handled the return. All the
-exits go through it — `closeHierarchyFilepathBrowser`, `closeCanvasPreview`,
-and **both** ways out of edit mode.
-
-That last one is the trap. **Edit mode is not a view**, so it has no close
-function to fix; it is the hierarchy editor with the row opened, and for a
-float carrying a waveform strip that strip IS what a user calls "the wave
-editor" (granny's `position`). Back out of it already returned to the grid;
-the jog-click TOGGLE in `openHierarchyParamEditor` did not — so the gesture
-that OPENS the editor was the one that could not close it back. Fixing the two
-real views first changed nothing observable, which read as "not deployed".
-
-`tests/host/test_editor_returns_to_caller.sh` drives all three under both flag
-states. For the toggle it deliberately leaves the identifiers past the early
-return undeclared, so falling through throws instead of passing quietly.
-
-The LFO/knob-mapping target picker is **not** part of this: it is not opened
-through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
-`returnToSlotGridFromLfoTarget`. Do not merge the two.
-
-### Every scrolling list draws a SCROLLBAR, and no list draws arrows
-
-One dotted column at `SCREEN_WIDTH - 2`, solid thumb, in `drawMenuList` — so
-every list in the tree has it: main menu, settings, slots, patches, tools,
-store, chain views, the enum picker, the hierarchy editor and the file browser.
-A list that fits its window draws nothing.
-
-It **replaced** the up/down arrows rather than joining them. The arrows reported
-"there is more, that way"; the thumb reports that plus HOW MUCH and WHERE, which
-is the question a 47-model list actually raises. Keeping both draws one fact
-twice — the same argument retired the file browser's own `13/30` header counter.
-
-**It is also cheaper, and the shape of the saving is the point.** The arrows were
-5px wide and touched exactly two rows, so the clearance was 10px charged per-row
-to those two — a value on the first or last visible row was truncated to make
-room for a glyph beside it, reported from the device twice. The bar is ONE column
-spanning every row: 2px charged to all rows instead of 10px to two. Those rows
-went from 108 to 125.
-
-Three geometry rules, each of which was wrong first:
-
-- **The thumb has a 2px floor.** At 47 items in 5 rows its true height is 1.4px,
-  and a 1px thumb is indistinguishable from a tick of the track — position
-  without extent, which is half the point.
-- **The track covers the ROWS, not the rect.** The rect is 10..54 but the last
-  row of glyphs ends at 52, so running to `resolvedBottomY` left the final dot
-  two rows below anything it measured. Row ink is derived from the highlight
-  (`highlightHeight - 2 * offset`), and measured on the WINDOW rather than the
-  visible items — `keepOffLastRow` draws one row fewer at the end of a list, and
-  a track that shortened as you reached the bottom would read as the list
-  shrinking.
-- **The selection highlight stops short of a `BAR_GUTTER`.** Full width it runs
-  under the bar, and since the bar is drawn after the rows, white on white. Not
-  merely invisible: nine rows of solid ink in the track column reads as a SECOND
-  thumb, parked wherever the selection is. Nothing can be XOR-ed — the draw API
-  is write-only — so the fix is geometric, and one constant serves both the
-  highlight and the value edge.
-
-`tests/host/test_list_scrollbar.sh` asserts the GEOMETRY (position advances,
-both ends reached, a shorter list gives a TALLER thumb) rather than ink, and
-pins the phantom-thumb case on pixels because the draw calls cannot see it.
-
-### Widget animation, and the wiring that carries it
-
-`src/shared/param_pages/anim_state.mjs` is the per-key frame store: the page
-renderer is stateless, so nothing in it can know what a value was a moment ago.
-`observe(state, key, value, now, ms)` returns `{from, to, t, moving}`; a first
-sighting is stamped already-past, because an arrival is not a change.
-
-Animated today: the waveform morph (100ms), the enum square's resize, and the
-trigger flash. Time is passed IN, never read — no `Date.now()` anywhere in the
-renderer, which is what makes `tools/param-pages/movie.mjs` able to film a page
-deterministically.
-
-**THE SWITCH DOES NOT ANIMATE. IT TOGGLES.** It had a 160ms inverse fill — the
-slug snapped, the track wiped — and it is gone, reported from hardware as
-DISTRACTING. That is the argument that outranks the one which chose 160 over 70
-and 260: a switch is the control you flip most often and least deliberately, so
-motion under your hand every time is attention spent in the wrong place, and no
-duration fixes a thing that should not move. Nothing is lost, because the two
-states already differ by most of the widget's AREA — a flip is the loudest
-change on the page even when it happens between two frames. `drawSwitch` keeps
-`anim`/`nowMs` in its signature (`drawVizGroup` hands every widget the same
-arguments) and deliberately ignores them, and both halves are pinned by
-`tests/host/test_anim_wiring.sh`: the waveform must move part-way through a
-change, and the switch must be settled on EVERY frame after a flip.
-
-**THE STORE MUST BE PASSED FROM THE CONTROLLER, AND FOR MONTHS IT WAS NOT.**
-Every widget guards on `anim && typeof nowMs === "number"`, so an undefined
-store draws the settled frame forever — silently, and identically to a correct
-render of a value that is not moving. `createAnimState` was written, exported,
-unit-tested and never CALLED; every animation shipped inert. (The switch's fill
-was one of them — so it was live for a matter of weeks before being removed.)
-
-The same failure is recorded one field away at the same call site, for the
-trigger flash: *the renderer tests hand these in directly, so they prove the
-renderer and never the wiring*. A comment did not defend it.
-`tests/host/test_anim_wiring.sh` does — it drives the real controller and
-requires a frame 60ms into a flip to DIFFER from the settled one. Two ways it
-passes vacuously: forgetting `setLayout(LAYOUT_MOVY)` (the default is
-`LAYOUT_DIAL`, which has no animated widget at all), and asserting a particular
-picture instead of a difference between two frames.
-
-**A value ARRIVING is not a value changing, and 46 of 95 fleet modules
-animated their first page in.** The read cursor serves one key per tick, so a
-full page of 8 knobs spends ~9 ticks (~200ms) with `values[key]` undefined —
-and every animated widget rendered that absence as a CONCRETE PLACEHOLDER:
-`drawWaveform` resolved shape 0 and `drawEnumSquare` sized itself around
-`"--"`. `observe` recorded the placeholder as the settled first sighting, so
-the real value arrived as a TRANSITION — waveforms morphing and enum boxes
-growing, out of values nobody had set. (`drawSwitch` was the third and the
-loudest, reading NaN and drawing OFF; #323 cut its fill for unrelated reasons
-while this was in flight, which is why the count is 46 and not the 51 measured
-before it landed. The switch stays in the absence test`s fixture but is no
-longer one of its subjects — a widget that cannot animate cannot demonstrate
-an arrival.) This is the tri-state read rule one layer below where it is
-usually enforced: a read that did not complete must not produce a plan, a
-default or a cached verdict, and **a widget frame is all three**.
-
-`observeLanded(state, key, raw, value, now, ms)` takes the RAW value alongside
-the token being animated. **The two are separate arguments on purpose**: every
-derivation here is TOTAL, so `"s" + shape` and a pixel width both
-produce a perfectly ordinary token for an absent input — which is exactly how
-the placeholder got in. Only the raw value still carries the absence, so only
-it can be asked about it.
-
-**Nothing is recorded while the value is absent**, rather than recorded and
-suppressed: leaving the key out of the store makes the first real value a first
-sighting, which `observe` already stamps as already-past. Recording it would
-leave `from` pointing at a value that was never on screen, and the next genuine
-change would animate out of it. `undefined` ONLY — the controller refuses to
-cache `null` or `""` as a value, so an unanswered key is `undefined` and nothing
-else, and widening to falsy would swallow `0`, a legitimate reading of every
-switch, shape and enum in the fleet.
-
-`tests/host/test_anim_absent_values.sh` asserts BOTH halves — an arrival draws
-the settled frame immediately, AND a change after it still animates — because
-the first alone passes with every animation deleted. **Its two probe defects are
-the reusable part**: it ticked without DRAWING (the store only learns a value
-when the renderer observes one, so it never showed the widgets the placeholder
-and passed with the bug fully present), and its positive control turned a
-two-option enum already at its top, so nothing moved.
-
-### The neighbour lane warms page ±1, and it is NOT the same fix
-
-`observeLanded` stops what arrives from moving; it does not make it arrive any
-sooner. The rotation still serves one key per tick, so jogging to a cold page
-means watching it populate a cell at a time. `neighbourPrefetch` spends a
-CONDITIONAL extra rotation stop on one uncached key belonging to page ±1, so a
-warm neighbourhood costs nothing at all and a cold one is bounded by the sixteen
-keys either side of you. Ported from the `page-slide-transition` branch
-(`2ba94c0b`), where it existed because a page whose cells fill in *while it
-slides* is what the slide was added to avoid.
-
-Held off for one full pass after a page change (`PREFETCH_HOLD_TICKS`, 12 — the
-page you ARRIVED on owns the screen) and entirely while any key is settling (a
-knob is under a finger). Both are HOLDS: the lane resumes on its own, and "no
-reads happened" cannot distinguish a hold from a lane that is switched off,
-which is why each is tested against a positive control.
-
-**`fullKey` gained an optional PAGE argument for this** — it resolves a
-child-level template against whichever page is passed, defaulting to the current
-one, so a bare key would ask the wire about `synth:tune` for a neighbour serving
-`synth:part2_tune`: a number read off the wrong parameter, cached under the bare
-key, with nothing on screen to say so.
-
-**The two fixes are independent, and the ablation matrix is the evidence** (a
-jog onto a page carrying all three animated widgets):
-
-| lane | observeLanded | warmed | ticks to fill | animates in |
-|---|---|---|---|---|
-| on | on | 3/3 | 0 | no |
-| off | on | 0/3 | 3 | no |
-| on | off | 3/3 | 0 | no |
-| off | off | 0/3 | 3 | **yes** |
-
-Either one alone suppresses the animation *on a jog* — but only the lane removes
-the fill-in, and only `observeLanded` covers a component's FIRST page, which the
-lane can never reach because nothing is adjacent to a page set that does not
-exist yet. Keep both.
-
-**The probe that produced that table was wrong first, in the now-familiar way:**
-it jogged and snapshotted without TICKING, so no value ever *arrived* and the
-animation axis could not move — every row read "settled", including the
-all-disabled control. A matrix whose control cannot fail is not a matrix.
-
-`tests/host/test_neighbour_prefetch.sh` asserts a read COUNT, because "the
-values are there" passes just as well with a lane that reads every tick forever.
-Four mutants killed on this branch: lane disabled, hold removed, child key
-resolved against the wrong page, and the tri-state ignored so a failed read is
-cached.
-
-### The FIRST page is warmed synchronously, because nothing is adjacent to it
-
-The lane cannot reach a component's first page — nothing is adjacent to a page
-set that does not exist yet — so entry still filled one key per tick, ~9 ticks
-(~150ms), with every cell drawing a confidently WRONG picture until its value
-landed. Reported from the device: *"all of the controls up for a frame or so
-with the wrong value before snapping to the right one"*.
-
-**It snaps together rather than filling in cell by cell because of the viz
-groups.** obxd's Main page draws a filter curve from four keys and an ADSR from
-four more, so a graphic stays wrong until its LAST member arrives and then the
-whole thing jumps. Rendered, frame 0 had the filter curve collapsed into the
-bottom-left corner, the envelope a spike at the left edge, and Octave reading
-`--`. Suppressing the ANIMATION did not stop the placeholder being DRAWN — same
-rule, one layer up.
-
-`warmCurrentPage()` reads the entered page's keys before the first frame. It is
-called from the LOAD path, never from `tick()`: the controller is built during
-input handling and the draw happens on a later frame, so a warm here lands
-before anything is shown while a warm on the tick is always one frame late —
-and one frame late is the whole bug. Measured over the fleet: **all 95 modules
-now draw frame 0 identical to settled**, worst entry cost 8 reads ≈ 22 ms,
-capped by the 8-knob page.
-
-**It stops at the FIRST failed read, and that bound matters more than the warm.**
-A module not serving yet — minijv and osirus are the slowest in the fleet —
-costs one timeout instead of eight, and the rotation retries for free. Entry
-stalling on eight dead reads is a worse failure than the flash this removes.
-
-**IT RUNS ON EVERY PAGE CHANGE TOO, and the first cut did not.** That version
-argued the lane already keeps neighbours warm so a jog finds them cached, and
-blocking would "put a hitch on the exact gesture the lane exists to smooth."
-Measured, that is false at any speed a hand actually jogs. The lane fires on ONE
-stop of a ~10-stop rotation — one neighbour key per ~10 ticks, so eight keys is
-~80 ticks plus the 12-tick hold. Against a 3 × 8-knob module, by dwell before
-jogging on:
-
-| dwell | known on arrival | fill-in |
-|---|---|---|
-| 200 ms | 1/8 | 153 ms |
-| 500 ms | 3/8 | 153 ms |
-| 1000 ms | 6/8 | 153 ms |
-| 1500 ms | 8/8 | none |
-
-So the lane only wins if you sit on a page for a second and a half. Reported
-from the device as *"i still see it … just going from one page to another
-slowly"* — precisely the 200–1000 ms band. The old objection is answered by the
-measurement: the alternative is not a smooth gesture, it is 153 ms of WRONG
-PICTURE, and ~22 ms of nothing is better. With the warm on the hop, every dwell
-arrives 8/8 and settles in one frame, and the cost degrades gracefully — 22 ms
-at a fast jog, 0 once the lane has kept up.
-
-**That is what the lane is actually for**, and it is worth stating because the
-first cut had it backwards: the lane does not make the page correct, the warm
-does. The lane makes the warm FREE, turning a per-hop cost into an occasional
-one. Neither is redundant.
-
-`goToPage` gets it too — that is the path a far JUMP from the section picker
-takes, where the lane has warmed nothing at all.
-
-**`acceptValue` is the extraction that made this safe.** The tri-state here is
-three rules deep and every one was a shipped bug — a failed read is not a value;
-`""` is a MISS for a number or enum (`Number("") === 0` put a silent zero on the
-slot-settings Volume knob); `""` is a VALUE for an opaque key (an empty filepath
-is NONE). The rotation and the warm share it rather than each carrying a copy.
-The condition re-plan lives in it too: a warm that stored a condition key without
-replanning would leave the rotation reading the same value later, seeing no
-change, and never revealing the pages that key gates.
-
-`warmCurrentPage` therefore runs **two passes** — `acceptValue` can re-plan
-underneath it, swapping the page being warmed for a different key set. The
-second pass is free when nothing changed (every key is already cached, so it
-makes no reads). The bound of 2 is DEFENCE, not behaviour: no fleet contract
-reaches it, and raising it to 99 kills no test — recorded so the survival is not
-read as a coverage hole, exactly like the prefetch's two guards.
-
-`tests/host/test_page_entry_warm.sh` asserts **exactly** one read per key, not
-"at least": the cached-key skip is invisible on the happy path, and without it a
-plain page costs 16 reads — twice the entry budget, and a mutant that survived
-the first version of this test.
-
+### Chain contract and architecture — `docs/CHAIN.md`
+
+The `ui_hierarchy` and `chain_params` declarations (what a module must publish for
+the shadow UI to know its steps, ranges and enum options), the chain host's file
+layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
+
+- **Use `key`, not `param`**, for editable `params` entries — metadata comes from
+  `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
+  knob writing `0.058750` into an enum.
+- **A chain shape edit is a PERMUTATION, never a reload.** `fx:insert` /
+  `fx:remove` / `fx:move` keep instances running; a run of `<id>:module` writes
+  rebuilds every position behind it, losing arp phase and reverb tails.
+- Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
+  pointer instead of rotating it is a SIGSEGV on the SPI callback.
+
+### The knob grid / param pages — `docs/PARAM_PAGES.md`
+
+~1000 lines on the page planner, every widget and the rule that selects it, the
+peek / flip / dive gestures, animation, and the read budget. **Read it before
+touching `src/shared/param_pages/`, `shadow_ui_param_pages.mjs`, or any draw path
+in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to look:
+
+- **An IPC read is ~2.8 ms; a whole page render is 1.68 ms.** Nothing reads on the
+  draw path — values arrive on touch-down, on the rotation, or in the entry warm.
+- **A read that did not answer must never become a picture.** Placeholder frames
+  animated the first page of 46 of 95 fleet modules in.
+- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and a
+  detent TOGGLES, latched to one flick. `flipsOnClick` defines "is a two-way",
+  not "flip".
+- **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
+  cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
+- A momentary fires from the knob too, **latched per gesture** — a rate limit
+  still fires eight times across a two-second spin.
+- **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
+  pages to keep it there, as a permutation *within* a page.
+- Every scrolling list draws a scrollbar, and no list draws arrows.
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
@@ -1595,37 +441,6 @@ unreachable v1 plugin path.)
 ## Shadow Mode
 
 Shim intercepts hardware I/O to mix shadow audio with Move's output.
-
-### Whatever is drawn LAST must be fed FIRST
-
-`onMidiMessageInternal` (`src/shadow/shadow_ui.js`) is a run of early-outs ahead
-of the per-view switch, and the draw path is a switch with the overlays painted
-after it. **The two orders are the reverse of each other**, so an overlay added
-to the bottom of the draw path has to be added to the TOP of the input path, and
-nothing about either site says so.
-
-The knob grid's early-out is the one that bites, because it is first and it
-claims the jog. Text entry sits ~100 lines below it. That was safe only while no
-keyboard could be raised over `PARAM_PAGES` — and then User Presets became a
-trailing page INSIDE the grid, `enterPresetSaveAs` opened the keyboard without
-calling `setView` (its sibling `enterPresetDeleteConfirm` does), so `view` stayed
-`PARAM_PAGES` and the grid ate the jog while the keyboard was drawn on top of it.
-
-**The symptom pointed at the wrong subsystem.** Pad typing kept working, so it
-read as a keyboard bug: `decodeInput` (`shared/param_pages/page_input.mjs`)
-returns `null` for notes 68–99, so pads fall through, but it decodes CC 14 as
-navigation and consumes it. A half-working overlay is the signature of a
-dispatch-order bug, not a broken handler — check what is *upstream* of the
-handler before reading the handler.
-
-Guard the grid block (`&& !isTextEntryActive()`) rather than hoisting the
-overlay to the top: the feedback-gate and canvas-steal blocks sit between the
-two, and the feedback gate is a safety modal that must keep outranking
-everything. Precedence among overlays is deliberate, so moving one is a change
-in its own right. `tests/host/test_text_entry_outranks_grid.sh` pins the order,
-and pins the `decodeInput` jog-vs-pads asymmetry separately so a future change
-that starts claiming pad notes fails loudly instead of silently.
-
 ### A param read has THREE answers, not two
 
 `shadow_get_param` (`js_shadow_get_param`, `src/shadow/shadow_ui.c`) returns:
@@ -1662,124 +477,23 @@ means absent. The tri-state exists only where the wire is visible.
 (granny's read fails because it loads a WAV synchronously inside `set_param`, on
 the SPI thread that serves param requests. That realtime violation lives in its
 own repo and is not fixed here.)
+### Shadow UI internals — `docs/SHADOW_UI.md`
 
-### Global Settings is a SYNTHESISED CONTRACT, not a screen
+The synthesised contracts (Global Settings, Slot Settings, Master FX Settings), the
+component load gate, and the input-dispatch order. Read it before editing
+`src/shadow/shadow_ui.js` or its `.mjs` siblings.
 
-It runs on the same page engine as a module, a slot's settings and Master FX's
-settings — one list, one chrome, one set of widgets. The declaration is
-`src/shadow/shadow_ui_global_grid.mjs` (pure, no host globals, tested with no
-device by `tests/host/test_global_settings_contract.sh`); the concrete backends
-and the cache-var writes that cannot leave `shadow_ui.js` are `globalGridIoFor()`
-there. Entry is `enterGlobalSettingsGrid()`, modelled on
-`enterMasterFxSettingsGrid`.
-
-**Seven sections are seven PAGES**, jogged through on one axis with the section
-picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
-Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
-load-bearing: a ninth param in any section paginates silently and the bank bar
-takes over a split nobody chose. Audio sits at exactly eight. The contract test
-pins the per-section counts rather than trusting the shapes.
-
-Three consequences worth knowing:
-
-- **`[Help...]` lives on the Updates page**, one row under `[Module Store]`. It
-  used to be a peer of the sections; it cannot be a page of its own (that is an
-  eighth page, pinned against twice) and a one-entry menu page is the shape
-  Master FX already records as a mistake. See `UPDATES_ACTIONS`.
-- **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
-  list, the in-section list, the four `globalSettings*` state vars and the three
-  switch arms that drove them are gone. `runGlobalActionFromGrid` /
-  `maybeReturnToGlobalGrid` are the third instance of the slot / Master FX modal
-  hand-off, and reconcile the same way rather than hooking each exit.
-- **The screen reader forces the LIST layout** (`paramPagesLayout()`), because
-  Global Settings enters the page chrome even with TTS on — it has no hierarchy
-  editor behind it, and it is the screen you go to to turn TTS off.
-  `paramPagesEnabled()` still refuses the chrome for every *component*; that
-  seam is unchanged.
-
-Persistence is **three** things and conflating them loses a write silently: a
-shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
-hand-listed), a key-specific saver welded to the assignment, or backend-owned.
-Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
-
-### A timed-out read empties NOTHING, and latches nothing
-
-`loadChainConfigFromSlot`'s `readPosition` was `moduleId && moduleId !== ""`,
-which puts `null` (the read did not complete) in the same branch as `""` (the
-position is empty) — the comment there said so, having considered only the
-unserved case. Loading a module blocks the SPI callback (the thread that also
-serves param requests) and `applyComponentSelectionConfirmed` re-syncs
-**immediately after its fire-and-forget module write**, i.e. inside that
-window. So the position read `null`, was recorded as EMPTY, and
-`chainConfigFresh[slot] = true` declared it authoritative — *"clean by
-definition once it returns"* was true of the call, not of the answer.
-
-An empty box in the diagram is a `+`, so the position the user had just filled
-opened the **module picker** instead of the editor.
-
-**It takes a SECOND defect to make that permanent**, and this is the part worth
-remembering: the module signature is a separate set of reads taken milliseconds
-later, and they straddled the end of the load. The config read stale-empty; the
-signature read the real module. `applySlotModuleSignature` reloads the config
-only when the signature **changes** — so the *correct* read is what did the
-damage, by matching, and a correct signature never changes again. Osirus logged
-a clean 124 ms load at 13:48:53.700–.824 and the editor still drew the position
-empty fifteen seconds later, while slot settings — same key, different path —
-said "Synth Virus".
-
-Now: a failed read keeps the position it had, leaves the slot **un-fresh** so
-the next frame re-reads, and `getSlotModuleSignature` answers **null** rather
-than inventing an empty chain (`applySlotModuleSignature` refuses null). A
-failed `*_count` keeps the section length — 0 from a timeout truncates the whole
-section, not one position.
-
-Falling out of it for free: the picker writes the chosen module into
-`chainConfigs` **before** the DSP write, so "what we already had" during the
-load window *is* the module just picked — the box shows it throughout, and
-there is no loading state to maintain. `tests/host/test_chain_config_read_failure.sh`
-lifts the real functions and drives that sequence, reads failing on frame 1 and
-landing on frame 2.
-
-### A component editor WAITS; it does not decide from one read
-
-Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
-`if (!hierarchy) enterComponentEditFallback(...)` — which is the three-answers
-defect one layer above the controller that solves it, and the fallback is
-irreversible. For MiniJV and Osirus, the two slowest things in the fleet to
-come up, that drew an editor with **nothing in it**: neither ships a
-`ui_chain.js`, so the fallback lands on the bare preset browser, and the preset
-reads it makes there fail for the same reason the hierarchy read did.
-
-What made the entry the wrong place to give up is that **everything which knows
-how to wait is behind it** — the grid's `Loading...` hold, its bounded contract
-retry, its ten-second recovery probe, the list editor's `is_loading` re-fetch.
-
-`src/shared/component_load_gate.mjs` answers **ENTER / HOLD / FALLBACK**, and
-`openComponentEditor` (`shadow_ui.js`) is the one gate both editors — slot
-chain and Master FX — enter through. HOLD raises `VIEWS.COMPONENT_LOADING`
-("Loading...", `Back: exit`) and asks again: ~0.5 s apart for ~20 s, then every
-ten seconds for as long as the screen is up. **There is no give-up-and-show-the
--fallback ending**, on purpose — a blank editor is the failure being fixed.
-
-**The empty answer needs a second question.** A module that declares no
-hierarchy and a position whose module has not finished arriving BOTH answer
-`""`. `<prefix>_module` separates them: the chain host publishes the name only
-after `create_instance` returns (`chain_host.c:504`). Named + no hierarchy
-falls back **immediately**, so the well-behaved fleet never sees the hold, and
-entering still costs the one read it always did (`module` and `is_loading` are
-read lazily, on the ambiguous branch only).
-
-The wait is view-agnostic — it sits in front of the destination choice, so it
-works with Param View on Knobs or List and with the screen reader on — and it
-is drawn and serviced on **both** draw paths, main and co-run. The probe runs
-*before* the dispatch, so a probe that lands opens the editor on that frame.
-`tests/host/test_component_load_hold_wiring.sh` pins all of that from source;
-`test_component_load_gate.sh` unit-tests the decision, including that a named
-module with no hierarchy is **not** held.
-
-Not a regression: the old gate is byte-identical at `v0.11.6`. What changed is
-how long these two modules take to answer.
-
+- **Whatever is drawn LAST must be fed FIRST.** The draw path is a switch with the
+  overlays painted after it; the input path is a run of early-outs *before* it. The
+  two orders are the reverse of each other, and nothing at either site says so.
+- **A timed-out read empties NOTHING, and latches nothing.** A `null` recorded as
+  "this position is empty" made a filled chain position open the module picker —
+  and the *correct* read milliseconds later is what made it permanent, by matching.
+- **A component editor WAITS; it does not decide from one read.** Everything that
+  knows how to wait sits behind the entry, and the fallback is irreversible.
+- Global Settings is seven sections = seven PAGES. **One section, one page** is
+  load-bearing: a ninth param paginates silently and the bank bar takes over a
+  split nobody chose.
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
@@ -1828,113 +542,23 @@ Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.
 ### Skipback
 
 Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/Skipback/YYYY-MM-DD/`.
-
 ### USB-C Audio-Out Source
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
-Main Out). Move's firmware **never persists it** — there is no key in
-`/data/UserData/settings/Settings.json`, and the dialog is built as
-`ListViewDelegate<UsbAudioOutputSourceDelegate, NullTransactionPolicy>` — so it
-reverts to Mic on every boot. Schwung remembers it instead.
-
-Selecting a value makes Move emit a **pair** of XMOS audio-IO SysEx messages in
-one SPI frame (captured on hardware 2026-08-18):
-
-```
-Main Out:  F0 00 21 1D 01 01 37 12 02 00×12 F7   +   F0 00 21 1D 01 01 37 14 01 00×12 F7
-Mic:       ...37 12 00...                        +   ...37 14 00...
-```
-
-`37 12` is the shared routing/monitoring TLV — **bit0 is the USB-C *input*
-select, owned by Move's sampling page**; bit1 is monitoring, which is *how* Main
-Out reaches USB-C (the XMOS mutes the speakers while it's set, to prevent
-feedback). `37 14` is the dedicated out-source bit. This resolves open question
-Q2 in the movesniff findings doc, which listed `0x14` as unreversed.
-
-**Move's sampling page emits a LONE `37 12`, and it clears bit1.** Captured
-2026-08-26: changing the sampling source sent `37 12 01` then `37 12 00`, with
-no `37 14` anywhere near either. The original 2026-08-18 capture recorded bit0
-as `0` throughout and concluded "the pair is atomic" — true of the *out-source*
-control, false of the sampling page, which that capture never exercised.
-Because bit1 is what actually routes Main Out to USB-C, a sampling-source
-change silently reverted USB-C out to Mic while `37 14` still read Main Out, so
-nothing re-asserted. That is the **in-session** half of "sometimes reverts to
-the microphone"; the boot gate below is the across-reboot half.
-
-`xmos_audio_state_t.monitor` therefore tracks bit1 in its own right (it is
-deliberately NOT folded into `scan`'s `changed` return — that flag means "the
-out-source selection moved", and this is not a selection), and
-`usbc_gate_tick_monitor` re-asserts on `usbc_out == 1 && monitor == 0`. The
-`37 14` half of that test is what keeps it off a deliberate Mic selection,
-which moves both. **The debounce is load-bearing**: the pair can split across
-SPI frames (16 of 20 MIDI_OUT slots), so acting on a single tick would fight
-the leading half of a split Mic selection. Two consecutive worker ticks
-(~400 ms) against ~3 ms frames settles that. Verified on hardware — Move's
-`37 12 01` at f75529, our `37 12 03` at f75635 (**bit0 preserved, bit1
-restored**), then quiet.
-
-Flow: the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
-worker persists the value to `/data/UserData/schwung/usbc_out_state`; ~5 s after
-boot the worker arms a replay, which the SPI callback emits one message per
-frame. Only Main Out is replayed — Mic is Move's own boot default, so there is
-nothing to correct and nothing goes on the wire.
-
-Two behaviours worth knowing:
-
-- **Persistence is gated CAUSALLY, not on a deadline** (`src/host/usbc_out_gate.c`).
-  Move asserts its Mic default at ~0.6 s, and the shim observes its *own* replay
-  too (emit runs earlier in the same `pre_transfer` than scan) — neither carries
-  user intent and persisting either clobbers the stored preference.
-
-  This was a ~7 s deadline, and **that deadline was a bug**. The worker's clock
-  starts when MoveOriginal opens the SPI device; Move's assert floats with boot
-  load. A slow boot put the assert on the trusting side of the line, so Mic was
-  written over a stored Main Out — reverting in session *and* forgetting across
-  the reboot, one mechanism producing both halves of the symptom, intermittent
-  by construction. Confirmed on hardware: one boot logging `USB-C out: boot
-  re-assert Main Out` and the state file later reading `0` with no user action.
-
-  The discriminator is not time. **We only ever re-assert Main Out, so during
-  the boot window an observed Mic can only have come from Move.** The gate
-  stays closed until Move has had its say *and* we have re-asserted over it —
-  pre-replay observations are recorded but never persisted; while defending, an
-  observed Mic is countered (bounded by `USBC_GATE_MAX_REPLAYS`) rather than
-  believed; an observed Main Out only settles the gate once Move has actually
-  asserted Mic this boot, so our own echo cannot settle it early on a slow boot.
-  A ~60 s `usbc_gate_force_settle` backstop covers a boot where Move never
-  speaks (opening the gate persists nothing by itself). Trade-off, unchanged in
-  kind but now bounded by events: a change made before the ~5 s re-assert is not
-  persisted. Unit tests: `tests/host/test_usbc_out_gate.sh`.
-- **Move's own Settings screen keeps reading "Mic"** even when the hardware is on
-  Main Out — Move doesn't adopt the replayed value into its UI state. The audio
-  is correct; the screen is not. Selecting "Main Out" there is harmless;
-  selecting "Mic" (believing it a no-op) actually switches it off.
-
+Main Out), and Move's firmware **never persists it**. Schwung remembers it instead
+— **the SysEx wire format and the boot arbitration are in `docs/SPI_PROTOCOL.md`.**
 **Global Settings → Audio → USB-C Persist** (`usbc_out_persist`, default On)
-governs *whether Schwung restores* the value — deliberately **not** a second
-Mic/Main Out picker, which could disagree with Move's. Its value column
-annotates the source last seen on the wire (`On (Main Out)`), which is the only
-honest read given Move's screen goes stale. Params: `master_fx:usbc_out_persist`
-(get/set) and `master_fx:usbc_out_source` (get only; -1 unknown, 0 Mic, 1 Main
-Out). Persisted to `shadow_config.json`, which the **shim parses at init**
-(`native_resample_bridge_load_mode_from_shadow_config`) — so the flag is known
-before the ~5 s replay and the restore needs no runtime propagation.
+governs whether Schwung restores it.
 
-Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
-so it is both SPI-callback-safe and host-testable; unit tests in
-`tests/host/test_xmos_audio.sh`), observed and emitted in `schwung_shim.c`'s
-pre-transfer callback, persisted and armed in `src/host/shim_worker.c`. The
-boot arbitration is split out as `src/host/usbc_out_gate.c` — also pure state,
-with no clock of its own, which is what makes the boot orderings testable
-without a device.
-
-`xmos_audio_emit` is also the only sanctioned way to put SysEx into MIDI_OUT: it
-requires a **contiguous** run of free slots, refuses while any cable-0 SysEx is
-mid-flight, and never partial-writes. The `spi_sysex_inject` debug trigger was
-rerouted through it — the old path blind-wrote `out[0..31]` regardless of what
-Move had queued, and a stuck injection like that hard-powered-off the device
-twice.
-
+- Selecting a value emits a **pair** of `37 12` / `37 14` messages — but Move's
+  *sampling* page emits a **lone `37 12`** that clears the monitoring bit, silently
+  reverting USB-C out to Mic while `37 14` still reads Main Out.
+- Persistence is gated **CAUSALLY, not on a deadline.** It was a ~7 s deadline, and
+  that deadline was the bug: a slow boot put Move's own Mic assert on the trusting
+  side of the line and clobbered the stored preference.
+- **Move's own Settings screen keeps reading "Mic"** even when the hardware is on
+  Main Out. Selecting "Mic" there, believing it a no-op, actually switches it off.
+- `xmos_audio_emit` is the **only** sanctioned way to put SysEx into MIDI_OUT.
 ### Shadow Architecture
 
 `src/schwung_shim.c` (LD_PRELOAD, intercepts ioctl, mixes audio), `src/shadow/shadow_ui.js` (slot/patch UI), `src/host/shadow_constants.h` (SHM structs).
@@ -1951,133 +575,22 @@ Each of the 4 slots has:
 - **Volume**, **state persistence** (synth + FX + MIDI FX).
 
 **MPE controllers** (LinnStrument, Roli, Sensel): set Receive=All, Forward=THRU, enable MPE in the synth. Otherwise channel remap destroys per-note bend/pressure/slide.
+### User Presets, and the two trailing pages — `docs/SHADOW_UI.md`
 
-### User Presets
+Per-component preset snapshots (the opaque `<prefix>:state` blob, saved under
+`/data/UserData/schwung/presets/<module-id>/`, keyed by **module id** so they are
+offered wherever that module is loaded), plus the **My Presets** and **Module**
+pages the PLANNER appends to the end of every component's knob grid.
 
-Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module, or the component's own knob-grid "My Presets" page's `Load…` action. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
-
-**The browser is exactly ONE thing: choose a preset.** Picking a row LOADS it
-immediately and commits — there is no per-preset Load/Delete detail screen.
-Save, Save As and Delete are not offered here at all; they live on the
-component's own "My Presets" grid page (see below). This was three separate
-hardware reports, one cause: the verbs had moved to the grid page but the
-browser still offered its own copies — *"loading a preset shouldnt show
-load/delete, it should just load it (delete is on the main menu)"*, *"after
-deleting i get to a menu of [save current] not the preset (none) page"*,
-*"i also see [save current] if i load without saving"*. Scrolling the list
-**auditions live** (debounced) **when Global Settings → Audition is on**;
-Back reverts to the slot's original state. That gate (`browser_preview`,
-shared with the file browser's WAV preview) **defaults to OFF**: auditioning
-applies state to the live slot, and this list stopped being hard to reach the
-moment it became reachable from a page at the end of every component. Off
-disables the audition, not the list — a pick still loads, and with it off the
-browser pays no `:state` read on entry. Autosave is suppressed while
-auditioning (`isPresetPreviewActive()`) so an uncommitted preview is never
-persisted into `slot_N.json`. Impl: `src/shadow/shadow_ui_presets.mjs` (view
-module). Developer state-contract notes in `docs/MODULES.md`.
-
-A committed Load, or a completed Delete (still reached exclusively from the
-grid's My Presets page, via `enterPresetDeleteConfirm` — the SAME
-confirm-delete screen as before, just with no detail screen left in front of
-it), both exit through `VIEWS.CHAIN_EDIT`. `maybeReturnToComponentGrid` (see
-below) is what routes a grid-driven arrival back onto the My Presets page
-specifically, by NAME; a `[User Presets]`-row arrival (no grid open) lands
-plainly on the chain editor, as it always did.
-
-### Every component's knob grid ends with two pages it never declared
-
-Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
-sequence ends with two pages neither the module nor its author put there:
-**My Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
-then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
-always) and **Module** (`Swap Module`, `Remove Module`). Both are doors: a
-`PAGE_MENU` must be entered before an entry fires, so jogging past the end
-cannot fire Remove Module by accident.
-
-**Named "My Presets", not "User Presets"** — the header's right side is a
-MEASURED share against a `HEADER_MIN_LEFT` floor (70px), and "USER PRESETS"
-(56px) is past it and truncates to "USER PRESE". "My Presets" (46px) fits.
-"Presets" alone would be worse: 27 modules in the fleet already plan a page
-called that (obxd, sfz, hush1, minijv, sf2, hera, tablor, noisemaker, …), so
-`claimName` would dedupe this one to "Presets - 2". Reported from hardware —
-rendered PNGs, not text art, are what actually showed the truncation.
-
-**The `*` follows a knob write within one settle, not just a page
-re-entry.** Turning a knob on any OTHER page of the same component changes
-the live `<prefix>:state` blob the mark compares against, and nothing used to
-notice until the page was re-entered — *"changed a knob and * didnt appear
-until i exited and re entered the module"*. Fixed without adding a
-draw-path read: `componentParamPagesIo`'s `setParam` marks the write pending
-(`markComponentParamWrite`); `tickUserPresetStale`, driven from the main
-tick (never a draw function) alongside `tickParamPages`, waits out
-`CONTRACT_SETTLE_MS` and then asks ONCE — via `paramPagesRefreshTrailing()`,
-the same call Save/Load/Delete already use — and only when the grid is still
-open on the exact `(slot, component)` that wrote. One read per settle, never
-per detent, none once the user has moved on.
-
-**The header shows the loaded USER preset, with the same mark, on every
-page of the component** — `S1 > tst` clean, `S1 > * tst` dirty — falling
-back to the module's own patch name and then its abbreviation exactly as
-before when no user preset is loaded. Asked for on hardware and shipped:
-*"should we change the preset in the header from the system preset to the
-user preset? (Init -> tst) and then show the * there too?"*. Reads a CACHE
-(`userPresetLiveBlobCache`, keyed per slot+prefix), never the DSP —
-`userPresetHeaderMark` in `shadow_ui.js`, wired through `ctx` to
-`headerTitle()` in `shadow_ui_param_pages.mjs` — so this costs nothing beyond
-the read the My Presets page already pays for, and it answers `null`
-harmlessly for a synthesised contract (Slot/Master FX/Global Settings) or a
-Master FX component, none of which populate a record for their key.
-
-**They are appended by the PLANNER, after the whole walk — not injected into
-a level's hierarchy — because injection cannot work for this fleet.** A
-level's own `menu:` field (the same PAGE_MENU kind) lands right after that
-level's OWN grids, not last: Slot Settings dodges that by giving its menu a
-level of its own, which only works because it synthesises its whole
-hierarchy end to end. We do not own a module's. And three fleet shapes rule
-out injection outright: 11 of the 95 modules in
-`tests/fixtures/module-contracts.json` publish no `levels` object at all
-(chain_params pagination fallback), minijv has `levels` but no `root`, and
-with `modes` present the walk root is whichever mode is active. There is no
-level guaranteed to exist that "append to the end" could target.
-`planPages({ trailingMenus })` in `src/shared/param_pages/page_plan.mjs`
-appends after the walk instead — see `buildTrailingPages`/`appendTrailing`
-there and `io.trailingMenus()`/`refreshTrailing()` in
-`src/shared/param_pages/page_controller.mjs`.
-
-**A failed contract read cannot manufacture them.** `planPages` returns no
-pages at all when `unresolved`, so the append only ever lands on a resolved
-plan — the same rule as "a plan is a statement about what a module declares"
-above.
-
-**Scope is exactly the 4 chain slots' real components.** Master FX chain
-components are excluded — `__user_presets__` is injected in
-`enterComponentSelect` only, so Master FX has no user presets today and this
-inherits that gap rather than widening it. Slot Settings and Master FX
-Settings are excluded because they are settings, not modules: no module id to
-key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
-`componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
-component `enterParamPages` site, so a new call site cannot silently opt
-Master FX in. Grid view only — the list view (`param_view = 0`) is a separate
-code path with no pages to jog through and keeps its existing Shift+Click
-route.
-
-**The `*` leads the name**, e.g. `* Fat Brass` not `Fat Brass *`, because the
-list renderer truncates the TAIL: rendered on obxd, `"Fat Brass *"` drew as
-`"Fat Br…"` and the one character carrying the information was the first
-thing lost. See `presetRowValue` in `src/shared/param_pages/current_preset.mjs`.
-It costs no draw-path read — it compares the live `<prefix>:state` blob
-against a stored hash at PLAN time and on explicit refresh, never per frame
-(`trailingMenus()` has exactly 4 call sites, none inside `render()`).
-
-**Save overwrites; Save As does not.** `overwriteUserPreset` refuses when the
-`:state` read returns `null` — a FAILED read, not empty state — because
-writing it would replace a good preset with nothing. **Remove Module IS the
-picker's `None`**: it goes through `applyChainComponentPick`, the same
-function the picker uses, because removal is not one write — it closes the
-gap and renumbers everything downstream via a `remove` verb that permutes the
-DSP arrays rather than reloading modules (see "Chain shape edits are a
-PERMUTATION" above).
-
+- The browser is exactly ONE thing: **choose a preset.** Picking a row loads it;
+  Save / Save As / Delete live on the My Presets grid page.
+- Auditioning is gated by `browser_preview`, **default OFF** — it applies state to
+  the live slot, and autosave is suppressed while it is active.
+- The trailing pages are appended **after the whole walk**, never injected into a
+  level: 11 of 95 fleet modules publish no `levels` at all and minijv has no
+  `root`, so there is no level an injection could target.
+- Scope is the 4 chain slots' real components. **Master FX is excluded**, in one
+  helper, so a new call site cannot silently opt it in.
 ### MIDI Cable Filtering
 
 MIDI_IN (offset 2048): cable 0 = Move hw controls, cable 2 = external USB MIDI.
@@ -2124,131 +637,19 @@ Master FX still has **no insert, remove or move** — removal is picking `None`,
 which unloads in place and leaves a hole. Adding those (and the permutation
 that must come with them) is residual 2.2 Step 4, and it is a new feature, not
 a port of `chain_reorder.c`.
+### Master FX persistence, and what audio FX are fed — `docs/SHADOW_UI.md`
 
-### The SHIM says what is loaded, and it says it ONCE
-
-`masterFxConfig` is an in-file mirror that only learns about a position when
-something in `shadow_ui.js` puts it there. Anything that loads a master module
-by writing `master_fx:fxN:module` **straight to the shim** was therefore
-invisible to `saveMasterFxChainConfig()` — an overtake tool (movy is the visible
-case), or any Remote UI client, since schwung-manager's
-`handleSetMasterFxParam` forwards whatever key it is handed with no allowlist.
-The saver took its empty branch, wrote `{}` over a position the shim genuinely
-had loaded, and **the whole master chain was gone on the next boot** (two
-Discord reports; PR #221). It drifted the other way too: a position cleared
-through the shim was written back from the stale mirror.
-
-So the saver asks the shim. **`master_fx:modules`** (GET only) answers with the
-whole chain in one string — `[{"id":…,"path":…},…]`, one entry per position,
-built by `src/host/master_fx_snapshot.h`. Three properties the reader depends
-on and cannot check for itself, all pinned by
-`tests/host/test_master_fx_snapshot.c`:
-
-- **positional, never compacted.** An unloaded position is an empty entry. Omit
-  it and position 3's module lands on position 1 the moment anything ahead of it
-  is empty — a wrong module at boot, not a missing one.
-- **it refuses rather than truncates.** A short array parses perfectly and reads
-  as "those positions are empty", which is the erase this exists to prevent.
-- **quotes and backslashes are escaped.** Not for the odd filename's sake: the
-  reader treats unparseable exactly as it treats a failed read, so one strange
-  path would silently stop the whole chain persisting.
-
-**One read, not sixteen.** The first cut asked `fxN:name` per position plus
-`fxN:module` per loaded one — 8+ IPC round trips at ~2.8ms landing on the
-autosave frame, which is the frame the one-slot-per-tick split exists to keep
-clean. An IPC read costs more than redrawing the entire screen, so the count is
-the thing to fix, not the schedule.
-
-**It also makes the id and the path ONE fact.** Read separately they are two
-round trips that fail independently, and a state file pairing this position's id
-with the previous module's path restores the wrong module in silence — the boot
-loader parses `module_path` and never looks at `module_id`. The path is taken
-from the same answer as the id and only when it describes the module being
-written; otherwise the startup scan answers. And an id with **no** path is not
-written at all: it restores nothing, so putting it over a good file is the same
-erase as `{}`.
-
-Three things guard the read itself, all in `saveMasterFxChainConfig`:
-
-- **a null snapshot adopts NOTHING.** Failed is not empty — see "A param read
-  has THREE answers". The per-position reads stay as the fallback, because a
-  shim older than the JS answers this key with an error and the web updater
-  mirrors the shim separately: without the fallback, version skew silently
-  restores the data-loss bug.
-- **a write still in flight is not read back over.** `shadow_set_param` is
-  fire-and-forget under overtake, so a save reached from a tool through `ctx`
-  can read the position before its own write lands and adopt the module the user
-  just replaced. `masterFxModuleWriteAt` + `CONTRACT_SETTLE_MS`, the same bargain
-  as `userPresetWriteAt`.
-- **adopting invalidates the display-name caches**, like every other site that
-  assigns `.module`. They are keyed by POSITION, not by module, so a position
-  that adopts a different module goes on labelling and announcing as the last
-  one.
-
-`tests/host/test_master_fx_save_reads_shim.sh` drives the real function through
-a fixed dependency list rather than grepping for it — the version that shipped
-with #221 was five `rg -q` source pins in `tests/shadow`, a directory **CI does
-not run**, so deleting the fix would not have failed anything anywhere.
-
-### A STEP button is not a note, and audio FX were told it was
-
-Audio FX are fed from **three** places, and the only guard any of them had was
-`d1 >= 10` — which exists solely to drop the capacitive knob-touch notes 0–9,
-and was never a claim about what counts as musical input:
-
-```
-src/schwung_shim.c   MIDI_IN cable 0 (Move's own surface)   notes, d1 >= 10
-src/host/shadow_midi.c   shadow_chain_dispatch_midi_to_slots    ALL voice msgs, no guard
-src/host/shadow_midi.c   shadow_dispatch_direct_external_midi   cable-2 THRU, d1 >= 10
-```
-
-So on Move's own surface the **step buttons (16–31) and track buttons (40–43)
-reached every loaded audio FX as played notes.** Found with an FX whose note
-handler fires a one-shot action (capicola's forced re-slice): in Master FX it
-fired on essentially any button press. The ducker had the identical exposure
-and merely read as "sensitive". Both `shadow_master_fx_forward_midi` and the
-slot `FX_BROADCAST` were affected — the asymmetry is **not** master-vs-slot, it
-is broadcast-vs-dispatch: `chain_midi.c:720` handles `FX_BROADCAST` by
-forwarding to every audio FX and returning *before* any channel logic, so only
-the non-broadcast dispatch was ever channel-matched.
-
-Two guards fix it, in `src/host/fx_midi_filter.h`, and **the split is the
-point**:
-
-- `move_surface_note_is_pad(d1)` — cable-0 sites ONLY, where a note number is a
-  physical control identity. Replaces `d1 >= 10` at both shim broadcasts.
-- `fx_midi_channel_accepts(ch, status)` — applied **inside**
-  `shadow_master_fx_forward_midi`, not at its callers, so all three feeds are
-  gated by construction and a fourth cannot be added ungated.
-
-Never apply the note-range guard to the external sites: there a note number is
-a **pitch**, and clamping to 68–99 silences five octaves of a keyboard.
-`tests/host/test_fx_midi_filter_call_sites.sh` asserts that as an *absence* —
-a test that only checked "the guard exists" would pass with it wrongly applied.
-
-**Master FX → Settings → MIDI Ch** (`master_fx_midi_channel` in
-`shadow_config.json`; param `master_fx:midi_channel`, −1 = All) selects the
-listen channel. It lives on `MASTER_FX_SETTINGS_ITEMS_BASE` and in
-`MASTER_GRID_PARAMS`, **not** in Global Settings — the first cut put it under
-Global → Audio beside the other `master_fx:*` shim settings, which is where the
-*plumbing* lives but not where a Master FX setting is looked for, and it was
-reported missing from the device. Note the two representations: the wire
-(`master_fx:midi_channel`, the config key, and the shim's variable) carries the
-REAL channel (−1 = All, 0–15), while an enum cell is addressed by OPTION INDEX
-(0–16). They are off by one and disagree about All, so the conversion is pinned
-to `createMasterGridIo`'s `getParam`/`setParam` in `shadow_ui_slot_grid.mjs`
-(`mfxMidiChannelToIndex` / `…FromIndex`) rather than repeated per call site.
-
-**Default All**, deliberately: Master FX heard everything
-before this existed, so any other default silently kills every sidechain in
-the field — and a user whose ducker stopped after an update cannot connect
-that to a setting they never saw. Note that the channel setting **cannot**
-substitute for the pad guard: pads and steps share one cable-0 surface, so no
-channel value separates them. Persisted like `usbc_out_persist` and parsed by
-the shim at init (`shadow_resample.c`), so the filter is in force before the
-first SPI frame. An out-of-range stored value fails **open** (All) rather than
-muting every FX with no visible cause.
-
+- **The SHIM says what is loaded, and it says it ONCE.** `master_fx:modules` is one
+  GET returning the whole chain, positional and never compacted. The in-file mirror
+  never saw anything written straight to the shim (an overtake tool, a Remote UI
+  client) and wrote `{}` over it — the whole master chain gone on the next boot.
+- **A STEP button is not a note, and audio FX were told it was.** The only guard was
+  `d1 >= 10`, which exists solely to drop knob-touch notes 0–9, so steps (16–31) and
+  tracks (40–43) reached every loaded audio FX as played notes. `fx_midi_filter.h`
+  splits the cable-0 pad-range guard from the channel guard — **never apply the
+  note-range guard to the external sites**, where a note number is a pitch.
+- Master FX → Settings → **MIDI Ch** defaults to All, deliberately: any other
+  default silently kills every sidechain in the field.
 ### Overtake Modules
 
 Take full UI control in shadow mode. Listed in Tools menu below "Overtake" divider. Set `component_type: "overtake"` to keep the overtake lifecycle (LED clear, ~500 ms init delay, Shift+Vol+Jog-Click exit).
@@ -2386,6 +787,25 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 
 ## Documentation Index
 
+**`CLAUDE.md` is an INDEX for the four files below, not a summary of them.** Each
+was split out because it is ~1000 lines of subsystem detail that matters on the
+sessions touching that subsystem and costs context on every other one. The bullets
+left behind in this file are deliberately the *surprising* claims rather than the
+topics — enough that you know a rule exists and go read it before you break it. A
+new war story goes in the subsystem file with one bullet added here; adding it
+inline is how this file got to 151 KB.
+
+- `docs/PARAM_PAGES.md` — **The knob grid.** Page planner, every widget and the
+  rule that selects it, peek / flip / dive gestures, animation, the read budget.
+  Read before touching `src/shared/param_pages/` or any draw path.
+- `docs/SHADOW_UI.md` — **Shadow UI internals.** Input dispatch order, the
+  synthesised contracts, the component load gate, User Presets and the trailing
+  pages, Master FX persistence, what audio FX are fed.
+- `docs/CHAIN.md` — **The chain contract.** `ui_hierarchy`, `chain_params`, the
+  chain host's file layout, and the shape-edit permutation verbs.
+- `docs/DIAGNOSTICS.md` — **Measuring the device.** On-device E2E, OTLP tracing,
+  the param tally, the SPI frame tally. Every switch is off by default.
+
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
 - `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage). Its **widget reference** — every widget's picture beside the rule that selects it, plus chrome and motion — is GENERATED between markers by `node tools/param-pages/widget_sheet.mjs --manual` and pinned by `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image). There is no separate WIDGETS.md: a second user-facing widget page in the same voice as the manual's was one document too many, and the pictures belong next to the rules. `--manual` additionally writes a 14-image subset into `../schwung-catalog-site/manual.html`, sized from each image's own natural width — `width: 100%` rendered a one-cell switch four times the size of a cell. Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per widget and is gitignored.
 - `docs/LOGGING.md` — Unified logging
@@ -2401,7 +821,9 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
 3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
-4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
+4. **Docs**: update the subsystem file (`docs/PARAM_PAGES.md`, `docs/SHADOW_UI.md`,
+   `docs/CHAIN.md`, `docs/DIAGNOSTICS.md`) and add a bullet to `CLAUDE.md`'s hook
+   for it — **not** the prose itself. Then `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
 5. **Help files**: update `help.json` in modified tool modules
 6. **Module catalog**: bump `min_host_version` for modules depending on new host features
 7. **Commit + tag**: `git tag v0.X.0 && git push --tags`

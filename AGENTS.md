@@ -10,7 +10,13 @@ RIGHT NOW run: `~/.codex/superpowers/.codex/superpowers-codex bootstrap` and fol
 Before making code or docs changes, review the repository documentation relevant to the task.
 
 Always check these first:
-- `CLAUDE.md`
+- `CLAUDE.md` — the index. It points at four subsystem files it deliberately does
+  **not** summarise; read the one covering the code you are about to touch:
+  - `docs/PARAM_PAGES.md` — the knob grid, its widgets and gestures
+    (`src/shared/param_pages/`, any draw path)
+  - `docs/SHADOW_UI.md` — `src/shadow/shadow_ui.js` and its `.mjs` siblings
+  - `docs/CHAIN.md` — the chain contract and `modules/chain/dsp/`
+  - `docs/DIAGNOSTICS.md` — measuring the device
 - `BUILDING.md`
 - `docs/MODULES.md`
 - `docs/API.md`

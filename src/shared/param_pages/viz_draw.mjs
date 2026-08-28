@@ -542,8 +542,8 @@ function drawPartialEnv(ctx, leftX, xEnd, topY, baseY, present, roles, values, m
      * The rise was drawn unconditionally from `val.attack`, and an envelope
      * with no attack role makes that `undefined` -- so peakX is NaN, the NaN
      * reaches line()'s `for(;;)` and its equality break is never satisfied.
-     * Not a wrong picture: a HANG, the same one CLAUDE.md records for a
-     * partial GRID_GEOM freezing the shadow_ui tick.
+     * Not a wrong picture: a HANG, the same one docs/PARAM_PAGES.md records
+     * for a partial GRID_GEOM freezing the shadow_ui tick.
      *
      * It was unreachable until knob alignment made these pages drawable:
      * surge declares twelve LFO pages carrying hold/sustain/release and no
