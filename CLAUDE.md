@@ -1905,6 +1905,12 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
 - `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage)
+- `docs/WIDGETS.md` — **Widget contact sheet.** Every widget the knob grid
+  draws, the rule that selects it, and how many fleet cells it accounts for.
+  GENERATED: `node tools/param-pages/widget_sheet.mjs`, pinned by
+  `tests/host/test_widget_sheet.sh`. Not the SCH-50 catalog
+  (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per
+  widget for choosing between and is gitignored — this renders the one that won.
 - `docs/LOGGING.md` — Unified logging
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
@@ -1918,7 +1924,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
 3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
-4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior
+4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate `docs/WIDGETS.md` (`node tools/param-pages/widget_sheet.mjs`) — `tests/host/test_widget_sheet.sh` fails until you do.
 5. **Help files**: update `help.json` in modified tool modules
 6. **Module catalog**: bump `min_host_version` for modules depending on new host features
 7. **Commit + tag**: `git tag v0.X.0 && git push --tags`
