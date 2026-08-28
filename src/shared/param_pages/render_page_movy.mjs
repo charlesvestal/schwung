@@ -361,6 +361,26 @@ export function labelForCell(text, cellW = CELL_W) {
 }
 
 /**
+ * Did the label have to be SQUEEZED — devowelled or cut — to fit its cell?
+ *
+ * Not the same question as "is this label abbreviated", and the difference is
+ * the whole point. The word table turning Attack into ATK is the design
+ * working; comparing against labelUnsqueezed() reports that as a change and
+ * fires on 651 of the fleet's 759 pages, which is a finding nobody can read.
+ * What a reviewer wants is the residue: the label that the table could not
+ * save and shortenLabel had to cut into something that may no longer be a
+ * word. So the comparison is taken AFTER the word pass, against the same
+ * budget labelForCell uses.
+ *
+ * @returns {boolean}
+ */
+export function labelSqueezed(text, cellW = CELL_W) {
+    const labelWidth = Math.min(cellW, fontWidth4x5("M".repeat(LABEL_CHARS)));
+    const worded = caps(preAbbreviate(text, labelWidth));
+    return shortenLabel(LBL_MEASURE, worded, labelWidth) !== worded;
+}
+
+/**
  * What the word pass produced, BEFORE any squeezing to fit.
  *
  * The reference the test compares labelForCell against, and it has to be a
@@ -1557,12 +1577,61 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
 export const BIG_NUM_MAX_SPAN = 24;
 export const BIG_NUM_BIPOLAR_MAX_SPAN = 48;
 
+/*
+ * A COUNTED QUANTITY reads as its value, whatever its range.
+ *
+ * The span cap below is the right rule for a quantity where POSITION is the
+ * information -- a cutoff declared int 0..127 wants a pointer, and 1383 fleet
+ * int params on knob pages are exactly that shape, so the cap cannot simply be
+ * widened.
+ *
+ * But some numbers are not positions at all. A tempo is 124, not "40% of the
+ * way between 40 and 240". Steps, pulses and rotation are counts you set
+ * exactly; so are voice and polyphony limits. For those the arc is the widget
+ * that tells you nothing, and the number is the whole point -- reported from
+ * the fleet as bpm, lane steps and tempo all drawing as unreadable dials.
+ *
+ * Recognised by NAME, because nothing in the range distinguishes a tempo from
+ * a filter cutoff: both are ints with a wide span. That is the same basis the
+ * fader and LFO detectors work on, and it is deliberately a short closed list
+ * rather than a guess -- measured on the fleet it takes 64 params, every one a
+ * count or a tempo, and leaves every continuous int alone.
+ */
+const COUNTED_WORDS = /(^|_)(bpm|tempo|steps?|pulses?|rotation|count|voices|polyphony|divisions?)($|_)/i;
+
+/*
+ * THREE DIGITS, measured: the big number is 27px wide at 3 digits in a 32px
+ * cell, 37px at 4 and 96px at 10 -- and an overflow does NOT clip, because the
+ * panel is 128px wide and the digits simply run over the cell next door. So
+ * `clipped()` reports nothing and the page looks fine to every automated check
+ * while two labels sit under one smear of numerals.
+ *
+ * A count is therefore only drawn as a number when its whole range fits. Every
+ * one of the 64 fleet params this rule takes is within it (the widest is a
+ * tempo at 999), but a module is free to declare `steps 1..9999` and the guard
+ * is what stops that from wrecking the row. Seeds are the real casualty --
+ * 0..65535 is an identity if anything is, and it cannot be shown this way.
+ */
+const BIG_NUM_MAX_DIGITS = 3;
+
+function digitsOf(n) { return String(Math.trunc(Math.abs(n))).length; }
+
+export function isCountedQuantity(meta) {
+    if (!meta || meta.type !== "int") return false;
+    if (!COUNTED_WORDS.test(String(meta.key || "")) &&
+        !COUNTED_WORDS.test(String(meta.name || ""))) return false;
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    return Math.max(digitsOf(meta.min), digitsOf(meta.max)) <= BIG_NUM_MAX_DIGITS;
+}
+
 export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
     if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
     if (meta.type !== "int") return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    /* A count or a tempo is read, not aimed -- see isCountedQuantity. */
+    if (isCountedQuantity(meta)) return true;
     const span = meta.max - meta.min;
     return span <= (meta.min < 0 ? BIG_NUM_BIPOLAR_MAX_SPAN : BIG_NUM_MAX_SPAN);
 }
@@ -1774,13 +1843,43 @@ function drawAlsoOpensMark(ctx, g, col, rowY) {
  * does today apart from the enum square's new static width, which is what keeps
  * the harness, the tests and the device unaffected until a caller opts in.
  */
+export const WIDGET_OPAQUE  = "opaque";   /* drawOpaqueBox  — a path/canvas, chevron box */
+export const WIDGET_BUTTON  = "button";   /* drawButton     — a write-only trigger */
+export const WIDGET_ENUM    = "enum";     /* drawEnumSquare — a named option */
+export const WIDGET_BIGNUM  = "bignum";   /* drawBigNumber  — a small int, read as a number */
+export const WIDGET_KNOB    = "knob";     /* drawArcKnob    — a position on a range */
+
+/**
+ * Which widget a cell draws, from its meta alone.
+ *
+ * Extracted from drawKnobWidget's branch chain rather than restated beside it,
+ * and drawKnobWidget switches on THIS — so a tool that reports "what type is
+ * this cell" cannot drift from what the device draws. A second copy of the
+ * order is exactly the failure this codebase keeps finding: the audit sheet
+ * exists to catch a parameter rendered as the wrong type, and it would have
+ * been reading its own re-implementation of the rule.
+ *
+ * Value-independent by construction. Every branch below tests `meta`, never
+ * the reading — which is what makes it answerable for a page nobody has read
+ * a value for yet.
+ */
+export function widgetKindFor(meta) {
+    if (!meta) return WIDGET_KNOB;
+    if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
+    if (meta.writeOnly) return WIDGET_BUTTON;
+    if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
+    if (shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
+    return WIDGET_KNOB;
+}
+
 export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase,
                                anim, nowMs, animKey) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
-    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
+    const widget = widgetKindFor(meta);
+    if (widget === WIDGET_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
     /*
      * A TRIGGER is a button, so the cell shows the ACTION, not the value.
      *
@@ -1799,7 +1898,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      * wants its own wording can supply short_options[1], which is the existing
      * hook for "what this widget should say in three characters".
      */
-    if (meta.writeOnly) {
+    if (widget === WIDGET_BUTTON) {
         /* The cell's own label underneath names the action ("Clear", "Rnd
          * Preset"), so the bang carries no text — which also sidesteps the
          * module's idle spelling entirely. euclidrum's is an em-dash the 5x7
@@ -1811,7 +1910,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
                    btnPhase || { pressed: false, filled: false, burst: -1 });
         return;
     }
-    if (meta.kind === KIND_ENUM) {
+    if (widget === WIDGET_ENUM) {
         /* A plugin may report an enum as its option NAME rather than as an
          * index (see learnEnumWireFormat) — resolve either to the index, or
          * `short_options` is skipped for exactly the modules whose values are
@@ -1844,7 +1943,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      * shouldDrawBigNumber. Checked here, after the opaque/writeOnly/enum branches
      * that own their cells outright, and before the arc it replaces.
      */
-    if (shouldDrawBigNumber(meta)) {
+    if (widget === WIDGET_BIGNUM) {
         drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
                       bigNumberText(meta, raw));
         return;
