@@ -65,4 +65,104 @@ restore
 trap - EXIT
 
 echo "  ok  --check detects a stale section"
+
+# --- a RE-COMPRESSED image is not a changed image ---------------------------
+#
+# The swatches are written with zlib.deflateSync, and zlib is not byte-stable
+# across versions. A byte comparison therefore calls a pixel-identical image
+# stale on any machine whose zlib differs from the one that generated it --
+# green locally, red in CI, telling you to regenerate files that are already
+# correct. This test file was added in the same change that hit exactly that,
+# and it could not see it, because the machine running it is the machine that
+# wrote the images.
+#
+# So: recompress a committed swatch at a different level. Same pixels, different
+# bytes. --check must still pass.
+IMG=docs/images/widgets/arc-knob.png
+IMGBAK="$(mktemp)"
+cp "$IMG" "$IMGBAK"
+restore_img() { cp "$IMGBAK" "$IMG"; rm -f "$IMGBAK"; }
+trap restore_img EXIT
+
+node -e '
+const fs = require("node:fs"), zlib = require("node:zlib");
+const p = process.argv[1], b = fs.readFileSync(p);
+const chunks = []; let off = 8, idat = [];
+while (off + 8 <= b.length) {
+  const len = b.readUInt32BE(off), type = b.toString("latin1", off + 4, off + 8);
+  chunks.push({ type, data: b.subarray(off + 8, off + 8 + len) });
+  if (type === "IDAT") idat.push(b.subarray(off + 8, off + 8 + len));
+  off += 12 + len;
+  if (type === "IEND") break;
+}
+const raw = zlib.inflateSync(Buffer.concat(idat));
+/* level 1 instead of 9: the SAME scanlines, a different encoding of them. */
+const re = zlib.deflateSync(raw, { level: 1 });
+const crcT = [...Array(256)].map((_, n) => { let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crc = (buf) => { let c = 0xffffffff;
+  for (const x of buf) c = crcT[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+const chunk = (type, data) => { const h = Buffer.alloc(4); h.writeUInt32BE(data.length);
+  const t = Buffer.from(type, "latin1"), c = Buffer.alloc(4);
+  c.writeUInt32BE(crc(Buffer.concat([t, data]))); return Buffer.concat([h, t, data, c]); };
+const out = [b.subarray(0, 8)];
+let wroteIdat = false;
+for (const c of chunks) {
+  if (c.type === "IDAT") { if (!wroteIdat) { out.push(chunk("IDAT", re)); wroteIdat = true; } continue; }
+  out.push(chunk(c.type, c.data));
+}
+fs.writeFileSync(p, Buffer.concat(out));
+' "$IMG"
+
+if command cmp -s "$IMG" "$IMGBAK"; then
+  echo "FAIL: the recompression produced identical bytes — this probe proves nothing" >&2
+  exit 1
+fi
+if ! node tools/param-pages/widget_sheet.mjs --check >/dev/null 2>&1; then
+  echo "FAIL: --check called a RE-COMPRESSED swatch stale — it is comparing bytes, not pixels" >&2
+  exit 1
+fi
+echo "  ok  a re-compressed swatch is not stale (same pixels, different bytes)"
+
+# ...but a real PIXEL change still is. Flip one byte of the inflated scanlines.
+node -e '
+const fs = require("node:fs"), zlib = require("node:zlib");
+const p = process.argv[1], b = fs.readFileSync(p);
+let off = 8, idat = [], chunks = [];
+while (off + 8 <= b.length) {
+  const len = b.readUInt32BE(off), type = b.toString("latin1", off + 4, off + 8);
+  chunks.push({ type, data: b.subarray(off + 8, off + 8 + len) });
+  if (type === "IDAT") idat.push(b.subarray(off + 8, off + 8 + len));
+  off += 12 + len;
+  if (type === "IEND") break;
+}
+const raw = Buffer.from(zlib.inflateSync(Buffer.concat(idat)));
+/* Byte 1 is the first pixel of row 0; byte 0 is that row filter type. */
+raw[1] = raw[1] ^ 0xff;
+const re = zlib.deflateSync(raw, { level: 9 });
+const crcT = [...Array(256)].map((_, n) => { let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crc = (buf) => { let c = 0xffffffff;
+  for (const x of buf) c = crcT[(c ^ x) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+const chunk = (type, data) => { const h = Buffer.alloc(4); h.writeUInt32BE(data.length);
+  const t = Buffer.from(type, "latin1"), c = Buffer.alloc(4);
+  c.writeUInt32BE(crc(Buffer.concat([t, data]))); return Buffer.concat([h, t, data, c]); };
+const out = [b.subarray(0, 8)];
+let wroteIdat = false;
+for (const c of chunks) {
+  if (c.type === "IDAT") { if (!wroteIdat) { out.push(chunk("IDAT", re)); wroteIdat = true; } continue; }
+  out.push(chunk(c.type, c.data));
+}
+fs.writeFileSync(p, Buffer.concat(out));
+' "$IMG"
+
+if node tools/param-pages/widget_sheet.mjs --check >/dev/null 2>&1; then
+  echo "FAIL: --check passed on a swatch with CHANGED PIXELS — comparing pixels lost the point" >&2
+  exit 1
+fi
+echo "  ok  a changed PIXEL is still stale"
+
+restore_img
+trap - EXIT
+
 echo "PASS: docs/MODULES.md matches the widgets it documents"
