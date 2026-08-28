@@ -305,6 +305,10 @@ Named against real functions, not invented ones.
   **Compare by content, not bytes.**
 - An example module exercising both `drawCell` and the fullscreen `draw` from one
   `canvas.js`.
+- **Unknown `custom:` name falls through to the detector** (§10.1) — the same
+  assertion covers a typo, a failed load, and an older host reading a newer module.
+  Assert the *drawn result* is the detector's widget, not merely that no throw
+  occurred.
 
 ---
 
@@ -320,12 +324,72 @@ Named against real functions, not invented ones.
 
 ---
 
-## 10. Open questions
+## 10. Resolved
 
-- How a custom kind is *named* and referenced from `chain_params` — reusing the
-  existing `viz` field with a namespaced value is the obvious candidate but has
-  not been settled.
-- Whether `drawCell` should be offered on `ui_chain.js` modules too, or remain
-  canvas-only.
-- Whether the generator lives in this repo (alongside `tools/param-pages/`) or
-  ships as a standalone tool module authors install.
+### 10.1 Naming — reuse `viz`, namespaced `custom:<name>`
+
+A custom kind is declared as `"viz": "custom:mymeter"` in the same `chain_params`
+field that already carries the eight built-in kinds. Not a new `widget` field.
+
+One field means one question — *what picture is this?* — with one answer. A
+separate field would let a param declare both a built-in `viz` and a custom widget
+and leave the precedence between them undefined at the declaration site, which is
+the sort of thing that gets resolved differently by two call sites a year apart.
+
+It also lands in the right precedence slot. `viz.mjs:19`'s chain is *declared viz →
+module layout file → host override → detector → none*, and `custom:` is the author
+saying what this is, which is the **declared** slot. The "module layout file" slot
+stays empty; this design does not build one.
+
+**An unrecognised `custom:` name falls through to the detector**, exactly as any
+unknown `viz` value does today. That single behaviour covers three cases at once —
+an author's typo, a widget whose file failed to load, and an **older host reading a
+newer module** — and because they share one code path, the forward-compatibility
+story cannot rot separately from the typo story. A module that ships a custom
+widget therefore still draws something sensible on a host that has never heard of
+it.
+
+`custom:` is a **reserved prefix**: no built-in kind may ever be named into that
+namespace. Cheap to pin, and it keeps the two sets from colliding as built-ins are
+added.
+
+### 10.2 `ui_chain.js` modules — no, and the reason is structural
+
+Not a policy choice. `enterComponentEdit` (`shadow_ui.js:11994`) tries the
+**hierarchy editor first**, and only falls through to `loadModuleUi` →
+`VIEWS.COMPONENT_EDIT` when the component publishes **no `ui_hierarchy`**.
+
+So a module with a hierarchy never reaches its `ui_chain.js` at all, and a module
+without one has no knob grid — hence no cells, hence nothing for `drawCell` to draw
+into. The two paths are mutually exclusive by construction. Offering `drawCell` to
+`ui_chain.js` modules would be offering it to a view that has no cells.
+
+Worth carrying into sub-project 2: `ui_chain.js` is reached by **fewer** modules
+than its prominence suggests — it is the fallback for the hierarchy-less, not a
+peer of the grid. That further supports deferring it.
+
+### 10.3 The generator lives in this repo
+
+`tools/param-pages/`, beside `widget_sheet.mjs`, with a round-trip test under
+`tests/host/`.
+
+The argument is **lockstep, not convenience.** The generator's output format is
+consumed by the runtime; if a runtime change breaks the format, that has to fail in
+*this* repo's CI, not silently in a module author's build weeks later. `build.sh`
+silently skipping the link sidecar is the fresh scar here — a build step that can
+drift without failing defeats every bisect that follows it.
+
+Distribution to authors is a separate and much easier problem: it is one `.mjs` run
+under node, shippable in the release tarball alongside `shared/` if that turns out
+to be wanted. Solving distribution by splitting the repo would trade an easy problem
+for a version-skew one.
+
+---
+
+## 11. Still open
+
+Nothing blocking. Items deliberately left to implementation:
+
+- The exact `widgets.toml` schema for the sprite generator.
+- Whether `drawCell` receives modulation base values (`viz_draw.mjs`'s
+  `baseValues`) for a modulated param, or only the live value.
