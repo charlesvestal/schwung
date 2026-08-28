@@ -183,6 +183,48 @@ published API plus one extracted predicate, with no behaviour change.
 4. **document** `param_pages` as a supported embedding API in `docs/MODULES.md`,
    with the three layers and which one a given module wants.
 
+## Phase 1 result — measured 2026-08-28
+
+`scripts/schwung-grid-delta.mjs` on the movy branch `schwung-grid-delta` renders
+the same mock preset through both engines and diffs the frames. movy's own 135
+screenshot baselines pass unchanged; nothing in movy was modified.
+
+20 cases, 18 rendered, **11 with the same params on the page**:
+
+```
+mean total delta : 1394 px   17.0% of the screen
+mean BODY delta  : 1161 px   19.7% of the body band
+with viz off     : 1101 px   18.7%     <- the detector is NOT the story
+body ink         : movy 7027   schwung 8855  (7352 with viz off)
+schwung pixels drawn off-screen: 0
+```
+
+**About a fifth of the widget area changes, and it is not one misfiring
+detector.** Disabling Schwung's viz grouping moves the body delta by one point.
+The two engines draw the same parameter differently more or less everywhere —
+different glyphs, different knob geometry, different switch bodies. A swap is a
+visible restyle of movy, not a drop-in. `test8` is the clearest single case:
+identical params, movy draws four discrete knob arcs, Schwung resolves a
+graphic across the row.
+
+**The bigger finding is not pixels — it is that 7 of 18 pages carry DIFFERENT
+PARAMS.** Schwung paginates overflow (`knobs[]` is the author's chosen eight,
+not their parameter set; rendering only those hides 28% of the fleet's declared
+params relative to the list editor), while movy renders the eight. So adopting
+Schwung's grid moves which parameter is on which page and in which cell. For a
+sequencer that is not cosmetic: parameter locks and automation lanes are
+addressed by page and slot.
+
+That question — does movy adopt Schwung's pagination, or does Schwung learn to
+render a page movy planned — has to be answered before any renderer swap, and
+it is a bigger conversation with megadake than the restyle is.
+
+Both numbers came out of probes that were wrong twice first: without `settle()`
+every preset rendered the same unloaded page and reported an identical 91 ink
+pixels, which reads as "the engines nearly agree"; and without the alignment
+check the excluded pages inflated the delta with a comparison of different
+parameter sets. Both guards are in the script.
+
 ## The versioning question this opens
 
 Movy already imports `constants.mjs` and `input_filter.mjs` from
