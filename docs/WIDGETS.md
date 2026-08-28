@@ -232,3 +232,135 @@ that wrap.
 - There is **no representative shape**. A read that did not answer must never
   become a picture — the synthetic waveform that used to fill in for missing
   peaks drew a sample that was never loaded.
+
+---
+
+## Chrome
+
+The frame around the widgets. Every piece here draws in **absolute screen
+coordinates**, which is why these swatches are whole screens cropped to a band
+rather than cells.
+
+### Header
+
+![chrome-header](images/widgets/chrome-header.png)
+
+At rest: where you are on the left, which page on the right. The right side is
+a **measured share** against a `HEADER_MIN_LEFT` floor, not a fixed column —
+which is why the trailing preset page is named "My Presets" and not "User
+Presets" (56px, past the floor, truncating to "USER PRESE").
+
+![chrome-header-held](images/widgets/chrome-header-held.png)
+
+**Holding a knob** inverts the band and replaces it with that parameter's full
+name and value. This is where a value has room to be read, which is why
+`short_options` is consulted by the enum square *only* — the header keeps the
+full spelling.
+
+Set in the 4x5 face with one clear row above and below. Both rows are
+load-bearing and only when inverted: a glyph flush against either edge runs its
+ink into the boundary and the highlight bleeds into the border. Seen on
+hardware, put back.
+
+### Bank bar
+
+![chrome-bank-bar](images/widgets/chrome-bank-bar.png)
+
+One tick per page, the current one filled. It owns row 7, which is why a menu
+page cannot start its list at y=9 the way the enum picker does.
+
+### Footer
+
+![chrome-footer](images/widgets/chrome-footer.png)
+
+Hint pairs, each with its **key inverted into a pill** and its action plain, so
+a pair reads as one thing — without the pill a row of hints is an unparseable
+run: `JOG PAGE CLK MENU BACK EXIT`.
+
+**Fit-aware, in priority order.** Three pairs only fit when every word is ≤4
+characters; anything longer drops a pair rather than overflowing. `JOG SEL /
+CLK LOAD / BACK EXIT` is 126px and fits, which is why it is the swatch — `JOG
+PAGE / CLK OPEN / BACK EXIT` does not, and silently drops the middle pair. A
+back hint is pinned right.
+
+The hints come from the **caller**, never from the renderer: which gesture does
+what is the input mapping's business, and this library does not own input.
+
+### Label cell
+
+![chrome-label-cell](images/widgets/chrome-label-cell.png)
+
+Under every widget: the name at rest, the **value** while the knob is held
+(inverted into a strip), and a **tilde** prefix while the parameter is
+modulated. Labels are budgeted in *characters*, not pixels — a ragged row of
+4s and 6s costs more to read than the extra letters buy.
+
+### List and scrollbar
+
+![chrome-list](images/widgets/chrome-list.png)
+
+One dotted column at `SCREEN_WIDTH - 2` with a solid thumb, in `drawMenuList`
+— so every list in the tree has it: menus, settings, slots, patches, the enum
+picker, the file browser. A list that fits its window draws nothing.
+
+It **replaced** the up/down arrows rather than joining them: the arrows said
+"there is more, that way", the thumb says that plus how much and where. It is
+also cheaper in the shape that matters — the arrows were 5px charged to two
+rows, the bar is 1px charged to all of them, so those two rows went from 108px
+of value to 125px.
+
+Three rules, each of which was wrong first: the thumb has a **2px floor** (at
+47 items in 5 rows its true height is 1.4px, and a 1px thumb is a tick of the
+track); the track covers the **rows**, not the rect; and the selection
+highlight stops short of a gutter, or it runs under the bar and draws a
+phantom second thumb wherever the selection is.
+
+---
+
+## Motion
+
+Four widgets animate. Time is passed **in**, never read — there is no
+`Date.now()` anywhere in the renderer — which is what makes these strips a pure
+function call rather than a recording, and what lets a page be filmed
+deterministically.
+
+Each strip is one gesture, left to right, sharing a single animation store.
+
+**Every one of these shipped inert for months.** The store must be passed from
+the controller, and `createAnimState` was written, exported, unit-tested and
+never *called*. Every widget guards on `anim && typeof nowMs === "number"`, so
+an undefined store draws the settled frame forever — silently, and identically
+to a correct render of a value that is not moving. If a strip here ever looks
+like five copies of one picture, that is this bug and not a widget that does
+not move.
+
+### Switch — 160ms
+
+![motion-switch](images/widgets/motion-switch.png)
+
+The slug **snaps**; only the fill moves. That asymmetry is the design: the
+state changed instantly because it did, and the fill sweeping after it is what
+makes the change legible without a frame of ambiguity about which way it went.
+
+### Waveform morph — 100ms
+
+![motion-waveform](images/widgets/motion-waveform.png)
+
+Sine to square, interpolated. Known and not fixed: the enum peek is instant
+while this takes ~100ms, so the option list covers the morph at the moment it
+plays.
+
+### Enum square resize — 120ms
+
+![motion-enum](images/widgets/motion-enum.png)
+
+The square sizes itself to its text and grows into the new width rather than
+jumping. `LP` to `BAN PAS` is close to the widest case.
+
+### Trigger burst — 300ms
+
+![motion-button](images/widgets/motion-button.png)
+
+Press (120ms), then rings travelling out (300ms). Bursts **append** rather than
+replace, so a fast double-tap throws two rings instead of restarting one — two
+events look like two events. Fired by a jog click or a knob detent.

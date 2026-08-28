@@ -1306,7 +1306,7 @@ function drawButton(ctx, cx, rowY, phase) {
  * Accepts a bare number as well as a list: a caller that has only ever stamped
  * one time still works.
  */
-function buttonPhase(fired, now, held) {
+export function buttonPhase(fired, now, held) {
     const stamps = Array.isArray(fired) ? fired : (fired > 0 ? [fired] : []);
     const bursts = [];
     let pressed = false;
