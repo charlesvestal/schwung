@@ -62,18 +62,32 @@ export function getPadIndex(noteNumber) {
 const ledCache = new Array(128).fill(-1);
 const buttonCache = new Array(128).fill(-1);
 
+/*
+ * Cache what the hardware shows ONLY if the packet was actually queued.
+ *
+ * These two suppress a repaint matching the cache, which is what keeps a full
+ * redraw from costing 128 packets a frame. The cost of that is that a write
+ * recorded but never delivered is never retried — the LED stays wrong until
+ * its value happens to change, which for a pad that is simply "off" can be
+ * forever. move_midi_internal_send returns false when the shadow-UI MIDI-out
+ * buffer was full, so record -1 and let the next draw re-emit it.
+ *
+ * -1 rather than leaving the previous value: the previous value is a claim
+ * about the hardware that we have just failed to make true.
+ */
+
 /* Set LED color for a note (pad, step, etc.) */
 export function setLED(note, color, force = false) {
     if (!force && ledCache[note] === color) return;
-    ledCache[note] = color;
-    move_midi_internal_send([0x09, MidiNoteOn, note, color]);
+    const sent = move_midi_internal_send([0x09, MidiNoteOn, note, color]);
+    ledCache[note] = sent ? color : -1;
 }
 
 /* Set LED color via CC (for buttons) */
 export function setButtonLED(cc, color, force = false) {
     if (!force && buttonCache[cc] === color) return;
-    buttonCache[cc] = color;
-    move_midi_internal_send([0x0b, MidiCC, cc, color]);
+    const sent = move_midi_internal_send([0x0b, MidiCC, cc, color]);
+    buttonCache[cc] = sent ? color : -1;
 }
 
 /*

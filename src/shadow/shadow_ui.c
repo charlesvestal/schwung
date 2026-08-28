@@ -1349,6 +1349,12 @@ static JSValue js_shadow_get_param(JSContext *ctx, JSValueConst this_val, int ar
 
 /* === MIDI output functions for overtake modules === */
 
+/* Packets discarded because the shadow-UI MIDI-out SHM buffer was full when
+ * the caller wrote. Was silently zero-information before: the write returned
+ * success either way. See js_shadow_midi_send. */
+static long shadow_midi_out_drops = 0;
+
+
 /* Common implementation for sending MIDI via shared memory */
 static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv) {
@@ -1365,6 +1371,7 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
     JS_FreeValue(ctx, len_val);
 
     /* Process 4 bytes at a time (USB-MIDI packet format) */
+    int dropped = 0;
     for (int i = 0; i < len; i += 4) {
         uint8_t packet[4] = {0, 0, 0, 0};
 
@@ -1383,12 +1390,37 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
         int write_offset = shadow_midi_out->write_idx;
         if (write_offset + 4 <= SHADOW_MIDI_OUT_BUFFER_SIZE) {
             memcpy(&shadow_midi_out->buffer[write_offset], packet, 4);
-            shadow_midi_out->write_idx = write_offset + 4;
+            shadow_midi_out->write_idx = (uint16_t)(write_offset + 4);
+        } else {
+            dropped++;
         }
     }
 
     /* Signal shim that data is ready */
     shadow_midi_out->ready++;
+
+    /* A write that discards and reports success is how an LED goes permanently
+     * wrong: input_filter's setLED records the colour it believes the hardware
+     * now shows and suppresses the next identical repaint, so a packet lost
+     * here is never retried. Report the failure so the caller can decline to
+     * cache it, and count it so "sometimes drops LEDs" is a number rather than
+     * a feeling. Logging here is safe — shadow_ui is a separate SCHED_OTHER
+     * process, not the SPI callback — but it is rate-limited so a flood cannot
+     * turn a dropped LED into a dropped audio block. */
+    if (dropped) {
+        shadow_midi_out_drops += dropped;
+        static time_t last_report = 0;
+        time_t now = time(NULL);
+        if (now != last_report) {
+            last_report = now;
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG,
+                        "shadow MIDI out: buffer full, dropped %d packet(s) "
+                        "(%ld total) - more than %d bytes queued in one flush",
+                        dropped, shadow_midi_out_drops,
+                        SHADOW_MIDI_OUT_BUFFER_SIZE);
+        }
+        return JS_FALSE;
+    }
 
     return JS_TRUE;
 }
