@@ -202,6 +202,7 @@ freak	Cycling Envelope	envelope	detected	cycle_attack_ms,cycle_decay_ms
 freak	Cycling Envelope	switch	detected	cycle_bipolar
 freak	Cycling Envelope	switch	detected	cycle_retrig
 freak	Cycling Envelope	switch	detected	cycle_sync
+freak	Envelope	envelope	detected	env_attack_ms,env_decay_ms,env_sustain,env_release_ms
 freak	Envelope	switch	detected	env_retrig
 freak	Filter	filter	detected	filter_mode,filter_cutoff,filter_resonance
 freak	LFO	switch	detected	lfo_retrig
@@ -211,10 +212,7 @@ freak	Voice & Mix	fader	detected	volume
 gate	Main	envelope	detected	attack,hold,release
 gesture-test	Main	sample	detected	sample_path
 gesture-test	Main	switch	detected	power
-granny	ADSR Envelope	fader	detected	amp_attack_ms
-granny	ADSR Envelope	fader	detected	amp_decay_ms
-granny	ADSR Envelope	fader	detected	amp_release_ms
-granny	ADSR Envelope	fader	detected	amp_sustain
+granny	ADSR Envelope	envelope	detected	amp_attack_ms,amp_decay_ms,amp_sustain,amp_release_ms
 granny	Main	fader	detected	grain_gain
 granny	Main	sample	detected	position,spray
 granny	Main - 2	fader	detected	grain_gain
@@ -363,8 +361,11 @@ mrdrums	Main	fader	detected	vol
 mrdrums	Main	sample	detected	start
 mrdrums	Pad Settings	fader	detected	rand_vol_amt
 mrdrums	Pad Settings	sample	detected	sample_path
+mrsample	Amp Env	envelope	detected	attack_ms,decay_ms,sustain,release_ms
 mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
+mrsample	LFO	lfo	detected	lfo_rate_hz,lfo_depth
+mrsample	Main	envelope	detected	attack_ms,decay_ms,sustain,release_ms
 mrsample	Main	fader	detected	gain
 mrsample	Main	filter	detected	filter_cutoff,filter_res
 mrsample	Main	sample	detected	sample_start
@@ -469,6 +470,8 @@ osirus	Oscillators - 3	waveform	detected	sub_osc_shape
 osirus	Performance	fader	detected	patch_volume
 osirus	Settings	fader	detected	gain
 ottx	Advanced	eq	detected	lgain,mgain,hgain
+ottx	Main	fader	detected	in_gain
+ottx	Main	fader	detected	out_gain
 palette	PRESETS&RND	fader	detected	input_vol
 palette	PRESETS&RND	switch	detected	rnd_amount
 palette	PRESETS&RND	switch	detected	rnd_effect
@@ -650,6 +653,7 @@ tape-echo2	Out	fader	detected	echo_volume
 tape-echo2	Out	fader	detected	reverb_volume
 tape-echo2	Out	switch	detected	ping_pong
 tapescam	Main - 2	switch	detected	widen
+usefulity	Main	fader	detected	gain_db
 usefulity	Main	switch	detected	bass_mono
 usefulity	Main	switch	detected	mono
 usefulity	Main	switch	detected	mute
