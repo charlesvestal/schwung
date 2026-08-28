@@ -1281,7 +1281,7 @@
     {
       "id": "6w6",
       "name": "6W6",
-      "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 \u2014 the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
+      "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 — the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
       "author": "athousanddetails; voices after 606-Inspired-Synth-Drums (Matthew Fecher / AudioKit Pro)",
       "component_type": "sound_generator",
       "github_repo": "athousanddetails/schwung-6W6",
@@ -1354,6 +1354,17 @@
       "github_repo": "athousanddetails/schwung-8W8",
       "default_branch": "main",
       "asset_name": "8w8-module.tar.gz",
+      "min_host_version": "0.12.1"
+    },
+    {
+      "id": "forgetful",
+      "name": "Forgetful",
+      "description": "One live input sent by hand into four tape memories, each one already forgetting itself — drifting out of tune, breaking up, until it's gone",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "github_repo": "kliegsablaze/forgetful",
+      "default_branch": "main",
+      "asset_name": "forgetful-module.tar.gz",
       "min_host_version": "0.12.1"
     }
   ]
