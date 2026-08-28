@@ -48,6 +48,44 @@ Promise.all([
   if (sel.kind !== P.PAGE_ITEMS) say("the mode selector is a " + sel.kind + ", not an items page");
   if (!sel.selectParam) say("the mode selector writes no param");
 
+  /*
+   * The rows read as words, not as level ids.
+   *
+   * Levels are lowercase, so the rows drew "patch" / "performance" against a
+   * fleet where every other list is title-case. A module that declares the
+   * mode in chain_params spells the same two words properly there, and that
+   * is what gets shown -- borrowed ONLY where the option matches the mode
+   * name case-aside, because derivedLabels is also the VALUE commitItem
+   * carries, so anything else would be a silent relabelling.
+   *
+   * Driven off a synthetic contract, not minijv`s: the plugin`s GENERATED
+   * chain_params has no `mode` entry at all today (only its module.json
+   * mirror does, which the shadow UI never reads), so minijv is the
+   * nothing-to-borrow case and proves only the fallback.
+   */
+  {
+    const withOpts = cp.concat([{ key: "mode", name: "Mode", type: "enum",
+                                  options: ["Patch", "Performance"] }]);
+    const rows = P.planPages({ hierarchy: h, chainParams: withOpts })
+      .pages.find((p) => p.modeSelect).derivedLabels;
+    if (!rows.includes("Performance"))
+      say("declared enum options were not adopted as the mode rows: " + JSON.stringify(rows));
+    for (const l of rows)
+      if (!h.modes.some((mo) => String(mo).toLowerCase() === String(l).toLowerCase()))
+        say("mode row " + JSON.stringify(l) + " is not a declared mode case-aside");
+    /* A relabelling is refused rather than adopted. */
+    const renamed = cp.concat([{ key: "mode", name: "Mode", type: "enum",
+                                 options: ["Single", "Multi"] }]);
+    const rows2 = P.planPages({ hierarchy: h, chainParams: renamed })
+      .pages.find((p) => p.modeSelect).derivedLabels;
+    if (rows2.join() !== h.modes.join())
+      say("options that are not the mode names were adopted anyway: " + JSON.stringify(rows2));
+  }
+  /* Nothing to borrow: the rows are the mode names, and nothing throws. */
+  if (sel.derivedLabels.join() !== h.modes.join())
+    say("with no declared options the rows should be the mode names, got " +
+        JSON.stringify(sel.derivedLabels));
+
   /* ---- choosing a mode writes it AND re-roots the hierarchy ----------- */
   let modeVal = "Patch";
   const writes = [];

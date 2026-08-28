@@ -477,9 +477,25 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * takes the mode name. Unlike an ordinary items page the choice
          * re-roots the whole hierarchy, so it also forces a re-plan.
          */
+        /*
+         * The rows are the LEVEL names, which are lowercase because levels are
+         * — minijv drew "patch" / "performance" against a fleet where every
+         * other list is title-case. The module already spells them properly in
+         * chain_params (`options: ["Patch", "Performance"]`), so borrow that.
+         *
+         * Only where the option is the same WORD, case aside. Anything else is
+         * a relabelling, and `derivedLabels` is not merely a label: commitItem
+         * takes the chosen entry as the mode value. Restricting it to
+         * capitalisation is what makes this cosmetic and keeps the two in step.
+         */
+        const modeOpts = (chainParams || []).find(
+            (p) => p && p.key === (hierarchy.mode_param || "mode"));
+        const optionFor = (name) => (modeOpts && Array.isArray(modeOpts.options))
+            ? modeOpts.options.find((o) => String(o).toLowerCase() === String(name).toLowerCase())
+            : undefined;
         pages.push({
             kind: PAGE_ITEMS, name: claimName("Mode"), level: null,
-            derivedLabels: modes.slice(),
+            derivedLabels: modes.map((mo) => optionFor(mo) !== undefined ? optionFor(mo) : mo),
             selectParam: hierarchy.mode_param || "mode",
             modeSelect: true,
         });
