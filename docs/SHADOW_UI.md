@@ -434,6 +434,28 @@ safe rather than merely tidier:
   routing it would have made is one the DSP would have honoured.
   `tests/host/test_lfo_target_groups.sh` asserts this over every module.
 
+**A child level lists TEMPLATES, not keys** — and matching them raw is how the
+module that needed grouping most got none of it. mrdrums declares 16 pads on
+`root` and again on `pad_settings` (`child_key_template: "p{index}_{key}"`), so
+those levels list `vol` / `pan` / `start` while `chain_params` publishes
+`p01_vol` … `p16_mode`. Both levels collected nothing, were dropped as empty,
+and **all 200+ concrete keys fell to the orphan sweep** — reported from the
+device as "mrdrums has everything under Other". `page_plan.mjs` has always
+resolved these through `child_key.mjs`. The grouper expands to **one group per
+instance** ("Pad 3"), and levels sharing a `child_index_param` **merge into one
+set of instances**, for the reason `childPickerNeeded` gives: two levels naming
+one index are two views of one focus, and keying by level splits a single pad
+across two lists.
+
+**The focused-instance alias must keep a named home.** A child module publishes
+both `p03_start` and `pad_start`, and the alias is the one an LFO should target
+— the concrete key is what left `<alias>:modulated` answering 0. It appears in
+no level, so it is **inferred** from the level's declared keys with a floor of
+two matches (one coincidence is not a family). **Order is load-bearing**: infer
+before the concrete expansion has claimed anything and "largest family wins"
+picks `p01_` over `pad_` — measured, that put pad 1's twelve keys on the root
+page, left "Pad 1" holding four, and made the union 216 of 212.
+
 **The group step is SKIPPED, not emptied**, when there is nothing to group: no
 usable hierarchy (11 of 95 publish no `levels`), a list of 8 or fewer, or a walk
 that yields one group (11 single-level modules). An extra menu level over six
