@@ -160,7 +160,7 @@ how long these two modules take to answer.
 
 ### User Presets
 
-Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module, or the component's own knob-grid "My Presets" page's `Load…` action. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
+Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from the component's own knob-grid **"My Presets"** page — its `Preset` row / `Load…` action. That is the only door: the module-swap list used to carry an indented `[User Presets]` row as a second one, and it was removed once My Presets became a page on the component itself. A swap list is for swapping, and the presets now sit one jog from the controls they belong to, beside the Save / Save As / Delete that were already there. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
 
 **The browser is exactly ONE thing: choose a preset.** Picking a row LOADS it
 immediately and commits — there is no per-preset Load/Delete detail screen.
@@ -186,9 +186,9 @@ A committed Load, or a completed Delete (still reached exclusively from the
 grid's My Presets page, via `enterPresetDeleteConfirm` — the SAME
 confirm-delete screen as before, just with no detail screen left in front of
 it), both exit through `VIEWS.CHAIN_EDIT`. `maybeReturnToComponentGrid` (see
-below) is what routes a grid-driven arrival back onto the My Presets page
-specifically, by NAME; a `[User Presets]`-row arrival (no grid open) lands
-plainly on the chain editor, as it always did.
+below) is what routes the arrival back onto the My Presets page
+specifically, by NAME, and falls through to the plain chain editor when the
+position no longer holds a module to show one for (Remove Module).
 
 ### Every component's knob grid ends with two pages it never declared
 
@@ -256,9 +256,9 @@ plan — the same rule as "a plan is a statement about what a module declares",
 under "A param read has THREE answers" in `CLAUDE.md`.
 
 **Scope is exactly the 4 chain slots' real components.** Master FX chain
-components are excluded — `__user_presets__` is injected in
-`enterComponentSelect` only, so Master FX has no user presets today and this
-inherits that gap rather than widening it. Slot Settings and Master FX
+components are excluded — user presets have only ever been offered for the 4
+chain slots' components, never for a Master FX position, so this inherits that
+gap rather than widening it. Slot Settings and Master FX
 Settings are excluded because they are settings, not modules: no module id to
 key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
 `componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
