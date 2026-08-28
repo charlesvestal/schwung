@@ -47,26 +47,48 @@ Promise.all([
   const hier = pj(m.ui_hierarchy), cp = pj(m.chain_params);
   const ix = M.buildMetaIndex({ hierarchy: hier, chainParams: cp });
   const pages = P.planPages({ hierarchy: hier, chainParams: cp }).pages;
-  const page = pages.find((p) => p.keys && p.keys.indexOf("pad_start") >= 0);
-  if (!page) fail("no planned page carries pad_start");
+  /*
+   * FIND the sample-covered slot; do not name it.
+   *
+   * This asked for the key "pad_start" by name. mrdrums now scopes its pad
+   * params through child keys, so that param is spelled "start" on the Pad
+   * Settings level and the lookup failed -- a rename in somebody else`s module
+   * broke a test about OUR mod-indicator drawing, which has nothing to do with
+   * what the key is called.
+   *
+   * What the test actually needs is any slot covered by a `sample` graphic, so
+   * that is what it looks for. The premise check below is unchanged and still
+   * carries the weight: without a covering group every assertion after this is
+   * about a plain knob, which is how the first version of this test passed
+   * while measuring nothing.
+   */
+  let page = null, slot = -1, covering = null, groups = [];
+  for (const p of pages) {
+    if (!p.keys || !p.keys.length) continue;
+    const gs = (V.resolveViz({ keys: p.keys, metaIndex: ix }) || {}).groups || [];
+    const g = gs.find((x) => x.kind === "sample");
+    if (!g) continue;
+    /* The slot the graphic covers whose key actually exists -- a group can
+     * span a null padding slot. */
+    for (let s = g.slotStart; s < g.slotStart + g.slotSpan; s++) {
+      if (p.keys[s]) { page = p; slot = s; covering = g; groups = gs; break; }
+    }
+    if (page) break;
+  }
+  if (!page) fail("no planned mrdrums page carries a key covered by a sample group -- "
+      + "this test would be measuring a knob, not a graphic");
 
-  const groups = (V.resolveViz({ keys: page.keys, metaIndex: ix }) || {}).groups || [];
-  const slot = page.keys.indexOf("pad_start");
-  const covering = groups.find((g) => g.kind === "sample"
-      && slot >= g.slotStart && slot < g.slotStart + g.slotSpan);
-  /* The premise. Without it every assertion below is about a plain knob and
-   * the test proves nothing -- which is how the first version passed. */
-  if (!covering) fail("pad_start is not covered by a sample group any more -- "
-      + "this test is measuring a knob, not a graphic");
+  /* The key the sample graphic actually covers, whatever it is called. */
+  const modKey = page.keys[slot];
 
   const ink = (baseAt, liveAt) => {
     const vals = {};
-    for (const k of page.keys) vals[k] = "0.5";
-    vals.pad_start = baseAt;
+    for (const k of page.keys) if (k) vals[k] = "0.5";
+    vals[modKey] = baseAt;
     const fb = H.createFramebuffer();
     R.renderPageMovy(H.drawContext(fb), {
       page, metaIndex: ix, values: vals,
-      modValues: { pad_start: liveAt }, modulated: (k) => k === "pad_start",
+      modValues: { [modKey]: liveAt }, modulated: (k) => k === modKey,
       viz: groups, pageIndex: 0, pageCount: 1, header: "L",
     });
     const px = fb.pixels || fb.px;

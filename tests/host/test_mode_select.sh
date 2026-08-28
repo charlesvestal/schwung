@@ -58,13 +58,24 @@ Promise.all([
    * name case-aside, because derivedLabels is also the VALUE commitItem
    * carries, so anything else would be a silent relabelling.
    *
-   * Driven off a synthetic contract, not minijv`s: the plugin`s GENERATED
-   * chain_params has no `mode` entry at all today (only its module.json
-   * mirror does, which the shadow UI never reads), so minijv is the
-   * nothing-to-borrow case and proves only the fallback.
+   * Driven off a synthetic contract, not minijv`s.
+   *
+   * This used to say minijv`s GENERATED chain_params has no `mode` entry at
+   * all, so it was the nothing-to-borrow case. That stopped being true: the
+   * 2026-08-28 recapture has minijv declaring `mode` with options
+   * ["Patch","Performance"] alongside 14 other new params. Appending a second
+   * `mode` then produced a DUPLICATE, the planner took the module`s real one,
+   * and the relabelling case below silently stopped testing a relabelling --
+   * it asserted against minijv`s own options and failed on their case.
+   *
+   * So the synthetic entry REPLACES any real one rather than shadowing it.
+   * That keeps both halves honest whether or not the module declares a mode,
+   * which is the property that should have been written the first time: a test
+   * that builds a contract must own every key it depends on.
    */
   {
-    const withOpts = cp.concat([{ key: "mode", name: "Mode", type: "enum",
+    const cpNoMode = cp.filter((p) => !(p && /^mode$/i.test(String(p.key))));
+    const withOpts = cpNoMode.concat([{ key: "mode", name: "Mode", type: "enum",
                                   options: ["Patch", "Performance"] }]);
     const rows = P.planPages({ hierarchy: h, chainParams: withOpts })
       .pages.find((p) => p.modeSelect).derivedLabels;
@@ -74,15 +85,29 @@ Promise.all([
       if (!h.modes.some((mo) => String(mo).toLowerCase() === String(l).toLowerCase()))
         say("mode row " + JSON.stringify(l) + " is not a declared mode case-aside");
     /* A relabelling is refused rather than adopted. */
-    const renamed = cp.concat([{ key: "mode", name: "Mode", type: "enum",
+    const renamed = cpNoMode.concat([{ key: "mode", name: "Mode", type: "enum",
                                  options: ["Single", "Multi"] }]);
     const rows2 = P.planPages({ hierarchy: h, chainParams: renamed })
       .pages.find((p) => p.modeSelect).derivedLabels;
     if (rows2.join() !== h.modes.join())
       say("options that are not the mode names were adopted anyway: " + JSON.stringify(rows2));
   }
-  /* Nothing to borrow: the rows are the mode names, and nothing throws. */
-  if (sel.derivedLabels.join() !== h.modes.join())
+  /*
+   * Nothing to borrow: the rows are the mode names, and nothing throws.
+   *
+   * Built from a contract with `mode` REMOVED, not from minijv`s own. It used
+   * to read minijv`s plan directly because minijv declared no mode param, so
+   * "its plan" and "a plan with nothing to borrow" were the same thing. The
+   * 2026-08-28 recapture separated them -- minijv now declares mode with
+   * options ["Patch","Performance"] -- and this assertion started failing on
+   * behaviour that is CORRECT: borrowing the properly-spelled option is what
+   * the block above exists to make happen.
+   */
+  const selNoBorrow = P.planPages({
+    hierarchy: h,
+    chainParams: cp.filter((p) => !(p && /^mode$/i.test(String(p.key)))),
+  }).pages.find((p) => p.modeSelect);
+  if (selNoBorrow.derivedLabels.join() !== h.modes.join())
     say("with no declared options the rows should be the mode names, got " +
         JSON.stringify(sel.derivedLabels));
 
