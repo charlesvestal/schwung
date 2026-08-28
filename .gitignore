@@ -28,3 +28,7 @@ graphify-out/
 
 # SCH-50 UI differentiation catalog renders (contact sheets are committed)
 catalog-out/
+
+# Generated audit sheets (tools/param-pages/audit_sheet.mjs) — 759 PNGs.
+# Regenerate rather than commit; the report is derived from the fixture.
+out/
