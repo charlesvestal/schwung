@@ -286,8 +286,6 @@ midiverb	Main	fader	detected	output_gain
 minijv	Common / Control	switch	detected	nvram_patchCommon_portamentoswitch
 minijv	Common / Control - 2	switch	detected	nvram_patchCommon_sololegato
 minijv	Common / Control - 2	switch	detected	nvram_patchCommon_velocityswitch
-minijv	Edit Parts - 2	switch	detected	chorusswitch
-minijv	Edit Parts - 2	switch	detected	reverbswitch
 minijv	Edit Tones	switch	detected	link_tones
 minijv	Main	envelope	detected	macro_attack,macro_decay,macro_sustain,macro_release
 minijv	Main	filter	detected	macro_cutoff,macro_resonance

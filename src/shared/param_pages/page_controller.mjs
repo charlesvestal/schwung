@@ -27,7 +27,7 @@
  *   being turned and for a short settling window afterwards.
  */
 
-import { planPages, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
+import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey } from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
@@ -825,6 +825,44 @@ export function createController(io = {}) {
 
         const hierarchy = parse(rawHierarchy);
         /*
+         * Seed the active mode FROM THE MODULE.
+         *
+         * A mode re-roots the whole walk, and nobody was telling us which one
+         * the module is in — no caller passes `mode` on entry, so the planner
+         * fell back to modes[0] and a MiniJV sitting in Performance planned
+         * its patch tree until you found the Mode page and picked Performance
+         * by hand. (It was invisible before mode gating landed, because both
+         * trees were planned regardless.)
+         *
+         * Cost is one read, once, and only for a module that declares `modes`
+         * — minijv is the only one in the fleet. After that `mode` is carried
+         * in lastLoadOpts, so a re-read never happens and the user`s own
+         * choice on the Mode page stays authoritative.
+         *
+         * A FAILED read seeds nothing and latches nothing: leaving it unset
+         * means the next reload asks again, where writing modes[0] in would
+         * be indistinguishable from the module having answered "patch".
+         */
+        let activeMode = mode;
+        if (activeMode === null || activeMode === undefined) {
+            const modes = (hierarchy && Array.isArray(hierarchy.modes)) ? hierarchy.modes : null;
+            if (modes && modes.length) {
+                const raw = getParam(`${s.prefix}:${hierarchy.mode_param || "mode"}`);
+                if (raw !== null && raw !== undefined && String(raw) !== "") {
+                    activeMode = pickMode(raw, modes);
+                    if (s.lastLoadOpts) s.lastLoadOpts.mode = activeMode;
+                } else {
+                    /* Nothing is seeded, so the planner falls back to the first
+                     * mode — and without this the plan SETTLES on that fallback
+                     * and never asks again, which is the latch this branch
+                     * exists to avoid. minijv is exactly the module whose reads
+                     * time out while it loads, so this is the likely path, not
+                     * the exotic one. */
+                    armContractSettle();
+                }
+            }
+        }
+        /*
          * A chain_params read can fail the same way a ui_hierarchy read can,
          * and it is the same defect one key over.
          *
@@ -844,7 +882,7 @@ export function createController(io = {}) {
             ? (sameComponent ? s.chainParams : null)
             : parse(rawChain);
         if (chainFailed && sameComponent) armContractSettle();
-        const planned = planPages({ hierarchy, chainParams, mode, visible, trailingMenus: trailingMenus() });
+        const planned = planPages({ hierarchy, chainParams, mode: activeMode, visible, trailingMenus: trailingMenus() });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
         s.chainParams = chainParams;
