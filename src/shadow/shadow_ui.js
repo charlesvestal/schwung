@@ -14836,10 +14836,15 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
         if (modRatio >= 0 && modRatio >= zoomStart && modRatio <= zoomEnd) {
             const mx = plotX + 1 +
                 Math.round(((modRatio - zoomStart) / zoomRange) * (innerW - 1));
-            set_pixel(mx, plotY + 1, 1);
-            set_pixel(mx, plotY + 2, 1);
-            set_pixel(mx, plotY + plotH - 2, 1);
-            set_pixel(mx, plotY + plotH - 3, 1);
+            /* A COARSE DASH, 2 on 2 off -- the same rhythm the grid cell uses
+             * for this mark, and deliberately unlike the two lines already in
+             * this plot: the cursor is SOLID and the spray fences are a fine
+             * every-other-row dither. Three vertical marks in one plot are only
+             * legible if each has its own rhythm. */
+            for (let yy = plotY + 1; yy < plotY + plotH - 1; yy++) {
+                if (((yy - (plotY + 1)) & 3) >= 2) continue;
+                set_pixel(mx, yy, 1);
+            }
         }
 
         /* Single-marker legacy: just the active cursor. */

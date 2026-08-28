@@ -832,13 +832,22 @@ function gotoSlotFor(name) {
     return cols;
   }
 
-  /* A stub pair: exactly 4 rows in one column, in two adjacent pairs that are
-   * far apart -- i.e. NOT a contiguous run and NOT an every-other-row dot
-   * column. */
+  /* A COARSE DASH: runs of exactly 2, separated by gaps. That rhythm is what
+   * tells it apart from the two lines already in this plot -- the SOLID cursor
+   * (one run spanning the band) and the FINE spray dither (every run length 1).
+   * An ink-only check passes for all three. */
   const stubCols = (cols) => [...cols.entries()].filter(([, ys]) => {
     const t = [...new Set(ys)].sort((a, b) => a - b);
-    if (t.length !== 4) return false;
-    return t[1] === t[0] + 1 && t[3] === t[2] + 1 && (t[2] - t[1]) > 4;
+    if (t.length < 4) return false;
+    const runs = [];
+    for (const y of t) {
+      const last = runs[runs.length - 1];
+      if (last && y === last[last.length - 1] + 1) last.push(y);
+      else runs.push([y]);
+    }
+    if (runs.length < 2) return false;              /* solid */
+    if (runs.every((r) => r.length === 1)) return false;  /* fine dither */
+    return runs.every((r) => r.length <= 2);
   }).map(([x]) => x);
 
   const on  = captureCols(true);

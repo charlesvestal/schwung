@@ -1613,13 +1613,31 @@ export function drawSample(ctx, rect, roles, values, metaIndex, baseValues) {
     const basePos = baseValues ? posIn(baseValues, "position") : undefined;
     if (basePos !== undefined && pos !== undefined && colOf(basePos) !== colOf(pos)) {
         const bi = colOf(basePos), bh = halfAt(bi), bx = x0 + bi;
-        const stub = (yy) => {
-            if (yy < topY || yy > botY) return;
+        /*
+         * A COARSE DASH -- 2 on, 2 off -- and the rhythm is the whole point.
+         *
+         * This column has to be told apart from the two other vertical marks
+         * that can share the cell: the playback cursor is SOLID, and the spray
+         * fences are a fine every-other-row dither. Two-on-two-off is legible
+         * as a third rhythm in a 13px band, where a single stub pair at the
+         * edges (the first cut) was four pixels and read as noise on the frame.
+         * Reported from the device as wanting "a different line ... dotted with
+         * large dots".
+         *
+         * Phased from topY, an ABSOLUTE coordinate, so the dash does not crawl
+         * as the base moves between columns -- the same rule the fills follow,
+         * and the opposite of the fader lattice, where re-phasing IS the
+         * signal.
+         *
+         * Complemented against the waveform body like the cursor: a lit pixel
+         * over a lit body is invisible, so inside the envelope the dash is cut
+         * OUT of it instead.
+         */
+        for (let yy = topY; yy <= botY; yy++) {
+            if (((yy - topY) & 3) >= 2) continue;
             const inWave = yy >= midY - bh && yy <= midY + bh;
             ctx.fillRect(bx, yy, 1, 1, inWave ? 0 : 1);
-        };
-        stub(topY); stub(topY + 1);
-        stub(botY); stub(botY - 1);
+        }
     }
 
     if (pos !== undefined) {

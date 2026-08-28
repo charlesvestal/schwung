@@ -101,14 +101,27 @@ Promise.all([
   if (!(highCols[0] > cols[0]))
     fail("a higher base must mark a column further right");
 
-  /* Stubs at the band edges, top AND bottom -- a single edge reads as an
-   * artifact of the waveform rather than as a mark. */
+  /* A COARSE DASH: 2 on, 2 off. Asserted as the RHYTHM, because that is what
+   * distinguishes it from the solid cursor and from the fine every-other-row
+   * spray fence -- a plain "there is ink in this column" check passes for all
+   * three. Runs of 1 (fine dither) or a single run spanning the band (solid)
+   * both fail here. */
   const rows = [...new Set(lowMark.map((p) => Number(p.split(",")[1])))].sort((a, b) => a - b);
   if (rows.length < 4)
-    fail("expected stubs at both band edges, got rows " + rows.join(","));
-  const span = rows[rows.length - 1] - rows[0];
-  if (span < 6)
-    fail("the stubs are not at opposite edges of the band (span " + span + "px)");
+    fail("the base mark is only " + rows.length + "px tall; expected a dashed column");
+  const runs = [];
+  for (const y of rows) {
+    const last = runs[runs.length - 1];
+    if (last && y === last[last.length - 1] + 1) last.push(y);
+    else runs.push([y]);
+  }
+  if (runs.length < 2)
+    fail("the base mark is a SOLID column -- indistinguishable from the cursor");
+  if (!runs.every((r) => r.length <= 2))
+    fail("the base mark has a run of " + Math.max(...runs.map((r) => r.length))
+       + "px; a coarse dash is 2 on, 2 off");
+  if (runs.some((r) => r.length === 1) && runs.every((r) => r.length === 1))
+    fail("the base mark is a FINE dither -- indistinguishable from a spray fence");
 
   /* Base == cursor draws no mark: the two coinciding IS the reading, and a
    * mark there would be drawn under the solid cursor anyway. */
@@ -189,7 +202,7 @@ Promise.all([
   console.log("  ok  a modulated fader marks its base, clear of the bar");
 
   console.log("  ok  a modulated sample cell marks its BASE, one column wide");
-  console.log("  ok  the mark tracks the base and sits at both band edges");
+  console.log("  ok  the mark tracks the base and reads as a coarse dash");
   console.log("  ok  an unmodulated page is untouched");
   console.log("PASS: covered graphics carry the modulation base the knob dot used to");
 });
