@@ -25,7 +25,7 @@ node -e '
 Promise.all([
   import("./src/shared/param_pages/param_meta.mjs"),
   import("./src/shared/param_pages/render_page_movy.mjs"),
-]).then(([M, R]) => {
+]).then(async ([M, R]) => {
   const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
   const meta = (p) => M.buildMetaIndex({ chainParams: [p] }).getOrGuess(p.key);
 
@@ -55,7 +55,44 @@ Promise.all([
   const drawn = R.labelForCell(long.short_name);
   if (drawn.length > 8) fail("short_name must still be fitted to the cell, got " + drawn);
 
+  /*
+   * A PAGE can override it, because the page is the narrower context.
+   *
+   * filter has env_amount on BOTH Main and Envelope. On Envelope the page has
+   * already said "envelope" so the cell wants "Amt"; on Main an LFO Amt sits
+   * beside it and "Amt" would name them both. One value per param cannot say
+   * that, which is why the level carries its own.
+   */
+  {
+    const P = await import("./src/shared/param_pages/page_plan.mjs");
+    const hier = { levels: {
+      root: { name: "Main", knobs: ["env_amount", "lfo_amount"],
+              params: ["env_amount", "lfo_amount", { level: "envelope", label: "Envelope" }] },
+      envelope: { name: "Envelope", knobs: ["env_amount"],
+                  params: [{ key: "env_amount", short_name: "Amt" }] } } };
+    const cp = [{ key: "env_amount", name: "Env Amt", short_name: "Env Amt", type: "float", min: 0, max: 1 },
+                { key: "lfo_amount", name: "LFO Amt", type: "float", min: 0, max: 1 }];
+    const ix = M.buildMetaIndex({ hierarchy: hier, chainParams: cp });
+    const { pages } = P.planPages({ hierarchy: hier, chainParams: cp });
+    const drawn = (p, k) => R.labelForCell((p.shortNames && p.shortNames[k]) ||
+                                           ix.getOrGuess(k).short_name || ix.getOrGuess(k).label || k);
+    const main = pages.find((p) => p.name === "Main");
+    const env  = pages.find((p) => p.name === "Envelope");
+    if (!main || !env) fail("expected a Main and an Envelope page");
+
+    if (env.shortNames === null || !env.shortNames || env.shortNames.env_amount !== "Amt")
+      fail("the level did not carry its own short_name onto its page");
+    if (main.shortNames) fail("a level declaring none must carry none");
+
+    if (drawn(env, "env_amount") !== "AMOUNT")
+      fail("the page override should win on its own page, got " + drawn(env, "env_amount"));
+    if (drawn(main, "env_amount") === drawn(main, "lfo_amount"))
+      fail("the override must NOT leak to Main, where it would name two cells: " + drawn(main, "env_amount"));
+    if (drawn(main, "env_amount") !== "ENAMT")
+      fail("Main should keep the param-level spelling, got " + drawn(main, "env_amount"));
+  }
+
   console.log("PASS: short_name shortens the cell, leaves the header alone, "
-            + "and is inert when absent");
+            + "is inert when absent, and a PAGE can override it");
 });
 '
