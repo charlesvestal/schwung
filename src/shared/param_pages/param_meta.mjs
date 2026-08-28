@@ -27,6 +27,13 @@
 import { enumWiresNames } from "../param_format.mjs";
 
 /** A knob turns it continuously — float/int. */
+/*
+ * child_key.mjs imports nothing, so this cannot cycle. The child aliases are
+ * seeded here rather than by the caller because planPages builds its OWN index
+ * from the same inputs, and a key TYPE decides its fate at plan time.
+ */
+import { hasChildren, resolveChildKey } from "./child_key.mjs";
+
 export const KIND_NUMBER = "number";
 /** A knob steps through discrete options — enum/toggle. */
 export const KIND_ENUM = "enum";
@@ -88,13 +95,89 @@ export function buildMetaIndex({ hierarchy, chainParams } = {}) {
     }
 
     const cache = new Map();
+    /*
+     * bare key -> concrete key whose DECLARATION it borrows.
+     *
+     * A child level lists generic keys (`start`) and the module declares only
+     * the concrete ones (`p01_start`, … `p16_start`). Nothing declares `start`,
+     * so it fell to getOrGuess and became a plain 0..1 float -- which is a
+     * STRUCTURE guess, exactly what the comment below says this library must
+     * never make. mrdrums is the case: `p01_start` is a `wav_position` with a
+     * `filepath_param`, and losing both drew the sample cell as a bare knob.
+     *
+     * Borrowing rather than copying is what keeps it correct across pads: the
+     * alias is re-pointed when the focused instance changes, so
+     * `filepath_param` follows from `p01_sample_path` to `p05_sample_path`. It
+     * stays CONCRETE on purpose -- the file is read as a viz extra key, which
+     * is not resolved through the child template, so a bare `sample_path`
+     * there would ask for a param no module serves.
+     */
+    const aliases = new Map();
     const get = (key) => {
         if (cache.has(key)) return cache.get(key);
+        /*
+         * The two sources are resolved SEPARATELY, and that split is the point.
+         *
+         * A level listing `{key:"start", label:"Start"}` creates an inline
+         * entry carrying a LABEL and no structure. Treating that as "declared"
+         * vetoed the alias and left the key a plain float again -- the very
+         * bug this exists to fix, reintroduced by the level being polite enough
+         * to name its own params. So the level keeps its own label (inline, by
+         * the bare key) and borrows the STRUCTURE (chain, by the alias).
+         *
+         * chain.get(key) is tried first, so a module that really does declare
+         * the bare key is never shadowed.
+         */
         const i = inline.get(key) || null;
-        const c = chain.get(key) || null;
+        let c = chain.get(key) || null;
+        if (!c) {
+            const src = aliases.get(key);
+            const borrowed = src ? chain.get(src) : null;
+            if (borrowed) {
+                /*
+                 * STRUCTURE ONLY -- the NAME is never borrowed.
+                 *
+                 * A per-instance declaration names its instance: mrdrums calls
+                 * `p01_pan` "P01 Pan", so borrowing the name put "P01PAN" in a
+                 * cell whose whole point is that it shows the FOCUSED pad.
+                 * Reported from the device. The label belongs to the generic
+                 * key -- it is the same control whichever pad is focused, and
+                 * the pad is stated once in the header, not sixteen times in
+                 * the labels.
+                 *
+                 * Dropped rather than overwritten so the ordinary fallbacks
+                 * still run: the level's own inline label wins if it has one,
+                 * otherwise normalize derives it from the bare key.
+                 */
+                const { name, label, ...structure } = borrowed;
+                c = structure;
+            }
+        }
+        /* Normalised under the BARE key, because that is what the page, the
+         * value cache and the renderer all address it by. Only the declaration
+         * is borrowed. */
         const meta = (i || c) ? normalize(key, { ...(i || {}), ...(c || {}) }) : null;
         cache.set(key, meta);
         return meta;
+    };
+    /**
+     * Point `bare` at `concrete`'s declaration. Returns true if anything moved.
+     *
+     * Refuses to shadow a key the module actually declares -- mrdrums declares
+     * `pad_start` as well as `p01_start`, and a level listing `pad_start`
+     * must keep its own metadata rather than silently borrow another key's.
+     */
+    const setAlias = (bare, concrete) => {
+        if (!bare || !concrete || bare === concrete) return false;
+        /* Only a REAL declaration blocks borrowing -- an inline entry is
+         * usually just a label, and vetoing on it is what re-broke the case
+         * this exists for. See the two-source split in get(). */
+        if (chain.has(bare)) return false;
+        if (!chain.has(concrete)) return false;
+        if (aliases.get(bare) === concrete) return false;
+        aliases.set(bare, concrete);
+        cache.delete(bare);
+        return true;
     };
 
     /* A key a module puts on a knob but declares nowhere. Rare and real: sfz
@@ -108,8 +191,42 @@ export function buildMetaIndex({ hierarchy, chainParams } = {}) {
         kind: KIND_NUMBER, guessed: true,
     };
 
+    /*
+     * SEED THE CHILD ALIASES HERE, not in the controller.
+     *
+     * A child level lists `sample_path`; the module declares p01_sample_path …
+     * and nothing generic. The controller can re-point these as the focused
+     * instance changes, but it does so AFTER planPages has run -- and the plan
+     * is where a key's TYPE decides its fate. Unaliased, `sample_path` was a
+     * guessed 0..1 float, so it was planned as an ordinary turnable knob
+     * instead of an opaque filepath cell: no file cell, nothing to dive into,
+     * and the sample selection simply gone. Reported from the device.
+     *
+     * Instance 0 is the right seed because every instance carries the same
+     * structure; only the cross-references (filepath_param) name an instance,
+     * and those are re-pointed on a focus change.
+     *
+     * planPages builds its own index from the same inputs, so seeding here is
+     * what keeps the planner and the renderer deciding from ONE description --
+     * the split between them is exactly how this bug survived a layer down.
+     */
+    for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
+        if (!hasChildren(lvl)) continue;
+        const generic = new Set();
+        for (const k of (lvl.knobs || [])) generic.add(typeof k === "string" ? k : (k && k.key));
+        for (const p of (lvl.params || [])) {
+            if (p && typeof p === "object") { if (!p.level) generic.add(p.key); }
+            else generic.add(p);
+        }
+        for (const g of generic) {
+            if (!g) continue;
+            const concrete = resolveChildKey(lvl, 0, g);
+            if (concrete) setAlias(g, concrete);
+        }
+    }
+
     const keys = [...new Set([...inline.keys(), ...chain.keys()])];
-    return { get, getOrGuess, keys, conflicts: [...new Set(conflicts)] };
+    return { get, getOrGuess, keys, setAlias, conflicts: [...new Set(conflicts)] };
 }
 
 /**

@@ -382,6 +382,20 @@ export function currentParamPage() {
 }
 
 /**
+ * Which instance of `level` the grid is showing, zero-based; -1 if unknown.
+ *
+ * The editor hand-off needs it. Without it the editor opened its CHILD
+ * SELECTOR -- "which pad?" -- on a dive, when the grid already knew, and the
+ * module owns the answer through child_index_param anyway. Same defect as the
+ * duplicate picker pages: a second control for a fact that already has one.
+ */
+export function paramPagesChildIndex(level) {
+    if (!controller || !level) return -1;
+    return (typeof controller.childIndexOf === "function")
+        ? controller.childIndexOf(level) : -1;
+}
+
+/**
  * Once per frame. Polls for a contract that changed underneath us (a module
  * finishing an async ROM or sample load republishes a larger tree) and advances
  * the staggered read cursor by exactly one param.

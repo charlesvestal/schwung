@@ -19,7 +19,76 @@
  * (c) 2026 megadake, MIT — https://github.com/DimaDake/schwung-movy
  */
 
-import { hasChildren, childCount } from "./child_key.mjs";
+import { hasChildren, childCount, childIndexParam } from "./child_key.mjs";
+
+/**
+ * Every param key the hierarchy lists ANYWHERE — so the planner can ask
+ * whether a key is reachable by the user at all.
+ *
+ * Nav entries (`{level: …}`) are not params and are skipped, exactly as
+ * buildMetaIndex skips them.
+ */
+function allListedKeys(hierarchy) {
+    const out = new Set();
+    const add = (k) => { if (typeof k === "string" && k) out.add(k); };
+    for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
+        if (!lvl || typeof lvl !== "object") continue;
+        /*
+         * LISTED IS NOT REACHABLE, and the difference is a trap.
+         *
+         * An overflow key pulled from `params[]` is dropped when it is
+         * `ui_`-prefixed -- see the filter that builds `extra` below, whose
+         * comment names ui_current_pad and ui_preset_path outright. So a
+         * module can list its index param in params[] and that param still
+         * never gets a cell.
+         *
+         * This has to agree with that filter exactly. It did not, and the cost
+         * was the picker being suppressed as "redundant" while the control it
+         * deferred to did not exist: with auto-select off there was then NO
+         * way to change instance at all. Reported from the device as "if I
+         * turn off autoselect how do I get to another pad's settings?".
+         *
+         * A key on `knobs[]` is the author's intent and is honoured whatever
+         * it is called, which is why the two lists are treated differently
+         * here rather than merged.
+         */
+        for (const p of (lvl.params || [])) {
+            const k = (p && typeof p === "object") ? (p.level ? null : p.key) : p;
+            if (typeof k === "string" && k && !/^ui_/.test(k)) add(k);
+        }
+        for (const k of (lvl.knobs || [])) {
+            if (k && typeof k === "object") add(k.key); else add(k);
+        }
+    }
+    return out;
+}
+
+/**
+ * Does this child level still need a picker PAGE?
+ *
+ * The picker exists because nothing else owns the focus. Once a level declares
+ * `child_index_param` the MODULE owns it — and if that param is also listed
+ * somewhere the user can reach, the picker becomes a second control for a fact
+ * that already has one. This tree treats that as a defect rather than a
+ * convenience: the list arrows went when the scrollbar arrived, and the file
+ * browser's `13/30` counter went for the same reason.
+ *
+ * It showed up the moment a module declared TWO child levels sharing one
+ * index: mrdrums got a pad picker on root AND on Pad Settings, both selecting
+ * the same pad, in sync with each other and with the pad you played. Reported
+ * from the device as exactly that question.
+ *
+ * REACHABILITY IS THE CONDITION, not merely the declaration. A module that
+ * names an index param it never lists would otherwise lose its picker and
+ * leave no way at all to change instance by hand — so in that case the picker
+ * stays, and a module gets the deduplication only by offering the control
+ * itself.
+ */
+function childPickerNeeded(lvl, listedKeys) {
+    const idxParam = childIndexParam(lvl);
+    if (!idxParam) return true;
+    return !listedKeys.has(idxParam);
+}
 
 import { alignGroupsToRows, gatherGroupMembers } from "./viz.mjs";
 import { buildMetaIndex } from "./param_meta.mjs";
@@ -272,6 +341,10 @@ function balancedChunk(arr, size) {
 export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                             trailingMenus } = {}) {
     const warnings = [];
+    /* Whether a child level still needs a picker PAGE depends on the WHOLE
+     * hierarchy, not on the level: the index param may be listed on a sibling
+     * level, which is exactly where mrdrums puts it. */
+    const listedKeys = allListedKeys(hierarchy);
     /*
      * Built once per plan so knob pages can be nudged into a drawable layout —
      * see alignGroupsToRows. Planning happens on component load, not per frame,
@@ -600,7 +673,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         /* Repeated elements declared once and multiplied by the host. The
          * level object travels with the page so the caller can resolve concrete
          * keys without re-reading the hierarchy (see child_key.mjs). */
-        if (hasChildren(lvl)) {
+        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys)) {
             /*
              * A child selector IS an items page.
              *

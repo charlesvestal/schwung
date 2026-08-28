@@ -1176,7 +1176,7 @@ export function drawEq(ctx, rect, roles, values, metaIndex) {
  * said — five detents in six move nothing on screen, which is fine for a level
  * grabbed roughly and bad for anything nudged.
  */
-export function drawFader(ctx, rect, key, values, metaIndex) {
+export function drawFader(ctx, rect, key, values, metaIndex, baseValues) {
     const meta = metaIndex.getOrGuess(key);
     const normVal = fractionOf(meta, values ? values[key] : undefined);
     const { topY: top, botY: bot } = band(rect); const h = bot - top;
@@ -1232,6 +1232,39 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
     if (bh >= 3) {
         fillDithered(ctx, bx + 1, y + 1, bw - 2, bh - 2, pattern);
         notchCorners(ctx, bx, y, bw, bh);
+    }
+
+    /*
+     * THE BASE MARK, for a fader a source is driving.
+     *
+     * Same rule as the sample cell: a viz group COVERS its cells, so
+     * drawKnobWidget never runs for them and the modulation dot -- the only
+     * thing that says where you SET the value as opposed to where it is right
+     * now -- has no way onto the screen. The bar tracks the effective value,
+     * so without this a modulated fader is a bar moving on its own with the
+     * base nowhere to be seen.
+     *
+     * OUTSIDE THE RAILS, which is what makes it collision-proof rather than
+     * merely tidy. The bar spans cx-3..cx+3 and the dashed rails sit at cx+-4,
+     * so cx+-5..6 is the only part of the cell nothing else ever draws in. A
+     * mark inside the bar would have to fight the dithered lattice -- whose
+     * whole point is that it re-phases as the value moves -- and would be
+     * unreadable exactly when the value is moving, which is the only time this
+     * mark exists.
+     *
+     * Two stubs rather than a rule across the cell, matching drawSample: the
+     * fill boundary is already a full-width horizontal edge, so a second one
+     * would read as a second bar top.
+     */
+    if (baseValues) {
+        const baseNorm = fractionOf(meta, baseValues[key]);
+        if (baseNorm !== undefined && baseNorm !== null && !Number.isNaN(baseNorm)) {
+            const byy = Math.round(bot - clamp01(baseNorm) * h);
+            if (byy >= top && byy <= bot) {
+                ctx.fillRect(cx - 6, byy, 2, 1, 1);
+                ctx.fillRect(cx + 5, byy, 2, 1, 1);
+            }
+        }
     }
 }
 
@@ -1382,7 +1415,7 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, _anim, _nowMs) {
  * The envelope is the file's real peaks, decoded by wav_peaks.mjs and advanced
  * from the tick. When there are none, there is no envelope — see below.
  */
-export function drawSample(ctx, rect, roles, values, metaIndex) {
+export function drawSample(ctx, rect, roles, values, metaIndex, baseValues) {
     const x0 = rect.x, w = rect.w;
     const { topY, botY, midY, amp } = band(rect);
 
@@ -1469,11 +1502,12 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
      * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all
      * positions and lands a pixel off the column that will actually play. */
     const colOf = (p) => Math.min(w - 1, Math.floor(clamp01(p) * w));
-    const posOf = (role) => {
+    const posIn = (src, role) => {
         const k = roles[role];
-        if (!k || !values || values[k] === undefined || values[k] === null) return undefined;
-        return clamp01(fractionOf(metaIndex.getOrGuess(k), values[k]));
+        if (!k || !src || src[k] === undefined || src[k] === null) return undefined;
+        return clamp01(fractionOf(metaIndex.getOrGuess(k), src[k]));
     };
+    const posOf = (role) => posIn(values, role);
 
     /*
      * LOOP BOUNDS FIRST, so the playback cursor draws on top of them — the
@@ -1545,6 +1579,67 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
      * bright line; through a loud one it becomes a dark notch cut into the
      * body. Either way it is the highest-contrast thing in the column.
      */
+    /*
+     * THE BASE MARK: where the knob is SET, when a source is moving it.
+     *
+     * A graphic COVERS its cells, so `drawKnobWidget` never runs for them and
+     * the modulation dot -- the only thing that says "this is yours, that is
+     * the LFO" -- has no way onto the screen. That was invisible until a lone
+     * `wav_position` started forming a one-cell sample group (5f5fb11c): the
+     * cell had been an ordinary knob, with a pointer at the base and a dot at
+     * the effective value, and it silently became a waveform whose cursor
+     * tracks the effective value with the base nowhere on screen. Reported as
+     * "we lost the knob LFO indicator", against mrdrums' Sample Start.
+     *
+     * So the graphic carries what the widget it replaced carried. The cursor
+     * is already the live value; this is its base, and the two together say
+     * the same thing the pointer and the dot said.
+     *
+     * Drawn as STUBS at the band edges rather than a full-height line, and
+     * that is the whole design: the cursor is full height and solid, the spray
+     * fences are full height and dotted, so a third full-height mark would be
+     * a third thing competing at the same weight. Two 2px ticks read as an
+     * annotation on the track instead.
+     *
+     * Same COMPLEMENT technique as the cursor -- a lit pixel over a lit body
+     * is invisible, and at a loud peak the body reaches the band edge -- so
+     * the stub is cut out of the waveform where it lands inside it.
+     *
+     * Before the cursor, so that where the LFO passes through its own base the
+     * solid cursor wins the column. Nothing is lost by that: the two marks
+     * coinciding IS the reading "the source is at the base right now", which
+     * is exactly what the cursor alone shows.
+     */
+    const basePos = baseValues ? posIn(baseValues, "position") : undefined;
+    if (basePos !== undefined && pos !== undefined && colOf(basePos) !== colOf(pos)) {
+        const bi = colOf(basePos), bh = halfAt(bi), bx = x0 + bi;
+        /*
+         * A COARSE DASH -- 2 on, 2 off -- and the rhythm is the whole point.
+         *
+         * This column has to be told apart from the two other vertical marks
+         * that can share the cell: the playback cursor is SOLID, and the spray
+         * fences are a fine every-other-row dither. Two-on-two-off is legible
+         * as a third rhythm in a 13px band, where a single stub pair at the
+         * edges (the first cut) was four pixels and read as noise on the frame.
+         * Reported from the device as wanting "a different line ... dotted with
+         * large dots".
+         *
+         * Phased from topY, an ABSOLUTE coordinate, so the dash does not crawl
+         * as the base moves between columns -- the same rule the fills follow,
+         * and the opposite of the fader lattice, where re-phasing IS the
+         * signal.
+         *
+         * Complemented against the waveform body like the cursor: a lit pixel
+         * over a lit body is invisible, so inside the envelope the dash is cut
+         * OUT of it instead.
+         */
+        for (let yy = topY; yy <= botY; yy++) {
+            if (((yy - topY) & 3) >= 2) continue;
+            const inWave = yy >= midY - bh && yy <= midY + bh;
+            ctx.fillRect(bx, yy, 1, 1, inWave ? 0 : 1);
+        }
+    }
+
     if (pos !== undefined) {
         const mi = colOf(pos);
         const h = halfAt(mi), mx = x0 + mi;
@@ -1563,10 +1658,12 @@ const DRAW = {
     [VIZ_EQ]: (ctx, rect, group, values, metaIndex) => drawEq(ctx, rect, group.roles, values, metaIndex),
     [VIZ_WAVEFORM]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
         drawWaveform(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
-    [VIZ_FADER]: (ctx, rect, group, values, metaIndex) => drawFader(ctx, rect, group.roles.value, values, metaIndex),
+    [VIZ_FADER]: (ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) =>
+        drawFader(ctx, rect, group.roles.value, values, metaIndex, baseValues),
     [VIZ_SWITCH]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
         drawSwitch(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
-    [VIZ_SAMPLE]: (ctx, rect, group, values, metaIndex) => drawSample(ctx, rect, group.roles, values, metaIndex),
+    [VIZ_SAMPLE]: (ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) =>
+        drawSample(ctx, rect, group.roles, values, metaIndex, baseValues),
 };
 
 /**
@@ -1580,7 +1677,14 @@ const DRAW = {
  * pixels it always did — the animations are opt-in per caller, which is what
  * keeps the harness, the pinned baselines and the device unaffected.
  */
-export function drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs) {
+/*
+ * `baseValues` is OPTIONAL and is only ever the BASE of a modulated key --
+ * null when nothing on the page is modulated, which is the common case and
+ * costs the callers nothing. Only drawSample reads it today (see its base
+ * mark); the rest of the table ignores the argument, exactly as they already
+ * ignore `anim`/`nowMs` when they do not animate.
+ */
+export function drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) {
     const fn = DRAW[group.kind];
-    if (fn) fn(ctx, rect, group, values, metaIndex, anim, nowMs);
+    if (fn) fn(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues);
 }
