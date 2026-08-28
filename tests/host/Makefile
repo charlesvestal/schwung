@@ -65,25 +65,25 @@ $(BUILD_DIR)/%: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_overtake_native_led_repaint: test_overtake_native_led_repaint.c ../../src/host/shadow_led_queue.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) -D_POSIX_C_SOURCE=200809L $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -D_POSIX_C_SOURCE=200809L $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host/shadow_overtake_midi.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_shadow_midi_filter: test_shadow_midi_filter.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_midi_in_compact: test_midi_in_compact.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_rt_thread_audit: test_rt_thread_audit.c ../../src/host/rt_thread_audit.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_capture.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_master_fx_snapshot: test_master_fx_snapshot.c ../../src/host/master_fx_snapshot.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
