@@ -528,11 +528,31 @@ typedef struct shadow_param_t {
  * to external USB devices (cable 2) or control Move LEDs (cable 0).
  */
 typedef struct shadow_midi_out_t {
-    volatile uint8_t write_idx;      /* Shadow UI increments after writing */
+    /* uint16_t, and it MUST be: the buffer is 512 bytes and this is a BYTE
+     * offset into it. As a uint8_t it saturated at 255, so
+     *   - only the first 63 packets of a 128-packet buffer were addressable,
+     *     and the back half was never read at all;
+     *   - `write_idx = write_offset + 4` wrapped 252 -> 0, silently rewinding
+     *     the buffer so later packets overwrote earlier ones mid-flush;
+     *   - the `write_offset + 4 <= SHADOW_MIDI_OUT_BUFFER_SIZE` bounds check
+     *     in js_shadow_midi_send could never fire, because a uint8_t cannot
+     *     reach 512. The guard read as a working overflow check and was dead.
+     * This is the "~64 packets, >60/frame overflows" limit CLAUDE.md recorded
+     * as a property of the buffer; it was a property of THIS FIELD. Widening it
+     * costs nothing — it takes one of the reserved bytes, so sizeof is
+     * unchanged and both mappers (shadow_ui.c:83, schwung_shim.c:3417) use
+     * sizeof. */
+    volatile uint16_t write_idx;     /* Shadow UI increments after writing */
     volatile uint8_t ready;          /* Toggle to signal new data */
-    volatile uint8_t reserved[2];
+    volatile uint8_t reserved[1];
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
+
+/* The field above is load-bearing and its width is not obvious from its uses.
+ * A byte offset into the buffer must be able to reach the end of it. */
+_Static_assert((1ull << (8 * sizeof(((shadow_midi_out_t *)0)->write_idx))) >
+                   SHADOW_MIDI_OUT_BUFFER_SIZE,
+               "shadow_midi_out_t.write_idx cannot address its own buffer");
 
 /*
  * MIDI-to-DSP structure for shadow UI to send MIDI to chain DSP slots.
