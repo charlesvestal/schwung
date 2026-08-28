@@ -88,9 +88,10 @@ export function observe(state, key, value, now, durationMs = 120) {
  * own because by the time a widget calls in, an absent value has already been
  * turned into a concrete picture. The read cursor serves one key per tick, so a
  * page of 8 knobs spends ~9 ticks (~200ms) with `values[key]` undefined — and
- * every animated widget rendered that as a real reading: drawSwitch read NaN
- * and drew OFF, drawWaveform resolved shape 0, drawEnumSquare sized itself
- * around "--". `observe` then recorded that placeholder as the settled first
+ * every animated widget rendered that as a real reading: drawWaveform resolved
+ * shape 0 and drawEnumSquare sized itself around "--" (and drawSwitch read NaN
+ * and drew OFF, until #323 cut its fill and left it with nothing to animate).
+ * `observe` then recorded that placeholder as the settled first
  * sighting and the real value arrived as a TRANSITION, so every page animated
  * itself in from values nobody had set.
  *
@@ -100,7 +101,7 @@ export function observe(state, key, value, now, durationMs = 120) {
  *
  * `raw` is the value as it came off the wire, NOT the token being animated.
  * The two are separate arguments on purpose: every caller here animates
- * something derived (`on ? 1 : 0`, `"s" + shape`, a pixel width), and every one
+ * something derived (`"s" + shape`, a pixel width), and every one
  * of those derivations is total — it produces a perfectly ordinary token for an
  * absent input, which is exactly how the placeholder got in. Only the raw value
  * still carries the absence, so only the raw value can be asked about it.

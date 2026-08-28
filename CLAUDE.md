@@ -1415,21 +1415,25 @@ passes vacuously: forgetting `setLayout(LAYOUT_MOVY)` (the default is
 `LAYOUT_DIAL`, which has no animated widget at all), and asserting a particular
 picture instead of a difference between two frames.
 
-**A value ARRIVING is not a value changing, and 51 of 95 fleet modules
+**A value ARRIVING is not a value changing, and 46 of 95 fleet modules
 animated their first page in.** The read cursor serves one key per tick, so a
 full page of 8 knobs spends ~9 ticks (~200ms) with `values[key]` undefined —
 and every animated widget rendered that absence as a CONCRETE PLACEHOLDER:
-`drawSwitch` read NaN and drew OFF, `drawWaveform` resolved shape 0,
-`drawEnumSquare` sized itself around `"--"`. `observe` recorded the placeholder
-as the settled first sighting, so the real value arrived as a TRANSITION —
-switches sweeping on, waveforms morphing, enum boxes growing, out of values
-nobody had set. This is the tri-state read rule one layer below where it is
+`drawWaveform` resolved shape 0 and `drawEnumSquare` sized itself around
+`"--"`. `observe` recorded the placeholder as the settled first sighting, so
+the real value arrived as a TRANSITION — waveforms morphing and enum boxes
+growing, out of values nobody had set. (`drawSwitch` was the third and the
+loudest, reading NaN and drawing OFF; #323 cut its fill for unrelated reasons
+while this was in flight, which is why the count is 46 and not the 51 measured
+before it landed. The switch stays in the absence test`s fixture but is no
+longer one of its subjects — a widget that cannot animate cannot demonstrate
+an arrival.) This is the tri-state read rule one layer below where it is
 usually enforced: a read that did not complete must not produce a plan, a
 default or a cached verdict, and **a widget frame is all three**.
 
 `observeLanded(state, key, raw, value, now, ms)` takes the RAW value alongside
 the token being animated. **The two are separate arguments on purpose**: every
-derivation here is TOTAL, so `on ? 1 : 0`, `"s" + shape` and a pixel width all
+derivation here is TOTAL, so `"s" + shape` and a pixel width both
 produce a perfectly ordinary token for an absent input — which is exactly how
 the placeholder got in. Only the raw value still carries the absence, so only
 it can be asked about it.
