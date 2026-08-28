@@ -84,33 +84,9 @@ function allListedKeys(hierarchy) {
  * stays, and a module gets the deduplication only by offering the control
  * itself.
  */
-/**
- * Which level "owns" pad selection for an index param: the one that LISTS it.
- *
- * Two levels sharing a focus need one picker, and putting it on whichever is
- * walked first landed it on `root` -- so the module opened on a pad LIST and
- * its actual knobs moved to a second page. A level that names the index param
- * in its own params/knobs is saying that selecting the instance is part of
- * what that level is for, which is a better answer than walk order.
- *
- * Raw membership, deliberately NOT the `ui_`-filtered reachability test: this
- * asks who OWNS the selection, not whether the key gets a cell.
- */
-function indexParamOwner(hierarchy, idxParam) {
-    for (const [key, lvl] of Object.entries((hierarchy && hierarchy.levels) || {})) {
-        if (!lvl || typeof lvl !== "object") continue;
-        const named = (e) => ((e && typeof e === "object") ? (e.level ? null : e.key) : e) === idxParam;
-        if ((lvl.params || []).some(named) || (lvl.knobs || []).some(named)) return key;
-    }
-    return null;
-}
-
-function childPickerNeeded(lvl, listedKeys, pickedFor, levelKey, hierarchy) {
+function childPickerNeeded(lvl, listedKeys, pickedFor) {
     const idxParam = childIndexParam(lvl);
     if (!idxParam) return true;
-    /* Defer to the level that declares it, when one does. */
-    const owner = indexParamOwner(hierarchy, idxParam);
-    if (owner && owner !== levelKey) return false;
     /*
      * ONE PICKER PER SHARED INDEX.
      *
@@ -715,7 +691,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         /* Repeated elements declared once and multiplied by the host. The
          * level object travels with the page so the caller can resolve concrete
          * keys without re-reading the hierarchy (see child_key.mjs). */
-        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys, pickedFor, levelKey, hierarchy)) {
+        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys, pickedFor)) {
             const _idxParam = childIndexParam(lvl);
             if (_idxParam) pickedFor.add(_idxParam);
             /*
@@ -734,8 +710,20 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
              * commits to a local index that re-keys the level's own pages.
              * Both are expressed as fields on the page, not as a new kind.
              */
+            /*
+             * NAMED FOR WHAT IT SELECTS, not for its level.
+             *
+             * It inherited the level's name, so mrdrums' pad list was called
+             * "Main" -- a list of pads under the name of the page you were
+             * looking for. It is also the page BEFORE the ones it governs
+             * (firstGrid lands past it, so you jog back to reach it), and a
+             * page you arrive at by going backwards has to say what it is on
+             * its own. Reported from the device: it should be "Selected Pad".
+             */
             pages.push({
-                kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
+                kind: PAGE_ITEMS,
+                name: claimName(`Selected ${lvl.child_label || "Item"}`),
+                level: levelKey,
                 childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
                 /* The SAME derived-list field the mode selector uses. One

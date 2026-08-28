@@ -33,7 +33,8 @@ Promise.all([
   import("./src/shared/param_pages/child_key.mjs"),
   import("./src/shared/param_pages/page_plan.mjs"),
   import("./src/shared/knob_engine.mjs"),
-]).then(([PC, CK, PLAN, KE]) => {
+  import("./src/shared/param_pages/page_nav.mjs"),
+]).then(([PC, CK, PLAN, KE, NAV]) => {
   let bad = 0;
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
@@ -387,6 +388,45 @@ Promise.all([
       fail("the narrow-int gate is no longer the enum gate — they must stay one number");
   }
 
+
+  /* ---- the selector is the page BEFORE what it selects ------------------
+   *
+   * A pad list is not somewhere you should land: with auto-select on you never
+   * need it. It sits at index 0 -- ahead of the pages it governs, so you jog
+   * BACK to reach it -- and firstGrid lands past it. Reported from the device
+   * as "should it be like page -1?".
+   *
+   * It is also named for WHAT IT SELECTS. Inheriting the level`s name called
+   * mrdrums` pad list "Main": a list of pads under the name of the page you
+   * were looking for. A page you arrive at by going backwards has to say what
+   * it is on its own.
+   */
+  {
+    const L5 = { label: "Pads", child_count: 16, child_label: "Pad",
+                 child_key_template: "p{index}_{key}", child_index_base: 1,
+                 child_index_digits: 2, child_index_param: "ui_cur",
+                 knobs: ["vol"], params: ["vol"] };
+    const CP5 = [{ key: "ui_cur", name: "Cur", type: "int", min: 1, max: 16 }];
+    for (let i = 1; i <= 16; i++)
+      CP5.push({ key: `p${String(i).padStart(2,"0")}_vol`, name: "Vol",
+                 type: "float", min: 0, max: 1, step: 0.01 });
+    const pages = PLAN.planPages({
+      hierarchy: { modes: null, levels: { root: L5 } }, chainParams: CP5 }).pages;
+
+    const at = pages.findIndex((p) => p.childOf);
+    if (at !== 0)
+      fail("the child selector is at page " + at + "; it must PRECEDE the pages "
+         + "it governs so it is reachable by jogging back and never in the way");
+    if (pages[at].name !== "Selected Pad")
+      fail("the selector is called " + JSON.stringify(pages[at].name)
+         + ", expected \"Selected Pad\" — it must name what it selects, not its level");
+    const land = NAV.firstGrid(pages);
+    if (land === at)
+      fail("the module LANDS on the pad list — with auto-select on you never need it");
+    if (pages[land].kind !== "knobs")
+      fail("landing page is " + pages[land].kind + ", expected a grid");
+  }
+
   /* ---- a level with NO child_index_param is untouched ------------------ */
   {
     const L2 = Object.assign({}, LEVEL);
@@ -411,6 +451,7 @@ Promise.all([
     console.log("  ok  the graphic follows the focused child with no page change");
     console.log("  ok  the picker goes only when the index param really has a cell");
     console.log("  ok  a 1..16 selector steps like an enum; a 0..24 sweep does not");
+    console.log("  ok  the selector precedes what it selects, and is not where you land");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");
   }
