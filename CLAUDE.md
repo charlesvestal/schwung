@@ -1415,6 +1415,49 @@ passes vacuously: forgetting `setLayout(LAYOUT_MOVY)` (the default is
 `LAYOUT_DIAL`, which has no animated widget at all), and asserting a particular
 picture instead of a difference between two frames.
 
+**A value ARRIVING is not a value changing, and 51 of 95 fleet modules
+animated their first page in.** The read cursor serves one key per tick, so a
+full page of 8 knobs spends ~9 ticks (~200ms) with `values[key]` undefined —
+and every animated widget rendered that absence as a CONCRETE PLACEHOLDER:
+`drawSwitch` read NaN and drew OFF, `drawWaveform` resolved shape 0,
+`drawEnumSquare` sized itself around `"--"`. `observe` recorded the placeholder
+as the settled first sighting, so the real value arrived as a TRANSITION —
+switches sweeping on, waveforms morphing, enum boxes growing, out of values
+nobody had set. This is the tri-state read rule one layer below where it is
+usually enforced: a read that did not complete must not produce a plan, a
+default or a cached verdict, and **a widget frame is all three**.
+
+`observeLanded(state, key, raw, value, now, ms)` takes the RAW value alongside
+the token being animated. **The two are separate arguments on purpose**: every
+derivation here is TOTAL, so `on ? 1 : 0`, `"s" + shape` and a pixel width all
+produce a perfectly ordinary token for an absent input — which is exactly how
+the placeholder got in. Only the raw value still carries the absence, so only
+it can be asked about it.
+
+**Nothing is recorded while the value is absent**, rather than recorded and
+suppressed: leaving the key out of the store makes the first real value a first
+sighting, which `observe` already stamps as already-past. Recording it would
+leave `from` pointing at a value that was never on screen, and the next genuine
+change would animate out of it. `undefined` ONLY — the controller refuses to
+cache `null` or `""` as a value, so an unanswered key is `undefined` and nothing
+else, and widening to falsy would swallow `0`, a legitimate reading of every
+switch, shape and enum in the fleet.
+
+`tests/host/test_anim_absent_values.sh` asserts BOTH halves — an arrival draws
+the settled frame immediately, AND a change after it still animates — because
+the first alone passes with every animation deleted. **Its two probe defects are
+the reusable part**: it ticked without DRAWING (the store only learns a value
+when the renderer observes one, so it never showed the widgets the placeholder
+and passed with the bug fully present), and its positive control turned a
+two-option enum already at its top, so nothing moved.
+
+Still open, and a separate change: this stops the MOTION, not the fill-in. Cells
+still populate one per tick, so a page arrives showing `--` in cells whose reads
+have not landed. The `page-slide-transition` branch's `neighbourPrefetch`
+(`2ba94c0b`) warms pages ±1 on spare rotation stops and is the fix for that —
+but it only covers a jog to an adjacent page, never first entry into a
+component, and it depends on that branch`s `fullKey(key, page)` change.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
