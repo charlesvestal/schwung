@@ -49,6 +49,7 @@ import { createController, LAYOUT_LIST } from "../../src/shared/param_pages/page
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 import { createFakeDevice } from "./fake_device.mjs";
 import { makeRecord, presetRowValue } from "../../src/shared/param_pages/current_preset.mjs";
+import { fakeValue } from "./fake_values.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
 const FIXTURE = path.join(ROOT, "tests", "fixtures", "module-contracts.json");
@@ -82,18 +83,6 @@ if (!mod) {
     process.exit(2);
 }
 
-/* Deterministic pseudo-values so a page looks alive and reruns identically. */
-function fakeValue(key, meta) {
-    let h = 0;
-    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
-    const t = (h % 1000) / 1000;
-    if (!meta) return String(t.toFixed(3));
-    if (meta.kind === "opaque") return "/data/UserData/Samples/kick_01.wav";
-    const min = typeof meta.min === "number" ? meta.min : 0;
-    const max = typeof meta.max === "number" ? meta.max : 1;
-    const v = min + (max - min) * t;
-    return meta.type === "int" || meta.type === "enum" ? String(Math.round(v)) : v.toFixed(3);
-}
 
 /*
  * A representative "My Presets" / "Module" trailing set — same shape
