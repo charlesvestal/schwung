@@ -933,8 +933,16 @@ counts as one press"), so the implementation was what disagreed.
 
 The stamp is therefore the last **detent**, not the last fire: every detent
 extends the gesture, and the latch clears once the knob has been still for
-`TRIGGER_KNOB_GESTURE_GAP_MS` (400). Written *before* the early return, which is
+`TRIGGER_KNOB_GESTURE_GAP_MS` (270). Written *before* the early return, which is
 what makes the clock run on stillness rather than on elapsed time.
+
+It was 400 first and felt sluggish on hardware — *"the cooldown needs to be a
+bit shorter, try 2/3 the length"*. The floor is set by the SLOWEST deliberate
+turn that should still count as one gesture, so there is room to come down
+further. The tests deliberately do **not** pin the value: they assert "clearly
+inside" at 100ms and "clearly outside" at a second, so any gap from ~150 to
+~900ms passes and a broken latch still fails. Pinning 300/500 meant retuning
+the constant broke the suite for no behavioural reason.
 
 **A RELEASE clears it immediately**, on both surfaces. The gap is only a
 fallback for a cap sensor that never registered — letting go is the real

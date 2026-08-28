@@ -463,12 +463,19 @@ const TRIGGER_BURST_MAX = 4;
  * TRIGGER_KNOB_GESTURE_GAP_MS. A spin of any length is one fire; letting go
  * and flicking again is two.
  *
- * 400ms is chosen against the two things it must separate. Detents inside a
+ * 270ms is chosen against the two things it must separate. Detents inside a
  * deliberate turn arrive tens of milliseconds apart, so any plausible spin
- * stays latched; and 400ms of stillness is longer than a hand pauses
+ * stays latched; and 270ms of stillness is longer than a hand pauses
  * mid-gesture but shorter than the beat between two intended presses.
+ *
+ * It was 400 and that felt sluggish on hardware -- "the cooldown needs to be a
+ * bit shorter, try 2/3 the length". The floor is set by the SLOWEST deliberate
+ * turn that should still count as one gesture, not by the fastest, so there is
+ * room to come down further if a slow sweep still re-fires. Note the RELEASE
+ * re-arm below carries most of the real load: the gap only governs a gesture
+ * the cap sensor never saw.
  */
-const TRIGGER_KNOB_GESTURE_GAP_MS = 400;
+const TRIGGER_KNOB_GESTURE_GAP_MS = 270;
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);

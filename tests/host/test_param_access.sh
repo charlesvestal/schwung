@@ -137,21 +137,29 @@ Promise.all([
     fail("a 2-second spin fired the trigger " + writes.length + " extra times — " +
          "this is a rate limit, not a gesture latch");
 
-  /* Still inside the gap after the last detent: still the same gesture. */
+  /*
+   * The two sides of the gap, with GENEROUS MARGIN on purpose.
+   *
+   * These used to be 300ms and 500ms, which pinned the exact constant: tuning
+   * the gap from 400 to 270 broke the test for no behavioural reason. What is
+   * being asserted is that a gap EXISTS and has two sides, so "clearly inside"
+   * is 100ms and "clearly outside" is a full second. Any sane value between
+   * ~150ms and ~900ms passes, and a genuinely broken latch fails either way.
+   */
   writes.length = 0;
-  ctl.onKnobTurn(trigSlot, 1, 7300);
+  ctl.onKnobTurn(trigSlot, 1, 7100);          /* 100ms after the spin ended */
   if (writes.length)
-    fail("a detent 300ms after the spin started a new gesture — the gap is too short");
+    fail("a detent 100ms after the spin started a new gesture — the gap is far too short");
 
   /* Past the gap, a deliberate second flick is a second event. */
   writes.length = 0;
-  ctl.onKnobTurn(trigSlot, 1, 7800);
-  if (writes.length !== 1) fail("a second flick after the gesture gap did not fire");
+  ctl.onKnobTurn(trigSlot, 1, 8100);          /* a full second later */
+  if (writes.length !== 1) fail("a second flick a second later did not fire");
 
   /* EITHER direction: a trigger has no up and no down, and a direction-
    * sensitive one would make half of every spin read as a dead knob. */
   writes.length = 0;
-  ctl.onKnobTurn(trigSlot, -1, 8400);
+  ctl.onKnobTurn(trigSlot, -1, 9200);
   if (writes.length !== 1) fail("turning a trigger the other way did not fire it");
 
   /*
@@ -167,7 +175,7 @@ Promise.all([
    */
   writes.length = 0;
   ctl.onKnobTouch(trigSlot, false);
-  ctl.onKnobTurn(trigSlot, 1, 8450);
+  ctl.onKnobTurn(trigSlot, 1, 9250);          /* 50ms after the last fire */
   if (writes.length !== 1)
     fail("releasing the knob did not re-arm the trigger -- a detent 50ms later " +
          "was still swallowed by the gesture latch");
@@ -175,7 +183,7 @@ Promise.all([
   /* ...and the gap still governs when there was NO release, which is what
    * keeps the fallback honest. */
   writes.length = 0;
-  ctl.onKnobTurn(trigSlot, 1, 8500);
+  ctl.onKnobTurn(trigSlot, 1, 9300);
   if (writes.length)
     fail("without a release, a detent 50ms later fired -- the latch is gone");
 
