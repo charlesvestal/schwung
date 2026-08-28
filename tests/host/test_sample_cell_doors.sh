@@ -185,43 +185,36 @@ const { fontWidth4x5 } = await import("./src/shared/param_pages/font4x5.mjs");
 ok(fontWidth4x5(displayValue("", opaque)) <= CELL_W - 2 - 9,
    "and it fits the box budget rather than truncating to a stump");
 
-/* ---- 3b. no file, no waveform ------------------------------------------
+/* ---- 3b. no file: MARKERS still draw, a file-only graphic does not ------
  *
- * "You should see the loaded break, but not an empty waveform" -- reported
+ * "You should see the loaded break, but not an empty waveform" was reported
  * against breakbeat, whose A SMP / B SMP cells are graphics built from a
- * filepath alone, so with nothing loaded they were a bracketed rectangle
- * containing precisely nothing.
+ * filepath ALONE -- nothing loaded means nothing to draw, so they were a
+ * bracketed rectangle containing precisely nothing. Those collapse to the
+ * ordinary opaque box.
  *
- * The graphic is SUPPRESSED rather than drawn blank, so the cells fall back to
- * their ordinary widgets and the filepath becomes the opaque box saying NONE.
+ * Suppressing EVERY empty sample graphic was too broad, and this fixture is
+ * the case that shows why: position + spray are two real controls whose
+ * picture is the track they act on, and empty they still want it -- it is
+ * where the cursor and the fences live. "When no sample is loaded it should
+ * be the empty two column widget."
  *
- * Asserted for a DEFINITE empty only. An unanswered read must NOT suppress:
- * the file is frequently off-page (granny and mrdrums declare it on no knob,
- * so it arrives through the extra-key rotation), and swapping the widget for a
- * knob and back on every page entry is a flicker in the common case, not an
- * edge one.
+ * So the test is MARKERS, not emptiness.
  */
 {
   const empty  = render({ position: "0.42", spray: "0.15", sample_path: "", size: "0.5" });
   const unread = render({ position: "0.42", spray: "0.15", size: "0.5" });
-
-  /* The waveform baseline is the graphic being drawn at all. */
   const midY2 = ROW0_Y + Math.floor(BOX_H / 2);
-  ok(!on(empty, CELL_W, midY2),
-     "with NO file the sample graphic is not drawn -- an empty waveform is a " +
-     "bracketed rectangle containing nothing");
-  /* The cells fall back to their OWN widgets, which for the cursor means a
-   * one-cell bracket instead of the two-cell span one -- the graphic no longer
-   * covers it, so the per-cell divable mark applies again. Asserting the
-   * one-cell bracket rather than "some ink" is what proves the fallback ran
-   * rather than the whole row going blank. */
-  ok(hasBrackets(empty, 0, 1) && !hasBrackets(empty, 0, 2),
-     "and the cells fall back to their own widgets (one-cell mark, not the span one)");
+
+  ok(on(empty, CELL_W, midY2),
+     "with no file the MARKER graphic still draws -- position and spray are real " +
+     "controls and the track is their picture");
+  ok(hasBrackets(empty, 0, 2),
+     "and it keeps its two-cell span, not two separate knobs");
   ok(hasNotchedFrame(empty, 2),
-     "with the file still its own box -- now reading NONE");
+     "while the FILE cell falls back to its own box, which is where NONE belongs");
   ok(on(unread, CELL_W, midY2),
-     "but an UNANSWERED read still draws it: suppressing that swaps the widget " +
-     "for a knob and back on every page entry, and the file is usually off-page");
+     "an UNANSWERED read draws it too -- a failed read empties nothing");
 }
 
 /* ---- 4. the whole picture is a door ------------------------------------ */

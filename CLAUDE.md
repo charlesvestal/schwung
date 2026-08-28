@@ -831,14 +831,19 @@ clears the chevron; widening it for one word narrows that clearance on every
 opaque cell in the fleet. `NONE` is 19px and is already this tree's word for an
 empty selection (`none_label || "(none)"`, the preset row's `(none)`).
 
-**A sample graphic with no file is not drawn AT ALL** — *"you should see the
-loaded break, but not an empty waveform"*, reported against breakbeat, whose
-`A SMP`/`B SMP` cells are graphics built from a filepath alone and were a
-bracketed rectangle containing nothing. The group is **suppressed** in
-`renderPageMovy`'s viz loop rather than drawn blank, so the cells fall back to
-their own widgets: the filepath becomes the opaque box reading `NONE`, and
-granny's position and spray become plain knobs. With no sample there is nothing
-for a cursor to point into, and the values are still yours to set.
+**A FILE-ONLY graphic with no file is not drawn; one with MARKERS still is.**
+*"You should see the loaded break, but not an empty waveform"* was reported
+against breakbeat, whose `A SMP`/`B SMP` cells are built from a filepath ALONE
+— nothing loaded means nothing to draw, so they were a bracketed rectangle
+containing nothing. Those are **suppressed** in `renderPageMovy`'s viz loop and
+fall back to the opaque box reading `NONE`.
+
+Suppressing *every* empty sample graphic was too broad, and granny is the case
+that shows why: its graphic is `position` + `spray`, two real controls whose
+picture is the track they act on. Empty, the two-cell widget is still the right
+drawing — it is where the cursor and the fences live, and those values are
+yours to set before a file is chosen. *"When no sample is loaded it should be
+the empty two column widget."* So the test is **markers, not emptiness**.
 
 `""` **only**. `null`/`undefined` is a read that has not landed, and
 suppressing that changes the cell's whole WIDGET rather than its contents — a

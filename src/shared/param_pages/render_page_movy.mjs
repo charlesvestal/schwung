@@ -2060,34 +2060,39 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         if (!group || typeof group.slotStart !== "number") continue;
         if (Math.floor(group.slotStart / 4) !== row) continue;
         /*
-         * A SAMPLE GRAPHIC WITH NO FILE IS NOT DRAWN AT ALL.
+         * A FILE-ONLY sample graphic with no file is not drawn. One WITH
+         * MARKERS still is.
          *
-         * "You should see the loaded break, but not an empty waveform" —
+         * "You should see the loaded break, but not an empty waveform" was
          * reported against breakbeat, whose A SMP / B SMP cells are graphics
-         * built from a filepath alone, so with nothing loaded they were a
-         * bracketed rectangle containing nothing whatsoever.
+         * built from a filepath ALONE — nothing loaded means nothing to draw,
+         * so they were a bracketed rectangle containing precisely nothing.
+         * Those fall back to the ordinary opaque box: frame, chevron, NONE.
          *
-         * Suppressed rather than drawn blank, so the cells fall back to their
-         * ordinary widgets: the filepath becomes the opaque box (frame,
-         * chevron, and NONE), and granny's position and spray become plain
-         * knobs. Which is the honest picture — with no sample loaded there is
-         * nothing for a cursor to point into, and the values are still yours
-         * to set.
+         * Suppressing EVERY empty sample graphic was too broad, and granny is
+         * the case that shows why: its graphic is `position` + `spray`, two
+         * real controls whose picture is the track they act on. Empty, the
+         * two-cell widget is still the right drawing — it is where the cursor
+         * and the spray fences live, and those values are yours to set before
+         * a file is chosen. Collapsing it to plain knobs threw away the
+         * relationship between them. Reported as: "when no sample is loaded it
+         * should be the empty two column widget."
          *
-         * `""` ONLY — a definite "there is no file". `null`/`undefined` is a
-         * read that has not landed, and suppressing THAT changes the cell's
-         * whole widget rather than its contents: a knob would appear, then be
-         * replaced by a waveform a frame later, on every page entry. The file
-         * is frequently off-page (granny, mrdrums declare it on no knob and it
-         * arrives through the extra-key rotation), so the unanswered window is
-         * the common case, not an edge one. A failed read empties nothing.
+         * So the test is MARKERS, not emptiness: a graphic that has a
+         * position or a loop bound draws whatever the file situation is; one
+         * that is only a filepath needs the filepath.
          *
-         * Only VIZ_SAMPLE consults a file at all; every other kind is drawn
-         * from its own cells and cannot be empty in this sense.
+         * `""` ONLY for the file-only case — a definite "there is no file".
+         * `null`/`undefined` is a read that has not landed, and suppressing
+         * THAT changes the cell's whole widget rather than its contents: a box
+         * would appear and be replaced by a waveform a frame later, on every
+         * page entry. A failed read empties nothing.
          */
         if (group.kind === VIZ_SAMPLE) {
-            const fileKey = group.roles && group.roles.value;
-            if (fileKey && values && values[fileKey] === "") continue;
+            const roles = group.roles || {};
+            const hasMarker = !!(roles.position || roles.loopStart || roles.loopEnd);
+            const fileKey = roles.value;
+            if (!hasMarker && fileKey && values && values[fileKey] === "") continue;
         }
         const localStart = group.slotStart - slotBase;
         for (let s = localStart; s < localStart + group.slotSpan && s < 4; s++) covered[s] = true;
