@@ -33,12 +33,17 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 file="src/shadow/shadow_ui.js"
 blk=$(awk '/^function enterHierarchyEditorFromParamPages\(/,/^}/' "$file")
 [ -n "$blk" ] || fail "enterHierarchyEditorFromParamPages is gone"
-command grep -q "hierEditorChildCount = levelDef.child_count" <<<"$blk" || \
+# Matched on the ASSIGNMENT, not on how the count is derived: it went from
+# `levelDef.child_count` to childLevelCount(levelDef) when shadow_ui.js was
+# migrated onto child_key.mjs, and pinning the old expression made a strictly
+# broader implementation fail. What must hold is that the hand-off sets it,
+# and sets it before the level loads.
+command grep -qE "hierEditorChildCount = (levelDef\.child_count|childLevelCount\(levelDef\))" <<<"$blk" || \
   fail "the grid hand-off does not set hierEditorChildCount — a child level lands as a flat list of unprefixed keys"
 command grep -q "hierEditorChildLabel = levelDef.child_label" <<<"$blk" || \
   fail "the grid hand-off does not set hierEditorChildLabel"
 # It must be set BEFORE the level is loaded, or the gate has already run.
-cnt=$(command grep -n "hierEditorChildCount = levelDef.child_count" <<<"$blk" | head -n 1 | cut -d: -f1)
+cnt=$(command grep -nE "hierEditorChildCount = (levelDef\.child_count|childLevelCount\(levelDef\))" <<<"$blk" | head -n 1 | cut -d: -f1)
 ldl=$(command grep -n "loadHierarchyLevel()" <<<"$blk" | tail -n 1 | cut -d: -f1)
 [ -n "$cnt" ] && [ -n "$ldl" ] && [ "$cnt" -lt "$ldl" ] || \
   fail "the child count is set AFTER loadHierarchyLevel — the selector gate has already been evaluated"

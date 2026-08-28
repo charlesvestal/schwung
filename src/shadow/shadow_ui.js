@@ -56,6 +56,27 @@ import { RULE_Y as MOVY_RULE_Y,
  * the module header. */
 import { drawEnumList }
     from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
+/*
+ * The child-key contract, shared with the page planner.
+ *
+ * This file used to implement it ITSELF, and only the legacy shape --
+ * `<child_prefix><index>_<key>`, zero-based, unpadded -- open-coded at five
+ * sites. child_key.mjs was written because none of the six modules that need
+ * repeated elements use that shape (mrdrums 209 unreachable keys,
+ * weird-dreams 187, forge 106), but only the PLANNER was migrated to it. So a
+ * level declaring `child_key_template` planned and drew correctly and then
+ * broke the moment you dived into a cell: the editor built `synth:sample_path`
+ * where the module serves `synth:p01_sample_path`, and the file browser opened
+ * on a param nobody answers. Reported from the device as being unable to dive
+ * into sample selection.
+ *
+ * One definition now serves both halves, which is the point -- a second
+ * spelling of "which key does this cell address" is how the two disagreed for
+ * as long as they did.
+ */
+import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
+         childLabel as childLevelLabel, resolveChildKey }
+    from '/data/UserData/schwung/shared/param_pages/child_key.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
@@ -4223,13 +4244,9 @@ function normalizeVisibilityConditionKey(componentPrefix, levelDef, childIndex, 
     if (!rawKey) return "";
     if (rawKey.includes(":")) return rawKey;
     if (!componentPrefix) return rawKey;
-    if (levelDef && levelDef.child_prefix && childIndex >= 0) {
-        if (rawKey.startsWith(levelDef.child_prefix)) {
-            return `${componentPrefix}:${rawKey}`;
-        }
-        return `${componentPrefix}:${levelDef.child_prefix}${childIndex}_${rawKey}`;
-    }
-    return `${componentPrefix}:${rawKey}`;
+    /* Same resolution the editor uses for a value key -- a condition naming a
+     * per-instance param must read the INSTANCE it is gating, not the template. */
+    return `${componentPrefix}:${hierChildKeyFor(levelDef, childIndex, rawKey)}`;
 }
 
 function compareConditionValue(actualRaw, expectedRaw) {
@@ -11455,29 +11472,43 @@ function getNumericParamsForTarget(slot, target, numericOnly = true) {
                         const level = levels[levelName];
                         if (!level || !Array.isArray(level.params)) continue;
 
-                        const childPrefix = (typeof level.child_prefix === "string") ? level.child_prefix : "";
-                        const rawChildCount = parseInt(level.child_count, 10);
-                        const childCount = Number.isFinite(rawChildCount) ? Math.max(0, rawChildCount) : 0;
-                        const childLabel = (typeof level.child_label === "string" && level.child_label)
-                            ? level.child_label : "Item";
+                        const childCount = childLevelCount(level);
 
                         for (const entry of level.params) {
                             const key = (typeof entry === "string") ? entry : (entry && entry.key ? entry.key : "");
                             if (!key) continue;
 
-                            const meta = chainMetaByKey.get(key);
+                            /*
+                             * A GENERIC child key is declared nowhere: a level
+                             * lists `start` and the module declares p01_start
+                             * … p16_start. Looking the generic key up directly
+                             * finds nothing and skipped the whole level, so a
+                             * template-shaped module offered NONE of its
+                             * per-instance params here. Fall back to instance
+                             * 0, which carries the same structure as every
+                             * other instance.
+                             */
+                            const meta = chainMetaByKey.get(key)
+                                || (childCount > 0
+                                    ? chainMetaByKey.get(resolveChildKey(level, 0, key) || "")
+                                    : null);
                             if (!meta) continue;
                             const type = (meta.type || "").toLowerCase();
                             const isNumeric = type === "float" || type === "int" ||
                                 (!type && (meta.min !== undefined || meta.max !== undefined));
                             if (numericOnly && !isNumeric) continue;
 
-                            if (childPrefix && childCount > 0) {
+                            if (childCount > 0) {
                                 for (let i = 0; i < childCount; i++) {
-                                    const fullKey = `${childPrefix}${i}_${key}`;
-                                    if (seen.has(fullKey)) continue;
+                                    /* One definition of the key shape, and one
+                                     * of the instance NUMBER -- childLabel
+                                     * honours child_index_base, so pads read
+                                     * "Pad 1".."Pad 16" and not 0..15. */
+                                    const fullKey = resolveChildKey(level, i, key);
+                                    if (!fullKey || seen.has(fullKey)) continue;
                                     const baseLabel = meta.name || meta.label || key;
-                                    params.push({ key: fullKey, label: `${childLabel} ${i + 1} ${baseLabel}` });
+                                    params.push({ key: fullKey,
+                                                  label: `${childLevelLabel(level, i)} ${baseLabel}` });
                                     seen.add(fullKey);
                                 }
                             } else {
@@ -12283,7 +12314,7 @@ function enterHierarchyEditorFromParamPages() {
          * anything". The other two navigation sites set these; only the
          * hand-off from the grid did not.
          */
-        hierEditorChildCount = levelDef.child_count || 0;
+        hierEditorChildCount = childLevelCount(levelDef);
         hierEditorChildLabel = levelDef.child_label || "Child";
         loadHierarchyLevel();
     }
@@ -12528,8 +12559,9 @@ function loadHierarchyLevel() {
         (rootDef && rootDef.children === hierEditorLevel)
     );
 
-    /* Child selector for levels that require child_prefix */
-    if (levelDef.child_prefix && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {
+    /* Child selector for any level declaring repeated instances -- template
+     * or legacy child_prefix, which hasChildren() answers for both. */
+    if (childLevelHasChildren(levelDef) && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {
         hierEditorIsPresetLevel = false;
         hierEditorIsDynamicItems = false;
         hierEditorPresetEditMode = false;
@@ -12945,13 +12977,29 @@ function getHierarchyLevelDef() {
     return hierEditorHierarchy.levels ? hierEditorHierarchy.levels[hierEditorLevel] : null;
 }
 
+/*
+ * The concrete key `rawKey` addresses for instance `index` of `levelDef`, or
+ * rawKey unchanged when the level declares no children.
+ *
+ * A key ALREADY CONCRETE passes through. The legacy code expressed that as
+ * `rawKey.startsWith(child_prefix)`, which a template has no equivalent of, so
+ * the test is now membership of the level's own declared keys -- the same
+ * question childResolve asks in page_controller, and the honest one: only a
+ * key the level LISTS is a generic key to be multiplied.
+ */
+function hierChildKeyFor(levelDef, index, rawKey) {
+    if (!rawKey || index < 0 || !childLevelHasChildren(levelDef)) return rawKey;
+    const listed = (k) => (typeof k === "string" ? k : (k && k.key)) === rawKey;
+    if (!(levelDef.knobs || []).some(listed) && !(levelDef.params || []).some(listed)) {
+        return rawKey;
+    }
+    return resolveChildKey(levelDef, index, rawKey) || rawKey;
+}
+
 function buildHierarchyParamKey(key) {
     const prefix = getComponentParamPrefix(hierEditorComponent);
     const levelDef = getHierarchyLevelDef();
-    if (levelDef && levelDef.child_prefix && hierEditorChildIndex >= 0) {
-        return `${prefix}:${levelDef.child_prefix}${hierEditorChildIndex}_${key}`;
-    }
-    return `${prefix}:${key}`;
+    return `${prefix}:${hierChildKeyFor(levelDef, hierEditorChildIndex, key)}`;
 }
 
 function getHierarchyDisplayRawValue(slot, fullKey) {
@@ -12987,10 +13035,7 @@ function isHierarchyParamModulated(slot, fullKey) {
 
 function buildHierarchyParamKeyForLevel(levelDef, key, childIndex) {
     const prefix = getComponentParamPrefix(hierEditorComponent);
-    if (levelDef && levelDef.child_prefix && childIndex >= 0) {
-        return `${prefix}:${levelDef.child_prefix}${childIndex}_${key}`;
-    }
-    return `${prefix}:${key}`;
+    return `${prefix}:${hierChildKeyFor(levelDef, childIndex, key)}`;
 }
 
 function resetHierarchyEditState() {
@@ -14572,7 +14617,7 @@ function applyLinkedWavEndDefaultsForFilepath(filepathKey) {
 
     for (const levelDef of levels) {
         if (!levelDef || !Array.isArray(levelDef.params)) continue;
-        const hasChildren = !!(levelDef.child_prefix && typeof levelDef.child_prefix === "string");
+        const hasChildren = childLevelHasChildren(levelDef);
         const childIndices = hasChildren && selectedChildIndex >= 0 ? [selectedChildIndex] : [-1];
 
         for (const entry of levelDef.params) {
@@ -16569,11 +16614,12 @@ function handleSelect() {
                     hierEditorLevel = selectedParam.level;
                     hierEditorSelectedIdx = 0;
                     hierEditorPresetEditMode = false;
-                    /* Set up child count/label if target level has child_prefix */
+                    /* Set up child count/label for any level declaring
+                     * repeated instances -- template or legacy prefix. */
                     const targetLevel = hierEditorHierarchy.levels[selectedParam.level];
-                    if (targetLevel && targetLevel.child_prefix && targetLevel.child_count) {
+                    if (childLevelHasChildren(targetLevel)) {
                         hierEditorChildIndex = -1;
-                        hierEditorChildCount = targetLevel.child_count;
+                        hierEditorChildCount = childLevelCount(targetLevel);
                         hierEditorChildLabel = targetLevel.child_label || "Child";
                     }
                     loadHierarchyLevel();
@@ -17188,7 +17234,7 @@ function handleBack() {
                 announceHierLevel();
             } else if (hierEditorChildIndex >= 0) {
                 const levelDef = getHierarchyLevelDef();
-                if (levelDef && levelDef.child_prefix) {
+                if (childLevelHasChildren(levelDef)) {
                     /* Return to child selector list */
                     hierEditorChildIndex = -1;
                     if (hierEditorPath.length > 0) {
@@ -17213,7 +17259,7 @@ function handleBack() {
                     announce("Mode Selection");
                 } else {
                     const levelDef = getHierarchyLevelDef();
-                    if (levelDef && levelDef.child_prefix) {
+                    if (childLevelHasChildren(levelDef)) {
                         hierEditorChildIndex = -1;
                         hierEditorChildCount = 0;
                         hierEditorChildLabel = "";

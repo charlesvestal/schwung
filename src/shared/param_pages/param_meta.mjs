@@ -122,7 +122,30 @@ export function buildMetaIndex({ hierarchy, chainParams } = {}) {
          * the bare key is never shadowed.
          */
         const i = inline.get(key) || null;
-        const c = chain.get(key) || chain.get(aliases.get(key) || key) || null;
+        let c = chain.get(key) || null;
+        if (!c) {
+            const src = aliases.get(key);
+            const borrowed = src ? chain.get(src) : null;
+            if (borrowed) {
+                /*
+                 * STRUCTURE ONLY -- the NAME is never borrowed.
+                 *
+                 * A per-instance declaration names its instance: mrdrums calls
+                 * `p01_pan` "P01 Pan", so borrowing the name put "P01PAN" in a
+                 * cell whose whole point is that it shows the FOCUSED pad.
+                 * Reported from the device. The label belongs to the generic
+                 * key -- it is the same control whichever pad is focused, and
+                 * the pad is stated once in the header, not sixteen times in
+                 * the labels.
+                 *
+                 * Dropped rather than overwritten so the ordinary fallbacks
+                 * still run: the level's own inline label wins if it has one,
+                 * otherwise normalize derives it from the bare key.
+                 */
+                const { name, label, ...structure } = borrowed;
+                c = structure;
+            }
+        }
         /* Normalised under the BARE key, because that is what the page, the
          * value cache and the renderer all address it by. Only the declaration
          * is borrowed. */
