@@ -1809,24 +1809,125 @@ reports an error:
 Prefer accepting both conventions and rejecting anything else loudly enough to
 show up in a log.
 
+<!-- BEGIN generated widgets. Written by tools/param-pages/widget_sheet.mjs
+     from the same code the device draws with. Do not hand-edit between these
+     markers; regenerate instead. -->
+
 #### Which widget a cell draws
 
-`drawKnobWidget` (`render_page_movy.mjs`) is one ordered dispatch, and the
-order is the specification — each branch owns its cell outright:
+Authors do not pick a widget. Declare `type`, a range and `options`; the
+widget follows. `drawKnobWidget` (`render_page_movy.mjs`) is one ordered
+dispatch, and the order is the specification — each branch owns its cell
+outright:
 
-| # | test | widget |
-|---|---|---|
-| 1 | `kind === KIND_OPAQUE` | opaque box (chevron) |
-| 2 | `writeOnly` (a trigger) | button |
-| 3 | `kind === KIND_ENUM` | enum square |
-| 4 | `shouldDrawBigNumber` | big number |
-| 5 | *(otherwise)* | arc knob |
+| # | test | widget | |
+|---|---|---|---|
+| 1 | `kind === KIND_OPAQUE` | opaque box | ![opaque-box](images/widgets/opaque-box.png) |
+| 2 | `writeOnly` (a trigger) | button | ![button](images/widgets/button.png) |
+| 3 | `kind === KIND_ENUM` | enum square | ![enum-square](images/widgets/enum-square.png) |
+| 4 | `shouldDrawBigNumber` | big number | ![big-number](images/widgets/big-number.png) |
+| 5 | *(otherwise)* | arc knob | ![arc-knob](images/widgets/arc-knob.png) |
 
 A **viz graphic** pre-empts all of it: a resolved group covers its cells and
 draws one picture across them, and the per-cell widget is skipped.
 
-Authors do not pick a widget. Declare `type`, a range and `options`; the widget
-follows. See [WIDGETS.md](WIDGETS.md) for what each one looks like.
+Notes worth having before you declare something:
+
+- **The opaque box shows three states** — a value, `NONE` for `""`, and
+  `--` for a read that has not answered. Do not collapse the last two; an
+  empty slot and a slow one are different facts.
+- **A trigger is `access: "write"` on an ordinary enum**, not a type. The cap
+  carries no text: the module reports a constant idle spelling and the fleet
+  proves it is not readable (euclidrum's is an em-dash the 5x7 atlas cannot
+  draw, which rendered as a blank square). The cell's label names the action.
+  Fired by a jog click *or* a knob detent, either direction, at most once per
+  `TRIGGER_KNOB_COOLDOWN_MS`.
+- **`short_options` is for the enum square only.** The held-knob header keeps
+  the full spelling, which is where a value has room to be read.
+- **The big-number span bound is load-bearing.** An earlier version bounded at
+  128 and drew 1392 params big, including `volume [0..100]` — a sweep, where
+  an arc is the honest picture.
+- **A modulated knob keeps the pointer on the base and adds a dot** at the live
+  value. The dot is drawn even when they coincide: suppressing it there made a
+  modulated knob pixel-identical to an unmodulated one.
+
+  ![arc-knob-modulated](images/widgets/arc-knob-modulated.png)
+
+#### Viz graphics
+
+Detection runs in a fixed priority order and each detector gets first refusal
+on unclaimed keys. A graphic must be **contiguous and within one row** — it
+cannot span the label band between row 0 and row 1.
+
+| graphic | from | |
+|---|---|---|
+| envelope | adjacent attack/decay/sustain/release | ![viz-envelope](images/widgets/viz-envelope.png) |
+| filter | cutoff + resonance (mode/slope optional) | ![viz-filter](images/widgets/viz-filter.png) |
+| lfo | shape + rate + depth, sharing a stem | ![viz-lfo](images/widgets/viz-lfo.png) |
+| eq | bipolar, roughly symmetric band gains | ![viz-eq](images/widgets/viz-eq.png) |
+| waveform | one oscillator-shape enum | ![viz-waveform](images/widgets/viz-waveform.png) |
+| fader | a level | ![viz-fader](images/widgets/viz-fader.png) |
+| switch | `enum` Off/On **or** `int` 0..1 | ![viz-switch](images/widgets/viz-switch.png) |
+| sample | a file plus positions within it | ![viz-sample](images/widgets/viz-sample.png) |
+
+- **An optional role is dropped when it does not fit.** `detectFilter` used to
+  require every role it found to be contiguous, so a Mode knob parked at the far
+  end of the page deleted the corroborated cutoff/resonance pair.
+- **The switch takes `int` 0..1 as well as an Off/On enum** — 61 params across
+  11 modules spell it that way and drew as a number, which is the one widget
+  that tells you nothing. It draws both states, which is why it never raises the
+  option-list peek.
+- **The sample's file does not claim a cell.** It is `roles.value` — the
+  waveform is drawn *from* it, never *on* it — because it dives to the file
+  browser while every other member dives to the wave editor. With no file the
+  graphic is not drawn at all and the cells fall back to their own widgets.
+- **There is no representative shape.** A read that did not answer must never
+  become a picture; the synthetic waveform that used to fill in for missing
+  peaks drew a sample that was never loaded.
+
+#### The marks
+
+![brackets](images/widgets/brackets.png)
+
+Corner brackets mean **the knob works, and it also opens something** —
+`alsoOpens(meta)`, which in practice is a ranged `wav_position`. A viz group
+wears one across its whole span when any covered cell `opensOnClick`.
+
+See *Divability, and the two cell marks* below for why the brackets and the
+chevron are not two spellings of one idea.
+
+#### Chrome
+
+| | |
+|---|---|
+| ![chrome-header](images/widgets/chrome-header.png) | **Header** — where you are, and which page. The right side is a measured share against a `HEADER_MIN_LEFT` floor, not a fixed column. |
+| ![chrome-header-held](images/widgets/chrome-header-held.png) | Holding a knob inverts the band and shows that parameter's full name and value. One clear row above and below is load-bearing *only* when inverted. |
+| ![chrome-bank-bar](images/widgets/chrome-bank-bar.png) | **Bank bar** — one tick per page. It owns row 7, which is why a menu page cannot start its list at y=9 the way the enum picker does. |
+| ![chrome-footer](images/widgets/chrome-footer.png) | **Footer** — hint pairs, key inverted into a pill. Fit-aware: three pairs need every word ≤4 chars, and a longer one drops a pair rather than overflowing. Hints come from the caller, never the renderer. |
+| ![chrome-label-cell](images/widgets/chrome-label-cell.png) | **Label cell** — name at rest, value while held, `~` while modulated. Budgeted in *characters*, not pixels. |
+| ![chrome-list](images/widgets/chrome-list.png) | **List** — one dotted column with a solid thumb, in `drawMenuList`, so every list in the tree has it. 2px thumb floor; the track covers the rows, not the rect; the selection highlight stops short of the gutter or it draws a phantom second thumb. |
+
+#### Motion
+
+Time is passed **in**, never read — there is no `Date.now()` in the renderer,
+which is what lets a page be filmed deterministically.
+
+**The store must be passed from the controller.** Every widget guards on
+`anim && typeof nowMs === "number"`, so an undefined store draws the settled
+frame forever — silently, and identically to a correct render of a value that
+is not moving. `createAnimState` was written, exported, unit-tested and never
+*called*; every animation below shipped inert for months.
+
+*Slowed 5x — sampled at real time, so the curve is the device's.*
+
+| | |
+|---|---|
+| ![motion-switch](images/widgets/motion-switch.gif) | **Switch**, 160ms — the slug snaps, only the fill moves. |
+| ![motion-waveform](images/widgets/motion-waveform.gif) | **Waveform**, 100ms — one shape bends into the next. The enum peek is instant and covers this while it plays. |
+| ![motion-enum](images/widgets/motion-enum.gif) | **Enum square**, 120ms — the frame travels, the glyphs swap outright. Text is served short while the box is narrow and completes as it arrives. |
+| ![motion-button](images/widgets/motion-button.gif) | **Trigger**, 300ms — press then rings. Bursts append rather than replace, so a double-tap throws two. |
+
+<!-- END generated widgets -->
 
 #### Divability, and the two cell marks
 

@@ -1904,22 +1904,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 ## Documentation Index
 
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
-- `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage)
-- `docs/WIDGETS.md` — **Widget contact sheet**, deliberately SHORT and
-  user-facing: what each control looks like and means, with the motion as
-  animated GIFs. The rationale and the selection rules live in
-  `docs/MODULES.md`, not here — *"this documentation is also very dense, cut it
-  way down to be user facing"*. GENERATED: `node
-  tools/param-pages/widget_sheet.mjs`, pinned by
-  `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image, so
-  a renamed swatch cannot leave a picture of a widget that no longer exists).
-  `--manual` additionally writes a 14-image subset into `manual.html` between
-  markers, with each figure sized from the image's own natural width — a
-  one-cell switch stretched to a grid column renders four times the size of a
-  cell, which is what `width: 100%` did.
-  Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten
-  *alternatives* per widget for choosing between and is gitignored — this
-  renders the one that won.
+- `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage). Its **widget reference** — every widget's picture beside the rule that selects it, plus chrome and motion — is GENERATED between markers by `node tools/param-pages/widget_sheet.mjs --manual` and pinned by `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image). There is no separate WIDGETS.md: a second user-facing widget page in the same voice as the manual's was one document too many, and the pictures belong next to the rules. `--manual` additionally writes a 14-image subset into `../schwung-catalog-site/manual.html`, sized from each image's own natural width — `width: 100%` rendered a one-cell switch four times the size of a cell. Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per widget and is gitignored.
 - `docs/LOGGING.md` — Unified logging
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
