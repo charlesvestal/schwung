@@ -44,8 +44,9 @@ export function moduleById(id) {
  * @param {string} o.id          module to load into the slot
  * @param {string} [o.prefix]    param prefix, default "synth"
  * @param {object} [o.initial]   key -> initial raw value
+ * @param {boolean} [o.serveLists] answer the RUNTIME list params (see below)
  */
-export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
+export function createFakeDevice({ id, prefix = "synth", initial = {}, serveLists = false } = {}) {
     let mod = moduleById(id);
     const store = Object.create(null);
     const reads = [];
@@ -112,6 +113,45 @@ export function createFakeDevice({ id, prefix = "synth", initial = {} } = {}) {
          * in the fleet implements is_loading, so a test can turn it off and
          * prove the behaviour under test does not secretly depend on it. */
         if (bare === "is_loading") return servesIsLoading ? (loading ? "1" : "0") : "";
+
+        /*
+         * RUNTIME LISTS, opt-in.
+         *
+         * A preset browser's contents never come from the contract — they come
+         * from the loaded plugin at runtime, so an unserved one draws a page
+         * with a "--" where the name goes and nothing else. That empty frame is
+         * indistinguishable from a module whose preset page is genuinely
+         * broken, which is worse than not drawing it: an audit that invents a
+         * defect costs more than one that omits a page.
+         *
+         * The capture knows the param NAMES and the COUNT (dump_contracts
+         * records both, and deliberately not the names — minijv has 2427 and
+         * serves them one at a time). That is enough to draw the real chrome:
+         * the count drives the scrollbar and the index, and a synthetic name
+         * fills the row. The names are as fake as every value here; the
+         * LAYOUT is the device's.
+         *
+         * Off by default so no existing test's read counts move.
+         */
+        if (serveLists && mod.presets) {
+            const ps = mod.presets;
+            if (bare === ps.count_param) return String(ps.count || 0);
+            if (bare === ps.list_param && store[bare] === undefined) return "0";
+            if (ps.name_param && bare === ps.name_param) {
+                const idx = parseInt(store[ps.list_param] ?? "0", 10) || 0;
+                const names = ps.names;
+                return Array.isArray(names) && names[idx] !== undefined
+                    ? String(names[idx])
+                    : `Preset ${String(idx + 1).padStart(3, "0")}`;
+            }
+        }
+        if (serveLists && bare.endsWith("_items")) {
+            /* An items page reads a JSON array of {index,label}. Nothing in the
+             * capture records one, so this is shape-only: enough rows to show
+             * the list's scrolling and truncation behaviour. */
+            return JSON.stringify(Array.from({ length: 12 },
+                (_, i) => ({ index: i, label: `Item ${i + 1}` })));
+        }
 
         /* A lagging param serves its stale value for a few reads — this is the
          * race that makes write-back suppression necessary rather than tidy. */
