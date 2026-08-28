@@ -154,9 +154,42 @@ function stemOf(key, wordRegex) {
 }
 
 /** True when every item's stem (already attached as `.stem`) agrees. */
+/*
+ * A UNIT QUALIFIER is not a different subsystem.
+ *
+ * A rate is routinely published twice, once per time base -- `lfo_rate_div` for
+ * the tempo-synced division and `lfo_rate_hz` for the free-running one, with a
+ * `lfo_sync` enum choosing between them. That is an ordinary LFO, and the
+ * trailing token is a unit, not a name.
+ *
+ * Exact stem equality could not see that. schwung-filter's LFO page carries
+ * lfo_amount (stem "lfo") beside lfo_rate_div (stem "lfo_div"), the stems
+ * disagreed, and the graphic was refused -- on a page whose every key begins
+ * "lfo_", which is as unambiguous as this gets.
+ *
+ * So a stem may differ by trailing tokens drawn from a CLOSED list of units and
+ * time bases. Deliberately not "one stem is a prefix of the other": that would
+ * make "lfo" agree with "lfo_2", merging two different LFOs, which is the very
+ * thing the stem test exists to prevent. An unknown extra token still
+ * disagrees.
+ */
+const STEM_QUALIFIERS = new Set([
+    "div", "hz", "ms", "s", "sec", "secs", "bpm", "sync", "synced", "free",
+    "note", "beats", "bars", "time", "khz",
+]);
+
 function stemsAgree(items) {
     if (items.length < 2) return true;
-    return items.every((i) => i.stem === items[0].stem);
+    const base = items[0].stem;
+    return items.every((i) => {
+        if (i.stem === base) return true;
+        const a = String(base).split("_").filter(Boolean);
+        const b = String(i.stem).split("_").filter(Boolean);
+        const [shortT, longT] = a.length <= b.length ? [a, b] : [b, a];
+        for (let n = 0; n < shortT.length; n++) if (shortT[n] !== longT[n]) return false;
+        /* Everything the longer stem adds must be a unit, not a name. */
+        return longT.slice(shortT.length).every((t) => STEM_QUALIFIERS.has(t));
+    });
 }
 
 /* --------------------------------------------------------------- declared */
@@ -407,23 +440,55 @@ function detectFilter(pool) {
     }];
 }
 
+/*
+ * `spd` is in here because a fleet module used it and lost its whole graphic.
+ *
+ * schwung-work names four LFOs vlfo1_spd / vlfo2_spd / flfo1_spd / flfo2_spd,
+ * with depth, wave and phase all spelled in full beside them. No rate meant no
+ * group, so four consecutive Modulation pages drew seven separate dials each
+ * where an LFO belonged -- and nothing reported it, because a missing graphic
+ * looks exactly like a module that never wanted one.
+ *
+ * Abbreviations are the rule in this vocabulary, not the exception: the cells
+ * are five characters wide, so authors abbreviate at the source. `amt` is
+ * already here for the same reason.
+ */
 const LFO_WORD = {
     shape: /shape|waveform|wave/,
-    rate: /(^|_)(rate|speed|freq)($|_)/,
+    rate: /(^|_)(rate|speed|spd|freq)($|_)/,
     depth: /(^|_)(depth|amount|amt)($|_)/,
     phase: /(^|_)phase($|_)/,
 };
 
 function detectLfo(pool) {
-    let shape = null, rate = null, depth = null, phase = null;
+    let shape = null, depth = null, phase = null;
+    /*
+     * ONE LFO, TWO RATES -- take the one that can be drawn.
+     *
+     * A tempo-syncable LFO publishes its rate twice: `lfo_rate_div` as an enum
+     * of musical divisions, `lfo_rate_hz` as a float, with a sync switch
+     * choosing between them. Both match the rate vocabulary, and taking the
+     * first match took the ENUM -- which is not numeric, so the group was
+     * rejected two lines later while a perfectly good numeric rate sat in the
+     * next slot. schwung-filter's whole LFO page drew as five loose dials
+     * because of it.
+     *
+     * So rate is a CANDIDATE LIST, and the numeric ones are preferred. The
+     * division enum is still the better thing to show in the cell itself; it
+     * just cannot be the value a rate LINE is drawn from.
+     */
+    const rateCandidates = [];
     for (const item of pool) {
         const k = item.key.toLowerCase();
         if (!shape && LFO_WORD.shape.test(k) && isEnum(item.meta) &&
             (item.meta.options || []).some((o) => WAVEFORM_NAMES.test(String(o)))) shape = { ...item, stem: stemOf(k, LFO_WORD.shape) };
-        else if (!rate && LFO_WORD.rate.test(k)) rate = { ...item, stem: stemOf(k, LFO_WORD.rate) };
+        else if (LFO_WORD.rate.test(k)) rateCandidates.push({ ...item, stem: stemOf(k, LFO_WORD.rate) });
         else if (!depth && LFO_WORD.depth.test(k)) depth = { ...item, stem: stemOf(k, LFO_WORD.depth) };
         else if (!phase && LFO_WORD.phase.test(k)) phase = { ...item, stem: stemOf(k, LFO_WORD.phase) };
     }
+    /* Prefer a numeric rate; fall back to the first candidate so the failure
+     * below still reports "not numeric" rather than "no rate at all". */
+    const rate = rateCandidates.find((c) => isNumeric(c.meta)) || rateCandidates[0] || null;
     if (!rate || !depth) return [];
     if (!isNumeric(rate.meta) || !isNumeric(depth.meta)) return [];
     /* "delay_rate" next to "chorus_depth" reads like an LFO by vocabulary
@@ -478,6 +543,43 @@ function isEqBandIsh(key) {
     return tokens.includes("gain") && tokens.some((t) => EQ_BAND_TOKENS.has(t));
 }
 
+/**
+ * A dB LEVEL: negative because silence is, not because it is bipolar.
+ *
+ * The fader detector rejects anything with a negative minimum, on the reasoning
+ * that a bipolar range is a pan or a trim rather than a volume. That is right
+ * for pushnpull's `volume` (-1..1, unit %, which is a balance) and it is exactly
+ * wrong for a dB fader, where the whole scale runs from a silence floor up to
+ * some headroom -- the most fader-shaped control there is. usefulity's Gain
+ * (-100..35) and ottx's in/out gain (-60..30 dB) drew as plain arc knobs
+ * because of it.
+ *
+ * Three conditions, and the second and third are what keep this from swallowing
+ * the trims:
+ *
+ *   dB-scaled     declared `unit: "dB"`, or a `_db` suffix for the modules that
+ *                 put the unit in the name instead. A % or a raw ratio is not
+ *                 a dB level however it is named.
+ *   deep floor    min <= -30. A silence floor, not a cut. 4k-eq's band gains
+ *                 are dB and bipolar at +-15, and they are trims around unity;
+ *                 they should form an EQ, not four separate faders.
+ *   asymmetric    max < -min. A level has far more attenuation than boost. A
+ *                 symmetric +-48 is a trim no matter how deep it goes, which
+ *                 is what keeps surge's level_pfg out.
+ *
+ * Measured on the 100-module fleet: 14 params are named like a fader and
+ * rejected for being negative. This admits exactly 3 of them -- usefulity's
+ * gain_db and ottx's two -- and leaves the 11 trims, band gains and the one
+ * balance alone.
+ */
+export function isDbLevel(meta, key) {
+    if (!meta || typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    const inDb = String(meta.unit || "").toLowerCase() === "db" || /_db($|_)/.test(String(key || ""));
+    if (!inDb) return false;
+    if (meta.min > -30) return false;
+    return meta.max < -meta.min;
+}
+
 function detectFader(pool) {
     const out = [];
     for (const item of pool) {
@@ -486,8 +588,11 @@ function detectFader(pool) {
         if (isEqBandIsh(k)) continue;
         if (!/(^|_)(gain|volume|vol|level|amp)($|_)/.test(k)) continue;
         /* A fader is a unipolar level; a bipolar range is a pan or a trim,
-         * not a volume, whatever the name says. */
-        if (typeof item.meta.min === "number" && item.meta.min < 0) continue;
+         * not a volume, whatever the name says -- EXCEPT in dB, where a level
+         * is negative by nature and the fader is the canonical picture of it.
+         * See isDbLevel. */
+        if (typeof item.meta.min === "number" && item.meta.min < 0 &&
+            !isDbLevel(item.meta, k)) continue;
         out.push({
             kind: VIZ_FADER, group: null, roles: { value: item.key }, keys: [item.key],
             slotStart: item.slot, slotSpan: 1, source: VIZ_SOURCE_DETECTED,
