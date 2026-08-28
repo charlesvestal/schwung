@@ -1951,7 +1951,7 @@ muting every FX with no visible cause.
 
 Take full UI control in shadow mode. Listed in Tools menu below "Overtake" divider. Set `component_type: "overtake"` to keep the overtake lifecycle (LED clear, ~500 ms init delay, Shift+Vol+Jog-Click exit).
 
-Requirements: handle all MIDI via `onMidiMessageInternal/External`; use progressive LED init (output buffer holds ~64 packets, >60/frame overflows):
+Requirements: handle all MIDI via `onMidiMessageInternal/External`; use progressive LED init (the shadow-UI MIDI-out buffer holds **128 packets per flush**, and a write past that is refused rather than silently wrapped):
 
 ```javascript
 let ledInitPending = true;
@@ -1963,6 +1963,28 @@ globalThis.tick = function() {
 ```
 
 Lifecycle: host clears LEDs ("Loading...") → ~500 ms → `init()` → run → Shift+Vol+Jog Click → host clears LEDs ("Exiting...") → return to Move.
+
+**The old figure here was "~64 packets, >60/frame overflows", and it was a
+symptom, not a limit.** `shadow_midi_out_t.write_idx` is a byte offset into a
+512-byte buffer and was declared `uint8_t`, so it saturated at 255: only the
+first 63 packets were addressable, `write_idx = write_offset + 4` wrapped
+252 -> 0 and silently rewound the buffer mid-flush, and the
+`write_offset + 4 <= SHADOW_MIDI_OUT_BUFFER_SIZE` bounds check could never fire
+because a `uint8_t` cannot reach 512 — it read as a working overflow guard and
+was dead code.
+
+Widening it to `uint16_t` costs nothing (it takes a reserved byte, `sizeof` is
+unchanged, and both mappers use `sizeof`). A `_Static_assert` beside the field
+now requires it to be able to address its own buffer.
+
+Two consequences worth holding on to. **A dropped LED was permanent, not a
+flicker**: `input_filter`'s `setLED` recorded the colour it believed it had
+sent and suppressed the next identical repaint, so a lost packet was never
+retried. It now caches only on a successful send. And **`move_midi_internal_send`
+returned true either way** — the write discarded and reported success, which is
+the same defect class as the tri-state read rule above. It now returns false and
+the drop is counted and logged (rate-limited, from `shadow_ui`, which is
+SCHED_OTHER and may log). Pinned by `tests/host/test_shadow_midi_out_capacity.c`.
 
 Reference: `src/modules/controller/ui.js`.
 

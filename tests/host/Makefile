@@ -19,11 +19,18 @@ LDFLAGS = -lpthread
 # changed. CI does a clean build and never saw it; a local mutation check does,
 # and silently concluded the mutation was harmless. -MMD emits a .d per target,
 # -MP adds phony targets so a DELETED header does not wedge the build.
-DEPFLAGS = -MMD -MP
+# -MF names ONE dep file explicitly. Without it, -MMD on a rule with several
+# sources asks the compiler to emit several .d files while -o names one output;
+# gcc tolerates that, clang refuses ("cannot specify -o when generating multiple
+# output files"). CI is gcc, so it went green; the local failure only appears
+# once the multi-source targets actually rebuild, which is why it survived the
+# commit that introduced it.
+DEPFLAGS = -MMD -MP -MF $@.d
 
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
+	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
 	$(BUILD_DIR)/test_ext_midi_ring \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
