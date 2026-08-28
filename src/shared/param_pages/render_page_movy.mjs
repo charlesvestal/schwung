@@ -2363,7 +2363,26 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         if (!covered[col] && alsoOpens(meta)) drawAlsoOpensMark(ctx, g, col, rowY);
 
 
-        const label = labelForCell(meta.label || meta.key, g.cellW);
+        /*
+         * `short_name` is for the CELL only -- the same split as short_options.
+         *
+         * The cell is five characters wide and the header is the full width of
+         * the screen, so they want different words. Without a way to say so the
+         * only lever is the name itself, and shortening that fixes the cell by
+         * damaging the header and the list: "Osc 1 Pitch" has to become "Pitch"
+         * everywhere, and on a module with four oscillators the header then
+         * cannot tell you which one you are holding.
+         *
+         * Measured on the 39 modules charlesvestal owns: 1766 controls, 1150 of
+         * them squeezed, and 500 whose name simply repeats their own page
+         * ("VCF Cutoff" on the VCF page drawing VCFCUT where CUTOFF would fit).
+         * 425 of those stop being squeezed with a shorter cell label alone --
+         * with no change to what the header says.
+         *
+         * Falls back to `label` so every module that declares nothing is
+         * unaffected.
+         */
+        const label = labelForCell(meta.short_name || meta.label || meta.key, g.cellW);
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
