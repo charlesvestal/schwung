@@ -64,7 +64,7 @@ if (!decl) {
 /* What lets the default move at all: a device that never chose follows the new
    default, one that chose keeps its choice. A second writer would pin every
    existing install to whatever it booted with, forever. Same rule as
-   param_view, which documents this in CLAUDE.md. */
+   param_view, which documents this in docs/PARAM_PAGES.md. */
 /* Count CALLS, not the definition -- `function saveBrowserPreviewConfig()`
    matches a naive /saveBrowserPreviewConfig\(\)/ too. */
 const savers = (ui.match(/(?<!function\s)saveBrowserPreviewConfig\(\)/g) || []).length;

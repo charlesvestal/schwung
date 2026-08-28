@@ -125,8 +125,8 @@ Promise.all([
    * attack at all. drawPartialEnv computed its rise from val.attack
    * unconditionally, so with no attack role that is undefined, peakX is NaN,
    * and the NaN reaches line()`s for(;;) whose equality break is never
-   * satisfied -- a HANG, the same one CLAUDE.md records for a partial
-   * GRID_GEOM freezing the shadow_ui tick.
+   * satisfied -- a HANG, the same one docs/PARAM_PAGES.md records for
+   * a partial GRID_GEOM freezing the shadow_ui tick.
    *
    * It was unreachable until alignment made those pages drawable: a latent
    * renderer bug EXPOSED by this change, not caused by it. Asserted here

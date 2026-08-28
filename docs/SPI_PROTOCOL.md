@@ -192,3 +192,113 @@ Injecting too many MIDI events per frame causes SIGABRT. Safe limits:
 - MIDI IN: `handleMidiInput()` iterates 8-byte events, stops at first empty message
 - SPI transfer blocks until hardware is ready (the ioctl itself takes ~2ms)
 - Frame budget after ioctl: ~900µs for all shim/host processing
+
+## USB-C Audio-Out Source (XMOS audio-IO SysEx)
+
+Moved here from `CLAUDE.md`, which keeps a summary. This is the `37 12` /
+`37 14` TLV pair on MIDI_OUT cable 0, and the boot arbitration around it.
+
+Move's Settings menu picks what a connected computer receives over USB-C (Mic or
+Main Out). Move's firmware **never persists it** — there is no key in
+`/data/UserData/settings/Settings.json`, and the dialog is built as
+`ListViewDelegate<UsbAudioOutputSourceDelegate, NullTransactionPolicy>` — so it
+reverts to Mic on every boot. Schwung remembers it instead.
+
+Selecting a value makes Move emit a **pair** of XMOS audio-IO SysEx messages in
+one SPI frame (captured on hardware 2026-08-18):
+
+```
+Main Out:  F0 00 21 1D 01 01 37 12 02 00×12 F7   +   F0 00 21 1D 01 01 37 14 01 00×12 F7
+Mic:       ...37 12 00...                        +   ...37 14 00...
+```
+
+`37 12` is the shared routing/monitoring TLV — **bit0 is the USB-C *input*
+select, owned by Move's sampling page**; bit1 is monitoring, which is *how* Main
+Out reaches USB-C (the XMOS mutes the speakers while it's set, to prevent
+feedback). `37 14` is the dedicated out-source bit. This resolves open question
+Q2 in the movesniff findings doc, which listed `0x14` as unreversed.
+
+**Move's sampling page emits a LONE `37 12`, and it clears bit1.** Captured
+2026-08-26: changing the sampling source sent `37 12 01` then `37 12 00`, with
+no `37 14` anywhere near either. The original 2026-08-18 capture recorded bit0
+as `0` throughout and concluded "the pair is atomic" — true of the *out-source*
+control, false of the sampling page, which that capture never exercised.
+Because bit1 is what actually routes Main Out to USB-C, a sampling-source
+change silently reverted USB-C out to Mic while `37 14` still read Main Out, so
+nothing re-asserted. That is the **in-session** half of "sometimes reverts to
+the microphone"; the boot gate below is the across-reboot half.
+
+`xmos_audio_state_t.monitor` therefore tracks bit1 in its own right (it is
+deliberately NOT folded into `scan`'s `changed` return — that flag means "the
+out-source selection moved", and this is not a selection), and
+`usbc_gate_tick_monitor` re-asserts on `usbc_out == 1 && monitor == 0`. The
+`37 14` half of that test is what keeps it off a deliberate Mic selection,
+which moves both. **The debounce is load-bearing**: the pair can split across
+SPI frames (16 of 20 MIDI_OUT slots), so acting on a single tick would fight
+the leading half of a split Mic selection. Two consecutive worker ticks
+(~400 ms) against ~3 ms frames settles that. Verified on hardware — Move's
+`37 12 01` at f75529, our `37 12 03` at f75635 (**bit0 preserved, bit1
+restored**), then quiet.
+
+Flow: the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
+worker persists the value to `/data/UserData/schwung/usbc_out_state`; ~5 s after
+boot the worker arms a replay, which the SPI callback emits one message per
+frame. Only Main Out is replayed — Mic is Move's own boot default, so there is
+nothing to correct and nothing goes on the wire.
+
+Two behaviours worth knowing:
+
+- **Persistence is gated CAUSALLY, not on a deadline** (`src/host/usbc_out_gate.c`).
+  Move asserts its Mic default at ~0.6 s, and the shim observes its *own* replay
+  too (emit runs earlier in the same `pre_transfer` than scan) — neither carries
+  user intent and persisting either clobbers the stored preference.
+
+  This was a ~7 s deadline, and **that deadline was a bug**. The worker's clock
+  starts when MoveOriginal opens the SPI device; Move's assert floats with boot
+  load. A slow boot put the assert on the trusting side of the line, so Mic was
+  written over a stored Main Out — reverting in session *and* forgetting across
+  the reboot, one mechanism producing both halves of the symptom, intermittent
+  by construction. Confirmed on hardware: one boot logging `USB-C out: boot
+  re-assert Main Out` and the state file later reading `0` with no user action.
+
+  The discriminator is not time. **We only ever re-assert Main Out, so during
+  the boot window an observed Mic can only have come from Move.** The gate
+  stays closed until Move has had its say *and* we have re-asserted over it —
+  pre-replay observations are recorded but never persisted; while defending, an
+  observed Mic is countered (bounded by `USBC_GATE_MAX_REPLAYS`) rather than
+  believed; an observed Main Out only settles the gate once Move has actually
+  asserted Mic this boot, so our own echo cannot settle it early on a slow boot.
+  A ~60 s `usbc_gate_force_settle` backstop covers a boot where Move never
+  speaks (opening the gate persists nothing by itself). Trade-off, unchanged in
+  kind but now bounded by events: a change made before the ~5 s re-assert is not
+  persisted. Unit tests: `tests/host/test_usbc_out_gate.sh`.
+- **Move's own Settings screen keeps reading "Mic"** even when the hardware is on
+  Main Out — Move doesn't adopt the replayed value into its UI state. The audio
+  is correct; the screen is not. Selecting "Main Out" there is harmless;
+  selecting "Mic" (believing it a no-op) actually switches it off.
+
+**Global Settings → Audio → USB-C Persist** (`usbc_out_persist`, default On)
+governs *whether Schwung restores* the value — deliberately **not** a second
+Mic/Main Out picker, which could disagree with Move's. Its value column
+annotates the source last seen on the wire (`On (Main Out)`), which is the only
+honest read given Move's screen goes stale. Params: `master_fx:usbc_out_persist`
+(get/set) and `master_fx:usbc_out_source` (get only; -1 unknown, 0 Mic, 1 Main
+Out). Persisted to `shadow_config.json`, which the **shim parses at init**
+(`native_resample_bridge_load_mode_from_shadow_config`) — so the flag is known
+before the ~5 s replay and the restore needs no runtime propagation.
+
+Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
+so it is both SPI-callback-safe and host-testable; unit tests in
+`tests/host/test_xmos_audio.sh`), observed and emitted in `schwung_shim.c`'s
+pre-transfer callback, persisted and armed in `src/host/shim_worker.c`. The
+boot arbitration is split out as `src/host/usbc_out_gate.c` — also pure state,
+with no clock of its own, which is what makes the boot orderings testable
+without a device.
+
+`xmos_audio_emit` is also the only sanctioned way to put SysEx into MIDI_OUT: it
+requires a **contiguous** run of free slots, refuses while any cable-0 SysEx is
+mid-flight, and never partial-writes. The `spi_sysex_inject` debug trigger was
+rerouted through it — the old path blind-wrote `out[0..31]` regardless of what
+Move had queued, and a stuck injection like that hard-powered-off the device
+twice.
+
