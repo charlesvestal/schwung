@@ -129,9 +129,68 @@ Promise.all([
   })();
   if (plainA.size === 0) fail("the unmodulated page drew nothing at all");
 
+
+  /* ---- THE FADER carries the same mark, in the one place nothing else draws.
+   *
+   * A fader is a knob in a different costume and is covered by its group in
+   * exactly the same way, so it loses the dot for exactly the same reason. The
+   * mark sits OUTSIDE the rails (the bar spans cx-3..cx+3, rails at cx+-4)
+   * because the interior is a dithered lattice that re-phases as the value
+   * moves -- a mark inside it would be least readable precisely when the value
+   * is moving, which is the only time it exists.
+   */
+  const fader = groups.find((g) => g.kind === "fader");
+  if (!fader) fail("mrdrums Main no longer plans a fader group");
+  const FK = fader.roles.value;
+
+  const finkFader = (baseAt, liveAt) => {
+    const vals = {};
+    for (const k of page.keys) vals[k] = "0.5";
+    vals[FK] = baseAt;
+    const fb = H.createFramebuffer();
+    R.renderPageMovy(H.drawContext(fb), {
+      page, metaIndex: ix, values: vals,
+      modValues: { [FK]: liveAt }, modulated: (k) => k === FK,
+      viz: groups, pageIndex: 0, pageCount: 1, header: "L",
+    });
+    const px = fb.pixels || fb.px;
+    const s = new Set();
+    for (let y = 0; y < 64; y++)
+      for (let x = 0; x < 128; x++) if (px[y * 128 + x]) s.add(x + "," + y);
+    return s;
+  };
+
+  const fSame = finkFader("0.8", "0.8");
+  const fLow  = finkFader("0.2", "0.8");
+  const fMid  = finkFader("0.5", "0.8");
+  const fLowM = only(fLow, fSame), fMidM = only(fMid, fSame);
+
+  if (fLowM.length === 0)
+    fail("a modulated fader draws NOTHING for its base -- the bar moves on its "
+       + "own with no way to see what you set");
+  /* Two stubs, one either side, on ONE row. */
+  const fRows = [...new Set(fLowM.map((q) => Number(q.split(",")[1])))];
+  if (fRows.length !== 1)
+    fail("the fader base mark spans " + fRows.length + " rows; it must be one");
+  const fCols = [...new Set(fLowM.map((q) => Number(q.split(",")[0])))].sort((a, b) => a - b);
+  if (fCols.length !== 4)
+    fail("expected two 2px stubs either side of the fader, got columns "
+       + JSON.stringify(fCols));
+  /* A GAP between them: contiguous would mean it crossed the bar. */
+  if (fCols[2] - fCols[1] < 5)
+    fail("the fader stubs are not clear of the bar (columns "
+       + JSON.stringify(fCols) + ") -- they would fight the dithered fill");
+  /* ...and it tracks the base: a HIGHER base marks a HIGHER row (smaller y). */
+  const fMidRow = [...new Set(fMidM.map((q) => Number(q.split(",")[1])))];
+  if (fMidRow.length !== 1 || !(fMidRow[0] < fRows[0]))
+    fail("the fader base mark does not track the base value (0.2 -> row "
+       + fRows[0] + ", 0.5 -> row " + JSON.stringify(fMidRow) + ")");
+
+  console.log("  ok  a modulated fader marks its base, clear of the bar");
+
   console.log("  ok  a modulated sample cell marks its BASE, one column wide");
   console.log("  ok  the mark tracks the base and sits at both band edges");
   console.log("  ok  an unmodulated page is untouched");
-  console.log("PASS: the sample graphic carries the modulation base the knob dot used to");
+  console.log("PASS: covered graphics carry the modulation base the knob dot used to");
 });
 '

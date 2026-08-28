@@ -783,6 +783,93 @@ function gotoSlotFor(name) {
   values.spray = savedSpray;
 }
 
+/* ---- the editor says where a SOURCE has the position --------------------
+ *
+ * The editor is the screen you open specifically to SET this value. In edit
+ * mode the cursor is hierEditorEditValue, seeded from `:base` -- correctly,
+ * that is what the jog moves -- so with an LFO running the cursor sits still
+ * while the sound sweeps and nothing on screen says why.
+ *
+ * Asserted as a STUB PAIR, not merely as "extra ink": the mark has to be
+ * distinguishable from the two things already in this plot, a solid
+ * full-height cursor and dotted full-height spray fences. A column of 4 pixels
+ * split between the top and the bottom of the band is none of those, and a
+ * mark drawn as a rule would satisfy an ink-only check while reading as a
+ * third fence.
+ *
+ * The position is fed as "0.5" so it maps to mid-file (the value is
+ * normalised against the declared min/max, NOT read as a percentage): the base resolves to
+ * ratio 0 in this fixture (no real WAV behind the stub, see the spray case
+ * above), so a mid-file source is what makes the two columns DIFFER. Fed the
+ * same value as the base, the assertion could pass on the cursor.
+ */
+{
+  const savedPath = values.sample_path, savedPos = values.position;
+  const savedSpray2 = values.spray;
+  const PLOT_X0 = 4, INNER_W = 120;
+
+  function captureCols(modulated) {
+    values.sample_path = "/tmp/probe.wav";
+    values.spray = "0";                    /* no fences competing */
+    values.position = "0.5";               /* mid-file for the SOURCE */
+    if (modulated) values["position:modulated"] = "1";
+    else delete values["position:modulated"];
+    openGrid();
+    const slot = gotoSlotFor("position");
+    if (slot < 0) return null;
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") return null;
+    const cols = new Map();
+    const realPixel = globalThis.set_pixel;
+    globalThis.set_pixel = (x, y, c) => {
+      if (c) { if (!cols.has(x)) cols.set(x, []); cols.get(x).push(y); }
+      return 0;
+    };
+    ctx.drawScreen ? ctx.drawScreen() : globalThis.tick();
+    globalThis.set_pixel = realPixel;
+    feed(back());
+    return cols;
+  }
+
+  /* A stub pair: exactly 4 rows in one column, in two adjacent pairs that are
+   * far apart -- i.e. NOT a contiguous run and NOT an every-other-row dot
+   * column. */
+  const stubCols = (cols) => [...cols.entries()].filter(([, ys]) => {
+    const t = [...new Set(ys)].sort((a, b) => a - b);
+    if (t.length !== 4) return false;
+    return t[1] === t[0] + 1 && t[3] === t[2] + 1 && (t[2] - t[1]) > 4;
+  }).map(([x]) => x);
+
+  const on  = captureCols(true);
+  const off = captureCols(false);
+
+  if (!on || !off) {
+    fail("the modulation case could not reach the waveform editor");
+  } else {
+    const marks = stubCols(on);
+    if (marks.length !== 1) {
+      fail("a modulated wav_position drew " + marks.length + " source mark(s) in the " +
+           "editor, expected 1 — the screen you set the value on cannot say where " +
+           "the LFO has it (cols " + JSON.stringify(marks) + ")");
+    } else {
+      const want = PLOT_X0 + Math.round(0.5 * (INNER_W - 1));
+      if (Math.abs(marks[0] - want) > 1)
+        fail("the source mark is at x=" + marks[0] + ", expected ~" + want +
+             " — it is not tracking the modulated position");
+    }
+    /* And an UNMODULATED position draws none: the mark must state a fact, not
+     * decorate every wav_position in the fleet. */
+    if (stubCols(off).length !== 0)
+      fail("an unmodulated wav_position still drew a source mark");
+  }
+
+  values.sample_path = savedPath;
+  values.position = savedPos;
+  values.spray = savedSpray2;
+  delete values["position:modulated"];
+}
+
 /* ---- N. the editor inherits the PAGE knob row ---------------------------
  *
  * A declared `knobs` array is not the order the user was just looking at. The

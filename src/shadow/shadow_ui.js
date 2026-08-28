@@ -12996,6 +12996,11 @@ function buildHierarchyParamKeyForLevel(levelDef, key, childIndex) {
 function resetHierarchyEditState() {
     hierEditorEditKey = "";
     hierEditorEditValue = null;
+    /* Both are seeded per EDIT SESSION by beginHierarchyParamEdit, so they must
+     * die with it: a marker left behind would be drawn over the next
+     * wav_position opened, at a position belonging to a different parameter. */
+    wavEditorSpray = null;
+    wavEditorMod = null;
 }
 
 function beginHierarchyParamEdit(key) {
@@ -13012,7 +13017,52 @@ function beginHierarchyParamEdit(key) {
     hierEditorEditKey = fullKey;
     hierEditorEditValue = String((baseVal !== null) ? baseVal : liveVal);
     seedWavEditorSpray(key, meta);
+    seedWavEditorMod(key, meta, fullKey);
     return true;
+}
+
+/*
+ * Is the position being edited driven by a source, and where is it right now?
+ *
+ * The editor is the screen you are on SPECIFICALLY to set this value, so the
+ * base-versus-live distinction matters more here than anywhere: in edit mode
+ * the cursor is `hierEditorEditValue`, which beginHierarchyParamEdit seeds
+ * from `:base` -- correctly, that is what the jog moves -- and with an LFO
+ * running that leaves the cursor sitting still while the sound sweeps, with
+ * nothing on screen to say why.
+ *
+ * Read ONCE, like the spray beside it and for the same reason: this frame
+ * resamples the WAV and is already the most expensive screen here, so a
+ * per-frame IPC read (~2.8ms against a 1.68ms whole-page render) is not
+ * affordable. Unlike the spray, the value this tracks MOVES on its own, so a
+ * seeded reading goes stale -- deliberately. What it is for is stating THAT a
+ * source is driving the position and roughly where, not animating it; the
+ * grid cell is where the live motion is shown, at the tick rate, because it
+ * costs nothing extra there.
+ *
+ * Null unless `:modulated` says 1, so an unmodulated position -- every
+ * wav_position in the fleet until an LFO is pointed at one -- draws nothing
+ * and pays for nothing.
+ */
+/*
+ * The RAW value is stored, not a ratio, and it is normalised at the draw with
+ * the SAME durationSec the cursor uses. A wav_position may be declared in
+ * seconds (`display_unit: "sec"`), and normalizeWavPositionRatio then needs
+ * the file duration to place it -- which is not known here and returns 0 for
+ * a missing one, i.e. a marker silently pinned to the head of the file.
+ */
+let wavEditorMod = null;   /* { fullKey, raw } */
+function seedWavEditorMod(key, meta, fullKey) {
+    wavEditorMod = null;
+    if (!meta || meta.ui_type !== "wav_position") return;
+    if (!isHierarchyParamModulated(hierEditorSlot, fullKey)) return;
+    const raw = getSlotParam(hierEditorSlot, fullKey);
+    /* A FAILED read is not a position. Drawing nothing is honest; inventing 0
+     * would plant a marker at the head of the file and claim the source is
+     * there. */
+    if (raw === null || raw === "") return;
+    if (!Number.isFinite(Number(raw))) return;
+    wavEditorMod = { fullKey, raw: String(raw) };
 }
 
 /*
@@ -14764,6 +14814,34 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
                 }
             }
         }
+        /*
+         * WHERE THE SOURCE HAS IT, when one is driving this position.
+         *
+         * Drawn as 2px stubs at the top and bottom of the plot rather than as
+         * a rule, which is the SAME language the grid uses for a modulated
+         * sample cell and a modulated fader -- one mark meaning "this is the
+         * other end of the base/live pair", so the three surfaces do not each
+         * invent a spelling. It also has to be distinct from the spray fences
+         * immediately above, which already own the dotted full-height line: a
+         * second dotted column would read as a third fence.
+         *
+         * Before the cursor, so a source passing through the base leaves the
+         * solid cursor owning the column -- the two coinciding IS the reading
+         * "it is at your value right now".
+         */
+        const modRatio = wavEditorMod
+            ? Math.max(0, Math.min(1, normalizeWavPositionRatio(
+                wavEditorMod.raw, selectedMeta, preview.durationSec || 0)))
+            : -1;
+        if (modRatio >= 0 && modRatio >= zoomStart && modRatio <= zoomEnd) {
+            const mx = plotX + 1 +
+                Math.round(((modRatio - zoomStart) / zoomRange) * (innerW - 1));
+            set_pixel(mx, plotY + 1, 1);
+            set_pixel(mx, plotY + 2, 1);
+            set_pixel(mx, plotY + plotH - 2, 1);
+            set_pixel(mx, plotY + plotH - 3, 1);
+        }
+
         /* Single-marker legacy: just the active cursor. */
         for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
             set_pixel(cursorX, y, 1);

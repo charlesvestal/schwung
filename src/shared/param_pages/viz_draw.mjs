@@ -1176,7 +1176,7 @@ export function drawEq(ctx, rect, roles, values, metaIndex) {
  * said — five detents in six move nothing on screen, which is fine for a level
  * grabbed roughly and bad for anything nudged.
  */
-export function drawFader(ctx, rect, key, values, metaIndex) {
+export function drawFader(ctx, rect, key, values, metaIndex, baseValues) {
     const meta = metaIndex.getOrGuess(key);
     const normVal = fractionOf(meta, values ? values[key] : undefined);
     const { topY: top, botY: bot } = band(rect); const h = bot - top;
@@ -1232,6 +1232,39 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
     if (bh >= 3) {
         fillDithered(ctx, bx + 1, y + 1, bw - 2, bh - 2, pattern);
         notchCorners(ctx, bx, y, bw, bh);
+    }
+
+    /*
+     * THE BASE MARK, for a fader a source is driving.
+     *
+     * Same rule as the sample cell: a viz group COVERS its cells, so
+     * drawKnobWidget never runs for them and the modulation dot -- the only
+     * thing that says where you SET the value as opposed to where it is right
+     * now -- has no way onto the screen. The bar tracks the effective value,
+     * so without this a modulated fader is a bar moving on its own with the
+     * base nowhere to be seen.
+     *
+     * OUTSIDE THE RAILS, which is what makes it collision-proof rather than
+     * merely tidy. The bar spans cx-3..cx+3 and the dashed rails sit at cx+-4,
+     * so cx+-5..6 is the only part of the cell nothing else ever draws in. A
+     * mark inside the bar would have to fight the dithered lattice -- whose
+     * whole point is that it re-phases as the value moves -- and would be
+     * unreadable exactly when the value is moving, which is the only time this
+     * mark exists.
+     *
+     * Two stubs rather than a rule across the cell, matching drawSample: the
+     * fill boundary is already a full-width horizontal edge, so a second one
+     * would read as a second bar top.
+     */
+    if (baseValues) {
+        const baseNorm = fractionOf(meta, baseValues[key]);
+        if (baseNorm !== undefined && baseNorm !== null && !Number.isNaN(baseNorm)) {
+            const byy = Math.round(bot - clamp01(baseNorm) * h);
+            if (byy >= top && byy <= bot) {
+                ctx.fillRect(cx - 6, byy, 2, 1, 1);
+                ctx.fillRect(cx + 5, byy, 2, 1, 1);
+            }
+        }
     }
 }
 
@@ -1607,7 +1640,8 @@ const DRAW = {
     [VIZ_EQ]: (ctx, rect, group, values, metaIndex) => drawEq(ctx, rect, group.roles, values, metaIndex),
     [VIZ_WAVEFORM]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
         drawWaveform(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
-    [VIZ_FADER]: (ctx, rect, group, values, metaIndex) => drawFader(ctx, rect, group.roles.value, values, metaIndex),
+    [VIZ_FADER]: (ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) =>
+        drawFader(ctx, rect, group.roles.value, values, metaIndex, baseValues),
     [VIZ_SWITCH]: (ctx, rect, group, values, metaIndex, anim, nowMs) =>
         drawSwitch(ctx, rect, group.roles.value, values, metaIndex, anim, nowMs),
     [VIZ_SAMPLE]: (ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) =>
