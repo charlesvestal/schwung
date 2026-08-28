@@ -1529,10 +1529,36 @@ A module not serving yet — minijv and osirus are the slowest in the fleet —
 costs one timeout instead of eight, and the rotation retries for free. Entry
 stalling on eight dead reads is a worse failure than the flash this removes.
 
-Deliberately NOT on every page change: the lane keeps neighbours warm, so a jog
-finds them cached and blocking there would put a hitch on the exact gesture the
-lane exists to smooth. A far JUMP from the section picker can still land cold —
-known, and left rather than widened without a report.
+**IT RUNS ON EVERY PAGE CHANGE TOO, and the first cut did not.** That version
+argued the lane already keeps neighbours warm so a jog finds them cached, and
+blocking would "put a hitch on the exact gesture the lane exists to smooth."
+Measured, that is false at any speed a hand actually jogs. The lane fires on ONE
+stop of a ~10-stop rotation — one neighbour key per ~10 ticks, so eight keys is
+~80 ticks plus the 12-tick hold. Against a 3 × 8-knob module, by dwell before
+jogging on:
+
+| dwell | known on arrival | fill-in |
+|---|---|---|
+| 200 ms | 1/8 | 153 ms |
+| 500 ms | 3/8 | 153 ms |
+| 1000 ms | 6/8 | 153 ms |
+| 1500 ms | 8/8 | none |
+
+So the lane only wins if you sit on a page for a second and a half. Reported
+from the device as *"i still see it … just going from one page to another
+slowly"* — precisely the 200–1000 ms band. The old objection is answered by the
+measurement: the alternative is not a smooth gesture, it is 153 ms of WRONG
+PICTURE, and ~22 ms of nothing is better. With the warm on the hop, every dwell
+arrives 8/8 and settles in one frame, and the cost degrades gracefully — 22 ms
+at a fast jog, 0 once the lane has kept up.
+
+**That is what the lane is actually for**, and it is worth stating because the
+first cut had it backwards: the lane does not make the page correct, the warm
+does. The lane makes the warm FREE, turning a per-hop cost into an occasional
+one. Neither is redundant.
+
+`goToPage` gets it too — that is the path a far JUMP from the section picker
+takes, where the lane has warmed nothing at all.
 
 **`acceptValue` is the extraction that made this safe.** The tri-state here is
 three rules deep and every one was a shipped bug — a failed read is not a value;

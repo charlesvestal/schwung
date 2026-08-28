@@ -130,5 +130,48 @@ const shot = (ctl) => {
      ") -- the warm is an entry cost, not a standing one");
 }
 
+/* ---- 5. A JOG lands on a correct page too ----------------------------- */
+{
+  /* THE CASE THE FIRST VERSION MISSED. The warm ran only on load, on the
+     reasoning that "the lane already keeps neighbours warm". Measured, the lane
+     fires on ONE stop of a ~10-stop rotation -- one neighbour key per ~10 ticks
+     -- so eight keys needs ~1.5s of dwell. Reported from the device as "i still
+     see it ... just going from one page to another slowly", which is exactly
+     the band where the lane has done some of the work and not all of it. */
+  const WIDE = [];
+  for (let i = 0; i < 24; i++) {
+    WIDE.push({ key: "w" + i, name: "W" + i, type: "float", min: 0, max: 1, step: 0.01 });
+  }
+  const WH = { modes: null, levels: { root: { label: "T",
+    knobs: WIDE.map((p) => p.key), params: WIDE.map((p) => ({ key: p.key })) } } };
+  let clock = 1000;
+  const ctl = createController({
+    getParam: (k) => {
+      const b = String(k).replace(/^[^:]+:/, "");
+      if (b === "ui_hierarchy") return JSON.stringify(WH);
+      if (b === "chain_params") return JSON.stringify(WIDE);
+      return /^w\d+$/.test(b) ? "0.78" : "";
+    },
+    setParam: () => {}, announce: () => {}, now: () => clock,
+  });
+  ctl.setLayout(LAYOUT_MOVY);
+  ctl.load({ prefix: "synth" });
+  ok(ctl.state.pages.length >= 3, "the wide fixture plans at least three pages");
+
+  /* A dwell far too short for the lane -- ~200ms, a brisk but ordinary jog. */
+  for (let i = 0; i < 12; i++) { ctl.tick(); clock += 17; }
+  ctl.onJog(1);
+  const keys = (ctl.page.keys || []).filter(Boolean);
+  const known = keys.filter((k) => ctl.state.values[k] !== undefined).length;
+  ok(known === keys.length,
+     "jogging onto a page the lane has NOT warmed still arrives complete (" +
+     known + "/" + keys.length + ")");
+
+  const arrival = shot(ctl);
+  for (let i = 0; i < 30; i++) { ctl.tick(); clock += 17; }
+  ok(arrival === shot(ctl),
+     "and its first frame is the settled one -- no fill-in on a jog either");
+}
+
 process.exit(fail ? 1 : 0);
 '

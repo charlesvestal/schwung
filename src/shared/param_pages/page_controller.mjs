@@ -1358,11 +1358,29 @@ export function createController(io = {}) {
      * would stall on eight dead reads, which is a far worse failure than the
      * flash this removes.
      *
-     * Deliberately NOT applied on every page change: the lane already keeps
-     * neighbours warm, so a jog finds them cached, and blocking there would put
-     * a hitch on the exact gesture the lane exists to smooth. A far JUMP from
-     * the section picker can still land cold — known, and left alone rather
-     * than widened without a report.
+     * IT RUNS ON EVERY PAGE CHANGE TOO, and the first version of this did not
+     * — "deliberately NOT applied on every page change: the lane already keeps
+     * neighbours warm, so a jog finds them cached". **Measured, that is false
+     * at any speed a hand actually jogs.** The lane fires on ONE stop of a
+     * ~10-stop rotation, so it warms one neighbour key per ~10 ticks: eight
+     * keys is ~80 ticks, plus the 12-tick hold. Dwell on a page before jogging
+     * on, against a 3 x 8-knob module:
+     *
+     *     dwell  200ms -> 1/8 known on arrival, 153ms of fill-in
+     *     dwell  500ms -> 3/8
+     *     dwell 1000ms -> 6/8
+     *     dwell 1500ms -> 8/8, correct on frame 1
+     *
+     * So the lane only wins if you sit on a page for a second and a half.
+     * Reported from the device as *"i still see it ... just going from one page
+     * to another slowly"* — which is exactly the 200-1000ms band.
+     *
+     * The old objection was that blocking here puts "a hitch on the exact
+     * gesture the lane exists to smooth". The measurement answers it: the
+     * alternative is not a smooth gesture, it is 153ms of WRONG PICTURE, and
+     * ~22ms of nothing is better than that. The lane still earns its keep — it
+     * makes this call free whenever it has kept up, which is what turns a
+     * per-hop cost into an occasional one.
      */
     function warmCurrentPage() {
         if (!s.metaIndex) return 0;
@@ -2362,6 +2380,10 @@ export function createController(io = {}) {
             s.cursor = 0;
             s.touched = -1;
             s.turnClaimMs = 0;
+            /* Whatever the lane has not got to yet, read now — see
+             * warmCurrentPage. Usually free: the lane keeps the page you are
+             * jogging onto warm, so this makes no reads at all. */
+            warmCurrentPage();
             /* One full pass for the page you arrived on before warming
              * anything else. A page of 8 knobs is 9 stops, ~0.16s. */
             s.prefetchHoldUntil = s.tickCount + PREFETCH_HOLD_TICKS;
@@ -2414,6 +2436,9 @@ export function createController(io = {}) {
         s.cursor = 0;
         s.touched = -1;
         s.turnClaimMs = 0;
+        /* Same as onJog — and this is the path a far JUMP from the section
+         * picker takes, where the lane has warmed nothing at all. */
+        warmCurrentPage();
         /* Same hold as onJog: the arrived page owns the first full pass. */
         s.prefetchHoldUntil = s.tickCount + PREFETCH_HOLD_TICKS;
         /* enterMenu refuses an empty list, and then nobody has spoken yet. */
