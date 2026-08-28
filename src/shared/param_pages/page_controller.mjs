@@ -2543,6 +2543,20 @@ export function createController(io = {}) {
              * land on the device the instant you let go, not up to 20ms
              * later. */
             const key = keyAt(slot);
+            /*
+             * LETTING GO ENDS THE GESTURE, immediately.
+             *
+             * The trigger latch clears itself after TRIGGER_KNOB_GESTURE_GAP_MS
+             * of stillness, which is a fallback for a cap sensor that never
+             * registered. A release is the real boundary and it is unambiguous:
+             * the hand is off the knob, so the next detent is a new gesture and
+             * should fire at once rather than waiting out a timer.
+             *
+             * The gap stays as the backstop for exactly the reason the knob
+             * card keeps its decay — a touch that the sensor misses must not
+             * strand the feature.
+             */
+            if (key) delete s.triggerKnobLastMs[key];
             if (key && s.pendingWrite[key] !== undefined) {
                 setParam(fullKey(key), s.pendingWrite[key]);
                 replanIfCondition(key);

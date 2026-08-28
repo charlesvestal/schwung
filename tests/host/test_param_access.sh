@@ -154,6 +154,31 @@ Promise.all([
   ctl.onKnobTurn(trigSlot, -1, 8400);
   if (writes.length !== 1) fail("turning a trigger the other way did not fire it");
 
+  /*
+   * LETTING GO RE-ARMS IT IMMEDIATELY.
+   *
+   * The gap is a fallback for a cap sensor that never registered; a release is
+   * the real gesture boundary and it is unambiguous. Without this you fire,
+   * let go, grab the knob again and the next detent is swallowed for up to
+   * 400ms -- which reads as the control being broken, not as a safety.
+   *
+   * Asserted at a time INSIDE the gap, so it can only pass because of the
+   * release. 8450 is 50ms after the previous fire at 8400.
+   */
+  writes.length = 0;
+  ctl.onKnobTouch(trigSlot, false);
+  ctl.onKnobTurn(trigSlot, 1, 8450);
+  if (writes.length !== 1)
+    fail("releasing the knob did not re-arm the trigger -- a detent 50ms later " +
+         "was still swallowed by the gesture latch");
+
+  /* ...and the gap still governs when there was NO release, which is what
+   * keeps the fallback honest. */
+  writes.length = 0;
+  ctl.onKnobTurn(trigSlot, 1, 8500);
+  if (writes.length)
+    fail("without a release, a detent 50ms later fired -- the latch is gone");
+
   /* A CLICK is never latched: one press is one gesture, and a shared timer
    * between the two paths is exactly how that regresses. */
   writes.length = 0;
@@ -334,10 +359,25 @@ if [ -z "$wo" ]; then
   echo "FAIL: could not find the held-trigger footer branch in $pp" >&2
   exit 1
 fi
-if ! grep -q 'click: "PUSH"' <<<"$wo"; then
-  echo "FAIL: a held trigger does not advertise CLK PUSH." >&2
-  echo "      The widget is a push button; the hint must name that gesture." >&2
+# BOTH keys, ONE verb. It said CLK PUSH while the click was the only way to
+# fire it -- "name the gesture the picture is asking for". A knob detent fires
+# it too now, and you do not PUSH a knob you are turning, so no single
+# gesture-name covers both keys and the honest word is the consequence.
+if ! grep -q 'click: "FIRE"' <<<"$wo"; then
+  echo "FAIL: a held trigger does not advertise CLK FIRE." >&2
   echo "$wo" >&2
+  exit 1
+fi
+if ! grep -q '\["KNB", "FIRE"\]' <<<"$wo"; then
+  echo "FAIL: a held trigger does not advertise KNB FIRE -- turning the knob" >&2
+  echo "      fires it, and nothing on screen says so." >&2
+  echo "$wo" >&2
+  exit 1
+fi
+# The two must not disagree: one action, one verb.
+if grep -q 'click: "PUSH"' <<<"$wo"; then
+  echo "FAIL: the click still says PUSH while the knob says FIRE -- one action," >&2
+  echo "      two verbs" >&2
   exit 1
 fi
 # The neighbouring vocabulary must not have moved with it.
@@ -351,4 +391,4 @@ if ! grep -q 'click: "OPEN"' <<<"$dv"; then
   echo "FAIL: a held divable no longer advertises CLK OPEN" >&2
   exit 1
 fi
-echo "  ok  a held trigger advertises CLK PUSH, divable still CLK OPEN"
+echo "  ok  a held trigger advertises CLK FIRE and KNB FIRE; divable still CLK OPEN"

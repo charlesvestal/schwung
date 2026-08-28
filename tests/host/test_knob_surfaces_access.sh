@@ -98,7 +98,17 @@ b=$( { command grep -oE "^const TRIGGER_KNOB_GESTURE_GAP_MS = [0-9]+" \
 [ -n "$b" ] || fail "page_controller.mjs does not declare TRIGGER_KNOB_GESTURE_GAP_MS"
 [ "$a" = "$b" ] || fail "the knob trigger gesture gap has drifted: shadow_ui \"$a\" vs grid \"$b\""
 
+# LETTING GO RE-ARMS IT. The gap is the fallback for a cap sensor that never
+# registered; a release is the real boundary. Without this you fire, let go,
+# take hold again, and the next detent is swallowed for up to 400ms.
+rearm=$( { command grep -n "triggerKnobLastMs\[knobIndex\] = 0;" "$file" || true; } | head -n 1 | cut -d: -f1)
+[ -n "$rearm" ] || fail "releasing a knob does not re-arm the trigger latch on this surface"
+touchoff=$( { command grep -n "knobTouched\[knobIndex\] = false;" "$file" || true; } | head -n 1 | cut -d: -f1)
+[ -n "$touchoff" ] && [ "$rearm" -gt "$touchoff" ] && [ $((rearm - touchoff)) -lt 20 ] || \
+  fail "the trigger re-arm is not in the knob RELEASE handler (release $touchoff, re-arm $rearm)"
+
 echo "  ok  a knob detent fires a trigger once per GESTURE; a readout still writes nothing"
+echo "  ok  releasing the knob re-arms the latch"
 echo "  ok  both knob surfaces share one gesture-gap value"
 
 # --- the click must fire a trigger, not open a picker ------------------------
