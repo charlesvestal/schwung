@@ -65,6 +65,11 @@ function keyOf(entry) {
  *
  * @returns {{get: (key:string)=>object|null, keys: string[], conflicts: string[]}}
  */
+/* Live octave numbering: note 0 is C-2, so 36 is C1 and 60 is C3. */
+const NOTE_PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+export const NOTE_NAMES = Object.freeze(Array.from({ length: 128 }, (_, i) =>
+    NOTE_PITCH_CLASSES[i % 12] + (Math.floor(i / 12) - 2)));
+
 export function buildMetaIndex({ hierarchy, chainParams } = {}) {
     const inline = new Map();
     const conflicts = [];
@@ -365,6 +370,37 @@ function normalize(key, raw) {
      * One axis rather than two flags, because they are the same question asked
      * in opposite directions, and a param cannot be both.
      */
+    /*
+     * A MIDI NOTE NUMBER IS A NOTE, and 36 does not say so.
+     *
+     * Declared as int 0..127 it drew an arc: a pointer somewhere in 128
+     * semitones, telling you nothing about which note the module listens for,
+     * which is the only thing this parameter is for. It cannot be a big number
+     * either -- that widget draws digits, and a name is what is wanted.
+     *
+     * So the names are supplied here and the param becomes an ordinary enum.
+     * It then draws in the enum square as C1, and it opens as a LIST, which is
+     * what a 128-way choice should have been all along.
+     *
+     * Live`s octave numbering, matching the pads: 36 is C1, 60 is C3.
+     *
+     * SAFE ON THE WIRE because the option INDEX equals the note number: the
+     * range must be exactly 0..127, so options[36] is the value 36. A narrower
+     * range would make the index an offset and silently transpose everything,
+     * which is why this refuses anything else rather than generating a window.
+     *
+     * Matched on a key or name ENDING in "note" -- `arp_note_length` is a
+     * length and `vf_track`/`flt_key` ("KEY", "Key Track") are key-tracking
+     * amounts, all int 0..127, and all correctly left as knobs.
+     */
+    if (!meta.options && type === "int" && meta.min === 0 && meta.max === 127 &&
+        (/(^|_)note$/i.test(String(meta.key || "")) ||
+         /(^|\s)note$/i.test(String(meta.name || "").trim()))) {
+        meta.options = NOTE_NAMES;
+        meta.note_names = true;
+        type = "enum";
+    }
+
     const access = lower(meta.access);
     meta.readOnly = access === "read";
     meta.writeOnly = access === "write";
