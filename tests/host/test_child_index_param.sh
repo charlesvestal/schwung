@@ -31,7 +31,8 @@ node -e '
 Promise.all([
   import("./src/shared/param_pages/page_controller.mjs"),
   import("./src/shared/param_pages/child_key.mjs"),
-]).then(([PC, CK]) => {
+  import("./src/shared/param_pages/page_plan.mjs"),
+]).then(([PC, CK, PLAN]) => {
   let bad = 0;
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
@@ -304,6 +305,57 @@ Promise.all([
          + "so the waveform shows the previous pad until you jog away and back");
   }
 
+
+  /* ---- the picker only goes when the index is REALLY reachable ---------
+   *
+   * The picker is suppressed when the module owns the focus AND offers the
+   * control itself. "Offers" has to mean a CELL, not a mention: an overflow
+   * key pulled from params[] is dropped when it is `ui_`-prefixed (page_plan
+   * filters exactly that, naming ui_current_pad in its comment), so a module
+   * can list its index param and still give it no cell.
+   *
+   * Getting this wrong removed the picker while the control it deferred to did
+   * not exist -- with auto-select off there was then no way to reach another
+   * instance at all. Reported from the device as "if I turn off autoselect how
+   * do I get to another pads settings?".
+   */
+  {
+    const mkLvl = (params, knobs) => ({
+      label: "Pads", child_count: 4, child_label: "Pad",
+      child_key_template: "p{index}_{key}",
+      child_index_base: 1, child_index_digits: 2,
+      child_index_param: "ui_cur",
+      child_key_overrides: { ui_cur: "ui_cur" },
+      params, knobs,
+    });
+    const CP4 = [{ key: "ui_cur", name: "Cur", type: "int", min: 1, max: 4 }];
+    for (let i = 1; i <= 4; i++) {
+      const n = String(i).padStart(2, "0");
+      CP4.push({ key: `p${n}_vol`, name: "Vol", type: "float", min: 0, max: 1, step: 0.01 });
+    }
+    const plan = (lvl) => PLAN.planPages({
+      hierarchy: { modes: null, levels: { root: lvl } }, chainParams: CP4 });
+    const hasPicker = (r) => (r.pages || r).some((p) => p.childOf);
+    const hasCell = (r) => (r.pages || r).some((p) => (p.keys || []).indexOf("ui_cur") >= 0);
+
+    /* Listed in params[] ONLY, and ui_-prefixed: no cell, so the picker stays. */
+    const onlyParams = plan(mkLvl(["ui_cur", "vol"], ["vol"]));
+    if (hasCell(onlyParams))
+      fail("a ui_-prefixed key from params[] got a cell — this test no longer "
+         + "covers the case it was written for");
+    if (!hasPicker(onlyParams))
+      fail("the child picker was suppressed while the index param has NO cell — "
+         + "with the module`s own focus control off there is no way to change instance");
+
+    /* On knobs[]: the author placed it, so it gets a cell and the picker goes. */
+    const onKnobs = plan(mkLvl(["ui_cur", "vol"], ["ui_cur", "vol"]));
+    if (!hasCell(onKnobs))
+      fail("an authored knob was dropped for being ui_-prefixed — knobs[] is intent");
+    if (hasPicker(onKnobs))
+      fail("the picker survived even though the index param has its own cell — "
+         + "two controls for one fact");
+  }
+
   /* ---- a level with NO child_index_param is untouched ------------------ */
   {
     const L2 = Object.assign({}, LEVEL);
@@ -326,6 +378,7 @@ Promise.all([
     console.log("  ok  choosing a child writes it back, so the two cannot disagree");
     console.log("  ok  a generic child key borrows the concrete declaration, and follows");
     console.log("  ok  the graphic follows the focused child with no page change");
+    console.log("  ok  the picker goes only when the index param really has a cell");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");
   }

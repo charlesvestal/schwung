@@ -33,9 +33,28 @@ function allListedKeys(hierarchy) {
     const add = (k) => { if (typeof k === "string" && k) out.add(k); };
     for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
         if (!lvl || typeof lvl !== "object") continue;
+        /*
+         * LISTED IS NOT REACHABLE, and the difference is a trap.
+         *
+         * An overflow key pulled from `params[]` is dropped when it is
+         * `ui_`-prefixed -- see the filter that builds `extra` below, whose
+         * comment names ui_current_pad and ui_preset_path outright. So a
+         * module can list its index param in params[] and that param still
+         * never gets a cell.
+         *
+         * This has to agree with that filter exactly. It did not, and the cost
+         * was the picker being suppressed as "redundant" while the control it
+         * deferred to did not exist: with auto-select off there was then NO
+         * way to change instance at all. Reported from the device as "if I
+         * turn off autoselect how do I get to another pad's settings?".
+         *
+         * A key on `knobs[]` is the author's intent and is honoured whatever
+         * it is called, which is why the two lists are treated differently
+         * here rather than merged.
+         */
         for (const p of (lvl.params || [])) {
-            if (p && typeof p === "object") { if (!p.level) add(p.key); }
-            else add(p);
+            const k = (p && typeof p === "object") ? (p.level ? null : p.key) : p;
+            if (typeof k === "string" && k && !/^ui_/.test(k)) add(k);
         }
         for (const k of (lvl.knobs || [])) {
             if (k && typeof k === "object") add(k.key); else add(k);
