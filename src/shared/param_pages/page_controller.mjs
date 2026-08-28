@@ -1258,13 +1258,30 @@ export function createController(io = {}) {
         }
         if (at > p.keys.length) {
             /* A plain read: an extra key is a filename, never modulated and
-             * never turned, so it skips the modulation and settle lanes. The
-             * tri-state still applies — a failed read must not become "" and
-             * then become "no sample". */
+             * never turned, so it skips the modulation and settle lanes.
+             *
+             * The tri-state applies, and it has THREE branches — which is the
+             * bug this used to have. It dropped `""` along with null, on the
+             * reasoning that a failed read must not become "no sample". True
+             * of null; false of `""`, which is the channel saying there IS no
+             * file. Dropping it left `s.values[key]` UNDEFINED forever, and
+             * undefined is indistinguishable from null downstream:
+             *
+             *   - the cell renders "--" (read did not answer) where it should
+             *     read NONE (there is no file). Reported from the device as
+             *     "why does granny show -- instead of none" — and the log
+             *     settles it: across 41MB, `sample_path` never once appears in
+             *     a param_giveup, so the read was succeeding the whole time.
+             *   - the empty-file graphic suppression in render_page_movy keys
+             *     on `=== ""`, so on granny's ROOT page — where the file is
+             *     off-page and therefore an extra key — an empty sample still
+             *     drew the empty waveform this was supposed to remove.
+             *
+             * So: store an empty answer, drop only a missing one. */
             const ek = extraKeys[at - p.keys.length - 1];
             if (!ek) return null;
             const ev = getParam(fullKey(ek));
-            if (ev !== null && ev !== undefined && ev !== "") s.values[ek] = ev;
+            if (ev !== null && ev !== undefined) s.values[ek] = ev;
             return null;
         }
         const key = p.keys[at];

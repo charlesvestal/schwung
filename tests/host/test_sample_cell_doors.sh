@@ -277,6 +277,75 @@ ok(!!fileIntent && fileIntent.key === "sample_path",
 ok(ctl.onClick(sSize) === null,
    "an ordinary float outside the picture still opens nothing");
 
+/* ---- 5. an EXTRA key EMPTY answer must be stored ---------------------
+ *
+ * granny declares sample_path on no knobs list, so on its root page the file
+ * is OFF-PAGE and reaches the controller as a viz EXTRA key -- a separate stop
+ * in the read rotation from the ordinary per-key one.
+ *
+ * That stop used to drop `""` along with null, on the reasoning that a failed
+ * read must not become "no sample". True of null; false of `""`, which is the
+ * channel saying there IS no file. Dropped, the value stayed UNDEFINED
+ * forever, and undefined is indistinguishable from null downstream: the cell
+ * reads "--" instead of NONE, and the empty-graphic suppression (keyed on
+ * `=== ""`) never fires, so an empty sample still drew the empty waveform.
+ *
+ * Reported as "why does granny show -- instead of none". The device log
+ * settled it: across 41MB, `sample_path` never once appears in a
+ * param_giveup, so the read had been succeeding all along.
+ *
+ * Driven through the real controller, with the file deliberately OFF the page.
+ */
+{
+  /* sample_path appears in NEITHER knobs nor params, which is what makes it
+   * off-page. It is still found, because `position` names it through
+   * filepath_param -- that declaration is how detectSample resolves a file it
+   * cannot see on the page, and it is what granny does. Listing it in params
+   * put it back ON the page and the store assertion below then passed through
+   * the ordinary per-key read, proving nothing. */
+  const CP2 = CHAIN_PARAMS.map((m) => (m.key === "position"
+      ? Object.assign({}, m, { filepath_param: "sample_path" }) : m));
+  const HIER2 = JSON.stringify({ modes: null, levels: { root: {
+    label: "G", knobs: ["position", "spray", "size"],
+    params: [{ key: "position" }, { key: "spray" }, { key: "size" }] } } });
+  const reads = [];
+  const mk = (pathValue) => {
+    const c2 = C.createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        reads.push(b);
+        if (b === "ui_hierarchy") return HIER2;
+        if (b === "chain_params") return JSON.stringify(CP2);
+        if (b === "sample_path") return pathValue;
+        if (b === "preset_name") return null;
+        return "0.5";
+      },
+      setParam: () => {}, announce: () => {},
+    });
+    c2.load({ slot: 0, component: "synth" });
+    /* Long enough for the rotation to reach the extra stop several times. */
+    for (let i = 0; i < 60; i++) c2.tick();
+    return c2;
+  };
+
+  const empty = mk("");
+  ok((empty.page.keys || []).indexOf("sample_path") < 0,
+     "the fixture keeps the file OFF the page, so it is an extra key");
+  ok(reads.indexOf("sample_path") >= 0,
+     "the extra-key stop actually read it");
+  ok(empty.state.values.sample_path === "",
+     "an EMPTY answer is stored as the empty string -- dropping it leaves " +
+     "undefined, which renders -- and defeats the empty-graphic suppression " +
+     "(got " + JSON.stringify(empty.state.values.sample_path) + ")");
+
+  /* ...and a MISSING answer is still not stored, which is the half that was
+   * right. Distinguishing them is the whole point. */
+  const failed = mk(null);
+  ok(failed.state.values.sample_path === undefined,
+     "a FAILED read is still not stored (got " +
+     JSON.stringify(failed.state.values.sample_path) + ")");
+}
+
 if (fail) { console.log("FAIL: " + fail + " assertion(s)"); process.exit(1); }
 console.log("PASS: the sample graphic is one door, and the file is its own");
 '
