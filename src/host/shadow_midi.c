@@ -164,6 +164,7 @@ static shadow_midi_out_t **host_shadow_midi_out_shm;
 static uint8_t **host_shadow_ui_midi_shm;
 static shadow_midi_dsp_t **host_shadow_midi_dsp_shm;
 static shadow_midi_inject_t **host_shadow_midi_inject_shm;
+static shadow_midi_inject_t **host_shadow_midi_inject_ui_shm;
 static uint8_t *host_shadow_mailbox;
 
 /* Idle tracking */
@@ -192,6 +193,7 @@ void midi_routing_init(const midi_host_t *host)
     host_shadow_ui_midi_shm = host->shadow_ui_midi_shm;
     host_shadow_midi_dsp_shm = host->shadow_midi_dsp_shm;
     host_shadow_midi_inject_shm = host->shadow_midi_inject_shm;
+    host_shadow_midi_inject_ui_shm = host->shadow_midi_inject_ui_shm;
     host_shadow_mailbox = host->shadow_mailbox;
     host_slot_idle = host->slot_idle;
     host_slot_silence_frames = host->slot_silence_frames;
@@ -695,7 +697,9 @@ void shadow_drain_midi_inject(void)
     }
 
     uint8_t *midi_in = host_shadow_mailbox + MIDI_IN_OFFSET;
-    int injected = shadow_overtake_midi_drain(inject_shm, overtake_active,
+    shadow_midi_inject_t *ui_shm = host_shadow_midi_inject_ui_shm
+                                       ? *host_shadow_midi_inject_ui_shm : NULL;
+    int injected = shadow_overtake_midi_drain(inject_shm, ui_shm, overtake_active,
                                               midi_in, MIDI_IN_MAX_EVTS,
                                               MIDI_IN_MAX_BYTES);
 

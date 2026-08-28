@@ -2922,6 +2922,7 @@ static uint8_t last_shadow_midi_out_ready = 0;
 static shadow_midi_dsp_t *shadow_midi_dsp_shm = NULL;  /* MIDI to DSP from shadow UI */
 static uint8_t last_shadow_midi_dsp_ready = 0;
 static shadow_midi_inject_t *shadow_midi_inject_shm = NULL;  /* MIDI inject into Move's MIDI_IN */
+static shadow_midi_inject_t *shadow_midi_inject_ui_shm = NULL;  /* shadow UI's own inject, never diverted to a module */
 static schwung_ext_midi_remap_t *ext_midi_remap_shm = NULL;  /* Cable-2 channel remap table */
 
 static uint32_t last_screenreader_sequence = 0;  /* Track last spoken message */
@@ -3428,6 +3429,17 @@ static void init_shadow_shm(void)
      * maps it, so initializing here once at startup is race-free. */
     if (shadow_midi_inject_shm) {
         shadow_midi_inject_init(shadow_midi_inject_shm);
+    }
+
+    /* The shadow UI's own inject ring. Separate segment, identical layout: the
+     * ring above is claimed by the overtake test bus (drained onto the module
+     * rather than into Move), and a JS `move_midi_inject_to_move` is addressing
+     * Move's FIRMWARE. Sharing one ring between the two producers made
+     * song-mode's own Play CC come back to it as a button press. */
+    shadow_midi_inject_ui_shm = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT_UI,
+                                                                       sizeof(shadow_midi_inject_t), 1, 1);
+    if (shadow_midi_inject_ui_shm) {
+        shadow_midi_inject_init(shadow_midi_inject_ui_shm);
     }
 
     /* Create/open cable-2 channel remap shared memory (active overtake module writes,
@@ -4797,6 +4809,7 @@ static void shim_init_subsystems(void)
             .shadow_ui_midi_shm = &shadow_ui_midi_shm,
             .shadow_midi_dsp_shm = &shadow_midi_dsp_shm,
             .shadow_midi_inject_shm = &shadow_midi_inject_shm,
+            .shadow_midi_inject_ui_shm = &shadow_midi_inject_ui_shm,
             .shadow_mailbox = shadow_buf,
             .slot_idle = shadow_slot_idle,
             .slot_silence_frames = shadow_slot_silence_frames,

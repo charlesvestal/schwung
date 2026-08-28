@@ -65,6 +65,7 @@ static int drain_ring(shadow_midi_inject_t *ring,
 }
 
 int shadow_overtake_midi_drain(shadow_midi_inject_t *shared,
+                               shadow_midi_inject_t *ui,
                                int overtake_active,
                                uint8_t *midi_in,
                                int max_events,
@@ -91,6 +92,20 @@ int shadow_overtake_midi_drain(shadow_midi_inject_t *shared,
      * is about latency on the packets that can leave Move wedged. */
     if (!overtake_active)
         copied = drain_ring(shared, midi_in, copied, max_events, midi_in_bytes);
+
+    /* The shadow UI's ring drains in BOTH modes, and the ownership rule it
+     * expresses is "who PUSHED it", not "what mode are we in".
+     *
+     * `move_midi_inject_to_move` used to push into the SHARED ring, so from
+     * 2026-07-29 -- when the shim started popping that ring during overtake and
+     * republishing it to the module as if it were a hardware press -- song-mode
+     * lost both halves at once: its pad and Play packets never reached Move,
+     * AND they came straight back into its own onMidiMessageInternal. Its Play
+     * CC toggled its own playback and re-injected, so it fired pads as fast as
+     * the 50ms inject throttle allowed, on a loop that could only be broken by
+     * leaving the tool. Two producers cannot share one ring when the consumer
+     * is chosen by mode; the test bus keeps `shared`, and the UI gets this. */
+    copied = drain_ring(ui, midi_in, copied, max_events, midi_in_bytes);
 
     /* The dedicated ring drains in both modes. That is the whole point of the
      * split: while overtake owns the shared ring's consumer, an overtake DSP

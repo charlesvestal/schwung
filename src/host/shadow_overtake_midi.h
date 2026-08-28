@@ -23,10 +23,16 @@ void shadow_overtake_midi_discard(void);
  * owns its test-bus consumer, and it goes FIRST when it is drained at all --
  * the shim's overtake-exit releases live in it. Returns packets copied.
  *
+ * `ui` is the shadow UI's own cross-process ring (`move_midi_inject_to_move`),
+ * and it drains in BOTH modes for the same reason the dedicated one does: it
+ * is a producer addressing Move's firmware, not the test bus. See the
+ * ownership note in shadow_overtake_midi.c.
+ *
  * Bounded by BOTH max_events and midi_in_bytes; pass SHADOW_MIDI_IN_BYTES.
  * The byte bound is not belt-and-braces: the RX display-status word sits
  * immediately after MIDI_IN. */
 int shadow_overtake_midi_drain(shadow_midi_inject_t *shared,
+                               shadow_midi_inject_t *ui,
                                int overtake_active,
                                uint8_t *midi_in,
                                int max_events,
