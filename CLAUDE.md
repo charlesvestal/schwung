@@ -595,10 +595,129 @@ byte-identical against `tests/fixtures/movy-geom-baseline.txt`
 Preview it without deploying: `node tools/param-pages/preview_knob_card.mjs
 <module-id> --knob N [--short] [--png DIR --scale 4]`.
 
-### Every enum opens a LIST
+### Every enum opens a LIST — except at TWO options, where the click FLIPS it
 
-Any enum that declares `options` is divable: hold its knob, click, pick from a
-scrolling list, Back cancels. The knob still steps it one detent at a time —
+A picker over two items is a menu whose entire content is the value already
+visible in the cell and the one other value there is, and it charges two
+gestures for a state one gesture can describe. So a two-option enum WRITES THE
+OTHER VALUE on click and never raises the list. Reported from the device
+against Global Settings' Mirror Display and Move->Schwung — *"if an option has
+two values, clicking it should change the option ... we dont need a whole menu
+for two items"*.
+
+**Deliberately NOT limited to booleans, and that is the interesting part.**
+`drawnAsSwitch` splits Off/On (212 fleet cells) from a two-way CHOICE —
+`Mix/Reverb`, `Saw/Square`, `Legato/Trig` (134 cells) — and that split is right
+for the PEEK, which exists to show a word the cell has no room for. It is wrong
+here: what the flip removes is the SECOND GESTURE, and a choice pays that
+exactly as a boolean does. Two rules over the same population, disagreeing on
+purpose.
+
+`flipsOnClick` (`param_meta.mjs`) is ONE definition serving two questions that
+must not disagree — what the click does (`page_controller.onClick`) and what
+the footer promises while the knob is held (`CLK FLIP`, not `CLK OPEN`). The
+divable/opaque pair beside it is written up as exactly that failure three times
+over: a cell became a door and the footer had to be told separately, so it
+advertised `CLK MENU` over a click that opened an editor. **The FLIP branch
+must precede the divable OPEN branch** — a two-option enum is still divable, so
+OPEN claims it otherwise.
+
+**It requires `divable`, which is what keeps TRIGGERS out.** A trigger is a
+two-option enum in the wire format (`["—","Rnd!"]`), so a predicate written on
+the option count alone turns every momentary in the fleet into a latch —
+euclidrum randomises a kit on the way past. Readouts are excluded the same way.
+
+**THE FLIP IS THE GRID'S ANSWER. A LIST FOCUSES INSTEAD.** Both list surfaces
+— `knobsAsList` (Param View: List, and whatever the screen reader forces) and
+the hierarchy editor — put a two-option enum into EDIT MODE on click and let
+the jog step it, exactly like a float row. The flip needs a knob under your
+hand to be the saving it claims; a list has none, so a row that changed value
+the instant you clicked it would be the one row on the page with no focus
+state. Reported from the device: *"just show it focus and let jog change it.
+then it's the same gesture for each row. otherwise it's invisible."*
+
+`flipsOnClick` is still what both consult — it is the definition of "this enum
+is a two-way", not of "flip". The grid flips that set and the list focuses it,
+so the two can differ about what a two-way DOES without ever drifting about
+WHICH params are two-way. In `page_controller` it is the term that WIDENS the
+knobsAsList edit gate past `!divable`; the hierarchy editor restates the count
+instead, because its meta is the RAW `chain_params` declaration (`type`, not
+`kind`, and no `divable` at all) and the two exclusions `divable` carries are
+its own two early returns immediately above.
+
+`tests/host/test_two_option_enum_flip.sh` pins the grid half and the picker
+skip; `test_list_layout_footer.sh` drives the focus for real, clicking a
+two-option row and jogging it both ways — a footer assertion alone would pass
+with EDIT advertised over a row the jog does nothing to. The flip test's
+list-editor probe was anchored on the first `type === "enum"` in
+`shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
+and stayed GREEN with the branch deleted.
+
+### Two values means the DETENT TOGGLES, once per flick
+
+There were three spellings of one control and two of them had a dead
+direction: an Off/On (or int 0..1) boolean was direction-ABSOLUTE — right meant
+On, left meant Off, so at Off a left turn did nothing forever — while a two-way
+CHOICE like Mix/Reverb fell to the enum branch and CLAMPED behind the
+four-detent gate, so at Mix a left turn did nothing forever and a right turn
+took four detents to do anything.
+
+Reported from the device: *"if there are only two, why not let it wrap
+otherwise you have to know which way is off and which way is on, in which case
+you need some knowledge you dont have."* There is no way to acquire it — the
+cell shows a STATE, not a direction. Same argument that makes a trigger fire in
+either direction.
+
+**WRAPPING ALONE WOULD NOT DO, and that is the part worth keeping.** With two
+values, "wrap" and "toggle on every detent" are the same thing, and one flick
+of an encoder is a dozen detents — so a flick would land on whichever value the
+detent count happened to be even or odd about. `isTwoWayMeta` in
+`knob_engine.mjs` therefore pairs the toggle with a LATCH at
+`TWO_WAY_GESTURE_GAP_MS`, the same number and the same rule as
+`TRIGGER_KNOB_GESTURE_GAP_MS`: **one flick is one gesture.** And it is a latch
+rather than a rate limit — the stamp is the last **DETENT**, so the clock runs
+on STILLNESS. That distinction shipped wrong once already on the trigger and
+was reported from hardware; `test_two_way_knob_toggle.sh` pins it as a
+sequence, and pins the two constants EQUAL by number, because a user cannot
+learn two flick lengths for two controls that look alike.
+
+**It lives in the ENGINE, so every surface inherits it** — knob grid, knob
+card, list edit mode, the hierarchy editor and the patches screen all reach
+`knobStep`. A TRIGGER is excluded there by `access: "write"`, not by option
+count: it is a two-option enum on the wire, and toggling it writes "do nothing"
+on every other flick, which for euclidrum is the write that destroys a kit.
+Three or more options are untouched — they keep the gate and they CLAMP, because
+wrapping a 47-model list makes the end of it unreachable by feel.
+
+Consequence worth knowing: the jog in list edit mode routes through
+`knobEditStep` -> `onKnobTurn` -> `knobStep`, so it inherits the latch too. A
+deliberate jog detent is 1:1 everywhere else, so flipping a two-way twice in
+under ~270 ms from the jog is swallowed. Deliberate, and the cheapest place to
+revisit if it ever reads wrong.
+
+### A knob page drawn as a LIST has three states, and said none of them
+
+`footerHints()` had no branch for `knobsAsList` at all and fell through to the
+GRID's answer, `JOG PAGE / CLK MENU`, which is wrong outside the list, inside
+it and while editing a row. With Param View on List — or the screen reader on,
+which forces the layout — that is the only footer there is, and Global Settings
+is driven entirely by the jog. Now `JOG PAGE / CLK ENTER`, then
+`JOG SEL / CLK <row verb> / BACK OUT`, then `JOG ADJ / CLK DONE / BACK OUT`.
+
+The row verb is the ROW's, mirroring `onClick`'s ladder: `FIRE` a trigger,
+`EDIT` anything turnable that is not a longer enum (which now includes a
+two-option one), `OPEN` anything else divable. A readout gets **no** click pair
+— an absence is the truth and a verb would be a promise.
+
+**It must precede the held-knob branch**, and not for tidiness: in this layout
+`onClick` takes its param from the ROW CURSOR and overrides whatever knob is
+under your hand, so the held-knob footer describes a cell the click will not
+act on. Same promise-versus-behaviour bug that branch's own comments record
+twice, reached from the other side. Pinned as an ordering, and the seek loops
+in the test are BOUNDED because the row cursor clamps rather than wrapping.
+
+Past two options, the list is unchanged. Any enum that declares `options` is
+divable: hold its knob, click, pick from a scrolling list, Back cancels. The knob still steps it one detent at a time —
 the list is the other half, for a Recv Ch with seventeen options or a Braids
 model with forty-seven. `VIEWS.ENUM_PICKER`, `drawEnumPicker` in
 `src/shadow/shadow_ui.js`, hints `JOG SEL` / `CLK SET` / `BACK EXIT`

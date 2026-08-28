@@ -64,12 +64,18 @@ Promise.all([
     if (isSwitch && !flipped)
       fail(name + " draws as a switch but did not flip on ONE detent (got " + st.value + ")");
   }
-  /* ...and a switch follows the DIRECTION turned, rather than accumulating --
-   * which is what an int would have done on the numeric path. */
+  /* ...and a switch reaches the other value on ONE detent rather than
+   * accumulating, which is what an int would have done on the numeric path.
+   *
+   * It no longer follows the DIRECTION turned: with two values there is
+   * nowhere to go but the other one, so either direction toggles and one
+   * flick is one flip. That rule and its latch live in
+   * tests/host/test_two_way_knob_toggle.sh; what matters HERE is only that
+   * what is drawn as a switch does not fall through to the numeric path. */
   {
     const st = K.knobInit(1);
     K.knobStep(st, { type: "int", min: 0, max: 1 }, -1, 1000);
-    if (st.value !== 0) fail("an int boolean did not follow the direction turned");
+    if (st.value !== 0) fail("an int boolean did not move on one detent");
   }
   console.log("  ok  what is drawn as a switch is turned as a switch");
 
