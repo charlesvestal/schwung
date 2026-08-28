@@ -444,20 +444,31 @@ export const CONTRACT_RECOVER_INTERVAL_TICKS = 600;
 const TRIGGER_BURST_KEEP_MS = 400;
 const TRIGGER_BURST_MAX = 4;
 /*
- * A knob detent fires a trigger too, and THAT is what needs a cooldown.
+ * ONE FIRE PER GESTURE, on the knob path only.
  *
  * A jog click is one gesture per press, so it may repeat as fast as a finger
- * can manage and nothing rate-limits it. An encoder is not: one flick of the
- * wrist is a dozen detents, and a trigger is by definition something that DOES
- * a thing — euclidrum's `rnd_preset` would randomise a kit twelve times, and
- * magneto's `["Play","Save"]` would write a file per detent. So the knob path,
- * and only the knob path, collapses a spin into one fire per window.
+ * can manage and nothing limits it. An encoder is not: one flick of the wrist
+ * is a dozen detents, and a trigger is by definition something that DOES a
+ * thing — magneto's `["Play","Save"]` would write a file per detent.
  *
- * 250ms is a little longer than the 120ms press animation and a little shorter
- * than the 300ms burst, so a deliberate second flick reads as a second event
- * while a single sweep cannot.
+ * THIS WAS A RATE LIMIT FIRST, AND A RATE LIMIT IS THE WRONG SHAPE. "At most
+ * once per 250ms" still fires eight times across a two-second spin, which is
+ * what came back from the device: "gesture test fires repeatedly on detent."
+ * The docs already promised the right behaviour — "a whole flick of the
+ * encoder counts as one press" — so the implementation was the thing that
+ * disagreed, not the intent.
+ *
+ * So it LATCHES: the first detent fires, every detent after it extends the
+ * gesture, and the latch clears only once the knob has been still for
+ * TRIGGER_KNOB_GESTURE_GAP_MS. A spin of any length is one fire; letting go
+ * and flicking again is two.
+ *
+ * 400ms is chosen against the two things it must separate. Detents inside a
+ * deliberate turn arrive tens of milliseconds apart, so any plausible spin
+ * stays latched; and 400ms of stillness is longer than a hand pauses
+ * mid-gesture but shorter than the beat between two intended presses.
  */
-const TRIGGER_KNOB_COOLDOWN_MS = 250;
+const TRIGGER_KNOB_GESTURE_GAP_MS = 400;
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
@@ -2203,17 +2214,23 @@ export function createController(io = {}) {
          * writeOnly and therefore not turnable — falling through would silently
          * eat the motion, which is exactly what it used to do.
          *
-         * The cooldown lives HERE and nowhere else: see
-         * TRIGGER_KNOB_COOLDOWN_MS. Note it is applied BEFORE the header claim
-         * as well, deliberately — a swallowed detent is not an interaction, and
-         * letting it move the header would make a spin look like it was doing
-         * something on every click of the encoder.
+         * The gesture latch lives HERE and nowhere else: see
+         * TRIGGER_KNOB_GESTURE_GAP_MS. Note it is applied BEFORE the header
+         * claim as well, deliberately — a swallowed detent is not an
+         * interaction, and letting it move the header would make a spin look
+         * like it was doing something on every click of the encoder.
          */
         if (meta.writeOnly) {
             const t = nowMs === undefined ? now() : nowMs;
+            /* The stamp is the last DETENT, not the last fire, which is what
+             * makes this a latch rather than a rate limit: every detent
+             * extends the gesture, so the clock only runs while the knob is
+             * still. Written before the early return for exactly that reason. */
             const last = s.triggerKnobLastMs[key];
-            if (last !== undefined && t - last < TRIGGER_KNOB_COOLDOWN_MS) return null;
+            const startsGesture = last === undefined
+                || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
             s.triggerKnobLastMs[key] = t;
+            if (!startsGesture) return null;
             if (!s.touchOrder.length) { s.touched = slot; s.turnClaimMs = t; }
             else if (s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
             fireTrigger(key, meta, t);

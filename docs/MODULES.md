@@ -1840,8 +1840,10 @@ Notes worth having before you declare something:
   carries no text: the module reports a constant idle spelling and the fleet
   proves it is not readable (euclidrum's is an em-dash the 5x7 atlas cannot
   draw, which rendered as a blank square). The cell's label names the action.
-  Fired by a jog click *or* a knob detent, either direction, at most once per
-  `TRIGGER_KNOB_COOLDOWN_MS`.
+  Fired by a jog click *or* a knob detent, either direction. The knob path
+  LATCHES — a whole spin is one fire, and the latch clears only once the knob
+  has been still for `TRIGGER_KNOB_GESTURE_GAP_MS`. A rate limit was tried
+  first and still fired eight times across a two-second spin.
 - **`short_options` is for the enum square only.** The held-knob header keeps
   the full spelling, which is where a value has room to be read.
 - **The big-number span bound is load-bearing.** An earlier version bounded at
