@@ -3698,6 +3698,10 @@ export function createController(io = {}) {
          *  it. Read-only view of the cache the renderer uses — the injected
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
+        /** Which instance of `level` is focused, zero-based. The editor
+         *  hand-off needs it: without it the editor re-asks which child,
+         *  when the grid already knows. */
+        childIndexOf: (level) => childIndexFor(level),
         get metaIndex() { return s.metaIndex; },
         /** True while `<prefix>:ui_hierarchy` could not be READ. The page set,
          *  if any, is the previous one — nothing here was planned from the

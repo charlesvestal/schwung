@@ -248,7 +248,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
+    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
     paramPagesRefreshTrailing, paramPagesExitMenu
 } from './shadow_ui_param_pages.mjs';
@@ -3018,6 +3018,9 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * param lives, and exitParamPages tears the controller down. */
     const page = currentParamPage();
     const level = page && page.level;
+    /* Which instance the grid was showing. Captured HERE, beside `level`, for
+     * the same reason: exitParamPages below tears the controller down. */
+    const childAt = level ? paramPagesChildIndex(level) : -1;
     paramEditorReturnPage = (page && page.name) || "";
     /* Carry the page's knob ORDER in with us — see hierEditorKnobsFromPage.
      * Captured here for the same reason `level` is: exitParamPages tears the
@@ -3044,9 +3047,21 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     /* Land on the level the grid was on, not the hierarchy root. */
     if (level && hierEditorHierarchy && hierEditorHierarchy.levels &&
         hierEditorHierarchy.levels[level] && level !== hierEditorLevel) {
+        const levelDef = hierEditorHierarchy.levels[level];
         hierEditorLevel = level;
         hierEditorPath = [];
-        hierEditorChildIndex = -1;
+        /*
+         * ...and on the INSTANCE it was showing. This is the dive path, so
+         * handing off -1 makes loadHierarchyLevel raise the child selector and
+         * a click on Sample Path lands on "which pad?" instead of the file
+         * browser. Reported from the device.
+         *
+         * `childAt` is captured beside `level`, above, and for the same reason:
+         * exitParamPages has already torn the controller down by here.
+         */
+        hierEditorChildIndex = childLevelHasChildren(levelDef) ? childAt : -1;
+        hierEditorChildCount = childLevelCount(levelDef);
+        hierEditorChildLabel = levelDef.child_label || "";
         loadHierarchyLevel();
     }
 
@@ -12257,6 +12272,20 @@ function enterHierarchyEditorFromParamPages() {
     const page = currentParamPage();
     const slotIndex = paramPagesSlot();
     const componentKey = paramPagesComponent();
+    /*
+     * WHICH INSTANCE, captured BEFORE exitParamPages tears the controller down.
+     *
+     * The grid already knows which pad you are editing -- the module owns it
+     * through child_index_param and the controller follows. Handing off with
+     * -1 made the editor open its CHILD SELECTOR instead of the parameter,
+     * so diving into Sample Path landed on a "which pad?" menu. Reported from
+     * the device, and it is the same defect as the duplicate picker pages: a
+     * second control for a fact that already has one.
+     *
+     * Backing out of the parameter still reaches the selector, so nothing is
+     * lost -- only the question nobody asked is.
+     */
+    const childAt = (page && page.level) ? paramPagesChildIndex(page.level) : -1;
 
     /*
      * A SYNTHESISED CONTRACT HAS NOWHERE TO EJECT TO.
@@ -12296,7 +12325,10 @@ function enterHierarchyEditorFromParamPages() {
         const levelDef = hierEditorHierarchy.levels[page.level];
         hierEditorLevel = page.level;
         hierEditorPath = [];
-        hierEditorChildIndex = -1;
+        /* The instance the grid was showing, not "ask again". Falls back to
+         * -1 -- the selector -- for a level with no children, which is what
+         * every non-child level gets and always got. */
+        hierEditorChildIndex = childLevelHasChildren(levelDef) ? childAt : -1;
         /*
          * The CHILD COUNT travels with the level, and this path used to drop
          * it.
