@@ -96,6 +96,25 @@ Promise.all([
       fail("lfo_rate and lfo_2_depth are two different LFOs and must not group");
   }
 
+  /* ---- 3b. a trigger is not a switch ----------------------------------- */
+  {
+    /*
+     * The one that cost a device round trip. A covered cell never reaches
+     * drawKnobWidget, so a switch GRAPHIC over a write-only param silently
+     * overruled the button widget -- and declaring access write looked like it
+     * did nothing, on modules that had declared it correctly.
+     */
+    const trigEnum = { key: "rnd_patch", name: "Rnd Patch", type: "enum",
+                       options: ["0", "1"], access: "write" };
+    if (has([trigEnum], "switch")) fail("a write-only two-option enum must not draw as a switch");
+    const trigInt = { key: "rnd_preset", name: "Rnd Preset", type: "int",
+                      min: 0, max: 1, step: 1, access: "write" };
+    if (has([trigInt], "switch")) fail("a write-only int 0..1 must not draw as a switch");
+    /* A REAL boolean still draws as a switch -- that is the whole point of it. */
+    const realSwitch = { key: "tempo_sync", name: "Sync", type: "enum", options: ["Off", "On"] };
+    if (!has([realSwitch], "switch")) fail("an ordinary two-option enum stopped drawing as a switch");
+  }
+
   /* ---- 4. one LFO, two rates: take the one that can be drawn ----------- */
   {
     /* schwung-filter: a tempo-syncable LFO publishes rate twice. Taking the
