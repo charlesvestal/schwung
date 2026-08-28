@@ -604,13 +604,22 @@ void shadow_drain_midi_inject(void)
      * off-limits during overtake because its consumer is the test-bus
      * publisher in schwung_shim.c and this ring is documented single-consumer.
      *
-     * OPEN, and worth knowing before trusting this path: the DEFER guard below
-     * requires three consecutive frames with an entirely empty MIDI_IN, reset
-     * by a non-zero slot on ANY cable. Move's own surface is filtered out of
-     * the mailbox during overtake, but cable 2 is not -- so an external USB
-     * keyboard played into an overtake module may hold the counter at zero and
-     * stall the dedicated ring for as long as you play. Not measured on
-     * hardware. Check it before relying on injection under live external MIDI. */
+     * MEASURED 2026-08-28, because reading the DEFER guard below suggests a
+     * hazard that is not real and the next reader will re-derive it. The guard
+     * wants two consecutive frames with an entirely empty MIDI_IN and resets on
+     * a non-zero slot on ANY cable; cable 2 is NOT filtered from the mailbox
+     * during overtake, so live external MIDI does land in the buffer it scans.
+     * That much is true -- Move plays those notes on its own instrument, which
+     * is how you can see them arrive.
+     *
+     * It does not stall the drain, and the reason is the packet RATE. Move
+     * consumes MIDI_IN every frame, so holding the counter at zero needs a
+     * packet in essentially every 2.9 ms frame -- about 340/second sustained.
+     * A held note is ONE packet, and a mod-wheel or pitch-bend sweep is 100-200
+     * per second, so both still leave the two clear frames the counter needs.
+     * Verified on hardware with Chord Finder: pads, sustained mod wheel and
+     * pitch bend, 205 drains, no dropouts. Something that genuinely saturates
+     * every frame could still stall this; nothing a controller produces does. */
 
     /* Shim-originated packets first, and independent of the ring: they must
      * still reach Move while an overtake module is up, which is precisely when
