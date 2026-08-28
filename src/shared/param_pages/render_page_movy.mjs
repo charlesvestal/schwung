@@ -26,7 +26,8 @@
  * device's own print(), same as the dial/bar grid.
  */
 
-import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick } from "./param_meta.mjs";
+import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
+         widgetKindFor, WIDGET_OPAQUE, WIDGET_BUTTON, WIDGET_ENUM } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
@@ -1780,7 +1781,11 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
     /* Anything that cannot show two values at once shows the live one, so it
      * animates under modulation instead of freezing on the base. */
     const shown = (liveRaw === null || liveRaw === undefined) ? raw : liveRaw;
-    if (meta.kind === KIND_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
+    /* The cascade below IS widgetKindFor's cascade — asked, not restated, so a
+     * consumer drawing describePage()'s view model in its own style cannot
+     * reach a different verdict than this grid does. */
+    const widget = widgetKindFor(meta);
+    if (widget === WIDGET_OPAQUE) { drawOpaqueBox(ctx, kx, ky, shown, cellText); return; }
     /*
      * A TRIGGER is a button, so the cell shows the ACTION, not the value.
      *
@@ -1799,7 +1804,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      * wants its own wording can supply short_options[1], which is the existing
      * hook for "what this widget should say in three characters".
      */
-    if (meta.writeOnly) {
+    if (widget === WIDGET_BUTTON) {
         /* The cell's own label underneath names the action ("Clear", "Rnd
          * Preset"), so the bang carries no text — which also sidesteps the
          * module's idle spelling entirely. euclidrum's is an em-dash the 5x7
@@ -1811,7 +1816,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
                    btnPhase || { pressed: false, filled: false, burst: -1 });
         return;
     }
-    if (meta.kind === KIND_ENUM) {
+    if (widget === WIDGET_ENUM) {
         /* A plugin may report an enum as its option NAME rather than as an
          * index (see learnEnumWireFormat) — resolve either to the index, or
          * `short_options` is skipped for exactly the modules whose values are
@@ -2474,10 +2479,22 @@ export function drawPresetBody(ctx, rect, o) {
     }
 }
 
-export function renderPageMovy(ctx, o) {
+/**
+ * WHAT THE HEADER SAYS — as data, so it can be drawn by somebody else.
+ *
+ * A held knob takes the header over: the strip becomes that param's full name
+ * and value, inverted. Otherwise it is the page's own title and label.
+ *
+ * Exported and consumed by `renderPageMovy` itself so there is one definition.
+ * A tool drawing our view model under its own chrome needs the same two
+ * strings, and a second copy of this rule would drift on the first change to
+ * either branch.
+ *
+ * @returns {{left: string, right: string|null, inverted: boolean}}
+ */
+export function movyHeaderFor(o) {
     const page = o.page;
     const touched = typeof o.touched === "number" ? o.touched : -1;
-
     if (touched >= 0 && page && page.keys && page.keys[touched] && o.metaIndex) {
         const hk = page.keys[touched];
         const m = o.metaIndex.getOrGuess(hk);
@@ -2485,18 +2502,29 @@ export function renderPageMovy(ctx, o) {
         /* "header", not "cell": this is the surface with room, and the whole
          * reason a host-resolved value has two forms at all. */
         const hv = o.displayFor ? o.displayFor(hk, v, "header") : null;
-        drawHeader(ctx, m.label || m.key,
-                   (hv === null || hv === undefined) ? displayValue(v, m) : String(hv), true);
-    } else {
-        /* pageLabel, not page.name: a page belonging to a CHILD level is
-         * named after WHICH CHILD it is showing, which the planned name
-         * cannot know. Falls back to the name for every other page. */
-        drawHeader(ctx, o.title || "",
-                   (o.pageLabel !== undefined && o.pageLabel !== null)
-                       ? o.pageLabel
-                       : (page ? page.name : null),
-                   false);
+        return {
+            left: m.label || m.key,
+            right: (hv === null || hv === undefined) ? displayValue(v, m) : String(hv),
+            inverted: true,
+        };
     }
+    /* pageLabel, not page.name: a page belonging to a CHILD level is
+     * named after WHICH CHILD it is showing, which the planned name
+     * cannot know. Falls back to the name for every other page. */
+    return {
+        left: o.title || "",
+        right: (o.pageLabel !== undefined && o.pageLabel !== null)
+            ? o.pageLabel
+            : (page ? page.name : null),
+        inverted: false,
+    };
+}
+
+export function renderPageMovy(ctx, o) {
+    const page = o.page;
+
+    const h = movyHeaderFor(o);
+    drawHeader(ctx, h.left, h.right, h.inverted);
     drawBankBar(ctx, o.pageIndex | 0, Math.max(1, o.pageCount | 0), o.pageGroups);
 
     if (!page || !page.keys) return;
