@@ -3337,12 +3337,18 @@ export function createController(io = {}) {
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
 
-    /* Movy layout is a whole separate renderer (its own fixed-geometry header
-     * and knob grid, not a `layout` value render_page.mjs understands — see
-     * render_page_movy.mjs), so it does not take decorations (a sequencer's
-     * per-slot p-locks) or an embedding `rect`: it draws its own header full
-     * width, the way Movy itself always does. Anything using those keeps
-     * LAYOUT_DIAL/LAYOUT_BAR — see setLayout. */
+    /* Movy layout is a whole separate renderer (its own header and knob grid,
+     * not a `layout` value render_page.mjs understands — see
+     * render_page_movy.mjs). It used to refuse decorations and an embedding
+     * `rect`, which made it the one layout a sequencer could not use — and it
+     * is the layout the device actually draws, so "share the grid" meant
+     * "share every grid except the real one".
+     *
+     * Both now work: `movyBandLayout` places the bands into a rect and lets a
+     * caller take the body alone, and `drawKnobRow` reads per-slot
+     * decorations. The default path — no rect, no bands — reproduces the
+     * vertical rhythm table exactly and is pinned byte-identical by the render
+     * snapshots. */
     /*
      * `footer` is [key, action] hint pairs, most important first, supplied by
      * the CALLER — the gestures belong to whoever owns the input mapping, same
@@ -3382,7 +3388,7 @@ export function createController(io = {}) {
         if (footer) drawFooter(ctx, footer);
     }
 
-    function render(ctx, { title, rect, footer } = {}) {
+    function render(ctx, { title, rect, footer, bands } = {}) {
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
@@ -3394,6 +3400,14 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                /* Both undefined for the device's own full-screen draw, which
+                 * is what keeps that path byte-identical. */
+                rect, bands,
+                /* A sequencer's per-slot parameter locks. Graphics stand down
+                 * while these are live (see the `viz` argument below): a
+                 * picture spanning four cells cannot say which of them is
+                 * locked. */
+                decorations: s.decorations,
                 displayFor: formatValue
                     ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
                     : null,
@@ -3404,7 +3418,12 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
-                viz: vizEnabled ? vizGroups() : [],
+                /* Graphics stand down while p-locks are live, the same rule the
+                 * dial/bar branch has always applied: one picture replacing
+                 * four cells cannot show which of the four is locked. Without
+                 * this the lock marks would land on cells whose widget had been
+                 * absorbed into a graphic. */
+                viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
                 /*
                  * The trigger button's press animation. Both of these have to
                  * come from here: the renderer is pure and reads the clock off
