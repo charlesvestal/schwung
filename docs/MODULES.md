@@ -1888,6 +1888,26 @@ Notes worth having before you declare something:
   a two-second spin.
 - **`short_options` is for the enum square only.** The held-knob header keeps
   the full spelling, which is where a value has room to be read.
+- **`short_name` is the same split for the LABEL.** The cell is five characters
+  and the header is the width of the screen, so declare the long,
+  disambiguating name in `name` and the cell's word in `short_name`:
+
+  ```json
+  { "key": "osc1_pitch", "name": "Osc 1 Pitch", "short_name": "Pitch" }
+  ```
+
+  The cell draws `PITCH` where it drew `OSC1PIT`; the header and the list keep
+  `Osc 1 Pitch`. Optional, and inert when absent.
+
+  **Do not repeat the page in the cell.** A page called *Filter Envelope* has
+  already said "filter envelope", so its knobs are `Attack` and `Decay` — not
+  `F.Atk` or `FENVAT`. Measured across the 39 catalogued modules by this
+  author: 1766 controls on knob pages, 1150 of them squeezed past being words,
+  and 500 whose name merely repeats their own page. 425 of those stop being
+  squeezed with a `short_name` alone.
+
+  It is still a label, so it is still fitted to the cell — a long `short_name`
+  is not a way to smuggle six characters into five.
 - **The big-number span bound is load-bearing.** An earlier version bounded at
   128 and drew 1392 params big, including `volume [0..100]` — a sweep, where
   an arc is the honest picture.
