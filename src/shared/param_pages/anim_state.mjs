@@ -81,6 +81,48 @@ export function observe(state, key, value, now, durationMs = 120) {
     return { from: state.from.get(key), to: value, t, moving: t < 1 };
 }
 
+/**
+ * `observe`, but only once the value has actually been READ.
+ *
+ * AN ARRIVAL IS NOT A CHANGE, and the store cannot tell the difference on its
+ * own because by the time a widget calls in, an absent value has already been
+ * turned into a concrete picture. The read cursor serves one key per tick, so a
+ * page of 8 knobs spends ~9 ticks (~200ms) with `values[key]` undefined — and
+ * every animated widget rendered that as a real reading: drawSwitch read NaN
+ * and drew OFF, drawWaveform resolved shape 0, drawEnumSquare sized itself
+ * around "--". `observe` then recorded that placeholder as the settled first
+ * sighting and the real value arrived as a TRANSITION, so every page animated
+ * itself in from values nobody had set.
+ *
+ * This is the tri-state read rule (see `shadow_get_param`) one layer below
+ * where it is usually enforced: a read that did not complete must not produce a
+ * plan, a default or a cached verdict — and a widget frame is all three.
+ *
+ * `raw` is the value as it came off the wire, NOT the token being animated.
+ * The two are separate arguments on purpose: every caller here animates
+ * something derived (`on ? 1 : 0`, `"s" + shape`, a pixel width), and every one
+ * of those derivations is total — it produces a perfectly ordinary token for an
+ * absent input, which is exactly how the placeholder got in. Only the raw value
+ * still carries the absence, so only the raw value can be asked about it.
+ *
+ * NOTHING IS RECORDED while the value is absent. That is the point: leaving the
+ * key out of the store entirely means the first real value is a FIRST SIGHTING,
+ * which `observe` already stamps as already-past. Recording the placeholder and
+ * suppressing the animation instead would leave `from` set to it, so the next
+ * genuine change would animate out of a value that was never on screen.
+ *
+ * `undefined` ONLY. `null` and `""` are not absences here: the controller
+ * refuses to cache either as a value (`""` is a served channel with nothing to
+ * say — except for an opaque key, where it is the real reading NONE), so a key
+ * that has never been answered is `undefined` and nothing else. Widening this
+ * to falsy would swallow `0`, which is a legitimate reading of every switch,
+ * shape and enum in the fleet.
+ */
+export function observeLanded(state, key, raw, value, now, durationMs = 120) {
+    if (raw === undefined) return { from: null, to: value, t: 1, moving: false };
+    return observe(state, key, value, now, durationMs);
+}
+
 function progress(state, key, now, durationMs) {
     const since = state.since.get(key);
     if (since === undefined || !(durationMs > 0)) return 1;

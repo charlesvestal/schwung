@@ -41,7 +41,7 @@ import {
 } from "./font_big_num.mjs";
 import { fontWidth4x5, fontPrint4x5, FONT4_HEIGHT, FONT4_MEASURE } from "./font4x5.mjs";
 import { fontWidth5x3, fontPrint5x3 } from "./font5x3.mjs";
-import { observe as animObserve, easeOut, lerp } from "./anim_state.mjs";
+import { observe as animObserve, observeLanded as animObserveLanded, easeOut, lerp } from "./anim_state.mjs";
 /* The one definition of the chrome geometry (see the band comment below). */
 import { SCREEN_WIDTH as W, HEADER_H, RULE_Y, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "../list_geometry.mjs";
@@ -1412,7 +1412,7 @@ export function enumSquareWidth(text) {
  * behaviour it did not ask for. A missing `anim` is the normal case, not an
  * error.
  */
-export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
+export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
     const h = BOX_H;
     const target = enumSquareWidth(text);
 
@@ -1424,7 +1424,11 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey) {
      */
     let w = target;
     if (anim && typeof nowMs === "number" && animKey) {
-        const a = animObserve(anim, "enumw:" + animKey, target, nowMs, ENUM_ANIM_MS);
+        /* `raw` is the value BEHIND the text, and the text alone cannot stand
+         * in for it: an unread key renders as "--", which is a perfectly
+         * ordinary string with a perfectly ordinary width, so the box would
+         * grow out of it on arrival. See observeLanded. */
+        const a = animObserveLanded(anim, "enumw:" + animKey, raw, target, nowMs, ENUM_ANIM_MS);
         if (a.moving && typeof a.from === "number") {
             w = Math.round(lerp(a.from, target, easeOut(a.t)));
             if (w < ENUM_MIN_W) w = ENUM_MIN_W;
@@ -1832,7 +1836,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
         /* Its own centring — it reserves an ENUM_W slot, not KW, and sizes
          * itself inside it. */
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text,
-                       anim, nowMs, animKey);
+                       anim, nowMs, animKey, shown);
         return;
     }
     /*

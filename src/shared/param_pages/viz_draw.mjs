@@ -34,7 +34,7 @@ import {
 } from "./viz.mjs";
 import { enumIndexOf } from "./param_meta.mjs";
 import { wavPeaks, resamplePeaks } from "./wav_peaks.mjs";
-import { observe, easeOut, lerp } from "./anim_state.mjs";
+import { observeLanded, easeOut, lerp } from "./anim_state.mjs";
 
 /* ------------------------------------------------------------- animation --
  *
@@ -1077,7 +1077,12 @@ export function drawWaveform(ctx, rect, key, values, metaIndex, anim, nowMs) {
          * retarget morphs from the shape it was heading to — the last thing
          * actually drawn — which at 100ms is at most one frame stale.
          */
-        const tr = observe(anim, "wave:" + key, "s" + shape, nowMs, WAVE_MORPH_MS);
+        /* The RAW value, not the shape id: `lfoShapeIdOf` falls through to a
+         * default for anything it does not recognise, so an unread key resolves
+         * to a perfectly ordinary shape and the morph out of it looks exactly
+         * like a real one. See observeLanded. */
+        const tr = observeLanded(anim, "wave:" + key, values ? values[key] : undefined,
+                                 "s" + shape, nowMs, WAVE_MORPH_MS);
         if (tr.moving && typeof tr.from === "string") {
             const f = Number(tr.from.slice(1));
             if (Number.isFinite(f) && f !== shape) { morphFrom = f; morphT = easeOut(tr.t); }
