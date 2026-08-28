@@ -95,6 +95,8 @@ import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_
  * the live blob, and never turns a failed read into a `*`. */
 import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
+import { groupLfoTargetParams, flatLfoTargetParams, locateLfoTargetParam, indexOfKey }
+    from '/data/UserData/schwung/shared/lfo_target_groups.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
@@ -421,7 +423,8 @@ const VIEWS = {
     LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
     ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
-    LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 2: parameter
+    LFO_TARGET_GROUP: "lfotargetgroup",       // LFO target picker step 2: level group (skipped when ungrouped)
+    LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 3: parameter
     ENUM_PICKER: "enumpick",                  // Option list for an enum param
     COMPONENT_LOADING: "comploading"          // "Loading..." while a component's contract arrives
 };
@@ -3702,6 +3705,8 @@ function restoreMasterFxLfo(lfoIndex, lfoConfig) {
 /* LFO target picker state */
 let lfoTargetComponents = [];  /* Available components [{key, label}] */
 let selectedLfoTargetComp = 0;
+let lfoTargetGroups = [];      /* Level groups [{key, label, params}] — see lfo_target_groups.mjs */
+let selectedLfoTargetGroup = 0;
 let lfoTargetParams = [];      /* Params for selected component [{key, label}] */
 let selectedLfoTargetParam = 0;
 
@@ -16207,6 +16212,12 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem(lfoTargetComponents[selectedLfoTargetComp].label);
             }
             break;
+        case VIEWS.LFO_TARGET_GROUP:
+            selectedLfoTargetGroup = Math.max(0, Math.min(lfoTargetGroups.length - 1, selectedLfoTargetGroup + delta));
+            if (lfoTargetGroups.length > 0) {
+                announceMenuItem(lfoTargetGroups[selectedLfoTargetGroup].label);
+            }
+            break;
         case VIEWS.LFO_TARGET_PARAM:
             selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam + delta));
             if (lfoTargetParams.length > 0) {
@@ -17054,6 +17065,11 @@ function handleSelect() {
             }
             break;
         }
+        case VIEWS.LFO_TARGET_GROUP: {
+            if (lfoTargetGroups.length > 0) enterLfoTargetGroupParams(selectedLfoTargetGroup);
+            needsRedraw = true;
+            break;
+        }
         case VIEWS.LFO_TARGET_PARAM: {
             if (lfoTargetParams.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
@@ -17510,7 +17526,24 @@ function handleBack() {
             announce(lfoCtx ? lfoCtx.title : "LFO");
             needsRedraw = true;
             break;
+        case VIEWS.LFO_TARGET_GROUP:
+            setView(VIEWS.LFO_TARGET_COMPONENT);
+            if (lfoTargetComponents.length > 0) {
+                announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
+            }
+            needsRedraw = true;
+            break;
         case VIEWS.LFO_TARGET_PARAM:
+            /* One step back is the group when there IS one — the component
+             * picker is two. `lfoTargetGroups` is emptied whenever the group
+             * step was skipped, so this cannot strand the user on a screen
+             * that was never shown. */
+            if (lfoTargetGroups.length > 0) {
+                setView(VIEWS.LFO_TARGET_GROUP);
+                announce("Section, " + lfoTargetGroups[selectedLfoTargetGroup].label);
+                needsRedraw = true;
+                break;
+            }
             setView(VIEWS.LFO_TARGET_COMPONENT);
             if (lfoTargetComponents.length > 0) {
                 announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
@@ -18686,6 +18719,9 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         getTargetParams: function(compKey) {
             return lfoTargetParamsFor(slotChainTarget(slot), compKey, "LFO");
         },
+        getTargetGroups: function(compKey) {
+            return lfoTargetGroupsFor(slotChainTarget(slot), compKey, "LFO");
+        },
         title: "LFO " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
         returnAnnounce: "Chain Settings",
@@ -18705,56 +18741,71 @@ const LFO_TARGET_PARAMS = [
  *
  * The slot and Master FX LFO editors held two copies of this that differed
  * only in how the chain_params key was spelled, which the chain target now
- * answers. Only continuous types are offered: a string or an action has no
- * range for a depth to mean anything against.
+ * answers. The type allowlist itself (and the story of `wav_position`, which
+ * was missing from it and cost the whole modulation-indicator chain) now lives
+ * in `flatLfoTargetParams` — this is the IPC half.
  */
 function lfoTargetParamsFor(target, compKey, logLabel) {
     /* LFO-to-LFO: return hardcoded LFO params */
     if (compKey === "lfo1" || compKey === "lfo2") return LFO_TARGET_PARAMS.slice();
-    const result = [];
     try {
         const json = chainTargetGetParam(target, compKey, "chain_params");
-        if (json) {
-            const params = JSON.parse(json);
-            for (let i = 0; i < params.length; i++) {
-                const p = params[i];
-                /*
-                 * `wav_position` IS a modulation target, and leaving it out
-                 * cost the whole indicator chain.
-                 *
-                 * This is a TYPE ALLOWLIST written before wav_position
-                 * existed, and it silently excluded every sample-position
-                 * param in the fleet -- mrdrums Sample Start, granny, mrsample.
-                 * A wav_position is a ranged number a knob turns (min/max
-                 * declared, 0..1), which is the only property the modulation
-                 * engine needs: chain_mod_emit_value looks the key up with
-                 * find_param_by_key and scales by the declared range, and
-                 * neither cares what the UI calls the type.
-                 *
-                 * The consequence was not "one missing menu row". Because the
-                 * param could not be picked, an LFO aimed at a sample start
-                 * had to be routed to the CONCRETE per-pad key instead, while
-                 * the grid draws the ALIAS -- so `<alias>:modulated` answered
-                 * 0, the read cursor never asked for `:base`, and the key
-                 * never entered refreshModulatedValues. Reported from the
-                 * device as a lost LFO dot and a choppy cell: the cell was
-                 * being fed the effective value by the ordinary rotation at
-                 * ~6Hz instead of the base plus a 44Hz dot.
-                 *
-                 * Confirmed on hardware with param_tally: `synth:pad_start`
-                 * and `synth:pad_start:modulated` both read 6x/window, and
-                 * `synth:pad_start:base` NEVER read.
-                 */
-                if (p.type === "float" || p.type === "int" || p.type === "enum"
-                    || p.type === "wav_position") {
-                    result.push({ key: p.key, label: p.name || p.label || p.key });
-                }
-            }
-        }
+        if (json) return flatLfoTargetParams(JSON.parse(json));
     } catch (e) {
         debugLog(logLabel + ": Failed to parse chain_params: " + e);
     }
-    return result;
+    return [];
+}
+
+/*
+ * The same list, grouped by the levels the component's hierarchy declares —
+ * see `shared/lfo_target_groups.mjs` for why, and for the losslessness rule.
+ *
+ * TWO reads, once, on entry to the picker. Not a draw path.
+ *
+ * `null` from the hierarchy read is the third answer: the read did not
+ * complete. It is NOT "this module declares no levels", and treating it as one
+ * is the granny bug — a timed-out `ui_hierarchy` read paginating chain_params
+ * instead, and then latching. Nothing here caches (the list is rebuilt on every
+ * entry), so the cost is one wrong-shaped menu rather than a stuck plan, but
+ * the branch is on the RAW value before parsing, and one retry is cheaper than
+ * showing the user a flat 418-row list they were not meant to see.
+ */
+function lfoTargetGroupsFor(target, compKey, logLabel) {
+    if (compKey === "lfo1" || compKey === "lfo2") {
+        return { grouped: false, flat: LFO_TARGET_PARAMS.slice(), groups: [] };
+    }
+
+    /* chain_params is read ONCE here and both halves come out of it — the flat
+     * list AND the grouping. Calling lfoTargetParamsFor for the first would
+     * make this three reads (~8 ms) where two will do. */
+    let chainParams = [];
+    try {
+        chainParams = JSON.parse(chainTargetGetParam(target, compKey, "chain_params") || "[]");
+    } catch (e) {
+        debugLog(logLabel + ": Failed to parse chain_params: " + e);
+    }
+    const flat = flatLfoTargetParams(chainParams);
+
+    let raw = chainTargetGetParam(target, compKey, "ui_hierarchy");
+    if (raw === null) raw = chainTargetGetParam(target, compKey, "ui_hierarchy");
+    if (raw === null) {
+        debugLog(logLabel + ": ui_hierarchy read failed twice for " + compKey +
+                 " — offering the flat list rather than inventing a grouping");
+        return { grouped: false, flat, groups: [] };
+    }
+
+    let hierarchy = null;
+    if (raw) {
+        try { hierarchy = JSON.parse(raw); }
+        catch (e) { debugLog(logLabel + ": Failed to parse ui_hierarchy: " + e); }
+    }
+    try {
+        return groupLfoTargetParams({ hierarchy, chainParams });
+    } catch (e) {
+        debugLog(logLabel + ": Failed to group targets: " + e);
+        return { grouped: false, flat, groups: [] };
+    }
 }
 
 function makeMfxLfoCtx(lfoIdx) {
@@ -18793,6 +18844,9 @@ function makeMfxLfoCtx(lfoIdx) {
         },
         getTargetParams: function(compKey) {
             return lfoTargetParamsFor(MASTER_CHAIN_TARGET, compKey, "MFX LFO");
+        },
+        getTargetGroups: function(compKey) {
+            return lfoTargetGroupsFor(MASTER_CHAIN_TARGET, compKey, "MFX LFO");
         },
         title: "MFX LFO " + (lfoIdx + 1),
         returnView: VIEWS.MASTER_FX,
@@ -18952,28 +19006,99 @@ function drawLfoEdit() {
     });
 }
 
-/* LFO target picker: step 1 - select component */
+/*
+ * LFO target picker: step 1 — select component.
+ *
+ * Lands on the component the LFO is ALREADY routed at, not on index 0. The
+ * reset was free to write and expensive to use: re-aiming an LFO pointed at
+ * param #143 of 418 cost the same 143 jog steps as the first time, with the
+ * answer sitting in `target` the whole while. Nothing new is persisted for
+ * this — the stored routing IS the memory, so it cannot go stale.
+ */
 function enterLfoTargetPicker() {
     if (!lfoCtx) return;
     lfoTargetComponents = lfoCtx.getTargetComponents();
-    selectedLfoTargetComp = 0;
+    /* Cleared here, not only in step 2: a group list left over from the last
+     * component would send Back to a screen this component never showed. */
+    lfoTargetGroups = [];
+    selectedLfoTargetGroup = 0;
+    selectedLfoTargetComp = indexOfKey(lfoTargetComponents, lfoCtx.getParam("target"));
     setView(VIEWS.LFO_TARGET_COMPONENT);
     if (lfoTargetComponents.length > 0) {
-        announce("Target, " + lfoTargetComponents[0].label);
+        announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
     }
 }
 
-/* LFO target picker: step 2 - select parameter for chosen component */
+/*
+ * LFO target picker: step 2 — the component's level groups, or straight to its
+ * params when grouping would not pay (no hierarchy, a short list, or one
+ * group). See `shared/lfo_target_groups.mjs`.
+ */
 function enterLfoTargetParamPicker(componentKey) {
     if (!lfoCtx) return;
-    lfoTargetParams = lfoCtx.getTargetParams(componentKey);
-    selectedLfoTargetParam = 0;
+    const grouping = lfoCtx.getTargetGroups
+        ? lfoCtx.getTargetGroups(componentKey)
+        : { grouped: false, flat: lfoCtx.getTargetParams(componentKey), groups: [] };
+
+    /* Seed only within the component the routing actually names. Carrying a
+     * param index across components would land the cursor on whatever happens
+     * to sit at that ordinal in a module that knows nothing about it. */
+    const routedHere = lfoCtx.getParam("target") === componentKey;
+    const storedParam = routedHere ? lfoCtx.getParam("target_param") : "";
+
+    if (!grouping.grouped) {
+        lfoTargetGroups = [];
+        lfoTargetParams = grouping.flat;
+        selectedLfoTargetParam = indexOfKey(lfoTargetParams, storedParam);
+        setView(VIEWS.LFO_TARGET_PARAM);
+        if (lfoTargetParams.length > 0) {
+            announce("Param, " + lfoTargetParams[selectedLfoTargetParam].label);
+        } else {
+            announce("No parameters available");
+        }
+        return;
+    }
+
+    lfoTargetGroups = grouping.groups;
+    const at = locateLfoTargetParam(lfoTargetGroups, storedParam);
+    selectedLfoTargetGroup = at.groupIndex;
+    selectedLfoTargetParam = at.paramIndex;
+    setView(VIEWS.LFO_TARGET_GROUP);
+    announce("Section, " + lfoTargetGroups[selectedLfoTargetGroup].label);
+}
+
+/* LFO target picker: step 3 — the params in the chosen group. */
+function enterLfoTargetGroupParams(groupIndex) {
+    const group = lfoTargetGroups[groupIndex];
+    if (!group) return;
+    lfoTargetParams = group.params;
+    /* selectedLfoTargetParam is already the stored routing's index when this
+     * is the group it lives in; anywhere else, start at the top. */
+    if (selectedLfoTargetGroup !== groupIndex) selectedLfoTargetParam = 0;
+    selectedLfoTargetGroup = groupIndex;
+    selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam));
     setView(VIEWS.LFO_TARGET_PARAM);
     if (lfoTargetParams.length > 0) {
-        announce("Param, " + lfoTargetParams[0].label);
+        announce("Param, " + lfoTargetParams[selectedLfoTargetParam].label);
     } else {
         announce("No parameters available");
     }
+}
+
+function drawLfoTargetGroup() {
+    clear_screen();
+    const compIdx = selectedLfoTargetComp;
+    const compLabel = (compIdx >= 0 && compIdx < lfoTargetComponents.length)
+        ? lfoTargetComponents[compIdx].label : "Target";
+    drawHeader(truncateText((lfoCtx ? lfoCtx.title : "LFO") + " > " + compLabel, 22));
+
+    drawMenuList({
+        items: lfoTargetGroups,
+        selectedIndex: selectedLfoTargetGroup,
+        getLabel: function(item) { return item.label; },
+        getValue: function(item) { return String(item.params.length); },
+        valueAlignRight: true,
+    });
 }
 
 function drawLfoTargetComponent() {
@@ -18992,7 +19117,13 @@ function drawLfoTargetParam() {
     const compIdx = selectedLfoTargetComp;
     const compLabel = (compIdx >= 0 && compIdx < lfoTargetComponents.length)
         ? lfoTargetComponents[compIdx].label : "Param";
-    drawHeader((lfoCtx ? lfoCtx.title : "LFO") + " > " + compLabel);
+    /* Grouped: the SECTION, not the component. The component is one row back
+     * and the section is what you cannot see from here — the same reasoning
+     * that makes the long LFO target label name the module and not the slot
+     * (shared/lfo_target_label.mjs). */
+    const group = lfoTargetGroups.length ? lfoTargetGroups[selectedLfoTargetGroup] : null;
+    drawHeader(truncateText((lfoCtx ? lfoCtx.title : "LFO") + " > " +
+                            (group ? group.label : compLabel), 22));
 
     if (lfoTargetParams.length === 0) {
         print(LIST_LABEL_X, LIST_TOP_Y, "No parameters", 1);
@@ -19431,6 +19562,7 @@ function dispatchCoRunDraw() {
         case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
         case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
+        case VIEWS.LFO_TARGET_GROUP:     drawLfoTargetGroup(); break;
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
         case VIEWS.STORE_PICKER_RESULT:  drawStorePickerResult(); break;
         case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
@@ -20580,6 +20712,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.LFO_TARGET_COMPONENT:
             drawLfoTargetComponent();
+            break;
+        case VIEWS.LFO_TARGET_GROUP:
+            drawLfoTargetGroup();
             break;
         case VIEWS.LFO_TARGET_PARAM:
             drawLfoTargetParam();
