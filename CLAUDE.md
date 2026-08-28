@@ -653,6 +653,48 @@ list-editor probe was anchored on the first `type === "enum"` in
 `shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
 and stayed GREEN with the branch deleted.
 
+### Two values means the DETENT TOGGLES, once per flick
+
+There were three spellings of one control and two of them had a dead
+direction: an Off/On (or int 0..1) boolean was direction-ABSOLUTE — right meant
+On, left meant Off, so at Off a left turn did nothing forever — while a two-way
+CHOICE like Mix/Reverb fell to the enum branch and CLAMPED behind the
+four-detent gate, so at Mix a left turn did nothing forever and a right turn
+took four detents to do anything.
+
+Reported from the device: *"if there are only two, why not let it wrap
+otherwise you have to know which way is off and which way is on, in which case
+you need some knowledge you dont have."* There is no way to acquire it — the
+cell shows a STATE, not a direction. Same argument that makes a trigger fire in
+either direction.
+
+**WRAPPING ALONE WOULD NOT DO, and that is the part worth keeping.** With two
+values, "wrap" and "toggle on every detent" are the same thing, and one flick
+of an encoder is a dozen detents — so a flick would land on whichever value the
+detent count happened to be even or odd about. `isTwoWayMeta` in
+`knob_engine.mjs` therefore pairs the toggle with a LATCH at
+`TWO_WAY_GESTURE_GAP_MS`, the same number and the same rule as
+`TRIGGER_KNOB_GESTURE_GAP_MS`: **one flick is one gesture.** And it is a latch
+rather than a rate limit — the stamp is the last **DETENT**, so the clock runs
+on STILLNESS. That distinction shipped wrong once already on the trigger and
+was reported from hardware; `test_two_way_knob_toggle.sh` pins it as a
+sequence, and pins the two constants EQUAL by number, because a user cannot
+learn two flick lengths for two controls that look alike.
+
+**It lives in the ENGINE, so every surface inherits it** — knob grid, knob
+card, list edit mode, the hierarchy editor and the patches screen all reach
+`knobStep`. A TRIGGER is excluded there by `access: "write"`, not by option
+count: it is a two-option enum on the wire, and toggling it writes "do nothing"
+on every other flick, which for euclidrum is the write that destroys a kit.
+Three or more options are untouched — they keep the gate and they CLAMP, because
+wrapping a 47-model list makes the end of it unreachable by feel.
+
+Consequence worth knowing: the jog in list edit mode routes through
+`knobEditStep` -> `onKnobTurn` -> `knobStep`, so it inherits the latch too. A
+deliberate jog detent is 1:1 everywhere else, so flipping a two-way twice in
+under ~270 ms from the jog is swallowed. Deliberate, and the cheapest place to
+revisit if it ever reads wrong.
+
 ### A knob page drawn as a LIST has three states, and said none of them
 
 `footerHints()` had no branch for `knobsAsList` at all and fell through to the

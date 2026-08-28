@@ -1939,6 +1939,12 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
+**A two-option enum is turned differently, too.** With two values there is
+nowhere to go but the other one, so a detent TOGGLES it whichever way you
+turned — and one flick of the encoder is one flip, not a dozen. Three or more
+options keep the four-detent gate and clamp at the ends. A trigger
+(`access: "write"`) is never toggled; it fires.
+
 **Except at exactly two options, where there is no list to open.** On the knob
 grid the click FLIPS it — the picker would show the value already in the cell
 and the one other value there is — and the footer reads `CLK FLIP` rather than

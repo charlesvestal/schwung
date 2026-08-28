@@ -63,6 +63,7 @@ Promise.all([
     M.flipsOnClick, M.isTurnable);
 
   /* ---- a real controller, in LIST layout ------------------------------- */
+  let clock = 10000;   /* driven explicitly: the two-way latch is measured in ms */
   const store = { cutoff: "0.5", flip2: "Off", pick3: "A", trig2: "—", ro2: "No" };
   const HIER = JSON.stringify({ modes: null, levels: { root: { label: "S",
       knobs: ["cutoff", "flip2", "pick3", "trig2", "ro2"],
@@ -84,6 +85,7 @@ Promise.all([
     },
     setParam: () => {},
     announce: () => {},
+    now: () => clock,
   });
   ctl.setLayout(C.LAYOUT_LIST);
   ctl.load({ slot: 0, component: "synth" });
@@ -165,12 +167,38 @@ Promise.all([
     fail("clicking a two-option enum row should FOCUS it, not flip or open it");
   const beforeFlip = ctl.state.values["flip2"];
   ctl.onJog(1);
-  if (ctl.state.values["flip2"] === beforeFlip)
+  const afterUp = ctl.state.values["flip2"];
+  if (afterUp === beforeFlip)
     fail("the jog did not move a focused two-option enum — focus without a working jog is " +
          "worse than the flip it replaced");
-  ctl.onJog(-1);
+
+  /* EITHER DIRECTION toggles: from the same starting value, a DOWN detent must
+   * reach the same place an UP detent did. The cell shows a state, not a
+   * direction, so a control where left does nothing is dead half the time.
+   * Driven from a fresh gesture at the same start value rather than by
+   * reversing, which the latch is entitled to swallow. */
+  clock += 2000;
+  ctl.onJog(-1);                                   /* back to the start */
+  clock += 2000;
   if (ctl.state.values["flip2"] !== beforeFlip)
-    fail("the focused enum did not step back; a two-way must be reachable in both directions");
+    fail("a two-way did not come back on the opposite detent");
+  ctl.onJog(-1);                                   /* DOWN from the start */
+  if (ctl.state.values["flip2"] !== afterUp)
+    fail("a DOWN detent left a two-way at " + ctl.state.values["flip2"] + " but UP reached " +
+         afterUp + " — the direction still has to be known, which is the whole complaint");
+
+  /* ONE FLICK IS ONE FLIP. Wrapping alone would toggle on every detent, so a
+   * spin would land wherever the count happened to be even or odd about. */
+  const settled = ctl.state.values["flip2"];
+  for (let i = 0; i < 20; i++) { clock += 30; ctl.onJog(1); }
+  if (ctl.state.values["flip2"] !== settled)
+    fail("a 20-detent spin flipped a two-way again — this is a wrap, not a gesture latch");
+  /* ...and stillness ends the gesture, so the next reach works. */
+  clock += 2000;
+  ctl.onJog(1);
+  if (ctl.state.values["flip2"] === settled)
+    fail("the two-way stayed latched after the knob went still — the stamp must be the last " +
+         "DETENT, so the clock runs on stillness rather than on elapsed time");
 
   /* ---- 5. A HELD KNOB MUST NOT CLAIM THIS FOOTER ------------------------ */
   ctl.exitMenu();                 /* back to the row cursor */
