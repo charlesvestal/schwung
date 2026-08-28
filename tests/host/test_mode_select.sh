@@ -93,16 +93,16 @@ Promise.all([
   if (after !== "performance")
     say("after choosing performance the pages are still rooted at " + JSON.stringify(after) +
         " — the hierarchy was not re-planned");
-  /* The parts level is what performance mode unlocks, and it must be reachable
-     EARLY: rooted at performance it is one of the first levels, where rooted at
-     patch it is buried. */
+  /* The parts level is what performance mode unlocks, and patch mode must not
+     have it AT ALL. This used to read "reachable earlier in performance than
+     in patch", because the orphan sweep put the whole performance tree on the
+     end of the patch plan too -- the parts page was at 72 of 76, editing a
+     performance you were not in. See test_param_pages_mode_gating.sh. */
   const partsAt = ctl.pages.findIndex((p) => p.childOf);
   if (partsAt < 0) say("performance mode does not reach the part selector");
   const patchPlan = P.planPages({ hierarchy: h, chainParams: cp, mode: "patch" }).pages;
-  const partsAtPatch = patchPlan.findIndex((p) => p.childOf);
-  if (!(partsAt < partsAtPatch))
-    say("the part selector is at page " + partsAt + " in performance and " + partsAtPatch +
-        " in patch — the root did not actually move");
+  if (patchPlan.some((p) => p.childOf))
+    say("patch mode still plans the part selector — the root did not actually move");
 
   /*
    * NOT asserted: that the current-mode marker follows the module rather than
@@ -111,6 +111,65 @@ Promise.all([
    * through the public API, so a test for it would only be able to assert
    * itself. Said here rather than written as a check that cannot fail.
    */
+
+  /* ---- entering a module SEEDS the mode from the module ----------------
+   *
+   * No caller passes `mode` on entry, so the planner fell back to modes[0]:
+   * a MiniJV sitting in Performance planned its patch tree until you found
+   * this page and picked Performance by hand. It went unnoticed because both
+   * trees were planned regardless until mode gating landed.
+   *
+   * The module answers "Performance"; the level is called "performance". The
+   * seeding match is case-insensitive for exactly that reason, so answering
+   * it the way the module really does is the test, not a convenience. */
+  for (const [answer, want] of [["Performance", "performance"], ["Patch", "patch"],
+                                ["1", "performance"], ["", "patch"]]) {
+    const c2 = C.createController({
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(h);
+        if (b === "chain_params") return JSON.stringify(cp);
+        if (b === "mode") return answer;
+        return "10";
+      },
+      setParam: () => {}, announce: () => {},
+    });
+    c2.load({ slot: 0, component: "synth" });
+    for (let i = 0; i < 10; i++) c2.tick();
+    const got = rootOf(c2.pages);
+    if (got !== want)
+      say("a module answering mode=" + JSON.stringify(answer) + " was planned at root " +
+          JSON.stringify(got) + ", expected " + want);
+  }
+
+  /* A FAILED read is not an answer. It must not seed modes[0] as though the
+     module had said so -- leaving it unset is what makes the next reload ask
+     again. Observable as: the root is still the fallback, but nothing latched,
+     so a later successful read moves it. */
+  {
+    let answer = null;
+    let clock = 0;
+    const c3 = C.createController({
+      now: () => clock,
+      getParam: (k) => {
+        const b = String(k).replace(/^[^:]+:/, "");
+        if (b === "ui_hierarchy") return JSON.stringify(h);
+        if (b === "chain_params") return JSON.stringify(cp);
+        if (b === "mode") return answer;
+        return "10";
+      },
+      setParam: () => {}, announce: () => {},
+    });
+    c3.load({ slot: 0, component: "synth" });
+    for (let i = 0; i < 10; i++) c3.tick();
+    if (rootOf(c3.pages) !== "patch") say("a failed mode read should fall back to the first mode");
+    answer = "Performance";
+    /* The re-ask is on the contract settle deadline, which is wall-clock. */
+    clock += C.CONTRACT_SETTLE_MS * 4;
+    for (let i = 0; i < 40; i++) { clock += 20; c3.tick(); }
+    if (rootOf(c3.pages) !== "performance")
+      say("a failed mode read LATCHED — the later answer never took effect");
+  }
 
   console.log("  ok  every page minijv plans is one the grid draws");
   console.log("  ok  the mode selector is an items page and writes its param");

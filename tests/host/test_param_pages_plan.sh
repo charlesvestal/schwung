@@ -61,12 +61,27 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
   const deliberatelyExcluded = new Set();
   for (const mod of fx.modules) {
     const h = mod.ui_hierarchy;
-    const r = planPages({ hierarchy: h, chainParams: mod.chain_params });
-    totalPages += r.pages.length;
+    /*
+     * A module declaring `modes` plans ONE mode at a time -- the inactive
+     * mode`s levels are not orphans and are no longer swept in (see
+     * test_param_pages_mode_gating.sh). So coverage is the union over modes:
+     * "every declared key is reachable in SOME mode", which is the invariant
+     * that was always meant. Asserting it against a single plan would have
+     * demanded minijv show its performance tree while in patch mode, i.e. the
+     * bug. Every other module has exactly one plan and is unaffected.
+     */
+    const modeList = Array.isArray(h && h.modes) && h.modes.length ? h.modes : [undefined];
+    const plans = modeList.map((md) => planPages({ hierarchy: h, chainParams: mod.chain_params, mode: md }));
+    const r = { pages: plans.flatMap((p) => p.pages), warnings: plans.flatMap((p) => p.warnings || []) };
+    totalPages += plans[0].pages.length;
 
-    /* Page names are the only way a user tells 47 pages apart. */
-    const names = r.pages.filter((p) => p.kind === PAGE_KNOBS).map((p) => p.name);
-    if (names.length !== new Set(names).size) dupNames.push(mod.id);
+    /* Page names are the only way a user tells 47 pages apart. Per PLAN, not
+     * over the union -- two modes may each legitimately own a page called
+     * "Presets", and they are never on screen together. */
+    for (const p of plans) {
+      const names = p.pages.filter((pg) => pg.kind === PAGE_KNOBS).map((pg) => pg.name);
+      if (names.length !== new Set(names).size) dupNames.push(mod.id);
+    }
 
     /* Declared = every editable key any level lists, on a knob or not.
      *
@@ -156,16 +171,29 @@ import("./src/shared/param_pages/page_plan.mjs").then(async (m) => {
 
   /* ---- 4. minijv: the fleet in one module ------------------------------- */
   {
+    /* Patch is minijv`s first mode and so the default plan; the part selector
+       lives in the OTHER one, which is the whole point of the mode split. */
     const { pages } = plan("minijv");
+    const perf = planPages({ hierarchy: fx.modules.find((x) => x.id === "minijv").ui_hierarchy,
+                             chainParams: fx.modules.find((x) => x.id === "minijv").chain_params,
+                             mode: "performance" }).pages;
     /* The mode selector is an ITEMS page now -- same gesture, same machinery.
-       PAGE_ITEMS was a kind nothing ever drew. */
-    if (!(pages[0].kind === PAGE_ITEMS && pages[0].modeSelect))
-      fail("minijv must open on the mode select, got " + pages[0].kind);
-    if (!pages.some((p) => p.kind === PAGE_PRESET)) fail("minijv has no preset page");
-    if (!pages.some((p) => p.kind === PAGE_ITEMS && p.childOf))
+       PAGE_ITEMS was a kind nothing ever drew. It leads BOTH modes: it is the
+       only way back to the other one. */
+    for (const [label, set] of [["patch", pages], ["performance", perf]]) {
+      if (!(set[0].kind === PAGE_ITEMS && set[0].modeSelect))
+        fail("minijv " + label + " must open on the mode select, got " + set[0].kind);
+      if (!set.some((p) => p.kind === PAGE_PRESET)) fail("minijv " + label + " has no preset page");
+    }
+    if (!perf.some((p) => p.kind === PAGE_ITEMS && p.childOf))
       fail("minijv lost its child_prefix part selector");
+    if (pages.some((p) => p.kind === PAGE_ITEMS && p.childOf))
+      fail("minijv shows its part selector in PATCH mode");
     if (pages.filter((p) => p.kind === PAGE_ITEMS).length < 3) fail("minijv lost items_param pages");
-    if (pages.length < 60) fail("minijv collapsed to " + pages.length + " pages (expected ~76)");
+    if (pages.length < 60) fail("minijv patch collapsed to " + pages.length + " pages (expected ~70)");
+    /* Performance is the small tree; if it ever approaches patch`s size the
+       two have been merged again. */
+    if (perf.length > 20) fail("minijv performance planned " + perf.length + " pages — trees merged?");
 
     /* Four near-identical tone subtrees: without parent prefixes the user gets
      * four pages called "Filter" and no way to tell them apart. */

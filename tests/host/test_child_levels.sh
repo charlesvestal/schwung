@@ -66,7 +66,12 @@ Promise.all([
     checked++;
 
     const ix = M.buildMetaIndex({ hierarchy: h, chainParams: cp });
-    const pages = P.planPages({ hierarchy: h, chainParams: cp, metaIndex: ix }).pages;
+    /* A module with `modes` plans one mode at a time, so a child level living
+       in the second mode is absent from the first mode`s plan and that is
+       correct. "Reachable" means reachable in SOME mode. */
+    const modeList = (Array.isArray(h.modes) && h.modes.length) ? h.modes : [undefined];
+    const pages = modeList.flatMap(
+      (md) => P.planPages({ hierarchy: h, chainParams: cp, metaIndex: ix, mode: md }).pages);
 
     for (const lvl of childLevels) {
       const sel = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_ITEMS && p.childOf);
@@ -94,6 +99,11 @@ Promise.all([
       const b = String(k).replace(/^[^:]+:/, "");
       if (b === "ui_hierarchy") return JSON.stringify(h);
       if (b === "chain_params") return JSON.stringify(cp);
+      /* Parts exist ONLY in performance mode, and since the modes gate the
+         walk the controller has to be told which one we are in -- answered
+         the way the module answers it, capitalised, to exercise the seeding
+         match as well (the level is called "performance"). */
+      if (b === "mode") return "Performance";
       reads.push(b); return "10";
     },
     setParam: (k) => writes.push(String(k).replace(/^[^:]+:/, "")),
