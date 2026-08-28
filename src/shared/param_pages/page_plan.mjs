@@ -76,6 +76,50 @@ function childOf(level) {
     return (c && c !== "None") ? c : null;
 }
 
+/**
+ * Which of `modes` a reported mode value names, or the first mode as the
+ * fallback. Exported because the seeding path in the shadow UI has to agree
+ * with the planner about this: the module reports "Performance" and the level
+ * is called "performance", so anything comparing them exactly reads a module
+ * in its second mode as being in its first.
+ */
+export function pickMode(reported, modes) {
+    if (!Array.isArray(modes) || modes.length === 0) return null;
+    if (reported === null || reported === undefined) return modes[0];
+    const want = String(reported).trim().toLowerCase();
+    if (!want) return modes[0];
+    const named = modes.find((m) => String(m).trim().toLowerCase() === want);
+    if (named !== undefined) return named;
+    /* A module may answer with the enum INDEX instead of the name. Name first,
+     * deliberately, so a mode literally called "1" still resolves as itself. */
+    const n = parseInt(want, 10);
+    if (Number.isInteger(n) && n >= 0 && n < modes.length) return modes[n];
+    return modes[0];
+}
+
+/* Every level reachable from `root` by the same two edges the walk follows —
+ * a `params` entry naming a level, and `children`. Used to work out which
+ * levels belong to a mode OTHER than the active one; the walk itself stays
+ * recursive-with-prefixes and cannot answer that question on its own. */
+function reachableFrom(levels, root) {
+    const seen = new Set();
+    const stack = [root];
+    while (stack.length) {
+        const key = stack.pop();
+        if (seen.has(key)) continue;
+        const lvl = levels[key];
+        if (!lvl) continue;
+        seen.add(key);
+        for (const p of (lvl.params || [])) {
+            const t = levelOf(p);
+            if (t) stack.push(t);
+        }
+        const kid = childOf(lvl);
+        if (kid) stack.push(kid);
+    }
+    return seen;
+}
+
 function knobKeys(level) {
     return ((level && level.knobs) || []).map(keyOf).filter((k) => k !== null);
 }
@@ -418,6 +462,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
     /* Mode select (minijv only in the fleet): with `modes` present the level
      * names ARE the mode names, so the active mode picks the walk root. */
     let rootKey = "root";
+    const inactiveModeLevels = new Set();
     const modes = Array.isArray(hierarchy.modes) ? hierarchy.modes : null;
     if (modes && modes.length > 0) {
         /*
@@ -438,9 +483,30 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
             selectParam: hierarchy.mode_param || "mode",
             modeSelect: true,
         });
-        const active = (mode && modes.includes(mode)) ? mode : modes[0];
+        /* Case-insensitive on purpose. The level names, and therefore the
+         * `modes` array, are lowercase; minijv's get_param("mode") answers
+         * "Performance". An exact match silently fell through to modes[0], so
+         * a module sitting in its second mode planned its first one. */
+        const active = pickMode(mode, modes);
         rootKey = levels[active] ? active : "root";
         if (!levels[active]) warnings.push(`mode "${active}" has no matching level`);
+        /*
+         * Levels owned by a mode that is NOT the active one.
+         *
+         * The orphan sweep at the bottom of the walk cannot tell "no edge
+         * reaches this" from "the other mode reaches this" — and it was
+         * written FOR minijv's performance tree, back when the Mode page was
+         * unreachable and those levels genuinely were orphans. Left alone it
+         * undoes the re-root one loop later: measured, both modes planned all
+         * 76 pages, differing only in which level got named "Main".
+         *
+         * Reachable-from-active wins, so a level both trees share is kept.
+         */
+        for (const other of modes) {
+            if (other === active) continue;
+            for (const k of reachableFrom(levels, other)) inactiveModeLevels.add(k);
+        }
+        for (const k of reachableFrom(levels, active)) inactiveModeLevels.delete(k);
     }
     if (!levels[rootKey]) {
         const first = Object.keys(levels)[0];
@@ -724,10 +790,16 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
     /* Root's own knobs become the first grid page, named for the root level. */
     visit(rootKey, null, false);
 
-    /* Levels no edge reaches (minijv's performance/perf_main/part_selector)
-     * would otherwise be permanently invisible. */
+    /* Levels no edge reaches would otherwise be permanently invisible.
+     *
+     * This used to name minijv's performance/perf_main/part_selector as the
+     * case it existed for. It no longer does: those are reached from the
+     * `performance` mode root, and hauling them in here is what stopped the
+     * mode from gating anything. `inactiveModeLevels` is the difference
+     * between an orphan and somebody else's tree. */
     for (const key of Object.keys(levels)) {
         if (visited.has(key)) continue;
+        if (inactiveModeLevels.has(key)) continue;
         const lvl = levels[key];
         if (knobKeys(lvl).length === 0 && paramKeys(lvl).length === 0 && !lvl.items_param && !lvl.list_param) continue;
         visit(key, null, false);
