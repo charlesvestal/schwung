@@ -1,0 +1,56 @@
+{
+  "_comment": [
+    "TEMPLATE. Copy to assets.local.json (which is gitignored) and edit the paths.",
+    "",
+    "WHY THIS EXISTS. The fleet audit renders each module's DECLARED contract, and",
+    "for an asset-driven module that contract depends on what is loaded. sf2 with an",
+    "empty soundfonts/ directory declares three parameters — preset, octave_transpose,",
+    "gain — and the audit faithfully draws that, which looks exactly like a module",
+    "with a broken UI rather than a module with nothing to play. Same class: sfz's",
+    "knob_0..knob_7 are SFZ-opcode controls that get their names from the loaded",
+    "instrument, and granny/mrsample need a sample before their surface is real.",
+    "",
+    "WHY PATHS AND NOT FILES. These are JV-880 ROMs, commercial soundfonts and",
+    "sample libraries: not ours to redistribute, and hundreds of megabytes. They are",
+    "never copied into this repo. provision_assets.sh reads this file and pushes them",
+    "from wherever they live on your machine STRAIGHT TO THE DEVICE, and",
+    "tests/host/test_no_bundled_assets.sh fails the build if one ever lands in the",
+    "tree — it checks what git tracks, so it catches `git add -f` too.",
+    "",
+    "The Node harness never reads these. It does not run the DSP; it renders a",
+    "captured contract. Assets matter at CAPTURE time, on the device, which is what",
+    "provision_assets.sh + dump_contracts_device.js are for."
+  ],
+
+  "device_module_root": "/data/UserData/schwung/modules/sound_generators",
+
+  "modules": {
+    "sf2": {
+      "device_dir": "sf2/soundfonts",
+      "note": "TinySoundFont reads every .sf2 here. Empty = a three-parameter module.",
+      "files": [
+        "/path/to/your/SoundFonts/GeneralUser GS v1.471.sf2"
+      ]
+    },
+    "sfz": {
+      "device_dir": "sfz/instruments",
+      "note": "One directory per instrument, each containing its .sfz and its samples.",
+      "files": []
+    },
+    "minijv": {
+      "device_dir": "minijv/roms",
+      "note": "jv880_waverom1/2.bin, jv880_rom1/2.bin, jv880_nvram.bin.",
+      "files": []
+    },
+    "dexed": {
+      "device_dir": "dexed/banks",
+      "note": "DX7 .syx cartridge banks, 32 voices each.",
+      "files": []
+    },
+    "osirus": {
+      "device_dir": "osirus/roms",
+      "note": "virus_b.BIN / virus_c.BIN.",
+      "files": []
+    }
+  }
+}
