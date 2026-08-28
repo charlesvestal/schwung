@@ -1058,6 +1058,39 @@ rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
 three modules declare `navigate_to` at all, and new vocabulary repeats the
 `options_as_string` lesson: documented for months, set by nobody.
 
+### An editor inherits the KNOB ROW of the page you came from
+
+A level's declared `knobs` array is not the order the user was just looking at.
+The grid re-seats keys for LAYOUT — `gatherGroupMembers` pulls granny's `spray`
+next to `position` so the waveform can span both cells — so diving into the
+wave editor silently changed which physical knob was which, **one click
+apart**. In the grid spray is knob 2; in the editor it was knob 4.
+
+Reported as *"the editor should be using the same knobs as the entered page.
+using main is confusing, it's a hidden order no one has reference to"* — and
+that is the argument: the declared order is invisible, and the page on screen a
+moment ago is the only reference a user has.
+
+`hierEditorKnobsFromPage` captures the page's keys in `openParamEditorFromGrid`
+(alongside `level`, and for the same reason — `exitParamPages` tears the
+controller down). Taken **verbatim**: no visibility filter, because the grid
+already applied one when it planned the page, and **no compaction**, because a
+hole means "this knob does nothing" and closing it would shift every knob after
+it — the same class of surprise this fixes. The level's own
+`hierEditorAllKnobs.filter(...)` path does compact, which is a latent version
+of the same bug for any level whose knobs are not all visible.
+
+Gated on the level it was captured from, so navigating elsewhere inside the
+editor hands the row back, and cleared in `exitHierarchyEditor` so it cannot
+survive into a later list-originated session.
+
+**It took a hardware log to find, and that is the point.** Turning what looked
+like the spray knob resolved to `synth:size_ms` in `adjustKnobAndShow`'s debug
+line. The mapping was not observable from outside `shadow_ui.js` — the same
+gap the routing comment blames for three shipped bugs — so `ctx.knobParamKey(i)`
+now exposes it, and `test_shadow_param_editor_routing.sh` asserts the MAPPING
+rather than the array.
+
 ### An editor returns to whoever OPENED it, through EVERY door
 
 Diving into a parameter from the knob grid can land you in three different
