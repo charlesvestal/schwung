@@ -328,8 +328,26 @@ Named against real functions, not invented ones.
 
 ### 10.1 Naming — reuse `viz`, namespaced `custom:<name>`
 
-A custom kind is declared as `"viz": "custom:mymeter"` in the same `chain_params`
-field that already carries the eight built-in kinds. Not a new `widget` field.
+`viz` is an **object**, not a string — `viz.mjs:180` returns early on anything that
+is not one, and the declared form is `{ group, role, kind, span }`:
+
+```json
+{ "key": "attack", "name": "Attack", "type": "float",
+  "viz": { "group": "amp", "role": "attack" } }
+```
+
+So the namespace goes on the **`kind` sub-field**, and a custom widget is declared
+in exactly the shape a built-in one already is — single-param or grouped:
+
+```json
+{ "key": "drive", "name": "Drive", "type": "float",
+  "viz": { "kind": "custom:mymeter" } }
+
+{ "key": "x", "viz": { "group": "pad", "role": "x", "kind": "custom:xy" } },
+{ "key": "y", "viz": { "group": "pad", "role": "y" } }
+```
+
+Not a new `widget` field.
 
 One field means one question — *what picture is this?* — with one answer. A
 separate field would let a param declare both a built-in `viz` and a custom widget
