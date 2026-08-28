@@ -27,7 +27,7 @@
  * EQ last because its false positives are the hardest to spot.
  */
 
-import { KIND_NUMBER, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
+import { KIND_NUMBER, KIND_ENUM, KIND_OPAQUE, isTrigger } from "./param_meta.mjs";
 
 /* Matches render_page.mjs COLS. Not imported from there to avoid a cycle
  * (render_page imports this module to draw what it resolves). */
@@ -609,6 +609,23 @@ function detectSwitch(pool) {
     const out = [];
     for (const item of pool) {
         if (!isBooleanMeta(item.meta)) continue;
+        /*
+         * A TRIGGER IS NOT A SWITCH, however boolean it looks.
+         *
+         * A write-only param declares that writing DOES something and the value
+         * means nothing. Palette spells its five randomisers as enums of
+         * ["0","1"] and Spectra spells its four as int 0..1, so both satisfy
+         * isBooleanMeta exactly -- and a switch graphic drew over them, showing
+         * a latched on/off position for a value the module never reports.
+         *
+         * drawKnobWidget already gets this right: widgetKindFor puts writeOnly
+         * ahead of the enum branch and returns a button. But A CELL A VIZ GROUP
+         * COVERS NEVER REACHES drawKnobWidget, so the graphic silently overruled
+         * the widget. Declaring access:"write" then appeared to do nothing at
+         * all -- the module was correct, the widget rule was correct, and the
+         * screen still showed a switch.
+         */
+        if (isTrigger(item.meta)) continue;
         out.push({
             kind: VIZ_SWITCH, group: null, roles: { value: item.key }, keys: [item.key],
             slotStart: item.slot, slotSpan: 1, source: VIZ_SOURCE_DETECTED,
