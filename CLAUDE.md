@@ -500,7 +500,8 @@ component load gate, and the input-dispatch order. Read it before editing
 - **The LFO target picker groups by level, and the grouping is LOSSLESS** — an
   orphan sweep into "Other", asserted over all 95 modules. It was one flat list
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
-  branches on that.
+  branches on that. **A child level lists TEMPLATES** — resolve them through
+  `child_key.mjs` or a drum module files 200+ keys under "Other".
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
