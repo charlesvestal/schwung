@@ -1089,6 +1089,25 @@ Gated on the level it was captured from, so navigating elsewhere inside the
 editor hands the row back, and cleared in `exitHierarchyEditor` so it cannot
 survive into a later list-originated session.
 
+**But the entry performs a level hop of its own, and the first cut mistook that
+for navigation.** granny's `root` lists only navigation entries, so `position`
+is not in `root.params` and `openParamEditorFromGrid` relocates the editor to
+`main` on the way in. The override applied at root and was discarded at main:
+
+```
+knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
+knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
+```
+
+So the row is **rebound to the level actually landed on**, once the entry has
+settled; anything after that point is the user moving, and the gate is right
+for that. The knob-context cache keys on the LEVEL, which has not changed at
+that moment, so the rebind must invalidate it or the stale row survives.
+
+The original test could not see this: its fixture put the param in the page's
+own level, so there was no hop. `position2` exists in that fixture purely to
+create one.
+
 **It took a hardware log to find, and that is the point.** Turning what looked
 like the spray knob resolved to `synth:size_ms` in `adjustKnobAndShow`'s debug
 line. The mapping was not observable from outside `shadow_ui.js` — the same

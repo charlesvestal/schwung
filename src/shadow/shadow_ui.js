@@ -3020,6 +3020,32 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
         announce((meta && meta.label ? meta.label : "Parameter") + ", opening in list");
         return;
     }
+    /*
+     * BIND THE PAGE'S KNOB ROW TO THE LEVEL WE ACTUALLY LANDED ON.
+     *
+     * The capture above records the level the PAGE was on, and that is not
+     * necessarily where we end up: granny's `root` lists only navigation
+     * entries, so `position` is not in root.params and the search above
+     * relocates us to `main`. The gate in applyHierarchyVisibilityFilters read
+     * that hop as "the user navigated away" and handed the row back — so the
+     * override applied at root, was discarded at main, and spray sat on knob 4
+     * again. Caught by the knobRow log line, after four wrong theories:
+     *
+     *   knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
+     *   knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
+     *
+     * The hop is part of ENTERING, not of navigating. Anything after this
+     * point is the user moving, and the gate is correct for that — which is
+     * why this rebinds rather than removing the gate.
+     */
+    if (hierEditorKnobsFromPage) {
+        hierEditorKnobsFromPage.level = hierEditorLevel;
+        hierEditorKnobs = hierEditorKnobsFromPage.keys.slice();
+        /* The context cache keys on the LEVEL, which has not changed since it
+         * was last built — so without this the stale row survives the fix. */
+        invalidateKnobContextCache();
+    }
+
     hierEditorSelectedIdx = idx;
     const liveMeta = (typeof getParamMetadata === "function" ? getParamMetadata(bare) : null) || meta;
     announce((liveMeta && (liveMeta.name || liveMeta.label)) || bare);
@@ -4297,6 +4323,12 @@ function applyHierarchyVisibilityFilters(levelDef) {
         } else {
             hierEditorKnobs = hierEditorAllKnobs.filter(k => visibleKeys.has(k));
         }
+        /* Which knob row won, and why. The override is gated on a level match
+         * and the resulting row is what getKnobContext maps, so this one line
+         * answers "did the page row take effect" without a hardware guess. */
+        debugLog(`knobRow: level=${hierEditorLevel}` +
+                 ` fromPage=${hierEditorKnobsFromPage ? hierEditorKnobsFromPage.level : "null"}` +
+                 ` -> ${JSON.stringify(hierEditorKnobs)}`);
     } else {
         hierEditorKnobs = [];
     }

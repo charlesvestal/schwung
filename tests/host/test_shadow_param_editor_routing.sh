@@ -99,6 +99,12 @@ const CHAIN_PARAMS = [
   /* The granular read spread. Present so the wav_position editor has fences to
      draw -- see the spray case at the bottom of this file. */
   { key: "spray", name: "Spray", type: "float", min: 0, max: 1, step: 0.001 },
+  /* A wav_position reachable from a ROOT knob while living in `main`. granny
+     is shaped this way -- root lists only navigation entries, so diving from a
+     root page RELOCATES the editor to another level on the way in. Without
+     this the fixture never exercises that hop. */
+  { key: "position2", name: "Position 2", type: "wav_position", mode: "position",
+    filepath_param: "sample_path", min: 0, max: 1, step: 0.01 },
   /* An enum, reported by NAME — the chord case. Divable now (clicking a held
    * enum knob opens its option list) while the knob still steps it. */
   { key: "mode", name: "Mode", type: "enum",
@@ -120,7 +126,7 @@ const HIERARCHY = {
        * page 0, and the page-restore assertion below then passes whether or
        * not the restore happens. They must be reachable only via an OVERFLOW
        * page of `main`, which is where the real complaint came from. */
-      knobs: ["gain"],
+      knobs: ["gain", "position2"],
       params: [{ level: "main", label: "Main" }],
     },
     /* Nine params before the divable pair, so they land on an OVERFLOW page:
@@ -130,11 +136,11 @@ const HIERARCHY = {
       knobs: ["gain", ...FILLER],
       params: [{ key: "gain" }, ...FILLER.map((k) => ({ key: k })),
                { key: "position" }, { key: "spray" }, { key: "sample_path" },
-               { key: "mode" }],
+               { key: "mode" }, { key: "position2" }],
     },
   },
 };
-const values = { gain: "0.5", position: "0.5", spray: "0.125",
+const values = { gain: "0.5", position: "0.5", position2: "0.25", spray: "0.125",
                  sample_path: "", mode: "Hall" };
 for (const k of FILLER) values[k] = "0.5";
 function getParam(key) {
@@ -821,6 +827,51 @@ function gotoSlotFor(name) {
       if (mismatches.length) {
         fail("the editor knob row does not match the page it was entered from: " +
              mismatches.join(" | "));
+      }
+      feed(back());
+    }
+  }
+}
+
+/* ---- N+1. the row survives the LEVEL HOP that entering performs ---------
+ *
+ * The page the user was on and the level the param LIVES in are not always the
+ * same. granny root lists only navigation entries, so diving from a root page
+ * relocates the editor to `main` on the way in -- and the first version of the
+ * override read that hop as "the user navigated away" and handed the declared
+ * row back. It applied at root and was discarded at main:
+ *
+ *   knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
+ *   knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
+ *
+ * The case the ORIGINAL test could not see, because its fixture put the param
+ * in the page own level. position2 exists to create the hop.
+ */
+{
+  openGrid();
+  V.paramPagesGoTo(0);
+  for (let i = 0; i < 24; i++) V.tickParamPages();
+  const pg = V.currentParamPage();
+  const pageKeys = ((pg && pg.keys) || []).slice();
+  const slot = pageKeys.indexOf("position2");
+  if (slot < 0) {
+    fail("position2 is not on the root page -- the level-hop case is not set up");
+  } else {
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") {
+      fail("diving from the root page did not reach the waveform editor");
+    } else {
+      const mismatches = [];
+      for (let i = 0; i < pageKeys.length && i < 8; i++) {
+        const want = pageKeys[i];
+        if (!want) continue;
+        const got = ctx.knobParamKey(i);
+        if (got !== want) mismatches.push("knob " + (i + 1) + ": page=" + want + " editor=" + got);
+      }
+      if (mismatches.length) {
+        fail("after the entry level hop the editor knob row reverted to the " +
+             "declared order: " + mismatches.join(" | "));
       }
       feed(back());
     }
