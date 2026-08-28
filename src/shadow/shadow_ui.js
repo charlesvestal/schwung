@@ -18523,7 +18523,35 @@ function lfoTargetParamsFor(target, compKey, logLabel) {
             const params = JSON.parse(json);
             for (let i = 0; i < params.length; i++) {
                 const p = params[i];
-                if (p.type === "float" || p.type === "int" || p.type === "enum") {
+                /*
+                 * `wav_position` IS a modulation target, and leaving it out
+                 * cost the whole indicator chain.
+                 *
+                 * This is a TYPE ALLOWLIST written before wav_position
+                 * existed, and it silently excluded every sample-position
+                 * param in the fleet -- mrdrums Sample Start, granny, mrsample.
+                 * A wav_position is a ranged number a knob turns (min/max
+                 * declared, 0..1), which is the only property the modulation
+                 * engine needs: chain_mod_emit_value looks the key up with
+                 * find_param_by_key and scales by the declared range, and
+                 * neither cares what the UI calls the type.
+                 *
+                 * The consequence was not "one missing menu row". Because the
+                 * param could not be picked, an LFO aimed at a sample start
+                 * had to be routed to the CONCRETE per-pad key instead, while
+                 * the grid draws the ALIAS -- so `<alias>:modulated` answered
+                 * 0, the read cursor never asked for `:base`, and the key
+                 * never entered refreshModulatedValues. Reported from the
+                 * device as a lost LFO dot and a choppy cell: the cell was
+                 * being fed the effective value by the ordinary rotation at
+                 * ~6Hz instead of the base plus a 44Hz dot.
+                 *
+                 * Confirmed on hardware with param_tally: `synth:pad_start`
+                 * and `synth:pad_start:modulated` both read 6x/window, and
+                 * `synth:pad_start:base` NEVER read.
+                 */
+                if (p.type === "float" || p.type === "int" || p.type === "enum"
+                    || p.type === "wav_position") {
                     result.push({ key: p.key, label: p.name || p.label || p.key });
                 }
             }
