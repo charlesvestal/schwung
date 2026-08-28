@@ -64,12 +64,15 @@ over the entire screen" there is nothing.
 `canvas.js` gains one optional hook:
 
 ```javascript
-drawCell(ctx, rect, values, meta)
+drawCell(ctx, frame, values, meta)
 ```
 
 Declaring it makes that parameter's cell render the module's own art **in the
 grid**. Clicking the cell still dives into the same overlay's fullscreen `draw`.
 One file, one author mental model, two scales.
+
+`frame` is the knob box's own coordinate space, not a screen rect — see §3, which
+is the constraint the rest of this design hangs off.
 
 This is not a fourth mechanism. Script loading, overlay resolution, error
 surfacing, the `try/catch` and the ctx shape are all already built; this adds a
@@ -109,21 +112,61 @@ moves 24 fleet pages to keep that true. No new layout rules to design or test.
 
 ---
 
-## 3. The rect-scoped context
+## 3. The frame-local context
 
-The `drawCell` hook receives a context that is the canvas ctx **translated,
-clipped, and stripped of reads**:
+**A custom widget never draws direct pixels. It draws into a frame, and it cannot
+express a coordinate outside that frame.**
 
-- `fillRect` / `drawRect` / `setPixel` / `drawLine` / `print` offset into the
-  group's rect and are bounded by it. Drawing outside your rect stops being a rule
-  authors must follow and becomes something they *cannot express* — roughly fifteen
-  lines over the same method names.
-- `width` / `height` are the rect's, not the screen's.
-- **`getParam` and `getValue` are absent.** Values are handed in via the `values`
+This is stronger than clipping, and it has to be, because the rect a widget receives
+is unstable in three independent ways:
+
+- `render_page.mjs:619` — `cellW = floor(rect.w / COLS)`, dependent on the caller's
+  rect; and `:116` — `rowH = floor(gridH / ROWS)` is **dynamic**. `computeGeom` then
+  selects the entire render mode from that height: `dial` at full height, then a
+  shrinking radius, then `bar-value`, `bar-label`, `bar-only`.
+- `render_page_movy.mjs` — `CELL_W = 32` fixed, height `LBL0_Y - ROW0_Y` = **15**,
+  with the comment at `:2123` warning that 15 is only correct because both of that
+  grid's gaps happen to be 15px.
+- `render_page.mjs:670` — `w: cellW * Math.min(g.slotSpan, COLS - col)`. A two-slot
+  group near the right edge is silently **clamped** to less width than it declared.
+
+So the same widget can be handed 32×15, a taller dial-mode row, a squashed bar-only
+row, or a clamped span. Pixel coordinates are wrong under all of it.
+
+### The frame is the knob box, not the cell
+
+Movy already draws this distinction: `KW = 17` (`:606`) is the knob box inside a
+`CELL_W = 32` cell, and the label is drawn separately by `drawLabelCell`. **A custom
+widget owns the art area; Schwung keeps drawing the label.** Labels therefore stay
+consistent across a page even when half its cells are custom, and the widget gets
+the more stable of the two frames.
+
+### The context
+
+- `(0, 0)` is the widget's own top-left. `width` / `height` are the frame's.
+  There is **no escape hatch to absolute space** — clipping stops being a safety
+  net and becomes the coordinate system.
+- `fillRect` / `drawRect` / `setPixel` / `drawLine` / `print` operate in that
+  space. Drawing outside your frame stops being a rule authors must follow and
+  becomes something they cannot express.
+- **`getParam` and `getValue` are absent.** Values arrive via the `values`
   argument. This makes `PARAM_PAGES.md`'s hardest rule — *nothing reads on the
   draw path* — enforced by construction rather than by review.
 - `state` is retained; `now()` is retained for animation, matching
   `viz_draw.mjs`'s existing optional `nowMs` convention.
+
+### The two tiers adapt differently, and this is the load-bearing part
+
+**Code tier** receives the frame's real `width`/`height` and must adapt to them —
+exactly what built-in viz widgets already do, since they are handed a rect and
+compute against it.
+
+**Sprite tier cannot do that.** 1-bit art on a 128×64 mono display cannot be
+fractionally scaled; it dithers into mush. So a sprite widget declares the
+**nominal frame it was drawn for**, and Schwung anchors it 1:1 inside the real
+frame, integer-scaling only on an exact fit. **If the nominal frame does not fit,
+fall back to the built-in widget rather than scaling it.** Never fractional. The
+generator enforces this at build time, on the author's machine.
 
 Staying inside this contract is also what keeps a custom widget **host-testable**.
 The entire 14k-line `param_pages/` library unit-tests on a Mac with no device
@@ -150,12 +193,19 @@ parser, no runtime validator, no second file format to version.
 ### The format falls out of the cost math, and it is not PNG
 
 A QuickJS binding costs roughly 490 ns — measured previously when the draw path was
-profiled, and the reason `PARAM_PAGES.md` says not to optimise draw calls. A 32×16
-sprite blitted per pixel is 512 calls
-≈ **250 µs** — about 15% of the 1.68 ms page render, for one sprite. Run-length
-encoding the rows (a 1-bit sprite is typically 2–4 runs per row) gives roughly
-16 × 3 = 48 calls ≈ **24 µs**. Ten times cheaper, and it is only `fillRect` calls,
-so it stays inside the ctx and stays host-testable.
+profiled, and the reason `PARAM_PAGES.md` says not to optimise draw calls.
+
+A knob box is `KW = 17` wide (`render_page_movy.mjs:606`) by roughly 15 tall, so a
+sprite filling one is ~255 pixels. Blitted per pixel that is 255 calls ≈ **125 µs**,
+against a 1.68 ms page render — and a page can hold **eight** of them, which is
+1 ms, over half the render, before anything else is drawn. Run-length encoding the
+rows (a 1-bit sprite is typically 2–4 runs per row) gives roughly 15 × 3 = 45 calls
+≈ **22 µs**, so a full page of custom widgets costs ~180 µs instead of ~1 ms.
+
+The per-sprite figure is survivable; **the full-page figure is what makes RLE
+non-optional**, and it is the one to check against, because a module that ships one
+custom widget will ship eight. It is still only `fillRect` calls, so it stays inside
+the ctx and stays host-testable.
 
 **`draw_image` is not the substrate.** `js_display.c:205` is stb_image-backed and
 registered in the shadow UI process (`shadow_ui.c:2819`), but it is unusable here
@@ -232,12 +282,23 @@ Named against real functions, not invented ones.
 
 ## 8. Testing
 
-- Unit tests for the rect-scoped ctx: a widget drawing outside its rect must
+- Unit tests for the frame-local ctx: a widget drawing outside its frame must
   produce **no pixels** outside it. Mutate the clip to prove the test can fail.
+- **Frame-instability matrix.** Draw the same widget into every rect the two
+  renderers can actually produce — movy's 32×15, each of `computeGeom`'s modes
+  (`dial` at full radius, reduced radius, `bar-value`, `bar-label`, `bar-only`),
+  and a span clamped by `Math.min(g.slotSpan, COLS - col)`. A widget must be legible
+  or cleanly absent in all of them, never overflowing and never half-drawn. This is
+  the axis the design exists to handle, so it gets asserted directly rather than
+  inferred from a single-size snapshot passing.
+- Sprite fallback: a nominal frame larger than the real frame must draw the
+  **built-in** widget, not a scaled sprite. Assert no fractional scaling path exists.
 - Unit test for one-strike disable: a widget that throws is called **once**, and the
   fallback widget draws.
-- Unit test that the rect ctx exposes no read: asserting `getParam === undefined`
+- Unit test that the frame ctx exposes no read: asserting `getParam === undefined`
   is weak; assert instead that a widget attempting a read cannot obtain one.
+- Label ownership: a page mixing custom and built-in cells must draw **all** labels
+  through `drawLabelCell`, with no custom widget able to suppress or replace one.
 - A snapshot in `tests/fixtures/snapshots/param_pages_viz.txt` covering a custom
   group, regenerated deliberately.
 - Generator round-trip: PNG → RLE → drawn pixels must match the source PNG.
