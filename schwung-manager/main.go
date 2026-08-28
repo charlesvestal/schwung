@@ -685,12 +685,22 @@ func (app *App) hostVersionString() string {
 // than the installed host version. A missing/unreadable host version
 // is treated as compatible — refusing installs when version.txt can't
 // be read would brick recovery on broken setups.
+//
+// That fallback stays, but it is no longer silent. A module declaring a
+// min_host_version installs unchecked on any device where host/version.txt
+// is missing, and then misbehaves in whatever way its unmet requirement
+// implies — which reads as a bug in the module, not as a skipped check.
+// One line in the log is the difference between diagnosing that in a minute
+// and not at all.
 func (app *App) checkHostCompat(minVersion string) error {
 	if minVersion == "" {
 		return nil
 	}
 	hostVersion := app.hostVersionString()
 	if hostVersion == "" || hostVersion == "unknown" {
+		app.logger.Warn("host version unknown; installing without checking the module's minimum",
+			"min_host_version", minVersion,
+			"version_file", filepath.Join(app.basePath, "host", "version.txt"))
 		return nil
 	}
 	if isNewerSemver(minVersion, hostVersion) {
