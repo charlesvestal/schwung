@@ -3,12 +3,15 @@
  *
  * Why this is worth a test rather than a comment. Every module guards its host
  * calls as `if (host->fn) host->fn()`. That is sound only while a read inside
- * the struct is the only read that can happen — and it isn't. A module linked
- * from object files compiled against two revisions of plugin_api_v1.h resolves
- * the same call at two different offsets, and the larger one runs off the end.
+ * the struct is the only read that can happen — and it isn't: a module's copy
+ * of plugin_api_v1.h can declare a field we do not have, and the guard then
+ * tests memory belonging to somebody else.
  *
- * breakbeat 0.2.x does exactly that: get_bpm() at +88 from bb_render_block and
- * at +120 from bb_create_instance. A chain sub-plugin's struct is
+ * breakbeat does exactly that. Its header appends get_project_bpm() after
+ * get_beat_position — a callback no Schwung has ever provided — so it resolves
+ * to +120 while the same binary calls the real get_bpm() at +88. Appending
+ * lets a module be OLDER than the host, never newer; a module cannot extend
+ * this struct from its side. A chain sub-plugin's struct is
  * chain_instance_t::subplugin_host_api, so +120 read the NEXT MEMBER of that
  * heap instance — non-NULL, so the guard passed, and the indirect call jumped
  * into the heap. SIGSEGV on the SPI callback at module load, which takes

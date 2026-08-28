@@ -209,13 +209,20 @@ typedef struct host_api_v1 {
      *
      * Every field above is guarded by callers as `if (host->fn) host->fn()`,
      * which is only sound while a read inside the struct is the only read that
-     * can happen. It isn't. A module linked from object files compiled against
-     * two different revisions of this header resolves the SAME call at two
-     * different offsets, and the larger one reads past the last field.
+     * can happen. It isn't: a module's copy of this header can declare a field
+     * we do not have, and the guard then tests memory belonging to somebody
+     * else.
      *
-     * That is not hypothetical. breakbeat 0.2.x calls get_bpm() at +88 from
-     * bb_render_block and at +120 from bb_create_instance; +120 is one past
-     * get_beat_position. The struct a chain sub-plugin gets is
+     * That is not hypothetical. breakbeat's copy appends
+     * `float (*get_project_bpm)(void)` after get_beat_position -- a callback
+     * NO Schwung has ever provided -- so it resolves to +120, one past our
+     * last field. Its own comment reads "Appended host callbacks. Keep these
+     * at the end for ABI compatibility", which is the right instinct applied
+     * in the wrong direction: appending lets a module be OLDER than the host,
+     * never newer. A module cannot extend this struct from its side.
+     *
+     * The same binary calls the real get_bpm() at +88, so the two offsets sit
+     * side by side in one disassembly. The struct a chain sub-plugin gets is
      * chain_instance_t::subplugin_host_api, so +120 read the NEXT MEMBER of
      * that instance — non-NULL, so the module's own guard passed, and the blr
      * jumped into the heap. SIGSEGV on the SPI callback at load, which takes
