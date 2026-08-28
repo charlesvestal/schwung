@@ -66,7 +66,7 @@ const CASES = [
     { name: "euclidrum   — eight cells the module names identically, disambiguated by key", id: "euclidrum", nth: 0 },
     { name: "branchage   — a sparse page: unused knob positions marked, not blank", id: "branchage", nth: 3, layout: LAYOUT_BAR },
     { name: "obxd / dial — knob 1 modulated (the list editor's \"~\")", id: "obxd", nth: 0, modulated: 0 },
-    { name: "minijv      — the section picker: 76 pages folded to 16 sections", id: "minijv", nth: 0, picker: 6 },
+    { name: "minijv      — the section picker: 70 patch pages folded to 12 sections", id: "minijv", nth: 0, picker: 6 },
     { name: "obxd        — the first-run gesture hint, cleared by any input", id: "obxd", nth: 0, hint: true },
 ];
 
