@@ -938,6 +938,9 @@ export function createController(io = {}) {
          * See restorePage(): the pages may not have existed when the caller
          * asked. */
         applyPendingRestore();
+        /* Before anything is drawn, never from tick() — see warmCurrentPage.
+         * s.values was cleared above, so this is the page's whole set. */
+        warmCurrentPage();
         announcePageChange();
         return true;
     }
@@ -1279,6 +1282,120 @@ export function createController(io = {}) {
      * a level that repeats a key across a page break, cannot quietly make the
      * lane read the screen back to itself.
      */
+    /**
+     * Take a value off the wire into `s.values`. Returns true if it was kept.
+     *
+     * ONE definition, because the tri-state here is three rules deep and every
+     * one of them was a shipped bug: a failed read is not a value, `""` is a
+     * MISS for a number or an enum (a key nobody serves answers `""`, and
+     * `Number("") === 0` put a silent zero on the slot-settings Volume knob),
+     * and `""` is a VALUE for an opaque key (an empty filepath is the module
+     * saying NONE). The read cursor and the entry warm below both go through
+     * this rather than each carrying a copy — a second copy is how one of them
+     * ends up disagreeing about `""` the first time either is touched.
+     *
+     * The condition re-plan lives here too, keyed on the value actually
+     * CHANGING. It has to: a warm that stored a condition key without replanning
+     * would leave the rotation reading the same value later, seeing no change,
+     * and never revealing the pages that key gates.
+     */
+    function acceptValue(key, raw, meta) {
+        if (raw === null || raw === undefined) return false;
+        if (raw === "" && meta.kind !== KIND_OPAQUE) return false;
+
+        /* First successful read repairs a guessed range, once — and teaches an
+         * enum which wire format its plugin speaks. This is THE read detection
+         * is allowed to use: it comes from the device, it is already being
+         * made, and it keeps arriving, so a verdict is never derived from a
+         * value the grid itself wrote. See learnEnumWireFormat. */
+        learnEnumWireFormat(meta, raw);
+        if (meta.guessed) {
+            const patch = inferFromValue(meta, raw);
+            if (patch) Object.assign(meta, patch);
+            delete meta.guessed;
+        }
+        /* A change to a key that gates visibility re-plans the page set: the
+         * params it hides or reveals are not otherwise reachable. */
+        const changed = s.values[key] !== raw;
+        s.values[key] = raw;
+        if (changed) replanIfCondition(key);
+        return true;
+    }
+
+    /**
+     * Read the page we are about to SHOW, before the first frame is drawn.
+     *
+     * THE FIRST PAGE OF A COMPONENT CANNOT BE PREFETCHED. The neighbour lane
+     * warms pages ±1, and nothing is adjacent to a page set that does not exist
+     * yet — so on entry the rotation filled the page one key per tick, ~9 ticks
+     * (~150ms), and every cell drew a confidently WRONG picture until its value
+     * landed. Reported from the device: *"all of the controls up for a frame or
+     * so with the wrong value before snapping to the right one"*.
+     *
+     * **It snaps together rather than filling in cell by cell because of the
+     * viz groups.** obxd's Main page draws a filter curve from four keys and an
+     * ADSR from four more, so a graphic stays visibly wrong until its LAST
+     * member arrives and then the whole thing jumps. Rendered, frame 0 has the
+     * filter curve collapsed into the bottom-left corner and the envelope as a
+     * spike at the left edge. That is the same rule `observeLanded` enforces one
+     * layer down — a read that did not answer must not become a picture — and
+     * suppressing the ANIMATION did not stop the placeholder being DRAWN.
+     *
+     * So this is called from the load path, not from `tick()`: the controller is
+     * built during input handling and the draw happens on a later frame, so a
+     * warm here lands before anything is shown, while a warm on the tick would
+     * always be one frame late — and one frame late is the whole bug.
+     *
+     * COST: ~8 reads at ~2.8ms, so ~23ms once, on a gesture that is already a
+     * module transition. That is under two frames against 150ms of wrong
+     * picture. The rotation would have made these same reads anyway; this only
+     * moves them ahead of the first draw.
+     *
+     * **It stops at the FIRST failed read, and that bound is the point.** A
+     * module that is not answering yet — minijv and osirus are the two slowest
+     * in the fleet — costs one timeout here instead of eight, and the ordinary
+     * rotation retries for free. Without the bound, entry to a slow module
+     * would stall on eight dead reads, which is a far worse failure than the
+     * flash this removes.
+     *
+     * Deliberately NOT applied on every page change: the lane already keeps
+     * neighbours warm, so a jog finds them cached, and blocking there would put
+     * a hitch on the exact gesture the lane exists to smooth. A far JUMP from
+     * the section picker can still land cold — known, and left alone rather
+     * than widened without a report.
+     */
+    function warmCurrentPage() {
+        if (!s.metaIndex) return 0;
+        let reads = 0;
+        /*
+         * TWO passes, because acceptValue can re-plan underneath us: a
+         * condition key gates which params are visible, so storing one can
+         * swap the page we are standing on for a different set of keys, and a
+         * single pass would then have warmed the page we left. The second pass
+         * costs nothing in the normal case — every key is already in s.values,
+         * so it makes no reads at all — and bounding it at two means a pair of
+         * condition keys that keep re-planning cannot spin here.
+         */
+        for (let pass = 0; pass < 2; pass++) {
+            const p = page();
+            if (!p || p.kind !== PAGE_KNOBS || !Array.isArray(p.keys)) return reads;
+            let readsThisPass = 0;
+            for (const key of p.keys) {
+                if (!key) continue;
+                if (key in s.values) continue;
+                const raw = getParam(fullKey(key, p));
+                reads++; readsThisPass++;
+                /* A failed read means the module is not serving yet. Stop —
+                 * see above. `""` is NOT a failure: acceptValue decides what
+                 * it means per kind, and the walk carries on either way. */
+                if (raw === null || raw === undefined) return reads;
+                acceptValue(key, raw, s.metaIndex.getOrGuess(key));
+            }
+            if (!readsThisPass) break;
+        }
+        return reads;
+    }
+
     function neighbourPrefetch(cur) {
         if (s.tickCount < (s.prefetchHoldUntil || 0)) return null;
         for (const k in s.settleUntil) {
@@ -1543,27 +1660,7 @@ export function createController(io = {}) {
          * still a miss, which is what keeps the slot-settings Volume bug
          * fixed: "" sailing through as a reading showed Number("") = 0.
          */
-        if (raw === null || raw === undefined) return null;
-        if (raw === "" && meta.kind !== KIND_OPAQUE) return null;
-
-        /* First successful read repairs a guessed range, once. */
-        /*
-         * ...and teaches an enum which wire format its plugin speaks. This is
-         * THE read detection is allowed to use: it comes from the device, it is
-         * already being made, and it keeps arriving, so a verdict is never
-         * derived from a value the grid itself wrote. See learnEnumWireFormat.
-         */
-        learnEnumWireFormat(meta, raw);
-        if (meta.guessed) {
-            const patch = inferFromValue(meta, raw);
-            if (patch) Object.assign(meta, patch);
-            delete meta.guessed;
-        }
-        /* A change to a key that gates visibility re-plans the page set: the
-         * params it hides or reveals are not otherwise reachable. */
-        const changed = s.values[key] !== raw;
-        s.values[key] = raw;
-        if (changed) replanIfCondition(key);
+        if (!acceptValue(key, raw, meta)) return null;
         return key;
     }
 

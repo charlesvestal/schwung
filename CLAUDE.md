@@ -1500,6 +1500,61 @@ Four mutants killed on this branch: lane disabled, hold removed, child key
 resolved against the wrong page, and the tri-state ignored so a failed read is
 cached.
 
+### The FIRST page is warmed synchronously, because nothing is adjacent to it
+
+The lane cannot reach a component's first page — nothing is adjacent to a page
+set that does not exist yet — so entry still filled one key per tick, ~9 ticks
+(~150ms), with every cell drawing a confidently WRONG picture until its value
+landed. Reported from the device: *"all of the controls up for a frame or so
+with the wrong value before snapping to the right one"*.
+
+**It snaps together rather than filling in cell by cell because of the viz
+groups.** obxd's Main page draws a filter curve from four keys and an ADSR from
+four more, so a graphic stays wrong until its LAST member arrives and then the
+whole thing jumps. Rendered, frame 0 had the filter curve collapsed into the
+bottom-left corner, the envelope a spike at the left edge, and Octave reading
+`--`. Suppressing the ANIMATION did not stop the placeholder being DRAWN — same
+rule, one layer up.
+
+`warmCurrentPage()` reads the entered page's keys before the first frame. It is
+called from the LOAD path, never from `tick()`: the controller is built during
+input handling and the draw happens on a later frame, so a warm here lands
+before anything is shown while a warm on the tick is always one frame late —
+and one frame late is the whole bug. Measured over the fleet: **all 95 modules
+now draw frame 0 identical to settled**, worst entry cost 8 reads ≈ 22 ms,
+capped by the 8-knob page.
+
+**It stops at the FIRST failed read, and that bound matters more than the warm.**
+A module not serving yet — minijv and osirus are the slowest in the fleet —
+costs one timeout instead of eight, and the rotation retries for free. Entry
+stalling on eight dead reads is a worse failure than the flash this removes.
+
+Deliberately NOT on every page change: the lane keeps neighbours warm, so a jog
+finds them cached and blocking there would put a hitch on the exact gesture the
+lane exists to smooth. A far JUMP from the section picker can still land cold —
+known, and left rather than widened without a report.
+
+**`acceptValue` is the extraction that made this safe.** The tri-state here is
+three rules deep and every one was a shipped bug — a failed read is not a value;
+`""` is a MISS for a number or enum (`Number("") === 0` put a silent zero on the
+slot-settings Volume knob); `""` is a VALUE for an opaque key (an empty filepath
+is NONE). The rotation and the warm share it rather than each carrying a copy.
+The condition re-plan lives in it too: a warm that stored a condition key without
+replanning would leave the rotation reading the same value later, seeing no
+change, and never revealing the pages that key gates.
+
+`warmCurrentPage` therefore runs **two passes** — `acceptValue` can re-plan
+underneath it, swapping the page being warmed for a different key set. The
+second pass is free when nothing changed (every key is already cached, so it
+makes no reads). The bound of 2 is DEFENCE, not behaviour: no fleet contract
+reaches it, and raising it to 99 kills no test — recorded so the survival is not
+read as a coverage hole, exactly like the prefetch's two guards.
+
+`tests/host/test_page_entry_warm.sh` asserts **exactly** one read per key, not
+"at least": the cached-key skip is invisible on the happy path, and without it a
+plain page costs 16 reads — twice the entry budget, and a mutant that survived
+the first version of this test.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
