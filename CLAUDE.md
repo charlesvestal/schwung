@@ -200,6 +200,47 @@ extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host);
 
 **v1 (deprecated, singleton)** — kept for legacy modules. Audio: 44100 Hz, 128 frames/block, stereo interleaved int16.
 
+### `host_api_v1_t` ends in a run of NULLs, and that is not padding
+
+Every module guards its host calls as `if (host->fn) host->fn()`. That is only
+sound while a read *inside* the struct is the only read that can happen — and
+it isn't. **A module's copy of `plugin_api_v1.h` can declare a field we do not
+have**, and the guard then tests memory belonging to somebody else.
+
+breakbeat is the case. Its header appends `float (*get_project_bpm)(void)`
+after `get_beat_position` — a callback **no Schwung has ever provided** — so it
+resolves to **+120**, one past our last field, while the same binary calls the
+real `get_bpm()` at **+88**. Its own comment reads *"Appended host callbacks.
+Keep these at the end for ABI compatibility"*, which is the right instinct in
+the wrong direction: appending lets a module be **older** than the host, never
+newer. A module cannot extend this struct from its side. The fix is upstream
+([mestela/schwung-breakbeat#3](https://github.com/mestela/schwung-breakbeat/pull/3));
+this is the backstop. The struct a chain sub-plugin receives is
+`chain_instance_t::subplugin_host_api`, so +120 read **the next member of that
+heap instance** — non-NULL, so the module's own guard passed, and the `blr`
+jumped into a `rw-p` page. SIGSEGV on the SPI callback at load, which takes
+MoveOriginal with it and **boot-loops the device**, because the slot is restored
+every boot and crashes before the UI can be used to remove it.
+
+`void *reserved[8]` at the end absorbs 64 bytes of that drift, so an over-read
+finds NULL and the caller's existing guard does what it was written to do. Every
+instance is zeroed by construction (`mm_init` memsets, `shadow_host_api` is BSS,
+`overtake_host_api` is a static, `chain_host` memcpy's `sizeof()`).
+
+**It does not make the ABI extensible** — appending a real field still requires
+rebuilds. It buys a safe failure instead of a crash. So **consume `reserved`
+from the front** when adding a field and never reduce the total;
+`tests/host/test_host_api_reserved_tail.c` fails on a shrunken tail, on a field
+appended *after* `reserved`, and on +120 specifically.
+
+**The diagnosis needed the load base.** The shim's SIGSEGV handler prints `pc`,
+`lr` and `sp` plus a `/proc/self/maps` dump to
+`/data/UserData/schwung/crash_maps.txt` (async-signal-safe `open`/`read`/`write`
+— the unified logger buffers, so a line logged *before* the crash is lost with
+it). `v2_load_synth` logs the dlopen'd module's `dlinfo` base, which is what
+turns a raw `lr` into `lr - base` and an `addr2line` offset. Without both halves
+the address is unattributable under ASLR.
+
 ### JS Host Functions
 
 Module management: `host_list_modules`, `host_load_module`, `host_load_ui_module`, `host_unload_module`, `host_return_to_menu`, `host_module_set_param/get_param/send_midi`, `host_is_module_loaded`, `host_get_current_module`, `host_rescan_modules`, `host_get_module_metadata(id)`.
@@ -564,14 +605,42 @@ model with forty-seven. `VIEWS.ENUM_PICKER`, `drawEnumPicker` in
 (`enumPickerFooterHints` in `shadow_ui_param_pages.mjs` — the hint vocabulary is
 a canon, so the wording is built there and not at the draw site).
 
-**`meta.divable` and `meta.divable_mark` are separate on purpose.** The corner
-brackets key on `divable_mark`, which stays exactly where it was: the opaque
-types. ~135 enums in the fleet against ~5 opaque params — bracket them all and
-every cell on every page is marked, which is the same as marking none; and for
-an opaque cell the brackets are STRUCTURAL, because `drawOpaqueBox` draws no
-frame of its own. Net pixel change on the grid is zero. The affordance for an
-enum is the footer, which flips to `CLK OPEN` off `divable` for free. An enum
-with no declared options has no list, so it is not a door.
+**THE CELL MARKS DO NOT MEAN "DIVABLE."** Measured over the fleet: **967
+divable cells on knob pages, 953 of them (99%) wearing NO mark at all** —
+because almost every divable cell is an enum. Divability is a FOOTER fact:
+hold the knob and it reads `CLK OPEN`. Marking 135 enums would erase what a
+mark means.
+
+The two marks split something narrower, cleanly, with zero overlap:
+
+| mark | cells | turnable? | means |
+|---|---|---|---|
+| corner brackets | 7 | always | the knob works, AND it opens something |
+| chevron box | 7 | never | there is no knob here — only a door |
+
+So **the chevron is not a mark, it is the WIDGET**: an opaque cell has no
+value-shape to draw, so `drawOpaqueBox`'s notched frame with a chevron in its
+broken edge is what that cell looks like. The brackets are an annotation on a
+working widget, and in practice mean exactly one thing — a **ranged
+`wav_position`**, a number a knob turns that also has a waveform editor behind
+it.
+
+That is why they must never be unified. Bracketing the opaque cells puts two
+frames on one rect (a doubled border) and still leaves 953 enums unmarked, so
+it unifies nothing; putting the chevron on every divable cell puts it on 953
+enums. Reported as *"is it confusing we have brackets and carats that both mean
+divable"* — the answer is that they never meant the same thing, but the flag
+name said they did.
+
+Hence the naming, which is the fix: `meta.opaque_type` is a fact about the
+DECLARATION, and `alsoOpens()` in `param_meta.mjs` is the bracket rule,
+single-sourced. It used to be open-coded as `divable_mark && kind !==
+KIND_OPAQUE` at each draw site — three terms of subtlety repeated per caller,
+and one site is the per-cell mark while the other is a whole viz group's, so
+they drifted the moment either was touched. `alsoOpens` also requires
+`divable`, so a read-only declaration cannot wear a mark promising a door that
+`onClick` will refuse to open (21 fleet params either way, so provably a
+no-op today — it is there so the mark cannot start lying).
 
 **The picker wears the movy chrome from BOTH entry points** — the knob grid, and
 a jog-click on an enum row in the hierarchy list editor — and reuses the one
@@ -745,6 +814,131 @@ keeps it safe; where the two are apart the run rule still gives span 1.
 `position` on both `root` and `main` — and the graphic then appears on both.
 That is the contract, not the detector.)
 
+### The sample graphic is ONE door, and the FILE is not part of it
+
+Four reports in a row, each falsifying the fix for the one before. The end
+state is small; the path to it is the part worth keeping.
+
+1. *"empty sample selection is indistinguishable from the spray control"* —
+   `sample_path` was **swallowed** by granny's waveform. `divable_mark` excludes
+   `KIND_OPAQUE` because `drawOpaqueBox` draws its own notched frame and
+   chevron, but a viz group suppresses that widget entirely, so the cell had no
+   frame, no chevron, no brackets and no filename.
+2. *"shouldn't the whole thing be divable?"* — `spray` opened nothing, so one
+   picture had a door on the left third and nothing in the middle.
+3. *"sample file isn't part of the continuum because it goes to a different
+   editor"* and *"why is there a line that spans between them?"* — the real
+   one, and it retires most of 1 and 2.
+
+**The file no longer claims a cell** (`detectSample`). It is still
+`roles.value` — the waveform is drawn FROM it, never ON it — and the value is
+still read, because the page cursor walks `page.keys`, not `group.keys`.
+Released, the cell draws as the ordinary opaque box: notched frame, chevron,
+and **the filename**, which is information the graphic was throwing away. That
+is the honest answer to report 1: the fix was never to bracket the cell, it was
+to stop swallowing it.
+
+**`spray` dives to the graphic's anchor** (`vizDiveTarget`), so a click
+anywhere in the picture opens the waveform editor. Derived, never named — the
+rule is "a member of the picture with nothing behind it", so the `self.divable`
+bail is what keeps the filepath's own door. Scoped to `VIZ_SAMPLE`: an envelope
+has no editor behind it, so a redirect there would invent a destination. ONE
+definition, three consumers — the click, the footer hint and the brackets.
+
+**One bracket per graphic**, drawn across the span in the viz loop; covered
+cells take no per-cell mark. Rendered per-cell first and it read as three boxes
+butted together (four on mrsample). Keyed on **mark-worthiness, not
+`divable`** — every enum declaring options is divable, and keying off that
+framed mrsample's Loop *switch*.
+
+**`gatherGroupMembers` had to learn the same thing, and its failure was
+silent.** `scattered` was built from every role, which after the change
+overstated `wantSpan` by one — and since the widened result is verified against
+that number by the real detector, the check could never pass, so the gather was
+abandoned *entirely* and granny's "Main - 2" collapsed to a one-cell waveform
+with the spray arc back three knobs away. Nothing about the failure said "the
+file"; the group simply stopped widening. Caught only by the fleet snapshot.
+
+Fleet effect is exactly two lines of `param_pages_viz.txt` (granny, mrsample)
+and three pages of the pixel baseline.
+
+**`displayValue` now separates "no file" from "no answer".** Both were `"--"`,
+which is the tri-state collapsed in the most visible place: an empty slot
+looked identical to a slot whose name had not arrived. `""` → `NONE`, `null` →
+`--`. It reads **NONE and not EMPTY**, which is the word that was asked for and
+does not fit — 23px in the box's 4x5 face against a 21px budget, rendering as
+`EMPT` with the chevron jammed against it. The budget exists so the value
+clears the chevron; widening it for one word narrows that clearance on every
+opaque cell in the fleet. `NONE` is 19px and is already this tree's word for an
+empty selection (`none_label || "(none)"`, the preset row's `(none)`).
+
+**A FILE-ONLY graphic with no file is not drawn; one with MARKERS still is.**
+*"You should see the loaded break, but not an empty waveform"* was reported
+against breakbeat, whose `A SMP`/`B SMP` cells are built from a filepath ALONE
+— nothing loaded means nothing to draw, so they were a bracketed rectangle
+containing nothing. Those are **suppressed** in `renderPageMovy`'s viz loop and
+fall back to the opaque box reading `NONE`.
+
+Suppressing *every* empty sample graphic was too broad, and granny is the case
+that shows why: its graphic is `position` + `spray`, two real controls whose
+picture is the track they act on. Empty, the two-cell widget is still the right
+drawing — it is where the cursor and the fences live, and those values are
+yours to set before a file is chosen. *"When no sample is loaded it should be
+the empty two column widget."* So the test is **markers, not emptiness**.
+
+`""` **only**. `null`/`undefined` is a read that has not landed, and
+suppressing that changes the cell's whole WIDGET rather than its contents — a
+knob would appear and be replaced by a waveform a frame later, on every page
+entry. The file is frequently off-page (granny and mrdrums declare it on no
+knob, so it arrives through the extra-key rotation), which makes the unanswered
+window the common case, not an edge one. `drawSample` keeps the same early
+return for callers that do not suppress.
+
+`tests/host/test_sample_cell_doors.sh` pins the lot, and **three of its probes
+were wrong first** — all three looked right, which is the point:
+
+- the "no spanning line" probe measured ink at midY in the file cell. The
+  chevron and the filename glyphs both live there. Then it measured the length
+  of the run starting in the waveform — a spray fence breaks that around x=35,
+  long before the boundary, so it **passed under the mutation**. What works is
+  the single gutter column between the graphic and the box.
+- "brackets vs frame" used the middle of the top edge. An arc knob's curve
+  reaches the top of its cell too, so a bracketed KNOB failed for having a
+  widget in it. The column just past the bracket arm is outside the knob (17px
+  centred in 32) and on any frame that spans the cell.
+- the framebuffer **must honour colour 0 as an erase**: brackets and the opaque
+  frame occupy the identical rect, and only `notchCorners` distinguishes them.
+
+### The wave editor draws the spray fences
+
+Once a click on `spray` opens the fullscreen `wav_position` editor, that editor
+has to show it — diving from a control onto a screen that does not contain it
+is the blank-editor failure in miniature. The word `spray` previously appeared
+nowhere in `shadow_ui.js`.
+
+Same two dotted columns `viz_draw.mjs` draws in the cell, same semantics:
+wrapping, and clamped to the file edges at `spray >= 0.5` (past that ±0.5
+already reaches every frame, and a wrapped fence would crawl back *inward* as
+the region grew). Drawn **before** the cursor so the solid cursor wins where
+they coincide, and gated on the spray value alone rather than on `preview.ok` —
+the cursor draws unconditionally, and two marks describing one playhead must
+appear and vanish together.
+
+**Read ONCE, on the way in** (`seedWavEditorSpray`, from
+`beginHierarchyParamEdit`), then maintained from the writes — the editor frame
+is already the most expensive screen here and a draw-path IPC read is ~2.8ms.
+The knob write updates it, or the fences freeze at their entry value and read
+as a dead knob. `isSprayMeta` is **imported** from `viz.mjs`: a second
+predicate would disagree with the cell the user just clicked out of the first
+time either is widened.
+
+Pinned functionally in `test_shadow_param_editor_routing.sh`, which captures
+`set_pixel` and separates dotted from solid. **The cursor sits at ratio 0
+there** — no real WAV, so no duration to map a position against — which puts
+the case squarely on the *wrapping* path, the arithmetic most likely to be
+wrong. Driven at two spray values, because one is satisfied by a hard-coded
+pair.
+
 ### Small ints are BIG NUMBERS, not framed ones
 
 `shouldDrawBigNumber` / `bigNumberText` / `drawBigNumber` in
@@ -760,6 +954,84 @@ and can never have one, so the frame advertised a door that does not open.
 The span bound is load-bearing: an earlier version bounded at 128 and drew 1392
 params big across 60 modules, including `volume [0..100]` and `tune [0..127]`,
 which are sweeps where an arc is the honest picture.
+
+### A momentary fires from the KNOB too, and it LATCHES per gesture
+
+A trigger is `access: "write"` on an ordinary enum — there is no `trigger` type
+— and it draws as a push button (`drawButton`), because the module reports a
+constant idle spelling that is meaningless as a value (euclidrum's is an
+em-dash the 5x7 atlas cannot draw at all).
+
+Turning its knob used to do **nothing**: `isTurnable` is false for `writeOnly`,
+so `onKnobTurn` swallowed the motion silently and the button did not even
+flicker. The stated reason was that turning walks THROUGH the fire value — but
+that is a fact about the enum STEPPER, not about the gesture. A momentary has
+no value to walk past, so the only thing the refusal achieved was forcing the
+hand off the knob and onto the jog. Now a **detent fires it, in EITHER
+direction** — a direction-sensitive momentary would make half of every spin
+read as a dead knob.
+
+**A LATCH, not a rate limit, and that distinction IS the bug.** The first cut
+was "at most once per 250ms", which still fires eight times across a two-second
+spin — reported from the device as *"gesture test fires repeatedly on detent"*.
+The docs already promised the right behaviour ("a whole flick of the encoder
+counts as one press"), so the implementation was what disagreed.
+
+The stamp is therefore the last **detent**, not the last fire: every detent
+extends the gesture, and the latch clears once the knob has been still for
+`TRIGGER_KNOB_GESTURE_GAP_MS` (270). Written *before* the early return, which is
+what makes the clock run on stillness rather than on elapsed time.
+
+It was 400 first and felt sluggish on hardware — *"the cooldown needs to be a
+bit shorter, try 2/3 the length"*. The floor is set by the SLOWEST deliberate
+turn that should still count as one gesture, so there is room to come down
+further. The tests deliberately do **not** pin the value: they assert "clearly
+inside" at 100ms and "clearly outside" at a second, so any gap from ~150 to
+~900ms passes and a broken latch still fails. Pinning 300/500 meant retuning
+the constant broke the suite for no behavioural reason.
+
+**A RELEASE clears it immediately**, on both surfaces. The gap is only a
+fallback for a cap sensor that never registered — letting go is the real
+gesture boundary, and without it you fire, let go, take hold again and the next
+detent is swallowed for up to 400ms, which reads as a broken control rather
+than as a safety.
+
+**The footer says `CLK FIRE` / `KNB FIRE`.** It said `CLK PUSH`, deliberately —
+"name the GESTURE the picture is asking for", and the picture is a push button.
+That held while the click was the only way to fire it, and stopped holding when
+a detent started firing it too: you do not push a knob you are turning, so no
+single gesture-name covers both keys and the honest word is the consequence.
+Two pairs rather than a compound `CLK/KNB` key, which measures 3px narrower and
+reads well but is new vocabulary — `FOOTER_CANON.keys` name a PHYSICAL control
+and `test_footer_canon.sh` enforces it. `KNB PUSH` does **not** fit: the face is
+proportional, PUSH is wider than FIRE, and the third pair was silently dropped.
+"If it fits" had to be answered by rendering it.
+
+**It is KNOB-ONLY.** A click is one gesture per press and may repeat as fast as
+a finger can manage. One flick of an encoder is a dozen detents, and a trigger
+is by definition something that DOES a thing: magneto's `["Play","Save"]` would
+write a file per detent. Applied at the knob CALLER, never inside the fire, so
+a click can never be gated by a knob's latch.
+
+**Both knob surfaces do this and the constant is duplicated, so it is pinned
+against drift.** `page_controller.mjs` (the knob grid) and `shadow_ui.js`
+(chain editor knob card, Master FX, hierarchy list editor) drive the same
+physical encoder against the same parameter, and which one is on screen is a
+Param View setting the user can flip — two copies of the number is two
+behaviours, noticed only as "it fires differently in List view", which nobody
+would think to report as a constant.
+`tests/host/test_knob_surfaces_access.sh` requires the two declarations to be
+byte-identical, that the window is checked BEFORE the write, and that neither
+click path mentions the constant at all. `tests/host/test_param_access.sh`
+drives the real controller and asserts the SEQUENCE — one fire, then eight
+swallowed detents, then a fire past the window, then the reverse direction,
+then two ungated clicks — because each half passes a shorter test alone, and a
+RATE LIMIT passes any test whose detents are spaced wider than its window. The
+spin in the test is 2 seconds of detents 30ms apart for exactly that reason.
+
+A **readout** (`access: "read"`) still refuses the turn: there is nothing to
+set. Both guards must precede the enum stepper's value read, which is asserted
+as a line ORDER.
 
 ### Knob ring LEDs, and giving them back
 
@@ -831,6 +1103,58 @@ is the case: its `banks` level names `root`, and root carries
 rather than inventing a `navigate_to: {level, kind}` form is deliberate — only
 three modules declare `navigate_to` at all, and new vocabulary repeats the
 `options_as_string` lesson: documented for months, set by nobody.
+
+### An editor inherits the KNOB ROW of the page you came from
+
+A level's declared `knobs` array is not the order the user was just looking at.
+The grid re-seats keys for LAYOUT — `gatherGroupMembers` pulls granny's `spray`
+next to `position` so the waveform can span both cells — so diving into the
+wave editor silently changed which physical knob was which, **one click
+apart**. In the grid spray is knob 2; in the editor it was knob 4.
+
+Reported as *"the editor should be using the same knobs as the entered page.
+using main is confusing, it's a hidden order no one has reference to"* — and
+that is the argument: the declared order is invisible, and the page on screen a
+moment ago is the only reference a user has.
+
+`hierEditorKnobsFromPage` captures the page's keys in `openParamEditorFromGrid`
+(alongside `level`, and for the same reason — `exitParamPages` tears the
+controller down). Taken **verbatim**: no visibility filter, because the grid
+already applied one when it planned the page, and **no compaction**, because a
+hole means "this knob does nothing" and closing it would shift every knob after
+it — the same class of surprise this fixes. The level's own
+`hierEditorAllKnobs.filter(...)` path does compact, which is a latent version
+of the same bug for any level whose knobs are not all visible.
+
+Gated on the level it was captured from, so navigating elsewhere inside the
+editor hands the row back, and cleared in `exitHierarchyEditor` so it cannot
+survive into a later list-originated session.
+
+**But the entry performs a level hop of its own, and the first cut mistook that
+for navigation.** granny's `root` lists only navigation entries, so `position`
+is not in `root.params` and `openParamEditorFromGrid` relocates the editor to
+`main` on the way in. The override applied at root and was discarded at main:
+
+```
+knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
+knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
+```
+
+So the row is **rebound to the level actually landed on**, once the entry has
+settled; anything after that point is the user moving, and the gate is right
+for that. The knob-context cache keys on the LEVEL, which has not changed at
+that moment, so the rebind must invalidate it or the stale row survives.
+
+The original test could not see this: its fixture put the param in the page's
+own level, so there was no hop. `position2` exists in that fixture purely to
+create one.
+
+**It took a hardware log to find, and that is the point.** Turning what looked
+like the spray knob resolved to `synth:size_ms` in `adjustKnobAndShow`'s debug
+line. The mapping was not observable from outside `shadow_ui.js` — the same
+gap the routing comment blames for three shipped bugs — so `ctx.knobParamKey(i)`
+now exposes it, and `test_shadow_param_editor_routing.sh` asserts the MAPPING
+rather than the array.
 
 ### An editor returns to whoever OPENED it, through EVERY door
 
@@ -1711,7 +2035,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 ## Documentation Index
 
 - `docs/API.md` — JS API reference (display, MIDI, host fns, LED colors)
-- `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage)
+- `docs/MODULES.md` — Module development guide (module.json, capabilities, tool_config, DSP API, Signal Chain integration, Remote UI `web_ui.html` + `schwungRemote` postMessage). Its **widget reference** — every widget's picture beside the rule that selects it, plus chrome and motion — is GENERATED between markers by `node tools/param-pages/widget_sheet.mjs --manual` and pinned by `tests/host/test_widget_sheet.sh` (which also fails on an ORPHANED image). There is no separate WIDGETS.md: a second user-facing widget page in the same voice as the manual's was one document too many, and the pictures belong next to the rules. `--manual` additionally writes a 14-image subset into `../schwung-catalog-site/manual.html`, sized from each image's own natural width — `width: 100%` rendered a one-cell switch four times the size of a cell. Not the SCH-50 catalog (`tools/param-pages/catalog.mjs`), which renders ten *alternatives* per widget and is gitignored.
 - `docs/LOGGING.md` — Unified logging
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
@@ -1725,7 +2049,7 @@ Release: bump `src/module.json` version → commit → `git tag v0.2.0 && git pu
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
 3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
-4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior
+4. **Docs**: update `CLAUDE.md`, `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
 5. **Help files**: update `help.json` in modified tool modules
 6. **Module catalog**: bump `min_host_version` for modules depending on new host features
 7. **Commit + tag**: `git tag v0.X.0 && git push --tags`

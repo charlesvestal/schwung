@@ -35,7 +35,7 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
-import { resolveViz, VIZ_SWITCH } from "./viz.mjs";
+import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 
@@ -443,6 +443,39 @@ export const CONTRACT_RECOVER_INTERVAL_TICKS = 600;
  * to bound the list — the renderer decides what it actually draws. */
 const TRIGGER_BURST_KEEP_MS = 400;
 const TRIGGER_BURST_MAX = 4;
+/*
+ * ONE FIRE PER GESTURE, on the knob path only.
+ *
+ * A jog click is one gesture per press, so it may repeat as fast as a finger
+ * can manage and nothing limits it. An encoder is not: one flick of the wrist
+ * is a dozen detents, and a trigger is by definition something that DOES a
+ * thing — magneto's `["Play","Save"]` would write a file per detent.
+ *
+ * THIS WAS A RATE LIMIT FIRST, AND A RATE LIMIT IS THE WRONG SHAPE. "At most
+ * once per 250ms" still fires eight times across a two-second spin, which is
+ * what came back from the device: "gesture test fires repeatedly on detent."
+ * The docs already promised the right behaviour — "a whole flick of the
+ * encoder counts as one press" — so the implementation was the thing that
+ * disagreed, not the intent.
+ *
+ * So it LATCHES: the first detent fires, every detent after it extends the
+ * gesture, and the latch clears only once the knob has been still for
+ * TRIGGER_KNOB_GESTURE_GAP_MS. A spin of any length is one fire; letting go
+ * and flicking again is two.
+ *
+ * 270ms is chosen against the two things it must separate. Detents inside a
+ * deliberate turn arrive tens of milliseconds apart, so any plausible spin
+ * stays latched; and 270ms of stillness is longer than a hand pauses
+ * mid-gesture but shorter than the beat between two intended presses.
+ *
+ * It was 400 and that felt sluggish on hardware -- "the cooldown needs to be a
+ * bit shorter, try 2/3 the length". The floor is set by the SLOWEST deliberate
+ * turn that should still count as one gesture, not by the fastest, so there is
+ * room to come down further if a slow sweep still re-fires. Note the RELEASE
+ * re-arm below carries most of the real load: the gap only governs a gesture
+ * the cap sensor never saw.
+ */
+const TRIGGER_KNOB_GESTURE_GAP_MS = 270;
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
@@ -566,6 +599,10 @@ export function createController(io = {}) {
         contractGaveUp: false,
         /* key -> ms when a trigger last fired, for the bang flash. */
         triggerFiredAt: Object.create(null),
+        /* key -> ms of the last KNOB-driven fire, for the knob cooldown only.
+         * Deliberately separate from triggerFiredAt: that one is a LIST the
+         * renderer trims, and a click must never be rate-limited by it. */
+        triggerKnobLastMs: Object.create(null),
         contractRetries: 0,
         /* Wall-clock ms at which a selection-driven contract re-read comes
          * due, or 0 for none pending. Re-armed per detent — see
@@ -1239,13 +1276,30 @@ export function createController(io = {}) {
         }
         if (at > p.keys.length) {
             /* A plain read: an extra key is a filename, never modulated and
-             * never turned, so it skips the modulation and settle lanes. The
-             * tri-state still applies — a failed read must not become "" and
-             * then become "no sample". */
+             * never turned, so it skips the modulation and settle lanes.
+             *
+             * The tri-state applies, and it has THREE branches — which is the
+             * bug this used to have. It dropped `""` along with null, on the
+             * reasoning that a failed read must not become "no sample". True
+             * of null; false of `""`, which is the channel saying there IS no
+             * file. Dropping it left `s.values[key]` UNDEFINED forever, and
+             * undefined is indistinguishable from null downstream:
+             *
+             *   - the cell renders "--" (read did not answer) where it should
+             *     read NONE (there is no file). Reported from the device as
+             *     "why does granny show -- instead of none" — and the log
+             *     settles it: across 41MB, `sample_path` never once appears in
+             *     a param_giveup, so the read was succeeding the whole time.
+             *   - the empty-file graphic suppression in render_page_movy keys
+             *     on `=== ""`, so on granny's ROOT page — where the file is
+             *     off-page and therefore an extra key — an empty sample still
+             *     drew the empty waveform this was supposed to remove.
+             *
+             * So: store an empty answer, drop only a missing one. */
             const ek = extraKeys[at - p.keys.length - 1];
             if (!ek) return null;
             const ev = getParam(fullKey(ek));
-            if (ev !== null && ev !== undefined && ev !== "") s.values[ek] = ev;
+            if (ev !== null && ev !== undefined) s.values[ek] = ev;
             return null;
         }
         const key = p.keys[at];
@@ -1295,10 +1349,46 @@ export function createController(io = {}) {
          * mistaken for one that answered zero.
          */
         if (raw === null || raw === undefined || raw === "") raw = getParam(fullKey(key));
-        if (raw === null || raw === undefined || raw === "") return null;
+
+        const meta = s.metaIndex.getOrGuess(key);
+        /*
+         * ...and for an OPAQUE key, "" is a VALUE.
+         *
+         * The miss rule above is right for a number and wrong for a filepath.
+         * An empty filepath is the module saying there is no file — the exact
+         * thing NONE exists to report — and discarding it left
+         * `s.values[key]` undefined forever, which renders "--".
+         *
+         * THE REPRO NAMED IT. "It showed none, I clicked into it, went back
+         * and it showed --", on granny, permanently. Every piece fits only
+         * this:
+         *
+         *   - granny declares sample_path in `main.params` but not in
+         *     `main.knobs`, so on the ROOT page it is OFF-page and arrives
+         *     through the viz extra-key stop, which does store "". That read
+         *     is what put NONE on the screen, and `s.values` accumulates
+         *     across pages, so it survived the jog to "Main - 2".
+         *   - returning from the filepath browser REBUILDS the controller
+         *     (a fresh io object per componentParamPagesIo call), emptying
+         *     `s.values`.
+         *   - on "Main - 2" the file IS a page key, so it comes through THIS
+         *     path — which threw the answer away every rotation. The root
+         *     page's extra-key stop never runs while you are on Main - 2, so
+         *     nothing ever refilled it.
+         *
+         * And it is invisible in the log: the read SUCCEEDS every time, so
+         * `sample_path` never appears in a param_giveup — across 41MB it never
+         * once does. A value being discarded looks exactly like a value being
+         * read.
+         *
+         * Scoped to KIND_OPAQUE. For a number or an enum an empty answer is
+         * still a miss, which is what keeps the slot-settings Volume bug
+         * fixed: "" sailing through as a reading showed Number("") = 0.
+         */
+        if (raw === null || raw === undefined) return null;
+        if (raw === "" && meta.kind !== KIND_OPAQUE) return null;
 
         /* First successful read repairs a guessed range, once. */
-        const meta = s.metaIndex.getOrGuess(key);
         /*
          * ...and teaches an enum which wire format its plugin speaks. This is
          * THE read detection is allowed to use: it comes from the device, it is
@@ -2071,6 +2161,42 @@ export function createController(io = {}) {
         return s.pageIndex;
     }
 
+    /*
+     * Fire a write-only param, and stamp it so the button widget can flash.
+     *
+     * The wire value that fires it is the module's business
+     * (["idle","trigger"], ["—","Rnd!"], ["Play","Save"] are all in the
+     * fleet), so option 1 goes out through the ordinary enum wire, which
+     * speaks whichever convention that module uses. Writing a bare "1" here is
+     * exactly the bug that makes euclidrum randomise a kit when asked to do
+     * nothing.
+     *
+     * The stamp APPENDS, it does not overwrite. A press must not cancel the
+     * bursts already travelling — a fast double-tap should throw two rings,
+     * not restart one. Trimmed to what can still be on screen, so the list
+     * cannot grow.
+     *
+     * ONE function for both gestures on purpose. A click and a detent must put
+     * the same value on the wire and the same stamp on screen; the ONLY thing
+     * that differs between them is the cooldown, and that is applied by the
+     * knob caller rather than here — so a click can never be rate-limited by
+     * a knob's window, which is the regression a shared timer would invite.
+     */
+    function fireTrigger(key, meta, t) {
+        if (meta.kind === KIND_ENUM && Array.isArray(meta.options) && meta.options.length > 1) {
+            setParam(fullKey(key), enumWireValue(meta, 1));
+            announce(`${meta.label}, ${meta.options[1]}`);
+        } else {
+            setParam(fullKey(key), "1");
+            announce(`${meta.label}`);
+        }
+        const prev = s.triggerFiredAt[key] || [];
+        s.triggerFiredAt[key] = prev
+            .filter((p) => t - p < TRIGGER_BURST_KEEP_MS)
+            .slice(-TRIGGER_BURST_MAX + 1)
+            .concat(t);
+    }
+
     /**
      * A physical knob moved. Applies the shared knob_engine so a value moves
      * identically here and in the list editor, writes through, and holds off
@@ -2081,6 +2207,43 @@ export function createController(io = {}) {
         const key = keyAt(slot);
         if (!key) return null;
         const meta = s.metaIndex.getOrGuess(key);
+
+        /*
+         * A TRIGGER fires on a detent, in EITHER direction.
+         *
+         * It has no value to walk, so there is no "up" and no "down" — the
+         * momentary is the whole control, and reaching it should not require
+         * the jog when your hand is already on the knob. Direction-sensitivity
+         * would be worse than useless here: it would make half of every spin
+         * do nothing, which reads as a dead knob.
+         *
+         * This sits AHEAD of the isTurnable swallow below because a trigger is
+         * writeOnly and therefore not turnable — falling through would silently
+         * eat the motion, which is exactly what it used to do.
+         *
+         * The gesture latch lives HERE and nowhere else: see
+         * TRIGGER_KNOB_GESTURE_GAP_MS. Note it is applied BEFORE the header
+         * claim as well, deliberately — a swallowed detent is not an
+         * interaction, and letting it move the header would make a spin look
+         * like it was doing something on every click of the encoder.
+         */
+        if (meta.writeOnly) {
+            const t = nowMs === undefined ? now() : nowMs;
+            /* The stamp is the last DETENT, not the last fire, which is what
+             * makes this a latch rather than a rate limit: every detent
+             * extends the gesture, so the clock only runs while the knob is
+             * still. Written before the early return for exactly that reason. */
+            const last = s.triggerKnobLastMs[key];
+            const startsGesture = last === undefined
+                || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
+            s.triggerKnobLastMs[key] = t;
+            if (!startsGesture) return null;
+            if (!s.touchOrder.length) { s.touched = slot; s.turnClaimMs = t; }
+            else if (s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
+            fireTrigger(key, meta, t);
+            return null;
+        }
+
         /* A filepath or canvas cannot be turned — it opens. Swallow the motion
          * rather than writing nonsense into it. */
         if (!isTurnable(meta)) return null;
@@ -2387,6 +2550,20 @@ export function createController(io = {}) {
              * land on the device the instant you let go, not up to 20ms
              * later. */
             const key = keyAt(slot);
+            /*
+             * LETTING GO ENDS THE GESTURE, immediately.
+             *
+             * The trigger latch clears itself after TRIGGER_KNOB_GESTURE_GAP_MS
+             * of stillness, which is a fallback for a cap sensor that never
+             * registered. A release is the real boundary and it is unambiguous:
+             * the hand is off the knob, so the next detent is a new gesture and
+             * should fire at once rather than waiting out a timer.
+             *
+             * The gap stays as the backstop for exactly the reason the knob
+             * card keeps its decay — a touch that the sensor misses must not
+             * strand the feature.
+             */
+            if (key) delete s.triggerKnobLastMs[key];
             if (key && s.pendingWrite[key] !== undefined) {
                 setParam(fullKey(key), s.pendingWrite[key]);
                 replanIfCondition(key);
@@ -2509,53 +2686,32 @@ export function createController(io = {}) {
             slot = r.slot;
         }
 
-        const key = keyAt(slot);
-        const meta = metaAt(slot);
+        let key = keyAt(slot);
+        let meta = metaAt(slot);
         if (!key || !meta) return null;
 
-        /*
-         * A TRIGGER fires. It is not a value to open or scrub — the module
-         * reports a constant and acts on the write, so a click is the whole
-         * interaction.
-         *
-         * The wire value that fires it is the module's business
-         * (["idle","trigger"], ["—","Rnd!"], ["Play","Save"] are all in the
-         * fleet), so option 1 goes out through the ordinary enum wire, which
-         * speaks whichever convention that module uses. Writing a bare "1"
-         * here is exactly the bug that makes euclidrum randomise a kit when
-         * asked to do nothing.
-         */
-        if (meta.writeOnly) {
-            if (meta.kind === KIND_ENUM && Array.isArray(meta.options) && meta.options.length > 1) {
-                setParam(fullKey(key), enumWireValue(meta, 1));
-                announce(`${meta.label}, ${meta.options[1]}`);
-            } else {
-                setParam(fullKey(key), "1");
-                announce(`${meta.label}`);
-            }
-            /*
-             * Stamp the fire time so the bang can flash. OVERWRITING is the
-             * point: clicking again mid-flash restarts the animation from the
-             * beginning rather than being swallowed by the one in progress, so
-             * two clicks look like two events. The renderer derives everything
-             * from this one number, so there is no animation state to clear.
-             */
-            /*
-             * APPEND, do not overwrite. A press must not cancel the bursts
-             * already travelling — a fast double-tap should throw two rings,
-             * not restart one. Trimmed to what can still be on screen, so the
-             * list cannot grow.
-             */
-            const t = now();
-            const prev = s.triggerFiredAt[key] || [];
-            s.triggerFiredAt[key] = prev
-                .filter((p) => t - p < TRIGGER_BURST_KEEP_MS)
-                .slice(-TRIGGER_BURST_MAX + 1)
-                .concat(t);
-            return null;
-        }
+        /* A TRIGGER fires — a click is the whole interaction, with no
+         * cooldown, because one press is one gesture. See fireTrigger. */
+        if (meta.writeOnly) { fireTrigger(key, meta, now()); return null; }
 
-        if (!meta.divable) return null;
+        /*
+         * A cell with no door of its own, drawn as part of a sample graphic,
+         * opens the GRAPHIC'S door — granny's `spray`, which is a plain float
+         * inside the waveform strip. See vizDiveTarget: the redirect is one
+         * definition shared with the footer hint and the corner brackets, so
+         * all three agree about which cells are doors.
+         *
+         * The intent that goes out names the ANCHOR, not the cell clicked, so
+         * every consumer downstream — the editor entry, the return-to-caller
+         * bookkeeping, the announcement — is the unchanged position path and
+         * knows nothing about this.
+         */
+        if (!meta.divable) {
+            const via = diveTargetAt(slot);
+            if (!via) return null;
+            key = via;
+            meta = s.metaIndex.getOrGuess(via);
+        }
         s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         /*
          * An enum opens a list of its OPTIONS, so the intent carries the list
@@ -2988,6 +3144,23 @@ export function createController(io = {}) {
         return false;
     }
 
+    /**
+     * The key this SLOT opens when its own cell has no door — see
+     * vizDiveTarget. Null for every ordinary cell, including one that opens
+     * itself.
+     *
+     * A slot accessor rather than a key one because both callers hold a slot
+     * (the click and the footer hint, which keys off `state.touched`), and
+     * because the answer is a property of the PAGE's layout: the same
+     * parameter on a page where it is not seated next to the cursor is not a
+     * door at all.
+     */
+    function diveTargetAt(slot) {
+        const key = keyAt(slot);
+        if (!key || !s.metaIndex) return null;
+        return vizDiveTarget(vizGroups(), key, s.metaIndex);
+    }
+
     function vizExtraKeys() {
         const out = [];
         for (const g of vizGroups()) {
@@ -3068,7 +3241,7 @@ export function createController(io = {}) {
          *  failure. */
         get contractUnresolved() { return s.contractUnresolved; },
         get triggerFiredAt() { return s.triggerFiredAt; },
-        keyAt, metaAt,
+        keyAt, metaAt, diveTargetAt,
         jumpIndex: () => jumpIndex(s.pages),
         groupIndex: () => groupIndex(s.pages),
     };

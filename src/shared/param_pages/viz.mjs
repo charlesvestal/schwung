@@ -601,8 +601,15 @@ function markerKind(key, meta) {
  * fizzik/nusaw/freak spread is stereo, chordism's is chord voicing,
  * cloudseed's diffusion is a reverb control. Matching any of them would draw a
  * region on the sample that the DSP never reads a grain from.
+ *
+ * EXPORTED because the fullscreen wav_position editor draws the same fences
+ * at its own scale and has to find the same parameter. A second predicate
+ * there would be a second answer to "what is a spray", and the two would
+ * disagree the first time either is widened -- the grid would fence a control
+ * the editor ignored, or vice versa, on the same screen the user just came
+ * from.
  */
-function isSprayMeta(key, meta) {
+export function isSprayMeta(key, meta) {
     return String(key).toLowerCase() === "spray"
         && !!meta && meta.type === "float" && meta.min === 0 && meta.max === 1;
 }
@@ -751,8 +758,36 @@ function detectSample(pool, metaIndex) {
      * before the gather pass. It is what lets `gatherGroupMembers` widen the
      * graphic once the two are seated together, exactly like the four knobs of
      * an ADSR sharing one envelope.
+     *
+     * THE FILE IS NOT A CANDIDATE, though it is still `roles.value` — the
+     * picture is drawn FROM it, not ON it.
+     *
+     * It used to claim a cell, on the same "give the picture width" reasoning
+     * that admits the spray, and the two are not alike. Everything else in
+     * this graphic is a position WITHIN the sample and dives to the waveform
+     * editor; the filepath is how you REPLACE the sample and dives to the file
+     * browser. Claiming it drew one continuous waveform across a boundary
+     * where the behaviour changes — reported from the device twice in a row,
+     * *"sample file isn't part of the continuum because it goes to a different
+     * editor"* and then *"why is there a line that spans between them?"*
+     *
+     * Released, the cell draws as the ordinary opaque box: notched frame,
+     * chevron, and THE FILENAME — which is information the graphic was
+     * throwing away. That is also the real answer to the report this whole
+     * thread started from ("empty sample selection is indistinguishable from
+     * the spray control"): the honest fix was never to bracket the cell, it
+     * was to stop swallowing it.
+     *
+     * `roles.value` is untouched, so the waveform still comes from this file,
+     * and the value is still read: the page cursor walks page.keys, not
+     * group.keys. `extraKeys` remains for an OFF-page file, which is the case
+     * it was built for.
+     *
+     * Unrelated to the no-anchor branch above, where a filepath with no marker
+     * anywhere near it draws its own waveform in its own cell. That is one
+     * cell, one door, and no boundary to cross.
      */
-    const claimable = [fileItem, sprayItem, ...members].filter(Boolean)
+    const claimable = [sprayItem, ...members].filter(Boolean)
         .slice().sort((a, b) => a.slot - b.slot);
     let run = [], best = [];
     for (const it of claimable) {
@@ -780,6 +815,54 @@ const DETECTORS = [
     detectFader, detectSwitch, detectEq,
     detectSample,
 ];
+
+/**
+ * THE PICTURE IS THE DOOR: what a cell dives into when it has no door of its own.
+ *
+ * granny draws `position`, `spray` and `sample_path` as ONE waveform strip.
+ * Two of those cells open something — the wave editor and the file browser —
+ * and `spray` opened nothing, because it is a plain float and nothing is
+ * declared behind it. Asked from the device: "shouldn't the whole thing be
+ * divable?" It should: the user is looking at one picture, and a click on the
+ * left third of it doing something while the middle does nothing is the
+ * picture disagreeing with itself.
+ *
+ * So a cell that is part of a sample graphic and has no door of its own dives
+ * to the graphic's own anchor — the position marker, whose editor draws that
+ * same waveform full-screen with the same fences.
+ *
+ * DERIVED, never named. The rule is "a member of the picture with nothing
+ * behind it", not "spray": nothing here mentions the key, so a future member
+ * seated into a sample graphic inherits this without a second edit, and a
+ * member that HAS its own door (the filepath) keeps it — the `self.divable`
+ * bail is what protects the file browser from being swallowed by the editor.
+ *
+ * Scoped to VIZ_SAMPLE alone. An envelope or a filter curve is a picture of
+ * several knobs with no editor behind it, so there is nothing to dive to and
+ * this would invent a destination.
+ *
+ * ONE definition for three consumers — the click (page_controller), the
+ * footer hint (shadow_ui_param_pages) and the corner brackets
+ * (render_page_movy). Three copies of "is this cell a door" is how a footer
+ * comes to promise CLK OPEN over a click that does nothing, which is the
+ * mismatch the hint site already carries a comment about.
+ *
+ * @returns {string|null} the key to open instead, or null for "no redirect".
+ */
+export function vizDiveTarget(groups, key, metaIndex) {
+    if (!key || !metaIndex || !groups) return null;
+    const self = metaIndex.getOrGuess(key);
+    if (!self || self.divable) return null;
+    for (const g of groups) {
+        if (!g || g.kind !== VIZ_SAMPLE) continue;
+        if (!Array.isArray(g.keys) || g.keys.indexOf(key) < 0) continue;
+        const anchor = g.roles && g.roles.position;
+        if (!anchor || anchor === key) continue;
+        const am = metaIndex.getOrGuess(anchor);
+        if (am && am.divable) return anchor;
+    }
+    return null;
+}
 
 /* ---------------------------------------------------------------- resolve */
 
@@ -1023,8 +1106,20 @@ export function gatherGroupMembers(keys, metaIndex) {
          * its cells by construction. */
         if (g.kind !== VIZ_SAMPLE) continue;
 
-        /* On this page, belongs to this picture, is not already a cell of it. */
+        /* On this page, belongs to this picture, is not already a cell of it.
+         *
+         * NOT the FILE, which is a role but never a cell of a marker's graphic
+         * (see detectSample). Leaving it in overstated `wantSpan` by one, and
+         * since the widened result is verified against that number by the real
+         * detector at the bottom of this loop, the check could never be
+         * satisfied — so the gather was abandoned entirely and the members it
+         * WOULD have seated stayed scattered. granny's "Main - 2" collapsed
+         * from a two-cell waveform to a one-cell one with the spray arc back
+         * three knobs away, which is the exact layout the gather pass exists
+         * to fix. Nothing about the failure said "the file": the group simply
+         * stopped widening. */
         const scattered = [...new Set(Object.values(g.roles))]
+            .filter((k) => k !== g.roles.value)
             .filter((k) => keys.indexOf(k) >= 0 && g.keys.indexOf(k) < 0);
         if (scattered.length === 0) continue;
 

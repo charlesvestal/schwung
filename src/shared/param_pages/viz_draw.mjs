@@ -1520,6 +1520,22 @@ export function drawSample(ctx, rect, roles, values, metaIndex) {
     drawStepCurve(ctx, x0, x0 + w, crestAt, 1);
     drawStepCurve(ctx, x0, x0 + w, troughAt, 1);
 
+    /*
+     * NO FILE still draws the MARKERS.
+     *
+     * This used to return early, on the reasoning that a cursor with no file
+     * is a playhead pointing into nothing. That is true of the playhead and
+     * false of the widget: the empty track, its cursor and its spray fences
+     * are the picture of two controls that still exist and are still yours to
+     * set. "When no sample is loaded it should be the empty two column
+     * widget."
+     *
+     * The emptiness is reported where it belongs — on the file's own cell,
+     * which reads NONE (see displayValue in render_page_movy.mjs). It is not
+     * written across the graphic, because centred on the graphic is over the
+     * SPRAY cell: "why is spray showing empty? Sample file should be empty."
+     */
+
     /* Column i covers frames [i/w, (i+1)/w), so a marker belongs in
      * floor(p*w). The obvious round(p*(w-1)) disagrees for a quarter of all
      * positions and lands a pixel off the column that will actually play. */

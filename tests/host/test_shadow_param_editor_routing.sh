@@ -75,7 +75,11 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 for (const n of ["print","fill_rect","clear_screen","text_width","draw_line",
                  "draw_circle","fill_circle","draw_arc","flush_display",
                  /* the knob indicator ring LEDs go out through this one */
-                 "move_midi_internal_send"]) {
+                 "move_midi_internal_send",
+                 /* the wav_position editor draws through these two, and it is
+                    the only screen here that does -- without them the spray
+                    case below throws instead of asserting. */
+                 "draw_rect","set_pixel"]) {
   globalThis[n] = () => 0;
 }
 
@@ -92,6 +96,15 @@ const CHAIN_PARAMS = [
     filepath_param: "sample_path", min: 0, max: 1, step: 0.01 },
   { key: "sample_path", name: "Sample File", type: "filepath",
     root: "/tmp", filter: ".wav" },
+  /* The granular read spread. Present so the wav_position editor has fences to
+     draw -- see the spray case at the bottom of this file. */
+  { key: "spray", name: "Spray", type: "float", min: 0, max: 1, step: 0.001 },
+  /* A wav_position reachable from a ROOT knob while living in `main`. granny
+     is shaped this way -- root lists only navigation entries, so diving from a
+     root page RELOCATES the editor to another level on the way in. Without
+     this the fixture never exercises that hop. */
+  { key: "position2", name: "Position 2", type: "wav_position", mode: "position",
+    filepath_param: "sample_path", min: 0, max: 1, step: 0.01 },
   /* An enum, reported by NAME — the chord case. Divable now (clicking a held
    * enum knob opens its option list) while the knob still steps it. */
   { key: "mode", name: "Mode", type: "enum",
@@ -113,7 +126,7 @@ const HIERARCHY = {
        * page 0, and the page-restore assertion below then passes whether or
        * not the restore happens. They must be reachable only via an OVERFLOW
        * page of `main`, which is where the real complaint came from. */
-      knobs: ["gain"],
+      knobs: ["gain", "position2"],
       params: [{ level: "main", label: "Main" }],
     },
     /* Nine params before the divable pair, so they land on an OVERFLOW page:
@@ -122,11 +135,13 @@ const HIERARCHY = {
       label: "Main",
       knobs: ["gain", ...FILLER],
       params: [{ key: "gain" }, ...FILLER.map((k) => ({ key: k })),
-               { key: "position" }, { key: "sample_path" }, { key: "mode" }],
+               { key: "position" }, { key: "spray" }, { key: "sample_path" },
+               { key: "mode" }, { key: "position2" }],
     },
   },
 };
-const values = { gain: "0.5", position: "0.25", sample_path: "", mode: "Hall" };
+const values = { gain: "0.5", position: "0.5", position2: "0.25", spray: "0.125",
+                 sample_path: "", mode: "Hall" };
 for (const k of FILLER) values[k] = "0.5";
 function getParam(key) {
   const bare = String(key).replace(/^[^:]+:/, "");
@@ -655,6 +670,212 @@ function gotoSlotFor(name) {
 
   globalThis.shadow_get_param = prevGet;
   globalThis.shadow_set_param = prevSet;
+}
+
+/* ---- N. the wav_position editor draws the SPRAY FENCES ------------------
+ *
+ * granny draws the spray as two dotted fences around the cursor in its grid
+ * cell, and the fullscreen editor drew nothing -- the word "spray" appeared
+ * nowhere in shadow_ui.js. That mattered once a click on the spray cell
+ * started opening this editor: the user dove from the control and landed on a
+ * screen that did not show it.
+ *
+ * Asserted on the PIXELS the editor puts out, not on the source, because the
+ * risky part is arithmetic -- wrap, clamp, zoom -- and all of it reads
+ * plausibly either way.
+ *
+ * DOTTED vs SOLID is the discriminator: the cursor is a solid column and a
+ * fence is lit on alternating rows, which is the whole visual distinction
+ * between "where a grain is read" and "how far it may wander".
+ *
+ * THE CURSOR SITS AT RATIO 0 HERE, and that is not a defect in the fixture.
+ * There is no real WAV behind the stub, so the duration is 0 and the position
+ * cannot be mapped to a ratio -- which puts this case squarely on the WRAPPING
+ * path, where pos - spray goes negative and has to come back round to
+ * 1 - spray. That is the arithmetic most likely to be wrong, so it is the
+ * better thing to pin than a comfortable mid-file cursor would be.
+ *
+ * Driven at TWO spray values, because a single one is satisfied by a pair of
+ * hard-coded columns.
+ */
+{
+  /* A FILE, for this case only. The fixture leaves sample_path empty (the
+   * browser case needs that). host_file_exists is stubbed true, so the path
+   * only has to be non-empty. */
+  const savedPath = values.sample_path, savedSpray = values.spray;
+
+  const PLOT_X0 = 4;      /* plotX + 1, mirroring drawWavPositionEditor */
+  const INNER_W = 120;    /* plotW - 2 */
+
+  function captureFences(sprayValue) {
+    values.sample_path = "/tmp/probe.wav";
+    values.spray = String(sprayValue);
+    openGrid();
+    const slot = gotoSlotFor("position");
+    if (slot < 0) return null;
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") return null;
+
+    const cols = new Map();
+    const realPixel = globalThis.set_pixel;
+    globalThis.set_pixel = (x, y, c) => {
+      if (c) { if (!cols.has(x)) cols.set(x, []); cols.get(x).push(y); }
+      return 0;
+    };
+    ctx.drawScreen ? ctx.drawScreen() : globalThis.tick();
+    globalThis.set_pixel = realPixel;
+    feed(back());
+
+    const tall = [...cols.entries()].filter(([, ys]) => ys.length >= 8);
+    const run = (ys, step) => {
+      const t = [...ys].sort((a, b) => a - b);
+      return t.length > 1 && t.every((y, i) => i === 0 || y === t[i - 1] + step);
+    };
+    return {
+      solid:  tall.filter(([, ys]) => run(ys, 1)).map(([x]) => x).sort((a, b) => a - b),
+      dotted: tall.filter(([, ys]) => run(ys, 2)).map(([x]) => x).sort((a, b) => a - b),
+    };
+  }
+
+  const expectAt = (frac) => PLOT_X0 + Math.round(frac * (INNER_W - 1));
+
+  for (const spray of [0.125, 0.25]) {
+    const r = captureFences(spray);
+    if (!r) { fail("the spray case could not reach the waveform editor at spray=" + spray); continue; }
+    if (r.solid.length < 1) {
+      /* Two causes, and both matter. Either the capture stopped seeing the
+       * editor at all, or a fence landed ON the cursor column and made it read
+       * as mixed rather than solid -- which is what CLAMPING instead of
+       * wrapping does at ratio 0, so this is a real assertion and not just a
+       * sanity check on the harness. */
+      fail("no solid cursor column at spray=" + spray +
+           " — either the capture broke, or a fence landed on the cursor " +
+           "column (a clamped fence does that at ratio 0; it must wrap)");
+      continue;
+    }
+    if (r.dotted.length !== 2) {
+      fail("the wav_position editor drew " + r.dotted.length + " dotted fence column(s) " +
+           "at spray=" + spray + ", expected 2 — a click on spray opens this screen, " +
+           "so the spread has to be visible on it (cols " + JSON.stringify(r.dotted) + ")");
+      continue;
+    }
+    /* Cursor at 0, so the fences land at +spray and at the WRAPPED 1 - spray. */
+    const want = [expectAt(spray), expectAt(1 - spray)].sort((a, b) => a - b);
+    for (let i = 0; i < 2; i++) {
+      if (Math.abs(r.dotted[i] - want[i]) > 1) {
+        fail("fence " + i + " at x=" + r.dotted[i] + " for spray=" + spray +
+             ", expected ~" + want[i] + " — the fences are not tracking the value " +
+             "(got " + JSON.stringify(r.dotted) + ", want " + JSON.stringify(want) + ")");
+      }
+    }
+  }
+
+  /* Spray OFF draws no fences at all: two columns sitting on top of the cursor
+   * would read as a spread of nothing. */
+  const off = captureFences(0);
+  if (off && off.dotted.length !== 0) {
+    fail("spray=0 still drew " + off.dotted.length + " fence(s) — at zero both " +
+         "land on the cursor and state a spread that is not there");
+  }
+
+  values.sample_path = savedPath;
+  values.spray = savedSpray;
+}
+
+/* ---- N. the editor inherits the PAGE knob row ---------------------------
+ *
+ * A declared `knobs` array is not the order the user was just looking at. The
+ * grid re-seats keys for LAYOUT -- gatherGroupMembers pulls granny spray next
+ * to position so the waveform can span both cells -- so diving into the wave
+ * editor silently changed which physical knob was which, one click apart.
+ *
+ * Found on hardware by turning what looked like the spray knob and watching
+ * the log resolve it to `synth:size_ms`. Reported as: "the editor should be
+ * using the same knobs as the entered page. using main is confusing, its a
+ * hidden order no one has reference to."
+ *
+ * Asserted through the knob MAPPING rather than by reading hierEditorKnobs:
+ * the array is an implementation detail, and which param a physical knob
+ * drives is the behaviour.
+ *
+ * The fixture earns this by declaring knobs and params in DIFFERENT orders --
+ * with both the same, the test passes whether or not the override exists.
+ */
+{
+  openGrid();
+  const slot = gotoSlotFor("position");
+  if (slot < 0) {
+    fail("position never reached the grid for the knob-row case");
+  } else {
+    const pg = V.currentParamPage();
+    const pageKeys = ((pg && pg.keys) || []).slice();
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") {
+      fail("the knob-row case did not reach the waveform editor");
+    } else if (typeof ctx.knobParamKey !== "function") {
+      fail("ctx.knobParamKey is missing -- the knob mapping is unobservable again");
+    } else {
+      const mismatches = [];
+      for (let i = 0; i < pageKeys.length && i < 8; i++) {
+        const want = pageKeys[i];
+        if (!want) continue;
+        const got = ctx.knobParamKey(i);
+        if (got !== want) mismatches.push("knob " + (i + 1) + ": page=" + want + " editor=" + got);
+      }
+      if (mismatches.length) {
+        fail("the editor knob row does not match the page it was entered from: " +
+             mismatches.join(" | "));
+      }
+      feed(back());
+    }
+  }
+}
+
+/* ---- N+1. the row survives the LEVEL HOP that entering performs ---------
+ *
+ * The page the user was on and the level the param LIVES in are not always the
+ * same. granny root lists only navigation entries, so diving from a root page
+ * relocates the editor to `main` on the way in -- and the first version of the
+ * override read that hop as "the user navigated away" and handed the declared
+ * row back. It applied at root and was discarded at main:
+ *
+ *   knobRow: level=root fromPage=root -> [position, spray, size_ms, ...]
+ *   knobRow: level=main fromPage=root -> [position, size_ms, density, spray, ...]
+ *
+ * The case the ORIGINAL test could not see, because its fixture put the param
+ * in the page own level. position2 exists to create the hop.
+ */
+{
+  openGrid();
+  V.paramPagesGoTo(0);
+  for (let i = 0; i < 24; i++) V.tickParamPages();
+  const pg = V.currentParamPage();
+  const pageKeys = ((pg && pg.keys) || []).slice();
+  const slot = pageKeys.indexOf("position2");
+  if (slot < 0) {
+    fail("position2 is not on the root page -- the level-hop case is not set up");
+  } else {
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") {
+      fail("diving from the root page did not reach the waveform editor");
+    } else {
+      const mismatches = [];
+      for (let i = 0; i < pageKeys.length && i < 8; i++) {
+        const want = pageKeys[i];
+        if (!want) continue;
+        const got = ctx.knobParamKey(i);
+        if (got !== want) mismatches.push("knob " + (i + 1) + ": page=" + want + " editor=" + got);
+      }
+      if (mismatches.length) {
+        fail("after the entry level hop the editor knob row reverted to the " +
+             "declared order: " + mismatches.join(" | "));
+      }
+      feed(back());
+    }
+  }
 }
 
 if (failures) process.exit(1);

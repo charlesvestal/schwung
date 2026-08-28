@@ -199,14 +199,29 @@ function normalize(key, raw) {
      * But it must NOT wear the corner brackets. There are ~135 enum params in
      * the fleet against ~5 filepath/string/canvas ones: bracket them all and
      * nearly every cell on nearly every page is marked, which is the same as
-     * marking none. Worse, the mark is STRUCTURAL for an opaque cell —
-     * drawOpaqueBox draws no frame of its own, the brackets are its frame (see
-     * render_page_movy.mjs) — so it cannot simply be made rarer either.
+     * marking none.
      *
-     * Hence `divable_mark`, which is what the renderer keys on, and which stays
-     * exactly where it was: the opaque types, wav_position included. The
-     * affordance for an enum is the footer, which flips to CLK OPEN off
-     * `divable` for free.
+     * THE CELL MARKS DO NOT MEAN "DIVABLE", and this is the thing to get right
+     * before touching either of them. Measured over the fleet: 967 divable
+     * cells on knob pages, of which 953 (99%) wear NO mark at all. Divability
+     * is a FOOTER fact — hold the knob and it says CLK OPEN. What the two
+     * marks distinguish is something narrower, and the split is clean with
+     * zero overlap:
+     *
+     *   corner brackets   7 cells, ALL turnable    "the knob works, AND it opens"
+     *   chevron box       7 cells, NONE turnable   "there is no knob; only a door"
+     *
+     * The chevron is therefore NOT a divable mark and must not be described as
+     * one. It is the WIDGET: an opaque cell has no value-shape to draw, so
+     * drawOpaqueBox's notched frame with the chevron in its broken edge is
+     * simply what that cell looks like. The brackets are an annotation on top
+     * of a working widget. Reported as exactly this confusion — "is it
+     * confusing we have brackets and carats that both mean divable" — and the
+     * answer is that they never meant the same thing, but the old name said
+     * they did.
+     *
+     * So this flag is now `opaque_type`, a fact about the DECLARATION and
+     * nothing more, and the bracket rule is `alsoOpens()` below.
      *
      * An enum that declares NO options is index-addressed and has no list to
      * show, so it is not a door.
@@ -239,7 +254,7 @@ function normalize(key, raw) {
 
     const listableEnum = type === "enum"
                        && Array.isArray(meta.options) && meta.options.length > 0;
-    meta.divable_mark = opaqueType;
+    meta.opaque_type = opaqueType;
     /* Neither end of the axis opens a list. A readout has nothing to choose;
      * a trigger's options are a spelling of "do it", not a menu. */
     meta.divable = (opaqueType || listableEnum) && !meta.readOnly && !meta.writeOnly;
@@ -287,14 +302,51 @@ export function isDivable(meta) {
 }
 
 /**
- * True when the cell should WEAR the corner brackets.
+ * True when the cell should WEAR THE CORNER BRACKETS: "this knob works, and it
+ * also opens something."
  *
- * Deliberately not the same question as isDivable — see normalize(). Every
- * enum is divable and none of them is marked, because a mark on 135 of 140
- * params is not a mark.
+ * The bracket rule, single-sourced. It used to be open-coded as
+ * `meta.opaque_type && meta.kind !== KIND_OPAQUE` at each draw site, which is
+ * three terms of subtlety repeated per caller — and one of the sites is the
+ * per-cell mark while the other is the mark for a whole viz group, so they
+ * drifted the moment either was touched.
+ *
+ * Reads as exactly one thing in the fleet: a RANGED wav_position, which is a
+ * number a knob turns perfectly well AND has a waveform editor worth opening.
+ * That pairing is the entire reason `opaque_type`, `kind` and `divable` are
+ * three separate fields.
+ *
+ * NOT the chevron. An opaque cell (KIND_OPAQUE) is excluded because it has no
+ * knob behaviour to annotate — drawOpaqueBox's notched frame IS its widget,
+ * and brackets on the same rect read as a doubled border. See normalize() for
+ * why "both marks mean divable" is the wrong mental model.
+ *
+ * `divable` is required as well, so a read-only or write-only declaration
+ * cannot wear a mark promising a door that onClick will refuse to open. Zero
+ * fleet params diverge on that term today (21 either way); it is there so the
+ * mark cannot start lying.
  */
-export function isDivableMarked(meta) {
-    return !!meta && !!meta.divable_mark;
+export function alsoOpens(meta) {
+    return opensOnClick(meta) && meta.kind !== KIND_OPAQUE;
+}
+
+/**
+ * True when clicking this cell opens an EDITOR — as opposed to an option list.
+ *
+ * The broader of the two: it is `alsoOpens` without the "and a knob can turn
+ * it" term, so it covers both opaque kinds. Used where the cell's own widget
+ * is not drawn and the question is only whether the thing on screen is a door:
+ * a viz group that spans and covers its cells draws ONE mark across the span,
+ * and it must appear for mrdrums, whose `pad_start` is a non-ranged
+ * wav_position and therefore KIND_OPAQUE.
+ *
+ * `opaque_type` rather than `divable` is what keeps ENUMS out. Every enum with
+ * options is divable, so the broader test framed mrsample's Loop switch —
+ * the "bracket them all and every cell is marked" failure. An enum opens a
+ * LIST, which the footer announces; only these open an editor.
+ */
+export function opensOnClick(meta) {
+    return !!meta && !!meta.opaque_type && !!meta.divable;
 }
 
 /** True when a knob can drive this param at all. */
