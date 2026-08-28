@@ -627,16 +627,52 @@ two-option enum in the wire format (`["—","Rnd!"]`), so a predicate written on
 the option count alone turns every momentary in the fleet into a latch —
 euclidrum randomises a kit on the way past. Readouts are excluded the same way.
 
-**Both editors flip**, or the same parameter answers the same gesture two
-different ways depending on a Param View setting the user can flip — the drift
-`test_knob_surfaces_access.sh` exists to catch on the trigger latch. The
-hierarchy editor restates the predicate rather than importing it, because its
-meta is the RAW `chain_params` declaration (`type`, not `kind`, and no
-`divable` at all); the two exclusions `divable` carries are its own two early
-returns immediately above. `tests/host/test_two_option_enum_flip.sh` pins the
-lot — and its list-editor probe was anchored on the first `type === "enum"` in
+**THE FLIP IS THE GRID'S ANSWER. A LIST FOCUSES INSTEAD.** Both list surfaces
+— `knobsAsList` (Param View: List, and whatever the screen reader forces) and
+the hierarchy editor — put a two-option enum into EDIT MODE on click and let
+the jog step it, exactly like a float row. The flip needs a knob under your
+hand to be the saving it claims; a list has none, so a row that changed value
+the instant you clicked it would be the one row on the page with no focus
+state. Reported from the device: *"just show it focus and let jog change it.
+then it's the same gesture for each row. otherwise it's invisible."*
+
+`flipsOnClick` is still what both consult — it is the definition of "this enum
+is a two-way", not of "flip". The grid flips that set and the list focuses it,
+so the two can differ about what a two-way DOES without ever drifting about
+WHICH params are two-way. In `page_controller` it is the term that WIDENS the
+knobsAsList edit gate past `!divable`; the hierarchy editor restates the count
+instead, because its meta is the RAW `chain_params` declaration (`type`, not
+`kind`, and no `divable` at all) and the two exclusions `divable` carries are
+its own two early returns immediately above.
+
+`tests/host/test_two_option_enum_flip.sh` pins the grid half and the picker
+skip; `test_list_layout_footer.sh` drives the focus for real, clicking a
+two-option row and jogging it both ways — a footer assertion alone would pass
+with EDIT advertised over a row the jog does nothing to. The flip test's
+list-editor probe was anchored on the first `type === "enum"` in
 `shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
-and stayed GREEN with the flip deleted.
+and stayed GREEN with the branch deleted.
+
+### A knob page drawn as a LIST has three states, and said none of them
+
+`footerHints()` had no branch for `knobsAsList` at all and fell through to the
+GRID's answer, `JOG PAGE / CLK MENU`, which is wrong outside the list, inside
+it and while editing a row. With Param View on List — or the screen reader on,
+which forces the layout — that is the only footer there is, and Global Settings
+is driven entirely by the jog. Now `JOG PAGE / CLK ENTER`, then
+`JOG SEL / CLK <row verb> / BACK OUT`, then `JOG ADJ / CLK DONE / BACK OUT`.
+
+The row verb is the ROW's, mirroring `onClick`'s ladder: `FIRE` a trigger,
+`EDIT` anything turnable that is not a longer enum (which now includes a
+two-option one), `OPEN` anything else divable. A readout gets **no** click pair
+— an absence is the truth and a verb would be a promise.
+
+**It must precede the held-knob branch**, and not for tidiness: in this layout
+`onClick` takes its param from the ROW CURSOR and overrides whatever knob is
+under your hand, so the held-knob footer describes a cell the click will not
+act on. Same promise-versus-behaviour bug that branch's own comments record
+twice, reached from the other side. Pinned as an ordering, and the seek loops
+in the test are BOUNDED because the row cursor clamps rather than wrapping.
 
 Past two options, the list is unchanged. Any enum that declares `options` is
 divable: hold its knob, click, pick from a scrolling list, Back cancels. The knob still steps it one detent at a time —

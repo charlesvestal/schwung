@@ -2888,36 +2888,41 @@ function openHierarchyParamEditor(selectedKey, meta, forceOpen) {
             refreshHierarchyVisibility();
         };
         /*
-         * TWO OPTIONS: the click FLIPS it rather than raising a list of the
-         * value you can see and the one other value there is. Same rule the
-         * knob grid applies (flipsOnClick in param_meta.mjs) and it has to be
-         * applied on BOTH editors or the same parameter answers the same
-         * gesture two different ways depending on a Param View setting the
-         * user can flip — which is the drift test_knob_surfaces_access.sh
-         * exists to catch on the trigger latch.
+         * TWO OPTIONS: the click FOCUSES the row, and the jog changes it —
+         * the same gesture every other row in this list answers to. It does
+         * NOT open a picker (a list of the value you can see and the one other
+         * value there is) and it does NOT flip in place.
          *
-         * The predicate is restated rather than imported because this meta is
-         * the RAW chain_params declaration, not a buildMetaIndex record: it
-         * has `type`, not `kind`, and no `divable` at all. The two guards that
+         * The flip is the GRID's answer, where the knob under your hand is
+         * already the direct control and the click only saves a second
+         * gesture. Here there is no knob under your hand, so a row that
+         * changed value the instant you clicked it would be the one row with
+         * no focus state — reported from the device as "just show it focus and
+         * let jog change it. then it's the same gesture for each row.
+         * otherwise it's invisible."
+         *
+         * Falling through to beginHierarchyParamEdit is what does it, so this
+         * is a `break` out of the picker rather than a branch of its own: the
+         * edit-mode path already steps an enum through adjustHierSelectedParam
+         * and already draws the row as focused.
+         *
+         * The count is restated rather than imported because this meta is the
+         * RAW chain_params declaration, not a buildMetaIndex record: it has
+         * `type`, not `kind`, and no `divable` at all. The two guards that
          * `divable` carries for the grid — trigger and readout — are the two
          * early returns immediately above, so the exclusions are the same
          * ones, reached a different way.
          */
-        if (meta.options.length === 2) {
-            const next = index === 0 ? 1 : 0;
-            commit(next);
-            announce((meta.name || meta.label || selectedKey) + ", " + meta.options[next]);
-            needsRedraw = true;
+        if (meta.options.length !== 2) {
+            openEnumPicker({
+                title: meta.name || meta.label || selectedKey,
+                options: meta.options,
+                index,
+                commit,
+                returnToGrid: false,
+            });
             return;
         }
-        openEnumPicker({
-            title: meta.name || meta.label || selectedKey,
-            options: meta.options,
-            index,
-            commit,
-            returnToGrid: false,
-        });
-        return;
     }
     /* Everything else — including wav_position, whose editor IS edit mode on a
      * selected wav_position (see isInWavPositionEditor). */
@@ -15501,14 +15506,10 @@ function drawHierarchyEditor() {
             hint = ["Click: keyboard", "Jog: scroll"];
         } else if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "canvas") {
             hint = ["Click: open", "Jog: scroll"];
-        } else if (!hierEditorEditMode && selectedMeta && selectedMeta.type === "enum" &&
-                   Array.isArray(selectedMeta.options) && selectedMeta.options.length === 2 &&
-                   !isTriggerParam(selectedMeta) && !isReadoutParam(selectedMeta)) {
-            /* Two options: the click writes the other one rather than raising
-             * the picker, so say so. The grid's footer makes the same promise
-             * as CLK FLIP. */
-            hint = ["Click: flip", "Jog: scroll"];
         }
+        /* A two-option enum needs NO special hint: it takes the ordinary
+         * "Click: edit" path with every other turnable row, which is the whole
+         * point of focusing it rather than flipping it here. */
         drawFooter(hint);
     }
 }

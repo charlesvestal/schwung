@@ -1939,11 +1939,16 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
-**Except at exactly two options, where the click FLIPS it instead.** A list of
-two is a menu whose whole content is the value already in the cell and the one
-other value there is, so the click writes the other one and the picker is never
-raised — the footer reads `CLK FLIP` rather than `CLK OPEN`. The knob still
-steps it, and the same rule applies in the list view.
+**Except at exactly two options, where there is no list to open.** On the knob
+grid the click FLIPS it — the picker would show the value already in the cell
+and the one other value there is — and the footer reads `CLK FLIP` rather than
+`CLK OPEN`. The knob still steps it.
+
+In the **list** view the same parameter is FOCUSED instead: click puts the row
+into edit mode and the jog steps it, exactly like a float row. The flip only
+saves a gesture when a knob is already under your hand, and in a list none is,
+so flipping there would leave one row with no focus state while every other row
+has one.
 
 This is a different line from the `switch` distinction two sections up, and
 they do not have to agree: a switch is a **boolean-flavoured** two-option enum

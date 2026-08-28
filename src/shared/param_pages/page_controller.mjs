@@ -2713,8 +2713,28 @@ export function createController(io = {}) {
                 announceKnobRow(mp, knobRowIndex(mp));
                 return null;
             }
+            /*
+             * A TWO-OPTION enum is FOCUSED here, not flipped and not opened.
+             *
+             * On the grid the click flips it, because the knob under your hand
+             * is already the direct control and the flip only saves the second
+             * gesture. A list has no knob under your hand: every other row is
+             * click-to-focus-then-jog, so a row that instead changed value the
+             * instant you clicked it would be the one row with no focus state
+             * at all. Reported from the device as exactly that — "just show it
+             * focus and let jog change it. then it's the same gesture for each
+             * row. otherwise it's invisible."
+             *
+             * `flipsOnClick` is what widens the gate, which keeps the two
+             * surfaces reading from ONE definition of "this enum is a
+             * two-way": the grid flips that set and the list focuses it, and
+             * neither can drift into disagreeing about WHICH params they are.
+             * Longer enums still open the picker — a focus-and-jog over 47
+             * Braids models is the thing the picker was built to replace.
+             */
             const rmeta = s.metaIndex ? s.metaIndex.getOrGuess(r.key) : null;
-            if (rmeta && !rmeta.writeOnly && !rmeta.divable && isTurnable(rmeta)) {
+            if (rmeta && !rmeta.writeOnly && isTurnable(rmeta)
+                && (!rmeta.divable || flipsOnClick(rmeta))) {
                 s.knobEditing = true;
                 announceKnobRow(mp, knobRowIndex(mp));
                 return null;

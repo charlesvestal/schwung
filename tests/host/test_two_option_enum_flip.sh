@@ -29,8 +29,13 @@ cd "$(dirname "$0")/../.."
 #      footer would promise a screen the click never shows. That exact
 #      promise-versus-behaviour drift is written up twice already in
 #      paramPagesFooterHints.
-#   5. the LIST editor flips too. The same parameter must not answer the same
-#      gesture two different ways depending on the Param View setting.
+#   5. the LIST editor does NOT flip -- it FOCUSES the row and lets the jog
+#      change it, like every other row. The flip needs a knob under your hand
+#      to be the saving it claims; a list has none, so a row that changed on
+#      the click would be the one row with no focus state. Same predicate
+#      decides both, so the two surfaces cannot drift about WHICH params are
+#      two-way -- only about what a two-way DOES on each. That half is driven
+#      for real in test_list_layout_footer.sh.
 
 if ! command -v node >/dev/null 2>&1; then
   echo "FAIL: node is required" >&2; exit 1
@@ -149,23 +154,35 @@ Promise.all([
          "still divable, so OPEN would claim it and the footer would advertise a screen the " +
          "click never shows");
 
-  /* ---- 5. the LIST editor flips the same parameter ---------------------- */
+  /* ---- 5. the LIST editor does NOT flip: it FOCUSES --------------------
+   *
+   * The flip is the GRID answer, where the knob under your hand is already the
+   * direct control. A list has no knob under your hand, so every row is
+   * click-to-focus-then-jog and a row that changed value on the click would be
+   * the one row with no focus state at all. Reported from the device: "just
+   * show it focus and let jog change it. then it is the same gesture for each
+   * row. otherwise it is invisible."
+   *
+   * So what must hold here is only that the PICKER is skipped — the focus
+   * itself is driven for real in test_list_layout_footer.sh, which clicks a
+   * two-option row and then jogs it in both directions.
+   */
   const UI = "src/shadow/shadow_ui.js";
   const ui = fs.readFileSync(UI, "utf8");
-  /* Anchored on the hierarchy editor'"'"'s OWN enum branch, not on the first
+  /* Anchored on the hierarchy editor OWN enum branch, not on the first
    * `type === "enum"` in the file. The loose anchor landed on
    * isTriggerEnumMeta 1500 lines earlier, whose own `options.length === 2`
-   * satisfied the search — so deleting the flip left the probe GREEN. */
+   * satisfied the search — so deleting the guard left the probe GREEN. */
   const enumBranch = ui.indexOf("!hierEditorEditMode && meta && meta.type === \"enum\" &&");
   if (enumBranch < 0) fail(UI + " no longer has the hierarchy-editor enum branch");
   const picker = ui.indexOf("openEnumPicker({", enumBranch);
-  const flip = ui.indexOf("meta.options.length === 2", enumBranch);
-  if (flip < 0 || flip > picker)
-    fail("the hierarchy editor still raises the picker for a two-option enum — the same " +
-         "parameter would answer the same gesture differently depending on Param View");
+  const guard = ui.indexOf("meta.options.length !== 2", enumBranch);
+  if (guard < 0 || guard > picker)
+    fail("the hierarchy editor still raises the picker for a two-option enum — it should " +
+         "fall through to beginHierarchyParamEdit and focus the row instead");
 
   if (failures) process.exit(1);
-  console.log("PASS: a two-option enum flips on click on both editors; three options still open; " +
-              "triggers and readouts are untouched");
+  console.log("PASS: a two-option enum flips on the GRID and focuses in the LIST; three options " +
+              "still open; triggers and readouts are untouched");
 }).catch((e) => { console.error("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '

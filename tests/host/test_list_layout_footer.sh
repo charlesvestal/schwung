@@ -131,8 +131,14 @@ Promise.all([
   const verbAtRow = (key) => (seekRow(key) ? pairFor("CLK") : null);
   if (verbAtRow("cutoff") !== "EDIT")
     fail("a plain float hands the jog to the value; the footer said " + verbAtRow("cutoff"));
-  if (verbAtRow("flip2") !== "FLIP")
-    fail("a two-option enum flips; the footer said " + verbAtRow("flip2"));
+  /* A two-option enum FOCUSES like every other turnable row — it does not flip
+   * here and it does not open. That is the request verbatim: "the same gesture
+   * for each row". The grid flips the same param; the two surfaces read the
+   * widened gate from one predicate, so they cannot drift about WHICH params. */
+  if (verbAtRow("flip2") !== "EDIT")
+    fail("a two-option enum should focus like any other row; the footer said " +
+         verbAtRow("flip2") + " — FLIP is the answer the GRID gives, and there is no knob under " +
+         "your hand here");
   if (verbAtRow("pick3") !== "OPEN")
     fail("a three-option enum opens its list; the footer said " + verbAtRow("pick3"));
   if (verbAtRow("trig2") !== "FIRE")
@@ -148,6 +154,23 @@ Promise.all([
   if (!ctl.knobEditing) fail("clicking a float row should start editing it");
   if (pairFor("JOG") !== "ADJ") fail("while editing, the jog adjusts the value; got " + flat());
   if (pairFor("CLK") !== "DONE") fail("while editing, the click is done; got " + flat());
+
+  /* ...and a TWO-OPTION ENUM does the same, and the jog then STEPS it. This is
+   * the half a footer assertion cannot reach: EDIT could be advertised over a
+   * row the jog does nothing to. */
+  ctl.exitMenu();                 /* leave edit mode, stay on the row cursor */
+  seekRow("flip2");
+  ctl.onClick(0);
+  if (!ctl.knobEditing)
+    fail("clicking a two-option enum row should FOCUS it, not flip or open it");
+  const beforeFlip = ctl.state.values["flip2"];
+  ctl.onJog(1);
+  if (ctl.state.values["flip2"] === beforeFlip)
+    fail("the jog did not move a focused two-option enum — focus without a working jog is " +
+         "worse than the flip it replaced");
+  ctl.onJog(-1);
+  if (ctl.state.values["flip2"] !== beforeFlip)
+    fail("the focused enum did not step back; a two-way must be reachable in both directions");
 
   /* ---- 5. A HELD KNOB MUST NOT CLAIM THIS FOOTER ------------------------ */
   ctl.exitMenu();                 /* back to the row cursor */

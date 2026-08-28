@@ -729,9 +729,12 @@ function footerHints() {
         let verb = null;
         if (rmeta) {
             if (rmeta.writeOnly) verb = "FIRE";
-            else if (flipsOnClick(rmeta)) verb = "FLIP";
+            /* A two-option enum FOCUSES here rather than flipping — see the
+             * knobsAsList branch of onClick. Same ladder, same order, and the
+             * `flipsOnClick` term is what keeps the widened gate identical on
+             * both sides. */
+            else if (isTurnable(rmeta) && (!rmeta.divable || flipsOnClick(rmeta))) verb = "EDIT";
             else if (rmeta.divable) verb = "OPEN";
-            else if (isTurnable(rmeta)) verb = "EDIT";
         }
         return orderedHints({ jog: "SEL", click: verb, extra: [["BACK", "OUT"]] });
     }
