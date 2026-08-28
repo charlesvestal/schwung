@@ -87,6 +87,7 @@ typedef struct {
     uint8_t **shadow_ui_midi_shm;
     shadow_midi_dsp_t **shadow_midi_dsp_shm;
     shadow_midi_inject_t **shadow_midi_inject_shm;
+    shadow_midi_inject_t **shadow_midi_inject_ui_shm;
     uint8_t *shadow_mailbox;
     /* No Master FX capture pointer here on purpose: it used to be
      * a pointer to shadow_master_fx_slots[0].capture, cached at init into a

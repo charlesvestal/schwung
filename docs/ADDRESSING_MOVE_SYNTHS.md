@@ -142,11 +142,23 @@ see `docs/SPI_PROTOCOL.md`) — injecting pitched notes there won't reach
 track instruments.
 
 Overtake DSPs use a dedicated bounded queue for this callback. It drains
-directly into Move's MIDI input while the takeover is active. The shared JS
+directly into Move's MIDI input while the takeover is active. The shared
 injection queue remains owned by the takeover test-bus publisher during that
 time, so DSP output cannot loop back into its own `on_midi` input. A tool UI
 can check for `shadow_overtake_move_inject_active()` when it needs to support
 older hosts where this separation is not available.
+
+**A JS `move_midi_inject_to_move` has its own queue too, for the same reason.**
+There are three producers and only one of them is the test bus, so ownership of
+a queue follows *who pushed into it*, never what mode the surface is in — while
+overtake is active the shim pops the test bus's queue **onto the module**,
+publishing each packet as though a control had been pressed. From 2026-07-29 to
+2026-08-28 the JS binding shared that queue, and song-mode is what it cost: its
+pad and transport packets never reached Move, and its own injected Play CC
+arrived back in its `onMidiMessageInternal`, toggling playback and injecting
+again — firing pads as fast as the 50 ms inject throttle allowed. Nothing in JS
+changed; `move_midi_inject_to_move` now pushes to `/schwung-midi-inject-ui`,
+which the shim drains into Move in every mode.
 
 **Anything still queued when your module unloads is discarded**, so the next
 module to load does not replay your notes into Move. What is NOT undone is

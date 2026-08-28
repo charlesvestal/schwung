@@ -11,6 +11,44 @@ static int fails = 0;
     if (!(cond)) { fprintf(stderr, "FAIL: %s\n", msg); fails++; } \
 } while (0)
 
+/* The shadow UI's own ring is NOT the test bus, and must reach Move in both
+ * modes. move_midi_inject_to_move used to push into the shared ring, which the
+ * shim republishes to the module while overtake is active -- so song-mode's
+ * injected Play CC never reached Move and came back as if a button had been
+ * pressed, toggling playback and re-injecting: pads fired as fast as the queue
+ * drained. */
+static void test_ui_ring_reaches_move_during_overtake(void)
+{
+    shadow_midi_inject_t shared;
+    shadow_midi_inject_t ui;
+    uint8_t midi_in[31 * 8];
+    uint8_t shared_pkt[4] = { 0x29, 0x90, 72, 100 };
+    uint8_t ui_pkt[4] = { 0x0B, 0xB0, 85, 127 };   /* song-mode's Play toggle */
+    uint8_t peek[4];
+
+    shadow_midi_inject_init(&shared);
+    shadow_midi_inject_init(&ui);
+    shadow_overtake_midi_init();
+    memset(midi_in, 0, sizeof(midi_in));
+
+    CHECK(shadow_midi_inject_push(&shared, shared_pkt) == 0,
+          "shared test-bus packet queued");
+    CHECK(shadow_midi_inject_push(&ui, ui_pkt) == 0,
+          "shadow UI packet queued");
+
+    CHECK(shadow_overtake_midi_drain(&shared, &ui, 1, midi_in, 31,
+                                     sizeof(midi_in)) == 1,
+          "overtake drains the UI ring");
+    CHECK(memcmp(&midi_in[0], ui_pkt, 4) == 0,
+          "the UI packet reaches Move during overtake");
+    CHECK(midi_in[4] == 0, "injected timestamp is zero");
+    CHECK(shadow_midi_inject_peek(&shared, peek) == 1
+              && memcmp(peek, shared_pkt, 4) == 0,
+          "the test-bus ring is still left to its publisher");
+    CHECK(shadow_midi_inject_peek(&ui, peek) == 0,
+          "the UI packet is consumed");
+}
+
 static void test_active_overtake_uses_only_dedicated_queue(void)
 {
     shadow_midi_inject_t shared;
@@ -31,7 +69,7 @@ static void test_active_overtake_uses_only_dedicated_queue(void)
     CHECK(shadow_overtake_midi_send(dsp_off, 4) == 4,
           "overtake note-off queued");
 
-    CHECK(shadow_overtake_midi_drain(&shared, 1, midi_in, 31, sizeof(midi_in)) == 2,
+    CHECK(shadow_overtake_midi_drain(&shared, NULL, 1, midi_in, 31, sizeof(midi_in)) == 2,
           "active overtake drains both dedicated packets");
     CHECK(memcmp(&midi_in[0], dsp_on, 4) == 0,
           "dedicated note-on is first");
@@ -44,7 +82,7 @@ static void test_active_overtake_uses_only_dedicated_queue(void)
           "active overtake leaves shared queue for its publisher");
 
     memset(midi_in, 0, sizeof(midi_in));
-    CHECK(shadow_overtake_midi_drain(&shared, 0, midi_in, 31, sizeof(midi_in)) == 1,
+    CHECK(shadow_overtake_midi_drain(&shared, NULL, 0, midi_in, 31, sizeof(midi_in)) == 1,
           "inactive mode resumes the shared queue");
     CHECK(memcmp(&midi_in[0], shared_pkt, 4) == 0,
           "shared packet reaches Move after overtake exits");
@@ -71,7 +109,7 @@ static void test_full_queue_preserves_fifo(void)
           "dedicated ring rejects a packet when full");
 
     memset(midi_in, 0, sizeof(midi_in));
-    CHECK(shadow_overtake_midi_drain(NULL, 1, midi_in, 1, sizeof(midi_in)) == 1,
+    CHECK(shadow_overtake_midi_drain(NULL, NULL, 1, midi_in, 1, sizeof(midi_in)) == 1,
           "bounded drain copies only the requested packet count");
     CHECK(midi_in[2] == 1,
           "ring overflow does not disturb the oldest packet");
@@ -91,7 +129,7 @@ static void test_unload_discards_the_departed_modules_packets(void)
     shadow_overtake_midi_discard();
 
     memset(midi_in, 0, sizeof(midi_in));
-    CHECK(shadow_overtake_midi_drain(NULL, 1, midi_in, 31, sizeof(midi_in)) == 0,
+    CHECK(shadow_overtake_midi_drain(NULL, NULL, 1, midi_in, 31, sizeof(midi_in)) == 0,
           "after unload the ring has nothing to replay");
     CHECK(midi_in[0] == 0,
           "and the next module's first frame is clean");
@@ -116,7 +154,7 @@ static void test_shared_ring_outranks_the_dedicated_one_on_exit(void)
     CHECK(shadow_overtake_midi_send(leftover, 4) == 4, "DSP leftover queued");
     CHECK(shadow_midi_inject_push(&shared, release) == 0, "release queued");
 
-    CHECK(shadow_overtake_midi_drain(&shared, 0, midi_in, 31, sizeof(midi_in)) == 2,
+    CHECK(shadow_overtake_midi_drain(&shared, NULL, 0, midi_in, 31, sizeof(midi_in)) == 2,
           "both drain once overtake is over");
     CHECK(memcmp(&midi_in[0], release, 4) == 0,
           "the RELEASE goes out first, ahead of the departed DSP's note");
@@ -140,7 +178,7 @@ static void test_drain_is_bounded_by_bytes_not_just_events(void)
     memset(guarded, 0, sizeof(guarded));
     /* 31 events claimed, 3 slots of room. The byte bound is the only thing
      * standing between this and the word past the end. */
-    int n = shadow_overtake_midi_drain(NULL, 1, guarded, 31, usable);
+    int n = shadow_overtake_midi_drain(NULL, NULL, 1, guarded, 31, usable);
     CHECK(n == 3, "the byte bound wins over the event count");
 
     int past_end_clean = 1;
@@ -152,6 +190,7 @@ static void test_drain_is_bounded_by_bytes_not_just_events(void)
 int main(void)
 {
     test_active_overtake_uses_only_dedicated_queue();
+    test_ui_ring_reaches_move_during_overtake();
     test_full_queue_preserves_fifo();
     test_unload_discards_the_departed_modules_packets();
     test_shared_ring_outranks_the_dedicated_one_on_exit();
