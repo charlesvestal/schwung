@@ -27,6 +27,13 @@
 import { enumWiresNames } from "../param_format.mjs";
 
 /** A knob turns it continuously — float/int. */
+/*
+ * child_key.mjs imports nothing, so this cannot cycle. The child aliases are
+ * seeded here rather than by the caller because planPages builds its OWN index
+ * from the same inputs, and a key TYPE decides its fate at plan time.
+ */
+import { hasChildren, resolveChildKey } from "./child_key.mjs";
+
 export const KIND_NUMBER = "number";
 /** A knob steps through discrete options — enum/toggle. */
 export const KIND_ENUM = "enum";
@@ -183,6 +190,40 @@ export function buildMetaIndex({ hierarchy, chainParams } = {}) {
         type: "float", min: 0, max: 1, step: 0.01,
         kind: KIND_NUMBER, guessed: true,
     };
+
+    /*
+     * SEED THE CHILD ALIASES HERE, not in the controller.
+     *
+     * A child level lists `sample_path`; the module declares p01_sample_path …
+     * and nothing generic. The controller can re-point these as the focused
+     * instance changes, but it does so AFTER planPages has run -- and the plan
+     * is where a key's TYPE decides its fate. Unaliased, `sample_path` was a
+     * guessed 0..1 float, so it was planned as an ordinary turnable knob
+     * instead of an opaque filepath cell: no file cell, nothing to dive into,
+     * and the sample selection simply gone. Reported from the device.
+     *
+     * Instance 0 is the right seed because every instance carries the same
+     * structure; only the cross-references (filepath_param) name an instance,
+     * and those are re-pointed on a focus change.
+     *
+     * planPages builds its own index from the same inputs, so seeding here is
+     * what keeps the planner and the renderer deciding from ONE description --
+     * the split between them is exactly how this bug survived a layer down.
+     */
+    for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
+        if (!hasChildren(lvl)) continue;
+        const generic = new Set();
+        for (const k of (lvl.knobs || [])) generic.add(typeof k === "string" ? k : (k && k.key));
+        for (const p of (lvl.params || [])) {
+            if (p && typeof p === "object") { if (!p.level) generic.add(p.key); }
+            else generic.add(p);
+        }
+        for (const g of generic) {
+            if (!g) continue;
+            const concrete = resolveChildKey(lvl, 0, g);
+            if (concrete) setAlias(g, concrete);
+        }
+    }
 
     const keys = [...new Set([...inline.keys(), ...chain.keys()])];
     return { get, getOrGuess, keys, setAlias, conflicts: [...new Set(conflicts)] };
