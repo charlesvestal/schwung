@@ -1965,10 +1965,10 @@ function paramPagesChromeFor(componentKey) {
  * ONE helper, called from every enterParamPages site that opens a chain
  * component (as opposed to a synthesised contract like Slot Settings or
  * Global Settings, which supply their own io and never reach here). Master FX
- * is excluded HERE rather than remembered at each call site: __user_presets__
- * is injected in enterComponentSelect only, never in enterMasterFxModuleSelect,
- * so Master FX has no user presets today and this inherits that gap rather
- * than widening it. masterFxIndexFromComponentKey is the same test
+ * is excluded HERE rather than remembered at each call site: user presets have
+ * only ever been offered for the four chain slots' components, never for a
+ * Master FX position, so this inherits that gap rather than widening it.
+ * masterFxIndexFromComponentKey is the same test
  * paramPagesChromeFor already uses to tell the two chains apart.
  *
  * `setParam` marks the write PENDING for the debounced `*` refresh
@@ -10274,34 +10274,23 @@ function enterComponentSelect(slotIndex, componentIndex) {
     /* Scan for available modules of this type */
     availableModules = scanModulesForType(comp.key);
 
-    /* Surface this component's User Presets manager (see shadow_ui_presets.mjs)
-     * as an indented row tucked directly beneath the loaded module — for any
-     * loaded chain component (synth, audio FX, MIDI FX). It rides alongside the
-     * module it belongs to (rather than at the top of the swap list) so the
-     * picker reads "<loaded module> / its presets" in place. Only shown when a
-     * module is loaded, since a preset snapshots its <component>:state. */
-    let presetsRowIndex = -1;
-    {
-        const loaded = getChainComponentModule(chainConfigs[slotIndex], comp.key);
-        const loadedId = loaded && loaded.module;
-        if (loadedId) {
-            const presetsRow = {
-                id: "__user_presets__",
-                /* No module abbrev needed — the indented row sits directly
-                 * under the module it belongs to, so context is implicit. */
-                name: "  [User Presets]"
-            };
-            /* Slot it right under the loaded module's entry; if that module
-             * isn't in the scan list (e.g. uninstalled), fall back to the top. */
-            const loadedIdx = availableModules.findIndex(m => m.id === loadedId);
-            presetsRowIndex = loadedIdx >= 0 ? loadedIdx + 1 : 0;
-            availableModules.splice(presetsRowIndex, 0, presetsRow);
-        }
-    }
+    /* Where the loaded module sits in the scan list, or -1 if nothing is
+     * loaded (or the loaded module is no longer installed). The rows added
+     * below are tucked directly under it, and it is where the cursor starts.
+     *
+     * This list used to carry an indented `[User Presets]` row here too. It
+     * doesn't any more: User Presets is the component's own "My Presets"
+     * trailing page in the knob grid, one jog from the module's own controls,
+     * which is both nearer to the sound it belongs to and where Save / Save As
+     * / Delete already live. A swap list is for swapping. */
+    const loaded = getChainComponentModule(chainConfigs[slotIndex], comp.key);
+    const loadedId = loaded && loaded.module;
+    const loadedIdx = loadedId
+        ? availableModules.findIndex(m => m.id === loadedId)
+        : -1;
 
     /*
-     * Move Left / Move Right, tucked under the loaded module beside its
-     * presets.
+     * Move Left / Move Right, tucked under the loaded module.
      *
      * They exist so Shift+jog is not the ONLY way to reorder a chain: a
      * modifier gesture with no discoverable equivalent is a feature only the
@@ -10311,23 +10300,17 @@ function enterComponentSelect(slotIndex, componentIndex) {
      * why the synth has neither: it is not a list position, and the sections
      * either side of it are not the same kind of thing.
      */
-    availableModules.splice(presetsRowIndex >= 0 ? presetsRowIndex + 1 : 0, 0,
-        ...chainMoveEntries(chainConfigs[slotIndex], comp.key));
+    const moveEntries = chainMoveEntries(chainConfigs[slotIndex], comp.key);
+    availableModules.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0, ...moveEntries);
 
-    selectedModuleIndex = 0;
-
-    if (presetsRowIndex >= 0) {
-        /* A module is loaded — default the cursor to its presets row (entering
-         * here is usually to reach presets, not to swap modules). */
-        selectedModuleIndex = presetsRowIndex;
-    } else {
-        /* Nothing loaded — default the cursor to the current module if any. */
-        const current = getChainComponentModule(chainConfigs[slotIndex], comp.key);
-        if (current && current.module) {
-            const idx = availableModules.findIndex(m => m.id === current.module);
-            if (idx >= 0) selectedModuleIndex = idx;
-        }
-    }
+    /* Default the cursor to the loaded module — the list opens showing you
+     * what is there now, with the moves right beneath it.
+     *
+     * With no loaded module to sit on (an empty position, or one whose module
+     * has been uninstalled since) the moves went in at the top instead, so
+     * step PAST them: a list must never open with the cursor on "Move Left".
+     * moveEntries is empty for an unoccupied position, so that case is 0. */
+    selectedModuleIndex = loadedIdx >= 0 ? loadedIdx : moveEntries.length;
 
     setView(VIEWS.COMPONENT_SELECT);
     needsRedraw = true;
@@ -10351,14 +10334,6 @@ function applyComponentSelection() {
     /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
      * because applying it fills the very hole this recognises. */
     const pending = pendingChainInsertFor(slotChainTarget(selectedSlot), comp.key);
-
-    /* Check if user selected this component's User Presets manager */
-    if (selected && selected.id === "__user_presets__") {
-        const loaded = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
-        enterPresetBrowser(selectedSlot, comp.key, loaded && loaded.module,
-                           getComponentParamPrefix(comp.key));
-        return;
-    }
 
     /* Check if user selected "[Get more...]" - enter store picker */
     if (selected && selected.id === "__get_more__") {
