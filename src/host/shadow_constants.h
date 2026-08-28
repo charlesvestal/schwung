@@ -27,7 +27,8 @@
 #define SHM_SHADOW_PARAM      "/schwung-param"        /* Shadow param requests */
 #define SHM_SHADOW_MIDI_OUT   "/schwung-midi-out"   /* MIDI output from shadow UI */
 #define SHM_SHADOW_MIDI_DSP   "/schwung-midi-dsp"   /* MIDI from shadow UI to DSP slots */
-#define SHM_SHADOW_MIDI_INJECT "/schwung-midi-inject" /* MIDI inject into Move's MIDI_IN */
+#define SHM_SHADOW_MIDI_INJECT "/schwung-midi-inject" /* MIDI inject into Move's MIDI_IN (test bus owns it during overtake) */
+#define SHM_SHADOW_MIDI_INJECT_UI "/schwung-midi-inject-ui" /* shadow UI's own inject — always bound for Move's firmware */
 #define SHM_SHADOW_EXT_MIDI_REMAP "/schwung-ext-midi-remap" /* Cable-2 channel remap table */
 #define SHM_SHADOW_SCREENREADER "/schwung-screenreader" /* Screen reader announcements */
 #define SHM_SHADOW_OVERLAY  "/schwung-overlay"  /* Overlay state (sampler/skipback) */

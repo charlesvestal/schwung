@@ -44,6 +44,7 @@ static shadow_param_t *shadow_param = NULL;
 static shadow_midi_out_t *shadow_midi_out = NULL;
 static shadow_midi_dsp_t *shadow_midi_dsp = NULL;
 static shadow_midi_inject_t *shadow_midi_inject = NULL;
+static shadow_midi_inject_t *shadow_midi_inject_ui = NULL;
 static schwung_ext_midi_remap_t *ext_midi_remap = NULL;
 static shadow_screenreader_t *shadow_screenreader = NULL;
 static shadow_overlay_state_t *shadow_overlay = NULL;
@@ -85,6 +86,13 @@ static int open_shadow_shm(void) {
     shadow_midi_dsp = (shadow_midi_dsp_t *)shadow_shm_map(SHM_SHADOW_MIDI_DSP, sizeof(shadow_midi_dsp_t), 0, 0);
 
     shadow_midi_inject = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT, sizeof(shadow_midi_inject_t), 0, 0);
+
+    /* Our own inject ring. The shim drains this one into Move in every mode;
+     * the segment above is the overtake test bus's, which during overtake is
+     * republished to the module instead of reaching Move (see
+     * shadow_overtake_midi.c). Absent only against a shim too old to create it,
+     * where the push falls back and behaves as it did before. */
+    shadow_midi_inject_ui = (shadow_midi_inject_t *)shadow_shm_map(SHM_SHADOW_MIDI_INJECT_UI, sizeof(shadow_midi_inject_t), 0, 0);
 
     ext_midi_remap = (schwung_ext_midi_remap_t *)shadow_shm_map(SHM_SHADOW_EXT_MIDI_REMAP, sizeof(schwung_ext_midi_remap_t), 0, 0);
 
@@ -1551,11 +1559,20 @@ static JSValue js_host_ext_midi_remap_enable(JSContext *ctx, JSValueConst this_v
  *     through Move's track-input dispatcher and reaches the
  *     internal track synths. Use this when JS wants to play a Move
  *     track instrument as MIDI.
+ *
+ * Packets go into the UI's OWN ring (/schwung-midi-inject-ui), not the
+ * test bus's. While overtake is active the shim pops the test-bus ring
+ * onto the module — publishing it back to this very process as if a
+ * control had been pressed — so a tool that injects a button CC there is
+ * writing its own input. song-mode did, and its Play CC re-entered
+ * onMidiMessageInternal and toggled playback on a loop.
  */
 static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val,
                                            int argc, JSValueConst *argv) {
     (void)this_val;
-    if (!shadow_midi_inject) return JS_FALSE;
+    shadow_midi_inject_t *ring = shadow_midi_inject_ui ? shadow_midi_inject_ui
+                                                       : shadow_midi_inject;
+    if (!ring) return JS_FALSE;
     if (argc < 1) return JS_FALSE;
 
     JSValueConst arr = argv[0];
@@ -1587,7 +1604,7 @@ static JSValue js_move_midi_inject_to_move(JSContext *ctx, JSValueConst this_val
          * route (cable 0 = pad simulation, cable 2 = external MIDI in
          * to the track synth). See function docblock. */
 
-        if (shadow_midi_inject_push(shadow_midi_inject, packet) != 0) {
+        if (shadow_midi_inject_push(ring, packet) != 0) {
             /* Ring full (drain starved) — drop this packet and stop the
              * batch (subsequent packets would just back up). */
             break;
