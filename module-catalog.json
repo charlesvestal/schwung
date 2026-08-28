@@ -1344,6 +1344,17 @@
       "default_branch": "master",
       "asset_name": "arranger-module.tar.gz",
       "min_host_version": "0.12.1"
+    },
+    {
+      "id": "8w8",
+      "name": "8W8",
+      "description": "TR-808 style drum machine. Sixteen voices, all synthesized, no samples — fifteen are circuit models built from the service notes and the published analyses, and the rim shot is a transcription of sc808, kept because two circuit builds lost to it by ear. Decay is loop gain on the kick and the toms rather than an envelope, one free-running metal bank feeds the hats, cymbal and cowbell as the hardware wires it, and velocity reaches most voices as a trigger voltage rather than a gain. Seven distortion characters per voice and on the master, bit-exactly bypassed at zero; reverb and delay sends on every voice but the kick; one-knob bus compressor; pad editor, remote web panel, Movy template.",
+      "author": "athousanddetails; circuit models from the TR-808 service notes and Werner/Abel/Smith; rim shot transcribed from sc808 (Yoshinosuke Horiuchi / Sam Aaron, Sonic Pi)",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-8W8",
+      "default_branch": "main",
+      "asset_name": "8w8-module.tar.gz",
+      "min_host_version": "0.12.1"
     }
   ]
 }
