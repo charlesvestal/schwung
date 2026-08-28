@@ -512,6 +512,43 @@ export function isReadOnly(meta) { return !!meta && !!meta.readOnly; }
  */
 export function isTrigger(meta) { return !!meta && !!meta.writeOnly; }
 
+/* Which widget a cell wears. Not a style name — a statement about the
+ * PARAMETER, which is why it is decided here beside the kinds rather than in a
+ * renderer. */
+export const WIDGET_OPAQUE = "opaque";   /* framed box + chevron: a door */
+export const WIDGET_BUTTON = "button";   /* a bang: fires, shows no value */
+export const WIDGET_ENUM   = "enum";     /* the three-character square */
+export const WIDGET_KNOB   = "knob";     /* pointer on a base, dot on the arc */
+
+/**
+ * ONE definition of which widget a param gets.
+ *
+ * `drawKnobWidget` calls this and so does `describePage`, deliberately: a
+ * consumer drawing our view model in its own style must reach the same verdict
+ * the grid reaches, and the only way to guarantee that is for there to be one
+ * answer rather than two that agree today.
+ *
+ * This repo has paid for the other shape. `isDoor` is exported from the
+ * controller with the note "Ask the controller; do not restate the kinds",
+ * because a literal list of page kinds copied into page_input.mjs stopped being
+ * updated and made knobs-as-list pages silently unusable.
+ *
+ * The cascade's ORDER is load-bearing and matches the renderer's:
+ * opaque is tested before writeOnly, so a write-only opaque param stays a door
+ * rather than becoming a bang with nothing to open.
+ *
+ * A viz group covering a cell is NOT part of this. That is a property of the
+ * PAGE (which cells a graphic spans), not of the param, and it is resolved
+ * separately by viz.mjs — see `covered[]` in drawKnobRow.
+ */
+export function widgetKindFor(meta) {
+    if (!meta) return WIDGET_KNOB;
+    if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
+    if (meta.writeOnly) return WIDGET_BUTTON;
+    if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
+    return WIDGET_KNOB;
+}
+
 /**
  * One-shot repair for a param whose type/range we had to guess (`meta.guessed`).
  * Mirrors how the enum layer learns its exchange format: on the first successful
