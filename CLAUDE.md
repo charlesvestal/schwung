@@ -431,6 +431,9 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.
+- **`level_walk.mjs` is the walk, and the LFO target picker is its second
+  consumer.** Names must not be copied — nothing shows a grid page title beside
+  the picker's row for the same level.
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
@@ -494,6 +497,10 @@ component load gate, and the input-dispatch order. Read it before editing
 - Global Settings is seven sections = seven PAGES. **One section, one page** is
   load-bearing: a ninth param paginates silently and the bank bar takes over a
   split nobody chose.
+- **The LFO target picker groups by level, and the grouping is LOSSLESS** — an
+  orphan sweep into "Other", asserted over all 95 modules. It was one flat list
+  of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
+  branches on that.
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.

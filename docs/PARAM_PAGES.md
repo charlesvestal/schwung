@@ -277,6 +277,20 @@ Still unrouted, and each is its own decision: `TOOL_FILE_BROWSER`,
 `KNOB_PARAM_PICKER`, `LFO_TARGET_*` and `DYNAMIC_PARAM_PICKER` are all lists
 whose knob turns still reach `handleKnobTurn`.
 
+### `level_walk.mjs` is the walk, and it has two consumers now
+
+The tree traversal, the prefix rules and the level-naming rules moved out of
+`page_plan.mjs` into `param_pages/level_walk.mjs` when the LFO target picker
+started grouping by the same levels (`docs/SHADOW_UI.md`). `planPages` behaves
+identically — `makeLevelWalker` is the old `visit`, verbatim, and seven tests
+catch a mutation of its prefix rule.
+
+Keep it that way: **a second copy of these rules would drift in silence**,
+because no screen shows a grid page title beside the picker's row for the same
+level. The one sanctioned divergence is the root's name — the walker calls its
+root "Main", and the picker overrides that with the mode's own name when
+`modes` gives it more than one root.
+
 ### The knob grid is the DEFAULT param view, and it reflows to stay drawable
 
 `paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there

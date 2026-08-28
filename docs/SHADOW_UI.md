@@ -407,3 +407,60 @@ channel value separates them. Persisted like `usbc_out_persist` and parsed by
 the shim at init (`shadow_resample.c`), so the filter is in force before the
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
+
+### The LFO target picker groups by LEVEL, and the grouping must be LOSSLESS
+
+An LFO's target was chosen from ONE flat list — every modulatable key the
+component declares, in `chain_params` order. Against the 95-module fleet
+capture that is **418 rows for minijv**, 303 for surge, 250 for forge, 213 for
+mrdrums: one unbroken jog-scroll, while the module author's own section names
+sat unused in the same `ui_hierarchy` the knob grid pages from. **84 of the 95
+publish `levels`.**
+
+`src/shared/lfo_target_groups.mjs` groups them; the picker gained a step
+(`VIEWS.LFO_TARGET_GROUP`) between component and param. Two rules make that
+safe rather than merely tidier:
+
+- **Named the same as the grid's pages.** Both come out of
+  `param_pages/level_walk.mjs`, which exists for this reason — it was extracted
+  from `page_plan.mjs` when the second consumer arrived. **No screen shows a
+  page title next to the picker's row for the same level**, so a second copy of
+  the naming rule would drift and nothing would ever report it: the user would
+  find `Oper1/Env` in one place and `Env` in the other with no way to know they
+  were the same thing.
+- **Lossless.** The union of the groups is exactly the flat list — same keys,
+  same labels, no duplicates — with an orphan sweep into a trailing **"Other"**
+  (mrdrums: 193 of its 213). Grouping must never cost a target, because the
+  routing it would have made is one the DSP would have honoured.
+  `tests/host/test_lfo_target_groups.sh` asserts this over every module.
+
+**The group step is SKIPPED, not emptied**, when there is nothing to group: no
+usable hierarchy (11 of 95 publish no `levels`), a list of 8 or fewer, or a walk
+that yields one group (11 single-level modules). An extra menu level over six
+rows costs a click and saves no scrolling. `lfoTargetGroups` is cleared on both
+entry points, because **Back branches on it** — leaving a previous component's
+groups behind sends Back to a section screen this component never showed. The
+sequence that produces it needs two components in a row, so a test starting
+from a fresh state cannot see it.
+
+**No mode filter, deliberately.** `planPages` drops levels owned by an inactive
+mode; this walks every mode root. A routing at a mode-inactive param is still
+valid, and minijv has no `root` at all, so gating would reach half its tree and
+the orphan sweep would dump the rest into "Other" — a worse answer than naming
+the level it came from. The picker and the grid therefore disagree about
+minijv's level list, and the walker's "call the root Main" rule is dropped when
+there are two roots (otherwise the second is claimed as "Main - 2" when the
+module already calls it "Performance").
+
+**The cursor lands on the routing the LFO already has.** All three indices used
+to reset to 0, so re-aiming an LFO pointed at param #143 cost the same 143 jog
+steps as the first time, with the answer sitting in `target` / `target_param`
+the whole while. Nothing new is persisted — the stored routing IS the memory,
+so it cannot go stale or need a heal. Seeding is scoped to the component the
+routing names: an index carried across components points at whatever happens to
+sit at that ordinal in a module that knows nothing about it.
+
+`ui_hierarchy` is read on entry and `null` is **not** "declares no levels" —
+that is the granny bug. It is retried once and then falls back to the flat
+list; nothing caches, so the cost is one wrong-shaped menu rather than a
+latched plan.

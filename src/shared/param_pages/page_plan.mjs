@@ -20,6 +20,10 @@
  */
 
 import { hasChildren, childCount, childIndexParam } from "./child_key.mjs";
+import {
+    keyOf, levelOf, childOf, knobKeys, paramKeys, levelNameToPrefix,
+    levelNamer, makeLevelWalker, reachableFrom,
+} from "./level_walk.mjs";
 
 /**
  * Every param key the hierarchy lists ANYWHERE — so the planner can ask
@@ -142,24 +146,6 @@ export const OPAQUE_TYPES = new Set(["canvas", "wav_position", "string", "filepa
 
 /* ---------------------------------------------------------------- helpers */
 
-function keyOf(entry) {
-    if (typeof entry === "string") return entry;
-    if (entry && typeof entry === "object" && entry.key) return entry.key;
-    return null;
-}
-
-/* A nav entry points at another level and carries no param of its own. */
-function levelOf(entry) {
-    return (entry && typeof entry === "object" && entry.level) ? entry.level : null;
-}
-
-/* `children` is absent as null, missing, or the literal string "None" — dexed
- * and every minijv level serialise it that way. */
-function childOf(level) {
-    const c = level && level.children;
-    return (c && c !== "None") ? c : null;
-}
-
 /**
  * Which of `modes` a reported mode value names, or the first mode as the
  * fallback. Exported because the seeding path in the shadow UI has to agree
@@ -179,51 +165,6 @@ export function pickMode(reported, modes) {
     const n = parseInt(want, 10);
     if (Number.isInteger(n) && n >= 0 && n < modes.length) return modes[n];
     return modes[0];
-}
-
-/* Every level reachable from `root` by the same two edges the walk follows —
- * a `params` entry naming a level, and `children`. Used to work out which
- * levels belong to a mode OTHER than the active one; the walk itself stays
- * recursive-with-prefixes and cannot answer that question on its own. */
-function reachableFrom(levels, root) {
-    const seen = new Set();
-    const stack = [root];
-    while (stack.length) {
-        const key = stack.pop();
-        if (seen.has(key)) continue;
-        const lvl = levels[key];
-        if (!lvl) continue;
-        seen.add(key);
-        for (const p of (lvl.params || [])) {
-            const t = levelOf(p);
-            if (t) stack.push(t);
-        }
-        const kid = childOf(lvl);
-        if (kid) stack.push(kid);
-    }
-    return seen;
-}
-
-function knobKeys(level) {
-    return ((level && level.knobs) || []).map(keyOf).filter((k) => k !== null);
-}
-
-/* Editable (non-nav) keys a level lists in `params`, in declaration order. */
-function paramKeys(level) {
-    return ((level && level.params) || [])
-        .filter((p) => !levelOf(p))
-        .map(keyOf)
-        .filter((k) => k !== null);
-}
-
-/* 6-char parent tag: one word → first 6 chars, multi-word → first 4 of word one
- * plus the other words' initials ("Operator 1" → "Oper1"). The 128 px header
- * also carries the module name, so this has to stay short. */
-function levelNameToPrefix(name) {
-    const words = String(name || "").split(/\s+/).filter(Boolean);
-    if (words.length === 0) return "";
-    if (words.length === 1) return words[0].slice(0, 6);
-    return (words[0].slice(0, 4) + words.slice(1).map((w) => w[0].toUpperCase()).join("")).slice(0, 6);
 }
 
 /* FNV-1a over the declared contract. The page set is rebuilt when this changes:
@@ -509,26 +450,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
 
     const pages = [];
 
-    /* A level's display name usually lives on the nav entry that points at it,
-     * not on the level itself, so collect labels from every level's nav
-     * entries. Nav label beats the level's own `label`: 24 levels across
-     * dexed/linein/minijv/obxd/sf2/sfz/nam disagree, and the nav label is the
-     * one users already see. */
-    const navLabel = Object.create(null);
-    for (const lvl of Object.values(levels)) {
-        for (const p of ((lvl && lvl.params) || [])) {
-            const target = levelOf(p);
-            if (target && p.label) navLabel[target] = p.label;
-        }
-    }
-    /* A level key is an internal identifier ("root", "patch_main", "osc1"); it
-     * is only a last resort for a page title, and never raw — "osc1" reads as
-     * "Osc1", not as a variable name. */
-    const prettify = (key) => String(key)
-        .replace(/[_-]+/g, " ")
-        .replace(/\b[a-z]/g, (c) => c.toUpperCase());
-    const declaredName = (key, lvl) => (lvl && lvl.name) || navLabel[key] || (lvl && lvl.label) || null;
-    const nameOf = (key, lvl) => declaredName(key, lvl) || prettify(key);
+    const { declaredName, nameOf } = levelNamer(levels);
 
     /**
      * Allocate a page name, appending " - N" for the smallest free N when the
@@ -644,8 +566,6 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         }
     }
     if (hierarchy.mode_param) selectorKeys.add(hierarchy.mode_param);
-    const visited = new Set();
-
     function emitLevel(levelKey, prefix) {
         const lvl = levels[levelKey];
         if (!lvl) return;
@@ -869,44 +789,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         return false;
     }
 
-    /* `transparent` marks a level reached through a `children` edge: it stands
-     * in for its parent's menu rather than being a category, so it neither takes
-     * nor contributes a name prefix. Without this every moog page would read
-     * "main/Oscillator 1". A `params` nav edge DOES contribute one — that is
-     * what keeps minijv's four "Filter" pages apart as Tone 1/Filter etc. */
-    function visit(levelKey, prefix, transparent) {
-        if (visited.has(levelKey)) return;
-        visited.add(levelKey);
-        const lvl = levels[levelKey];
-        if (!lvl) return;
-        if (lvl.visible_if && !isVisible(lvl.visible_if, lvl)) return;
-
-        emitLevel(levelKey, prefix);
-
-        /* Root's children carry no prefix: they are the module's top-level
-         * categories, so "Filter" beats "Root/Filter" — and the header is only
-         * 128 px wide, shared with the module name. Prefixes start one level
-         * down, which is exactly where they earn their keep (minijv would
-         * otherwise show four pages called "Filter").
-         *
-         * A level declaring no knobs of its own is a MENU, not a category — it
-         * exists to point at other levels. It contributes no prefix either, so
-         * minijv's tone_selector ("Edit Tones") gives "Tone 1" rather than
-         * "EditT/Tone 1", while tone1 itself still prefixes its children as
-         * "Tone1/Wave". */
-        const isMenuLevel = knobKeys(lvl).length === 0 && !lvl.items_param;
-        const childPrefix = (levelKey === rootKey || isMenuLevel) ? prefix
-            : transparent ? prefix
-            : levelNameToPrefix(nameOf(levelKey, lvl));
-        /* Both edges, always: a level with knobs can still own sub-levels
-         * (dexed's Operators, forge's Voice, minijv's tone1). */
-        for (const p of ((lvl.params) || [])) {
-            const target = levelOf(p);
-            if (target) visit(target, childPrefix, false);
-        }
-        const kid = childOf(lvl);
-        if (kid) visit(kid, prefix, true);
-    }
+    /* The walk itself lives in level_walk.mjs — the LFO target picker groups by
+     * the same tree and must name its rows identically. */
+    const { visit, visited } = makeLevelWalker({
+        levels, rootKey, isVisible,
+        onLevel: ({ levelKey, prefix }) => emitLevel(levelKey, prefix),
+    });
 
     /* Root's own knobs become the first grid page, named for the root level. */
     visit(rootKey, null, false);
