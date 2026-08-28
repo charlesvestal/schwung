@@ -1415,6 +1415,176 @@ passes vacuously: forgetting `setLayout(LAYOUT_MOVY)` (the default is
 `LAYOUT_DIAL`, which has no animated widget at all), and asserting a particular
 picture instead of a difference between two frames.
 
+**A value ARRIVING is not a value changing, and 46 of 95 fleet modules
+animated their first page in.** The read cursor serves one key per tick, so a
+full page of 8 knobs spends ~9 ticks (~200ms) with `values[key]` undefined —
+and every animated widget rendered that absence as a CONCRETE PLACEHOLDER:
+`drawWaveform` resolved shape 0 and `drawEnumSquare` sized itself around
+`"--"`. `observe` recorded the placeholder as the settled first sighting, so
+the real value arrived as a TRANSITION — waveforms morphing and enum boxes
+growing, out of values nobody had set. (`drawSwitch` was the third and the
+loudest, reading NaN and drawing OFF; #323 cut its fill for unrelated reasons
+while this was in flight, which is why the count is 46 and not the 51 measured
+before it landed. The switch stays in the absence test`s fixture but is no
+longer one of its subjects — a widget that cannot animate cannot demonstrate
+an arrival.) This is the tri-state read rule one layer below where it is
+usually enforced: a read that did not complete must not produce a plan, a
+default or a cached verdict, and **a widget frame is all three**.
+
+`observeLanded(state, key, raw, value, now, ms)` takes the RAW value alongside
+the token being animated. **The two are separate arguments on purpose**: every
+derivation here is TOTAL, so `"s" + shape` and a pixel width both
+produce a perfectly ordinary token for an absent input — which is exactly how
+the placeholder got in. Only the raw value still carries the absence, so only
+it can be asked about it.
+
+**Nothing is recorded while the value is absent**, rather than recorded and
+suppressed: leaving the key out of the store makes the first real value a first
+sighting, which `observe` already stamps as already-past. Recording it would
+leave `from` pointing at a value that was never on screen, and the next genuine
+change would animate out of it. `undefined` ONLY — the controller refuses to
+cache `null` or `""` as a value, so an unanswered key is `undefined` and nothing
+else, and widening to falsy would swallow `0`, a legitimate reading of every
+switch, shape and enum in the fleet.
+
+`tests/host/test_anim_absent_values.sh` asserts BOTH halves — an arrival draws
+the settled frame immediately, AND a change after it still animates — because
+the first alone passes with every animation deleted. **Its two probe defects are
+the reusable part**: it ticked without DRAWING (the store only learns a value
+when the renderer observes one, so it never showed the widgets the placeholder
+and passed with the bug fully present), and its positive control turned a
+two-option enum already at its top, so nothing moved.
+
+### The neighbour lane warms page ±1, and it is NOT the same fix
+
+`observeLanded` stops what arrives from moving; it does not make it arrive any
+sooner. The rotation still serves one key per tick, so jogging to a cold page
+means watching it populate a cell at a time. `neighbourPrefetch` spends a
+CONDITIONAL extra rotation stop on one uncached key belonging to page ±1, so a
+warm neighbourhood costs nothing at all and a cold one is bounded by the sixteen
+keys either side of you. Ported from the `page-slide-transition` branch
+(`2ba94c0b`), where it existed because a page whose cells fill in *while it
+slides* is what the slide was added to avoid.
+
+Held off for one full pass after a page change (`PREFETCH_HOLD_TICKS`, 12 — the
+page you ARRIVED on owns the screen) and entirely while any key is settling (a
+knob is under a finger). Both are HOLDS: the lane resumes on its own, and "no
+reads happened" cannot distinguish a hold from a lane that is switched off,
+which is why each is tested against a positive control.
+
+**`fullKey` gained an optional PAGE argument for this** — it resolves a
+child-level template against whichever page is passed, defaulting to the current
+one, so a bare key would ask the wire about `synth:tune` for a neighbour serving
+`synth:part2_tune`: a number read off the wrong parameter, cached under the bare
+key, with nothing on screen to say so.
+
+**The two fixes are independent, and the ablation matrix is the evidence** (a
+jog onto a page carrying all three animated widgets):
+
+| lane | observeLanded | warmed | ticks to fill | animates in |
+|---|---|---|---|---|
+| on | on | 3/3 | 0 | no |
+| off | on | 0/3 | 3 | no |
+| on | off | 3/3 | 0 | no |
+| off | off | 0/3 | 3 | **yes** |
+
+Either one alone suppresses the animation *on a jog* — but only the lane removes
+the fill-in, and only `observeLanded` covers a component's FIRST page, which the
+lane can never reach because nothing is adjacent to a page set that does not
+exist yet. Keep both.
+
+**The probe that produced that table was wrong first, in the now-familiar way:**
+it jogged and snapshotted without TICKING, so no value ever *arrived* and the
+animation axis could not move — every row read "settled", including the
+all-disabled control. A matrix whose control cannot fail is not a matrix.
+
+`tests/host/test_neighbour_prefetch.sh` asserts a read COUNT, because "the
+values are there" passes just as well with a lane that reads every tick forever.
+Four mutants killed on this branch: lane disabled, hold removed, child key
+resolved against the wrong page, and the tri-state ignored so a failed read is
+cached.
+
+### The FIRST page is warmed synchronously, because nothing is adjacent to it
+
+The lane cannot reach a component's first page — nothing is adjacent to a page
+set that does not exist yet — so entry still filled one key per tick, ~9 ticks
+(~150ms), with every cell drawing a confidently WRONG picture until its value
+landed. Reported from the device: *"all of the controls up for a frame or so
+with the wrong value before snapping to the right one"*.
+
+**It snaps together rather than filling in cell by cell because of the viz
+groups.** obxd's Main page draws a filter curve from four keys and an ADSR from
+four more, so a graphic stays wrong until its LAST member arrives and then the
+whole thing jumps. Rendered, frame 0 had the filter curve collapsed into the
+bottom-left corner, the envelope a spike at the left edge, and Octave reading
+`--`. Suppressing the ANIMATION did not stop the placeholder being DRAWN — same
+rule, one layer up.
+
+`warmCurrentPage()` reads the entered page's keys before the first frame. It is
+called from the LOAD path, never from `tick()`: the controller is built during
+input handling and the draw happens on a later frame, so a warm here lands
+before anything is shown while a warm on the tick is always one frame late —
+and one frame late is the whole bug. Measured over the fleet: **all 95 modules
+now draw frame 0 identical to settled**, worst entry cost 8 reads ≈ 22 ms,
+capped by the 8-knob page.
+
+**It stops at the FIRST failed read, and that bound matters more than the warm.**
+A module not serving yet — minijv and osirus are the slowest in the fleet —
+costs one timeout instead of eight, and the rotation retries for free. Entry
+stalling on eight dead reads is a worse failure than the flash this removes.
+
+**IT RUNS ON EVERY PAGE CHANGE TOO, and the first cut did not.** That version
+argued the lane already keeps neighbours warm so a jog finds them cached, and
+blocking would "put a hitch on the exact gesture the lane exists to smooth."
+Measured, that is false at any speed a hand actually jogs. The lane fires on ONE
+stop of a ~10-stop rotation — one neighbour key per ~10 ticks, so eight keys is
+~80 ticks plus the 12-tick hold. Against a 3 × 8-knob module, by dwell before
+jogging on:
+
+| dwell | known on arrival | fill-in |
+|---|---|---|
+| 200 ms | 1/8 | 153 ms |
+| 500 ms | 3/8 | 153 ms |
+| 1000 ms | 6/8 | 153 ms |
+| 1500 ms | 8/8 | none |
+
+So the lane only wins if you sit on a page for a second and a half. Reported
+from the device as *"i still see it … just going from one page to another
+slowly"* — precisely the 200–1000 ms band. The old objection is answered by the
+measurement: the alternative is not a smooth gesture, it is 153 ms of WRONG
+PICTURE, and ~22 ms of nothing is better. With the warm on the hop, every dwell
+arrives 8/8 and settles in one frame, and the cost degrades gracefully — 22 ms
+at a fast jog, 0 once the lane has kept up.
+
+**That is what the lane is actually for**, and it is worth stating because the
+first cut had it backwards: the lane does not make the page correct, the warm
+does. The lane makes the warm FREE, turning a per-hop cost into an occasional
+one. Neither is redundant.
+
+`goToPage` gets it too — that is the path a far JUMP from the section picker
+takes, where the lane has warmed nothing at all.
+
+**`acceptValue` is the extraction that made this safe.** The tri-state here is
+three rules deep and every one was a shipped bug — a failed read is not a value;
+`""` is a MISS for a number or enum (`Number("") === 0` put a silent zero on the
+slot-settings Volume knob); `""` is a VALUE for an opaque key (an empty filepath
+is NONE). The rotation and the warm share it rather than each carrying a copy.
+The condition re-plan lives in it too: a warm that stored a condition key without
+replanning would leave the rotation reading the same value later, seeing no
+change, and never revealing the pages that key gates.
+
+`warmCurrentPage` therefore runs **two passes** — `acceptValue` can re-plan
+underneath it, swapping the page being warmed for a different key set. The
+second pass is free when nothing changed (every key is already cached, so it
+makes no reads). The bound of 2 is DEFENCE, not behaviour: no fleet contract
+reaches it, and raising it to 99 kills no test — recorded so the survival is not
+read as a coverage hole, exactly like the prefetch's two guards.
+
+`tests/host/test_page_entry_warm.sh` asserts **exactly** one read per key, not
+"at least": the cached-key skip is invisible on the happy path, and without it a
+plain page costs 16 reads — twice the entry budget, and a mutant that survived
+the first version of this test.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
