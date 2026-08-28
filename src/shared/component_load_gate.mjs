@@ -3,7 +3,8 @@
  *
  * Opening a component's editor starts with one read of `<prefix>:ui_hierarchy`,
  * and that read has THREE answers, not two (see the note of the same name in
- * CLAUDE.md, and page_controller.mjs's `load`):
+ * CLAUDE.md, this gate's write-up in docs/SHADOW_UI.md, and
+ * page_controller.mjs's `load`):
  *
  *   JSON   the component declared a hierarchy
  *   ""     the channel served us and the key produced nothing

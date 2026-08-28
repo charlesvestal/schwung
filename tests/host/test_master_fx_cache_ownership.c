@@ -12,7 +12,7 @@
  * a vacated position had its owned pointer NULLed instead of rotated, and
  * v2_load_midi_fx_slot then parsed a param table through it — SIGSEGV on the
  * audio thread, plus a silently leaked allocation. See the PERMUTATION section
- * of CLAUDE.md and PERM_OWNED in src/host/chain_permute.h.
+ * of docs/CHAIN.md and PERM_OWNED in src/host/chain_permute.h.
  *
  * The permutation is not written yet (step 4d). This test establishes the
  * invariant it will depend on, against the REAL shadow_chain_mgmt.c and the

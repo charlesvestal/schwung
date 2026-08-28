@@ -82,7 +82,7 @@ typedef struct {
      * instead is the exact mistake that took the SPI callback down on the slot
      * chain: v2_load_midi_fx_slot parsed a param table through the NULLed
      * pointer and SIGSEGV'd on the audio thread, and the shift silently leaked
-     * the allocation it overwrote. See the PERMUTATION section of CLAUDE.md
+     * the allocation it overwrote. See the PERMUTATION section of docs/CHAIN.md
      * and PERM_OWNED in src/host/chain_permute.h. */
     char *chain_params_cache;
     int chain_params_cached;         /* 1 if cache is valid */
