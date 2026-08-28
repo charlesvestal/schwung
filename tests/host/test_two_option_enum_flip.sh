@@ -137,7 +137,7 @@ Promise.all([
   /* ---- 4. the FOOTER promises FLIP, and does so BEFORE it can say OPEN -- */
   const FOOT = "src/shadow/shadow_ui_param_pages.mjs";
   const foot = fs.readFileSync(FOOT, "utf8");
-  if (!/import \{ flipsOnClick \}/.test(foot))
+  if (!/import \{[^}]*\bflipsOnClick\b[^}]*\}/.test(foot))
     fail(FOOT + " must IMPORT flipsOnClick, not restate the rule — two copies is how the " +
          "footer and the click come apart");
   const iFlip = foot.indexOf("click: \"FLIP\"");
