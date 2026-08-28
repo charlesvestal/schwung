@@ -3034,8 +3034,8 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * an opaque param there landed on the module menu instead of the editor. */
     const paramPrefix = `${getComponentParamPrefix(componentKey)}:`;
     const raw = String(fullKey || "");
-    const bare = raw.startsWith(paramPrefix) ? raw.slice(paramPrefix.length)
-                                             : raw.replace(/^[^:]+:/, "");
+    let bare = raw.startsWith(paramPrefix) ? raw.slice(paramPrefix.length)
+                                           : raw.replace(/^[^:]+:/, "");
 
     exitParamPages();
     /* Without this the list entry below sees Param View = Knobs and bounces
@@ -3075,6 +3075,11 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * in the `main` level. Searching only the page level found nothing and fell
      * through to the module menu, which is exactly the bug. So if the page
      * level does not list it, find the level that does and go there. */
+    /* Back to the level's own dialect before looking it up -- see
+     * hierGenericKeyFor. Done AFTER landing, because the level (and therefore
+     * the key list to search) is only settled here. */
+    bare = hierGenericKeyFor(getHierarchyLevelDef(), hierEditorChildIndex, bare);
+
     let idx = indexOfHierParam(bare);
     if (idx < 0) {
         const owner = findLevelListingParam(bare);
@@ -13026,6 +13031,35 @@ function hierChildKeyFor(levelDef, index, rawKey) {
         return rawKey;
     }
     return resolveChildKey(levelDef, index, rawKey) || rawKey;
+}
+
+/*
+ * The GENERIC key a concrete one came from, or the key unchanged.
+ *
+ * The inverse of hierChildKeyFor, and it is needed because the two halves of a
+ * dive speak different dialects: the GRID addresses `synth:p01_sample_path`
+ * (the controller resolved it), while the editor's param list holds what the
+ * level LISTS -- `sample_path`. So the lookup missed, the owner search missed,
+ * and the click opened nothing at all. Found by reproducing the dive on the
+ * host rather than on the device, which is how it should have been found four
+ * reports earlier.
+ *
+ * Searched over the level's own declared keys rather than parsed out of the
+ * template: a template is not invertible in general (`p{index}_{key}` happens
+ * to be, `{key}_v{index}` is not), and the level's list is small and exact.
+ */
+function hierGenericKeyFor(levelDef, index, concreteKey) {
+    if (!concreteKey || index < 0 || !childLevelHasChildren(levelDef)) return concreteKey;
+    const cand = [];
+    for (const k of (levelDef.knobs || [])) cand.push(typeof k === "string" ? k : (k && k.key));
+    for (const p of (levelDef.params || [])) {
+        if (p && typeof p === "object") { if (!p.level) cand.push(p.key); }
+        else cand.push(p);
+    }
+    for (const g of cand) {
+        if (g && resolveChildKey(levelDef, index, g) === concreteKey) return g;
+    }
+    return concreteKey;
 }
 
 function buildHierarchyParamKey(key) {
