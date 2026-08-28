@@ -104,9 +104,44 @@ Promise.all([
     const pages = modeList.flatMap(
       (md) => P.planPages({ hierarchy: h, chainParams: cp, metaIndex: ix, mode: md }).pages);
 
+    /*
+     * A selector serves a child FAMILY, not a level name.
+     *
+     * mrdrums declares child_count 16 on BOTH `root` and `pad_settings`, with
+     * the same child_index_param (ui_current_pad) -- they are two pages onto
+     * the same sixteen pads. The planner emits ONE list for that family, which
+     * is the whole point of "one pad list, placed before what it selects": a
+     * selector per level would draw the same sixteen pads twice and make the
+     * user choose a pad they had already chosen.
+     *
+     * So requiring a selector whose `level` equals each child level failed a
+     * module whose pads are perfectly reachable -- page 0 picks the pad, page 2
+     * edits it. Key on the family instead: the level is reachable if something
+     * selects the index param it reads. Level identity remains the fallback for
+     * a level that declares no index param.
+     *
+     * HOW MUCH THIS CHECK IS WORTH, measured rather than assumed: not much.
+     * planPages emits a selector for EVERY child family by construction -- an
+     * orphaned child level referenced by nothing still gets one, and so does a
+     * level given a family nobody else selects (it gets a second list). Three
+     * separate fixture mutations failed to make this assertion fire. It is a
+     * statement of intent that the planner already guarantees, and the only
+     * time it has ever fired it was WRONG.
+     *
+     * Left in place because it costs nothing and would catch a planner that
+     * stopped emitting selectors altogether -- but do not read a pass here as
+     * evidence that child navigation works. The checks below it, which drive a
+     * real controller through choosing a child and re-keying its reads and
+     * writes, are the ones with teeth.
+     */
+    const familyOf = (name) => K.childIndexParam(h.levels[name]) || ("level:" + name);
+    const selected = new Set(
+      pages.filter((p) => p.kind === P.PAGE_ITEMS && p.childOf).map((p) => familyOf(p.childOf)));
+
     for (const lvl of childLevels) {
-      const sel = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_ITEMS && p.childOf);
-      if (!sel.length) say(mod.id + "/" + lvl + " has no selector page — the level is unreachable");
+      if (!selected.has(familyOf(lvl)))
+        say(mod.id + "/" + lvl + " has no selector for its child family (" + familyOf(lvl) +
+            ") — the level is unreachable");
       /* The knob pages are BACK, and each must carry its level or its keys
          cannot be resolved and the cells go back to addressing templates. */
       const knobs = pages.filter((p) => p.level === lvl && p.kind === P.PAGE_KNOBS);
