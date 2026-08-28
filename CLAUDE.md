@@ -1451,12 +1451,54 @@ when the renderer observes one, so it never showed the widgets the placeholder
 and passed with the bug fully present), and its positive control turned a
 two-option enum already at its top, so nothing moved.
 
-Still open, and a separate change: this stops the MOTION, not the fill-in. Cells
-still populate one per tick, so a page arrives showing `--` in cells whose reads
-have not landed. The `page-slide-transition` branch's `neighbourPrefetch`
-(`2ba94c0b`) warms pages ±1 on spare rotation stops and is the fix for that —
-but it only covers a jog to an adjacent page, never first entry into a
-component, and it depends on that branch`s `fullKey(key, page)` change.
+### The neighbour lane warms page ±1, and it is NOT the same fix
+
+`observeLanded` stops what arrives from moving; it does not make it arrive any
+sooner. The rotation still serves one key per tick, so jogging to a cold page
+means watching it populate a cell at a time. `neighbourPrefetch` spends a
+CONDITIONAL extra rotation stop on one uncached key belonging to page ±1, so a
+warm neighbourhood costs nothing at all and a cold one is bounded by the sixteen
+keys either side of you. Ported from the `page-slide-transition` branch
+(`2ba94c0b`), where it existed because a page whose cells fill in *while it
+slides* is what the slide was added to avoid.
+
+Held off for one full pass after a page change (`PREFETCH_HOLD_TICKS`, 12 — the
+page you ARRIVED on owns the screen) and entirely while any key is settling (a
+knob is under a finger). Both are HOLDS: the lane resumes on its own, and "no
+reads happened" cannot distinguish a hold from a lane that is switched off,
+which is why each is tested against a positive control.
+
+**`fullKey` gained an optional PAGE argument for this** — it resolves a
+child-level template against whichever page is passed, defaulting to the current
+one, so a bare key would ask the wire about `synth:tune` for a neighbour serving
+`synth:part2_tune`: a number read off the wrong parameter, cached under the bare
+key, with nothing on screen to say so.
+
+**The two fixes are independent, and the ablation matrix is the evidence** (a
+jog onto a page carrying all three animated widgets):
+
+| lane | observeLanded | warmed | ticks to fill | animates in |
+|---|---|---|---|---|
+| on | on | 3/3 | 0 | no |
+| off | on | 0/3 | 3 | no |
+| on | off | 3/3 | 0 | no |
+| off | off | 0/3 | 3 | **yes** |
+
+Either one alone suppresses the animation *on a jog* — but only the lane removes
+the fill-in, and only `observeLanded` covers a component's FIRST page, which the
+lane can never reach because nothing is adjacent to a page set that does not
+exist yet. Keep both.
+
+**The probe that produced that table was wrong first, in the now-familiar way:**
+it jogged and snapshotted without TICKING, so no value ever *arrived* and the
+animation axis could not move — every row read "settled", including the
+all-disabled control. A matrix whose control cannot fail is not a matrix.
+
+`tests/host/test_neighbour_prefetch.sh` asserts a read COUNT, because "the
+values are there" passes just as well with a lane that reads every tick forever.
+Four mutants killed on this branch: lane disabled, hold removed, child key
+resolved against the wrong page, and the tri-state ignored so a failed read is
+cached.
 
 ### Recording / capture
 

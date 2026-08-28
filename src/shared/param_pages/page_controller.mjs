@@ -260,6 +260,15 @@ import { announcePage, announceTouch, announceTurn, announcePageContents } from 
 export const SETTLE_TICKS = 9;
 
 /**
+ * Ticks the neighbour-prefetch lane stays shut after a page change.
+ *
+ * A full page of 8 knobs is 9 rotation stops, so 12 covers one whole pass with
+ * room for the viz extra key and the lane's own stop: the page you ARRIVED on
+ * refreshes completely before anything reads for a page nobody is looking at.
+ */
+export const PREFETCH_HOLD_TICKS = 12;
+
+/**
  * Minimum gap between announcements for the SAME key while it is being
  * turned continuously. A fast physical spin decodes to one MIDI CC message
  * per detent — measured on device at up to ~286/s during a fast Braids turn
@@ -558,6 +567,10 @@ export function createController(io = {}) {
         /* key -> tick at which reads may resume */
         settleUntil: Object.create(null),
         tickCount: 0,
+        /* Tick at which the neighbour-prefetch lane may resume; armed on every
+         * page change so the arrived page gets one whole pass to itself. See
+         * neighbourPrefetch(). */
+        prefetchHoldUntil: 0,
         knobStates: Object.create(null),
         /* key -> ms of the last announce() for that key — see ANNOUNCE_THROTTLE_MS */
         lastAnnounceMs: Object.create(null),
@@ -693,13 +706,26 @@ export function createController(io = {}) {
         const at = s.childIndex[level];
         return (typeof at === "number" && at >= 0) ? at : 0;
     };
-    const childResolve = (key) => {
-        const p = page();
+    /*
+     * Resolve a child-level key against a page — the CURRENT one unless another
+     * is named.
+     *
+     * The optional argument exists for the neighbour-prefetch lane, which reads
+     * keys belonging to page ±1. Defaulting to the current page would ask the
+     * wire about `synth:tune` for a page serving `synth:part2_tune`: a number
+     * read off the wrong parameter, cached under the bare key, with nothing on
+     * screen to say so.
+     *
+     * Same shape as pageLabel(p): the argument defaults to the current page, so
+     * the two dozen call sites that genuinely mean "now" are unchanged.
+     */
+    const childResolve = (key, pg) => {
+        const p = pg === undefined ? page() : pg;
         if (!p || !p.childLevel || !Array.isArray(p.keys)) return key;
         if (p.keys.indexOf(key) < 0) return key;
         return resolveChildKey(p.childLevel, childIndexFor(p.level), key) || key;
     };
-    const fullKey = (key) => `${s.prefix}:${childResolve(key)}`;
+    const fullKey = (key, pg) => `${s.prefix}:${childResolve(key, pg)}`;
     const page = () => s.pages[s.pageIndex] || null;
 
     /*
@@ -1225,6 +1251,51 @@ export function createController(io = {}) {
         s.touched = -1;
     }
 
+    /**
+     * One uncached key belonging to an adjacent page, as `{key, page}` — or
+     * null when both neighbours are warm, which is the steady state.
+     *
+     * Returns the PAGE as well as the key because fullKey resolves a
+     * child-level template against whichever page is passed, defaulting to the
+     * current one; a bare key would be resolved against the wrong level.
+     *
+     * Held off for one full pass after a page change: the page you have just
+     * ARRIVED on is the one whose values are on screen, and it must not have
+     * to share the rotation with a page nobody is looking at yet.
+     *
+     * Held off entirely while anything is settling — a settle window means a
+     * knob is under a finger, and that key's own refresh is what the rotation
+     * is for. Both are HOLDS, not cancellations: the lane resumes on its own,
+     * which is a thing "no reads happened" cannot distinguish from a lane that
+     * is switched off, so the test pairs each with a positive control.
+     *
+     * TWO OF THE GUARDS BELOW ARE DEFENCE, NOT BEHAVIOUR, and the test cannot
+     * kill a mutant of either — recorded so the next reader does not take the
+     * survival for a coverage hole. Dropping `q.kind !== PAGE_KNOBS` changes
+     * nothing today because every non-knob page carries `keys: []`; dropping
+     * the `cur.keys` skip changes nothing because a key on the current page is
+     * either already in s.values or about to be read by the ordinary rotation.
+     * Both are kept so that a page kind which one day grows a `keys` array, or
+     * a level that repeats a key across a page break, cannot quietly make the
+     * lane read the screen back to itself.
+     */
+    function neighbourPrefetch(cur) {
+        if (s.tickCount < (s.prefetchHoldUntil || 0)) return null;
+        for (const k in s.settleUntil) {
+            if ((s.settleUntil[k] || 0) > s.tickCount) return null;
+        }
+        for (const d of [1, -1]) {
+            const q = s.pages[s.pageIndex + d];
+            if (!q || q.kind !== PAGE_KNOBS || !Array.isArray(q.keys)) continue;
+            for (const k of q.keys) {
+                if (!k) continue;
+                if (cur.keys.indexOf(k) >= 0) continue;
+                if (!(k in s.values)) return { key: k, page: q };
+            }
+        }
+        return null;
+    }
+
     function tick() {
         s.tickCount++;
         flushDueWrites();
@@ -1298,9 +1369,58 @@ export function createController(io = {}) {
          * takes.
          */
         const extraKeys = vizEnabled ? vizExtraKeys() : [];
-        const stops = p.keys.length + 1 + extraKeys.length;
+        /*
+         * THE NEIGHBOUR LANE — why the incoming page arrives populated.
+         *
+         * The rotation serves one key per tick, so a page of 8 knobs takes ~9
+         * ticks (~200ms) to fill. Jog to it and you watch it populate a cell at
+         * a time. This spends a stop on a key belonging to page ±1 that is not
+         * yet cached, so by the time you arrive it is already there.
+         *
+         * It PAIRS with observeLanded rather than replacing it. This stops the
+         * cells arriving one by one; that stops what arrives from animating.
+         * Neither covers the other: a warm page still has to not animate in
+         * (the lane cannot reach a component`s FIRST page — nothing is adjacent
+         * to a page set that does not exist yet), and a page that does not
+         * animate still fills in slowly without this.
+         *
+         * Bounded by construction: only UNCACHED keys, only the two adjacent
+         * pages, so it goes quiet on its own and stays quiet. A lane that kept
+         * reading would cost ~2.8ms per tick — more than the 1.68ms whole-page
+         * render it decorates — which is why the test counts reads rather than
+         * checking that the values are present. "The values are there" passes
+         * just as well with a lane that never stops.
+         *
+         * The stop is CONDITIONAL, so a warm neighbourhood costs nothing at
+         * all. That makes `stops` change by one as the lane opens and closes,
+         * which shifts `at` by one for a tick. Harmless: the rotation is a
+         * refresh loop, not a sequence with meaning — a key merely gets its
+         * turn one tick early or late.
+         *
+         * Blocking at jog time was rejected: up to eight uncached keys is
+         * ~22ms of dead time on a page's first visit, a visible hitch on the
+         * exact gesture this exists to smooth.
+         */
+        const warm = neighbourPrefetch(p);
+        const stops = p.keys.length + 1 + extraKeys.length + (warm ? 1 : 0);
         const at = s.cursor % stops;
         s.cursor = (s.cursor + 1) % stops;
+
+        if (warm && at === stops - 1) {
+            /* fullKey resolves a CHILD-level template against the page the key
+             * belongs to, so the neighbour page is passed explicitly — the
+             * default is the CURRENT page, which would ask the wire about
+             * `synth:p3` when the neighbour serves `synth:part2_p3`. */
+            const v = getParam(fullKey(warm.key, warm.page));
+            /* The tri-state, same as everywhere: a read that did not complete
+             * must not be cached as a value, and neither must the "" a served
+             * channel returns for a key nobody answers. Leaving it absent
+             * simply means the lane tries it again — and nothing revisits a
+             * key that IS in s.values, so caching either would blank that cell
+             * for good. */
+            if (v !== null && v !== undefined && v !== "") s.values[warm.key] = v;
+            return null;
+        }
 
         /* Give late metadata a chance to arrive, on a wall-clock cadence. */
         if (!triedReresolve && s.tickCount % META_RETRY_INTERVAL_TICKS === 0) {
@@ -2145,6 +2265,9 @@ export function createController(io = {}) {
             s.cursor = 0;
             s.touched = -1;
             s.turnClaimMs = 0;
+            /* One full pass for the page you arrived on before warming
+             * anything else. A page of 8 knobs is 9 stops, ~0.16s. */
+            s.prefetchHoldUntil = s.tickCount + PREFETCH_HOLD_TICKS;
             /* Leaving a page leaves the door it was. Without this, entering a
              * browser, Shift+jogging away and jogging BACK put you inside it
              * again without a click — the page had never been marked as left,
@@ -2194,6 +2317,8 @@ export function createController(io = {}) {
         s.cursor = 0;
         s.touched = -1;
         s.turnClaimMs = 0;
+        /* Same hold as onJog: the arrived page owns the first full pass. */
+        s.prefetchHoldUntil = s.tickCount + PREFETCH_HOLD_TICKS;
         /* enterMenu refuses an empty list, and then nobody has spoken yet. */
         if (!(enterIfDoor && isDoor(page()) && enterMenu())) announcePageChange();
         return s.pageIndex;
