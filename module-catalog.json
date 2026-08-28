@@ -1333,6 +1333,17 @@
       "default_branch": "main",
       "asset_name": "4k-eq-module.tar.gz",
       "min_host_version": "0.12.1"
+    },
+    {
+      "id": "arranger",
+      "name": "Arranger",
+      "description": "A Song Builder, Performance, and Jam module that turns a library of (GM drum) MIDI clips into arranged songs you can compose, rehearse, and perform live",
+      "author": "chaolue",
+      "component_type": "overtake",
+      "github_repo": "chaolue/schwung-arranger",
+      "default_branch": "master",
+      "asset_name": "arranger-module.tar.gz",
+      "min_host_version": "0.12.1"
     }
   ]
 }
