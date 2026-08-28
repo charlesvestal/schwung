@@ -2131,7 +2131,12 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         drawVizGroup(ctx, {
             x: cellLeft(g, localStart), y: rowY,
             w: group.slotSpan * g.cellW, h: lblY - rowY,
-        }, group, liveValues, metaIndex, o.anim, o.nowMs);
+        }, group, liveValues, metaIndex, o.anim, o.nowMs,
+           /* The BASE, and only when something is actually modulated -- so a
+            * page with no source passes null and the graphic draws exactly as
+            * it always has. `liveValues === values` in that case anyway, and a
+            * mark whose base equals its cursor would never be drawn. */
+           hasMod ? values : null);
         /*
          * ONE MARK FOR THE WHOLE GRAPHIC.
          *
