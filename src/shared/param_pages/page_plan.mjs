@@ -84,9 +84,48 @@ function allListedKeys(hierarchy) {
  * stays, and a module gets the deduplication only by offering the control
  * itself.
  */
-function childPickerNeeded(lvl, listedKeys) {
+/**
+ * Which level "owns" pad selection for an index param: the one that LISTS it.
+ *
+ * Two levels sharing a focus need one picker, and putting it on whichever is
+ * walked first landed it on `root` -- so the module opened on a pad LIST and
+ * its actual knobs moved to a second page. A level that names the index param
+ * in its own params/knobs is saying that selecting the instance is part of
+ * what that level is for, which is a better answer than walk order.
+ *
+ * Raw membership, deliberately NOT the `ui_`-filtered reachability test: this
+ * asks who OWNS the selection, not whether the key gets a cell.
+ */
+function indexParamOwner(hierarchy, idxParam) {
+    for (const [key, lvl] of Object.entries((hierarchy && hierarchy.levels) || {})) {
+        if (!lvl || typeof lvl !== "object") continue;
+        const named = (e) => ((e && typeof e === "object") ? (e.level ? null : e.key) : e) === idxParam;
+        if ((lvl.params || []).some(named) || (lvl.knobs || []).some(named)) return key;
+    }
+    return null;
+}
+
+function childPickerNeeded(lvl, listedKeys, pickedFor, levelKey, hierarchy) {
     const idxParam = childIndexParam(lvl);
     if (!idxParam) return true;
+    /* Defer to the level that declares it, when one does. */
+    const owner = indexParamOwner(hierarchy, idxParam);
+    if (owner && owner !== levelKey) return false;
+    /*
+     * ONE PICKER PER SHARED INDEX.
+     *
+     * Two levels naming the same `child_index_param` are two views of one
+     * focus -- mrdrums has root and Pad Settings both following
+     * ui_current_pad -- so a picker on each is two lists selecting the same
+     * pad, in sync with each other and with the pad you played. Reported from
+     * the device as "why is main pad selection AND pad settings pad
+     * selection?".
+     *
+     * The FIRST level to plan one keeps it; the rest defer. Walk order is
+     * stable, so which level that is does not wander between plans.
+     */
+    if (pickedFor.has(idxParam)) return false;
+    /* ...and no picker at all when the module offers a real cell for it. */
     return !listedKeys.has(idxParam);
 }
 
@@ -345,6 +384,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
      * hierarchy, not on the level: the index param may be listed on a sibling
      * level, which is exactly where mrdrums puts it. */
     const listedKeys = allListedKeys(hierarchy);
+    /* child_index_param -> a picker page already exists for it. See
+     * childPickerNeeded: two levels sharing one focus need ONE list. */
+    const pickedFor = new Set();
     /*
      * Built once per plan so knob pages can be nudged into a drawable layout —
      * see alignGroupsToRows. Planning happens on component load, not per frame,
@@ -673,7 +715,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         /* Repeated elements declared once and multiplied by the host. The
          * level object travels with the page so the caller can resolve concrete
          * keys without re-reading the hierarchy (see child_key.mjs). */
-        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys)) {
+        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys, pickedFor, levelKey, hierarchy)) {
+            const _idxParam = childIndexParam(lvl);
+            if (_idxParam) pickedFor.add(_idxParam);
             /*
              * A child selector IS an items page.
              *

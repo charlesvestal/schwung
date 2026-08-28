@@ -32,7 +32,8 @@ Promise.all([
   import("./src/shared/param_pages/page_controller.mjs"),
   import("./src/shared/param_pages/child_key.mjs"),
   import("./src/shared/param_pages/page_plan.mjs"),
-]).then(([PC, CK, PLAN]) => {
+  import("./src/shared/knob_engine.mjs"),
+]).then(([PC, CK, PLAN, KE]) => {
   let bad = 0;
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
@@ -356,6 +357,36 @@ Promise.all([
          + "two controls for one fact");
   }
 
+
+  /* ---- a 1..16 selector steps like an enum, not like a sweep -----------
+   *
+   * One flick of an encoder is a dozen detents, so at one value per detent a
+   * pad index or a MIDI channel crosses its whole range before you can read
+   * it. Reported from the device as "these numbers move crazy fast on a single
+   * detent".
+   *
+   * The BOUNDARY is what is pinned, not the constant: 1..16 selectors gated,
+   * 0..24 quantities not. Measured over the fleet, 9..16 is entirely discrete
+   * identities and 17..24 is entirely things you sweep.
+   */
+  {
+    const gated = (min, max) => KE.detentsPerStep({ type: "int", min, max });
+    if (gated(1, 16) <= 1)
+      fail("a 1..16 selector steps once per detent — one flick crosses all 16");
+    if (gated(1, 16) !== gated(0, 4))
+      fail("a narrow int and a narrower one step differently — one gate, one feel");
+    /* ...and a sweep must NOT be gated, or it becomes 4x harder to move. */
+    if (gated(0, 24) !== 1)
+      fail("a 0..24 quantity is gated like a selector — pitch bend range and "
+         + "envelope depth are swept, not chosen");
+    if (gated(0, 136) !== 1)
+      fail("a wide int is gated — crossing it would take 500+ detents");
+    /* The gate is the ENUM gate, shared. Two numbers here would be two feels
+     * for controls that look alike. */
+    if (gated(1, 16) !== KE.ENUM_DELTA_DIV)
+      fail("the narrow-int gate is no longer the enum gate — they must stay one number");
+  }
+
   /* ---- a level with NO child_index_param is untouched ------------------ */
   {
     const L2 = Object.assign({}, LEVEL);
@@ -379,6 +410,7 @@ Promise.all([
     console.log("  ok  a generic child key borrows the concrete declaration, and follows");
     console.log("  ok  the graphic follows the focused child with no page change");
     console.log("  ok  the picker goes only when the index param really has a cell");
+    console.log("  ok  a 1..16 selector steps like an enum; a 0..24 sweep does not");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");
   }

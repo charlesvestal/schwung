@@ -62,8 +62,33 @@ export const ENUM_DELTA_DIV = 4;
 export const ARC_DELTA_SCALE = 0.5;
 /** A float/int knob's per-detent step, as a fraction of its own range. */
 export const MIN_STEP_RANGE_FRAC = 0.01;
-/** An int range this narrow or narrower is stepped like an enum. */
-export const NARROW_RANGE_MAX = 8;
+/**
+ * An int range this narrow or narrower is stepped like an enum.
+ *
+ * SIXTEEN, because that is where "which one of N things" stops and "a sweep"
+ * begins on this hardware. It was 8, which left every 1..16 selector at one
+ * value per detent -- and one flick of an encoder is a dozen detents, so a pad
+ * index or a MIDI channel flew past its whole range before you could read it.
+ * Reported from the device against mrdrums` Current Pad: "these numbers move
+ * crazy fast on a single detent".
+ *
+ * Measured over the fleet, the 9..16 band is 72 params and is ENTIRELY
+ * discrete identities -- `midi_ch[1..16]`, `ui_current_pad[1..16]`,
+ * `choke_group[0..16]`. The next band up (17..24, 17 params) is
+ * `pb_range[0..24]`, `pitch_env_depth[0..24]`: quantities you sweep, where
+ * four detents per unit would be an obstacle. So the boundary is evidence,
+ * not a round number.
+ *
+ * Deliberately NOT a second detent count. ENUM_DELTA_DIV stays 4 and is shared,
+ * for the reason the two-way latch pins its constant equal to the trigger`s: an
+ * enum and a pad index are the same gesture over the same kind of choice, and a
+ * user cannot learn two feels for controls that look alike.
+ *
+ * Note this does NOT align with shouldDrawBigNumber`s span of 24, and should
+ * not: how a value is DRAWN and how it STEPS are different questions, and the
+ * 17..24 band answers them differently on purpose.
+ */
+export const NARROW_RANGE_MAX = 16;
 
 /** schwung-movy model/knob-step.ts detentsPerStep, ported. */
 export function detentsPerStep(meta) {
