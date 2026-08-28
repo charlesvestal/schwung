@@ -23,7 +23,8 @@ Promise.all([
   import("./src/shared/param_pages/page_input.mjs"),
   import("./src/shared/param_pages/page_controller.mjs"),
   import("./tools/param-pages/fake_device.mjs"),
-]).then(([I, C, D]) => {
+  import("./src/shared/param_pages/param_meta.mjs"),
+]).then(([I, C, D, M]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const cc = (n, v) => [0xb0, n, v];
   const noteOn = (n, v) => [0x90, n, v];
@@ -220,8 +221,15 @@ Promise.all([
     if (ctl.pickerOpen) fail("touching a knob should dismiss the picker");
     feed(noteOff(0));
 
+    /* A divable that actually OPENS something. A two-option enum is divable
+     * and does not: its click writes the other value in place (flipsOnClick),
+     * so picking the first divable cell on the page would test the flip and
+     * call it an open. */
     let opaque = -1;
-    for (let i = 0; i < 8; i++) { const m = ctl.metaAt(i); if (m && m.divable) { opaque = i; break; } }
+    for (let i = 0; i < 8; i++) {
+        const m = ctl.metaAt(i);
+        if (m && m.divable && !M.flipsOnClick(m)) { opaque = i; break; }
+    }
     if (opaque < 0) fail("expected a divable param on the mrdrums page");
     feed(noteOn(opaque, 100));
     const opened = feed(cc(3, 127));

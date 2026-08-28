@@ -109,6 +109,43 @@ function isSwitchMeta(meta) {
 }
 
 /**
+ * Minimum still time before a knob can flip a two-way control again.
+ *
+ * The same number and the same rule as `TRIGGER_KNOB_GESTURE_GAP_MS` in
+ * page_controller.mjs: ONE FLICK IS ONE GESTURE. A trigger fires once per
+ * flick; a two-way flips once per flick. Both would otherwise act a dozen
+ * times across a single twist of the encoder.
+ *
+ * It is a LATCH, not a rate limit, and that is the distinction the trigger
+ * shipped wrong first: the stamp is the last DETENT, so every detent extends
+ * the gesture and the clock only runs while the knob is STILL.
+ */
+export const TWO_WAY_GESTURE_GAP_MS = 270;
+
+/**
+ * A control with exactly TWO values and no travel between them.
+ *
+ * Both spellings count — an Off/On (or int 0..1) boolean, which is drawn as a
+ * switch, and a two-way CHOICE like Mix/Reverb or Saw/Square, which is drawn
+ * as an enum square. They behave identically under the hand even though they
+ * are drawn differently, because the question a detent asks is the same one:
+ * there is nowhere to go but the other value.
+ *
+ * A TRIGGER is excluded. It is a two-option enum on the wire (["—","Rnd!"])
+ * and toggling it would write "do nothing" on every other flick — which for
+ * euclidrum's rnd_preset is the write that destroys a kit. Callers that route
+ * triggers away before reaching here (page_controller does) are unaffected;
+ * this is for the ones that do not.
+ */
+function isTwoWayMeta(meta) {
+    if (!meta) return false;
+    if (meta.writeOnly || meta.access === "write") return false;
+    if (isSwitchMeta(meta)) return true;
+    return (meta.kind === "enum" || meta.type === "enum")
+        && Array.isArray(meta.options) && meta.options.length === 2;
+}
+
+/**
  * Reversing direction drops whatever partial turn was banked the other way.
  * Without it the residue is spent cancelling the new direction first, so a
  * reversal costs up to div + (div - 1) detents — 7 at ENUM_DELTA_DIV 4 — and
@@ -174,23 +211,54 @@ export function knobStep(state, meta, delta, nowMs, fine = false) {
         };
     }
 
-    /* A boolean flips on ONE detent in the direction turned, whether its author
-     * spelled it as an Off/On enum or as an int 0..1. Hoisted ABOVE the enum
-     * branch because an int never enters that branch -- it would fall through
-     * to the numeric path, which reaches the same two values but by
-     * accumulating rather than by direction, so a reversal could spend a
-     * detent doing nothing. The picture and the feel have to agree. */
-    if (isSwitchMeta(meta)) {
+    /*
+     * TWO VALUES: A DETENT TOGGLES, WHICHEVER WAY IT WENT.
+     *
+     * It used to be direction-ABSOLUTE — right meant option 1, left meant
+     * option 0 — and a two-way choice like Mix/Reverb instead fell through to
+     * the enum branch below and CLAMPED behind a four-detent gate. Three
+     * spellings of one control, two of them with a dead direction:
+     *
+     *   Off/On at Off, turned left     nothing, forever
+     *   Mix/Reverb at Mix, turned left nothing, forever
+     *
+     * Reported from the device: "if there are only two, why not let it wrap
+     * otherwise you have to know which way is off and which way is on, in
+     * which case you need some knowledge you dont have." There is no way to
+     * acquire that knowledge from the screen — the cell shows a state, not a
+     * direction — so half of every reach for the knob reads as a dead control.
+     * That is the same argument that makes a trigger fire in either direction.
+     *
+     * WRAPPING ALONE WOULD NOT DO, and this is the part worth keeping. With
+     * two values, "wrap" and "toggle on every detent" are the same thing, and
+     * one flick of an encoder is a dozen detents — so a flick would land on
+     * whichever value the detent count happened to be even or odd about. The
+     * LATCH is what makes the gesture legible: one flick, one flip, and the
+     * clock runs on STILLNESS because the stamp is the last detent rather than
+     * the last flip.
+     *
+     * Hoisted above the enum branch for the reason it always was: an int 0..1
+     * never enters that branch and would accumulate on the numeric path.
+     */
+    if (isTwoWayMeta(meta)) {
+        const t = typeof nowMs === "number" ? nowMs : 0;
+        const last = state.lastTwoWayMs;
+        const startsGesture = last === undefined
+            || (t - last) >= TWO_WAY_GESTURE_GAP_MS;
+        state.lastTwoWayMs = t;
         state.detentAccum = 0;
-        state.value = delta > 0 ? 1 : 0;
+        if (!startsGesture) return state.value;
+        state.value = Math.round(Number(state.value)) === 0 ? 1 : 0;
         return state.value;
     }
 
     if (meta.kind === "enum" || meta.type === "enum") {
-        /* A switch has two states and no travel, so it flips on ONE detent, in
-         * the direction turned. Running it through the click gate below cost 4
-         * detents to move at all (and up to 7 to come back), which reads as a
-         * dead control: the drawn knob simply does not move when you turn it. */
+        /* THREE OR MORE options only — anything with exactly two was taken by
+         * the branch above. That is what the four-detent gate is for: a long
+         * list wants a sweep, and a two-way has nothing to sweep through, so
+         * running one through this gate cost 4 detents to move at all (and up
+         * to 7 to come back), which reads as a dead control — the drawn knob
+         * simply does not move when you turn it. */
         const div = fine ? 1 : ENUM_DELTA_DIV;
         clearOnReversal(state, delta);
         state.detentAccum += delta;

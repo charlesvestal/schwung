@@ -1938,6 +1938,34 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
+**A two-option enum is turned differently, too.** With two values there is
+nowhere to go but the other one, so a detent TOGGLES it whichever way you
+turned — and one flick of the encoder is one flip, not a dozen. Three or more
+options keep the four-detent gate and clamp at the ends. A trigger
+(`access: "write"`) is never toggled; it fires.
+
+**Except at exactly two options, where there is no list to open.** On the knob
+grid the click FLIPS it — the picker would show the value already in the cell
+and the one other value there is — and the footer reads `CLK FLIP` rather than
+`CLK OPEN`. The knob still steps it.
+
+In the **list** view the same parameter is FOCUSED instead: click puts the row
+into edit mode and the jog steps it, exactly like a float row. The flip only
+saves a gesture when a knob is already under your hand, and in a list none is,
+so flipping there would leave one row with no focus state while every other row
+has one.
+
+This is a different line from the `switch` distinction two sections up, and
+they do not have to agree: a switch is a **boolean-flavoured** two-option enum
+and only that group loses the peek, whereas *every* two-option enum flips —
+`Mix`/`Reverb` included. The peek exists to show a word the cell has no room
+for; the flip exists to save a gesture, and a choice pays that gesture exactly
+as a boolean does.
+
+Triggers (`access: "write"`) and readouts (`access: "read"`) are not divable at
+all, so neither flips: a trigger is a two-option enum on the wire, and firing
+it is not the same as setting it.
+
 **The cell marks do not mean "divable."** Measured over the fleet (2026-08):
 967 divable cells on knob pages, and **953 of them — 99% — wear no mark at
 all**, because almost every divable cell is an enum. Divability is announced by

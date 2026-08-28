@@ -54,6 +54,7 @@ import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* The enum option screen, shared with the picker view in shadow_ui.js — one
  * screen, two entries, opposite commit semantics. See enum_list.mjs. */
 import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
+import { flipsOnClick, isTurnable } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
@@ -690,6 +691,55 @@ function footerHints() {
     }
 
     /*
+     * A KNOB PAGE DRAWN AS A LIST is a door too, and this footer never said so.
+     *
+     * With Param View on List — or with the screen reader on, which forces the
+     * layout — a knob page becomes five rows driven entirely by the JOG: click
+     * enters, the jog is the row cursor, click opens the row, the jog is then
+     * the value, and Back steps out one layer at a time. Three states, and the
+     * footer reported the GRID's answer for all of them: `JOG PAGE / CLK MENU`,
+     * which is wrong in every one. Reported from the device as "when you're
+     * clicked in it actually still says jog page", against Global Settings —
+     * where the jog is the only thing you are using.
+     *
+     * It must come BEFORE the held-knob branch below, and that is not merely
+     * about ordering the common case first. In this layout `onClick` takes its
+     * param from the ROW CURSOR and overrides whatever knob is under your hand
+     * (see knobsAsList in page_controller). So the held-knob branch would
+     * describe a cell the click will not act on — the same promise-versus-
+     * behaviour bug that branch's own comments record twice, reached from the
+     * other side.
+     *
+     * The click verb is the ROW's, mirroring the controller's own ladder in
+     * onClick: fire a trigger, flip a two-option enum, open anything else
+     * divable, otherwise hand the jog to the value. A readout gets NO click
+     * pair, because nothing happens — an honest gap rather than a verb.
+     */
+    if (mp && mp.kind === PAGE_KNOBS && controller.isDoor && controller.isDoor(mp)) {
+        const entered = controller.menuEntered && controller.menuEntered();
+        if (!entered) return orderedHints({ jog: "PAGE", click: "ENTER", extra: fine });
+        /* Editing a row: the jog IS the value, and Back gives it back to the
+         * cursor rather than leaving the page. */
+        if (controller.knobEditing) {
+            return orderedHints({ jog: "ADJ", click: "DONE", extra: [["BACK", "OUT"]] });
+        }
+        const rows = controller.knobRows ? controller.knobRows() : [];
+        const row = rows[controller.knobRowIndex ? controller.knobRowIndex() : 0];
+        const rmeta = row && controller.metaAt ? controller.metaAt(row.slot) : null;
+        let verb = null;
+        if (rmeta) {
+            if (rmeta.writeOnly) verb = "FIRE";
+            /* A two-option enum FOCUSES here rather than flipping — see the
+             * knobsAsList branch of onClick. Same ladder, same order, and the
+             * `flipsOnClick` term is what keeps the widened gate identical on
+             * both sides. */
+            else if (isTurnable(rmeta) && (!rmeta.divable || flipsOnClick(rmeta))) verb = "EDIT";
+            else if (rmeta.divable) verb = "OPEN";
+        }
+        return orderedHints({ jog: "SEL", click: verb, extra: [["BACK", "OUT"]] });
+    }
+
+    /*
      * A preset browser is the same door, and the footer is where the promise
      * lives: OUTSIDE it the jog pages, so scrolling past a synth cannot load
      * its presets; INSIDE it the jog is the browser and every step auditions.
@@ -775,6 +825,21 @@ function footerHints() {
          * become a door and the footer has had to be told separately, and the
          * first two are both written up as promise-versus-behaviour bugs.
          */
+        /*
+         * A TWO-OPTION enum is not a door: the click writes the other value
+         * (see flipsOnClick). FLIP, not OPEN — this branch is the third one
+         * in this function whose whole job is keeping the promise the footer
+         * makes in step with what the button does, and the other two are both
+         * written up above as bugs where it came apart.
+         *
+         * FLIP names the consequence rather than the gesture, which the
+         * trigger's own note argues for whenever no single gesture-word
+         * covers the control: you are not opening anything, and "SET" is the
+         * picker's word for committing a choice you have already scrolled to.
+         */
+        if (flipsOnClick(meta)) {
+            return orderedHints({ jog: "PAGE", click: "FLIP", extra: fine });
+        }
         if ((meta && meta.divable) ||
             (controller.diveTargetAt && controller.diveTargetAt(held))) {
             return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });
