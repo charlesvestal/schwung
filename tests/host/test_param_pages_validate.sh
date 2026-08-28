@@ -73,6 +73,28 @@ Promise.all([
     if (dexed.some((f) => /\bpreset\b/.test(f.message))) {
       fail("dexed: a preset index reached through its own page kind is not unreachable");
     }
+    /*
+     * A declared read-only param is TELEMETRY, not an unreached control.
+     *
+     * 4k-eq publishes in_peak_l/r, out_peak_l/r and clip with access "read" so
+     * its web panel can draw meters. Counting those as unreachable told the
+     * author to put a level meter on a knob, and -- worse -- buried the two
+     * gaps that ARE real (hpf_enabled and lpf_enabled, filter switches with no
+     * way to reach them from the device) behind five that are not. Both halves
+     * are asserted: the meters gone, the switches still named.
+     */
+    {
+      const eq = check("4k-eq").filter((f) => f.rule === "unreachable-params");
+      const msg = eq.map((f) => f.message).join(" ");
+      /* No apostrophes or single quotes anywhere in here: this whole block is
+         inside a single-quoted bash string, and one would end it. */
+      for (const meter of ["in_peak_l", "out_peak_r", "clip"])
+        if (msg.includes(meter))
+          fail("4k-eq: " + meter + " is declared read-only and must not count as unreachable");
+      if (!msg.includes("hpf_enabled") || !msg.includes("lpf_enabled"))
+        fail("4k-eq: the two filter switches ARE unreachable and must still be reported: " + msg);
+    }
+
     /* A clean module should produce nothing at all. */
     const clean = check("chord");
     if (clean.length) fail("chord is a clean module but reported: " + clean.map((f) => f.rule).join(", "));

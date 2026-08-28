@@ -503,7 +503,11 @@ function detectLfo(pool) {
     if (!hasLfoContext) return [];
     const roles = { rate: rate.key, depth: depth.key };
     const items = [rate, depth];
-    if (shape && shape.stem === rate.stem) { roles.shape = shape.key; items.push(shape); }
+    /* stemsAgree, not ===, for the same reason the rate/depth test uses it: a
+     * shape named lfo_shape (stem "lfo") belongs to a rate named lfo_rate_hz
+     * (stem "lfo_hz"). Exact equality dropped the waveform out of its own LFO
+     * whenever the rate carried a unit. */
+    if (shape && stemsAgree([shape, rate])) { roles.shape = shape.key; items.push(shape); }
     if (phase && isNumeric(phase.meta) && stemOf(phase.key.toLowerCase(), LFO_WORD.phase) === rate.stem) {
         roles.phase = phase.key; items.push(phase);
     }
