@@ -186,6 +186,72 @@ Promise.all([
     }
   }
 
+
+  /* ---- a generic child key BORROWS the concrete declaration ------------
+   *
+   * A child level lists `start`; the module declares p01_start … p16_start and
+   * nothing called `start`. Without an alias that falls to getOrGuess and
+   * becomes a plain 0..1 float -- a STRUCTURE guess, which is the one thing
+   * the meta index is not allowed to make. On mrdrums it cost Sample Start its
+   * wav_position type and its filepath_param, so the cell drew as a bare knob
+   * instead of the waveform. Reported from the device.
+   */
+  {
+    const CP2 = [{ key: "ui_current_pad", name: "Current Pad", type: "int", min: 1, max: 16 }];
+    for (let i = 1; i <= 16; i++) {
+      const n = String(i).padStart(2, "0");
+      CP2.push({ key: `p${n}_start`, name: "Start", type: "wav_position",
+                 filepath_param: `p${n}_sample_path`, min: 0, max: 1, step: 0.01 });
+      CP2.push({ key: `p${n}_sample_path`, name: "Sample", type: "filepath" });
+      CP2.push({ key: `p${n}_vol`, name: "Vol", type: "float", min: 0, max: 1, step: 0.01 });
+    }
+    const L3 = {
+      label: "Pads", child_count: 16, child_label: "Pad",
+      child_key_template: "p{index}_{key}",
+      child_index_base: 1, child_index_digits: 2,
+      child_index_param: "ui_current_pad",
+      knobs: ["vol", "start"], params: [{ key: "vol" }, { key: "start" }],
+    };
+    let pad = "1";
+    const c = PC.createController({
+      getParam: (k) => {
+        if (k.endsWith(":ui_hierarchy")) return JSON.stringify({ modes: null, levels: { root: L3 } });
+        if (k.endsWith(":chain_params")) return JSON.stringify(CP2);
+        if (k.endsWith(":ui_current_pad")) return pad;
+        if (k.endsWith(":preset_name")) return "";
+        if (k.endsWith(":is_loading")) return "0";
+        if (k.endsWith(":module")) return "mrdrums";
+        return "0.5";
+      },
+      setParam: () => {}, announce: () => {}, now: () => 0,
+    });
+    c.load({ slot: 0, component: "synth", prefix: "synth" });
+    c.setLayout("movy");
+    for (let i = 0; i < 30; i++) c.tick();
+
+    const meta = c.metaIndex.getOrGuess("start");
+    if (meta.guessed)
+      fail("the generic child key `start` was GUESSED -- it must borrow the "
+         + "concrete declaration, or the widget is chosen from an invented type");
+    if (meta.type !== "wav_position")
+      fail("`start` resolved to type " + meta.type + ", expected wav_position");
+    if (meta.filepath_param !== "p01_sample_path")
+      fail("`start` borrowed filepath_param " + meta.filepath_param
+         + ", expected p01_sample_path");
+
+    /* It must FOLLOW the focused instance: the cross-reference names a pad, so
+     * a stale alias keeps drawing the previous pad file. */
+    pad = "5";
+    for (let i = 0; i < 30; i++) c.tick();
+    if (c.metaIndex.getOrGuess("start").filepath_param !== "p05_sample_path")
+      fail("after moving to pad 5 the borrowed filepath_param is still "
+         + c.metaIndex.getOrGuess("start").filepath_param);
+
+    /* A DECLARED key is never shadowed. */
+    if (c.metaIndex.getOrGuess("p01_vol").key !== "p01_vol")
+      fail("aliasing disturbed a declared key");
+  }
+
   /* ---- a level with NO child_index_param is untouched ------------------ */
   {
     const L2 = Object.assign({}, LEVEL);
@@ -206,6 +272,7 @@ Promise.all([
     console.log("  ok  a junk or missing index never moves the focus");
     console.log("  ok  the grid follows the module when it changes the focused child");
     console.log("  ok  choosing a child writes it back, so the two cannot disagree");
+    console.log("  ok  a generic child key borrows the concrete declaration, and follows");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");
   }

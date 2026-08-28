@@ -88,13 +88,66 @@ export function buildMetaIndex({ hierarchy, chainParams } = {}) {
     }
 
     const cache = new Map();
+    /*
+     * bare key -> concrete key whose DECLARATION it borrows.
+     *
+     * A child level lists generic keys (`start`) and the module declares only
+     * the concrete ones (`p01_start`, … `p16_start`). Nothing declares `start`,
+     * so it fell to getOrGuess and became a plain 0..1 float -- which is a
+     * STRUCTURE guess, exactly what the comment below says this library must
+     * never make. mrdrums is the case: `p01_start` is a `wav_position` with a
+     * `filepath_param`, and losing both drew the sample cell as a bare knob.
+     *
+     * Borrowing rather than copying is what keeps it correct across pads: the
+     * alias is re-pointed when the focused instance changes, so
+     * `filepath_param` follows from `p01_sample_path` to `p05_sample_path`. It
+     * stays CONCRETE on purpose -- the file is read as a viz extra key, which
+     * is not resolved through the child template, so a bare `sample_path`
+     * there would ask for a param no module serves.
+     */
+    const aliases = new Map();
     const get = (key) => {
         if (cache.has(key)) return cache.get(key);
+        /*
+         * The two sources are resolved SEPARATELY, and that split is the point.
+         *
+         * A level listing `{key:"start", label:"Start"}` creates an inline
+         * entry carrying a LABEL and no structure. Treating that as "declared"
+         * vetoed the alias and left the key a plain float again -- the very
+         * bug this exists to fix, reintroduced by the level being polite enough
+         * to name its own params. So the level keeps its own label (inline, by
+         * the bare key) and borrows the STRUCTURE (chain, by the alias).
+         *
+         * chain.get(key) is tried first, so a module that really does declare
+         * the bare key is never shadowed.
+         */
         const i = inline.get(key) || null;
-        const c = chain.get(key) || null;
+        const c = chain.get(key) || chain.get(aliases.get(key) || key) || null;
+        /* Normalised under the BARE key, because that is what the page, the
+         * value cache and the renderer all address it by. Only the declaration
+         * is borrowed. */
         const meta = (i || c) ? normalize(key, { ...(i || {}), ...(c || {}) }) : null;
         cache.set(key, meta);
         return meta;
+    };
+    /**
+     * Point `bare` at `concrete`'s declaration. Returns true if anything moved.
+     *
+     * Refuses to shadow a key the module actually declares -- mrdrums declares
+     * `pad_start` as well as `p01_start`, and a level listing `pad_start`
+     * must keep its own metadata rather than silently borrow another key's.
+     */
+    const setAlias = (bare, concrete) => {
+        if (!bare || !concrete || bare === concrete) return false;
+        /* Only a REAL declaration blocks borrowing -- an inline entry is
+         * usually just a label, and vetoing on it is what re-broke the case
+         * this exists for. See the two-source split in get(). */
+        if (chain.has(bare)) return false;
+        if (!chain.has(concrete)) return false;
+        if (aliases.get(bare) === concrete) return false;
+        aliases.set(bare, concrete);
+        cache.delete(bare);
+        return true;
     };
 
     /* A key a module puts on a knob but declares nowhere. Rare and real: sfz
@@ -109,7 +162,7 @@ export function buildMetaIndex({ hierarchy, chainParams } = {}) {
     };
 
     const keys = [...new Set([...inline.keys(), ...chain.keys()])];
-    return { get, getOrGuess, keys, conflicts: [...new Set(conflicts)] };
+    return { get, getOrGuess, keys, setAlias, conflicts: [...new Set(conflicts)] };
 }
 
 /**

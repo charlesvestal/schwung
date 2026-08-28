@@ -954,6 +954,11 @@ export function createController(io = {}) {
          * See restorePage(): the pages may not have existed when the caller
          * asked. */
         applyPendingRestore();
+        /* Before the warm, so the first reads already know each key's real
+         * declaration -- acceptValue repairs a GUESSED range from the first
+         * value it sees, and a guess repaired that way would then look
+         * settled and never be revisited. */
+        installChildAliases();
         /* Before anything is drawn, never from tick() — see warmCurrentPage.
          * s.values was cleared above, so this is the page's whole set. */
         warmCurrentPage();
@@ -1440,7 +1445,43 @@ export function createController(io = {}) {
      * which is the bug this exists to prevent -- and the pending write is the
      * dangerous one: it would land on the NEW instance.
      */
+    /**
+     * Point each child page's GENERIC keys at the focused instance's
+     * declaration.
+     *
+     * A child level lists `start`; the module declares `p01_start` … and
+     * nothing called `start`. Without this the metadata falls to getOrGuess and
+     * becomes a plain 0..1 float, which is a STRUCTURE guess: mrdrums Sample
+     * Start lost `wav_position` and its `filepath_param` and drew as a bare
+     * knob instead of the waveform. Reported from the device as exactly that.
+     *
+     * Re-run on every index change, because the borrowed declaration carries
+     * instance-specific cross-references -- `filepath_param` has to follow from
+     * `p01_sample_path` to `p05_sample_path` or the waveform keeps drawing the
+     * previous pad's file.
+     *
+     * Cheap and pure: no reads, just Map writes over the keys of child pages.
+     */
+    function installChildAliases() {
+        if (!s.metaIndex || typeof s.metaIndex.setAlias !== "function") return;
+        for (const pg of s.pages) {
+            if (!pg.childLevel || !Array.isArray(pg.keys)) continue;
+            const i = childIndexFor(pg.level);
+            for (const k of pg.keys) {
+                if (!k) continue;
+                const concrete = resolveChildKey(pg.childLevel, i, k);
+                /* A passthrough override resolves to itself -- that is how a
+                 * level's GLOBAL keys stay global -- and aliasing a key to
+                 * itself is a no-op setAlias already refuses. */
+                if (concrete) s.metaIndex.setAlias(k, concrete);
+            }
+        }
+    }
+
     function dropChildLevelCache(levelName) {
+        /* The borrowed metadata belonged to the instance we just left -- above
+         * all filepath_param, which still names the previous pad's file. */
+        installChildAliases();
         for (const pg of s.pages) {
             if (pg.level !== levelName || !Array.isArray(pg.keys)) continue;
             for (const k of pg.keys) {
