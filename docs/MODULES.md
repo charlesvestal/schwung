@@ -1926,7 +1926,6 @@ is not moving. `createAnimState` was written, exported, unit-tested and never
 
 | | |
 |---|---|
-| ![motion-switch](images/widgets/motion-switch.gif) | **Switch**, 160ms — the slug snaps, only the fill moves. |
 | ![motion-waveform](images/widgets/motion-waveform.gif) | **Waveform**, 100ms — one shape bends into the next. The enum peek is instant and covers this while it plays. |
 | ![motion-enum](images/widgets/motion-enum.gif) | **Enum square**, 120ms — the frame travels, the glyphs swap outright. Text is served short while the box is narrow and completes as it arrives. |
 | ![motion-button](images/widgets/motion-button.gif) | **Trigger**, 300ms — press then rings. Bursts append rather than replace, so a double-tap throws two. |
