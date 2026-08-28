@@ -2119,7 +2119,8 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * not a constant -- LBL0_Y - ROW0_Y is only correct for the grid's
          * own two rows because both of the grid's gaps happen to be 15px. */
         /* `anim` then `nowMs`, matching viz_draw's published signature. Both
-         * are optional there: with no store the switch and the waveform draw
+         * are optional there: with no store the waveform (the one animated viz
+         * widget left, now that the switch simply toggles) draws
          * exactly as they always have, which is what keeps every caller that
          * does not animate — the catalog, the composite, the pinned baselines —
          * pixel-identical. */

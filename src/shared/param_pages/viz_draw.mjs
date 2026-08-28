@@ -1284,31 +1284,31 @@ export function drawFader(ctx, rect, key, values, metaIndex) {
 const PILL_H = 9, SLUG_W = 5, SLUG_H = 5, SLUG_INSET = 2;
 
 /*
- * THE SLUG DOES NOT TRAVEL. It is at its destination seat on the frame the
- * value changes, and only the fill animates.
+ * THE SWITCH DOES NOT ANIMATE. IT TOGGLES.
  *
- * It used to interpolate between the seats over 120ms, which is defensible in
- * the abstract and wrong here: the seats are 2px in from each wall of a 16px
- * track, so the whole journey is about 7px. Seven pixels spread over seven
- * frames is not a movement, it is a smear — and it made the switch look like it
- * was deciding. Snapping it costs nothing, because the thing that reads as the
- * transition is the fill, and the fill is still there.
+ * Two things used to move here, and both are gone. The slug interpolated
+ * between its seats over 120ms — about 7px of journey spread over seven
+ * frames, which is a smear rather than a movement, and it made the switch look
+ * like it was deciding. That went first, on the argument that the FILL was the
+ * thing carrying the transition.
  *
- * FILL: 160ms, eased out — about nine frames at the shadow UI's 60Hz. Chosen
- * against 70 and 260 with all three rendered from this renderer: 70 is over
- * before the eye finds it and reads as an instant inversion, 260 is slow
- * enough that you watch it rather than notice it, which for a widget you flip
- * repeatedly becomes a wait.
+ * The fill has now gone the same way, for the reason that outranks the one
+ * that kept it: on hardware it is DISTRACTING. A switch is the control you
+ * flip most often and least deliberately, and 160ms of the cell inverting
+ * under your hand is motion in the corner of the eye every single time —
+ * exactly the wrong place to spend attention. Reported from the device as
+ * "distracting"; no calibration of the duration fixes a thing that should not
+ * be moving.
  *
- * Note the two decisions are not independent, which is why they were judged
- * together: the travel was only bad BECAUSE it was fast, and at 160+ it has
- * room to read. It still loses — seven pixels is not enough journey to be
- * worth splitting attention with the wipe — but a fast travel and a slow one
- * are different proposals and only the fast one was ever obviously wrong.
+ * Nothing is lost by it. The two states already differ by most of the widget's
+ * AREA (see the pill-inverted note above), so a flip is the loudest possible
+ * change even when it happens between two frames. The transition never had to
+ * be readable; the STATE does, and it is.
+ *
+ * `anim` and `nowMs` stay in the signature because drawVizGroup hands every
+ * widget the same arguments. They are deliberately unused.
  */
-const SWITCH_FILL_MS = 160;
-
-export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
+export function drawSwitch(ctx, rect, key, values, metaIndex, _anim, _nowMs) {
     const raw = values ? values[key] : undefined;
     /* Resolves a name-reporting plugin's value too — see enumIndexOf.
      *
@@ -1331,115 +1331,39 @@ export function drawSwitch(ctx, rect, key, values, metaIndex, anim, nowMs) {
     const seatOff = x + SLUG_INSET, seatOn = x + w - SLUG_INSET - SLUG_W;
     const sy = y + SLUG_INSET;
 
-    /*
-     * THE SLUG BELONGS TO THE DESTINATION FROM FRAME ONE — it flips on the
-     * press, and the fill catches up to it.
-     *
-     * That is the important half of the contract, whichever thing is doing the
-     * moving: the widget must never show the OLD value after the value has
-     * changed. The slug's seat is the part of this drawing that a glance reads
-     * as the state, so it is not allowed to lag; the fill is decoration on top
-     * of an already-correct reading, so it is the part allowed to be in
-     * between. An interpolated boundary is a real thing to look at, and unlike
-     * the track's polarity it does not have to pick a side — there is no
-     * half-inverted track on a 1-bit display, but there is a perfectly good
-     * half-swept one.
-     */
-    /*
-     * `p` is the FILL only — 0 is fully OFF, 1 is fully ON — and it is what
-     * makes the settled states come out exactly right: at p = 1 the fill
-     * reaches the far wall rather than stopping at the slug's trailing edge,
-     * which is what a literal "fill up to the slug" rule does and which left
-     * the last two columns of a settled ON switch drawn as outline. The pinned
-     * baseline caught that immediately: a static state is not allowed to
-     * change.
-     */
-    let p = on ? 1 : 0;
-    if (anim && typeof nowMs === "number") {
-        const tr = observe(anim, "switch:" + key, on ? 1 : 0, nowMs, SWITCH_FILL_MS);
-        const from = Number(tr.from);
-        if (tr.moving && Number.isFinite(from)) {
-            /* `from` is a FRACTION of the way across, not a seat: observe()
-             * re-bases a numeric mid-flight so a switch flipped back before the
-             * fill finished carries on from where the boundary visually IS
-             * instead of snapping to the far wall and draining again. */
-            p = lerp(from, on ? 1 : 0, easeOut(tr.t));
-        }
-    }
-    /* The seat, not an interpolation — see SWITCH_FILL_MS. */
     const sx = on ? seatOn : seatOff;
-    /*
-     * ONE key and ONE duration now. The burst needed a second (300ms against
-     * the travel's 120ms) because a flash outlives the movement that triggers
-     * it, and one key carries one duration — which also meant a caller gating
-     * redraws on `settled()` had to know to ask with the longer of the two. The
-     * sweep IS the travel, so that whole hazard goes with it.
-     */
 
     /*
-     * THE FILL IS A WIPE, AND IT RUNS BOTH WAYS.
-     *
-     * One rule: the track is inverted from its left wall out to a boundary, and
-     * everything to the right of that boundary is the outlined state. Turning
-     * ON the boundary travels left to right and the fill grows in; turning OFF
-     * it travels back and the fill drains away. At rest the rule degenerates to
-     * the two static states — boundary at the far wall means fully filled, at
-     * the near wall means fully outlined — so nothing special-cases the settled
-     * case.
-     *
-     * This replaces a burst. The burst was a decoration bolted onto the flip
-     * and it had two faults the frames made obvious: on an ON flip the track is
-     * filled, so the rays inside the pill were white on white and the figure
-     * came out lopsided; and bounding it to a 32x15 cell left about one pixel
-     * of travel, so it read as a twitch rather than a radiation. A wipe has
-     * neither problem because it is not drawn ON the widget, it IS the widget —
-     * and it says what the state change actually is, which a flash never did.
+     * ON is the track filled WALL TO WALL — not up to the slug's trailing
+     * edge, which is what a literal "fill up to the slug" rule does and which
+     * left the last two columns of an ON switch drawn as outline. OFF is the
+     * same rect as an empty frame: two rails and two walls.
      */
-    /* Wall to wall, not seat to seat: at p=1 this is x+w so the whole track is
-     * filled, and at p=0 it is x so none of it is. Anchoring it to the slug's
-     * seats instead would inherit the 2px inset and leave the settled states
-     * two columns short at each end. */
-    const sweepX = Math.round(lerp(x, x + w, p));
-
-    /* Left of the sweep: the ON rendering. Right of it: the OFF rendering.
-     * Both are drawn whole and then masked by column, so neither has to know
-     * about the other and a partially-swept track is always two coherent
-     * halves rather than an invented third state. */
-    const inSweep = (px) => px < sweepX;
-
-    /* ON half — solid ground. */
-    for (let px = x; px < x + w; px++) {
-        if (inSweep(px)) ctx.fillRect(px, y, 1, h, 1);
+    if (on) {
+        ctx.fillRect(x, y, w, h, 1);
+    } else {
+        ctx.fillRect(x, y, w, 1, 1);                         /* top rail */
+        ctx.fillRect(x, y + h - 1, w, 1, 1);                 /* bottom rail */
+        ctx.fillRect(x, y, 1, h, 1);                         /* left wall */
+        ctx.fillRect(x + w - 1, y, 1, h, 1);                 /* right wall */
     }
-    /* OFF half — top and bottom rails plus the right wall. */
-    for (let px = x; px < x + w; px++) {
-        if (inSweep(px)) continue;
-        ctx.fillRect(px, y, 1, 1, 1);
-        ctx.fillRect(px, y + h - 1, 1, 1, 1);
-    }
-    if (!inSweep(x)) ctx.fillRect(x, y, 1, h, 1);            /* left wall */
-    if (!inSweep(x + w - 1)) ctx.fillRect(x + w - 1, y, 1, h, 1);
     notchCorners(ctx, x, y, w, h);
 
     /*
-     * The slug takes the colour of the ground it is standing on, per column.
-     * Inside the sweep the ground is solid so the slug is a knockout; outside
-     * it the ground is empty so the slug is ink. A slug that straddles the
-     * boundary is therefore half hole and half block, which is exactly what it
-     * should look like at the moment the fill is passing it.
+     * The slug takes the colour of the ground it is standing on. ON the ground
+     * is solid so the slug is a knockout; OFF it is empty so the slug is ink.
+     * That inversion is the point of the widget: the two states differ by most
+     * of the cell's area rather than by where a 5px block sits.
      */
-    for (let px = sx; px < sx + SLUG_W; px++) {
-        ctx.fillRect(px, sy, 1, SLUG_H, inSweep(px) ? 0 : 1);
-    }
+    ctx.fillRect(sx, sy, SLUG_W, SLUG_H, on ? 0 : 1);
     /* The slug's own corners, in whichever direction softens them against the
      * ground each corner sits on. `notchCorners` clears, which rounds a solid
      * slug; a knockout needs the reverse, four SET pixels, or the hole is the
      * only square-cornered shape on a page where every filled box is softened. */
     for (const [px, py] of [[sx, sy], [sx + SLUG_W - 1, sy],
                             [sx, sy + SLUG_H - 1], [sx + SLUG_W - 1, sy + SLUG_H - 1]]) {
-        ctx.fillRect(px, py, 1, 1, inSweep(px) ? 1 : 0);
+        ctx.fillRect(px, py, 1, 1, on ? 1 : 0);
     }
-
 }
 
 /* ----------------------------------------------------------------- sample */
