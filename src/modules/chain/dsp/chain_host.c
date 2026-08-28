@@ -4,6 +4,14 @@
  * Orchestrates a signal chain: Input → MIDI FX → Sound Generator → Audio FX → Output
  */
 
+/* dlinfo()/struct link_map are GNU extensions and need the feature macro
+ * BEFORE any libc header — chain_internal.h pulls in dlfcn.h. Used only to
+ * log a dlopen'd module's load base, which is what turns the crash
+ * handler's raw lr into an addr2line-able offset. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <link.h>
 #include "chain_internal.h"
 
 
@@ -440,6 +448,30 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
         v2_chain_log(inst, msg);
         return -1;
+    }
+
+    /*
+     * The module's LOAD BASE, so a crash inside it can be attributed.
+     *
+     * The shim's SIGSEGV handler prints pc and lr, and both are raw runtime
+     * addresses — useless on their own for a dlopen'd .so under ASLR. With the
+     * base in the log, `lr - base` is a file offset you can hand straight to
+     * addr2line and get the function and line that made the call.
+     *
+     * Logged for the SYNTH position specifically because that is where a
+     * module runs the most code at load time (create_instance scans
+     * directories, opens samples, mmaps files), and it is where a crash on
+     * load strands the device in a boot loop: the position is restored at
+     * every boot, so a module that segfaults here takes MoveOriginal down
+     * before the UI can be used to remove it.
+     */
+    {
+        struct link_map *lm = NULL;
+        if (dlinfo(handle, RTLD_DI_LINKMAP, &lm) == 0 && lm) {
+            snprintf(msg, sizeof(msg), "loaded %s base=0x%lx",
+                     module_name, (unsigned long)lm->l_addr);
+            v2_chain_log(inst, msg);
+        }
     }
 
     /* V2 API required */
