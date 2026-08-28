@@ -450,15 +450,14 @@ function build() {
 
     const addGif = (name, buf) => images.set(name + ".gif", buf);
 
-    const SW = [{ key: "sync", name: "Sync", type: "enum", options: ["Off", "On"] }];
-    const swMi = buildMetaIndex({ chainParams: SW });
-    const swGroup = resolveViz({ keys: ["sync"], metaIndex: swMi }).groups[0];
-    addGif("motion-switch", clip(9, 20, CELL_W, RM.BOX_H, (ctx, t, anim) => {
-        /* Frame 0 primes the store with the OLD value; the flip is at t=0 too,
-         * so the clip reads as one gesture from the first frame. */
-        drawVizGroup(ctx, { x: 0, y: 0, w: CELL_W, h: RM.BOX_H },
-                     swGroup, { sync: t === 0 ? "0" : "1" }, swMi, anim, t);
-    }));
+    /*
+     * NO motion-switch CLIP. The switch had a 160ms fill and it is gone —
+     * removed for reading as distracting on hardware, since a switch is the
+     * control you flip most often and least deliberately. It toggles between
+     * two settled frames now, and a two-frame gif of a cut is not a motion
+     * study, it is a flicker. The two states are shown as stills under
+     * *Values*, which is where they belong.
+     */
 
     const WV = [{ key: "osc_wave", name: "Wave", type: "enum",
                   options: ["Sine", "Triangle", "Saw", "Square"] }];
@@ -621,7 +620,6 @@ is not moving. \`createAnimState\` was written, exported, unit-tested and never
 
 | | |
 |---|---|
-| ${gif("motion-switch")} | **Switch**, 160ms — the slug snaps, only the fill moves. |
 | ${gif("motion-waveform")} | **Waveform**, 100ms — one shape bends into the next. The enum peek is instant and covers this while it plays. |
 | ${gif("motion-enum")} | **Enum square**, 120ms — the frame travels, the glyphs swap outright. Text is served short while the box is narrow and completes as it arrives. |
 | ${gif("motion-button")} | **Trigger**, 300ms — press then rings. Bursts append rather than replace, so a double-tap throws two. |
@@ -707,7 +705,6 @@ const MANUAL_PICKS = {
         ["viz-sample", "<strong>Sample</strong> — the file's real waveform, play position and loop points."],
     ],
     motion: [
-        ["motion-switch.gif", "The slug snaps; the fill sweeps after it."],
         ["motion-waveform.gif", "One shape bends into the next."],
         ["motion-enum.gif", "The square grows to fit the new word."],
         ["motion-button.gif", "Presses, and throws a ring."],

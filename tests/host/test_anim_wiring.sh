@@ -13,6 +13,13 @@ cd "$(dirname "$0")/../.."
 # shipped, and every test passed because the renderer tests hand `anim` in
 # DIRECTLY. They prove the renderer. Nothing proved the wiring.
 #
+# THE SWITCH IS NO LONGER AN ANIMATED WIDGET -- its fill was removed because it
+# read as distracting on hardware, and it now toggles between two settled
+# frames. So this drives the WAVEFORM morph instead. The page still declares a
+# switch, and it is still asserted to be settled on every frame, which is the
+# other half of the same wiring question: a widget that should not move must
+# not start moving because a store arrived.
+#
 # This drives the real controller and asserts that a value change produces a
 # DIFFERENT PICTURE part-way through than at rest. That cannot pass with the
 # store missing, and it does not care which widget or which easing.
@@ -36,8 +43,8 @@ import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs"
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
 
-/* A switch (Off/On) and a waveform (5 shapes) -- the two viz widgets that
-   animate, so this fails if either loses its store. */
+/* A waveform (5 shapes), which animates, and a switch (Off/On), which no
+   longer does. Both are asserted: the morph must move, the switch must not. */
 const CHAIN_PARAMS = [
   { key: "onoff", name: "Gate", type: "enum", options: ["Off", "On"] },
   { key: "shape", name: "Shape", type: "enum",
@@ -77,27 +84,45 @@ const shot = () => {
 ok(!!ctl.state.anim, "the controller owns an animation store");
 
 const slotOf = (k) => (ctl.page.keys || []).indexOf(k);
+const wv = slotOf("shape");
 const sw = slotOf("onoff");
+ok(wv >= 0, "the waveform reached the page");
 ok(sw >= 0, "the switch reached the page");
 
-const before = shot();
-/* Flip it. An enum is gated at 4 raw detents per option. */
-for (let i = 0; i < 6; i++) { clock += 20; ctl.onKnobTurn(sw, 1, clock); }
+/* An enum is gated at 4 raw detents per option. */
+const step = (slot) => { for (let i = 0; i < 6; i++) { clock += 20; ctl.onKnobTurn(slot, 1, clock); } };
 
-/* Mid-flight and settled. The switch fill is 160ms, so 60ms in is inside it
+const before = shot();
+step(wv);
+
+/* Mid-flight and settled. The waveform morph is 100ms, so 40ms in is inside it
    and 600ms is well past. */
-clock += 60;
+clock += 40;
 const mid = shot();
 clock += 600;
 const settled = shot();
 
-ok(mid.key !== before.key, "the flip changed the picture at all");
+ok(mid.key !== before.key, "the shape change changed the picture at all");
 ok(mid.key !== settled.key,
-   "the frame 60ms into the flip differs from the settled one -- with no store " +
+   "the frame 40ms into the morph differs from the settled one -- with no store " +
    "wired through, every frame after a change is already the settled one");
 /* And it really does come to rest, rather than animating forever. */
 clock += 600;
 ok(shot().key === settled.key, "and it settles");
+
+/* THE SWITCH IS THE OTHER HALF: it must NOT move. Its fill was removed for
+   reading as distracting on hardware, and the store is wired, so the only
+   thing that can put motion back is the widget. Every frame after the flip is
+   the settled one -- including the very first, which is where a re-introduced
+   animation would show. */
+const preFlip = shot();
+step(sw);
+const flipped = [];
+for (const dt of [0, 40, 80, 160, 600]) { clock += dt; flipped.push(shot().key); }
+ok(flipped[0] !== preFlip.key, "the flip changed the picture at all");
+ok(flipped.every((k) => k === flipped[0]),
+   "the switch is settled on every frame after the flip -- it toggles, it does " +
+   "not animate");
 
 process.exit(fail ? 1 : 0);
 '
