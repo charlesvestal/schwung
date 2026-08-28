@@ -33,16 +33,47 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 file="src/shadow/shadow_ui.js"
 blk=$(awk '/^function enterHierarchyEditorFromParamPages\(/,/^}/' "$file")
 [ -n "$blk" ] || fail "enterHierarchyEditorFromParamPages is gone"
-command grep -q "hierEditorChildCount = levelDef.child_count" <<<"$blk" || \
+# Matched on the ASSIGNMENT, not on how the count is derived: it went from
+# `levelDef.child_count` to childLevelCount(levelDef) when shadow_ui.js was
+# migrated onto child_key.mjs, and pinning the old expression made a strictly
+# broader implementation fail. What must hold is that the hand-off sets it,
+# and sets it before the level loads.
+command grep -qE "hierEditorChildCount = (levelDef\.child_count|childLevelCount\(levelDef\))" <<<"$blk" || \
   fail "the grid hand-off does not set hierEditorChildCount — a child level lands as a flat list of unprefixed keys"
 command grep -q "hierEditorChildLabel = levelDef.child_label" <<<"$blk" || \
   fail "the grid hand-off does not set hierEditorChildLabel"
 # It must be set BEFORE the level is loaded, or the gate has already run.
-cnt=$(command grep -n "hierEditorChildCount = levelDef.child_count" <<<"$blk" | head -n 1 | cut -d: -f1)
+cnt=$(command grep -nE "hierEditorChildCount = (levelDef\.child_count|childLevelCount\(levelDef\))" <<<"$blk" | head -n 1 | cut -d: -f1)
 ldl=$(command grep -n "loadHierarchyLevel()" <<<"$blk" | tail -n 1 | cut -d: -f1)
 [ -n "$cnt" ] && [ -n "$ldl" ] && [ "$cnt" -lt "$ldl" ] || \
   fail "the child count is set AFTER loadHierarchyLevel — the selector gate has already been evaluated"
+# The hand-off must also carry WHICH instance. Handing off -1 makes
+# loadHierarchyLevel open the child selector, so diving into a parameter landed
+# on a "which pad?" menu instead of the parameter -- reported from the device.
+command grep -q "hierEditorChildIndex = childLevelHasChildren(levelDef) ? childAt : -1" <<<"$blk" || \
+  fail "the grid hand-off does not carry the focused child index — a dive opens the child selector instead of the param"
+# ...and it must be CAPTURED before exitParamPages tears the controller down.
+cap=$(command grep -n "paramPagesChildIndex(page.level)" <<<"$blk" | head -n 1 | cut -d: -f1)
+ext=$(command grep -n "exitParamPages()" <<<"$blk" | head -n 1 | cut -d: -f1)
+[ -n "$cap" ] && [ -n "$ext" ] && [ "$cap" -lt "$ext" ] || \
+  fail "the child index is read AFTER exitParamPages — the controller is already gone"
+echo "  ok  the grid hand-off carries the focused child index, captured before teardown"
 echo "  ok  the grid hand-off carries child_count/child_label, before the level loads"
+
+# THE DIVE PATH carries it too. openParamEditorFromGrid is the function a click
+# on a divable cell goes through, and it had the identical defect: -1 raised the
+# child selector, so Sample Path opened "which pad?" instead of the file
+# browser. Both hand-offs, one rule.
+blk2=$(awk '/^function openParamEditorFromGrid\(/,/^}/' "$file")
+[ -n "$blk2" ] || fail "openParamEditorFromGrid is gone"
+command grep -q "hierEditorChildIndex = childLevelHasChildren(levelDef) ? childAt : -1" <<<"$blk2" || \
+  fail "the DIVE path does not carry the focused child index — a dive opens the child selector"
+cap2=$(command grep -n "paramPagesChildIndex(level)" <<<"$blk2" | head -n 1 | cut -d: -f1)
+ext2=$(command grep -n "exitParamPages()" <<<"$blk2" | head -n 1 | cut -d: -f1)
+[ -n "$cap2" ] && [ -n "$ext2" ] && [ "$cap2" -lt "$ext2" ] || \
+  fail "the dive path reads the child index AFTER exitParamPages — the controller is gone"
+echo "  ok  the dive path carries the focused child index too"
+
 
 # ---- (a) the level's knob pages resolve to CONCRETE keys --------------------
 node -e '

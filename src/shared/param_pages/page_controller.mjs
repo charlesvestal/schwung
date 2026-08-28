@@ -29,7 +29,8 @@
 
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
-import { resolveChildKey } from "./child_key.mjs";
+import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire }
+    from "./child_key.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
@@ -707,6 +708,21 @@ export function createController(io = {}) {
         return (typeof at === "number" && at >= 0) ? at : 0;
     };
     /*
+     * The level DEFINITION behind a level name.
+     *
+     * Pages carry `childLevel` (the object, for resolveChildKey) and `childOf`
+     * (the name, for the index cache), and the picker only has the name. Found
+     * from the pages rather than from the hierarchy so it cannot disagree with
+     * what was actually planned.
+     */
+    const childLevelDef = (name) => {
+        if (!name) return null;
+        for (const pg of s.pages) {
+            if (pg.level === name && pg.childLevel) return pg.childLevel;
+        }
+        return null;
+    };
+    /*
      * Resolve a child-level key against a page — the CURRENT one unless another
      * is named.
      *
@@ -938,6 +954,11 @@ export function createController(io = {}) {
          * See restorePage(): the pages may not have existed when the caller
          * asked. */
         applyPendingRestore();
+        /* Before the warm, so the first reads already know each key's real
+         * declaration -- acceptValue repairs a GUESSED range from the first
+         * value it sees, and a guess repaired that way would then look
+         * settled and never be revisited. */
+        installChildAliases();
         /* Before anything is drawn, never from tick() — see warmCurrentPage.
          * s.values was cleared above, so this is the page's whole set. */
         warmCurrentPage();
@@ -1414,6 +1435,91 @@ export function createController(io = {}) {
         return reads;
     }
 
+    /**
+     * Drop everything cached for a child level, because it belonged to the
+     * instance we just left.
+     *
+     * The same cell now addresses a different pad, so its cached value, its
+     * pending write and its knob state are all about the previous one. Leaving
+     * them puts the old instance's numbers under the new instance's labels,
+     * which is the bug this exists to prevent -- and the pending write is the
+     * dangerous one: it would land on the NEW instance.
+     */
+    /**
+     * Point each child page's GENERIC keys at the focused instance's
+     * declaration.
+     *
+     * A child level lists `start`; the module declares `p01_start` … and
+     * nothing called `start`. Without this the metadata falls to getOrGuess and
+     * becomes a plain 0..1 float, which is a STRUCTURE guess: mrdrums Sample
+     * Start lost `wav_position` and its `filepath_param` and drew as a bare
+     * knob instead of the waveform. Reported from the device as exactly that.
+     *
+     * Re-run on every index change, because the borrowed declaration carries
+     * instance-specific cross-references -- `filepath_param` has to follow from
+     * `p01_sample_path` to `p05_sample_path` or the waveform keeps drawing the
+     * previous pad's file.
+     *
+     * Cheap and pure: no reads, just Map writes over the keys of child pages.
+     */
+    function installChildAliases() {
+        if (!s.metaIndex || typeof s.metaIndex.setAlias !== "function") return;
+        for (const pg of s.pages) {
+            if (!pg.childLevel || !Array.isArray(pg.keys)) continue;
+            const i = childIndexFor(pg.level);
+            for (const k of pg.keys) {
+                if (!k) continue;
+                const concrete = resolveChildKey(pg.childLevel, i, k);
+                /* A passthrough override resolves to itself -- that is how a
+                 * level's GLOBAL keys stay global -- and aliasing a key to
+                 * itself is a no-op setAlias already refuses. */
+                if (concrete) s.metaIndex.setAlias(k, concrete);
+            }
+        }
+    }
+
+    function dropChildLevelCache(levelName) {
+        /* The borrowed metadata belonged to the instance we just left -- above
+         * all filepath_param, which still names the previous pad's file. */
+        installChildAliases();
+        for (const pg of s.pages) {
+            if (pg.level !== levelName || !Array.isArray(pg.keys)) continue;
+            for (const k of pg.keys) {
+                delete s.values[k];
+                delete s.pendingWrite[k];
+                delete s.knobStates[k];
+            }
+        }
+        s.cursor = 0;
+    }
+
+    /**
+     * Adopt the instance the MODULE says is focused.
+     *
+     * Only for a level that declares `child_index_param` -- otherwise the
+     * index is local UI state and there is nothing to read. Costs no stop of
+     * its own; it rides on the preset-name stop.
+     *
+     * Deliberately NOT gated on a settle window. A settle means a KNOB is being
+     * turned, and turning a knob does not change which pad you are editing;
+     * playing one does. Gating this would mean the grid refused to follow the
+     * pad you just hit for as long as your hand was on a knob, which is
+     * precisely the moment it matters.
+     */
+    function syncChildIndexFromModule(p) {
+        const name = p && p.level;
+        const def = p && p.childLevel;
+        if (!name || !def) return;
+        const idxParam = childIndexParam(def);
+        if (!idxParam) return;
+        const raw = getParam(`${s.prefix}:${idxParam}`);
+        const i = childIndexFromWire(def, raw);
+        if (i === null) return;                 /* tri-state: not an answer */
+        if (i === childIndexFor(name)) return;  /* already there */
+        s.childIndex[name] = i;
+        dropChildLevelCache(name);
+    }
+
     function neighbourPrefetch(cur) {
         if (s.tickCount < (s.prefetchHoldUntil || 0)) return null;
         for (const k in s.settleUntil) {
@@ -1565,6 +1671,19 @@ export function createController(io = {}) {
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;
+            /*
+             * ...and, on the same stop, which instance the MODULE says is
+             * focused. Folded in here rather than given a stop of its own so a
+             * child level costs the rotation nothing extra -- the same bargain
+             * the preset name takes, and the reason both live on one stop.
+             *
+             * A NULL answer changes nothing. childIndexFromWire refuses a
+             * failed read, an empty one, a non-number and an out-of-range
+             * index, and adopting 0 from any of those would silently move the
+             * user off the instance they were editing -- re-keying every page
+             * and dropping its cached values -- because a read timed out.
+             */
+            syncChildIndexFromModule(p);
             return null;
         }
         if (at > p.keys.length) {
@@ -1829,15 +1948,23 @@ export function createController(io = {}) {
              * the old part's numbers sitting under the new part's labels.
              */
             s.childIndex[p.childOf] = it.index;
-            for (const pg of s.pages) {
-                if (pg.level !== p.childOf || !Array.isArray(pg.keys)) continue;
-                for (const k of pg.keys) {
-                    delete s.values[k];
-                    delete s.pendingWrite[k];
-                    delete s.knobStates[k];
-                }
+            /*
+             * ...and tell the MODULE, when it owns the focus. The param is the
+             * single source of truth in both directions, so a pick is the same
+             * write the module itself would make -- which is what stops a user
+             * choosing from this list and a module auto-following the pad you
+             * played from ever disagreeing.
+             *
+             * Written through the level, NOT through childResolve: this key
+             * names the level, not an instance of it, so resolving it would ask
+             * for `p01_focused_pad`.
+             */
+            const idxParam = childIndexParam(childLevelDef(p.childOf));
+            if (idxParam) {
+                setParam(`${s.prefix}:${idxParam}`,
+                         childIndexToWire(childLevelDef(p.childOf), it.index));
             }
-            s.cursor = 0;
+            dropChildLevelCache(p.childOf);
         } else if (p.selectParam) {
             setParam(fullKey(p.selectParam), String(it.index));
         }
@@ -3426,7 +3553,20 @@ export function createController(io = {}) {
     function vizGroups() {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
-        const cacheKey = `${s.fingerprint}#${s.pageIndex}`;
+        /*
+         * THE FOCUSED CHILD IS PART OF THE KEY.
+         *
+         * A group's `extraKeys` are resolved from metadata, and on a child
+         * level that metadata is an ALIAS that moves with the focused instance
+         * -- `filepath_param` goes from p01_sample_path to p05_sample_path.
+         * Keyed on fingerprint and page alone, neither of which changes when
+         * the pad does, the cache kept handing back a group naming the
+         * PREVIOUS pad's file: the rotation went on reading pad 1 while pad 5
+         * was on screen, and only a page change busted it. Reported from the
+         * device as the waveform updating only after jogging away and back.
+         */
+        const childAt = p.childLevel ? childIndexFor(p.level) : -1;
+        const cacheKey = `${s.fingerprint}#${s.pageIndex}#${childAt}`;
         if (vizCache && vizCache.key === cacheKey) return vizCache.groups;
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
         vizCache = { key: cacheKey, groups };
@@ -3571,6 +3711,10 @@ export function createController(io = {}) {
          *  it. Read-only view of the cache the renderer uses — the injected
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
+        /** Which instance of `level` is focused, zero-based. The editor
+         *  hand-off needs it: without it the editor re-asks which child,
+         *  when the grid already knows. */
+        childIndexOf: (level) => childIndexFor(level),
         get metaIndex() { return s.metaIndex; },
         /** True while `<prefix>:ui_hierarchy` could not be READ. The page set,
          *  if any, is the previous one — nothing here was planned from the

@@ -783,6 +783,102 @@ function gotoSlotFor(name) {
   values.spray = savedSpray;
 }
 
+/* ---- the editor says where a SOURCE has the position --------------------
+ *
+ * The editor is the screen you open specifically to SET this value. In edit
+ * mode the cursor is hierEditorEditValue, seeded from `:base` -- correctly,
+ * that is what the jog moves -- so with an LFO running the cursor sits still
+ * while the sound sweeps and nothing on screen says why.
+ *
+ * Asserted as a STUB PAIR, not merely as "extra ink": the mark has to be
+ * distinguishable from the two things already in this plot, a solid
+ * full-height cursor and dotted full-height spray fences. A column of 4 pixels
+ * split between the top and the bottom of the band is none of those, and a
+ * mark drawn as a rule would satisfy an ink-only check while reading as a
+ * third fence.
+ *
+ * The position is fed as "0.5" so it maps to mid-file (the value is
+ * normalised against the declared min/max, NOT read as a percentage): the base resolves to
+ * ratio 0 in this fixture (no real WAV behind the stub, see the spray case
+ * above), so a mid-file source is what makes the two columns DIFFER. Fed the
+ * same value as the base, the assertion could pass on the cursor.
+ */
+{
+  const savedPath = values.sample_path, savedPos = values.position;
+  const savedSpray2 = values.spray;
+  const PLOT_X0 = 4, INNER_W = 120;
+
+  function captureCols(modulated) {
+    values.sample_path = "/tmp/probe.wav";
+    values.spray = "0";                    /* no fences competing */
+    values.position = "0.5";               /* mid-file for the SOURCE */
+    if (modulated) values["position:modulated"] = "1";
+    else delete values["position:modulated"];
+    openGrid();
+    const slot = gotoSlotFor("position");
+    if (slot < 0) return null;
+    feed(noteOn(slot));
+    feed(click());
+    if (ctx.activeParamEditor() !== "wav_position") return null;
+    const cols = new Map();
+    const realPixel = globalThis.set_pixel;
+    globalThis.set_pixel = (x, y, c) => {
+      if (c) { if (!cols.has(x)) cols.set(x, []); cols.get(x).push(y); }
+      return 0;
+    };
+    ctx.drawScreen ? ctx.drawScreen() : globalThis.tick();
+    globalThis.set_pixel = realPixel;
+    feed(back());
+    return cols;
+  }
+
+  /* A COARSE DASH: runs of exactly 2, separated by gaps. That rhythm is what
+   * tells it apart from the two lines already in this plot -- the SOLID cursor
+   * (one run spanning the band) and the FINE spray dither (every run length 1).
+   * An ink-only check passes for all three. */
+  const stubCols = (cols) => [...cols.entries()].filter(([, ys]) => {
+    const t = [...new Set(ys)].sort((a, b) => a - b);
+    if (t.length < 4) return false;
+    const runs = [];
+    for (const y of t) {
+      const last = runs[runs.length - 1];
+      if (last && y === last[last.length - 1] + 1) last.push(y);
+      else runs.push([y]);
+    }
+    if (runs.length < 2) return false;              /* solid */
+    if (runs.every((r) => r.length === 1)) return false;  /* fine dither */
+    return runs.every((r) => r.length <= 2);
+  }).map(([x]) => x);
+
+  const on  = captureCols(true);
+  const off = captureCols(false);
+
+  if (!on || !off) {
+    fail("the modulation case could not reach the waveform editor");
+  } else {
+    const marks = stubCols(on);
+    if (marks.length !== 1) {
+      fail("a modulated wav_position drew " + marks.length + " source mark(s) in the " +
+           "editor, expected 1 — the screen you set the value on cannot say where " +
+           "the LFO has it (cols " + JSON.stringify(marks) + ")");
+    } else {
+      const want = PLOT_X0 + Math.round(0.5 * (INNER_W - 1));
+      if (Math.abs(marks[0] - want) > 1)
+        fail("the source mark is at x=" + marks[0] + ", expected ~" + want +
+             " — it is not tracking the modulated position");
+    }
+    /* And an UNMODULATED position draws none: the mark must state a fact, not
+     * decorate every wav_position in the fleet. */
+    if (stubCols(off).length !== 0)
+      fail("an unmodulated wav_position still drew a source mark");
+  }
+
+  values.sample_path = savedPath;
+  values.position = savedPos;
+  values.spray = savedSpray2;
+  delete values["position:modulated"];
+}
+
 /* ---- N. the editor inherits the PAGE knob row ---------------------------
  *
  * A declared `knobs` array is not the order the user was just looking at. The
@@ -878,7 +974,63 @@ function gotoSlotFor(name) {
   }
 }
 
+/* ---- a dive on a CHILD LEVEL opens the editor, not nothing --------------
+ *
+ * The two halves of a dive speak different dialects. The GRID addresses the
+ * concrete key, because the controller resolved the child template
+ * (`synth:p01_sample_path`), while the editor selects out of what the LEVEL
+ * lists (`sample_path`). So indexOfHierParam missed, findLevelListingParam
+ * missed, and the click opened NOTHING -- activeParamEditor stayed null.
+ * Reported from the device as the file picker never firing.
+ *
+ * Driven for real rather than pinned: three source-level fixes to this same
+ * dive shipped without moving it, because a grep can confirm a line exists and
+ * cannot confirm an editor opened.
+ *
+ * LAST in the file, because it rewrites the shared fixture into a child level.
+ */
+{
+  HIERARCHY.levels.main.child_count = 4;
+  HIERARCHY.levels.main.child_label = "Pad";
+  HIERARCHY.levels.main.child_key_template = "p{index}_{key}";
+  HIERARCHY.levels.main.child_index_base = 1;
+  HIERARCHY.levels.main.child_index_digits = 2;
+  HIERARCHY.levels.main.child_index_param = "cur_pad";
+  CHAIN_PARAMS.push({ key: "cur_pad", name: "Current", type: "int", min: 1, max: 4 });
+  for (let i = 1; i <= 4; i++) {
+    const n = String(i).padStart(2, "0");
+    CHAIN_PARAMS.push({ key: `p${n}_sample_path`, name: `P${n} Sample`,
+                        type: "filepath", root: "/tmp", filter: ".wav" });
+    CHAIN_PARAMS.push({ key: `p${n}_gain`, name: `P${n} Gain`,
+                        type: "float", min: 0, max: 1, step: 0.01 });
+    values[`p${n}_sample_path`] = "";
+    values[`p${n}_gain`] = "0.5";
+  }
+  values.cur_pad = "1";
+  HIERARCHY.levels.main.knobs = ["gain", ...FILLER];
+  HIERARCHY.levels.main.params = [{ key: "gain" }, ...FILLER.map((k) => ({ key: k })),
+                                  { key: "sample_path" }];
+  HIERARCHY.levels.root.knobs = ["gain"];
+  HIERARCHY.levels.root.params = [{ level: "main", label: "Main" }];
+
+  openGrid();
+  const slot = gotoSlotFor("sample_path");
+  if (slot < 0) {
+    fail("a filepath on a child level is not reachable on the grid at all");
+  } else {
+    feed(noteOn(slot));
+    feed(click());
+    const editor = ctx.activeParamEditor();
+    if (editor !== "filepath") {
+      fail("diving a filepath on a CHILD level opened " + JSON.stringify(editor) +
+           ", expected \"filepath\" — the grid addresses the concrete key and the " +
+           "editor lists the generic one, so the lookup misses and nothing opens");
+    }
+    feed(back());
+  }
+}
+
 if (failures) process.exit(1);
 console.log("PASS: editor routing — a wav_position opens the waveform, a filepath opens " +
-            "the browser, a plain number stays put, and Back returns to the grid from each");
+            "the browser (child levels too), a plain number stays put, and Back returns");
 '

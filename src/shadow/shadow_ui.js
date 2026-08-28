@@ -56,6 +56,27 @@ import { RULE_Y as MOVY_RULE_Y,
  * the module header. */
 import { drawEnumList }
     from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
+/*
+ * The child-key contract, shared with the page planner.
+ *
+ * This file used to implement it ITSELF, and only the legacy shape --
+ * `<child_prefix><index>_<key>`, zero-based, unpadded -- open-coded at five
+ * sites. child_key.mjs was written because none of the six modules that need
+ * repeated elements use that shape (mrdrums 209 unreachable keys,
+ * weird-dreams 187, forge 106), but only the PLANNER was migrated to it. So a
+ * level declaring `child_key_template` planned and drew correctly and then
+ * broke the moment you dived into a cell: the editor built `synth:sample_path`
+ * where the module serves `synth:p01_sample_path`, and the file browser opened
+ * on a param nobody answers. Reported from the device as being unable to dive
+ * into sample selection.
+ *
+ * One definition now serves both halves, which is the point -- a second
+ * spelling of "which key does this cell address" is how the two disagreed for
+ * as long as they did.
+ */
+import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
+         childLabel as childLevelLabel, resolveChildKey }
+    from '/data/UserData/schwung/shared/param_pages/child_key.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
@@ -227,7 +248,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot, clearParamPagesTouch,
+    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
     paramPagesRefreshTrailing, paramPagesExitMenu
 } from './shadow_ui_param_pages.mjs';
@@ -2997,6 +3018,9 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * param lives, and exitParamPages tears the controller down. */
     const page = currentParamPage();
     const level = page && page.level;
+    /* Which instance the grid was showing. Captured HERE, beside `level`, for
+     * the same reason: exitParamPages below tears the controller down. */
+    const childAt = level ? paramPagesChildIndex(level) : -1;
     paramEditorReturnPage = (page && page.name) || "";
     /* Carry the page's knob ORDER in with us — see hierEditorKnobsFromPage.
      * Captured here for the same reason `level` is: exitParamPages tears the
@@ -3010,8 +3034,8 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * an opaque param there landed on the module menu instead of the editor. */
     const paramPrefix = `${getComponentParamPrefix(componentKey)}:`;
     const raw = String(fullKey || "");
-    const bare = raw.startsWith(paramPrefix) ? raw.slice(paramPrefix.length)
-                                             : raw.replace(/^[^:]+:/, "");
+    let bare = raw.startsWith(paramPrefix) ? raw.slice(paramPrefix.length)
+                                           : raw.replace(/^[^:]+:/, "");
 
     exitParamPages();
     /* Without this the list entry below sees Param View = Knobs and bounces
@@ -3023,9 +3047,21 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
     /* Land on the level the grid was on, not the hierarchy root. */
     if (level && hierEditorHierarchy && hierEditorHierarchy.levels &&
         hierEditorHierarchy.levels[level] && level !== hierEditorLevel) {
+        const levelDef = hierEditorHierarchy.levels[level];
         hierEditorLevel = level;
         hierEditorPath = [];
-        hierEditorChildIndex = -1;
+        /*
+         * ...and on the INSTANCE it was showing. This is the dive path, so
+         * handing off -1 makes loadHierarchyLevel raise the child selector and
+         * a click on Sample Path lands on "which pad?" instead of the file
+         * browser. Reported from the device.
+         *
+         * `childAt` is captured beside `level`, above, and for the same reason:
+         * exitParamPages has already torn the controller down by here.
+         */
+        hierEditorChildIndex = childLevelHasChildren(levelDef) ? childAt : -1;
+        hierEditorChildCount = childLevelCount(levelDef);
+        hierEditorChildLabel = levelDef.child_label || "";
         loadHierarchyLevel();
     }
 
@@ -3039,6 +3075,11 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      * in the `main` level. Searching only the page level found nothing and fell
      * through to the module menu, which is exactly the bug. So if the page
      * level does not list it, find the level that does and go there. */
+    /* Back to the level's own dialect before looking it up -- see
+     * hierGenericKeyFor. Done AFTER landing, because the level (and therefore
+     * the key list to search) is only settled here. */
+    bare = hierGenericKeyFor(getHierarchyLevelDef(), hierEditorChildIndex, bare);
+
     let idx = indexOfHierParam(bare);
     if (idx < 0) {
         const owner = findLevelListingParam(bare);
@@ -4223,13 +4264,9 @@ function normalizeVisibilityConditionKey(componentPrefix, levelDef, childIndex, 
     if (!rawKey) return "";
     if (rawKey.includes(":")) return rawKey;
     if (!componentPrefix) return rawKey;
-    if (levelDef && levelDef.child_prefix && childIndex >= 0) {
-        if (rawKey.startsWith(levelDef.child_prefix)) {
-            return `${componentPrefix}:${rawKey}`;
-        }
-        return `${componentPrefix}:${levelDef.child_prefix}${childIndex}_${rawKey}`;
-    }
-    return `${componentPrefix}:${rawKey}`;
+    /* Same resolution the editor uses for a value key -- a condition naming a
+     * per-instance param must read the INSTANCE it is gating, not the template. */
+    return `${componentPrefix}:${hierChildKeyFor(levelDef, childIndex, rawKey)}`;
 }
 
 function compareConditionValue(actualRaw, expectedRaw) {
@@ -11455,29 +11492,43 @@ function getNumericParamsForTarget(slot, target, numericOnly = true) {
                         const level = levels[levelName];
                         if (!level || !Array.isArray(level.params)) continue;
 
-                        const childPrefix = (typeof level.child_prefix === "string") ? level.child_prefix : "";
-                        const rawChildCount = parseInt(level.child_count, 10);
-                        const childCount = Number.isFinite(rawChildCount) ? Math.max(0, rawChildCount) : 0;
-                        const childLabel = (typeof level.child_label === "string" && level.child_label)
-                            ? level.child_label : "Item";
+                        const childCount = childLevelCount(level);
 
                         for (const entry of level.params) {
                             const key = (typeof entry === "string") ? entry : (entry && entry.key ? entry.key : "");
                             if (!key) continue;
 
-                            const meta = chainMetaByKey.get(key);
+                            /*
+                             * A GENERIC child key is declared nowhere: a level
+                             * lists `start` and the module declares p01_start
+                             * … p16_start. Looking the generic key up directly
+                             * finds nothing and skipped the whole level, so a
+                             * template-shaped module offered NONE of its
+                             * per-instance params here. Fall back to instance
+                             * 0, which carries the same structure as every
+                             * other instance.
+                             */
+                            const meta = chainMetaByKey.get(key)
+                                || (childCount > 0
+                                    ? chainMetaByKey.get(resolveChildKey(level, 0, key) || "")
+                                    : null);
                             if (!meta) continue;
                             const type = (meta.type || "").toLowerCase();
                             const isNumeric = type === "float" || type === "int" ||
                                 (!type && (meta.min !== undefined || meta.max !== undefined));
                             if (numericOnly && !isNumeric) continue;
 
-                            if (childPrefix && childCount > 0) {
+                            if (childCount > 0) {
                                 for (let i = 0; i < childCount; i++) {
-                                    const fullKey = `${childPrefix}${i}_${key}`;
-                                    if (seen.has(fullKey)) continue;
+                                    /* One definition of the key shape, and one
+                                     * of the instance NUMBER -- childLabel
+                                     * honours child_index_base, so pads read
+                                     * "Pad 1".."Pad 16" and not 0..15. */
+                                    const fullKey = resolveChildKey(level, i, key);
+                                    if (!fullKey || seen.has(fullKey)) continue;
                                     const baseLabel = meta.name || meta.label || key;
-                                    params.push({ key: fullKey, label: `${childLabel} ${i + 1} ${baseLabel}` });
+                                    params.push({ key: fullKey,
+                                                  label: `${childLevelLabel(level, i)} ${baseLabel}` });
                                     seen.add(fullKey);
                                 }
                             } else {
@@ -12226,6 +12277,20 @@ function enterHierarchyEditorFromParamPages() {
     const page = currentParamPage();
     const slotIndex = paramPagesSlot();
     const componentKey = paramPagesComponent();
+    /*
+     * WHICH INSTANCE, captured BEFORE exitParamPages tears the controller down.
+     *
+     * The grid already knows which pad you are editing -- the module owns it
+     * through child_index_param and the controller follows. Handing off with
+     * -1 made the editor open its CHILD SELECTOR instead of the parameter,
+     * so diving into Sample Path landed on a "which pad?" menu. Reported from
+     * the device, and it is the same defect as the duplicate picker pages: a
+     * second control for a fact that already has one.
+     *
+     * Backing out of the parameter still reaches the selector, so nothing is
+     * lost -- only the question nobody asked is.
+     */
+    const childAt = (page && page.level) ? paramPagesChildIndex(page.level) : -1;
 
     /*
      * A SYNTHESISED CONTRACT HAS NOWHERE TO EJECT TO.
@@ -12265,7 +12330,10 @@ function enterHierarchyEditorFromParamPages() {
         const levelDef = hierEditorHierarchy.levels[page.level];
         hierEditorLevel = page.level;
         hierEditorPath = [];
-        hierEditorChildIndex = -1;
+        /* The instance the grid was showing, not "ask again". Falls back to
+         * -1 -- the selector -- for a level with no children, which is what
+         * every non-child level gets and always got. */
+        hierEditorChildIndex = childLevelHasChildren(levelDef) ? childAt : -1;
         /*
          * The CHILD COUNT travels with the level, and this path used to drop
          * it.
@@ -12283,7 +12351,7 @@ function enterHierarchyEditorFromParamPages() {
          * anything". The other two navigation sites set these; only the
          * hand-off from the grid did not.
          */
-        hierEditorChildCount = levelDef.child_count || 0;
+        hierEditorChildCount = childLevelCount(levelDef);
         hierEditorChildLabel = levelDef.child_label || "Child";
         loadHierarchyLevel();
     }
@@ -12528,8 +12596,9 @@ function loadHierarchyLevel() {
         (rootDef && rootDef.children === hierEditorLevel)
     );
 
-    /* Child selector for levels that require child_prefix */
-    if (levelDef.child_prefix && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {
+    /* Child selector for any level declaring repeated instances -- template
+     * or legacy child_prefix, which hasChildren() answers for both. */
+    if (childLevelHasChildren(levelDef) && hierEditorChildCount > 0 && hierEditorChildIndex < 0) {
         hierEditorIsPresetLevel = false;
         hierEditorIsDynamicItems = false;
         hierEditorPresetEditMode = false;
@@ -12945,13 +13014,58 @@ function getHierarchyLevelDef() {
     return hierEditorHierarchy.levels ? hierEditorHierarchy.levels[hierEditorLevel] : null;
 }
 
+/*
+ * The concrete key `rawKey` addresses for instance `index` of `levelDef`, or
+ * rawKey unchanged when the level declares no children.
+ *
+ * A key ALREADY CONCRETE passes through. The legacy code expressed that as
+ * `rawKey.startsWith(child_prefix)`, which a template has no equivalent of, so
+ * the test is now membership of the level's own declared keys -- the same
+ * question childResolve asks in page_controller, and the honest one: only a
+ * key the level LISTS is a generic key to be multiplied.
+ */
+function hierChildKeyFor(levelDef, index, rawKey) {
+    if (!rawKey || index < 0 || !childLevelHasChildren(levelDef)) return rawKey;
+    const listed = (k) => (typeof k === "string" ? k : (k && k.key)) === rawKey;
+    if (!(levelDef.knobs || []).some(listed) && !(levelDef.params || []).some(listed)) {
+        return rawKey;
+    }
+    return resolveChildKey(levelDef, index, rawKey) || rawKey;
+}
+
+/*
+ * The GENERIC key a concrete one came from, or the key unchanged.
+ *
+ * The inverse of hierChildKeyFor, and it is needed because the two halves of a
+ * dive speak different dialects: the GRID addresses `synth:p01_sample_path`
+ * (the controller resolved it), while the editor's param list holds what the
+ * level LISTS -- `sample_path`. So the lookup missed, the owner search missed,
+ * and the click opened nothing at all. Found by reproducing the dive on the
+ * host rather than on the device, which is how it should have been found four
+ * reports earlier.
+ *
+ * Searched over the level's own declared keys rather than parsed out of the
+ * template: a template is not invertible in general (`p{index}_{key}` happens
+ * to be, `{key}_v{index}` is not), and the level's list is small and exact.
+ */
+function hierGenericKeyFor(levelDef, index, concreteKey) {
+    if (!concreteKey || index < 0 || !childLevelHasChildren(levelDef)) return concreteKey;
+    const cand = [];
+    for (const k of (levelDef.knobs || [])) cand.push(typeof k === "string" ? k : (k && k.key));
+    for (const p of (levelDef.params || [])) {
+        if (p && typeof p === "object") { if (!p.level) cand.push(p.key); }
+        else cand.push(p);
+    }
+    for (const g of cand) {
+        if (g && resolveChildKey(levelDef, index, g) === concreteKey) return g;
+    }
+    return concreteKey;
+}
+
 function buildHierarchyParamKey(key) {
     const prefix = getComponentParamPrefix(hierEditorComponent);
     const levelDef = getHierarchyLevelDef();
-    if (levelDef && levelDef.child_prefix && hierEditorChildIndex >= 0) {
-        return `${prefix}:${levelDef.child_prefix}${hierEditorChildIndex}_${key}`;
-    }
-    return `${prefix}:${key}`;
+    return `${prefix}:${hierChildKeyFor(levelDef, hierEditorChildIndex, key)}`;
 }
 
 function getHierarchyDisplayRawValue(slot, fullKey) {
@@ -12987,15 +13101,17 @@ function isHierarchyParamModulated(slot, fullKey) {
 
 function buildHierarchyParamKeyForLevel(levelDef, key, childIndex) {
     const prefix = getComponentParamPrefix(hierEditorComponent);
-    if (levelDef && levelDef.child_prefix && childIndex >= 0) {
-        return `${prefix}:${levelDef.child_prefix}${childIndex}_${key}`;
-    }
-    return `${prefix}:${key}`;
+    return `${prefix}:${hierChildKeyFor(levelDef, childIndex, key)}`;
 }
 
 function resetHierarchyEditState() {
     hierEditorEditKey = "";
     hierEditorEditValue = null;
+    /* Both are seeded per EDIT SESSION by beginHierarchyParamEdit, so they must
+     * die with it: a marker left behind would be drawn over the next
+     * wav_position opened, at a position belonging to a different parameter. */
+    wavEditorSpray = null;
+    wavEditorMod = null;
 }
 
 function beginHierarchyParamEdit(key) {
@@ -13012,7 +13128,52 @@ function beginHierarchyParamEdit(key) {
     hierEditorEditKey = fullKey;
     hierEditorEditValue = String((baseVal !== null) ? baseVal : liveVal);
     seedWavEditorSpray(key, meta);
+    seedWavEditorMod(key, meta, fullKey);
     return true;
+}
+
+/*
+ * Is the position being edited driven by a source, and where is it right now?
+ *
+ * The editor is the screen you are on SPECIFICALLY to set this value, so the
+ * base-versus-live distinction matters more here than anywhere: in edit mode
+ * the cursor is `hierEditorEditValue`, which beginHierarchyParamEdit seeds
+ * from `:base` -- correctly, that is what the jog moves -- and with an LFO
+ * running that leaves the cursor sitting still while the sound sweeps, with
+ * nothing on screen to say why.
+ *
+ * Read ONCE, like the spray beside it and for the same reason: this frame
+ * resamples the WAV and is already the most expensive screen here, so a
+ * per-frame IPC read (~2.8ms against a 1.68ms whole-page render) is not
+ * affordable. Unlike the spray, the value this tracks MOVES on its own, so a
+ * seeded reading goes stale -- deliberately. What it is for is stating THAT a
+ * source is driving the position and roughly where, not animating it; the
+ * grid cell is where the live motion is shown, at the tick rate, because it
+ * costs nothing extra there.
+ *
+ * Null unless `:modulated` says 1, so an unmodulated position -- every
+ * wav_position in the fleet until an LFO is pointed at one -- draws nothing
+ * and pays for nothing.
+ */
+/*
+ * The RAW value is stored, not a ratio, and it is normalised at the draw with
+ * the SAME durationSec the cursor uses. A wav_position may be declared in
+ * seconds (`display_unit: "sec"`), and normalizeWavPositionRatio then needs
+ * the file duration to place it -- which is not known here and returns 0 for
+ * a missing one, i.e. a marker silently pinned to the head of the file.
+ */
+let wavEditorMod = null;   /* { fullKey, raw } */
+function seedWavEditorMod(key, meta, fullKey) {
+    wavEditorMod = null;
+    if (!meta || meta.ui_type !== "wav_position") return;
+    if (!isHierarchyParamModulated(hierEditorSlot, fullKey)) return;
+    const raw = getSlotParam(hierEditorSlot, fullKey);
+    /* A FAILED read is not a position. Drawing nothing is honest; inventing 0
+     * would plant a marker at the head of the file and claim the source is
+     * there. */
+    if (raw === null || raw === "") return;
+    if (!Number.isFinite(Number(raw))) return;
+    wavEditorMod = { fullKey, raw: String(raw) };
 }
 
 /*
@@ -14522,7 +14683,7 @@ function applyLinkedWavEndDefaultsForFilepath(filepathKey) {
 
     for (const levelDef of levels) {
         if (!levelDef || !Array.isArray(levelDef.params)) continue;
-        const hasChildren = !!(levelDef.child_prefix && typeof levelDef.child_prefix === "string");
+        const hasChildren = childLevelHasChildren(levelDef);
         const childIndices = hasChildren && selectedChildIndex >= 0 ? [selectedChildIndex] : [-1];
 
         for (const entry of levelDef.params) {
@@ -14764,6 +14925,39 @@ function drawWavPositionEditor(selectedKey, selectedMeta) {
                 }
             }
         }
+        /*
+         * WHERE THE SOURCE HAS IT, when one is driving this position.
+         *
+         * Drawn as 2px stubs at the top and bottom of the plot rather than as
+         * a rule, which is the SAME language the grid uses for a modulated
+         * sample cell and a modulated fader -- one mark meaning "this is the
+         * other end of the base/live pair", so the three surfaces do not each
+         * invent a spelling. It also has to be distinct from the spray fences
+         * immediately above, which already own the dotted full-height line: a
+         * second dotted column would read as a third fence.
+         *
+         * Before the cursor, so a source passing through the base leaves the
+         * solid cursor owning the column -- the two coinciding IS the reading
+         * "it is at your value right now".
+         */
+        const modRatio = wavEditorMod
+            ? Math.max(0, Math.min(1, normalizeWavPositionRatio(
+                wavEditorMod.raw, selectedMeta, preview.durationSec || 0)))
+            : -1;
+        if (modRatio >= 0 && modRatio >= zoomStart && modRatio <= zoomEnd) {
+            const mx = plotX + 1 +
+                Math.round(((modRatio - zoomStart) / zoomRange) * (innerW - 1));
+            /* A COARSE DASH, 2 on 2 off -- the same rhythm the grid cell uses
+             * for this mark, and deliberately unlike the two lines already in
+             * this plot: the cursor is SOLID and the spray fences are a fine
+             * every-other-row dither. Three vertical marks in one plot are only
+             * legible if each has its own rhythm. */
+            for (let yy = plotY + 1; yy < plotY + plotH - 1; yy++) {
+                if (((yy - (plotY + 1)) & 3) >= 2) continue;
+                set_pixel(mx, yy, 1);
+            }
+        }
+
         /* Single-marker legacy: just the active cursor. */
         for (let y = plotY + 1; y < plotY + plotH - 1; y++) {
             set_pixel(cursorX, y, 1);
@@ -16486,11 +16680,12 @@ function handleSelect() {
                     hierEditorLevel = selectedParam.level;
                     hierEditorSelectedIdx = 0;
                     hierEditorPresetEditMode = false;
-                    /* Set up child count/label if target level has child_prefix */
+                    /* Set up child count/label for any level declaring
+                     * repeated instances -- template or legacy prefix. */
                     const targetLevel = hierEditorHierarchy.levels[selectedParam.level];
-                    if (targetLevel && targetLevel.child_prefix && targetLevel.child_count) {
+                    if (childLevelHasChildren(targetLevel)) {
                         hierEditorChildIndex = -1;
-                        hierEditorChildCount = targetLevel.child_count;
+                        hierEditorChildCount = childLevelCount(targetLevel);
                         hierEditorChildLabel = targetLevel.child_label || "Child";
                     }
                     loadHierarchyLevel();
@@ -17105,7 +17300,7 @@ function handleBack() {
                 announceHierLevel();
             } else if (hierEditorChildIndex >= 0) {
                 const levelDef = getHierarchyLevelDef();
-                if (levelDef && levelDef.child_prefix) {
+                if (childLevelHasChildren(levelDef)) {
                     /* Return to child selector list */
                     hierEditorChildIndex = -1;
                     if (hierEditorPath.length > 0) {
@@ -17130,7 +17325,7 @@ function handleBack() {
                     announce("Mode Selection");
                 } else {
                     const levelDef = getHierarchyLevelDef();
-                    if (levelDef && levelDef.child_prefix) {
+                    if (childLevelHasChildren(levelDef)) {
                         hierEditorChildIndex = -1;
                         hierEditorChildCount = 0;
                         hierEditorChildLabel = "";
@@ -18523,7 +18718,35 @@ function lfoTargetParamsFor(target, compKey, logLabel) {
             const params = JSON.parse(json);
             for (let i = 0; i < params.length; i++) {
                 const p = params[i];
-                if (p.type === "float" || p.type === "int" || p.type === "enum") {
+                /*
+                 * `wav_position` IS a modulation target, and leaving it out
+                 * cost the whole indicator chain.
+                 *
+                 * This is a TYPE ALLOWLIST written before wav_position
+                 * existed, and it silently excluded every sample-position
+                 * param in the fleet -- mrdrums Sample Start, granny, mrsample.
+                 * A wav_position is a ranged number a knob turns (min/max
+                 * declared, 0..1), which is the only property the modulation
+                 * engine needs: chain_mod_emit_value looks the key up with
+                 * find_param_by_key and scales by the declared range, and
+                 * neither cares what the UI calls the type.
+                 *
+                 * The consequence was not "one missing menu row". Because the
+                 * param could not be picked, an LFO aimed at a sample start
+                 * had to be routed to the CONCRETE per-pad key instead, while
+                 * the grid draws the ALIAS -- so `<alias>:modulated` answered
+                 * 0, the read cursor never asked for `:base`, and the key
+                 * never entered refreshModulatedValues. Reported from the
+                 * device as a lost LFO dot and a choppy cell: the cell was
+                 * being fed the effective value by the ordinary rotation at
+                 * ~6Hz instead of the base plus a 44Hz dot.
+                 *
+                 * Confirmed on hardware with param_tally: `synth:pad_start`
+                 * and `synth:pad_start:modulated` both read 6x/window, and
+                 * `synth:pad_start:base` NEVER read.
+                 */
+                if (p.type === "float" || p.type === "int" || p.type === "enum"
+                    || p.type === "wav_position") {
                     result.push({ key: p.key, label: p.name || p.label || p.key });
                 }
             }
