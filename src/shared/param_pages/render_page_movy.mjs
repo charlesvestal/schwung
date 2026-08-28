@@ -2382,7 +2382,17 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * Falls back to `label` so every module that declares nothing is
          * unaffected.
          */
-        const label = labelForCell(meta.short_name || meta.label || meta.key, g.cellW);
+        /*
+         * PAGE first, then param, then the full name.
+         *
+         * A page-level short_name (page.shortNames, collected by page_plan
+         * from the level's own inline entries) beats the param's, because the
+         * page is the narrower context and it is what makes the cell
+         * unambiguous: the same param can want "Amt" on the Envelope page and
+         * "Env Amt" on Main, where an LFO Amt sits beside it.
+         */
+        const pageShort = (o && o.page && o.page.shortNames) ? o.page.shortNames[key] : null;
+        const label = labelForCell(pageShort || meta.short_name || meta.label || meta.key, g.cellW);
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
