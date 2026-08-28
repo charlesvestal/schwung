@@ -32,3 +32,26 @@ catalog-out/
 # Generated audit sheets (tools/param-pages/audit_sheet.mjs) — 759 PNGs.
 # Regenerate rather than commit; the report is derived from the fixture.
 out/
+
+# Proprietary module assets (ROMs, soundfonts, sample banks) are NEVER stored
+# in this repo. They are referenced by absolute path from the untracked
+# assets.local.json and pushed straight to the device. Enforced by
+# tests/host/test_no_bundled_assets.sh, which checks what git TRACKS — this
+# list is the first line of defence, not the only one.
+*.sf2
+*.sfz
+*.rom
+*.syx
+*.bin
+*.wav
+*.aif
+*.aiff
+*.ogg
+*.flac
+*.mp3
+*.m4a
+*.nam
+*.pcm
+*.rx2
+*.rex
+tools/param-pages/assets.local.json
