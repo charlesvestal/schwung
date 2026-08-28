@@ -252,6 +252,58 @@ Promise.all([
       fail("aliasing disturbed a declared key");
   }
 
+
+  /* ---- the GRAPHIC follows the focused child, without a page change -----
+   *
+   * A viz group memoises on fingerprint + page index, and NEITHER changes when
+   * the focused pad does. So the cached group went on naming the previous
+   * pad`s file as its extra key: the read rotation kept fetching pad 1 while
+   * pad 5 was on screen, and only jogging to another page and back busted the
+   * cache. Reported from the device as the waveform updating only after a
+   * detour.
+   *
+   * Asserted on the KEY THAT GETS READ, not on the cache: what the user sees
+   * is which file the rotation fetched, and a test that inspected the cache
+   * would pass on a correctly-rebuilt group whose value never arrived.
+   */
+  {
+    const CP3 = [{ key: "cur_pad", name: "Cur", type: "int", min: 1, max: 4 }];
+    for (let i = 1; i <= 4; i++) {
+      const n = String(i).padStart(2, "0");
+      CP3.push({ key: `p${n}_start`, name: "Start", type: "wav_position",
+                 filepath_param: `p${n}_sample_path`, min: 0, max: 1, step: 0.01 });
+      CP3.push({ key: `p${n}_sample_path`, name: "Sample", type: "filepath" });
+      CP3.push({ key: `p${n}_vol`, name: "Vol", type: "float", min: 0, max: 1, step: 0.01 });
+    }
+    const L4 = { label: "Pads", child_count: 4, child_label: "Pad",
+                 child_key_template: "p{index}_{key}", child_index_base: 1,
+                 child_index_digits: 2, child_index_param: "cur_pad",
+                 knobs: ["vol", "start"], params: ["vol", "start"] };
+    let pad = "1";
+    const c = PC.createController({
+      getParam: (k) => {
+        if (k.endsWith(":ui_hierarchy")) return JSON.stringify({ modes: null, levels: { root: L4 } });
+        if (k.endsWith(":chain_params")) return JSON.stringify(CP3);
+        if (k.endsWith(":cur_pad")) return pad;
+        if (k.endsWith(":preset_name")) return "";
+        if (k.endsWith(":is_loading")) return "0";
+        if (k.endsWith(":module")) return "m";
+        if (/sample_path$/.test(k)) return "/x/f.wav";
+        return "0.5";
+      }, setParam: () => {}, announce: () => {}, now: () => 0,
+    });
+    c.load({ slot: 0, component: "synth", prefix: "synth" });
+    c.setLayout("movy");
+    for (let i = 0; i < 40; i++) c.tick();
+    pad = "3";
+    for (let i = 0; i < 40; i++) c.tick();   /* NO page change */
+    const files = Object.keys(c.state.values).filter((k) => /sample_path$/.test(k));
+    if (files.indexOf("p03_sample_path") < 0)
+      fail("after the module moved the focus to pad 3, the graphic still asks for "
+         + JSON.stringify(files) + " -- the viz cache does not key on the focused child, "
+         + "so the waveform shows the previous pad until you jog away and back");
+  }
+
   /* ---- a level with NO child_index_param is untouched ------------------ */
   {
     const L2 = Object.assign({}, LEVEL);
@@ -273,6 +325,7 @@ Promise.all([
     console.log("  ok  the grid follows the module when it changes the focused child");
     console.log("  ok  choosing a child writes it back, so the two cannot disagree");
     console.log("  ok  a generic child key borrows the concrete declaration, and follows");
+    console.log("  ok  the graphic follows the focused child with no page change");
     console.log("  ok  a level that declares none reads none");
     console.log("PASS: a module can own which child instance is focused");
   }

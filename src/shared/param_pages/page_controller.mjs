@@ -3553,7 +3553,20 @@ export function createController(io = {}) {
     function vizGroups() {
         const p = page();
         if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
-        const cacheKey = `${s.fingerprint}#${s.pageIndex}`;
+        /*
+         * THE FOCUSED CHILD IS PART OF THE KEY.
+         *
+         * A group's `extraKeys` are resolved from metadata, and on a child
+         * level that metadata is an ALIAS that moves with the focused instance
+         * -- `filepath_param` goes from p01_sample_path to p05_sample_path.
+         * Keyed on fingerprint and page alone, neither of which changes when
+         * the pad does, the cache kept handing back a group naming the
+         * PREVIOUS pad's file: the rotation went on reading pad 1 while pad 5
+         * was on screen, and only a page change busted it. Reported from the
+         * device as the waveform updating only after jogging away and back.
+         */
+        const childAt = p.childLevel ? childIndexFor(p.level) : -1;
+        const cacheKey = `${s.fingerprint}#${s.pageIndex}#${childAt}`;
         if (vizCache && vizCache.key === cacheKey) return vizCache.groups;
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
         vizCache = { key: cacheKey, groups };
