@@ -1262,17 +1262,30 @@ renderer is stateless, so nothing in it can know what a value was a moment ago.
 `observe(state, key, value, now, ms)` returns `{from, to, t, moving}`; a first
 sighting is stamped already-past, because an arrival is not a change.
 
-Animated today: the switch's inverse fill (160ms — the slug SNAPS, only the fill
-moves), the waveform morph (100ms), the enum square's resize, and the trigger
-flash. Time is passed IN, never read — no `Date.now()` anywhere in the renderer,
-which is what makes `tools/param-pages/movie.mjs` able to film a page
+Animated today: the waveform morph (100ms), the enum square's resize, and the
+trigger flash. Time is passed IN, never read — no `Date.now()` anywhere in the
+renderer, which is what makes `tools/param-pages/movie.mjs` able to film a page
 deterministically.
+
+**THE SWITCH DOES NOT ANIMATE. IT TOGGLES.** It had a 160ms inverse fill — the
+slug snapped, the track wiped — and it is gone, reported from hardware as
+DISTRACTING. That is the argument that outranks the one which chose 160 over 70
+and 260: a switch is the control you flip most often and least deliberately, so
+motion under your hand every time is attention spent in the wrong place, and no
+duration fixes a thing that should not move. Nothing is lost, because the two
+states already differ by most of the widget's AREA — a flip is the loudest
+change on the page even when it happens between two frames. `drawSwitch` keeps
+`anim`/`nowMs` in its signature (`drawVizGroup` hands every widget the same
+arguments) and deliberately ignores them, and both halves are pinned by
+`tests/host/test_anim_wiring.sh`: the waveform must move part-way through a
+change, and the switch must be settled on EVERY frame after a flip.
 
 **THE STORE MUST BE PASSED FROM THE CONTROLLER, AND FOR MONTHS IT WAS NOT.**
 Every widget guards on `anim && typeof nowMs === "number"`, so an undefined
 store draws the settled frame forever — silently, and identically to a correct
 render of a value that is not moving. `createAnimState` was written, exported,
-unit-tested and never CALLED; every animation shipped inert.
+unit-tested and never CALLED; every animation shipped inert. (The switch's fill
+was one of them — so it was live for a matter of weeks before being removed.)
 
 The same failure is recorded one field away at the same call site, for the
 trigger flash: *the renderer tests hand these in directly, so they prove the
