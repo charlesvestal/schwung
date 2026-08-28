@@ -595,10 +595,51 @@ byte-identical against `tests/fixtures/movy-geom-baseline.txt`
 Preview it without deploying: `node tools/param-pages/preview_knob_card.mjs
 <module-id> --knob N [--short] [--png DIR --scale 4]`.
 
-### Every enum opens a LIST
+### Every enum opens a LIST — except at TWO options, where the click FLIPS it
 
-Any enum that declares `options` is divable: hold its knob, click, pick from a
-scrolling list, Back cancels. The knob still steps it one detent at a time —
+A picker over two items is a menu whose entire content is the value already
+visible in the cell and the one other value there is, and it charges two
+gestures for a state one gesture can describe. So a two-option enum WRITES THE
+OTHER VALUE on click and never raises the list. Reported from the device
+against Global Settings' Mirror Display and Move->Schwung — *"if an option has
+two values, clicking it should change the option ... we dont need a whole menu
+for two items"*.
+
+**Deliberately NOT limited to booleans, and that is the interesting part.**
+`drawnAsSwitch` splits Off/On (212 fleet cells) from a two-way CHOICE —
+`Mix/Reverb`, `Saw/Square`, `Legato/Trig` (134 cells) — and that split is right
+for the PEEK, which exists to show a word the cell has no room for. It is wrong
+here: what the flip removes is the SECOND GESTURE, and a choice pays that
+exactly as a boolean does. Two rules over the same population, disagreeing on
+purpose.
+
+`flipsOnClick` (`param_meta.mjs`) is ONE definition serving two questions that
+must not disagree — what the click does (`page_controller.onClick`) and what
+the footer promises while the knob is held (`CLK FLIP`, not `CLK OPEN`). The
+divable/opaque pair beside it is written up as exactly that failure three times
+over: a cell became a door and the footer had to be told separately, so it
+advertised `CLK MENU` over a click that opened an editor. **The FLIP branch
+must precede the divable OPEN branch** — a two-option enum is still divable, so
+OPEN claims it otherwise.
+
+**It requires `divable`, which is what keeps TRIGGERS out.** A trigger is a
+two-option enum in the wire format (`["—","Rnd!"]`), so a predicate written on
+the option count alone turns every momentary in the fleet into a latch —
+euclidrum randomises a kit on the way past. Readouts are excluded the same way.
+
+**Both editors flip**, or the same parameter answers the same gesture two
+different ways depending on a Param View setting the user can flip — the drift
+`test_knob_surfaces_access.sh` exists to catch on the trigger latch. The
+hierarchy editor restates the predicate rather than importing it, because its
+meta is the RAW `chain_params` declaration (`type`, not `kind`, and no
+`divable` at all); the two exclusions `divable` carries are its own two early
+returns immediately above. `tests/host/test_two_option_enum_flip.sh` pins the
+lot — and its list-editor probe was anchored on the first `type === "enum"` in
+`shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
+and stayed GREEN with the flip deleted.
+
+Past two options, the list is unchanged. Any enum that declares `options` is
+divable: hold its knob, click, pick from a scrolling list, Back cancels. The knob still steps it one detent at a time —
 the list is the other half, for a Recv Ch with seventeen options or a Braids
 model with forty-seven. `VIEWS.ENUM_PICKER`, `drawEnumPicker` in
 `src/shadow/shadow_ui.js`, hints `JOG SEL` / `CLK SET` / `BACK EXIT`

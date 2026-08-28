@@ -1939,6 +1939,23 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
+**Except at exactly two options, where the click FLIPS it instead.** A list of
+two is a menu whose whole content is the value already in the cell and the one
+other value there is, so the click writes the other one and the picker is never
+raised — the footer reads `CLK FLIP` rather than `CLK OPEN`. The knob still
+steps it, and the same rule applies in the list view.
+
+This is a different line from the `switch` distinction two sections up, and
+they do not have to agree: a switch is a **boolean-flavoured** two-option enum
+and only that group loses the peek, whereas *every* two-option enum flips —
+`Mix`/`Reverb` included. The peek exists to show a word the cell has no room
+for; the flip exists to save a gesture, and a choice pays that gesture exactly
+as a boolean does.
+
+Triggers (`access: "write"`) and readouts (`access: "read"`) are not divable at
+all, so neither flips: a trigger is a two-option enum on the wire, and firing
+it is not the same as setting it.
+
 **The cell marks do not mean "divable."** Measured over the fleet (2026-08):
 967 divable cells on knob pages, and **953 of them — 99% — wear no mark at
 all**, because almost every divable cell is an enum. Divability is announced by

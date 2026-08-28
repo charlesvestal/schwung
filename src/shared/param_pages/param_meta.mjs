@@ -349,6 +349,30 @@ export function opensOnClick(meta) {
     return !!meta && !!meta.opaque_type && !!meta.divable;
 }
 
+/**
+ * True when clicking this cell FLIPS it instead of opening anything.
+ *
+ * An enum with exactly two options has nothing to browse: the list would show
+ * the value already in the cell and the only other value there is. So the
+ * click writes the other one, and the picker is never raised.
+ *
+ * ONE definition because it answers two questions that must not disagree —
+ * what the click DOES (page_controller.onClick) and what the footer PROMISES
+ * while the knob is held (paramPagesFooterHints). The divable/opaque pair one
+ * function up is written up as exactly that failure, three times over: a cell
+ * became a door and the footer had to be told separately, so it advertised
+ * CLK MENU over a click that opened an editor.
+ *
+ * `divable` is required, which is what keeps triggers and readouts out: both
+ * are excluded from `divable` by construction, and a trigger is a two-option
+ * enum in the wire format, so a test on the option count alone would turn
+ * every momentary in the fleet into a latch.
+ */
+export function flipsOnClick(meta) {
+    return !!meta && !!meta.divable && meta.kind === KIND_ENUM
+        && Array.isArray(meta.options) && meta.options.length === 2;
+}
+
 /** True when a knob can drive this param at all. */
 export function isTurnable(meta) {
     /* A readout has nothing to set; a trigger is fired, not scrubbed — turning

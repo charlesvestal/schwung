@@ -54,6 +54,7 @@ import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 /* The enum option screen, shared with the picker view in shadow_ui.js — one
  * screen, two entries, opposite commit semantics. See enum_list.mjs. */
 import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
+import { flipsOnClick } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
 
@@ -775,6 +776,21 @@ function footerHints() {
          * become a door and the footer has had to be told separately, and the
          * first two are both written up as promise-versus-behaviour bugs.
          */
+        /*
+         * A TWO-OPTION enum is not a door: the click writes the other value
+         * (see flipsOnClick). FLIP, not OPEN — this branch is the third one
+         * in this function whose whole job is keeping the promise the footer
+         * makes in step with what the button does, and the other two are both
+         * written up above as bugs where it came apart.
+         *
+         * FLIP names the consequence rather than the gesture, which the
+         * trigger's own note argues for whenever no single gesture-word
+         * covers the control: you are not opening anything, and "SET" is the
+         * picker's word for committing a choice you have already scrolled to.
+         */
+        if (flipsOnClick(meta)) {
+            return orderedHints({ jog: "PAGE", click: "FLIP", extra: fine });
+        }
         if ((meta && meta.divable) ||
             (controller.diveTargetAt && controller.diveTargetAt(held))) {
             return orderedHints({ jog: "PAGE", click: "OPEN", extra: fine });

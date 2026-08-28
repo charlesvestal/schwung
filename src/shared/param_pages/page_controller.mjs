@@ -30,7 +30,7 @@
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey } from "./child_key.mjs";
-import { buildMetaIndex, inferFromValue, isTurnable, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
+import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
@@ -2750,7 +2750,6 @@ export function createController(io = {}) {
             key = via;
             meta = s.metaIndex.getOrGuess(via);
         }
-        s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         /*
          * An enum opens a list of its OPTIONS, so the intent carries the list
          * and where in it we currently are — the host should not have to spend
@@ -2768,9 +2767,41 @@ export function createController(io = {}) {
                 learnEnumWireFormat(meta, raw);
             }
             const idx = enumIndexOf(meta, raw);
-            s.pending.options = meta.options.slice();
-            s.pending.index = idx >= 0 ? idx : 0;
+            const at = idx >= 0 ? idx : 0;
+            /*
+             * TWO OPTIONS: THE CLICK SETS IT. There is no list.
+             *
+             * A picker over two items is a menu whose entire content is the
+             * value you can already see and the one other value there is, and
+             * it costs two gestures to reach a state one gesture can describe.
+             * Reported from the device as exactly that — "if an option has two
+             * values, clicking it should change the option ... we don't need a
+             * whole menu for two items", against Mirror Display and
+             * Move->Schwung.
+             *
+             * Deliberately NOT limited to booleans. `drawnAsSwitch` splits
+             * Off/On from a two-way CHOICE (Mix/Reverb, Saw/Square) and that
+             * split is right for the PEEK, which exists to show a word the cell
+             * has no room for. It is wrong here: the cost being removed is the
+             * second gesture, and a choice pays it exactly as a switch does.
+             * The new value lands in the cell either way, which is the same
+             * feedback the list would have given after one more click.
+             *
+             * It also cannot fire anything by accident — a trigger is
+             * writeOnly and returned above, and a readout is not divable and
+             * never reaches here.
+             */
+            if (flipsOnClick(meta)) {
+                const next = at === 0 ? 1 : 0;
+                commitEnum(key, next);
+                announce(`${meta.label}, ${meta.options[next]}`);
+                return null;
+            }
+            s.pending = { action: "open", key, fullKey: fullKey(key), meta,
+                          options: meta.options.slice(), index: at };
+            return s.pending;
         }
+        s.pending = { action: "open", key, fullKey: fullKey(key), meta };
         return s.pending;
     }
 
