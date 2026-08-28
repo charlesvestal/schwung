@@ -84,9 +84,24 @@ function allListedKeys(hierarchy) {
  * stays, and a module gets the deduplication only by offering the control
  * itself.
  */
-function childPickerNeeded(lvl, listedKeys) {
+function childPickerNeeded(lvl, listedKeys, pickedFor) {
     const idxParam = childIndexParam(lvl);
     if (!idxParam) return true;
+    /*
+     * ONE PICKER PER SHARED INDEX.
+     *
+     * Two levels naming the same `child_index_param` are two views of one
+     * focus -- mrdrums has root and Pad Settings both following
+     * ui_current_pad -- so a picker on each is two lists selecting the same
+     * pad, in sync with each other and with the pad you played. Reported from
+     * the device as "why is main pad selection AND pad settings pad
+     * selection?".
+     *
+     * The FIRST level to plan one keeps it; the rest defer. Walk order is
+     * stable, so which level that is does not wander between plans.
+     */
+    if (pickedFor.has(idxParam)) return false;
+    /* ...and no picker at all when the module offers a real cell for it. */
     return !listedKeys.has(idxParam);
 }
 
@@ -345,6 +360,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
      * hierarchy, not on the level: the index param may be listed on a sibling
      * level, which is exactly where mrdrums puts it. */
     const listedKeys = allListedKeys(hierarchy);
+    /* child_index_param -> a picker page already exists for it. See
+     * childPickerNeeded: two levels sharing one focus need ONE list. */
+    const pickedFor = new Set();
     /*
      * Built once per plan so knob pages can be nudged into a drawable layout —
      * see alignGroupsToRows. Planning happens on component load, not per frame,
@@ -673,7 +691,9 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         /* Repeated elements declared once and multiplied by the host. The
          * level object travels with the page so the caller can resolve concrete
          * keys without re-reading the hierarchy (see child_key.mjs). */
-        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys)) {
+        if (hasChildren(lvl) && childPickerNeeded(lvl, listedKeys, pickedFor)) {
+            const _idxParam = childIndexParam(lvl);
+            if (_idxParam) pickedFor.add(_idxParam);
             /*
              * A child selector IS an items page.
              *
@@ -690,8 +710,20 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
              * commits to a local index that re-keys the level's own pages.
              * Both are expressed as fields on the page, not as a new kind.
              */
+            /*
+             * NAMED FOR WHAT IT SELECTS, not for its level.
+             *
+             * It inherited the level's name, so mrdrums' pad list was called
+             * "Main" -- a list of pads under the name of the page you were
+             * looking for. It is also the page BEFORE the ones it governs
+             * (firstGrid lands past it, so you jog back to reach it), and a
+             * page you arrive at by going backwards has to say what it is on
+             * its own. Reported from the device: it should be "Selected Pad".
+             */
             pages.push({
-                kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
+                kind: PAGE_ITEMS,
+                name: claimName(`Selected ${lvl.child_label || "Item"}`),
+                level: levelKey,
                 childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
                 /* The SAME derived-list field the mode selector uses. One
