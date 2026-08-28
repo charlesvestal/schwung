@@ -102,6 +102,10 @@ typedef struct {
     char target[16];     /* Component: "synth", "fx1", "fx2", "midi_fx" */
     char param[32];      /* Parameter key (lookup metadata in chain_params) */
     float current_value; /* Current value only */
+    int last_cc_out;     /* Last 0-127 value emitted to the external port,
+                          * -1 = nothing sent yet. Change detection happens at
+                          * CC resolution, so a knob swept through a range that
+                          * maps to one CC step emits once, not once per turn. */
 } knob_mapping_t;
 
 /* Chain parameter info from module.json */
@@ -206,6 +210,8 @@ typedef struct {
     int receive_channel;   /* PATCH_CHANNEL_UNSET=absent, 0=All, 1-16=specific channel */
     int forward_channel;   /* PATCH_CHANNEL_UNSET=absent, -2=passthrough, -1=auto, 0-15=channel */
     int midi_fx_pre_mode;  /* 0 = Post (default), 1 = Pre (additive inject to Move MIDI_IN) */
+    int knob_cc_out;       /* 0 = off (default), 1 = echo chain-knob changes out
+                            * as CC 102-109 on the slot's recv channel */
     lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
 } patch_info_t;
 
@@ -348,6 +354,7 @@ typedef struct chain_instance {
      * native instrument on the slot's forward_channel plays it additively).
      * Only meaningful when a MIDI FX is loaded. */
     int midi_fx_pre_mode;
+    int knob_cc_out;
 
     /* Cached "pre_capable" hint from the loaded MIDI FX module.json.
      * Informs the Shadow UI default on first placement; does not gate the
@@ -537,6 +544,15 @@ CHAIN_INTERNAL int format_param_value(chain_param_info_t *param, float value, ch
 CHAIN_INTERNAL int is_smoothable_float(const char *val, float *out_value);
 CHAIN_INTERNAL chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str);
+
+/* Echo one chain knob's current value to the external port as CC 102-109 on
+ * the slot's receive channel. No-op unless the patch opts in via knob_cc_out.
+ * Audio-thread safe (ring enqueue only). `idx` indexes inst->knob_mappings. */
+CHAIN_INTERNAL void knob_emit_cc_out(chain_instance_t *inst, int idx);
+
+/* Echo every mapped chain knob. Used after a patch load or knob remap, where
+ * values change without any per-knob event for the controller to have seen. */
+CHAIN_INTERNAL void knob_emit_cc_out_all(chain_instance_t *inst);
 CHAIN_INTERNAL int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 CHAIN_INTERNAL int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);

@@ -57,6 +57,13 @@ extern volatile int shim_inject_boot_jack;
  * boot via shim_inject_boot_jack. */
 extern volatile int shim_jack_persist;
 
+/* ROUTE_EXTERNAL ring-full drops, incremented by the SPI callback. The RT path
+ * cannot log, so the worker reports the delta at ~1 Hz. A drop here is the one
+ * silent failure mode of chain knob CC out: the emitter records a value as
+ * delivered only on a non-zero return, so a DROP self-heals on the next turn —
+ * but a burst of them means the mailbox is saturated and motors are lagging. */
+extern volatile int shim_ext_midi_drops;
+
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),
  * -1 until observed. Worker persists it on change and re-asserts it at boot —
  * Move's firmware reverts this to Mic on every reboot. */
