@@ -590,12 +590,40 @@ function detectFader(pool) {
         const k = item.key.toLowerCase();
         if (!isNumeric(item.meta)) continue;
         if (isEqBandIsh(k)) continue;
-        if (!/(^|_)(gain|volume|vol|level|amp)($|_)/.test(k)) continue;
+        /*
+         * `output` and `input` count only as the WHOLE key.
+         *
+         * tapescam declares its trim as plain `output`, float 0..1, and drew an
+         * arc -- the vocabulary below had no word for it. But the containment
+         * test that would fix it also catches magneto's `input_pan`, which is a
+         * PAN: bipolar in meaning, and a fader would be a lie about it. So the
+         * bare word qualifies and a compound does not; a compound that really
+         * is a level almost always says so (`output_level`, `input_gain`) and
+         * matches on that instead.
+         */
+        /*
+         * A module's own IN and OUT are levels whatever their polarity.
+         *
+         * Matched on the key OR the declared name, because the name is
+         * sometimes the only place it is said: schwung-airwindows keys every
+         * control `param_N` and names this one "Output", and superboom spells
+         * its key `inputGain` in camelCase.
+         *
+         * And bipolar does not disqualify them, which is the one place this
+         * departs from the trim rule below. 4k-eq's IN and OUT are +-12 dB and
+         * pushnpull's output is -24..+12: those are the signal path's level,
+         * and a fader is the honest picture of one. An EQ BAND gain at +-15 is
+         * a different thing and still takes the arc, because `lf_gain` is not
+         * a bare in or out.
+         */
+        const nameBare = /^(output|input|out|in)$/i.test(String(item.meta.name || "").replace(/[\s.]/g, ""));
+        const bareIO = /^(output|input|out|in)$/.test(k) || nameBare;
+        if (!bareIO && !/(^|_)(gain|volume|vol|level|amp)($|_)/.test(k)) continue;
         /* A fader is a unipolar level; a bipolar range is a pan or a trim,
          * not a volume, whatever the name says -- EXCEPT in dB, where a level
          * is negative by nature and the fader is the canonical picture of it.
          * See isDbLevel. */
-        if (typeof item.meta.min === "number" && item.meta.min < 0 &&
+        if (!bareIO && typeof item.meta.min === "number" && item.meta.min < 0 &&
             !isDbLevel(item.meta, k)) continue;
         out.push({
             kind: VIZ_FADER, group: null, roles: { value: item.key }, keys: [item.key],
