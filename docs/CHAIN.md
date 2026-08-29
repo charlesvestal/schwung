@@ -73,11 +73,17 @@ macro row's `cc`/`is_macro` group in `slot_N.json` still carries a `name`
 key — see the persistence shape below), but nothing in `shadow_ui.js` calls
 `macro_N_set_name` or displays a per-macro name; every macro knob in the
 Knobs list reads simply as `Macro` (`getKnobAssignmentLabel`). Inside the
-Macro Editor, each of up to 4 rows shows one target param per row — its
-`short_name` (falling back to `label`, then the raw key — the same fallback
-the knob grid itself uses via `buildMetaIndex`) on the label side, its depth
-as a percentage on the value side. Click toggles jog-editing that row's
-depth in place; Shift+Click opens the target picker for that row instead.
+Macro Editor, each of up to 4 rows shows its target and amount on ONE line —
+target (the param's `short_name`, falling back to `label`, then the raw key
+— the same fallback the knob grid itself uses via `buildMetaIndex`) on the
+label side, depth as a percentage on the value side. Jog alternates a
+sub-selection within the active row (Target 1, Amount 1, Target 2, Amount 2,
+...; `macroEditorItemAt`/`Count` in `shadow_ui.js`), shown as a `[bracket]`
+around whichever side is currently selected rather than a second, separate
+list row. Click on the bracketed target opens the target picker; Click on
+the bracketed amount toggles jog-editing that depth in place. Which action a
+click performs is entirely determined by which side is bracketed, so there
+is no Shift gesture here.
 
 **Changing a knob's type is Shift+Click on its row in the Knobs list**
 (`enterKnobEditor`'s select handler), not a click on the row itself (which

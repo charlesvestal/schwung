@@ -12059,63 +12059,80 @@ function loadMacroConfig(slot, knobNum) {
     } catch (e) { /* malformed/empty — leave the blanks seeded above */ }
 }
 
-/* One row per param -- target on the label side, amount on the value side,
- * same line. Click toggles jog-editing the amount in place; Shift+Click
- * opens the target picker instead. No Name row here: renaming a macro is a
- * Shift+Click on its row in the Knobs list (enterKnobEditor's select
- * handler) rather than a field inside this editor. */
+/* Target N and Amount N are separate navigable items, alternating (Target 1,
+ * Amount 1, Target 2, Amount 2, ...) rather than sharing one line. Jog moves
+ * the selector between them with no modifier; Click on a Target item opens
+ * the target picker, Click on an Amount item toggles jog-editing that
+ * amount in place — which action a click performs is entirely determined by
+ * which item is selected, so there is no Shift gesture here. No Name row
+ * either: renaming a macro is a Shift+Click on its row in the Knobs list
+ * (enterKnobEditor's select handler), not a field inside this editor. */
 function macroEditorItemAt(index) {
-    return { type: "row", row: index };
+    const row = Math.floor(index / 2);
+    return (index % 2 === 0) ? { type: "target", row } : { type: "amount", row };
 }
 
 function macroEditorItemCount() {
-    return MACRO_MAX_TARGETS;
+    return MACRO_MAX_TARGETS * 2;
 }
 
-/* The row's label is the TARGET PARAM's own short_name, resolved through the
- * same chain_params/ui_hierarchy metadata the knob grid already uses — not
- * "target: param", which is an internal key pair a user never typed. Falls
- * back to the raw param key when a target publishes no short_name. */
 function macroEditorItemLabel(item) {
-    const row = macroEditorRows[item.row];
-    if (!row.target || !row.param) return "(empty)";
-    return row.shortName || row.param;
+    return item.type === "target" ? `Target ${item.row + 1}` : `Amount ${item.row + 1}`;
 }
 
+/* A Target item's value is the assigned param's own short_name, resolved
+ * through the same chain_params/ui_hierarchy metadata the knob grid uses —
+ * not "target: param", which is an internal key pair a user never typed.
+ * Falls back to the raw param key when a target publishes no short_name. */
 function macroEditorItemValue(item) {
-    return Math.round(macroEditorRows[item.row].depth * 100) + "%";
+    const row = macroEditorRows[item.row];
+    if (item.type === "target") {
+        return (row.target && row.param) ? (row.shortName || row.param) : "(empty)";
+    }
+    return Math.round(row.depth * 100) + "%";
 }
 
+/* Target and Amount stay on ONE line per row (4 visual rows, not 8) — jog
+ * still moves through Target 1, Amount 1, Target 2, Amount 2, ... via
+ * macroEditorItemAt/Count, but that alternation is a sub-selection WITHIN
+ * the active row rather than its own list row. A small [bracket] marker on
+ * whichever side (target or amount) is currently selected stands in for the
+ * row-level highlight drawMenuList would otherwise only apply to one whole
+ * row at a time. */
 function drawMacroEditor() {
     clear_screen();
     drawHeader(`Macro ${macroEditorKnobNum}`);
 
-    const items = [];
-    for (let i = 0; i < macroEditorItemCount(); i++) items.push(macroEditorItemAt(i));
+    const selected = macroEditorItemAt(macroEditorIndex);
+    const rows = [];
+    for (let r = 0; r < MACRO_MAX_TARGETS; r++) rows.push(r);
 
     drawMenuList({
-        items,
-        selectedIndex: macroEditorIndex,
-        getLabel: (item) => truncateText(macroEditorItemLabel(item), 14),
-        getValue: (item) => macroEditorItemValue(item),
+        items: rows,
+        selectedIndex: selected.row,
+        getLabel: (r) => {
+            const text = truncateText(macroEditorItemValue({ type: "target", row: r }), 10);
+            /* Target has no separate "now editing" sub-state — clicking it
+             * always leaves for the target picker — so it only ever needs
+             * the loose, "you are here" bracket. */
+            return (r === selected.row && selected.type === "target") ? `[ ${text} ]` : text;
+        },
+        getValue: (r) => {
+            const text = macroEditorItemValue({ type: "amount", row: r });
+            if (r !== selected.row || selected.type !== "amount") return text;
+            /* Once editingMacroDepth is live, drawMenuList's own editMode
+             * option already brackets the selected row's value TIGHT
+             * ([value], no spaces) -- bracketing it here too stacked into
+             * [[value]]. Loose brackets only apply before that click. */
+            return editingMacroDepth ? text : `[ ${text} ]`;
+        },
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         valueAlignRight: true,
         prioritizeSelectedValue: true,
         editMode: editingMacroDepth,
     });
 
-    /* Reflects what a click does RIGHT NOW: the row's Shift+Click destination
-     * only exists while Shift is actually held, so the footer must poll it
-     * on every repaint rather than fix a label at entry. */
-    let footer;
-    if (editingMacroDepth) {
-        footer = ["Back: done", "Jog: amount"];
-    } else if (isShiftHeld()) {
-        footer = ["Back: cancel", "Click: target"];
-    } else {
-        footer = ["Back: cancel", "Click: amount"];
-    }
-    drawFooter(footer);
+    drawFooter(editingMacroDepth ? ["Back: done", "Jog: amount"] : ["Back: cancel", "Click: edit"]);
 }
 
 /* Open the target picker for macro row `row` (0-based). Reuses the LFO
@@ -17216,12 +17233,11 @@ function handleSelect() {
             break;
         case VIEWS.MACRO_EDITOR: {
             const item = macroEditorItemAt(macroEditorIndex);
-            if (isShiftHeld()) {
-                /* Shift+Click: change this row's target/param. */
+            if (item.type === "target") {
                 enterMacroTargetPicker(item.row);
             } else {
-                /* Plain click: toggle jog-edit mode on this row's amount,
-                 * same gesture as the LFO editor's depth row. */
+                /* Toggle jog-edit mode on this amount, same gesture as the
+                 * LFO editor's depth row. */
                 editingMacroDepth = !editingMacroDepth;
                 needsRedraw = true;
                 const row = macroEditorRows[item.row];
