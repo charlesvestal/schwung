@@ -294,6 +294,37 @@ export { WORD_ABBREV };
  * @param {string} text    the declared name or key
  * @param {number} cellW   cell width in px; the grid is 32, the knob card 29
  */
+/**
+ * An EXPLICIT label, fitted but never re-worded.
+ *
+ * labelForCell runs the word pass first, and that pass EXPANDS a known
+ * mnemonic when the full word fits -- deliberately, so a derived family reads
+ * as ATK/DEC/SUS/REL rather than ATK/DECAY/SUS/REL. Right for a label we
+ * derived; wrong for one an author typed. Asked for "Amt", the grid drew
+ * AMOUNT: the author said the short form and got the long one back.
+ *
+ * So a declared short_name is capped and squeezed to fit -- it is still a
+ * five-character cell and a long one is not a way in -- but its WORDS are
+ * left alone.
+ */
+export function labelVerbatim(text, cellW = CELL_W) {
+    const labelWidth = Math.min(cellW, fontWidth4x5("M".repeat(LABEL_CHARS)));
+    /*
+     * preAbbreviate with NO BUDGET, which is the whole distinction.
+     *
+     * The word pass does two opposite things. Given a budget it EXPANDS a
+     * mnemonic to the full word when that fits -- which is what turned a
+     * declared "Amt" into AMOUNT, overriding the author. Given none it only
+     * ABBREVIATES, which is what turns "Sustain" into SUS.
+     *
+     * Dropping the pass altogether was the first attempt and it lost the
+     * second half: a declared "Sustain" drew SUSTAI, a tail-truncation, where
+     * the derived path had correctly drawn SUS. So the budget goes, not the
+     * pass.
+     */
+    return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text)), labelWidth);
+}
+
 export function labelForCell(text, cellW = CELL_W) {
     /*
      * The CAP governs, not the cell.
@@ -2392,7 +2423,9 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * "Env Amt" on Main, where an LFO Amt sits beside it.
          */
         const pageShort = (o && o.page && o.page.shortNames) ? o.page.shortNames[key] : null;
-        const label = labelForCell(pageShort || meta.short_name || meta.label || meta.key, g.cellW);
+        const declared = pageShort || meta.short_name || null;
+        const label = declared ? labelVerbatim(declared, g.cellW)
+                               : labelForCell(meta.label || meta.key, g.cellW);
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
