@@ -14,6 +14,7 @@
           "params": [
             {
               "key": "type",
+              "short_name": "Chord",
               "options_as_string": true,
               "name": "Type",
               "type": "enum",
@@ -47,6 +48,7 @@
             },
             {
               "key": "strum_dir",
+              "short_name": "Dir",
               "options_as_string": true,
               "name": "Strum Dir",
               "type": "enum",
