@@ -405,6 +405,76 @@ function normalize(key, raw) {
     meta.readOnly = access === "read";
     meta.writeOnly = access === "write";
 
+    /*
+     * A TWO-STATE CONTROL NAMED FOR AN ACTION IS A BUTTON.
+     *
+     * `access: "write"` is the right way to say "this is a trigger", and
+     * almost nothing in the fleet says it: 46 controls across 13 modules are
+     * momentary actions declared as ordinary booleans. forge has 13 of them --
+     * Rnd Kit, Rnd Voice, Copy A>B, Swap A/B -- each drawing a latching switch
+     * for something you press once.
+     *
+     * The tell is unambiguous when both halves agree: the name is a VERB and
+     * the control has exactly two states. A verb is not enough on its own
+     * (`rnd_pitch_amt` is how MUCH to randomise), and two states is not enough
+     * on its own (Mono, Sync, Bypass are all real switches).
+     *
+     * `idle`/`trigger` as the option pair is taken as a declaration by itself,
+     * because that is a module spelling out a momentary in the only vocabulary
+     * it had.
+     *
+     * EXCLUSIONS, each from a real false positive found while sweeping:
+     *   *_mode           a mode is a state you set (granny trigger_mode)
+     *   *retrig*, *_sync a retrigger or sync SETTING, not an act (work
+     *                    vlfo1_trig is ["Free","Retrig"])
+     *   hard_reset       a synth envelope behaviour, not a button
+     *   *_amt, *_amount, *_depth, *_seed, *_rate  a quantity that merely has
+     *                    "rnd" in its name
+     *
+     * Inferred, so `access` still wins where a module has bothered to declare
+     * it -- including a module declaring "readwrite" to say this is NOT a
+     * trigger.
+     */
+    if (!meta.writeOnly && !meta.readOnly && !access) {
+        const key = lower(meta.key || "");
+        const name = lower(meta.name || "").replace(/[\s\/>]+/g, "_");
+        const opts = Array.isArray(meta.options) ? meta.options.map((o) => lower(o).trim()) : null;
+        const twoState = (opts && opts.length === 2 &&
+                          opts.every((o) => /^(off|on|no|yes|0|1|false|true|disabled|enabled|-|—)$/.test(o)))
+                       || (type === "int" && meta.min === 0 && meta.max === 1)
+                       || (type === "float" && meta.step === 1 && meta.min === 0 && meta.max === 1);
+        const declaredMomentary = !!opts && opts.length === 2 &&
+                                  opts.some((o) => /^(trigger|trig|fire|go|do|now|save|clear|reset|init|rnd!?)$/.test(o));
+        const VERB = /(^|_)(rnd|rand|random|randomi[sz]e|reroll|shuffle|clear|reset|init|fire|bang|panic|save|store|recall|capture|grab|arm|regen|copy|paste|swap|undo)(\d*)($|_)/;
+        /* `retrig` must match `retrigger` too, and a mode is a mode wherever
+         * the word sits. Both learned from false positives: ducker's `mode` is
+         * ["Trigger","Gate"] -- "Trigger" there NAMES a mode, it is not an act
+         * -- and hush1's `retrigger` slipped a `retrig($|_)` boundary. */
+        /*
+         * Two kinds of veto, and they do not have the same force.
+         *
+         * MODE_LIKE says the control is a STATE, whatever its options are
+         * called -- ducker's `mode` is ["Trigger","Gate"], where "Trigger"
+         * names a mode rather than an act. It overrides even a declared
+         * momentary.
+         *
+         * QUANTITY says the NAME is about an amount, so the verb in it is not
+         * a gesture -- `rnd_pitch_amt` is how much to randomise. It only vetoes
+         * the guess. A module that has actually spelled out ["idle","trigger"]
+         * is telling us directly, and webstream's `play_pause_step` should not
+         * lose that to the word "step".
+         */
+        const MODE_LIKE = /(^|_)(mode|retrig\w*|sync|hard_reset)($|_)/;
+        const QUANTITY = /_(amt|amount|depth|seed|rate|time|len|length|steps?|range|slew|chords?|octave)($|_)/;
+        const modeLike = MODE_LIKE.test(key) || MODE_LIKE.test(name);
+        const quantity = QUANTITY.test(key) || QUANTITY.test(name);
+        const verbal = (VERB.test(key) || VERB.test(name)) && !modeLike && !quantity;
+        if ((declaredMomentary && !modeLike) || (verbal && twoState)) {
+            meta.writeOnly = true;
+            meta.trigger_inferred = true;
+        }
+    }
+
     const listableEnum = type === "enum"
                        && Array.isArray(meta.options) && meta.options.length > 0;
     meta.opaque_type = opaqueType;

@@ -1666,8 +1666,23 @@ const BIG_NUM_MAX_DIGITS = 3;
 
 function digitsOf(n) { return String(Math.trunc(Math.abs(n))).length; }
 
+/*
+ * A FLOAT THAT STEPS BY 1 IS AN INTEGER RANGE.
+ *
+ * krautdrums declares `tempo` as float 60..200 with step 1 -- whole numbers
+ * throughout, and no more continuous than an int. The rule below required
+ * type "int" exactly, so it drew a dial where every other tempo in the fleet
+ * draws a number. Reported from the review as "didn't we fix that?", and the
+ * answer was that we fixed it for the declaration, not for the quantity.
+ */
+function isWholeNumbered(meta) {
+    if (!meta) return false;
+    if (meta.type === "int") return true;
+    return meta.type === "float" && meta.step === 1;
+}
+
 export function isCountedQuantity(meta) {
-    if (!meta || meta.type !== "int") return false;
+    if (!isWholeNumbered(meta)) return false;
     if (!COUNTED_WORDS.test(String(meta.key || "")) &&
         !COUNTED_WORDS.test(String(meta.name || ""))) return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
@@ -1677,7 +1692,7 @@ export function isCountedQuantity(meta) {
 export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
     if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
-    if (meta.type !== "int") return false;
+    if (!isWholeNumbered(meta)) return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
     /* A count or a tempo is read, not aimed -- see isCountedQuantity. */
