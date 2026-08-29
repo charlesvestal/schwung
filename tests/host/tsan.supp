@@ -1,0 +1,25 @@
+# ThreadSanitizer suppressions — keep this file SHORT and keep every entry
+# justified. A suppression is a claim that we understand a report better than
+# the tool does, and that claim should be rare.
+
+# ---------------------------------------------------------------------------
+# The seqlock payload copy in src/modules/chain/dsp/chain_loader.c
+# ---------------------------------------------------------------------------
+#
+# The chain loader passes a module name from the SPI audio callback to the
+# loader thread through a seqlock. The SPI thread MUST NOT block — an RT thread
+# waiting on a lock held by a SCHED_OTHER thread is unbounded priority
+# inversion — so the writer never waits and the reader retries instead.
+#
+# A seqlock reader deliberately reads bytes that may be concurrently written,
+# then re-reads the sequence counter and DISCARDS what it read if the counter
+# moved. The validation is what makes it correct. TSan sees the copy but has no
+# way to see the validation that follows it, so it reports a race. This is the
+# well-known seqlock blind spot, not a defect in the handshake.
+#
+# Deliberately scoped to the two one-line copy helpers rather than to
+# loader_read_request / chain_loader_request_synth, so a genuine race anywhere
+# else in the request path is still reported. That is why those helpers exist
+# and why they must not be inlined back.
+race:seqlock_read_payload
+race:seqlock_write_payload

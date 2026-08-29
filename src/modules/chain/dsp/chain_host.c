@@ -13,6 +13,7 @@
 #endif
 #include <link.h>
 #include "chain_internal.h"
+#include "chain_loader.h"
 
 
 /* ============================================================================
@@ -111,6 +112,10 @@ static void v2_destroy_instance(void *instance) {
 
     v2_chain_log(inst, "Destroying instance");
 
+    /* Join the loader FIRST. A load in flight owns a half-built instance and
+     * reads inst->module_dir; everything below frees what it is standing on. */
+    chain_loader_shutdown(inst);
+
     /* Unload all plugins */
     v2_synth_panic(inst);
     v2_unload_all_audio_fx(inst);
@@ -154,13 +159,19 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_load_error[0] = '\0';
     chain_mod_clear_target_entries(inst, "synth", 0);
 
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->destroy_instance) {
-        inst->synth_plugin_v2->destroy_instance(inst->synth_instance);
-    }
-
-    if (inst->synth_handle) {
-        dlclose(inst->synth_handle);
-    }
+    /*
+     * DETACH here, tear down elsewhere. Nulling the triple first is what makes
+     * this safe with no new gating: every call site requires both the api and
+     * the instance pointer to be non-NULL, so they all stop calling into the
+     * old module the moment these stores land.
+     *
+     * chain_loader_retire hands the teardown to the loader thread when one is
+     * running, and falls back to tearing down inline when there is none — which
+     * is the behaviour this function has always had.
+     */
+    chain_retired_module_t retired = {
+        inst->synth_handle, inst->synth_plugin_v2, inst->synth_instance
+    };
 
     inst->synth_handle = NULL;
     inst->synth_plugin_v2 = NULL;
@@ -170,6 +181,8 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
     inst->synth_bypassed = 0;
+
+    chain_loader_retire(inst, &retired);
 }
 
 /* V2 unload all audio FX */
@@ -372,17 +385,39 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
     return 0;
 }
 
-/* V2 load synth - loads a sound generator module */
-int v2_load_synth(chain_instance_t *inst, const char *module_name) {
+/*
+ * Build a synth instance into `out`. THIS IS THE HALF THAT MAY BLOCK — dlopen,
+ * fopen, calloc and the plugin's own create_instance, measured at 672.9 ms for
+ * minijv. It runs on the loader thread (chain_loader.c), or inline on the SPI
+ * thread via the synchronous v2_load_synth below.
+ *
+ * It touches NOTHING reachable from a render path: every result lands in `out`,
+ * and only chain_synth_commit publishes it. That is what makes running it off
+ * the audio thread safe without a lock on either side.
+ *
+ * The one exception is v2_chain_log, which is safe from both threads by
+ * construction — unified_log_v opens with pthread_mutex_trylock and returns
+ * without logging if the lock is held, so concurrent callers drop a line rather
+ * than block.
+ */
+void chain_synth_stage(chain_instance_t *inst, const char *module_name,
+                       chain_staged_synth_t *out) {
     char msg[256];
     char synth_path[MAX_PATH_LEN];
     char module_name_copy[MAX_NAME_LEN];  /* Local copy to avoid pointer invalidation */
 
-    if (!inst) return -1;
-    if (!module_name || !module_name[0]) return -1;
+    if (!out) return;
+    out->ok = 0;
+    out->default_forward_channel = -1;
+    out->consumes_line_input = 0;
+    out->param_count = 0;
+    out->load_error[0] = '\0';
+
+    if (!inst) return;
+    if (!module_name || !module_name[0]) return;
     if (!valid_module_name(module_name)) {
         v2_chain_log(inst, "Invalid synth module name");
-        return -1;
+        return;
     }
 
     /* Make a local copy of module_name immediately - the original pointer may
@@ -438,7 +473,6 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     char dsp_path[MAX_PATH_LEN];
     snprintf(dsp_path, sizeof(dsp_path), "%s/dsp.so", synth_path);
 
-    inst->synth_load_error[0] = '\0';
     snprintf(msg, sizeof(msg), "Loading synth: %s", dsp_path);
     v2_chain_log(inst, msg);
 
@@ -447,7 +481,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     if (!handle) {
         snprintf(msg, sizeof(msg), "dlopen failed: %s", dlerror());
         v2_chain_log(inst, msg);
-        return -1;
+        return;
     }
 
     /*
@@ -480,7 +514,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         snprintf(msg, sizeof(msg), "Synth %s does not support V2 API (V2 required)", module_name);
         v2_chain_log(inst, msg);
         dlclose(handle);
-        return -1;
+        return;
     }
 
     plugin_api_v2_t *api = init_v2(&inst->subplugin_host_api);
@@ -488,7 +522,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         snprintf(msg, sizeof(msg), "Synth %s V2 API version mismatch", module_name);
         v2_chain_log(inst, msg);
         dlclose(handle);
-        return -1;
+        return;
     }
 
     void *synth_inst = api->create_instance(synth_path, pack_config);
@@ -496,7 +530,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         snprintf(msg, sizeof(msg), "Synth %s V2 create_instance failed", module_name);
         v2_chain_log(inst, msg);
         dlclose(handle);
-        return -1;
+        return;
     }
 
     /* Check UI and parameters JSON buffer size limits */
@@ -511,46 +545,41 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         free(temp_buf);
 
         if (cp_len >= SHADOW_PARAM_VALUE_LEN - 1 || ui_len >= SHADOW_PARAM_VALUE_LEN - 1) {
-            snprintf(msg, sizeof(msg), "Synth %s UI or param JSON too large (chain_params: %d, ui_hierarchy: %d). Max %d.", 
+            snprintf(msg, sizeof(msg), "Synth %s UI or param JSON too large (chain_params: %d, ui_hierarchy: %d). Max %d.",
                      module_name, cp_len, ui_len, SHADOW_PARAM_VALUE_LEN - 1);
             v2_chain_log(inst, msg);
-            snprintf(inst->synth_load_error, sizeof(inst->synth_load_error), "UI buffer overflow");
-            
+            snprintf(out->load_error, sizeof(out->load_error), "UI buffer overflow");
+
             api->destroy_instance(synth_inst);
-            
-            /* Proceed as success with NULL synth_instance so UI loads and displays error */
-            inst->synth_handle = handle;
-            inst->synth_plugin_v2 = api;
-            inst->synth_instance = NULL;
-            strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
-            
-            parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
-            inst->mod_param_refresh_ms_synth = 0;
-            return 0;
+
+            /* Stage as SUCCESS with a NULL instance, so the UI loads and shows
+             * the error rather than the position looking empty. */
+            out->handle = handle;
+            out->api = api;
+            out->instance = NULL;
+            snprintf(out->module_name, sizeof(out->module_name), "%s", module_name);
+            snprintf(out->synth_path, sizeof(out->synth_path), "%s", synth_path);
+            parse_chain_params(synth_path, out->params, &out->param_count);
+            out->ok = 1;
+            return;
         }
     }
 
-    inst->synth_handle = handle;
-    inst->synth_plugin_v2 = api;
-    inst->synth_instance = synth_inst;
-    strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
-
     /* Parse chain_params from module.json for type info */
-    if (parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count) < 0) {
+    if (parse_chain_params(synth_path, out->params, &out->param_count) < 0) {
         v2_chain_log(inst, "ERROR: Failed to parse synth parameters");
         api->destroy_instance(synth_inst);
         dlclose(handle);
-        inst->synth_handle = NULL;
-        inst->synth_plugin_v2 = NULL;
-        inst->synth_instance = NULL;
-        inst->current_synth_module[0] = '\0';
-        return -1;
+        return;
     }
-    inst->mod_param_refresh_ms_synth = 0;
+
+    out->handle = handle;
+    out->api = api;
+    out->instance = synth_inst;
+    snprintf(out->module_name, sizeof(out->module_name), "%s", module_name);
+    snprintf(out->synth_path, sizeof(out->synth_path), "%s", synth_path);
 
     /* Parse default_forward_channel from capabilities in module.json */
-    inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
-    inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -566,10 +595,10 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                     int fwd_ch = -1;
                     if (json_get_int_in_section(json, "capabilities", "default_forward_channel", &fwd_ch) == 0) {
                         if (fwd_ch == -2) {
-                            inst->synth_default_forward_channel = -2;  /* Passthrough (for MPE) */
+                            out->default_forward_channel = -2;  /* Passthrough (for MPE) */
                             v2_chain_log(inst, "Synth default_forward_channel: passthrough");
                         } else if (fwd_ch >= 1 && fwd_ch <= 16) {
-                            inst->synth_default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
+                            out->default_forward_channel = fwd_ch - 1;  /* Store as 0-15 */
                             snprintf(msg, sizeof(msg), "Synth default_forward_channel: %d", fwd_ch);
                             v2_chain_log(inst, msg);
                         }
@@ -590,7 +619,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                                 json_get_string(json, "component_type", ctype, sizeof(ctype));
                             }
                             if (strcmp(ctype, "audio_fx") != 0 && strcmp(ctype, "midi_fx") != 0) {
-                                inst->synth_consumes_line_input = 1;
+                                out->consumes_line_input = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
                         }
@@ -602,8 +631,136 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         }
     }
 
-    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s (%d params)", module_name, inst->synth_param_count);
+    out->ok = 1;
+    snprintf(msg, sizeof(msg), "Synth v2 staged: %s (%d params)", module_name, out->param_count);
     v2_chain_log(inst, msg);
+}
+
+/*
+ * destroy_instance + dlclose for a triple that is no longer reachable from any
+ * render path. NEVER call this from the SPI thread: destroy_instance is the
+ * plugin's own teardown (unbounded) and dlclose unmaps.
+ */
+void chain_synth_destroy_triple(chain_retired_module_t *r) {
+    if (!r) return;
+    if (r->api && r->instance && r->api->destroy_instance) {
+        r->api->destroy_instance(r->instance);
+    }
+    if (r->handle) dlclose(r->handle);
+    r->handle = NULL;
+    r->api = NULL;
+    r->instance = NULL;
+}
+
+void chain_loader_note_demote_failed(const char *msg) {
+    chain_log(msg);
+}
+
+void chain_loader_note_retire_overflow(chain_instance_t *inst) {
+    v2_chain_log(inst, "chain loader: retire ring full — leaking a module "
+                       "(safe; a use-after-free in the audio path is not)");
+}
+
+/*
+ * Publish a staged load into the live synth position. SPI THREAD ONLY.
+ *
+ * Everything here is a pointer store or a small copy — the ~1.1 MB parameter
+ * block is SWAPPED, not copied, and the displaced block goes back to the loader
+ * to be reused by the next staging. That keeps the number of live blocks
+ * invariant and means no allocation happens on this thread.
+ *
+ * What it displaces is handed back through `retired_out` rather than destroyed
+ * here, because destroy_instance and dlclose are exactly what must not run on
+ * the audio thread.
+ */
+void chain_synth_commit(chain_instance_t *inst, chain_staged_synth_t *staged,
+                        chain_retired_module_t *retired_out) {
+    if (!inst || !staged) return;
+
+    if (retired_out) {
+        retired_out->handle   = NULL;
+        retired_out->api      = NULL;
+        retired_out->instance = NULL;
+    }
+
+    if (!staged->ok) {
+        /* Load failed. Leave the position exactly as it was — a failed load
+         * must not empty a working slot, the same rule the shadow UI applies to
+         * a failed read. */
+        return;
+    }
+
+    /* Silence the outgoing module before it stops being rendered, or its voices
+     * are simply cut. Same call, same order, as the synchronous path. */
+    v2_synth_panic(inst);
+    chain_mod_clear_target_entries(inst, "synth", 0);
+
+    if (retired_out) {
+        retired_out->handle   = inst->synth_handle;
+        retired_out->api      = inst->synth_plugin_v2;
+        retired_out->instance = inst->synth_instance;
+    }
+
+    /* Swap the metadata block; the loader reuses what we displace. */
+    chain_param_info_t *displaced = inst->synth_params;
+    inst->synth_params      = staged->params;
+    staged->params          = displaced;
+
+    inst->synth_handle      = staged->handle;
+    inst->synth_plugin_v2   = staged->api;
+    inst->synth_instance    = staged->instance;
+    inst->synth_param_count = staged->param_count;
+    snprintf(inst->current_synth_module, sizeof(inst->current_synth_module),
+             "%s", staged->module_name);
+    snprintf(inst->synth_load_error, sizeof(inst->synth_load_error),
+             "%s", staged->load_error);
+    inst->synth_default_forward_channel = staged->default_forward_channel;
+    inst->synth_consumes_line_input     = staged->consumes_line_input;
+    inst->mod_param_refresh_ms_synth    = 0;
+    inst->synth_bypassed                = 0;
+    smoother_reset(&inst->synth_smoother);
+    inst->dirty = 1;
+
+    /* The staged record no longer owns the module. */
+    staged->handle   = NULL;
+    staged->api      = NULL;
+    staged->instance = NULL;
+
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Synth v2 loaded: %s (%d params)",
+             inst->current_synth_module, inst->synth_param_count);
+    v2_chain_log(inst, msg);
+}
+
+/*
+ * Synchronous load — stage and commit back to back on the calling thread.
+ *
+ * Kept for the paths that are still synchronous (patch load, boot restore) and
+ * as the fallback when a loader thread cannot be started. It is deliberately
+ * the SAME two functions the deferred path uses, in sequence, so there is one
+ * implementation of loading and not two that can drift.
+ */
+int v2_load_synth(chain_instance_t *inst, const char *module_name) {
+    if (!inst) return -1;
+
+    chain_staged_synth_t staged;
+    memset(&staged, 0, sizeof(staged));
+    staged.params = (chain_param_info_t *)calloc(MAX_CHAIN_PARAMS,
+                                                 sizeof(chain_param_info_t));
+    if (!staged.params) return -1;
+
+    chain_synth_stage(inst, module_name, &staged);
+    if (!staged.ok) {
+        free(staged.params);
+        return -1;
+    }
+
+    chain_retired_module_t old = { NULL, NULL, NULL };
+    chain_synth_commit(inst, &staged, &old);
+    chain_synth_destroy_triple(&old);
+
+    /* commit swapped our block into the instance and handed back the old one. */
+    free(staged.params);
     return 0;
 }
 
@@ -961,12 +1118,30 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         const char *subkey = key + 6;
         /* Intercept module change to swap synth dynamically */
         if (strcmp(subkey, "module") == 0) {
-            v2_synth_panic(inst);
-            v2_unload_synth(inst);
-            smoother_reset(&inst->synth_smoother);  /* Reset smoother on module change */
             if (val && val[0] != '\0' && strcmp(val, "none") != 0) {
-                v2_load_synth(inst, val);
+                /*
+                 * DEFER. This write is serviced on the SPI audio callback, and
+                 * loading a module from here blocks it — measured at 672.9 ms
+                 * for minijv, ~232 consecutive dropped frames — as well as
+                 * making every thread the plugin spawns inherit SCHED_FIFO 70.
+                 *
+                 * Note what is NOT done first: no panic, no unload. The
+                 * outgoing module keeps rendering for the whole load, so a swap
+                 * costs no silence. chain_synth_commit does the panic and the
+                 * detach at the instant the new one takes over.
+                 */
+                if (chain_loader_request_synth(inst, val) != 0) {
+                    /* No loader available — do it the old way rather than not
+                     * at all. Blocks, exactly as it always did. */
+                    v2_synth_panic(inst);
+                    v2_unload_synth(inst);
+                    smoother_reset(&inst->synth_smoother);
+                    v2_load_synth(inst, val);
+                }
             } else {
+                v2_synth_panic(inst);
+                v2_unload_synth(inst);
+                smoother_reset(&inst->synth_smoother);
                 /* Clearing synth - also clear knob mappings */
                 inst->knob_mapping_count = 0;
             }
@@ -1631,6 +1806,23 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         int mod_result = chain_mod_get_modulated_for_subkey(inst, "synth", subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
 
+        /*
+         * Is a module still being built for this position?
+         *
+         * This key has existed in the shadow UI for months — page_controller
+         * probes it, the component load gate waits on it — and the chain host
+         * has never implemented it, because loading was synchronous and there
+         * was never a moment when the honest answer was "1". Deferred loading
+         * is what finally gives that machinery something true to read.
+         *
+         * It MUST be exactly "1" or "0". The UI probes once per component and
+         * latches: any other answer records the component as not implementing
+         * it, permanently, and it falls back to guessing at a debounce.
+         */
+        if (strcmp(subkey, "is_loading") == 0) {
+            return snprintf(buf, buf_len, "%d", chain_loader_synth_busy(inst) ? 1 : 0);
+        }
+
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
             return snprintf(buf, buf_len, "%d", inst->synth_default_forward_channel);
@@ -1959,6 +2151,16 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         return;
     }
+
+    /*
+     * Publish any module the loader thread finished building. This is the ONLY
+     * place a deferred load becomes visible, and it is on the SPI thread — so
+     * "only the SPI thread ever mutates a chain instance" is still true, and a
+     * commit can no more interleave with a render than a permutation can.
+     *
+     * One atomic load when nothing is pending.
+     */
+    chain_loader_commit(inst);
 
     /* Update smoothed parameters and send interpolated values to sub-plugins */
     {

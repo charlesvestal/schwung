@@ -43,6 +43,50 @@ jobs:
             bash "$t"
           done
 
+  # ------------------------------------------------------------- sanitizers
+  # The deferred module loader (src/modules/chain/dsp/chain_loader.c) is the
+  # one place in this tree where two threads touch the same memory, and one of
+  # them is the SPI audio callback. It is lock-free by design — the SPI side
+  # takes no mutex, because an RT thread blocking on a lock held by a
+  # SCHED_OTHER thread is unbounded priority inversion — so nothing but a race
+  # detector will tell us when that reasoning stops being true.
+  #
+  # This job exists because the sanitizers are NOT usable on the maintainer's
+  # machine: a six-line pthread program hangs under ASan and segfaults under
+  # TSan there, so a local run says nothing either way. Linux CI is the only
+  # place these currently produce a trustworthy answer.
+  #
+  # Deliberately NOT a required check while it beds in — read it, don't gate
+  # on it, until it has been green for a while.
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ThreadSanitizer — races in the loader handshake
+        run: |
+          set -e
+          mkdir -p build/tests
+          cc -std=gnu11 -g -O1 -fsanitize=thread \
+            -Wall -Wno-unused-parameter -Wno-unused-function \
+            -Isrc -Isrc/modules/chain/dsp -Isrc/host \
+            tests/host/test_chain_deferred_load.c \
+            src/modules/chain/dsp/chain_loader.c \
+            -o build/tests/tsan_deferred_load -lpthread
+          # suppressions: exactly the seqlock payload copy, see tsan.supp
+          TSAN_OPTIONS="halt_on_error=1:suppressions=$PWD/tests/host/tsan.supp" \
+            ./build/tests/tsan_deferred_load
+      - name: AddressSanitizer — use-after-free across the handoff
+        run: |
+          set -e
+          cc -std=gnu11 -g -O1 -fsanitize=address,undefined \
+            -fno-omit-frame-pointer \
+            -Wall -Wno-unused-parameter -Wno-unused-function \
+            -Isrc -Isrc/modules/chain/dsp -Isrc/host \
+            tests/host/test_chain_deferred_load.c \
+            src/modules/chain/dsp/chain_loader.c \
+            -o build/tests/asan_deferred_load -lpthread
+          ASAN_OPTIONS="detect_leaks=1:halt_on_error=1" ./build/tests/asan_deferred_load
+
   # ----------------------------------------------------------------------- go
   # schwung-manager (on-device module store / updater service).
   # NOTE: go.mod declares `go 1.26`. Keep this pin >= 1.26 or the build breaks.
