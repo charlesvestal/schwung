@@ -17394,8 +17394,12 @@ function handleSelect() {
             if (lfoTargetComponents.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
                 if (comp.key === "__clear__") {
-                    lfoCtx.setParamBlocking("target", "");
-                    lfoCtx.setParamBlocking("target_param", "");
+                    if (lfoCtx.clearTarget) {
+                        lfoCtx.clearTarget();
+                    } else {
+                        lfoCtx.setParamBlocking("target", "");
+                        lfoCtx.setParamBlocking("target_param", "");
+                    }
                     if (!returnToSlotGridFromLfoTarget()) {
                         setView(lfoCtx.pickerHomeView || VIEWS.LFO_EDIT);
                         if (lfoCtx.onPickerReturn) lfoCtx.onPickerReturn();
@@ -19163,6 +19167,13 @@ function makeSlotMacroTargetCtx(slot, knobNum, row) {
          * pick needs an explicit refresh or the editor would keep showing
          * the row's old target/param until re-entered. */
         onPickerReturn: function() { loadMacroConfig(slot, knobNum); },
+        /* The shared picker's default [Clear Target] just blanks target and
+         * target_param (fine for an LFO, whose depth is independent of what
+         * it's aimed at). A macro row's own macro_N_row_R:clear already
+         * zeroes target/param/depth together in one call — reused here so a
+         * cleared row doesn't hand its old amount to whatever gets assigned
+         * to it next. */
+        clearTarget: function() { return shadowSetParamBlocking(slot, prefix + "clear", "1"); },
     };
 }
 
