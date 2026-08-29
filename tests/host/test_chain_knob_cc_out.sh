@@ -52,9 +52,16 @@ command grep -q 'knob_emit_cc_out_all(inst);' src/modules/chain/dsp/chain_patch.
 # THE LOOP GUARD. The inbound absolute path must NOT echo: a controller set
 # this value, and one configured to hear its own output (how a motorised unit
 # normally runs) would fight the user's fingers mid-turn. chain_midi.c has
-# exactly one emit -- the relative branch.
+# exactly two emits -- both in the RELATIVE branch (direct-mode knobs, and
+# (since the macro feature) macro knobs, which echo their own 0..1 position
+# the same way). Both absolute-branch cases (direct-mode and macro) instead
+# carry a "Deliberately no knob_emit_cc_out() here" comment documenting the
+# omission, which is checked below rather than trusting a bare count to mean
+# "no new legitimate site was ever added".
 n=$(command grep -c 'knob_emit_cc_out(inst' src/modules/chain/dsp/chain_midi.c || true)
-[ "$n" -eq 1 ] || fail "chain_midi.c has $n emit sites, expected exactly 1 (absolute CC must not echo)"
+[ "$n" -eq 2 ] || fail "chain_midi.c has $n emit sites, expected exactly 2 (direct-mode + macro relative knob paths)"
+n=$(command grep -c 'Deliberately no knob_emit_cc_out() here' src/modules/chain/dsp/chain_midi.c || true)
+[ "$n" -eq 2 ] || fail "chain_midi.c documents $n no-echo absolute branches, expected 2 (direct-mode + macro)"
 
 # The absolute branch still has to record what the sender already knows, or the
 # next genuine change is measured against a stale baseline.

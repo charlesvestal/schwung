@@ -96,7 +96,29 @@ typedef enum {
     KNOB_TYPE_ENUM = 2
 } knob_type_t;
 
-/* Knob mapping structure */
+/* Macro fan-out: one knob, up to MAX_MACRO_TARGETS module params.
+ * An empty target[0]=='\0' means the row is unused — no separate count
+ * field, so there is only one place a row's occupancy can be recorded. */
+#define MAX_MACRO_TARGETS 4
+#define MACRO_NAME_LEN 16
+
+typedef struct {
+    char target[16];   /* "" = row unused */
+    char param[32];
+    float depth;        /* -1.0..+1.0, same semantics as lfo_state_t.depth */
+} macro_target_t;
+
+/* Knob mapping structure.
+ *
+ * is_macro==0 (default): direct 1:1 mode, target/param/current_value behave
+ * exactly as before — untouched by the macro fields below.
+ *
+ * is_macro==1: target/param are unused ("").  current_value is instead the
+ * knob's OWN raw position in 0..1 (0 = no effect on any target, 1 = full
+ * effect of each row's signed depth), and macro_targets[] fans that position
+ * out to up to MAX_MACRO_TARGETS module params via the chain_mod modulation
+ * bus (see chain_macro_apply in chain_mod.c). A knob is either direct or a
+ * macro, never both — promoting/demoting clears the other mode's fields. */
 typedef struct {
     int cc;              /* CC number (71-78 for knobs 1-8) */
     char target[16];     /* Component: "synth", "fx1", "fx2", "midi_fx" */
@@ -106,6 +128,10 @@ typedef struct {
                           * -1 = nothing sent yet. Change detection happens at
                           * CC resolution, so a knob swept through a range that
                           * maps to one CC step emits once, not once per turn. */
+
+    int is_macro;
+    char macro_name[MACRO_NAME_LEN];
+    macro_target_t macro_targets[MAX_MACRO_TARGETS];
 } knob_mapping_t;
 
 /* Chain parameter info from module.json */
@@ -545,6 +571,12 @@ CHAIN_INTERNAL int is_smoothable_float(const char *val, float *out_value);
 CHAIN_INTERNAL chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str);
 
+/* Shared relative-encoder acceleration curve (see definition in
+ * chain_params.c). Updates *last_ms and returns a multiplier capped at
+ * KNOB_ACCEL_MAX_MULT; callers needing a lower ceiling (int/enum) cap the
+ * result themselves. */
+CHAIN_INTERNAL int chain_knob_accel(uint64_t *last_ms);
+
 /* Echo one chain knob's current value to the external port as CC 102-109 on
  * the slot's receive channel. No-op unless the patch opts in via knob_cc_out.
  * Audio-thread safe (ring enqueue only). `idx` indexes inst->knob_mappings. */
@@ -571,6 +603,13 @@ CHAIN_INTERNAL int chain_mod_get_modulated_for_subkey(chain_instance_t *inst, co
 CHAIN_INTERNAL int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target);
 CHAIN_INTERNAL void chain_mod_update_base_from_set_param(chain_instance_t *inst, const char *target, const char *param, const char *val);
+
+/* Macro fan-out (1 knob -> up to MAX_MACRO_TARGETS params), built on top of
+ * chain_mod_emit_value/chain_mod_clear_source. `idx` indexes
+ * inst->knob_mappings; `row` indexes a mapping's macro_targets. */
+CHAIN_INTERNAL void chain_macro_apply(chain_instance_t *inst, int idx);
+CHAIN_INTERNAL void chain_macro_clear_all_sources(chain_instance_t *inst, int idx);
+CHAIN_INTERNAL void chain_macro_clear_row_source(chain_instance_t *inst, int idx, int row);
 
 /* chain_midi.c */
 CHAIN_INTERNAL int chain_get_clock_status(void);

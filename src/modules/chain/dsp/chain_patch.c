@@ -1205,7 +1205,17 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
         }
     }
 
-    /* Parse knob_mappings - simplified */
+    /* Parse knob_mappings - simplified.
+     *
+     * A macro (is_macro:1) fans out across MULTIPLE flat rows sharing one
+     * cc — one row per populated target, or a single header-only row if
+     * none is populated yet — rather than a nested "targets":[...] array.
+     * That's deliberate: this scanner grabs the FIRST '}'/']' with no
+     * bracket-depth tracking (see arr_end/obj_end above), so a real nested
+     * array would silently truncate everything after its first ']'. Rows
+     * for the same macro are merged BY CC into one patch->knob_mappings[]
+     * entry as they're parsed — see chain_host.c's "knob_mappings" getter
+     * for the writer side of this format. */
     const char *mappings_pos = strstr(json, "\"knob_mappings\"");
     if (mappings_pos) {
         const char *arr_start = strchr(mappings_pos, '[');
@@ -1213,37 +1223,31 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
 
         if (arr_start && arr_end) {
             const char *obj_start = arr_start;
-            while (patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+            for (;;) {
                 obj_start = strchr(obj_start + 1, '{');
                 if (!obj_start || obj_start > arr_end) break;
 
                 const char *obj_end = strchr(obj_start, '}');
                 if (!obj_end || obj_end > arr_end) break;
 
-                knob_mapping_t *m = &patch->knob_mappings[patch->knob_mapping_count];
-
-                /*
-                 * Clear the row before parsing into it.
-                 *
-                 * `m` is only ADVANCED when a row is accepted, so a REJECTED
-                 * row leaves its cc/target/param sitting in the slot and the
-                 * next row inherits every field it happens to omit — a mapping
-                 * silently pointed at a module named by a row that was thrown
-                 * away. Rejected rows used to be a curiosity of hand-edited
-                 * patches; the permutation makes them routine, because vacating
-                 * a position blanks a mapping in place rather than removing it.
-                 *
-                 * It also terminates `target`: the strncpy below caps `len` at
-                 * exactly sizeof-1, and strncpy writes no NUL when it copies
-                 * the full count.
-                 */
-                memset(m, 0, sizeof(*m));
+                /* Parse into scratch fields first — a macro row may MERGE
+                 * into an already-accepted entry instead of becoming a new
+                 * patch->knob_mappings[] slot, so nothing is written there
+                 * until the merge-vs-new decision below. */
+                int row_cc = 0;
+                char row_target[16] = "";
+                char row_param[32] = "";
+                float row_value = -999999.0f;  /* Sentinel: no saved value */
+                int row_is_macro = 0;
+                char row_name[MACRO_NAME_LEN] = "";
+                int row_macro_row = -1;
+                float row_depth = 0.0f;
 
                 /* Parse cc */
                 const char *cc_pos = strstr(obj_start, "\"cc\"");
                 if (cc_pos && cc_pos < obj_end) {
                     const char *colon = strchr(cc_pos, ':');
-                    if (colon) m->cc = atoi(colon + 1);
+                    if (colon) row_cc = atoi(colon + 1);
                 }
 
                 /* Parse target */
@@ -1255,7 +1259,7 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                         if (q2 && q2 < obj_end) {
                             int len = q2 - q1 - 1;
                             if (len > 15) len = 15;
-                            strncpy(m->target, q1 + 1, len);
+                            strncpy(row_target, q1 + 1, len);
                         }
                     }
                 }
@@ -1269,21 +1273,87 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                         if (q2 && q2 < obj_end) {
                             int len = q2 - q1 - 1;
                             if (len > 31) len = 31;
-                            strncpy(m->param, q1 + 1, len);
+                            strncpy(row_param, q1 + 1, len);
                         }
                     }
                 }
 
                 /* Parse saved value if present */
-                m->current_value = -999999.0f;  /* Sentinel: no saved value */
                 const char *val_pos = strstr(obj_start, "\"value\"");
                 if (val_pos && val_pos < obj_end) {
                     const char *colon = strchr(val_pos, ':');
-                    if (colon) m->current_value = strtof(colon + 1, NULL);
+                    if (colon) row_value = strtof(colon + 1, NULL);
                 }
 
-                if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->param[0]) {
-                    patch->knob_mapping_count++;
+                /* Parse is_macro and, if set, the macro-only fields */
+                const char *macro_pos = strstr(obj_start, "\"is_macro\"");
+                if (macro_pos && macro_pos < obj_end) {
+                    const char *colon = strchr(macro_pos, ':');
+                    if (colon) row_is_macro = (atoi(colon + 1) != 0);
+                }
+
+                if (row_is_macro) {
+                    const char *name_pos = strstr(obj_start, "\"name\"");
+                    if (name_pos && name_pos < obj_end) {
+                        const char *q1 = strchr(strchr(name_pos, ':'), '"');
+                        if (q1 && q1 < obj_end) {
+                            const char *q2 = strchr(q1 + 1, '"');
+                            if (q2 && q2 < obj_end) {
+                                int len = q2 - q1 - 1;
+                                if (len > MACRO_NAME_LEN - 1) len = MACRO_NAME_LEN - 1;
+                                strncpy(row_name, q1 + 1, len);
+                            }
+                        }
+                    }
+
+                    const char *row_pos = strstr(obj_start, "\"macro_row\"");
+                    if (row_pos && row_pos < obj_end) {
+                        const char *colon = strchr(row_pos, ':');
+                        if (colon) row_macro_row = atoi(colon + 1);
+                    }
+
+                    const char *depth_pos = strstr(obj_start, "\"depth\"");
+                    if (depth_pos && depth_pos < obj_end) {
+                        const char *colon = strchr(depth_pos, ':');
+                        if (colon) row_depth = strtof(colon + 1, NULL);
+                    }
+                }
+
+                /* Accept-gate: a bare macro header legitimately has no
+                 * param, so it is accepted on is_macro alone. */
+                int row_valid = (row_cc >= KNOB_CC_START && row_cc <= KNOB_CC_END) &&
+                                 (row_param[0] || row_is_macro);
+
+                if (row_valid && row_is_macro) {
+                    knob_mapping_t *m = NULL;
+                    for (int k = 0; k < patch->knob_mapping_count; k++) {
+                        if (patch->knob_mappings[k].cc == row_cc && patch->knob_mappings[k].is_macro) {
+                            m = &patch->knob_mappings[k];
+                            break;
+                        }
+                    }
+                    if (!m && patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                        m = &patch->knob_mappings[patch->knob_mapping_count++];
+                        memset(m, 0, sizeof(*m));
+                        m->cc = row_cc;
+                        m->is_macro = 1;
+                        m->current_value = (row_value > -999998.0f) ? row_value : 0.0f;
+                        strncpy(m->macro_name, row_name, MACRO_NAME_LEN - 1);
+                    }
+                    if (m && row_macro_row >= 0 && row_macro_row < MAX_MACRO_TARGETS &&
+                        row_target[0] && row_param[0]) {
+                        macro_target_t *mt = &m->macro_targets[row_macro_row];
+                        memcpy(mt->target, row_target, sizeof(mt->target));
+                        memcpy(mt->param, row_param, sizeof(mt->param));
+                        mt->depth = row_depth;
+                    }
+                } else if (row_valid && patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                    knob_mapping_t *m = &patch->knob_mappings[patch->knob_mapping_count++];
+                    memset(m, 0, sizeof(*m));
+                    m->cc = row_cc;
+                    memcpy(m->target, row_target, sizeof(m->target));
+                    memcpy(m->param, row_param, sizeof(m->param));
+                    m->current_value = row_value;
                 }
 
                 obj_start = obj_end;
@@ -1505,9 +1575,6 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
      * The saved value may be stale if params were changed via module UI,
      * so always read the real value from the plugin after state restore. */
     for (int i = 0; i < inst->knob_mapping_count; i++) {
-        const char *target = inst->knob_mappings[i].target;
-        const char *param = inst->knob_mappings[i].param;
-
         /* "Nothing sent to the controller yet" is -1, but the rows we just
          * copied came from a patch_info_t whose parser clears each row with
          * memset — so they arrive claiming they have already sent CC 0, and a
@@ -1515,6 +1582,21 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
          * bulk dump forces -1 before it emits and hides this; a future
          * per-knob emit that does not go through the dump would not. */
         inst->knob_mappings[i].last_cc_out = -1;
+
+        if (inst->knob_mappings[i].is_macro) {
+            /* No single plugin param to read back — current_value IS the
+             * knob's own position and the patch already has it verbatim;
+             * just clamp. The effect on every target is re-established in
+             * the pass below, once chain_mod's target state exists. */
+            float v = inst->knob_mappings[i].current_value;
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            inst->knob_mappings[i].current_value = v;
+            continue;
+        }
+
+        const char *target = inst->knob_mappings[i].target;
+        const char *param = inst->knob_mappings[i].param;
 
         char val_buf[64];
         int got = -1;
@@ -1551,6 +1633,19 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
             }
         } else {
             inst->knob_mappings[i].current_value = 0.5f;
+        }
+    }
+
+    /* Re-establish every macro's chain_mod base-value snapshots and push
+     * initial effective values into each target, once per load. Unlike
+     * LFOs (recomputed every render block), a macro only emits on a knob
+     * event, so without this pass a reloaded macro's targets would sit at
+     * whatever they last were rather than what the saved knob position
+     * implies. Deliberately a separate pass after the loop above: it needs
+     * every mapping's current_value already clamped/copied in. */
+    for (int i = 0; i < inst->knob_mapping_count; i++) {
+        if (inst->knob_mappings[i].is_macro) {
+            chain_macro_apply(inst, i);
         }
     }
 

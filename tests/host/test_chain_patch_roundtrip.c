@@ -77,6 +77,11 @@ void chain_mod_clear_source(void *ctx, const char *source_id) { (void)ctx; (void
 int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
     (void)inst; (void)target; return 0;
 }
+/* Macro fan-out lives in chain_mod.c, not linked here; the reseed CALL SITE
+ * (patch load must re-push every macro's effect once, since macros are
+ * event-driven rather than recomputed per render block like LFOs) is proved
+ * at the source level in test_chain_macro_apply's pin half. */
+void chain_macro_apply(chain_instance_t *inst, int idx) { (void)inst; (void)idx; }
 
 int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     snprintf(loaded_synth, sizeof(loaded_synth), "%s", module_name);

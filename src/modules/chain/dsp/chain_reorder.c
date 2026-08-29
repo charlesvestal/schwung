@@ -91,13 +91,20 @@ static int chain_perm_collect_midi_fx(chain_instance_t *inst, chain_perm_array_t
 /*
  * Re-aim everything that names a position BY STRING.
  *
- * Three tables do, and all three had to be found by reading rather than by
+ * Four tables do, and all four had to be found by reading rather than by
  * grepping for one spelling: the runtime modulation targets (whose entries also
  * carry the modulation BASE — which is exactly why it no longer needs carrying
- * anywhere, the entry simply stays valid), the two per-slot LFOs, and the knob
- * mappings. A routing whose module LEFT is cleared in both halves; leaving
- * `param` naming a departed module's parameter is how a later `target` write
- * silently revives half a routing.
+ * anywhere, the entry simply stays valid), the two per-slot LFOs, the knob
+ * mappings, and each macro knob's up to MAX_MACRO_TARGETS rows. A routing whose
+ * module LEFT is cleared in both halves; leaving `param` naming a departed
+ * module's parameter is how a later `target` write silently revives half a
+ * routing.
+ *
+ * A macro row's live CONTRIBUTION lives in mod_targets[] above (keyed by
+ * target+param, source-agnostic) and is already retargeted by the first loop.
+ * This loop only keeps the row's own CONFIGURATION — what the next knob turn
+ * or chain_macro_apply() call re-emits to — from drifting out of sync with a
+ * position that just moved or vanished elsewhere in the same slot.
  */
 static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
                                     int max, const int *map, int count) {
@@ -118,6 +125,16 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
     }
     for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
         knob_mapping_t *k = &inst->knob_mappings[i];
+        if (k->is_macro) {
+            for (int r = 0; r < MAX_MACRO_TARGETS; r++) {
+                macro_target_t *mt = &k->macro_targets[r];
+                if (!mt->target[0]) continue;
+                if (chain_perm_retarget(mt->target, sizeof(mt->target), prefix, max, map, count) < 0) {
+                    mt->param[0] = '\0';
+                }
+            }
+            continue;
+        }
         if (chain_perm_retarget(k->target, sizeof(k->target), prefix, max, map, count) < 0) {
             k->param[0] = '\0';
         }

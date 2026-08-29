@@ -757,28 +757,29 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
+                    if (inst->knob_mappings[i].is_macro) {
+                        int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
+                        float delta = 0.0f;
+                        if (msg[2] == 1) {
+                            delta = KNOB_STEP_FLOAT * accel;
+                        } else if (msg[2] == 127) {
+                            delta = -KNOB_STEP_FLOAT * accel;
+                        } else {
+                            return;  /* Ignore other values */
+                        }
+                        inst->knob_mappings[i].current_value += delta;
+                        chain_macro_apply(inst, i);
+                        knob_emit_cc_out(inst, i);
+                        return;
+                    }
+
                     const char *target = inst->knob_mappings[i].target;
                     const char *param = inst->knob_mappings[i].param;
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
                     if (!pinfo) continue;
 
                     /* Calculate acceleration based on time between events */
-                    uint64_t now = get_time_ms();
-                    uint64_t last = inst->knob_last_time_ms[i];
-                    inst->knob_last_time_ms[i] = now;
-                    int accel = KNOB_ACCEL_MIN_MULT;
-                    if (last > 0) {
-                        uint64_t elapsed = now - last;
-                        if (elapsed < KNOB_ACCEL_SLOW_MS) {
-                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
-                                accel = KNOB_ACCEL_MAX_MULT;
-                            } else {
-                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
-                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
-                            }
-                        }
-                    }
+                    int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
 
                     /* Cap acceleration: enums never accelerate, ints limited */
                     int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
@@ -830,6 +831,16 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
             int target_cc = KNOB_CC_START + (cc - KNOB_ABS_CC_START);
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == target_cc) {
+                    if (inst->knob_mappings[i].is_macro) {
+                        inst->knob_mappings[i].current_value = (float)msg[2] / 127.0f;
+                        chain_macro_apply(inst, i);
+                        /* Deliberately no knob_emit_cc_out() here — same
+                         * anti-echo-loop reasoning as the direct-mode path
+                         * below. */
+                        inst->knob_mappings[i].last_cc_out = msg[2];
+                        return;
+                    }
+
                     const char *target = inst->knob_mappings[i].target;
                     const char *param = inst->knob_mappings[i].param;
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);

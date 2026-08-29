@@ -43,8 +43,15 @@ const VIEWS = { CHAIN_SETTINGS: "chain_settings" };
 
 const makeCtx = lift("makeSlotLfoCtx",
   ["getSlotParam", "setSlotParam", "shadowSetParamBlocking", "CHAIN_CAP",
-   "LFO_TARGET_PARAMS", "VIEWS", "debugLog"]);
+   "LFO_TARGET_PARAMS", "VIEWS", "debugLog", "collectChainTargetComponents"]);
 if (!makeCtx) process.exit(1);
+
+/* makeSlotLfoCtx.getTargetComponents() now delegates the synth/FX/MIDI FX
+   walk to this extracted helper (shared with the Macro target picker) rather
+   than doing it inline -- lifted the same way, and handed in as one more
+   dependency, so this test still runs the REAL walk rather than a copy of it. */
+const liftCollect = lift("collectChainTargetComponents", ["getSlotParam", "CHAIN_CAP"]);
+if (!liftCollect) process.exit(1);
 
 /* A fake slot that answers only what it was given. An unserved key answers ""
    the way the real param channel does -- null would read as a different kind
@@ -56,8 +63,9 @@ function device(state) {
 }
 const targetsOf = (state) => {
   const d = device(state);
+  const collect = liftCollect(d.get, CHAIN_CAP);
   const ctx = makeCtx(d.get, () => true, () => true, CHAIN_CAP,
-                      LFO_TARGET_PARAMS, VIEWS, () => {})(0, 0);
+                      LFO_TARGET_PARAMS, VIEWS, () => {}, collect)(0, 0);
   return { comps: ctx.getTargetComponents(), reads: d.reads };
 };
 const labelFor = (comps, key) => {

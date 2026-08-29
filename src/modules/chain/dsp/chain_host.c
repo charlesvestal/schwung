@@ -1185,6 +1185,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     }
                 }
 
+                /* A direct assign demotes a macro knob: drop every one of its
+                 * chain_mod contributions before repurposing the mapping, or
+                 * they would keep pushing targets nobody is editing anymore. */
+                if (found >= 0 && inst->knob_mappings[found].is_macro) {
+                    chain_macro_clear_all_sources(inst, found);
+                    inst->knob_mappings[found].is_macro = 0;
+                    inst->knob_mappings[found].macro_name[0] = '\0';
+                    memset(inst->knob_mappings[found].macro_targets, 0,
+                           sizeof(inst->knob_mappings[found].macro_targets));
+                }
+
                 if (target[0] && param[0]) {
                     /* Look up param info from the target's chain_params.
                      * knob_find_param parses the index out of the id, so
@@ -1226,6 +1237,9 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Remove mapping for this CC */
                 for (int i = 0; i < inst->knob_mapping_count; i++) {
                     if (inst->knob_mappings[i].cc == cc) {
+                        if (inst->knob_mappings[i].is_macro) {
+                            chain_macro_clear_all_sources(inst, i);
+                        }
                         /* Shift remaining mappings down */
                         for (int j = i; j < inst->knob_mapping_count - 1; j++) {
                             inst->knob_mappings[j] = inst->knob_mappings[j + 1];
@@ -1236,6 +1250,39 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     }
                 }
             }
+            else if (strcmp(action, "to_macro") == 0) {
+                /* Promote this knob to a macro. No effect on any target until
+                 * rows are configured via macro_N_row_R:* (current_value=0
+                 * means "no effect", deliberately not the direct-mode default
+                 * so enabling a macro never jumps every target on creation). */
+                int found = -1;
+                for (int i = 0; i < inst->knob_mapping_count; i++) {
+                    if (inst->knob_mappings[i].cc == cc) {
+                        found = i;
+                        break;
+                    }
+                }
+                if (found < 0 && inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                    found = inst->knob_mapping_count++;
+                    memset(&inst->knob_mappings[found], 0, sizeof(knob_mapping_t));
+                    inst->knob_mappings[found].cc = cc;
+                    inst->knob_mappings[found].last_cc_out = -1;
+                }
+                if (found >= 0) {
+                    /* Clears cleanly whether this was previously direct
+                     * (no-op: no chain_mod sources to clear) or already a
+                     * macro being re-promoted (drops the old rows' sources). */
+                    chain_macro_clear_all_sources(inst, found);
+                    knob_mapping_t *km = &inst->knob_mappings[found];
+                    km->target[0] = '\0';
+                    km->param[0] = '\0';
+                    km->current_value = 0.0f;
+                    km->is_macro = 1;
+                    km->macro_name[0] = '\0';
+                    memset(km->macro_targets, 0, sizeof(km->macro_targets));
+                    inst->dirty = 1;
+                }
+            }
             else if (strcmp(action, "adjust") == 0 && val) {
                 /* Adjust knob value by delta - used by Shift+Knob in Move mode */
                 int delta_int = atoi(val);  /* +N or -N */
@@ -1244,6 +1291,16 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Find mapping for this CC */
                 for (int i = 0; i < inst->knob_mapping_count; i++) {
                     if (inst->knob_mappings[i].cc == cc) {
+                        if (inst->knob_mappings[i].is_macro) {
+                            int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
+                            float delta = KNOB_STEP_FLOAT * accel * (delta_int > 0 ? 1 : -1);
+                            inst->knob_mappings[i].current_value += delta;
+                            chain_macro_apply(inst, i);
+                            knob_emit_cc_out(inst, i);
+                            inst->dirty = 1;
+                            break;
+                        }
+
                         /* Look up parameter metadata */
                         const char *target = inst->knob_mappings[i].target;
                         const char *param = inst->knob_mappings[i].param;
@@ -1251,20 +1308,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         if (!pinfo) continue;
 
                         /* Calculate acceleration based on time between events */
-                        uint64_t now = get_time_ms();
-                        uint64_t last = inst->knob_last_time_ms[i];
-                        inst->knob_last_time_ms[i] = now;
-                        int accel = KNOB_ACCEL_MIN_MULT;
-                        if (last > 0) {
-                            uint64_t elapsed = now - last;
-                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
-                                accel = KNOB_ACCEL_MAX_MULT;
-                            } else if (elapsed < KNOB_ACCEL_SLOW_MS) {
-                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
-                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
-                            }
-                        }
+                        int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
 
                         /* Cap acceleration: enums never accelerate, ints limited */
                         int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
@@ -1303,6 +1347,91 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 }
             }
             return;
+        }
+    }
+    /* Macro configuration: macro_N_set_name, macro_N_row_R:target,
+     * macro_N_row_R:target_param, macro_N_row_R:depth, macro_N_row_R:clear.
+     * Auto-vivifies the knob's mapping as a macro (matches knob_N_set's
+     * find-or-add), so the editor can name a macro or add a row in any
+     * order without a separate knob_N_to_macro call first. */
+    else if (strncmp(key, "macro_", 6) == 0) {
+        int knob_num;
+        char rest[64];
+        if (sscanf(key + 6, "%d_%63s", &knob_num, rest) == 2 && knob_num >= 1 && knob_num <= 8) {
+            int cc = 70 + knob_num;
+
+            int found = -1;
+            for (int i = 0; i < inst->knob_mapping_count; i++) {
+                if (inst->knob_mappings[i].cc == cc) {
+                    found = i;
+                    break;
+                }
+            }
+            if (found < 0 && inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                found = inst->knob_mapping_count++;
+                memset(&inst->knob_mappings[found], 0, sizeof(knob_mapping_t));
+                inst->knob_mappings[found].cc = cc;
+                inst->knob_mappings[found].last_cc_out = -1;
+            }
+            if (found < 0) return;  /* No room for a new knob mapping */
+
+            knob_mapping_t *km = &inst->knob_mappings[found];
+            if (!km->is_macro) {
+                /* A macro_* write always means macro mode, whether or not
+                 * knob_N_to_macro was called first. */
+                km->is_macro = 1;
+                km->target[0] = '\0';
+                km->param[0] = '\0';
+                km->current_value = 0.0f;
+            }
+
+            if (strcmp(rest, "set_name") == 0 && val) {
+                strncpy(km->macro_name, val, MACRO_NAME_LEN - 1);
+                km->macro_name[MACRO_NAME_LEN - 1] = '\0';
+                inst->dirty = 1;
+            } else if (strncmp(rest, "row_", 4) == 0) {
+                const char *after_row = rest + 4;
+                const char *colon = strchr(after_row, ':');
+                if (colon) {
+                    int row = atoi(after_row);
+                    const char *subaction = colon + 1;
+                    if (row >= 0 && row < MAX_MACRO_TARGETS) {
+                        macro_target_t *mt = &km->macro_targets[row];
+                        if (strcmp(subaction, "target") == 0 && val) {
+                            /* Retargeting invalidates this row's contribution
+                             * on whatever it used to point at, same as an
+                             * LFO's target/target_param handlers. */
+                            if (mt->target[0]) chain_macro_clear_row_source(inst, found, row);
+                            strncpy(mt->target, val, sizeof(mt->target) - 1);
+                            mt->target[sizeof(mt->target) - 1] = '\0';
+                            mt->param[0] = '\0';
+                            chain_macro_apply(inst, found);
+                            inst->dirty = 1;
+                        } else if (strcmp(subaction, "target_param") == 0 && val) {
+                            if (mt->param[0]) chain_macro_clear_row_source(inst, found, row);
+                            strncpy(mt->param, val, sizeof(mt->param) - 1);
+                            mt->param[sizeof(mt->param) - 1] = '\0';
+                            /* Macros are event-driven, not recomputed every
+                             * render block like LFOs — push the effect of
+                             * the newly-completed row immediately. */
+                            chain_macro_apply(inst, found);
+                            inst->dirty = 1;
+                        } else if (strcmp(subaction, "depth") == 0 && val) {
+                            mt->depth = strtof(val, NULL);
+                            if (mt->depth < -1.0f) mt->depth = -1.0f;
+                            if (mt->depth > 1.0f) mt->depth = 1.0f;
+                            chain_macro_apply(inst, found);
+                            inst->dirty = 1;
+                        } else if (strcmp(subaction, "clear") == 0) {
+                            chain_macro_clear_row_source(inst, found, row);
+                            mt->target[0] = '\0';
+                            mt->param[0] = '\0';
+                            mt->depth = 0.0f;
+                            inst->dirty = 1;
+                        }
+                    }
+                }
+            }
         }
     }
     /* Forward to synth by default */
@@ -1515,13 +1644,49 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         /* Return full knob mappings array as JSON for patch saving.
          * Read ACTUAL current values from DSP plugins, not the knob
          * tracking value which may be stale if params were changed
-         * via module UI or state restore. */
+         * via module UI or state restore.
+         *
+         * A macro mapping has no single target/param to read back this way
+         * (its current_value IS the knob position, not a plugin value), so
+         * it serializes flat instead: one row per populated macro_targets[]
+         * entry (or one header-only row if none are populated yet), tagged
+         * "is_macro"/"macro_row" so chain_patch.c's hand-rolled scanner
+         * (first-'}' / first-']' only, no bracket-depth tracking) never has
+         * to parse a nested array. */
         int off = 0;
         off += snprintf(buf + off, buf_len - off, "[");
+        int emitted = 0;
         for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-            const char *target = inst->knob_mappings[i].target;
-            const char *param = inst->knob_mappings[i].param;
-            float value = inst->knob_mappings[i].current_value;
+            knob_mapping_t *km = &inst->knob_mappings[i];
+
+            if (km->is_macro) {
+                int any_row = 0;
+                for (int r = 0; r < MAX_MACRO_TARGETS; r++) {
+                    macro_target_t *mt = &km->macro_targets[r];
+                    if (!mt->target[0] || !mt->param[0]) continue;
+                    any_row = 1;
+                    off += snprintf(buf + off, buf_len - off,
+                        "%s{\"cc\":%d,\"is_macro\":1,\"name\":\"%s\",\"value\":%.3f,"
+                        "\"macro_row\":%d,\"target\":\"%s\",\"param\":\"%s\",\"depth\":%.3f}",
+                        emitted ? "," : "",
+                        km->cc, km->macro_name, km->current_value,
+                        r, mt->target, mt->param, mt->depth);
+                    emitted = 1;
+                    if (off >= buf_len - 1) break;
+                }
+                if (!any_row) {
+                    off += snprintf(buf + off, buf_len - off,
+                        "%s{\"cc\":%d,\"is_macro\":1,\"name\":\"%s\",\"value\":%.3f}",
+                        emitted ? "," : "", km->cc, km->macro_name, km->current_value);
+                    emitted = 1;
+                }
+                if (off >= buf_len - 1) break;
+                continue;
+            }
+
+            const char *target = km->target;
+            const char *param = km->param;
+            float value = km->current_value;
 
             /* Try to read actual value from DSP plugin */
             char val_buf[64];
@@ -1551,8 +1716,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
             off += snprintf(buf + off, buf_len - off,
                 "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f}",
-                (i > 0) ? "," : "",
-                inst->knob_mappings[i].cc, target, param, value);
+                emitted ? "," : "",
+                km->cc, target, param, value);
+            emitted = 1;
             if (off >= buf_len - 1) break;
         }
         off += snprintf(buf + off, buf_len - off, "]");
@@ -1560,6 +1726,34 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
     if (strcmp(key, "knob_mapping_count") == 0) {
         return snprintf(buf, buf_len, "%d", inst->knob_mapping_count);
+    }
+    if (strncmp(key, "macro_", 6) == 0) {
+        int knob_num;
+        char action[16];
+        if (sscanf(key + 6, "%d_%15s", &knob_num, action) == 2 && knob_num >= 1 && knob_num <= 8 &&
+            strcmp(action, "config") == 0) {
+            int cc = 70 + knob_num;
+            for (int i = 0; i < inst->knob_mapping_count; i++) {
+                if (inst->knob_mappings[i].cc != cc) continue;
+
+                knob_mapping_t *km = &inst->knob_mappings[i];
+                if (!km->is_macro) return snprintf(buf, buf_len, "{\"is_macro\":0}");
+
+                int off = 0;
+                off += snprintf(buf + off, buf_len - off,
+                    "{\"is_macro\":1,\"name\":\"%s\",\"value\":%.3f,\"targets\":[",
+                    km->macro_name, km->current_value);
+                for (int r = 0; r < MAX_MACRO_TARGETS; r++) {
+                    macro_target_t *mt = &km->macro_targets[r];
+                    off += snprintf(buf + off, buf_len - off,
+                        "%s{\"target\":\"%s\",\"param\":\"%s\",\"depth\":%.3f}",
+                        (r > 0) ? "," : "", mt->target, mt->param, mt->depth);
+                }
+                off += snprintf(buf + off, buf_len - off, "]}");
+                return off;
+            }
+            return snprintf(buf, buf_len, "{\"is_macro\":0}");  /* Unmapped knob */
+        }
     }
     if (strncmp(key, "knob_", 5) == 0) {
         /* knob_N_param format (N is 1-8 for knobs, mapping to CC 71-78) */
@@ -1570,9 +1764,38 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             int cc = 70 + knob_num;
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
+                    knob_mapping_t *km = &inst->knob_mappings[i];
+
+                    if (strcmp(query_param, "is_macro") == 0) {
+                        return snprintf(buf, buf_len, "%d", km->is_macro ? 1 : 0);
+                    }
+
+                    if (km->is_macro) {
+                        /* No single target/param governs a macro knob, so it
+                         * answers these generically instead of falling into
+                         * the pinfo-driven logic below (which assumes one). */
+                        if (strcmp(query_param, "name") == 0) {
+                            return snprintf(buf, buf_len, "%s", km->macro_name[0] ? km->macro_name : "Macro");
+                        } else if (strcmp(query_param, "value") == 0) {
+                            return snprintf(buf, buf_len, "%.0f%%", km->current_value * 100.0f);
+                        } else if (strcmp(query_param, "min") == 0) {
+                            return snprintf(buf, buf_len, "0.00");
+                        } else if (strcmp(query_param, "max") == 0) {
+                            return snprintf(buf, buf_len, "1.00");
+                        } else if (strcmp(query_param, "type") == 0) {
+                            return snprintf(buf, buf_len, "float");
+                        } else if (strcmp(query_param, "target") == 0 || strcmp(query_param, "param") == 0) {
+                            /* Unassigned by design — old code that doesn't know
+                             * about macros should read "unassigned", not the
+                             * name of an arbitrary row. */
+                            return snprintf(buf, buf_len, "%s", "");
+                        }
+                        break;
+                    }
+
                     /* Look up param info for all queries */
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
+                    const char *target = km->target;
+                    const char *param = km->param;
                     /* Indexed, not enumerated — see the knob_N_set site. This
                      * pinfo feeds the min/max/step/options answers below, so
                      * an unresolved fx4+ target made the whole knob undrivable. */
