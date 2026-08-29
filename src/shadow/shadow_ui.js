@@ -407,7 +407,9 @@ const VIEWS = {
     FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
-    MACRO_EDITOR: "macroedit", // Name + up to MAX_MACRO_TARGETS rows for a macro knob
+    MACRO_EDITOR: "macroedit", // Up to MAX_MACRO_TARGETS rows for a macro knob
+    KNOB_OPTIONS: "knobopts",  // Shift+Click on a Knobs-list row: one entry, Knob Type
+    KNOB_TYPE_PICKER: "knobtypepick", // Simple/Macro picker + change confirmation
     DYNAMIC_PARAM_PICKER: "dynamicpick", // Dedicated picker UI for module_picker/parameter_picker
     STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
@@ -1752,13 +1754,25 @@ let knobParamPickerPath = [];        // Navigation path for back in hierarchy
 
 /* Macro editor state — for a knob promoted to a macro (knob_N_to_macro).
  * MACRO_MAX_TARGETS mirrors MAX_MACRO_TARGETS in chain_internal.h; both are
- * pinned by tests/host/test_macro_row_cap_js.sh so they cannot drift. */
+ * pinned by tests/host/test_macro_row_cap_js.sh so they cannot drift.
+ * No macro name here — macros are unnamed; see knobEditorTypeIcon/getKnobAssignmentLabel. */
 const MACRO_MAX_TARGETS = 4;
 let macroEditorKnobNum = 0;      // 1-8, which knob's macro is being edited
-let macroEditorName = "";
 let macroEditorRows = [];        // MACRO_MAX_TARGETS x {target, param, depth}
-let macroEditorIndex = 0;        // 0 = Name row; 1..MACRO_MAX_TARGETS*2 = Target/Amount rows
-let editingMacroDepth = false;   // True while jog adjusts the selected Amount row in place
+let macroEditorIndex = 0;        // one row per target, 0..MACRO_MAX_TARGETS-1
+let editingMacroDepth = false;   // True while jog adjusts the selected row's amount in place
+
+/* Knob Options (Shift+Click on a Knobs-list row) and its one entry, Knob
+ * Type — a Simple/Macro picker gated by a confirm step, since either
+ * direction discards state (a macro's rows, or a direct assignment's
+ * target). See enterKnobOptions/enterKnobTypePicker. */
+let knobOptionsKnobNum = 0;         // 1-8, which knob Knob Options is showing
+let knobTypePickerKnobNum = 0;      // 1-8, which knob the type picker is for
+let knobTypePickerIndex = 0;        // 0 = Simple, 1 = Macro
+let knobTypeConfirming = false;     // true while showing the change Yes/No
+let knobTypeConfirmIndex = 0;       // 0 = No, 1 = Yes
+let knobTypePendingIsMacro = false; // the type awaiting confirmation
+const KNOB_TYPE_OPTIONS = ["Simple", "Macro"];
 
 let dynamicPickerMeta = null;
 let dynamicPickerKey = "";
@@ -11342,8 +11356,8 @@ function loadKnobAssignments(slot) {
     for (let i = 0; i < NUM_KNOBS; i++) {
         const isMacro = parseInt(getSlotParam(slot, `knob_${i + 1}_is_macro`)) === 1;
         if (isMacro) {
-            const name = getSlotParam(slot, `knob_${i + 1}_name`) || "";
-            knobEditorAssignments.push({ target: "", param: "", isMacro: true, name });
+            /* Macros are unnamed — no knob_N_name read here. */
+            knobEditorAssignments.push({ target: "", param: "", isMacro: true });
             continue;
         }
         const target = getSlotParam(slot, `knob_${i + 1}_target`) || "";
@@ -11358,9 +11372,11 @@ function loadKnobAssignments(slot) {
     knobEditorCcOut = (ccOut === null) ? null : (parseInt(ccOut) ? 1 : 0);
 }
 
-/* Get available targets for knob assignment (components with modules loaded) */
+/* Get available targets for knob assignment (components with modules loaded).
+ * Promoting to a macro is Knob Options -> Knob Type now, not an entry here
+ * — that's the one path a type change gets its confirmation from. */
 function getKnobTargets(slot) {
-    const targets = [{ id: "", name: "(None)" }, { id: "__macro__", name: "[Make Macro]" }];
+    const targets = [{ id: "", name: "(None)" }];
     const cfg = chainConfigs[slot];
     if (!cfg) return targets;
 
@@ -11827,10 +11843,12 @@ function handleDynamicParamPickerSelect() {
     closeDynamicParamPicker(`Target ${dynamicPickerSelectedTarget}:${selectedParam.key}`);
 }
 
-/* Get display label for a knob assignment */
+/* Get display label for a knob assignment. Macros are unnamed, so every
+ * macro knob reads simply as "Macro" — see Knob Options -> Knob Type for
+ * how to tell which macro is which (its configured target rows). */
 function getKnobAssignmentLabel(assignment) {
     if (assignment && assignment.isMacro) {
-        return assignment.name || "Macro";
+        return "Macro";
     }
     if (!assignment || !assignment.target || !assignment.param) {
         return "(None)";
@@ -11988,7 +12006,7 @@ function enterMacroEditor(slot, knobNum) {
     macroEditorIndex = 0;
     setView(VIEWS.MACRO_EDITOR);
     needsRedraw = true;
-    announce(`Macro ${knobNum}, ${macroEditorName || "Unnamed"}`);
+    announce(`Macro ${knobNum}`);
 }
 
 /* A target's chain_params/ui_hierarchy metadata, fetched at most once per
@@ -12015,7 +12033,6 @@ function macroRowShortName(slot, target, key, metaCache) {
  * editor showing an empty macro rather than caching a guess: nothing here
  * is written back until the user takes an explicit action on a row. */
 function loadMacroConfig(slot, knobNum) {
-    macroEditorName = "";
     macroEditorRows = [];
     for (let i = 0; i < MACRO_MAX_TARGETS; i++) {
         macroEditorRows.push({ target: "", param: "", depth: 0, shortName: "" });
@@ -12025,7 +12042,7 @@ function loadMacroConfig(slot, knobNum) {
     if (raw === null) return;
     try {
         const cfg = JSON.parse(raw);
-        macroEditorName = cfg.name || "";
+        /* cfg.name is ignored -- macros are unnamed on the JS side now. */
         const metaCache = {};
         if (Array.isArray(cfg.targets)) {
             for (let i = 0; i < MACRO_MAX_TARGETS && i < cfg.targets.length; i++) {
@@ -12071,7 +12088,7 @@ function macroEditorItemValue(item) {
 
 function drawMacroEditor() {
     clear_screen();
-    drawHeader(truncateText(`Macro ${macroEditorKnobNum}: ${macroEditorName || "Unnamed"}`, 22));
+    drawHeader(`Macro ${macroEditorKnobNum}`);
 
     const items = [];
     for (let i = 0; i < macroEditorItemCount(); i++) items.push(macroEditorItemAt(i));
@@ -12110,6 +12127,105 @@ function enterMacroTargetPicker(row) {
 }
 
 /* ========== End Macro Editor Functions ========== */
+
+/* ========== Knob Options / Knob Type Functions ==========
+ *
+ * Shift+Click on a Knobs-list row opens Knob Options — a one-entry menu
+ * (room for more later) whose only entry, Knob Type, is a Simple/Macro
+ * picker. Selecting the type the knob is ALREADY in is a no-op; selecting
+ * the other one requires a Yes/No confirmation, since either direction
+ * discards state a plain undo can't recover (a macro's configured rows, or
+ * a direct assignment's target/param). Applying either direction reuses the
+ * exact host verbs the earlier flows already used: knob_N_to_macro to
+ * promote, knob_N_set with an empty value to demote (chain_host.c's
+ * demotion cleanup fires whenever the mapping was already a macro, before
+ * it even looks at whether a target/param followed).
+ */
+
+function enterKnobOptions(knobNum) {
+    knobOptionsKnobNum = knobNum;
+    setView(VIEWS.KNOB_OPTIONS);
+    needsRedraw = true;
+    announce(`Knob ${knobNum} Options`);
+}
+
+function drawKnobOptions() {
+    clear_screen();
+    drawHeader(`Knob ${knobOptionsKnobNum} Options`);
+
+    const assignment = knobEditorAssignments[knobOptionsKnobNum - 1];
+    const typeLabel = (assignment && assignment.isMacro) ? "Macro" : "Simple";
+
+    drawMenuList({
+        items: [{ label: "Knob Type" }],
+        selectedIndex: 0,
+        getLabel: (item) => item.label,
+        getValue: () => typeLabel,
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+    });
+
+    drawFooter(["Back: cancel", "Click: edit"]);
+}
+
+function enterKnobTypePicker(knobNum) {
+    knobTypePickerKnobNum = knobNum;
+    const assignment = knobEditorAssignments[knobNum - 1];
+    knobTypePickerIndex = (assignment && assignment.isMacro) ? 1 : 0;
+    knobTypeConfirming = false;
+    setView(VIEWS.KNOB_TYPE_PICKER);
+    needsRedraw = true;
+    announce(`Knob Type, ${KNOB_TYPE_OPTIONS[knobTypePickerIndex]}`);
+}
+
+function drawKnobTypePicker() {
+    clear_screen();
+    drawHeader(`Knob ${knobTypePickerKnobNum} Type`);
+
+    if (knobTypeConfirming) {
+        const targetLabel = knobTypePendingIsMacro ? "Macro" : "Simple";
+        print(2, 20, `Convert to ${targetLabel}?`, 1);
+        const noPrefix = knobTypeConfirmIndex === 0 ? "> " : "  ";
+        const yesPrefix = knobTypeConfirmIndex === 1 ? "> " : "  ";
+        print(20, 40, noPrefix + "No", 1);
+        print(70, 40, yesPrefix + "Yes", 1);
+        drawFooter(["Back: cancel", "Click: confirm"]);
+        return;
+    }
+
+    drawMenuList({
+        items: KNOB_TYPE_OPTIONS,
+        selectedIndex: knobTypePickerIndex,
+        getLabel: (item) => item,
+        getValue: () => "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+    });
+
+    drawFooter(["Back: cancel", "Click: select"]);
+}
+
+/* Apply the confirmed type change and land on the natural next screen: the
+ * Macro Editor when promoting (same courtesy the old "[Make Macro]" picker
+ * entry gave — jump straight into configuring what was just created), the
+ * Knobs list when demoting (nothing left to configure). */
+function applyKnobTypeChange() {
+    const knobNum = knobTypePickerKnobNum;
+    if (knobTypePendingIsMacro) {
+        setSlotParam(knobEditorSlot, `knob_${knobNum}_to_macro`, "1");
+    } else {
+        setSlotParam(knobEditorSlot, `knob_${knobNum}_set`, "");
+    }
+    loadKnobAssignments(knobEditorSlot);
+    if (knobTypePendingIsMacro) {
+        enterMacroEditor(knobEditorSlot, knobNum);
+    } else {
+        setView(VIEWS.KNOB_EDITOR);
+        announce("Converted to simple knob");
+        needsRedraw = true;
+    }
+}
+
+/* ========== End Knob Options / Knob Type Functions ========== */
 
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
@@ -16260,6 +16376,18 @@ function handleJog(delta, shift = isShiftHeld()) {
                 }
             }
             break;
+        case VIEWS.KNOB_OPTIONS:
+            /* One entry — nothing to navigate. */
+            break;
+        case VIEWS.KNOB_TYPE_PICKER:
+            if (knobTypeConfirming) {
+                knobTypeConfirmIndex = knobTypeConfirmIndex === 0 ? 1 : 0;
+                announce(knobTypeConfirmIndex === 0 ? "No" : "Yes");
+            } else {
+                knobTypePickerIndex = Math.max(0, Math.min(KNOB_TYPE_OPTIONS.length - 1, knobTypePickerIndex + delta));
+                announceMenuItem("Knob Type", KNOB_TYPE_OPTIONS[knobTypePickerIndex]);
+            }
+            break;
         case VIEWS.MACRO_EDITOR:
             if (editingMacroDepth) {
                 const item = macroEditorItemAt(macroEditorIndex);
@@ -17014,27 +17142,13 @@ function handleSelect() {
                 setSlotParam(knobEditorSlot, "knob_cc_out", String(knobEditorCcOut));
                 announceMenuItem("Knob CC Out", knobCcOutLabel());
                 needsRedraw = true;
+            } else if (isShiftHeld()) {
+                /* Shift+Click any knob row (macro or simple): Knob Options,
+                 * not the row's normal edit target. */
+                enterKnobOptions(knobEditorIndex + 1);
             } else if (knobEditorAssignments[knobEditorIndex] && knobEditorAssignments[knobEditorIndex].isMacro) {
-                if (isShiftHeld()) {
-                    /* Shift+Click a macro row: rename it directly, rather than
-                     * opening its editor just to reach a Name field. */
-                    const knobNum = knobEditorIndex + 1;
-                    openTextEntry({
-                        title: "Macro Name",
-                        initialText: knobEditorAssignments[knobEditorIndex].name || "",
-                        onAnnounce: announce,
-                        onConfirm: (nextText) => {
-                            const name = String(nextText || "").slice(0, 15);
-                            setSlotParam(knobEditorSlot, `macro_${knobNum}_set_name`, name);
-                            loadKnobAssignments(knobEditorSlot);
-                            announceParameter("Name", name || "(unnamed)");
-                            needsRedraw = true;
-                        }
-                    });
-                } else {
-                    /* Already a macro — open its editor, not the 1:1 param picker. */
-                    enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
-                }
+                /* Already a macro — open its editor, not the 1:1 param picker. */
+                enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
             } else {
                 /* Edit this knob's assignment */
                 enterKnobParamPicker();
@@ -17045,13 +17159,6 @@ function handleSelect() {
                 /* Main view - selecting a target */
                 const targets = getKnobTargets(knobEditorSlot);
                 const selected = targets[knobParamPickerIndex];
-                if (selected && selected.id === "__macro__") {
-                    /* Promote this knob to a macro and jump straight into its
-                     * editor — matches the direct-assign flow's one-click feel. */
-                    setSlotParam(knobEditorSlot, `knob_${knobEditorIndex + 1}_to_macro`, "1");
-                    enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
-                    break;
-                }
                 if (selected) {
                     if (selected.id === "") {
                         /* (None) selected - clear assignment */
@@ -17119,6 +17226,37 @@ function handleSelect() {
                 needsRedraw = true;
                 const row = macroEditorRows[item.row];
                 announce(`${macroEditorItemLabel(item)}, ${Math.round(row.depth * 100)}%`);
+            }
+            break;
+        }
+        case VIEWS.KNOB_OPTIONS:
+            enterKnobTypePicker(knobOptionsKnobNum);
+            break;
+        case VIEWS.KNOB_TYPE_PICKER: {
+            if (knobTypeConfirming) {
+                if (knobTypeConfirmIndex === 1) {
+                    applyKnobTypeChange();
+                } else {
+                    knobTypeConfirming = false;
+                    needsRedraw = true;
+                    announce("Cancelled");
+                }
+                break;
+            }
+            const wantsMacro = (knobTypePickerIndex === 1);
+            const assignment = knobEditorAssignments[knobTypePickerKnobNum - 1];
+            const currentIsMacro = !!(assignment && assignment.isMacro);
+            if (wantsMacro === currentIsMacro) {
+                /* No actual change — nothing to confirm. */
+                setView(VIEWS.KNOB_OPTIONS);
+                announce("Knob Options");
+                needsRedraw = true;
+            } else {
+                knobTypePendingIsMacro = wantsMacro;
+                knobTypeConfirming = true;
+                knobTypeConfirmIndex = 0;
+                needsRedraw = true;
+                announce(`Convert to ${wantsMacro ? "Macro" : "Simple"}?`);
             }
             break;
         }
@@ -17637,6 +17775,22 @@ function handleBack() {
                  * macro just got its first row), so refresh before it draws. */
                 loadKnobAssignments(knobEditorSlot);
                 announce("Knob Editor");
+                needsRedraw = true;
+            }
+            break;
+        case VIEWS.KNOB_OPTIONS:
+            setView(VIEWS.KNOB_EDITOR);
+            announce("Knob Editor");
+            needsRedraw = true;
+            break;
+        case VIEWS.KNOB_TYPE_PICKER:
+            if (knobTypeConfirming) {
+                knobTypeConfirming = false;
+                needsRedraw = true;
+                announce("Knob Type");
+            } else {
+                setView(VIEWS.KNOB_OPTIONS);
+                announce("Knob Options");
                 needsRedraw = true;
             }
             break;
@@ -18231,13 +18385,12 @@ function drawKnobEditor() {
         prioritizeSelectedValue: true
     });
 
-    /* Shift+Click on a macro row renames it instead of opening its editor —
-     * only meaningful for a macro (a direct 1:1 assignment has no name), and
-     * only while Shift is actually held, so poll it fresh on every repaint
-     * the same way the Macro Editor's own footer does. */
-    const selectedAssignment = knobEditorIndex < NUM_KNOBS ? knobEditorAssignments[knobEditorIndex] : null;
-    const footer = (selectedAssignment && selectedAssignment.isMacro && isShiftHeld())
-        ? ["Back: cancel", "Click: rename"]
+    /* Shift+Click on any knob row opens Knob Options instead of the row's
+     * normal edit target — not the CC Out toggle row, which has no options.
+     * Polled fresh on every repaint: there is no event that fires when
+     * Shift alone changes state. */
+    const footer = (knobEditorIndex < NUM_KNOBS && isShiftHeld())
+        ? ["Back: cancel", "Click: options"]
         : ["Back: cancel", "Click: edit"];
     drawFooter(footer);
 }
@@ -19847,6 +20000,8 @@ function dispatchCoRunDraw() {
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
         case VIEWS.MACRO_EDITOR:         drawMacroEditor(); break;
+        case VIEWS.KNOB_OPTIONS:         drawKnobOptions(); break;
+        case VIEWS.KNOB_TYPE_PICKER:     drawKnobTypePicker(); break;
         case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
         case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
@@ -20960,6 +21115,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.MACRO_EDITOR:
             drawMacroEditor();
+            break;
+        case VIEWS.KNOB_OPTIONS:
+            drawKnobOptions();
+            break;
+        case VIEWS.KNOB_TYPE_PICKER:
+            drawKnobTypePicker();
             break;
         case VIEWS.DYNAMIC_PARAM_PICKER:
             drawDynamicParamPicker();

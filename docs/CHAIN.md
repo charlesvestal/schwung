@@ -57,7 +57,7 @@ both; promoting/demoting clears the other mode's fields.
 Configuration set_param keys, all auto-vivifying the knob's mapping as a macro:
 
 ```
-macro_N_set_name       = "WARM"           macro's display name
+macro_N_set_name       = "WARM"           macro's display name (wire-level only — see below)
 macro_N_row_R:target   = "fx1"            R = 0..3, clears this row's old contribution first
 macro_N_row_R:target_param = "cutoff"
 macro_N_row_R:depth    = "0.6"            -1.0..+1.0
@@ -67,15 +67,33 @@ macro_N_row_R:clear    = "1"
 Read: `knob_N_is_macro`, `macro_N_config` (one JSON blob: name, value, all 4
 rows — the Shadow UI's single read on entering the Macro Editor).
 
-The Macro Editor itself has no Name field — a macro's name is set by
-Shift+Click on its row in the Knobs list (`enterKnobEditor`'s select handler
-in `shadow_ui.js`, which calls `macro_N_set_name` directly), not by a row
-inside the editor. Inside the editor, each of up to 4 rows shows one target
-param per row — its `short_name` (falling back to `label`, then the raw
-key — the same fallback the knob grid itself uses via `buildMetaIndex`) on
-the label side, its depth as a percentage on the value side. Click toggles
-jog-editing that row's depth in place; Shift+Click opens the target picker
-for that row instead.
+**Macros are unnamed in the Shadow UI.** `macro_N_set_name` and the `name`
+field in `macro_N_config`/persistence still exist at the wire/host level (a
+macro row's `cc`/`is_macro` group in `slot_N.json` still carries a `name`
+key — see the persistence shape below), but nothing in `shadow_ui.js` calls
+`macro_N_set_name` or displays a per-macro name; every macro knob in the
+Knobs list reads simply as `Macro` (`getKnobAssignmentLabel`). Inside the
+Macro Editor, each of up to 4 rows shows one target param per row — its
+`short_name` (falling back to `label`, then the raw key — the same fallback
+the knob grid itself uses via `buildMetaIndex`) on the label side, its depth
+as a percentage on the value side. Click toggles jog-editing that row's
+depth in place; Shift+Click opens the target picker for that row instead.
+
+**Changing a knob's type is Shift+Click on its row in the Knobs list**
+(`enterKnobEditor`'s select handler), not a click on the row itself (which
+still opens the Macro Editor for a macro, or the target picker for a direct
+knob). Shift+Click opens **Knob Options** — a one-entry menu (room for more
+later) whose only entry, **Knob Type**, is a Simple/Macro picker. Selecting
+the type the knob is already in is a no-op; selecting the other one requires
+a Yes/No confirmation, since either direction discards state a plain undo
+can't recover — a macro's configured rows, or a direct assignment's target.
+Confirming applies the same host verbs the promotion/demotion always used —
+`knob_N_to_macro` to promote (landing in the Macro Editor, same courtesy the
+old picker-driven promotion gave), `knob_N_set` with an **empty** value to
+demote (landing back on the Knobs list, "direct, unassigned"). The knob
+target picker's old `[Make Macro]` entry is gone — Knob Options is the one
+place a type change happens, so it is the one place that gets the
+confirmation.
 
 **Implementation is almost entirely reuse of the runtime modulation bus**
 (`chain_mod.c`), which already does non-destructive, range-scaled, N-**sources**-
