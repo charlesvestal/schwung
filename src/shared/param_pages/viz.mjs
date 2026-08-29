@@ -465,13 +465,15 @@ function detectFilter(pool) {
  * substring matches: "generate" still does not match `rate`, because the
  * character before it is a letter.
  *
- * `magnitude` is surge's word for depth (lfo0_magnitude), and pmd/amd are
- * dexed's -- pitch and amplitude mod depth, the DX7's own names.
+ * `magnitude` is surge's word for depth (lfo0_magnitude), `amplitude` is helm's
+ * (mono_lfo_1_amplitude), and pmd/amd are dexed's -- pitch and amplitude mod
+ * depth, the DX7's own names. Deliberately not bare `amp`, which is an
+ * amplifier far more often than it is an LFO depth.
  */
 const LFO_WORD = {
     shape: /shape|waveform|wave/,
-    rate: /(^|_|\d)(rate|speed|spd|freq)(\d*)($|_)/,
-    depth: /(^|_|\d)(depth|amount|amt|magnitude|pmd|amd)(\d*)($|_)/,
+    rate: /(^|_|\d)(rate|speed|spd|frequency|freq)(\d*)($|_)/,
+    depth: /(^|_|\d)(depth|amount|amt|amplitude|magnitude|pmd|amd)(\d*)($|_)/,
     phase: /(^|_|\d)phase(\d*)($|_)/,
 };
 
