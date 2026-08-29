@@ -409,6 +409,12 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **A Macro knob is 1 source → N targets, built from the same bus that already
+  does N sources → 1 target** (`chain_mod.c`'s LFO modulation math) — `signal =
+  2*pos-1, bipolar=0` recovers a clean unipolar `pos*depth*range_span` per row.
+  Its persistence is flat, repeated JSON rows sharing one `cc`, not a nested
+  array — `chain_patch.c`'s knob_mappings scanner grabs the first `}`/`]` with
+  no bracket-depth tracking, so a nested `"targets":[...]` would truncate.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 

@@ -958,6 +958,34 @@ void knob_forward_value(chain_instance_t *inst, const char *target, const char *
     }
 }
 
+/* Shared acceleration curve for a relative-encoder knob turn: faster turns
+ * (shorter time since the last event on this knob) get a bigger multiplier,
+ * up to KNOB_ACCEL_MAX_MULT. Callers that need a lower ceiling (ints, enums)
+ * cap the result themselves afterward — this always computes against the
+ * float ceiling, matching the three call sites that used to each hand-roll
+ * this same curve (relative-CC knob turns, macro knob turns, Shift+Knob
+ * adjust). `last_ms` is updated in place to the current time. */
+int chain_knob_accel(uint64_t *last_ms) {
+    uint64_t now = get_time_ms();
+    uint64_t last = *last_ms;
+    *last_ms = now;
+
+    int accel = KNOB_ACCEL_MIN_MULT;
+    if (last > 0) {
+        uint64_t elapsed = now - last;
+        if (elapsed < KNOB_ACCEL_SLOW_MS) {
+            if (elapsed <= KNOB_ACCEL_FAST_MS) {
+                accel = KNOB_ACCEL_MAX_MULT;
+            } else {
+                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
+                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+            }
+        }
+    }
+    return accel;
+}
+
 
 /* ---- Chain-knob CC out ---------------------------------------------------
  *
@@ -1004,8 +1032,18 @@ void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     int recv_ch = inst->host->slot_recv_channel((void *)inst);
     if (recv_ch < 0 || recv_ch > 15) return;
 
-    chain_param_info_t *pinfo = knob_find_param(inst, km->target, km->param);
-    int cc_val = knob_value_to_cc(km->current_value, pinfo);
+    /* A macro has no single governing param for knob_value_to_cc's min/max
+     * span, but its own current_value is already 0..1 — map straight to
+     * 0-127 rather than silently dropping the echo for every macro knob. */
+    int cc_val;
+    if (km->is_macro) {
+        cc_val = (int)(km->current_value * 127.0f + 0.5f);
+        if (cc_val < 0) cc_val = 0;
+        if (cc_val > 127) cc_val = 127;
+    } else {
+        chain_param_info_t *pinfo = knob_find_param(inst, km->target, km->param);
+        cc_val = knob_value_to_cc(km->current_value, pinfo);
+    }
     if (cc_val < 0) return;
     if (cc_val == km->last_cc_out) return;          /* change detection at CC resolution */
 

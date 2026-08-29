@@ -470,6 +470,63 @@ void chain_mod_clear_source(void *ctx, const char *source_id) {
     }
 }
 
+/* ===========================================================================
+ * Macro fan-out: one physical knob drives up to MAX_MACRO_TARGETS module
+ * params through this same modulation bus. A macro's own "position" is
+ * inst->knob_mappings[idx].current_value in [0,1]. Passing
+ * signal=2*pos-1 with bipolar=0 into chain_mod_emit_value recovers a clean
+ * unipolar mapping (mod_signal=(signal+1)*0.5=pos), so each row's
+ * contribution is pos * depth * range_span: 0 = every target sits at its
+ * snapshotted base_value, 1 = each target gets its row's full signed depth.
+ *
+ * Each row is its own chain_mod source, keyed by the physical knob's CC
+ * number rather than the mapping's array index — knob_N_clear compacts
+ * knob_mappings[] by shifting, so an index-keyed id would let a shifted-in
+ * mapping inherit a stale source and its leftover contribution.
+ * ===========================================================================
+ */
+
+static void chain_macro_source_id(int cc, int row, char *out, size_t out_len) {
+    int knob_num = cc - KNOB_CC_START + 1;
+    snprintf(out, out_len, "macro%d_%d", knob_num, row);
+}
+
+void chain_macro_apply(chain_instance_t *inst, int idx) {
+    if (!inst || idx < 0 || idx >= MAX_KNOB_MAPPINGS) return;
+    knob_mapping_t *km = &inst->knob_mappings[idx];
+    if (!km->is_macro) return;
+
+    float pos = chain_mod_clampf(km->current_value, 0.0f, 1.0f);
+    km->current_value = pos;
+    float signal = 2.0f * pos - 1.0f;
+
+    for (int row = 0; row < MAX_MACRO_TARGETS; row++) {
+        macro_target_t *mt = &km->macro_targets[row];
+        if (!mt->target[0] || !mt->param[0]) continue;
+
+        char source_id[32];
+        chain_macro_source_id(km->cc, row, source_id, sizeof(source_id));
+        chain_mod_emit_value(inst, source_id, mt->target, mt->param,
+                              signal, mt->depth, 0.0f, /*bipolar=*/0, /*enabled=*/1);
+    }
+}
+
+void chain_macro_clear_row_source(chain_instance_t *inst, int idx, int row) {
+    if (!inst || idx < 0 || idx >= MAX_KNOB_MAPPINGS) return;
+    if (row < 0 || row >= MAX_MACRO_TARGETS) return;
+
+    char source_id[32];
+    chain_macro_source_id(inst->knob_mappings[idx].cc, row, source_id, sizeof(source_id));
+    chain_mod_clear_source(inst, source_id);
+}
+
+void chain_macro_clear_all_sources(chain_instance_t *inst, int idx) {
+    if (!inst || idx < 0 || idx >= MAX_KNOB_MAPPINGS) return;
+    for (int row = 0; row < MAX_MACRO_TARGETS; row++) {
+        chain_macro_clear_row_source(inst, idx, row);
+    }
+}
+
 
 int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
     if (!inst || !target) return -1;

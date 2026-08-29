@@ -76,6 +76,18 @@ CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *targe
 CHAIN_INTERNAL void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     (void)inst; (void)idx;
 }
+/* Acceleration curve for a relative knob turn — chain_params.c's job, not
+ * linked here; the curve itself is proved in test_chain_macro_apply. */
+CHAIN_INTERNAL int chain_knob_accel(uint64_t *last_ms) {
+    (void)last_ms;
+    return 1;
+}
+/* Macro fan-out — chain_mod.c's job, not linked here (this file drives MIDI
+ * FX slot placement, not knob mappings); the fan-out itself is proved in
+ * test_chain_macro_apply. */
+CHAIN_INTERNAL void chain_macro_apply(chain_instance_t *inst, int idx) {
+    (void)inst; (void)idx;
+}
 /* chain_reorder.c reaches the audio-FX unloader on its remove path; this file
  * only drives the MIDI side, and the audio loader lives in the one TU that
  * cannot be compiled natively. */

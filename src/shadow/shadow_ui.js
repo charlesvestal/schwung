@@ -407,6 +407,7 @@ const VIEWS = {
     FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
+    MACRO_EDITOR: "macroedit", // Name + up to MAX_MACRO_TARGETS rows for a macro knob
     DYNAMIC_PARAM_PICKER: "dynamicpick", // Dedicated picker UI for module_picker/parameter_picker
     STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
@@ -1748,6 +1749,17 @@ let knobParamPickerParams = [];  // Available params in current folder
 let knobParamPickerHierarchy = null; // Parsed ui_hierarchy for current target
 let knobParamPickerLevel = null;     // Current level name in hierarchy (null = flat mode)
 let knobParamPickerPath = [];        // Navigation path for back in hierarchy
+
+/* Macro editor state — for a knob promoted to a macro (knob_N_to_macro).
+ * MACRO_MAX_TARGETS mirrors MAX_MACRO_TARGETS in chain_internal.h; both are
+ * pinned by tests/host/test_macro_row_cap_js.sh so they cannot drift. */
+const MACRO_MAX_TARGETS = 4;
+let macroEditorKnobNum = 0;      // 1-8, which knob's macro is being edited
+let macroEditorName = "";
+let macroEditorRows = [];        // MACRO_MAX_TARGETS x {target, param, depth}
+let macroEditorIndex = 0;        // 0 = Name row; 1..MACRO_MAX_TARGETS*2 = Target/Amount rows
+let editingMacroDepth = false;   // True while jog adjusts the selected Amount row in place
+
 let dynamicPickerMeta = null;
 let dynamicPickerKey = "";
 let dynamicPickerTargetKey = "";
@@ -11328,9 +11340,15 @@ function enterKnobEditor(slot) {
 function loadKnobAssignments(slot) {
     knobEditorAssignments = [];
     for (let i = 0; i < NUM_KNOBS; i++) {
+        const isMacro = parseInt(getSlotParam(slot, `knob_${i + 1}_is_macro`)) === 1;
+        if (isMacro) {
+            const name = getSlotParam(slot, `knob_${i + 1}_name`) || "";
+            knobEditorAssignments.push({ target: "", param: "", isMacro: true, name });
+            continue;
+        }
         const target = getSlotParam(slot, `knob_${i + 1}_target`) || "";
         const param = getSlotParam(slot, `knob_${i + 1}_param`) || "";
-        knobEditorAssignments.push({ target, param });
+        knobEditorAssignments.push({ target, param, isMacro: false });
     }
     /* Three answers, not two (CLAUDE.md). "" is a chain DSP older than this
      * feature — genuinely Off. null is a read that did not complete, and it
@@ -11342,7 +11360,7 @@ function loadKnobAssignments(slot) {
 
 /* Get available targets for knob assignment (components with modules loaded) */
 function getKnobTargets(slot) {
-    const targets = [{ id: "", name: "(None)" }];
+    const targets = [{ id: "", name: "(None)" }, { id: "__macro__", name: "[Make Macro]" }];
     const cfg = chainConfigs[slot];
     if (!cfg) return targets;
 
@@ -11811,6 +11829,9 @@ function handleDynamicParamPickerSelect() {
 
 /* Get display label for a knob assignment */
 function getKnobAssignmentLabel(assignment) {
+    if (assignment && assignment.isMacro) {
+        return assignment.name || "Macro";
+    }
     if (!assignment || !assignment.target || !assignment.param) {
         return "(None)";
     }
@@ -11941,6 +11962,119 @@ function applyKnobAssignment(target, param) {
 }
 
 /* ========== End Knob Editor Functions ========== */
+
+/* ========== Macro Editor Functions ==========
+ *
+ * A macro knob fans one knob position out to up to MACRO_MAX_TARGETS module
+ * params, each with its own signed depth (-1..+1, same semantics/widget as
+ * an LFO's depth) — see chain_macro_apply in chain_mod.c. The target picker
+ * is the LFO target picker's COMPONENT/GROUP/PARAM views reused verbatim
+ * through makeSlotMacroTargetCtx (below, near makeSlotLfoCtx) rather than a
+ * fourth ad-hoc hierarchy walker; the host sub-keys it drives
+ * (macro_N_row_R:target / :target_param) mirror lfoN:target / :target_param
+ * exactly for that reason.
+ */
+
+/* Enter the editor for knob `knobNum`'s (1-8) macro. */
+function enterMacroEditor(slot, knobNum) {
+    macroEditorKnobNum = knobNum;
+    editingMacroDepth = false;
+    loadMacroConfig(slot, knobNum);
+    macroEditorIndex = 0;
+    setView(VIEWS.MACRO_EDITOR);
+    needsRedraw = true;
+    announce(`Macro ${knobNum}, ${macroEditorName || "Unnamed"}`);
+}
+
+/* Read one macro's whole config in a single call (macro_N_config, a JSON
+ * blob) — the editor's one read on entry, mirroring the LFO grouping
+ * picker's one-read-per-entry pattern. A failed read (null) leaves the
+ * editor showing an empty macro rather than caching a guess: nothing here
+ * is written back until the user takes an explicit action on a row. */
+function loadMacroConfig(slot, knobNum) {
+    macroEditorName = "";
+    macroEditorRows = [];
+    for (let i = 0; i < MACRO_MAX_TARGETS; i++) {
+        macroEditorRows.push({ target: "", param: "", depth: 0 });
+    }
+
+    const raw = getSlotParam(slot, `macro_${knobNum}_config`);
+    if (raw === null) return;
+    try {
+        const cfg = JSON.parse(raw);
+        macroEditorName = cfg.name || "";
+        if (Array.isArray(cfg.targets)) {
+            for (let i = 0; i < MACRO_MAX_TARGETS && i < cfg.targets.length; i++) {
+                const t = cfg.targets[i] || {};
+                macroEditorRows[i] = {
+                    target: t.target || "",
+                    param: t.param || "",
+                    depth: parseFloat(t.depth) || 0,
+                };
+            }
+        }
+    } catch (e) { /* malformed/empty — leave the blanks seeded above */ }
+}
+
+/* Item index 0 is the Name row; each of the MACRO_MAX_TARGETS rows below it
+ * is a Target/Amount pair, mirroring the LFO editor's "target opens a
+ * picker, everything else is a jog-editable value" split. */
+function macroEditorItemAt(index) {
+    if (index <= 0) return { type: "name" };
+    const offset = index - 1;
+    const row = Math.floor(offset / 2);
+    return (offset % 2) === 0 ? { type: "target", row } : { type: "amount", row };
+}
+
+function macroEditorItemCount() {
+    return 1 + MACRO_MAX_TARGETS * 2;
+}
+
+function macroEditorItemLabel(item) {
+    if (item.type === "name") return "Name";
+    if (item.type === "target") return `Target ${item.row + 1}`;
+    return `Amount ${item.row + 1}`;
+}
+
+function macroEditorItemValue(item) {
+    if (item.type === "name") return macroEditorName || "(unnamed)";
+    const row = macroEditorRows[item.row];
+    if (item.type === "target") {
+        return (row.target && row.param) ? `${row.target}: ${row.param}` : "(empty)";
+    }
+    return Math.round(row.depth * 100) + "%";
+}
+
+function drawMacroEditor() {
+    clear_screen();
+    drawHeader(truncateText(`Macro ${macroEditorKnobNum}: ${macroEditorName || "Unnamed"}`, 22));
+
+    const items = [];
+    for (let i = 0; i < macroEditorItemCount(); i++) items.push(macroEditorItemAt(i));
+
+    drawMenuList({
+        items,
+        selectedIndex: macroEditorIndex,
+        getLabel: macroEditorItemLabel,
+        getValue: (item) => truncateText(macroEditorItemValue(item), 14),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: editingMacroDepth,
+    });
+
+    drawFooter(editingMacroDepth ? ["Back: done", "Jog: amount"] : ["Back: cancel", "Click: edit"]);
+}
+
+/* Open the target picker for macro row `row` (0-based). Reuses the LFO
+ * target picker's COMPONENT/GROUP/PARAM views via lfoCtx — see
+ * makeSlotMacroTargetCtx near makeSlotLfoCtx. */
+function enterMacroTargetPicker(row) {
+    lfoCtx = makeSlotMacroTargetCtx(knobEditorSlot, macroEditorKnobNum, row);
+    enterLfoTargetPicker();
+}
+
+/* ========== End Macro Editor Functions ========== */
 
 /* Handle Shift+Click - enter component edit mode */
 function handleShiftSelect() {
@@ -16070,8 +16204,7 @@ function handleJog(delta, shift = isShiftHeld()) {
                 /* Announce knob and current assignment */
                 const knobNum = knobEditorIndex + 1;
                 const assignment = knobEditorAssignments[knobEditorIndex];
-                const assignLabel = assignment ? `${assignment.target}: ${assignment.label}` : "Unassigned";
-                announceMenuItem(`Knob ${knobNum}`, assignLabel);
+                announceMenuItem(`Knob ${knobNum}`, getKnobAssignmentLabel(assignment));
             }
             break;
         case VIEWS.KNOB_PARAM_PICKER:
@@ -16081,7 +16214,7 @@ function handleJog(delta, shift = isShiftHeld()) {
                 knobParamPickerIndex = Math.max(0, Math.min(targets.length - 1, knobParamPickerIndex + delta));
                 if (targets.length > 0) {
                     const t = targets[knobParamPickerIndex];
-                    announceMenuItem("Target", t.label || t.id || "None");
+                    announceMenuItem("Target", t.name || t.id || "None");
                 }
             } else {
                 /* Navigate params list */
@@ -16090,6 +16223,22 @@ function handleJog(delta, shift = isShiftHeld()) {
                     const kp = knobParamPickerParams[knobParamPickerIndex];
                     announceMenuItem("Param", kp.label || kp.key || "Unknown");
                 }
+            }
+            break;
+        case VIEWS.MACRO_EDITOR:
+            if (editingMacroDepth) {
+                const item = macroEditorItemAt(macroEditorIndex);
+                const row = macroEditorRows[item.row];
+                let newDepth = row.depth + 0.01 * delta;
+                if (newDepth < -1) newDepth = -1;
+                if (newDepth > 1) newDepth = 1;
+                row.depth = newDepth;
+                setSlotParam(knobEditorSlot, `macro_${macroEditorKnobNum}_row_${item.row}:depth`, newDepth.toFixed(4));
+                announceParameter(`Amount ${item.row + 1}`, Math.round(newDepth * 100) + "%");
+            } else {
+                macroEditorIndex = Math.max(0, Math.min(macroEditorItemCount() - 1, macroEditorIndex + delta));
+                const item = macroEditorItemAt(macroEditorIndex);
+                announceMenuItem(macroEditorItemLabel(item), macroEditorItemValue(item));
             }
             break;
         case VIEWS.DYNAMIC_PARAM_PICKER:
@@ -16830,6 +16979,9 @@ function handleSelect() {
                 setSlotParam(knobEditorSlot, "knob_cc_out", String(knobEditorCcOut));
                 announceMenuItem("Knob CC Out", knobCcOutLabel());
                 needsRedraw = true;
+            } else if (knobEditorAssignments[knobEditorIndex] && knobEditorAssignments[knobEditorIndex].isMacro) {
+                /* Already a macro — open its editor, not the 1:1 param picker. */
+                enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
             } else {
                 /* Edit this knob's assignment */
                 enterKnobParamPicker();
@@ -16840,6 +16992,13 @@ function handleSelect() {
                 /* Main view - selecting a target */
                 const targets = getKnobTargets(knobEditorSlot);
                 const selected = targets[knobParamPickerIndex];
+                if (selected && selected.id === "__macro__") {
+                    /* Promote this knob to a macro and jump straight into its
+                     * editor — matches the direct-assign flow's one-click feel. */
+                    setSlotParam(knobEditorSlot, `knob_${knobEditorIndex + 1}_to_macro`, "1");
+                    enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
+                    break;
+                }
                 if (selected) {
                     if (selected.id === "") {
                         /* (None) selected - clear assignment */
@@ -16895,6 +17054,32 @@ function handleSelect() {
                 }
             }
             break;
+        case VIEWS.MACRO_EDITOR: {
+            const item = macroEditorItemAt(macroEditorIndex);
+            if (item.type === "name") {
+                openTextEntry({
+                    title: "Macro Name",
+                    initialText: macroEditorName,
+                    onAnnounce: announce,
+                    onConfirm: (nextText) => {
+                        macroEditorName = String(nextText || "").slice(0, 15);
+                        setSlotParam(knobEditorSlot, `macro_${macroEditorKnobNum}_set_name`, macroEditorName);
+                        announceParameter("Name", macroEditorName || "(unnamed)");
+                        needsRedraw = true;
+                    }
+                });
+            } else if (item.type === "target") {
+                enterMacroTargetPicker(item.row);
+            } else {
+                /* Amount row: toggle jog-edit mode, same gesture as the LFO
+                 * editor's depth row. */
+                editingMacroDepth = !editingMacroDepth;
+                needsRedraw = true;
+                const row = macroEditorRows[item.row];
+                announce(`Amount ${item.row + 1}, ${Math.round(row.depth * 100)}%`);
+            }
+            break;
+        }
         case VIEWS.DYNAMIC_PARAM_PICKER:
             handleDynamicParamPickerSelect();
             break;
@@ -17031,7 +17216,10 @@ function handleSelect() {
                 if (comp.key === "__clear__") {
                     lfoCtx.setParamBlocking("target", "");
                     lfoCtx.setParamBlocking("target_param", "");
-                    if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+                    if (!returnToSlotGridFromLfoTarget()) {
+                        setView(lfoCtx.pickerHomeView || VIEWS.LFO_EDIT);
+                        if (lfoCtx.onPickerReturn) lfoCtx.onPickerReturn();
+                    }
                     announce("Target cleared");
                     needsRedraw = true;
                 } else {
@@ -17051,7 +17239,10 @@ function handleSelect() {
                 const param = lfoTargetParams[selectedLfoTargetParam];
                 lfoCtx.setParamBlocking("target", comp.key);
                 lfoCtx.setParamBlocking("target_param", param.key);
-                if (!returnToSlotGridFromLfoTarget()) setView(VIEWS.LFO_EDIT);
+                if (!returnToSlotGridFromLfoTarget()) {
+                    setView(lfoCtx.pickerHomeView || VIEWS.LFO_EDIT);
+                    if (lfoCtx.onPickerReturn) lfoCtx.onPickerReturn();
+                }
                 announce("Target set: " + comp.label + " " + param.label);
                 needsRedraw = true;
             }
@@ -17392,6 +17583,21 @@ function handleBack() {
                 needsRedraw = true;
             }
             break;
+        case VIEWS.MACRO_EDITOR:
+            if (editingMacroDepth) {
+                editingMacroDepth = false;
+                needsRedraw = true;
+                const item = macroEditorItemAt(macroEditorIndex);
+                announceMenuItem(macroEditorItemLabel(item), macroEditorItemValue(item));
+            } else {
+                setView(VIEWS.KNOB_EDITOR);
+                /* The knob editor's own list may have changed (e.g. this
+                 * macro just got its first row), so refresh before it draws. */
+                loadKnobAssignments(knobEditorSlot);
+                announce("Knob Editor");
+                needsRedraw = true;
+            }
+            break;
         case VIEWS.DYNAMIC_PARAM_PICKER:
             if (dynamicPickerMode === "param" && dynamicPickerMeta && dynamicPickerMeta.picker_type === "parameter_picker") {
                 dynamicPickerMode = "target";
@@ -17497,8 +17703,8 @@ function handleBack() {
             /* Opened from a grid cell? Go back to the grid, not to the list
              * editor screen the user never opened. */
             if (returnToSlotGridFromLfoTarget()) break;
-            setView(VIEWS.LFO_EDIT);
-            announce(lfoCtx ? lfoCtx.title : "LFO");
+            setView(lfoCtx && lfoCtx.pickerHomeView ? lfoCtx.pickerHomeView : VIEWS.LFO_EDIT);
+            announce(lfoCtx && lfoCtx.pickerHomeAnnounce ? lfoCtx.pickerHomeAnnounce : "LFO");
             needsRedraw = true;
             break;
         case VIEWS.LFO_TARGET_GROUP:
@@ -18621,6 +18827,65 @@ function drawGlobalSettings() { _drawGlobalSettings(); }
 
 /* --- LFO Context Factories --- */
 
+/*
+ * Synth + FX + MIDI FX components with a module loaded, in signal order.
+ * Shared by the LFO and Macro target pickers so they cannot drift apart —
+ * extracted from makeSlotLfoCtx's getTargetComponents, which is otherwise
+ * unchanged (it still appends the other LFO and [Clear Target] itself).
+ *
+ * Both sections are as long as the chain SAYS it is.
+ *
+ * They used to stop at two, which was the old fixed shape; the DSP has held
+ * eight of each for a while, so an eight-FX chain offered modulation of the
+ * first two positions and silently pretended the rest were not there.
+ *
+ * The bound is the PUBLISHED COUNT, never the cap. This function runs inside
+ * a draw on a describeLfoTargetFor cache miss, and a reorder forces one
+ * (resetLfoTargetLabels), so every position walked costs two IPC round trips
+ * at ~2.8ms — walking to the cap would turn the frame after every reorder
+ * into ~16 reads, ~45ms, for positions that mostly hold nothing. One read
+ * for the count buys the right length, and a two-FX chain costs what it
+ * always did.
+ *
+ * The count is a HIGH-WATER MARK (chain_host.c keeps `fx_count = slot + 1`
+ * and only trims a trailing NULL), so an interior position inside it can
+ * still be empty — hence the per-position guard stays.
+ */
+function collectChainTargetComponents(slot) {
+    const comps = [];
+    const synthModule = getSlotParam(slot, "synth_module");
+    if (synthModule) {
+        let name = getSlotParam(slot, "synth:name") || synthModule;
+        if (name === synthModule && name.startsWith("rnbo-synth-")) {
+            name = name.substring("rnbo-synth-".length) + " (RNBO)";
+        } else if (name === synthModule && name.startsWith("rnbo-fx-")) {
+            name = name.substring("rnbo-fx-".length) + " (RNBO)";
+        }
+        comps.push({ key: "synth", label: "Synth: " + name });
+    }
+    const count = (key, cap) => {
+        const n = parseInt(getSlotParam(slot, key), 10);
+        return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
+    };
+    const fxCount = count("fx_count", CHAIN_CAP.fx);
+    for (let i = 1; i <= fxCount; i++) {
+        const fxModule = getSlotParam(slot, "fx" + i + "_module");
+        if (fxModule) {
+            const name = getSlotParam(slot, "fx" + i + ":name") || fxModule;
+            comps.push({ key: "fx" + i, label: "FX " + i + ": " + name });
+        }
+    }
+    const midiFxCount = count("midi_fx_count", CHAIN_CAP.midiFx);
+    for (let i = 1; i <= midiFxCount; i++) {
+        const mfxModule = getSlotParam(slot, "midi_fx" + i + "_module");
+        if (mfxModule) {
+            const name = getSlotParam(slot, "midi_fx" + i + ":name") || mfxModule;
+            comps.push({ key: "midi_fx" + i, label: "MIDI FX " + i + ": " + name });
+        }
+    }
+    return comps;
+}
+
 function makeSlotLfoCtx(slot, lfoIdx) {
     const prefix = "lfo" + (lfoIdx + 1) + ":";
     return {
@@ -18632,59 +18897,7 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
         getTargetComponents: function() {
-            const comps = [];
-            const synthModule = getSlotParam(slot, "synth_module");
-            if (synthModule) {
-                let name = getSlotParam(slot, "synth:name") || synthModule;
-                if (name === synthModule && name.startsWith("rnbo-synth-")) {
-                    name = name.substring("rnbo-synth-".length) + " (RNBO)";
-                } else if (name === synthModule && name.startsWith("rnbo-fx-")) {
-                    name = name.substring("rnbo-fx-".length) + " (RNBO)";
-                }
-                comps.push({ key: "synth", label: "Synth: " + name });
-            }
-            /*
-             * Both sections are as long as the chain SAYS it is.
-             *
-             * They used to stop at two, which was the old fixed shape; the DSP
-             * has held eight of each for a while, so an eight-FX chain offered
-             * modulation of the first two positions and silently pretended the
-             * rest were not there.
-             *
-             * The bound is the PUBLISHED COUNT, never the cap. This function
-             * runs inside a draw on a describeLfoTargetFor cache miss, and a
-             * reorder forces one (resetLfoTargetLabels), so every position
-             * walked costs two IPC round trips at ~2.8ms — walking to the cap
-             * would turn the frame after every reorder into ~16 reads, ~45ms,
-             * for positions that mostly hold nothing. One read for the count
-             * buys the right length, and a two-FX chain costs what it always
-             * did.
-             *
-             * The count is a HIGH-WATER MARK (chain_host.c keeps
-             * `fx_count = slot + 1` and only trims a trailing NULL), so an
-             * interior position inside it can still be empty — hence the
-             * per-position guard stays.
-             */
-            const count = (key, cap) => {
-                const n = parseInt(getSlotParam(slot, key), 10);
-                return (isNaN(n) || n < 0) ? 0 : Math.min(n, cap);
-            };
-            const fxCount = count("fx_count", CHAIN_CAP.fx);
-            for (let i = 1; i <= fxCount; i++) {
-                const fxModule = getSlotParam(slot, "fx" + i + "_module");
-                if (fxModule) {
-                    const name = getSlotParam(slot, "fx" + i + ":name") || fxModule;
-                    comps.push({ key: "fx" + i, label: "FX " + i + ": " + name });
-                }
-            }
-            const midiFxCount = count("midi_fx_count", CHAIN_CAP.midiFx);
-            for (let i = 1; i <= midiFxCount; i++) {
-                const mfxModule = getSlotParam(slot, "midi_fx" + i + "_module");
-                if (mfxModule) {
-                    const name = getSlotParam(slot, "midi_fx" + i + ":name") || mfxModule;
-                    comps.push({ key: "midi_fx" + i, label: "MIDI FX " + i + ": " + name });
-                }
-            }
+            const comps = collectChainTargetComponents(slot);
             /* Add the other LFO as a target (skip self) */
             const otherIdx = lfoIdx === 0 ? 1 : 0;
             comps.push({ key: "lfo" + (otherIdx + 1), label: "LFO " + (otherIdx + 1) });
@@ -18700,7 +18913,53 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         title: "LFO " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
         returnAnnounce: "Chain Settings",
+        /* Distinct from returnView above: that is where LFO_EDIT ITSELF goes
+         * on Back. This is where the TARGET PICKER (COMPONENT/GROUP/PARAM)
+         * goes when it exits without going through the grid hand-off — i.e.
+         * back to this same LFO's editor, not out to Chain Settings. Reusing
+         * returnView here would send a picker confirm two screens too far. */
+        pickerHomeView: VIEWS.LFO_EDIT,
+        pickerHomeAnnounce: "LFO " + (lfoIdx + 1),
         supportsRetrigger: true,
+    };
+}
+
+/*
+ * Target-picker context for one row of a macro knob's fan-out. Same shape as
+ * makeSlotLfoCtx, sized down to what the picker actually reads — no
+ * scopeId/supportsRetrigger, since those are only read by the LFO_EDIT
+ * screen a macro never visits. The host sub-keys (macro_N_row_R:target /
+ * :target_param) mirror lfoN:target / :target_param exactly, which is what
+ * lets enterLfoTargetPicker/enterLfoTargetParamPicker/enterLfoTargetGroupParams
+ * work here completely unmodified.
+ */
+function makeSlotMacroTargetCtx(slot, knobNum, row) {
+    const prefix = `macro_${knobNum}_row_${row}:`;
+    return {
+        getParam: function(key) { return getSlotParam(slot, prefix + key); },
+        setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
+        setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
+        getTargetComponents: function() {
+            const comps = collectChainTargetComponents(slot);
+            /* No "other LFO" entry — a macro row only targets ordinary
+             * module params, never another modulation source. */
+            comps.push({ key: "__clear__", label: "[Clear Target]" });
+            return comps;
+        },
+        getTargetParams: function(compKey) {
+            return lfoTargetParamsFor(slotChainTarget(slot), compKey, "Macro");
+        },
+        getTargetGroups: function(compKey) {
+            return lfoTargetGroupsFor(slotChainTarget(slot), compKey, "Macro");
+        },
+        title: `Macro ${knobNum} Target ${row + 1}`,
+        pickerHomeView: VIEWS.MACRO_EDITOR,
+        pickerHomeAnnounce: "Macro Editor",
+        /* macroEditorRows is a local snapshot (loaded once on entry, unlike
+         * the LFO editor which re-reads live every draw), so a confirmed
+         * pick needs an explicit refresh or the editor would keep showing
+         * the row's old target/param until re-entered. */
+        onPickerReturn: function() { loadMacroConfig(slot, knobNum); },
     };
 }
 
@@ -18826,6 +19085,9 @@ function makeMfxLfoCtx(lfoIdx) {
         title: "MFX LFO " + (lfoIdx + 1),
         returnView: VIEWS.MASTER_FX,
         returnAnnounce: "Master FX Settings",
+        /* See makeSlotLfoCtx for why this is distinct from returnView. */
+        pickerHomeView: VIEWS.LFO_EDIT,
+        pickerHomeAnnounce: "MFX LFO " + (lfoIdx + 1),
     };
 }
 
@@ -19534,6 +19796,7 @@ function dispatchCoRunDraw() {
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
+        case VIEWS.MACRO_EDITOR:         drawMacroEditor(); break;
         case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
         case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
@@ -20644,6 +20907,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             drawKnobParamPicker();
+            break;
+        case VIEWS.MACRO_EDITOR:
+            drawMacroEditor();
             break;
         case VIEWS.DYNAMIC_PARAM_PICKER:
             drawDynamicParamPicker();

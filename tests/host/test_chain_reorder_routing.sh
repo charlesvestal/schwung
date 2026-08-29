@@ -113,7 +113,16 @@ keyed=$(awk '
 
 [ -n "$keyed" ] || fail "could not derive the set of position-keyed types from $hdr"
 
-struct_body=$(awk '/^typedef struct chain_instance \{/,/^\} chain_instance_t;/' "$hdr")
+# A member can sit directly on chain_instance_t, or one level down inside
+# ANOTHER position-keyed struct -- macro_target_t lives in
+# knob_mapping_t.macro_targets[], not on the instance itself, because a macro
+# knob's fan-out is itself an array of position-keyed rows. So the member
+# search covers the WHOLE header (the same scope the `keyed` derivation above
+# already uses), and "is it walked" accepts ANY receiver (`->$m[`), not just
+# `inst->$m[` -- a member reached through another struct's own loop variable
+# (`k->macro_targets[r]`) is walked exactly as completely as one reached
+# through inst directly.
+struct_body=$(cat "$hdr")
 
 # A derivation that quietly yields nothing passes every check below it, which is
 # the exact failure mode this file is guarding against elsewhere. Count what was
@@ -121,22 +130,26 @@ struct_body=$(awk '/^typedef struct chain_instance \{/,/^\} chain_instance_t;/' 
 checked=0
 
 for type in $keyed; do
+  # sort -u: patch_info_t and chain_instance_t both declare a `knob_mappings`
+  # array (the saved-patch copy and the live one), so an unscoped whole-header
+  # search finds the same member name twice for that type. One real member,
+  # counted once.
   members=$(printf '%s\n' "$struct_body" | command grep "^ *$type " \
-    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/")
-  [ -n "$members" ] || fail "found the position-keyed type $type but no chain_instance_t member of it"
+    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/" | sort -u)
+  [ -n "$members" ] || fail "found the position-keyed type $type but no struct member of it anywhere in $hdr"
   for m in $members; do
     checked=$((checked + 1))
-    command grep -q "inst->$m\[" "$src" || fail \
-"chain_instance_t.$m is an array of $type, which names a chain position by \
-string, but chain_reorder.c never walks it. A shape edit will leave every \
-routing in it pointing at whatever module slides into the index it names. \
-Add it to chain_perm_retarget_all."
+    command grep -q -- "->$m\[" "$src" || fail \
+"a $type array named .$m names a chain position by string, but chain_reorder.c \
+never walks it. A shape edit will leave every routing in it pointing at \
+whatever module slides into the index it names. Add it to \
+chain_perm_retarget_all."
   done
 done
 
-[ "$checked" -ge 3 ] || fail "only $checked position-keyed table(s) were derived from $hdr; \
-there are three (mod_targets, lfos, knob_mappings), so the derivation above is broken \
-and everything it checked was vacuous"
+[ "$checked" -ge 4 ] || fail "only $checked position-keyed table(s) were derived from $hdr; \
+there are four (mod_targets, lfos, knob_mappings, and knob_mappings' nested macro_targets), \
+so the derivation above is broken and everything it checked was vacuous"
 
 # ...and each of those walks must handle the module that LEFT, not only the one
 # that moved: chain_perm_retarget returns -1 for a position that is gone, and a
