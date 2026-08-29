@@ -230,8 +230,8 @@ helm	Main	fader	detected	amp_sustain
 helm	Main	fader	detected	volume
 helm	Main	filter	detected	cutoff,resonance
 helm	Mod Envelope	envelope	detected	mod_attack,mod_decay,mod_sustain,mod_release
-helm	Mono LFO 1	waveform	detected	mono_lfo_1_waveform
-helm	Mono LFO 2	waveform	detected	mono_lfo_2_waveform
+helm	Mono LFO 1	lfo	detected	mono_lfo_1_waveform,mono_lfo_1_amplitude,mono_lfo_1_frequency
+helm	Mono LFO 2	lfo	detected	mono_lfo_2_waveform,mono_lfo_2_amplitude,mono_lfo_2_frequency
 helm	Noise / Feedback	fader	detected	noise_volume
 helm	Oscillator 1	fader	detected	osc_1_volume
 helm	Oscillator 1	switch	detected	unison_1_harmonize
@@ -239,7 +239,7 @@ helm	Oscillator 1	waveform	detected	osc_1_waveform
 helm	Oscillator 2	fader	detected	osc_2_volume
 helm	Oscillator 2	switch	detected	unison_2_harmonize
 helm	Oscillator 2	waveform	detected	osc_2_waveform
-helm	Poly LFO	waveform	detected	poly_lfo_waveform
+helm	Poly LFO	lfo	detected	poly_lfo_waveform,poly_lfo_amplitude,poly_lfo_frequency
 helm	Reverb	switch	detected	reverb_on
 helm	Settings	fader	detected	volume
 helm	Settings	switch	detected	legato
