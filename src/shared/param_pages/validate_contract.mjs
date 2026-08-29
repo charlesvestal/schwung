@@ -216,7 +216,30 @@ export function validateContract({ id, hierarchy, chainParams } = {}) {
         for (const lvl of Object.values(levels)) {
             if (hasChildren(lvl)) for (const k of allChildKeys(lvl)) viaChildren.add(k);
         }
-        const real = unreachable.filter((k) => !viaChildren.has(k));
+        /*
+         * A READ-ONLY param is not meant to be reached.
+         *
+         * `access: "read"` is telemetry -- a meter, a detected key, a sample
+         * count. It is published so a web panel or a remote client can display
+         * it, and putting it on a knob page would be a defect, not a fix. But
+         * this rule counted it as unreachable and told the author to go and
+         * place it: 4k-eq declares in_peak_l/r, out_peak_l/r and clip exactly
+         * as designed, and was reported as having 7 unreachable params of
+         * which 5 were correct.
+         *
+         * That mattered beyond the noise. The count is what a reviewer reads
+         * first, and a rule that inflates it with things nobody should act on
+         * teaches them to stop reading it -- so the two REAL gaps in that same
+         * module (hpf_enabled and lpf_enabled, filter switches with no way to
+         * reach them from the device) sat behind five false ones.
+         *
+         * Write-only is deliberately NOT excluded: a trigger is a button, and a
+         * button you cannot press is a real gap.
+         */
+        const readOnly = new Set(
+            cp.filter((p) => p && p.key && String(p.access || "").toLowerCase() === "read")
+              .map((p) => p.key));
+        const real = unreachable.filter((k) => !viaChildren.has(k) && !readOnly.has(k));
         if (real.length) {
             add("warn", "unreachable-params",
                 `${real.length} chain_params are listed in no level, so no UI can reach them: ` +
