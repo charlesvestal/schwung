@@ -4,6 +4,8 @@
 303	Main - 2	waveform	detected	waveform
 4k-eq	HF	switch	declared	hf_bell
 4k-eq	LF	switch	declared	lf_bell
+4k-eq	Main	fader	detected	input_gain
+4k-eq	Main	fader	detected	output_gain
 4k-eq	Main	switch	declared	auto_gain
 4k-eq	Main	switch	declared	bypass
 6w6	Params	fader	declared	bd_level
@@ -100,6 +102,8 @@ chordism	Oscillators	waveform	detected	wave_1
 chordism	Oscillators	waveform	detected	wave_2
 chordism	Oscillators	waveform	detected	wave_3
 chordism	Oscillators	waveform	detected	wave_4
+chowtape	Main - 2	fader	detected	output
+clap	Main	fader	detected	param_5
 denis	Control	envelope	detected	attack,decay,sustain,release
 denis	Control	filter	detected	filter_cutoff,filter_q
 denis	Mod & Patch - 2	switch	detected	legato
@@ -168,6 +172,7 @@ euclidrum	Main	switch	detected	lane8_enabled
 filter	Envelope	envelope	detected	env_attack,env_release
 filter	LFO	waveform	detected	lfo_shape
 filter	Main	filter	detected	cutoff,resonance
+filter	Output	fader	detected	output
 fizzik	Exciter	envelope	detected	exc_attack,exc_decay
 fizzik	Exciter	fader	detected	vel_level
 fizzik	Mod	lfo	detected	lfo1_rate,lfo1_depth,lfo1_shape
@@ -484,6 +489,7 @@ psxverb	Main	fader	detected	input_gain
 psxverb	Main	fader	detected	reverb_level
 punchfx	Main	fader	detected	volume
 pushnpull	Filter	filter	detected	cutoff,resonance
+pushnpull	Main	fader	detected	output
 pushnpull	Main - 2	switch	detected	band_on
 radiogarden	Params	fader	detected	gain
 rex	Main	envelope	detected	attack,decay,sustain,release
@@ -538,6 +544,8 @@ structor	Randomize	switch	detected	seq_on
 superarp	Global	switch	detected	latch
 superarp	Global	switch	detected	triplet
 superarp	Main	switch	detected	latch
+superboom	Main	fader	detected	inputGain
+superboom	Main	fader	detected	output
 superboom	Seal	switch	detected	limiter
 superboom	Skulpt - 2	switch	detected	micControl
 surge	Amp Envelope	envelope	detected	env1_attack,env1_decay,env1_sustain,env1_release
@@ -652,6 +660,8 @@ tape-echo2	Main	switch	detected	tempo_sync
 tape-echo2	Out	fader	detected	echo_volume
 tape-echo2	Out	fader	detected	reverb_volume
 tape-echo2	Out	switch	detected	ping_pong
+tapescam	Main	fader	detected	output
+tapescam	Main - 2	fader	detected	input
 tapescam	Main - 2	switch	detected	widen
 usefulity	Main	fader	detected	gain_db
 usefulity	Main	switch	detected	bass_mono
