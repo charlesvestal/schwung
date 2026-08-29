@@ -78,6 +78,44 @@ Promise.all([
     if (!has(spelled, "lfo")) fail("speed stopped being a rate");
   }
 
+  /* ---- 2b. every module spells rate and depth its own way -------------- */
+  {
+    /* Each of these cost a module its LFO graphic, and each was found by
+       sweeping the fleet rather than by reading the vocabulary. */
+    const shape = { key: "x_wave", name: "Wave", type: "enum", options: ["Tri", "Sin", "Saw"] };
+    const pair = (rate, depth) => [F(rate), Object.assign({}, shape, { key: "x_wave" }), F(depth)];
+    /* helm: frequency + amplitude. `freq` alone never matched "frequency". */
+    if (!has([F("mono_lfo_1_frequency"), { key: "mono_lfo_1_wave", name: "W", type: "enum",
+              options: ["Tri", "Sin"] }, F("mono_lfo_1_amplitude")], "lfo"))
+      fail("frequency/amplitude should read as rate/depth");
+    /* surge: magnitude is depth. */
+    if (!has([F("lfo0_rate"), { key: "lfo0_wave", name: "W", type: "enum", options: ["Tri", "Sin"] },
+              F("lfo0_magnitude")], "lfo"))
+      fail("magnitude should read as depth");
+    /*
+     * minijv: no separator between the instance and the role.
+     *
+     * Rate and depth adjacent, because the stem-stripper eats the DIGIT along
+     * with the word -- "lfo1rate" stems to "lfo", not "lfo1" -- so a shape
+     * named "lfo1wave" (stem "lfo1") no longer agrees and drops out. That also
+     * means two LFOs whose roles are spelled this way share a stem and could
+     * group with each other; nothing in the fleet does it today, and fixing it
+     * properly means preserving the boundary character in the stem.
+     */
+    if (!has([F("lfo1rate"), F("lfo1depth"),
+              { key: "lfo1wave", name: "W", type: "enum", options: ["Tri", "Sin"] }], "lfo"))
+      fail("a digit is a boundary: lfo1rate should read as a rate");
+    /* obxd: the index trails the role. */
+    if (!has([F("lfo_rate"), { key: "lfo_wave", name: "W", type: "enum", options: ["Tri", "Sin"] },
+              F("lfo_amt1")], "lfo"))
+      fail("lfo_amt1 should read as a depth");
+    /* ...and the boundary must not open the door to substring matches. */
+    if (has([F("generate"), { key: "gen_wave", name: "W", type: "enum", options: ["Tri", "Sin"] },
+             F("gen_depth")], "lfo"))
+      fail("\"generate\" must not match the rate word");
+    void pair;
+  }
+
   /* ---- 3. a unit qualifier is not a different subsystem ---------------- */
   {
     /* granny page 5 is NAMED "ADSR Envelope" and drew four faders: the _ms
