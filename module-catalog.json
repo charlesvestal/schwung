@@ -1357,6 +1357,17 @@
       "min_host_version": "0.12.1"
     },
     {
+      "id": "cw78",
+      "name": "CW-78",
+      "description": "Roland CR-78 style drum machine. Fourteen voices, all synthesized, no samples — every one a circuit model built from the 1979 service notes and held to Roland's own factory alignment table. The machine's 34 preset rhythms ship with it, transcribed from the same document, transport-synced with the A/B variation lever live on all seventeen style buttons. Decay is loop gain on the kick, bongos, conga and snare shell rather than an envelope; one noise source feeds the hats, maracas, tambourine and the snare's snap as the hardware busses it. Seven distortion characters per voice and on the master, bit-exactly bypassed at zero; reverb and delay sends on every voice but the kick; one-knob bus compressor; CR-78-style remote web panel with the hardware's own rhythm buttons, Movy template.",
+      "author": "athousanddetails; every voice modelled from the Roland CR-78 service notes (June 1979), VG-11A voicing board",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-cw-78",
+      "default_branch": "main",
+      "asset_name": "cw78-module.tar.gz",
+      "min_host_version": "0.12.1"
+    },
+    {
       "id": "forgetful",
       "name": "Forgetful",
       "description": "One live input sent by hand into four tape memories, each one already forgetting itself — drifting out of tune, breaking up, until it's gone",
