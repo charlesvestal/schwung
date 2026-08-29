@@ -17360,10 +17360,14 @@ function handleBack() {
             break;
         }
         case VIEWS.KNOB_EDITOR:
-            /* Return to chain settings */
-            setView(VIEWS.CHAIN_SETTINGS);
-            announce("Chain Settings");
-            needsRedraw = true;
+            /* Re-derive Slot Settings rather than hardcoding the legacy list
+             * view: enterChainSettings is the one place that gates grid vs.
+             * list (paramPagesEnabled()/param_view), and the grid is the
+             * DEFAULT entry into Slot Settings for virtually everyone (TTS
+             * off). Hardcoding VIEWS.CHAIN_SETTINGS here dropped every such
+             * user onto the list on the way back out, regardless of which
+             * one they actually came from. */
+            enterChainSettings(knobEditorSlot);
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder !== null) {
