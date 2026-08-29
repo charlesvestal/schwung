@@ -2,11 +2,43 @@
 303	Main	fader	detected	volume
 303	Main	filter	detected	cutoff,resonance
 303	Main - 2	waveform	detected	waveform
+4k-eq	HF	switch	declared	hf_bell
+4k-eq	LF	switch	declared	lf_bell
+4k-eq	Main	switch	declared	auto_gain
+4k-eq	Main	switch	declared	bypass
+6w6	Params	fader	declared	bd_level
+6w6	Params - 2	fader	declared	sd_level
+6w6	Params - 3	fader	declared	ht_level
+6w6	Params - 3	fader	declared	lt_level
+6w6	Params - 4	fader	declared	ch_level
+6w6	Params - 5	fader	declared	cy_level
+6w6	Params - 5	fader	declared	oh_level
+6w6	Params - 6	fader	declared	cp_level
+6w6	Params - 7	fader	declared	volume
+8w8	Params	fader	declared	bd_level
+8w8	Params - 10	fader	declared	ch_level
+8w8	Params - 10	fader	declared	oh_level
+8w8	Params - 11	fader	declared	cy_level
+8w8	Params - 12	fader	declared	volume
+8w8	Params - 16	fader	declared	rev_level
+8w8	Params - 17	fader	declared	dly_level
+8w8	Params - 2	fader	declared	sd_level
+8w8	Params - 3	fader	declared	lt_level
+8w8	Params - 3	fader	declared	mt_level
+8w8	Params - 4	fader	declared	ht_level
+8w8	Params - 5	fader	declared	lc_level
+8w8	Params - 5	fader	declared	mc_level
+8w8	Params - 6	fader	declared	hc_level
+8w8	Params - 6	fader	declared	rs_level
+8w8	Params - 7	fader	declared	cl_level
+8w8	Params - 8	fader	declared	cp_level
+8w8	Params - 8	fader	declared	ma_level
+8w8	Params - 9	fader	declared	cb_level
 9w9	Params - 10	fader	declared	hc_volume
-9w9	Params - 11	fader	declared	cr_volume
 9w9	Params - 11	fader	declared	ohh_volume
-9w9	Params - 11	fader	declared	rc_volume
-9w9	Params - 12	fader	declared	volume
+9w9	Params - 12	fader	declared	cr_volume
+9w9	Params - 12	fader	declared	rc_volume
+9w9	Params - 13	fader	declared	volume
 9w9	Params - 2	fader	declared	bd_c_level
 9w9	Params - 3	fader	declared	sd_c_level
 9w9	Params - 5	fader	declared	lt_c_level
@@ -36,7 +68,7 @@ braids	Amp Envelope	envelope	declared	attack,decay,sustain,release
 braids	Filter	envelope	declared	f_attack,f_decay,f_sustain,f_release
 braids	Filter	filter	declared	cutoff,resonance
 braids	Global	fader	declared	volume
-braids	Main	envelope	declared	attack,decay,sustain
+braids	Main	envelope	declared	attack,decay,sustain,release
 braids	Main	filter	declared	cutoff
 branchage	Params - 2	switch	detected	kick_branch_enabled
 branchage	Params - 3	switch	detected	hat_branch_enabled
@@ -274,6 +306,7 @@ linein	Guitar Settings	switch	detected	soft_clip
 linein	Line Settings	switch	detected	safety_limiter
 linein	Phono Settings	switch	detected	hum_notch
 linein	Phono Settings	switch	detected	riaa_eq
+magneto	Channel	eq	detected	low,mid,high
 magneto	Channel	fader	detected	chan_vol
 magneto	Deck	switch	detected	bwd
 magneto	Deck	switch	detected	fwd
@@ -324,12 +357,12 @@ moog	Oscillator 2	fader	detected	osc2_volume
 moog	Oscillator 3	fader	detected	osc3_volume
 moog	Oscillator 4	fader	detected	osc4_volume
 mrdrums	Global	fader	detected	g_master_vol
-mrdrums	Main	envelope	detected	pad_attack_ms,pad_decay_ms
-mrdrums	Main	fader	detected	pad_vol
-mrdrums	Main	sample	detected	pad_start
-mrdrums	Main	switch	detected	ui_auto_select_pad
-mrdrums	Pad Settings	fader	detected	pad_rand_vol_amt
-mrdrums	Pad Settings	sample	detected	pad_sample_path
+mrdrums	Global	switch	detected	ui_auto_select_pad
+mrdrums	Main	envelope	detected	attack_ms,decay_ms
+mrdrums	Main	fader	detected	vol
+mrdrums	Main	sample	detected	start
+mrdrums	Pad Settings	fader	detected	rand_vol_amt
+mrdrums	Pad Settings	sample	detected	sample_path
 mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
 mrsample	Main	fader	detected	gain
@@ -599,19 +632,23 @@ tablor	Filter	filter	declared	flt_freq,flt_res,flt_type
 tablor	Filter	waveform	declared	sub_wave
 tablor	Global	fader	declared	volume
 tablor	Global	switch	declared	legato
-tablor	Global	switch	declared	save_preset
 tablor	Lfo 1	lfo	declared	lfo1_shape,lfo1_rate,lfo1_depth,lfo1_phase
 tablor	Lfo 1	switch	declared	lfo1_sync
 tablor	Lfo 2	lfo	declared	lfo2_shape,lfo2_rate,lfo2_depth,lfo2_phase
 tablor	Lfo 2	switch	declared	lfo2_sync
 tablor	Main	fader	declared	wt1_level
 tablor	Main	fader	declared	wt2_level
-tablor	Main - 2	sample	declared	wt1_table
-tablor	Main - 2	sample	declared	wt2_table
 tablor	Mod 1-2	switch	declared	m1_on
 tablor	Mod 1-2	switch	declared	m2_on
 tablor	Mod 3-4	switch	declared	m3_on
 tablor	Mod 3-4	switch	declared	m4_on
+tape-echo2	Advanced	eq	detected	bass,treble
+tape-echo2	Advanced	fader	detected	input_volume
+tape-echo2	Advanced	switch	detected	input_send
+tape-echo2	Main	switch	detected	tempo_sync
+tape-echo2	Out	fader	detected	echo_volume
+tape-echo2	Out	fader	detected	reverb_volume
+tape-echo2	Out	switch	detected	ping_pong
 tapescam	Main - 2	switch	detected	widen
 usefulity	Main	switch	detected	bass_mono
 usefulity	Main	switch	detected	mono
