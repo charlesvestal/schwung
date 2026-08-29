@@ -54,9 +54,6 @@ aphex	MG / ESP	fader	detected	esp_in_gain
 aphex	Main	fader	detected	volume
 aphex	Modern	switch	detected	ms10_mode
 aphex	Patch	switch	detected	mutate
-aphex	Patch	switch	detected	reset_patch
-aphex	Patch	switch	detected	rnd_mod
-aphex	Patch	switch	detected	rnd_patch
 aphex	Patch - 2	switch	detected	trigger
 aphex	VCO 1+2	waveform	detected	v1_wave
 aphex	VCO 1+2	waveform	detected	v2_wave
@@ -77,7 +74,6 @@ branchage	Params - 3	switch	detected	hat_branch_enabled
 branchage	Params - 3	switch	detected	snare_branch_enabled
 breakbeat	Main	sample	detected	A_sample_path
 breakbeat	Main	sample	detected	B_sample_path
-breakbeat	Main - 2	switch	detected	save_preset
 chiptune	Main	envelope	detected	env_attack,env_decay,env_sustain,env_release
 chiptune	Main	fader	detected	volume
 chordism	Arp	switch	detected	arp_enabled
@@ -111,6 +107,7 @@ dexed	Global	fader	detected	output_level
 dexed	Global	switch	detected	osc_sync
 dexed	LFO	switch	detected	lfo_sync
 dexed	Main	fader	detected	output_level
+dexed	Main	lfo	detected	lfo_speed,lfo_pmd
 dexed	Operat/Operator 1	fader	detected	op1_level
 dexed	Operat/Operator 1	switch	detected	op1_osc_mode
 dexed	Operat/Operator 1 - 2	fader	detected	op1_amp_mod
@@ -183,24 +180,12 @@ fizzik	Voice	fader	detected	level
 forge	FX - 2	switch	detected	dly_pp
 forge	General	eq	detected	eq_lo,eq_mid,eq_hi
 forge	General - 3	switch	detected	limiter
-forge	Main	switch	detected	rnd_kit
-forge	Main	switch	detected	rnd_kit_params
-forge	Main	switch	detected	rnd_pan
-forge	Main	switch	detected	rnd_voice
 forge	Patch	switch	detected	all_mono
-forge	Patch	switch	detected	copy_a_b
-forge	Patch	switch	detected	init_decay
-forge	Patch	switch	detected	init_freq
-forge	Patch	switch	detected	rnd_pitch
-forge	Patch - 2	switch	detected	copy_b_a
-forge	Patch - 2	switch	detected	rnd_b_from_a
-forge	Patch - 2	switch	detected	swap_ab
 forge	Voice/Filter - 2	switch	detected	cv_bw_on
 forge	Voice/Mod - 2	switch	detected	cv_lfo_rt
 forge	Voice/Osc	fader	detected	cv_level
 forge	Voice/Osc	waveform	detected	cv_wave
 forge	Voice/Osc - 2	switch	detected	cv_xfm
-forge	Voice/Setup	switch	detected	cv_init
 forge	Voice/Setup - 2	switch	detected	cv_mute
 fork	Global Settings	switch	detected	fallthrough
 freak	Cycling Envelope	envelope	detected	cycle_attack_ms,cycle_decay_ms
@@ -479,10 +464,6 @@ ottx	Main	fader	detected	in_gain
 ottx	Main	fader	detected	out_gain
 palette	PRESETS&RND	fader	detected	input_vol
 palette	PRESETS&RND	switch	detected	rnd_amount
-palette	PRESETS&RND	switch	detected	rnd_effect
-palette	PRESETS&RND	switch	detected	rnd_macro
-palette	PRESETS&RND	switch	detected	rnd_patch
-palette	PRESETS&RND	switch	detected	rnd_values
 plaits	Main - 2	switch	detected	legato
 po32-drum	Params	fader	detected	level
 psxverb	Main	fader	detected	input_gain
@@ -535,10 +516,6 @@ smack	Perform - 2	switch	detected	pad_play
 smack-in	Params - 2	switch	detected	pad_play
 spectra	Control - 2	switch	detected	limiter
 spectra	Motion	waveform	detected	motion_shape
-spectra	Patch	switch	detected	rnd_motion
-spectra	Patch	switch	detected	rnd_pan
-spectra	Patch	switch	detected	rnd_preset
-spectra	Patch	switch	detected	rnd_spectra
 streamrtsp	Params	fader	detected	gain
 structor	Randomize	switch	detected	seq_on
 superarp	Global	switch	detected	latch
@@ -655,7 +632,6 @@ tablor	Mod 3-4	switch	declared	m3_on
 tablor	Mod 3-4	switch	declared	m4_on
 tape-echo2	Advanced	eq	detected	bass,treble
 tape-echo2	Advanced	fader	detected	input_volume
-tape-echo2	Advanced	switch	detected	input_send
 tape-echo2	Main	switch	detected	tempo_sync
 tape-echo2	Out	fader	detected	echo_volume
 tape-echo2	Out	fader	detected	reverb_volume
@@ -688,14 +664,8 @@ war_bells	Perform	switch	detected	hold
 war_bells	Perform	switch	detected	reverse
 war_bells	Tone	fader	detected	effect_vol
 webstream	Params	fader	detected	gain
-weird-dreams	General - 2	switch	detected	reset_eq
 weird-dreams	Main	fader	detected	cv_vol
 weird-dreams	Patch	switch	detected	all_mono
-weird-dreams	Patch	switch	detected	init_freq
-weird-dreams	Patch	switch	detected	rnd_kit
-weird-dreams	Patch	switch	detected	rnd_pan
-weird-dreams	Patch	switch	detected	rnd_pitch
-weird-dreams	Patch	switch	detected	rnd_voice
 weird-dreams	Voice - 2	envelope	detected	cv_nattack,cv_ndecay
 weird-dreams	Voice - 2	fader	detected	cv_level
 work	Main	fader	detected	level
