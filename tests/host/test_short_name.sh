@@ -52,8 +52,24 @@ Promise.all([
   /* It is a LABEL, so the same squeezing applies -- a long short_name is not a
    * way to smuggle six characters into a five-character cell. */
   const long = meta(Object.assign({}, full, { short_name: "Resonance Amount" }));
-  const drawn = R.labelForCell(long.short_name);
+  const drawn = R.labelVerbatim(long.short_name);
   if (drawn.length > 8) fail("short_name must still be fitted to the cell, got " + drawn);
+
+  /*
+   * FITTED, BUT NEVER RE-WORDED.
+   *
+   * labelForCell runs the word pass, which EXPANDS a known mnemonic when the
+   * full word fits -- right for a label we derived, wrong for one an author
+   * typed. Asked for "Amt", the grid drew AMOUNT: the author said the short
+   * form and got the long one back. Reported by Charles from the review.
+   */
+  if (R.labelForCell("Amt") !== "AMOUNT")
+    fail("precondition: the derived path is expected to expand Amt");
+  if (R.labelVerbatim("Amt") !== "AMT")
+    fail("a declared short_name must not be re-worded, got " + R.labelVerbatim("Amt"));
+  /* A space-separated pair survives: NS VOL reads better than NSVOL. */
+  if (R.labelVerbatim("NS VOL") !== "NS VOL")
+    fail("a declared two-word label should survive, got " + R.labelVerbatim("NS VOL"));
 
   /*
    * A PAGE can override it, because the page is the narrower context.
