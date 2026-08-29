@@ -453,11 +453,26 @@ function detectFilter(pool) {
  * are five characters wide, so authors abbreviate at the source. `amt` is
  * already here for the same reason.
  */
+/*
+ * A DIGIT IS A BOUNDARY TOO, and an index may trail the role word.
+ *
+ * The boundary was underscore-or-end, which two common naming styles never
+ * satisfy. minijv writes `nvram_tone_0_lfo1rate` -- the instance number runs
+ * straight into the role with no separator -- and that alone is 20+ pages
+ * drawing no LFO. obxd writes `lfo_amt1`, where the index trails the role.
+ *
+ * Allowing a DIGIT either side fixes both without opening the door to
+ * substring matches: "generate" still does not match `rate`, because the
+ * character before it is a letter.
+ *
+ * `magnitude` is surge's word for depth (lfo0_magnitude), and pmd/amd are
+ * dexed's -- pitch and amplitude mod depth, the DX7's own names.
+ */
 const LFO_WORD = {
     shape: /shape|waveform|wave/,
-    rate: /(^|_)(rate|speed|spd|freq)($|_)/,
-    depth: /(^|_)(depth|amount|amt)($|_)/,
-    phase: /(^|_)phase($|_)/,
+    rate: /(^|_|\d)(rate|speed|spd|freq)(\d*)($|_)/,
+    depth: /(^|_|\d)(depth|amount|amt|magnitude|pmd|amd)(\d*)($|_)/,
+    phase: /(^|_|\d)phase(\d*)($|_)/,
 };
 
 function detectLfo(pool) {
