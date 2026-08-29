@@ -1998,6 +1998,72 @@ merely repeats their own page**. 425 of those stop being squeezed with a
 It is still a label, so it is still fitted to the cell — a long `short_name`
 is not a way to smuggle six characters into five.
 
+**Drawn as you typed it, when it fits.** A `short_name` of `Noise` draws
+`NOISE`, not the `NSE` the abbreviation table would pick, and `Amt` stays
+`AMT` rather than being expanded back to `AMOUNT`. Only when what you typed is
+too wide does the table get a say (`Sustain` → `SUS`), and only then the
+squeeze. You are the author; the grid does not second-guess a word that fits.
+
+##### A page can override it
+
+`short_name` belongs to the parameter, and the same parameter can sit on more
+than one page. `env_amount` on an *Envelope* page wants `Amt`; on a *Main*
+page beside an LFO Amt, `Amt` would name them both. So a level may carry its
+own, in the inline entry it already uses to name its params:
+
+```json
+"levels": {
+  "envelope": { "params": [ { "key": "env_amount", "short_name": "Amt" } ] }
+}
+```
+
+The level's value wins on its own page; the parameter's applies everywhere
+else.
+
+##### Four questions, in order
+
+These came out of naming ~1100 controls across 39 modules. Each is a word you
+can delete because something on screen already says it.
+
+1. **Does the page say it?** A page titled *VCF* has said "filter", so
+   `VCF Cutoff` is just `Cutoff`. A page titled *Filter Envelope* has said
+   both, so its knobs are `Attack`, `Decay`, `Sustain`, `Release`.
+
+2. **Does the widget say it?** A fader *is* a level — `Output Level` under a
+   fader is just `Output`, and `Noise Volume` is `Noise`. A switch is an
+   enable; an LFO graphic is an LFO; a waveform is a shape.
+
+3. **Does the word imply its own domain?** Cutoff and resonance are a
+   filter's; attack, decay, sustain and release are an envelope's. So
+   `Filter 1 Cutoff` is `Cutoff 1` — the index survives and moves to the end,
+   because it is the only part that distinguishes it.
+
+4. **Do the neighbours say it?** If every cell on the page carries the same
+   word, that word is context, and the one that differs should lead.
+
+##### Two things not to do
+
+**Never reduce to a bare index.** `Volume 1` under a fader is *not* `1`. Four
+cells reading `1 2 3 4` beneath four identical faders are worse than
+`VOL 1`. A word is only redundant when something else in the label still
+carries meaning.
+
+**Never make two cells on a page draw the same thing.** Check the whole page,
+not the one control — and check every page the parameter appears on. An ugly
+long label beats an ambiguous short one. `obxd` shipped two cells both
+reading `OCTAVE`, because it names `octave` and `octave_transpose` alike.
+
+##### When a word must shrink anyway
+
+Take the **front** of it: `Compression` → `Comp`, `Panorama` → `Pano`,
+`Algorithm` → `Algo`. A leading prefix is what a reader recognises, where a
+devowelled skeleton (`CMPRS`, `PANRM`, `ALGRTH`) has to be decoded. The
+exception is a prefix that reads as a different word — `Scatter` → `SCAT` and
+`Restart` → `REST` mislead, so those devowel instead: `Scttr`, `Rstrt`.
+
+For **two** words, devowelling wins and prefixing does not: `Feedback Tone` is
+better as `FBTONE` than `FEETON`. Cut the words, not the label.
+
 
 #### Divability, and the two cell marks
 
