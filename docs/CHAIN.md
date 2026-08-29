@@ -67,6 +67,16 @@ macro_N_row_R:clear    = "1"
 Read: `knob_N_is_macro`, `macro_N_config` (one JSON blob: name, value, all 4
 rows — the Shadow UI's single read on entering the Macro Editor).
 
+The Macro Editor itself has no Name field — a macro's name is set by
+Shift+Click on its row in the Knobs list (`enterKnobEditor`'s select handler
+in `shadow_ui.js`, which calls `macro_N_set_name` directly), not by a row
+inside the editor. Inside the editor, each of up to 4 rows shows one target
+param per row — its `short_name` (falling back to `label`, then the raw
+key — the same fallback the knob grid itself uses via `buildMetaIndex`) on
+the label side, its depth as a percentage on the value side. Click toggles
+jog-editing that row's depth in place; Shift+Click opens the target picker
+for that row instead.
+
 **Implementation is almost entirely reuse of the runtime modulation bus**
 (`chain_mod.c`), which already does non-destructive, range-scaled, N-**sources**-
 per-target contribution math for LFOs. A macro is the mirror case — 1 source,

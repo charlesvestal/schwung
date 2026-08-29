@@ -26,10 +26,10 @@ js_cap=$(awk '/^const MACRO_MAX_TARGETS = /{gsub(/[^0-9]/, "", $4); print $4}' "
     exit 1
 }
 
-# The editor's own item count must be derived from the cap (Name + a
-# Target/Amount pair per row), not a restated literal that a cap raise would
-# silently leave behind.
-command grep -q 'return 1 + MACRO_MAX_TARGETS \* 2;' "$JS" \
+# The editor's own item count must be derived from the cap (one row per
+# target -- target and amount share a row, and there is no separate Name
+# row), not a restated literal that a cap raise would silently leave behind.
+command grep -q 'return MACRO_MAX_TARGETS;' "$JS" \
     || { echo "FAIL: macroEditorItemCount() no longer derives its length from MACRO_MAX_TARGETS" >&2; exit 1; }
 
 echo "PASS: macro row cap agrees between chain_internal.h and shadow_ui.js ($hdr_cap)"

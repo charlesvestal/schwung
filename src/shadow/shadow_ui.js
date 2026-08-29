@@ -11973,6 +11973,11 @@ function applyKnobAssignment(target, param) {
  * fourth ad-hoc hierarchy walker; the host sub-keys it drives
  * (macro_N_row_R:target / :target_param) mirror lfoN:target / :target_param
  * exactly for that reason.
+ *
+ * ONE ROW PER PARAM, not one row per target plus one per amount: target/param
+ * is the row's label (left), amount is the row's value (right). Click toggles
+ * jog-editing the amount in place; Shift+Click opens the target picker for
+ * that row instead — halves the row count a target/amount split would cost.
  */
 
 /* Enter the editor for knob `knobNum`'s (1-8) macro. */
@@ -11986,6 +11991,24 @@ function enterMacroEditor(slot, knobNum) {
     announce(`Macro ${knobNum}, ${macroEditorName || "Unnamed"}`);
 }
 
+/* A target's chain_params/ui_hierarchy metadata, fetched at most once per
+ * loadMacroConfig call and reused across every row that names the same
+ * target — two rows both pointing at "fx1" cost one fetch, not two. Mirrors
+ * the fallback the knob grid itself uses (short_name, then label, then the
+ * bare key) via the same buildMetaIndex the grid is built on. */
+function macroRowShortName(slot, target, key, metaCache) {
+    if (!metaCache[target]) {
+        let hierarchy = null, chainParams = [];
+        const hierarchyJson = getSlotParam(slot, `${target}:ui_hierarchy`);
+        const chainParamsJson = getSlotParam(slot, `${target}:chain_params`);
+        try { hierarchy = hierarchyJson ? JSON.parse(hierarchyJson) : null; } catch (e) { /* fall through with none */ }
+        try { chainParams = chainParamsJson ? JSON.parse(chainParamsJson) : []; } catch (e) { /* fall through with none */ }
+        metaCache[target] = buildMetaIndex({ hierarchy, chainParams });
+    }
+    const meta = metaCache[target].get(key) || metaCache[target].getOrGuess(key);
+    return (meta && (meta.short_name || meta.label)) || key;
+}
+
 /* Read one macro's whole config in a single call (macro_N_config, a JSON
  * blob) — the editor's one read on entry, mirroring the LFO grouping
  * picker's one-read-per-entry pattern. A failed read (null) leaves the
@@ -11995,7 +12018,7 @@ function loadMacroConfig(slot, knobNum) {
     macroEditorName = "";
     macroEditorRows = [];
     for (let i = 0; i < MACRO_MAX_TARGETS; i++) {
-        macroEditorRows.push({ target: "", param: "", depth: 0 });
+        macroEditorRows.push({ target: "", param: "", depth: 0, shortName: "" });
     }
 
     const raw = getSlotParam(slot, `macro_${knobNum}_config`);
@@ -12003,46 +12026,47 @@ function loadMacroConfig(slot, knobNum) {
     try {
         const cfg = JSON.parse(raw);
         macroEditorName = cfg.name || "";
+        const metaCache = {};
         if (Array.isArray(cfg.targets)) {
             for (let i = 0; i < MACRO_MAX_TARGETS && i < cfg.targets.length; i++) {
                 const t = cfg.targets[i] || {};
+                const target = t.target || "";
+                const param = t.param || "";
                 macroEditorRows[i] = {
-                    target: t.target || "",
-                    param: t.param || "",
+                    target, param,
                     depth: parseFloat(t.depth) || 0,
+                    shortName: (target && param) ? macroRowShortName(slot, target, param, metaCache) : "",
                 };
             }
         }
     } catch (e) { /* malformed/empty — leave the blanks seeded above */ }
 }
 
-/* Item index 0 is the Name row; each of the MACRO_MAX_TARGETS rows below it
- * is a Target/Amount pair, mirroring the LFO editor's "target opens a
- * picker, everything else is a jog-editable value" split. */
+/* One row per param -- target on the label side, amount on the value side,
+ * same line. Click toggles jog-editing the amount in place; Shift+Click
+ * opens the target picker instead. No Name row here: renaming a macro is a
+ * Shift+Click on its row in the Knobs list (enterKnobEditor's select
+ * handler) rather than a field inside this editor. */
 function macroEditorItemAt(index) {
-    if (index <= 0) return { type: "name" };
-    const offset = index - 1;
-    const row = Math.floor(offset / 2);
-    return (offset % 2) === 0 ? { type: "target", row } : { type: "amount", row };
+    return { type: "row", row: index };
 }
 
 function macroEditorItemCount() {
-    return 1 + MACRO_MAX_TARGETS * 2;
+    return MACRO_MAX_TARGETS;
 }
 
+/* The row's label is the TARGET PARAM's own short_name, resolved through the
+ * same chain_params/ui_hierarchy metadata the knob grid already uses — not
+ * "target: param", which is an internal key pair a user never typed. Falls
+ * back to the raw param key when a target publishes no short_name. */
 function macroEditorItemLabel(item) {
-    if (item.type === "name") return "Name";
-    if (item.type === "target") return `Target ${item.row + 1}`;
-    return `Amount ${item.row + 1}`;
+    const row = macroEditorRows[item.row];
+    if (!row.target || !row.param) return "(empty)";
+    return row.shortName || row.param;
 }
 
 function macroEditorItemValue(item) {
-    if (item.type === "name") return macroEditorName || "(unnamed)";
-    const row = macroEditorRows[item.row];
-    if (item.type === "target") {
-        return (row.target && row.param) ? `${row.target}: ${row.param}` : "(empty)";
-    }
-    return Math.round(row.depth * 100) + "%";
+    return Math.round(macroEditorRows[item.row].depth * 100) + "%";
 }
 
 function drawMacroEditor() {
@@ -12055,15 +12079,26 @@ function drawMacroEditor() {
     drawMenuList({
         items,
         selectedIndex: macroEditorIndex,
-        getLabel: macroEditorItemLabel,
-        getValue: (item) => truncateText(macroEditorItemValue(item), 14),
+        getLabel: (item) => truncateText(macroEditorItemLabel(item), 14),
+        getValue: (item) => macroEditorItemValue(item),
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         valueAlignRight: true,
         prioritizeSelectedValue: true,
         editMode: editingMacroDepth,
     });
 
-    drawFooter(editingMacroDepth ? ["Back: done", "Jog: amount"] : ["Back: cancel", "Click: edit"]);
+    /* Reflects what a click does RIGHT NOW: the row's Shift+Click destination
+     * only exists while Shift is actually held, so the footer must poll it
+     * on every repaint rather than fix a label at entry. */
+    let footer;
+    if (editingMacroDepth) {
+        footer = ["Back: done", "Jog: amount"];
+    } else if (isShiftHeld()) {
+        footer = ["Back: cancel", "Click: target"];
+    } else {
+        footer = ["Back: cancel", "Click: amount"];
+    }
+    drawFooter(footer);
 }
 
 /* Open the target picker for macro row `row` (0-based). Reuses the LFO
@@ -16980,8 +17015,26 @@ function handleSelect() {
                 announceMenuItem("Knob CC Out", knobCcOutLabel());
                 needsRedraw = true;
             } else if (knobEditorAssignments[knobEditorIndex] && knobEditorAssignments[knobEditorIndex].isMacro) {
-                /* Already a macro — open its editor, not the 1:1 param picker. */
-                enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
+                if (isShiftHeld()) {
+                    /* Shift+Click a macro row: rename it directly, rather than
+                     * opening its editor just to reach a Name field. */
+                    const knobNum = knobEditorIndex + 1;
+                    openTextEntry({
+                        title: "Macro Name",
+                        initialText: knobEditorAssignments[knobEditorIndex].name || "",
+                        onAnnounce: announce,
+                        onConfirm: (nextText) => {
+                            const name = String(nextText || "").slice(0, 15);
+                            setSlotParam(knobEditorSlot, `macro_${knobNum}_set_name`, name);
+                            loadKnobAssignments(knobEditorSlot);
+                            announceParameter("Name", name || "(unnamed)");
+                            needsRedraw = true;
+                        }
+                    });
+                } else {
+                    /* Already a macro — open its editor, not the 1:1 param picker. */
+                    enterMacroEditor(knobEditorSlot, knobEditorIndex + 1);
+                }
             } else {
                 /* Edit this knob's assignment */
                 enterKnobParamPicker();
@@ -17056,27 +17109,16 @@ function handleSelect() {
             break;
         case VIEWS.MACRO_EDITOR: {
             const item = macroEditorItemAt(macroEditorIndex);
-            if (item.type === "name") {
-                openTextEntry({
-                    title: "Macro Name",
-                    initialText: macroEditorName,
-                    onAnnounce: announce,
-                    onConfirm: (nextText) => {
-                        macroEditorName = String(nextText || "").slice(0, 15);
-                        setSlotParam(knobEditorSlot, `macro_${macroEditorKnobNum}_set_name`, macroEditorName);
-                        announceParameter("Name", macroEditorName || "(unnamed)");
-                        needsRedraw = true;
-                    }
-                });
-            } else if (item.type === "target") {
+            if (isShiftHeld()) {
+                /* Shift+Click: change this row's target/param. */
                 enterMacroTargetPicker(item.row);
             } else {
-                /* Amount row: toggle jog-edit mode, same gesture as the LFO
-                 * editor's depth row. */
+                /* Plain click: toggle jog-edit mode on this row's amount,
+                 * same gesture as the LFO editor's depth row. */
                 editingMacroDepth = !editingMacroDepth;
                 needsRedraw = true;
                 const row = macroEditorRows[item.row];
-                announce(`Amount ${item.row + 1}, ${Math.round(row.depth * 100)}%`);
+                announce(`${macroEditorItemLabel(item)}, ${Math.round(row.depth * 100)}%`);
             }
             break;
         }
@@ -18189,7 +18231,15 @@ function drawKnobEditor() {
         prioritizeSelectedValue: true
     });
 
-    drawFooter(["Back: cancel", "Click: edit"]);
+    /* Shift+Click on a macro row renames it instead of opening its editor —
+     * only meaningful for a macro (a direct 1:1 assignment has no name), and
+     * only while Shift is actually held, so poll it fresh on every repaint
+     * the same way the Macro Editor's own footer does. */
+    const selectedAssignment = knobEditorIndex < NUM_KNOBS ? knobEditorAssignments[knobEditorIndex] : null;
+    const footer = (selectedAssignment && selectedAssignment.isMacro && isShiftHeld())
+        ? ["Back: cancel", "Click: rename"]
+        : ["Back: cancel", "Click: edit"];
+    drawFooter(footer);
 }
 
 /* Draw param picker - select target then param for knob assignment */
