@@ -322,6 +322,25 @@ export function labelVerbatim(text, cellW = CELL_W) {
      * the derived path had correctly drawn SUS. So the budget goes, not the
      * pass.
      */
+    /*
+     * VERBATIM IF IT FITS; the table only as a fallback.
+     *
+     * Two wrong answers were tried first, and both came from treating the word
+     * pass as all-or-nothing:
+     *
+     *   with a budget   it EXPANDS a mnemonic -- a declared "Amt" drew AMOUNT,
+     *                   overriding the author.
+     *   with no budget  it ABBREVIATES unconditionally -- a declared "Noise"
+     *                   drew NSE, "Color" drew CLR. The author typed a word
+     *                   that fits and got a mnemonic back.
+     *   skipping it     loses the good mnemonics -- "Sustain" tail-truncated to
+     *                   SUSTAI where the table would have said SUS.
+     *
+     * So: if what the author typed fits the cell, draw exactly that. Only when
+     * it does not does the table get a say, and only then does the squeeze.
+     */
+    const asked = caps(text);
+    if (fontWidth4x5(asked) <= labelWidth) return asked;
     return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text)), labelWidth);
 }
 
