@@ -4,6 +4,8 @@
 303	Main - 2	waveform	detected	waveform
 4k-eq	HF	switch	declared	hf_bell
 4k-eq	LF	switch	declared	lf_bell
+4k-eq	Main	fader	detected	input_gain
+4k-eq	Main	fader	detected	output_gain
 4k-eq	Main	switch	declared	auto_gain
 4k-eq	Main	switch	declared	bypass
 6w6	Params	fader	declared	bd_level
@@ -100,6 +102,8 @@ chordism	Oscillators	waveform	detected	wave_1
 chordism	Oscillators	waveform	detected	wave_2
 chordism	Oscillators	waveform	detected	wave_3
 chordism	Oscillators	waveform	detected	wave_4
+chowtape	Main - 2	fader	detected	output
+clap	Main	fader	detected	param_5
 denis	Control	envelope	detected	attack,decay,sustain,release
 denis	Control	filter	detected	filter_cutoff,filter_q
 denis	Mod & Patch - 2	switch	detected	legato
@@ -168,6 +172,7 @@ euclidrum	Main	switch	detected	lane8_enabled
 filter	Envelope	envelope	detected	env_attack,env_release
 filter	LFO	waveform	detected	lfo_shape
 filter	Main	filter	detected	cutoff,resonance
+filter	Output	fader	detected	output
 fizzik	Exciter	envelope	detected	exc_attack,exc_decay
 fizzik	Exciter	fader	detected	vel_level
 fizzik	Mod	lfo	detected	lfo1_rate,lfo1_depth,lfo1_shape
@@ -202,6 +207,7 @@ freak	Cycling Envelope	envelope	detected	cycle_attack_ms,cycle_decay_ms
 freak	Cycling Envelope	switch	detected	cycle_bipolar
 freak	Cycling Envelope	switch	detected	cycle_retrig
 freak	Cycling Envelope	switch	detected	cycle_sync
+freak	Envelope	envelope	detected	env_attack_ms,env_decay_ms,env_sustain,env_release_ms
 freak	Envelope	switch	detected	env_retrig
 freak	Filter	filter	detected	filter_mode,filter_cutoff,filter_resonance
 freak	LFO	switch	detected	lfo_retrig
@@ -211,10 +217,7 @@ freak	Voice & Mix	fader	detected	volume
 gate	Main	envelope	detected	attack,hold,release
 gesture-test	Main	sample	detected	sample_path
 gesture-test	Main	switch	detected	power
-granny	ADSR Envelope	fader	detected	amp_attack_ms
-granny	ADSR Envelope	fader	detected	amp_decay_ms
-granny	ADSR Envelope	fader	detected	amp_release_ms
-granny	ADSR Envelope	fader	detected	amp_sustain
+granny	ADSR Envelope	envelope	detected	amp_attack_ms,amp_decay_ms,amp_sustain,amp_release_ms
 granny	Main	fader	detected	grain_gain
 granny	Main	sample	detected	position,spray
 granny	Main - 2	fader	detected	grain_gain
@@ -363,8 +366,11 @@ mrdrums	Main	fader	detected	vol
 mrdrums	Main	sample	detected	start
 mrdrums	Pad Settings	fader	detected	rand_vol_amt
 mrdrums	Pad Settings	sample	detected	sample_path
+mrsample	Amp Env	envelope	detected	attack_ms,decay_ms,sustain,release_ms
 mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
+mrsample	LFO	lfo	detected	lfo_rate_hz,lfo_depth
+mrsample	Main	envelope	detected	attack_ms,decay_ms,sustain,release_ms
 mrsample	Main	fader	detected	gain
 mrsample	Main	filter	detected	filter_cutoff,filter_res
 mrsample	Main	sample	detected	sample_start
@@ -469,6 +475,8 @@ osirus	Oscillators - 3	waveform	detected	sub_osc_shape
 osirus	Performance	fader	detected	patch_volume
 osirus	Settings	fader	detected	gain
 ottx	Advanced	eq	detected	lgain,mgain,hgain
+ottx	Main	fader	detected	in_gain
+ottx	Main	fader	detected	out_gain
 palette	PRESETS&RND	fader	detected	input_vol
 palette	PRESETS&RND	switch	detected	rnd_amount
 palette	PRESETS&RND	switch	detected	rnd_effect
@@ -481,6 +489,7 @@ psxverb	Main	fader	detected	input_gain
 psxverb	Main	fader	detected	reverb_level
 punchfx	Main	fader	detected	volume
 pushnpull	Filter	filter	detected	cutoff,resonance
+pushnpull	Main	fader	detected	output
 pushnpull	Main - 2	switch	detected	band_on
 radiogarden	Params	fader	detected	gain
 rex	Main	envelope	detected	attack,decay,sustain,release
@@ -535,6 +544,8 @@ structor	Randomize	switch	detected	seq_on
 superarp	Global	switch	detected	latch
 superarp	Global	switch	detected	triplet
 superarp	Main	switch	detected	latch
+superboom	Main	fader	detected	inputGain
+superboom	Main	fader	detected	output
 superboom	Seal	switch	detected	limiter
 superboom	Skulpt - 2	switch	detected	micControl
 surge	Amp Envelope	envelope	detected	env1_attack,env1_decay,env1_sustain,env1_release
@@ -649,7 +660,10 @@ tape-echo2	Main	switch	detected	tempo_sync
 tape-echo2	Out	fader	detected	echo_volume
 tape-echo2	Out	fader	detected	reverb_volume
 tape-echo2	Out	switch	detected	ping_pong
+tapescam	Main	fader	detected	output
+tapescam	Main - 2	fader	detected	input
 tapescam	Main - 2	switch	detected	widen
+usefulity	Main	fader	detected	gain_db
 usefulity	Main	switch	detected	bass_mono
 usefulity	Main	switch	detected	mono
 usefulity	Main	switch	detected	mute
