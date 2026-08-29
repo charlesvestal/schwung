@@ -67,6 +67,21 @@ Promise.all([
     fail("precondition: the derived path is expected to expand Amt");
   if (R.labelVerbatim("Amt") !== "AMT")
     fail("a declared short_name must not be re-worded, got " + R.labelVerbatim("Amt"));
+
+  /*
+   * VERBATIM IF IT FITS. Two wrong answers preceded this, both from treating
+   * the word pass as all-or-nothing: with a budget it EXPANDED (Amt -> AMOUNT),
+   * with none it ABBREVIATED unconditionally (Noise -> NSE, Color -> CLR), and
+   * skipping it lost the good mnemonics (Sustain tail-truncated to SUSTAI).
+   */
+  for (const w of ["Noise", "Color", "Shape", "Ring", "Output"])
+    if (R.labelVerbatim(w) !== w.toUpperCase())
+      fail("a declared word that FITS must be drawn as typed: " + w + " -> " + R.labelVerbatim(w));
+  /* ...and the table still rescues one that does not fit. */
+  if (R.labelVerbatim("Sustain") !== "SUS")
+    fail("a declared word too wide for the cell should take its mnemonic, got " + R.labelVerbatim("Sustain"));
+  if (R.labelVerbatim("Release") !== "REL")
+    fail("Release should shorten to REL, got " + R.labelVerbatim("Release"));
   /* A space-separated pair survives: NS VOL reads better than NSVOL. */
   if (R.labelVerbatim("NS VOL") !== "NS VOL")
     fail("a declared two-word label should survive, got " + R.labelVerbatim("NS VOL"));
