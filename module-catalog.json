@@ -1377,6 +1377,17 @@
       "default_branch": "main",
       "asset_name": "forgetful-module.tar.gz",
       "min_host_version": "0.12.1"
+    },
+    {
+      "id": "wayward",
+      "name": "Wayward",
+      "description": "Six loops recorded from the input, each keeping its own tempo, sliding out of alignment and back over minutes \u2014 tape phasing on eight knobs",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "github_repo": "kliegsablaze/wayward",
+      "default_branch": "main",
+      "asset_name": "wayward-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }
