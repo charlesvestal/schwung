@@ -1183,6 +1183,36 @@ function activateLedQueue() {
             /* Non-LED messages (sysex, etc.) pass through immediately */
             return originalMidiInternalSend(arr);
         }
+        /*
+         * QUEUED IS ACCEPTED, AND THE CALLER NEEDS TO BE TOLD SO.
+         *
+         * This used to fall off the end and return undefined. Harmless while
+         * nothing read the result -- and then #319 made input_filter's setLED
+         * read it:
+         *
+         *     const sent = move_midi_internal_send(...);
+         *     ledCache[note] = sent ? color : -1;
+         *
+         * which is right against the real binding (false = the MIDI-out buffer
+         * was full, so don't record a colour we failed to make true) and wrong
+         * against this one. Every LED write under overtake recorded -1, so the
+         * cache never suppressed anything and EVERY module repainted its whole
+         * surface every frame -- ~58 writes into a 16-per-tick flush budget.
+         * Notes flush before CCs, so the budget went entirely to pads and steps
+         * and the button LEDs never flushed at all.
+         *
+         * That is the "LEDs don't work at all" failure that overtake authors
+         * have written progressive-init workarounds around; tb3po's refreshLeds
+         * carries a comment naming it. It hit every overtake module that paints
+         * through shared setLED -- davebox, tb3po, control, mark, mono, and the
+         * rest -- but NOT the ones declaring skip_led_clear (chorddex,
+         * song-mode), because those never activate this queue.
+         *
+         * `true` is honest: the packet is retained under its note/CC key and
+         * coalesced with any later write to the same key, so it IS delivered.
+         * The queue drops nothing on a full frame -- it only defers.
+         */
+        return true;
     };
 }
 
