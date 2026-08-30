@@ -404,6 +404,9 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.
+- **A plain read of a modulated key answers the BASE**, never the plugin's value
+  — the plugin holds the effective value the overlay keeps writing into it. The
+  driven value is asked for as `<key>:effective` (#276).
 - **A chain shape edit is a PERMUTATION, never a reload.** `fx:insert` /
   `fx:remove` / `fx:move` keep instances running; a run of `<id>:module` writes
   rebuilds every position behind it, losing arp phase and reverb tails.

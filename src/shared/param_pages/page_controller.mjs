@@ -1770,11 +1770,11 @@ export function createController(io = {}) {
          * current within `stops` ticks — under 0.2s, for a tick mark. */
         s.modCache[key] = !!isModulated(fullKey(key));
 
-        /* For a modulated key the plain key returns the EFFECTIVE value — what
-         * the source is currently driving it to — and that belongs to the dot.
-         * The pointer wants the base, so ask for it directly. Same one read on
-         * the cursor either way; the extra cost of showing both values is the
-         * fast lane above, not this.
+        /* The pointer wants the base — what the user set — so ask for it
+         * directly. (Since #276 the plain key also answers with the base for
+         * a modulated target, but `:base` is the explicit ask and works
+         * against any chain host.) The driven value belongs to the dot,
+         * which reads `:effective` in refreshModulatedValues.
          *
          * `:base` is served by chain_mod_get_base_for_subkey and only exists
          * while a target is active, so fall back rather than blank the knob if
@@ -3321,7 +3321,12 @@ export function createController(io = {}) {
              * only displays it. Gating it meant the dot froze for the whole
              * time you were turning the knob, which is exactly when you most
              * want to see where modulation is putting the param. */
-            const v = getParam(fullKey(key));
+            /* The plain key answers with the BASE for a modulated target
+             * (#276), so the driven value is asked for by name. Miss rule as
+             * for `:base` above: "" is an unserved key, not a value — fall
+             * back to the plain key rather than freeze the dot. */
+            let v = getParam(fullKey(key) + ":effective");
+            if (v === null || v === undefined || v === "") v = getParam(fullKey(key));
             if (v !== null && v !== undefined) s.modValues[key] = v;
         }
         s.modCursor = (s.modCursor + n) % modKeys.length;

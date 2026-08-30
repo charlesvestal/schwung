@@ -1630,6 +1630,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (base_result >= 0) return base_result;
         int mod_result = chain_mod_get_modulated_for_subkey(inst, "synth", subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
+        int eff_result = chain_mod_get_effective_for_subkey(inst, "synth", subkey, buf, buf_len);
+        if (eff_result >= 0) return eff_result;
+        /* A plain read of an actively modulated key answers with the BASE —
+         * the plugin holds the effective value the overlay keeps writing into
+         * it, which is not what the user set (#276). */
+        int plain_base = chain_mod_get_base_for_plain_key(inst, "synth", subkey, buf, buf_len);
+        if (plain_base >= 0) return plain_base;
 
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
@@ -1703,6 +1710,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (base_result >= 0) return base_result;
         int mod_result = chain_mod_get_modulated_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
+        int eff_result = chain_mod_get_effective_for_subkey(inst, fx_id, subkey, buf, buf_len);
+        if (eff_result >= 0) return eff_result;
+        int plain_base = chain_mod_get_base_for_plain_key(inst, fx_id, subkey, buf, buf_len);
+        if (plain_base >= 0) return plain_base;
 
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > fxi) {
@@ -1779,6 +1790,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (base_result >= 0) return base_result;
         int mod_result = chain_mod_get_modulated_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
+        int eff_result = chain_mod_get_effective_for_subkey(inst, mfx_id, subkey, buf, buf_len);
+        if (eff_result >= 0) return eff_result;
+        int plain_base = chain_mod_get_base_for_plain_key(inst, mfx_id, subkey, buf, buf_len);
+        if (plain_base >= 0) return plain_base;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > mfi) {
             if (inst->midi_fx_ui_hierarchy[mfi][0]) {

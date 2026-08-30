@@ -13147,7 +13147,11 @@ function seedWavEditorMod(key, meta, fullKey) {
     wavEditorMod = null;
     if (!meta || meta.ui_type !== "wav_position") return;
     if (!isHierarchyParamModulated(hierEditorSlot, fullKey)) return;
-    const raw = getSlotParam(hierEditorSlot, fullKey);
+    /* The plain key answers with the BASE for a modulated target (#276);
+     * the marker wants where the source is driving it, so ask `:effective`
+     * and fall back for targets that don't serve it ("" is a miss). */
+    let raw = getSlotParam(hierEditorSlot, `${fullKey}:effective`);
+    if (raw === null || raw === "") raw = getSlotParam(hierEditorSlot, fullKey);
     /* A FAILED read is not a position. Drawing nothing is honest; inventing 0
      * would plant a marker at the head of the file and claim the source is
      * there. */
