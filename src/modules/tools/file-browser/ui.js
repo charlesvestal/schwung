@@ -99,6 +99,13 @@ var wavPlayerLoaded = false;
 var playingFilePath = "";
 var WAV_PLAYER_DSP = "/data/UserData/schwung/modules/tools/wav-player/dsp.so";
 
+/* file_path waiting for the wav-player's DSP to finish loading, and the tick
+ * budget it may wait for. ~1s at the 44Hz tick — far longer than a dlopen, and
+ * bounded so a host that never answers still plays instead of hanging. */
+var pendingPlayPath = "";
+var pendingPlayTicks = 0;
+var PLAY_LOAD_WAIT_TICKS = 44;
+
 /* Status message */
 var statusMessage = "";
 var statusTicks = 0;
@@ -440,20 +447,65 @@ function openActionsMenu(path, kind) {
     setView(VIEW_ACTIONS);
 }
 
+/*
+ * Hand the file to the wav-player, once its DSP actually exists.
+ *
+ * The load runs on the shim worker, so the instance is still NULL for a few
+ * frames after "load" is requested — and an overtake_dsp set_param with no
+ * instance is not queued, it is REFUSED (error 13, schwung_shim.c). Writing
+ * file_path straight after the load therefore threw it away: the first Play
+ * changed to the playback screen and played nothing, and the second worked
+ * only because the DSP had come up in the meantime (#344).
+ *
+ * `__ready` is the host's own probe for exactly this. Waiting only while it
+ * answers a positive "0" means an older host that does not serve the key, or
+ * a read that did not complete, still sends immediately rather than stalling
+ * on a value that will never arrive.
+ */
+function flushPendingPlay() {
+    if (!pendingPlayPath) return;
+
+    var stillLoading = (typeof host_module_get_param === "function") &&
+                       (host_module_get_param("__ready") === "0");
+    if (stillLoading && pendingPlayTicks > 0) {
+        pendingPlayTicks--;
+        return;
+    }
+
+    if (typeof host_module_set_param === "function") {
+        host_module_set_param("file_path", pendingPlayPath);
+    }
+    pendingPlayPath = "";
+    pendingPlayTicks = 0;
+}
+
 function startPlayback(path) {
     if (!wavPlayerLoaded) {
-        if (typeof host_module_set_param === "function") {
+        /* BLOCKING, so the shim has taken the load request — and therefore
+         * raised the loading flag `__ready` reports — before the first poll.
+         * Fire-and-forget lets that poll answer "ready" about a load that has
+         * not started yet, which is the same lost write by a shorter route. */
+        if (typeof host_module_set_param_blocking === "function") {
+            host_module_set_param_blocking("load", WAV_PLAYER_DSP, 500);
+            wavPlayerLoaded = true;
+        } else if (typeof host_module_set_param === "function") {
             host_module_set_param("load", WAV_PLAYER_DSP);
             wavPlayerLoaded = true;
         }
     }
     playingFilePath = path;
-    if (typeof host_module_set_param === "function") {
-        host_module_set_param("file_path", path);
-    }
+    pendingPlayPath = path;
+    pendingPlayTicks = PLAY_LOAD_WAIT_TICKS;
+    /* Already loaded is the common case and sends on this very call, so
+     * playback still starts without waiting a frame. */
+    flushPendingPlay();
 }
 
 function stopPlayback() {
+    /* Drop a start still waiting on the load, or Play-then-Stop would send the
+     * file once the DSP arrived and begin playing after the user stopped. */
+    pendingPlayPath = "";
+    pendingPlayTicks = 0;
     if (typeof host_module_set_param === "function") {
         host_module_set_param("playing", "0");
     }
@@ -913,6 +965,10 @@ globalThis.init = function() {
 };
 
 globalThis.tick = function() {
+    /* Before the text-entry early-out: a file waiting on the wav-player's DSP
+     * must still be delivered if the user opens the keyboard meanwhile. */
+    flushPendingPlay();
+
     /* Text entry takes over when active */
     if (isTextEntryActive()) {
         tickTextEntry();
