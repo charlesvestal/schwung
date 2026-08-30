@@ -88,9 +88,11 @@
                 {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
                 <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" data-confirm="Update {{.Name}}?" data-confirm-title="Update Module" data-confirm-label="Update">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="return_to" value="/modules" class="js-return-to">
                     <button type="submit" class="btn btn-secondary btn-small">Update</button>
                 </form>
                 {{end}}
+                {{template "uninstall-button" (dict "ID" .ID "Name" .Name "CSRFToken" $.CSRFToken)}}
             </div>
         </article>
         {{end}}{{end}}
@@ -115,6 +117,7 @@
             <div class="module-actions">
                 <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" data-confirm="Install {{.Name}}?" data-confirm-title="Install Module" data-confirm-label="Install">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="return_to" value="/modules" class="js-return-to">
                     <button type="submit" class="btn btn-primary btn-small">Install</button>
                 </form>
             </div>
@@ -134,7 +137,7 @@
                     <th scope="col">Name</th>
                     <th scope="col">Category</th>
                     <th scope="col">Author</th>
-                    <th scope="col">Actions</th>
+                    <th scope="col" class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -143,13 +146,15 @@
                     <td><span class="module-list-name">{{.Name}}</span> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a></td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
-                    <td>
+                    <td class="col-actions">
                         {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
                         <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" data-confirm="Update {{.Name}}?" data-confirm-title="Update Module" data-confirm-label="Update">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="return_to" value="/modules" class="js-return-to">
                             <button type="submit" class="btn btn-secondary btn-small">Update</button>
                         </form>
                         {{end}}
+                        {{template "uninstall-button" (dict "ID" .ID "Name" .Name "CSRFToken" $.CSRFToken)}}
                     </td>
                 </tr>
                 {{end}}{{end}}
@@ -169,7 +174,7 @@
                     <th scope="col">Name</th>
                     <th scope="col">Category</th>
                     <th scope="col">Author</th>
-                    <th scope="col">Actions</th>
+                    <th scope="col" class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -178,9 +183,10 @@
                     <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
-                    <td>
+                    <td class="col-actions">
                         <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" data-confirm="Install {{.Name}}?" data-confirm-title="Install Module" data-confirm-label="Install">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                    <input type="hidden" name="return_to" value="/modules" class="js-return-to">
                             <button type="submit" class="btn btn-primary btn-small">Install</button>
                         </form>
                     </td>
@@ -260,7 +266,11 @@
         updateBtns.forEach(function(b) { b.disabled = disabled; });
     }
 
-    function runBulk(label, suffix, emptyMsg) {
+    /* doneMsg is what the toast says when EVERY item succeeded. A partial run
+     * must not claim it, so the failure case reports the counts instead and
+     * arrives red -- "All Modules Installed" over two failures would be the
+     * same lie the flash colouring used to tell. */
+    function runBulk(label, suffix, emptyMsg, doneMsg) {
         setBtnsDisabled(true);
         var targets = collectTargets(suffix);
         if (targets.length === 0) {
@@ -277,7 +287,16 @@
                 statusEl.textContent = label + ' done — ' + ok + ' ok' + (failed ? ', ' + failed + ' failed' : '');
                 detailEl.textContent = '';
                 barFill.style.width = '100%';
-                setTimeout(function() { window.location.reload(); }, 1200);
+                /* Reload THROUGH a flash so the result is still on screen
+                 * afterwards. A bare reload dropped it: the inline progress
+                 * text is wiped by the very reload that shows the new state,
+                 * so a bulk run finished with nothing saying it had. */
+                var msg = failed ? (ok + ' ok, ' + failed + ' failed') : doneMsg;
+                var kind = failed ? 'error' : 'success';
+                setTimeout(function() {
+                    window.location.href = '/modules?flash=' + encodeURIComponent(msg) +
+                                           '&flash_type=' + kind;
+                }, 1200);
                 return;
             }
             var t = targets[idx++];
@@ -292,12 +311,12 @@
 
     installBtn.addEventListener('click', function() {
         if (!confirm('Install every uninstalled module from the catalog?')) return;
-        runBulk('Installing', 'install', 'All modules already installed');
+        runBulk('Installing', 'install', 'All modules already installed', 'All Modules Installed');
     });
     updateBtns.forEach(function(btn) {
         btn.addEventListener('click', function() {
             if (!confirm('Update every module that has an update available?')) return;
-            runBulk('Updating', 'update', 'All modules are up to date');
+            runBulk('Updating', 'update', 'All modules are up to date', 'All Modules Upgraded');
         });
     });
 })();
@@ -344,6 +363,46 @@
     var listBtn = document.getElementById('view-list-btn');
     var isListView = true;
     var currentFilter = 'all';
+
+    /*
+     * Where you were, kept across a navigation.
+     *
+     * Opening a module and coming Back is a fresh document -- the browser
+     * restores neither the category filter, the sort, the grid/list choice nor
+     * the scroll position, so a browse through Audio FX reset to All at the
+     * top on every visit. Installing had the same effect for the same reason,
+     * since the POST redirects and reloads the list.
+     *
+     * sessionStorage rather than localStorage: this is "where I am right now",
+     * and it should not still be in force in a new tab tomorrow. Every access
+     * is wrapped -- Safari's private mode throws on read AND write -- and a
+     * failure just means the page opens at its defaults.
+     */
+    var VIEW_KEY = 'schwung.modules.view';
+    function loadView() {
+        try {
+            var raw = sessionStorage.getItem(VIEW_KEY);
+            return raw ? JSON.parse(raw) : null;
+        } catch (e) { return null; }
+    }
+    function saveView(extra) {
+        try {
+            var v = { filter: currentFilter, list: isListView,
+                      sort: sortSelect ? sortSelect.value : null,
+                      scroll: window.scrollY || 0 };
+            if (extra) { for (var k in extra) v[k] = extra[k]; }
+            sessionStorage.setItem(VIEW_KEY, JSON.stringify(v));
+        } catch (e) { /* storage unavailable — defaults are fine */ }
+    }
+
+    /* The filter travels with the install POST too, so the reload after it
+     * lands back on the same view rather than on the module's detail page
+     * (the server's Referer fallback, which no-referrer makes unreachable). */
+    function syncReturnTo() {
+        var q = '/modules';
+        var inputs = document.querySelectorAll('.js-return-to');
+        for (var i = 0; i < inputs.length; i++) inputs[i].value = q;
+    }
 
     // Section headers
     var gridInstalledHeader = document.getElementById('grid-installed-header');
@@ -456,12 +515,14 @@
             this.setAttribute('aria-pressed', 'true');
             currentFilter = this.getAttribute('data-filter');
             applyFilters();
+            saveView({ scroll: 0 });
         });
     }
 
     sortSelect.addEventListener('change', function() {
         applySort(this.value);
         applyFilters();
+        saveView();
     });
 
     function setView(toList) {
@@ -477,27 +538,79 @@
         updateCount();
     }
 
-    gridBtn.addEventListener('click', function() { setView(false); });
-    listBtn.addEventListener('click', function() { setView(true); });
+    gridBtn.addEventListener('click', function() { setView(false); saveView(); });
+    listBtn.addEventListener('click', function() { setView(true); saveView(); });
 
-    /* Default to grid view on mobile */
-    if (window.innerWidth <= 768) { setView(false); }
+    var saved = loadView();
 
-    // Clickable rows and cards
+    /* Default to grid view on mobile — but never over an explicit choice the
+     * user made in this session. */
+    if (saved && typeof saved.list === 'boolean') {
+        setView(saved.list);
+    } else if (window.innerWidth <= 768) {
+        setView(false);
+    }
+
+    // Clickable rows and cards. Record the view on the way out so Back lands
+    // on the filter and position the module was opened from.
     document.querySelectorAll('.module-row[data-href]').forEach(function(row) {
-        row.addEventListener('click', function() { window.location.href = row.getAttribute('data-href'); });
+        row.addEventListener('click', function() {
+            saveView();
+            window.location.href = row.getAttribute('data-href');
+        });
     });
     document.querySelectorAll('.module-card[data-href]').forEach(function(card) {
         card.addEventListener('click', function(e) {
             if (e.target.closest('a, button')) return;
+            saveView();
             window.location.href = card.getAttribute('data-href');
         });
     });
+
+    /* An install/update reloads this page, so keep the view across it too. */
+    document.addEventListener('submit', function(e) {
+        if (e.target && e.target.matches && e.target.matches('form[action^="/modules/"]')) saveView();
+    }, true);
+
+    // Restore the saved filter and sort BEFORE the first paint of the list, so
+    // the page never flashes the full catalogue on the way to Audio FX.
+    if (saved) {
+        if (saved.sort && sortSelect) {
+            for (var si = 0; si < sortSelect.options.length; si++) {
+                if (sortSelect.options[si].value === saved.sort) { sortSelect.value = saved.sort; break; }
+            }
+        }
+        if (saved.filter) {
+            for (var ci = 0; ci < catBtns.length; ci++) {
+                var isMatch = catBtns[ci].getAttribute('data-filter') === saved.filter;
+                catBtns[ci].classList.toggle('active', isMatch);
+                catBtns[ci].setAttribute('aria-pressed', isMatch ? 'true' : 'false');
+                if (isMatch) currentFilter = saved.filter;
+            }
+        }
+    }
 
     // Initial sort and hide empty categories
     applySort(sortSelect.value);
     updateCategoryButtons();
     applyFilters();
+    syncReturnTo();
+
+    /* A filter the catalogue no longer has anything for (a category emptied by
+     * an uninstall) would leave an empty page with no way to tell why, so fall
+     * back to All rather than restoring it. */
+    if (currentFilter !== 'all' && parseInt(countEl.textContent, 10) === 0) {
+        currentFilter = 'all';
+        for (var ri = 0; ri < catBtns.length; ri++) {
+            var isAll = catBtns[ri].getAttribute('data-filter') === 'all';
+            catBtns[ri].classList.toggle('active', isAll);
+            catBtns[ri].setAttribute('aria-pressed', isAll ? 'true' : 'false');
+        }
+        applyFilters();
+        saveView({ scroll: 0 });
+    } else if (saved && saved.scroll) {
+        window.scrollTo(0, saved.scroll);
+    }
 })();
 </script>
 {{end}}
