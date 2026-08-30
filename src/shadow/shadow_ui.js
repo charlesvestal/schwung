@@ -9135,15 +9135,65 @@ function cancelToolProcess() {
  */
 const GLOBAL_SETTINGS_COMPONENT = "global_settings";
 
+/*
+ * Where leaving Global Settings goes, when it is not "out of shadow mode".
+ *
+ * VIEWS.OVERTAKE_MODULE when Settings was opened OVER a foregrounded Tool,
+ * -1 otherwise. Captured on the way IN, because `view` is what distinguishes
+ * the two cases and enterParamPages overwrites it.
+ *
+ * NOT `overtakeModuleLoaded` on its own: hideToolOvertake parks a Tool with
+ * that flag still true (deliberately — it is how a re-launch detects the live
+ * session), so a Tool hidden behind the Tools menu would be restored by a
+ * Back the user aimed at Settings.
+ */
+let globalSettingsReturnView = -1;
+
+/*
+ * Leaving Global Settings hands the surface back to WHOEVER OWNS IT.
+ *
+ * `shadow_request_exit()` is one statement — `display_mode = 0` — and it gives
+ * the OLED to Move. That is right when Settings sits over the shadow UI, and
+ * wrong when a Tool is running: Shift+Vol+Step2 opens Settings straight over a
+ * live Tool (the JUMP_TO_SETTINGS branch does no overtake bookkeeping at all,
+ * unlike JUMP_TO_TOOLS beside it), so Back dropped the user on Move's
+ * instrument screen with the Tool still loaded and no way back to it but
+ * re-entering by hand (#339).
+ *
+ * Returning is only a view change: entering Settings never tore the Tool down,
+ * so its callbacks and page state are untouched and only its tick was gated on
+ * the view. The Tool is re-checked HERE rather than trusted from entry, since
+ * it can be exited from inside Settings.
+ *
+ * ONE helper, called by both exit sites, so a third cannot quietly exit past a
+ * running Tool again.
+ */
+function leaveGlobalSettings() {
+    const returnToTool = (globalSettingsReturnView === VIEWS.OVERTAKE_MODULE) &&
+                         overtakeModuleLoaded && overtakeModuleCallbacks;
+    globalSettingsReturnView = -1;
+    if (returnToTool) {
+        setView(VIEWS.OVERTAKE_MODULE);
+        needsRedraw = true;
+        return;
+    }
+    if (typeof shadow_request_exit === "function") shadow_request_exit();
+}
+
 function enterGlobalSettingsGrid(restorePageName) {
+    /* Captured BEFORE enterParamPages moves the view off the Tool. */
+    globalSettingsReturnView =
+        (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks)
+            ? VIEWS.OVERTAKE_MODULE : -1;
     /* A fresh entry is not a return from a modal. Whatever hand-off was
      * outstanding has been served by getting here. */
     globalModalFromGrid = false;
     enterParamPages(0, GLOBAL_SETTINGS_COMPONENT, GLOBAL_SETTINGS_COMPONENT,
                     restorePageName || null, globalGridIoFor(),
                     /* No moduleKey: there is no module behind this contract to
-                     * abbreviate. Back leaves shadow mode, which is not a view,
-                     * so it is an onExit rather than a returnView. */
+                     * abbreviate. Back usually leaves shadow mode, which is not
+                     * a view, so it is an onExit rather than a returnView —
+                     * leaveGlobalSettings picks the destination. */
                     { label: "Global", name: "Settings",
                       /* PINNED TO THE LIST, whatever Param View says.
                        *
@@ -9158,9 +9208,7 @@ function enterGlobalSettingsGrid(restorePageName) {
                        * pin — their Volume, Mute and Solo really are
                        * performance controls. */
                       layout: LAYOUT_LIST,
-                      onExit: () => {
-                          if (typeof shadow_request_exit === "function") shadow_request_exit();
-                      } });
+                      onExit: () => { leaveGlobalSettings(); } });
     needsRedraw = true;
 }
 
@@ -17559,9 +17607,9 @@ function handleBack() {
                     const frame = helpNavStack[helpNavStack.length - 1];
                     announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
                 }
-            } else if (typeof shadow_request_exit === "function") {
+            } else {
                 /* Nothing left on this view to back out of. */
-                shadow_request_exit();
+                leaveGlobalSettings();
             }
             break;
     }
