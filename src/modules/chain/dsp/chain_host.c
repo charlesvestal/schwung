@@ -909,6 +909,24 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         memset(inst->lfos, 0, sizeof(inst->lfos));
         memset(inst->lfo_base_values, 0, sizeof(inst->lfo_base_values));
         memset(inst->lfo_base_valid, 0, sizeof(inst->lfo_base_valid));
+        /*
+         * Knob mappings go too, for the identical reason the LFOs do: they
+         * are per-SLOT state, not per-module, so unloading everything they
+         * could point at used to leave a mapping "assigned" to a component
+         * that no longer exists.
+         *
+         * Reported from the device: a knob assigned to a param in one Set
+         * still read (and, if turned, still forwarded to whatever now
+         * occupies that position) after switching to an empty Set. Two-pass
+         * set switching only calls load_file when the new Set has SAVED
+         * slot state; an empty Set has none, so pass 2 never runs and this
+         * clear is the only reset the mapping gets. Loading a patch assigns
+         * the whole array from the patch (chain_patch.c, `memcpy(inst->
+         * knob_mappings, patch->knob_mappings, ...)`), so nothing a patch
+         * defines can be lost by clearing first.
+         */
+        memset(inst->knob_mappings, 0, sizeof(inst->knob_mappings));
+        inst->knob_mapping_count = 0;
         inst->current_patch = -1;
         inst->dirty = 0;
         malloc_trim(0);
