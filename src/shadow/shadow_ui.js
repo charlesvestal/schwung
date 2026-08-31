@@ -2618,7 +2618,14 @@ function drawModuleLists() {
         headerRight: "LISTS",
         entries: moduleListsRows(),
         index: moduleListsMemberIndex,
-        footer: [["JOG", "SEL"], ["CLK", "TOGGLE"], ["BACK", "MODULE"]],
+        /* No JOG hint, and that is not a saving of space for its own sake:
+         * drawFooter DROPS a pair that does not fit, silently and along with
+         * everything after it, so "JOG SEL, CLK TOGGLE, BACK MODULE" rendered
+         * as "JOG SEL ... BACK MODULE" and the screen`s PRIMARY action was the
+         * one word missing from its own footer. Found by rendering it and
+         * looking. JOG is the pair worth losing: every list on this device
+         * jogs, and TOGGLE is the only hint here that says something. */
+        footer: [["CLK", "TOGGLE"], ["BACK", "MODULE"]],
     });
 }
 
@@ -2835,7 +2842,13 @@ function drawModuleListsActions() {
          * overlay has deliberately made inert. */
         footer: moduleListsConfirmDelete
             ? [["CLK", "YES"], ["BACK", "NO"]]
-            : [["JOG", "SEL"], ["CLK", "DO"], ["BACK", "EDIT"]],
+            /* One row means nothing to jog to, so naming JOG would name a
+             * gesture that does nothing — the same rule the picker`s empty
+             * state already follows. Favorites is the case: it offers Clear
+             * alone. */
+            : (moduleListsActionRows().length > 1
+                ? [["JOG", "SEL"], ["CLK", "DO"], ["BACK", "EDIT"]]
+                : [["CLK", "DO"], ["BACK", "EDIT"]]),
     });
     /* Drawn LAST, so it is fed FIRST — see moduleListsSelectAction() and the
      * jog case, which early-out on moduleListsConfirmDelete before reading
@@ -11165,7 +11178,12 @@ function enterComponentSelect(slotIndex, componentIndex) {
 
     /* Row 0, added LAST so the rows below are the finished, filtered set. */
     availableModules.unshift({ id: PICKER_FILTER_ID, name: "List",
-                               value: componentSelectFilter || "All" });
+                               value: componentSelectFilter || "All",
+                               /* This row cycles the filter; it does not load.
+                                * The footer reads the verb off the row under
+                                * the cursor, so the row that behaves unusually
+                                * is the one that has to say so. */
+                               clickVerb: "LIST" });
 
     /* Default the cursor to the loaded module — the list opens showing you
      * what is there now, with the moves right beneath it.

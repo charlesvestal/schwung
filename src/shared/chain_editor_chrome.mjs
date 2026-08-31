@@ -185,6 +185,19 @@ export function drawChainEditorBands(ctx, o) {
  *             `entries` are the picker`s own rows ({id, name}), already
  *             including the Move rows — not the raw module scan.
  */
+/*
+ * The verb CLK earns on the row under the cursor.
+ *
+ * Read off the ROW rather than fixed on the screen, because the picker now
+ * carries a row that does not load: the list-filter row cycles the filter in
+ * place. A fixed "LOAD" there describes a different button than the one the
+ * user is about to press.
+ */
+function pickerClickVerb(o) {
+    const row = (o.entries || [])[o.index];
+    return (row && row.clickVerb) || "LOAD";
+}
+
 export function drawChainPicker(ctx, o) {
     /* Delegates to drawListScreen rather than restating the rect, the
      * MENU_LIST_Y + 8 empty offset, the fitText and the row loop. This file
@@ -217,7 +230,13 @@ export function drawChainPicker(ctx, o) {
          * this x. The device clips silently, so a message that overflowed would
          * simply lose its last word with nothing to say it had. */
         emptyMessage: o.emptyMessage || "No modules available",
-        footer: [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]],
+        /* CLK does not always LOAD. The list-filter row cycles the filter and
+         * loads nothing, so a fixed "LOAD" is a footer describing a different
+         * button than the one under the cursor. A row that behaves unusually
+         * names its own verb; everything else is a module and loads. */
+        footer: [["JOG", "SEL"],
+                 ["CLK", pickerClickVerb(o)],
+                 ["BACK", "EXIT"]],
         /* An empty picker keeps its OWN, shorter footer: a screen with nothing
          * on it and no way out named is the one place a hint matters most, and
          * JOG/CLK name gestures that would do nothing. BACK is EXIT here by
