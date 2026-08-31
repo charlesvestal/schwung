@@ -1025,6 +1025,56 @@ h2.section-header + .module-list {
     margin-left: var(--space-sm);
 }
 
+/* Channel toggle bar sits below the page header so switching Stable /
+   Beta is one click from wherever the user encounters a module. */
+.channel-toggle {
+    display: flex;
+    align-items: center;
+    margin-bottom: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-card);
+    border-radius: var(--radius);
+}
+
+.channel-form {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+    width: 100%;
+    margin: 0;
+}
+
+.channel-toggle-label {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.channel-hint {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    flex: 1;
+    min-width: 200px;
+}
+
+/* Beta badge: distinct from category badges so it reads at a glance
+   in a list of already-badged rows. Amber for warning-ish, not the
+   destructive red. */
+.badge-beta {
+    background: #b7791f;
+    color: #ffffff;
+}
+
+/* Teaser is a hint, not a badge — one line of muted italic text next
+   to the version. Clicking it isn't a link (channel change requires
+   a POST); a title tooltip explains what to do. */
+.beta-teaser {
+    color: var(--accent);
+    font-size: 0.8125rem;
+    font-style: italic;
+    margin-left: var(--space-sm);
+}
+
 .module-version-inline {
     color: var(--text-muted);
     font-size: 0.8125rem;

@@ -262,10 +262,17 @@ func (s *FileService) ListDir(dir string) ([]FileEntry, error) {
 }
 
 // ReleaseMeta holds release dates for a module.
+//
+// Channels is the optional per-channel version snapshot the catalog-site
+// generator produces so the Store UI can show what's on each channel
+// WITHOUT round-tripping each module's release.json at page-render time.
+// Old metadata files without a channels field still work — the UI
+// treats Version as the stable version and skips the beta hints.
 type ReleaseMeta struct {
-	FirstRelease string `json:"first_release"`
-	LastUpdated  string `json:"last_updated"`
-	Version      string `json:"version"`
+	FirstRelease string      `json:"first_release"`
+	LastUpdated  string      `json:"last_updated"`
+	Version      string      `json:"version"`
+	Channels     *ChannelSet `json:"channels,omitempty"`
 }
 
 // CatalogService fetches and caches the remote module catalog.
@@ -584,16 +591,53 @@ var funcMap = template.FuncMap{
 		}
 		return template.HTML(sb.String())
 	},
-	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
+	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta, channel string) bool {
 		inst, ok := installed[id]
 		if !ok {
 			return false
 		}
-		rm, ok := meta[id]
-		if !ok || rm.Version == "" {
+		v := channelVersion(meta[id], channel)
+		if v == "" {
 			return false // Can't tell — don't show update button
 		}
-		return isNewerSemver(rm.Version, inst.Version)
+		return isNewerSemver(v, inst.Version)
+	},
+	// channelVersion returns the version string of the release the
+	// user's current channel would install. Empty when metadata has
+	// nothing to say about this module.
+	"channelVersion": func(rm ReleaseMeta, channel string) string {
+		return channelVersion(rm, channel)
+	},
+	// channelIsBeta reports whether the version channelVersion would
+	// return comes from the beta channel (rather than falling back to
+	// stable). Used to tag versions in the UI.
+	"channelIsBeta": func(rm ReleaseMeta, channel string) bool {
+		if channel != ChannelBeta || rm.Channels == nil || rm.Channels.Beta == nil {
+			return false
+		}
+		beta := rm.Channels.Beta.Version
+		stable := channelStableVersion(rm)
+		return beta != "" && isNewerSemver(beta, stable)
+	},
+	// betaTeaser returns the beta version string when the user is on
+	// stable, the module publishes a beta, and that beta is newer than
+	// what stable would offer. Empty otherwise. Callers use this to
+	// nudge users toward opting in without popping a modal.
+	"betaTeaser": func(rm ReleaseMeta, channel string) string {
+		if channel == ChannelBeta {
+			return ""
+		}
+		if rm.Channels == nil || rm.Channels.Beta == nil {
+			return ""
+		}
+		beta := rm.Channels.Beta.Version
+		if beta == "" {
+			return ""
+		}
+		if !isNewerSemver(beta, channelStableVersion(rm)) {
+			return ""
+		}
+		return beta
 	},
 	"humanSize": func(b int64) string {
 		const unit = 1024
@@ -786,6 +830,7 @@ type App struct {
 	tmpl          templateMap
 	fileSvc       *FileService
 	catalogSvc    *CatalogService
+	channelPref   *ChannelPref
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
 	shm           *ShmConfig // shared memory for live config sync (nil if not on device)
@@ -793,6 +838,15 @@ type App struct {
 	upgradeStatus string     // current upgrade step (empty = not upgrading)
 	downloadJobs  map[string]*downloadJob
 	downloadMu    sync.Mutex
+}
+
+// channel returns the manager's current channel preference, safe on a
+// nil pref (returns stable).
+func (app *App) channel() string {
+	if app == nil {
+		return ChannelStable
+	}
+	return app.channelPref.Channel()
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -878,14 +932,17 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 
 	releaseMeta := app.catalogSvc.GetReleaseMeta()
 
-	// Check if any installed module has an update available.
+	// Check if any installed module has an update available. Uses the
+	// channel-resolved version so a beta user's "update all" button
+	// doesn't stay dark when the only update is a beta.
+	currentChannel := app.channel()
 	hasAnyUpdate := false
 	for id, inst := range installed {
-		rm, ok := releaseMeta[id]
-		if !ok || rm.Version == "" {
+		v := channelVersion(releaseMeta[id], currentChannel)
+		if v == "" {
 			continue
 		}
-		if isNewerSemver(rm.Version, inst.Version) {
+		if isNewerSemver(v, inst.Version) {
 			hasAnyUpdate = true
 			break
 		}
@@ -913,6 +970,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"HasInstalled":        len(installed) > 0,
 		"HasAnyUpdate":        hasAnyUpdate,
 		"ReleaseMeta":         releaseMeta,
+		"Channel":             currentChannel,
 		"Active":              "modules",
 		"HostVersion":         hostVersion,
 		"HostLatestVersion":   hostLatestVersion,
@@ -921,6 +979,21 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"Flash":               r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "modules.html", data)
+}
+
+// handleModulesChannelSet updates the manager-global module channel
+// preference. Redirects back to /modules on success so the change is
+// reflected in the page render — the toggle is not htmx-driven because
+// every update/install button on the page depends on the channel and
+// re-rendering the whole list is cleaner than dozens of partial swaps.
+func (app *App) handleModulesChannelSet(w http.ResponseWriter, r *http.Request) {
+	value := r.FormValue("channel")
+	if !app.channelPref.SetChannel(value) {
+		http.Redirect(w, r, "/modules?flash=Unknown+channel", http.StatusSeeOther)
+		return
+	}
+	app.logger.Info("module channel changed", "channel", app.channel())
+	http.Redirect(w, r, "/modules?flash=Channel+set+to+"+app.channel(), http.StatusSeeOther)
 }
 
 // findModuleDir locates the installed directory for a module by ID.
@@ -1062,6 +1135,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"AssetGroups":    assetGroups,
 		"BuiltIn":        builtIn,
 		"ReleaseMeta":    app.catalogSvc.GetReleaseMeta(),
+		"Channel":        app.channel(),
 		"Active":         "modules",
 		"ModuleSchema":   moduleSchema,
 		"SettingValues":  settingValues,
@@ -1092,9 +1166,15 @@ func getInstallSubdir(componentType string) string {
 }
 
 // ReleaseJSON is the structure of a module's release.json file.
+//
+// The Channels field is the beta/stable extension (see module_channel.go).
+// Old release.json files (Version+DownloadURL only) still parse and are
+// treated as a stable release by resolveReleaseForChannel — the channel
+// feature is strictly additive.
 type ReleaseJSON struct {
 	Version     string                 `json:"version"`
 	DownloadURL string                 `json:"download_url"`
+	Channels    *ChannelSet            `json:"channels,omitempty"`
 	Modules     map[string]ReleaseJSON `json:"modules,omitempty"`
 }
 
@@ -1140,8 +1220,18 @@ func (app *App) installModule(mod *CatalogModule) error {
 			return fmt.Errorf("decoding release.json: %w", err)
 		}
 		if moduleRelease, ok := rel.forModule(mod.ID); ok {
-			downloadURL = moduleRelease.DownloadURL
-			releaseVersion = moduleRelease.Version
+			// Route through the channel resolver. On the stable
+			// channel this is a no-op (returns top-level version +
+			// download_url) so old release.json files behave the
+			// same as before this change.
+			entry, served := resolveReleaseForChannel(moduleRelease, app.channel())
+			downloadURL = entry.DownloadURL
+			releaseVersion = entry.Version
+			app.logger.Info("release.json resolved",
+				"id", mod.ID,
+				"requested_channel", app.channel(),
+				"served_channel", served,
+				"version", releaseVersion)
 		} else {
 			app.logger.Warn("module missing from multi-module release.json; using fallback URL",
 				"id", mod.ID)
@@ -1629,17 +1719,35 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	installed := discoverInstalledModules(app.basePath)
+	releaseMeta := app.catalogSvc.GetReleaseMeta()
+	channel := app.channel()
 	type apiModule struct {
 		CatalogModule
-		Installed        bool   `json:"installed"`
-		InstalledVersion string `json:"installed_version,omitempty"`
+		Installed         bool   `json:"installed"`
+		InstalledVersion  string `json:"installed_version,omitempty"`
+		Channel           string `json:"channel"`
+		OfferedVersion    string `json:"offered_version,omitempty"`
+		OfferedIsBeta     bool   `json:"offered_is_beta,omitempty"`
+		BetaAvailable     string `json:"beta_available,omitempty"`
 	}
 	var result []apiModule
 	for _, m := range cat.Modules {
-		am := apiModule{CatalogModule: m}
+		am := apiModule{CatalogModule: m, Channel: channel}
 		if inst, ok := installed[m.ID]; ok {
 			am.Installed = true
 			am.InstalledVersion = inst.Version
+		}
+		rm := releaseMeta[m.ID]
+		am.OfferedVersion = channelVersion(rm, channel)
+		if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
+			b := rm.Channels.Beta.Version
+			am.OfferedIsBeta = b != "" && isNewerSemver(b, channelStableVersion(rm))
+		}
+		if channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
+			b := rm.Channels.Beta.Version
+			if b != "" && isNewerSemver(b, channelStableVersion(rm)) {
+				am.BetaAvailable = b
+			}
 		}
 		result = append(result, am)
 	}
@@ -3399,6 +3507,7 @@ func main() {
 		tmpl:         tmpl,
 		fileSvc:      &FileService{AllowedRoots: allowedRoots},
 		catalogSvc:   NewCatalogService(*catalogURL, basePath),
+		channelPref:  NewChannelPref(basePath),
 		basePath:     basePath,
 		logger:       logger,
 		shm:          shm,
@@ -3435,6 +3544,7 @@ func main() {
 	mux.HandleFunc("POST /modules/update-all", app.handleModuleUpdateAll)
 	mux.HandleFunc("POST /modules/install-all", app.handleModuleInstallAll)
 	mux.HandleFunc("POST /modules/install-custom", app.handleCustomInstall)
+	mux.HandleFunc("POST /modules/channel", app.handleModulesChannelSet)
 
 	// Module assets.
 	mux.HandleFunc("GET /modules/{id}/assets", app.handleModuleAssets)

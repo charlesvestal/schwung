@@ -1167,6 +1167,10 @@ The manager also serves a **file browser** (`/files`, under `/data/UserData/`) a
  "download_url": "https://github.com/user/move-anything-mymodule/releases/download/v0.2.0/mymodule-module.tar.gz"}
 ```
 
+An optional `channels` block adds beta/stable channels — see
+`docs/MODULE_CHANNELS.md`. Old release.json without it keeps working
+unchanged; the channel feature is strictly additive.
+
 Repositories that publish multiple catalog modules may key each release by
 catalog ID. Schwung Manager and the shared store utilities select the matching
 entry before downloading:

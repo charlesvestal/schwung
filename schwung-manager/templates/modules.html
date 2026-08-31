@@ -8,6 +8,22 @@
     <p>Browse and manage Schwung modules from the catalog.</p>
 </div>
 
+<section class="channel-toggle" aria-label="Module channel">
+    <form method="POST" action="/modules/channel" class="channel-form">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <span class="channel-toggle-label">Channel:</span>
+        <div class="segmented-toggle" role="group" aria-label="Choose module channel">
+            <button type="submit" name="channel" value="stable" class="seg-btn {{if eq .Channel "stable"}}seg-btn-active{{end}}" aria-pressed="{{if eq .Channel "stable"}}true{{else}}false{{end}}">Stable</button>
+            <button type="submit" name="channel" value="beta" class="seg-btn {{if eq .Channel "beta"}}seg-btn-active{{end}}" aria-pressed="{{if eq .Channel "beta"}}true{{else}}false{{end}}">Beta</button>
+        </div>
+        {{if eq .Channel "beta"}}
+        <span class="channel-hint">You'll get every stable release, plus module authors' beta pre-releases when available.</span>
+        {{else}}
+        <span class="channel-hint">Only vetted stable releases. Switch to Beta to also see pre-release builds.</span>
+        {{end}}
+    </form>
+</section>
+
 <section class="host-summary {{if .HostUpdateAvailable}}host-summary-update{{end}}" aria-label="Schwung Host">
     <div class="host-summary-info">
         <h2 class="host-summary-title">Schwung Host</h2>
@@ -83,9 +99,10 @@
             <div class="module-meta">
                 <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
                 <span>by {{.Author}}</span>
+                {{with betaTeaser (releaseMeta .ID $.ReleaseMeta) $.Channel}}<span class="beta-teaser" title="Enable Beta channel to install this pre-release">beta {{versionStr .}} available</span>{{end}}
             </div>
             <div class="module-actions">
-                {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
+                {{if hasUpdate .ID $.Installed $.ReleaseMeta $.Channel}}
                 <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" data-confirm="Update {{.Name}}?" data-confirm-title="Update Module" data-confirm-label="Update">
                     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                     <button type="submit" class="btn btn-secondary btn-small">Update</button>
@@ -105,12 +122,13 @@
         {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
         <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
-                <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</h3>
+                <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (channelVersion (releaseMeta .ID $.ReleaseMeta) $.Channel)}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (channelVersion (releaseMeta .ID $.ReleaseMeta) $.Channel)}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (channelVersion (releaseMeta .ID $.ReleaseMeta) $.Channel)}}</a>{{end}}{{if channelIsBeta (releaseMeta .ID $.ReleaseMeta) $.Channel}} <span class="badge badge-beta" title="Pre-release build">beta</span>{{end}}</h3>
             </div>
             <p class="module-description">{{.Description}}</p>
             <div class="module-meta">
                 <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
                 <span>by {{.Author}}</span>
+                {{with betaTeaser (releaseMeta .ID $.ReleaseMeta) $.Channel}}<span class="beta-teaser" title="Enable Beta channel to install this pre-release">beta {{versionStr .}} available</span>{{end}}
             </div>
             <div class="module-actions">
                 <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" data-confirm="Install {{.Name}}?" data-confirm-title="Install Module" data-confirm-label="Install">
@@ -140,11 +158,11 @@
             <tbody>
                 {{range .Modules}}{{if isInstalled .ID $.Installed}}
                 <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
-                    <td><span class="module-list-name">{{.Name}}</span> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a></td>
+                    <td><span class="module-list-name">{{.Name}}</span> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a>{{with betaTeaser (releaseMeta .ID $.ReleaseMeta) $.Channel}} <span class="beta-teaser" title="Enable Beta channel to install this pre-release">beta {{versionStr .}} available</span>{{end}}</td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
-                        {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
+                        {{if hasUpdate .ID $.Installed $.ReleaseMeta $.Channel}}
                         <form method="POST" action="/modules/{{.ID}}/update" class="inline-form" onclick="event.stopPropagation()" data-confirm="Update {{.Name}}?" data-confirm-title="Update Module" data-confirm-label="Update">
                             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                             <button type="submit" class="btn btn-secondary btn-small">Update</button>
@@ -175,7 +193,7 @@
             <tbody>
                 {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
                 <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
-                    <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</td>
+                    <td><span class="module-list-name">{{.Name}}</span>{{if (channelVersion (releaseMeta .ID $.ReleaseMeta) $.Channel)}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (channelVersion (releaseMeta .ID $.ReleaseMeta) $.Channel)}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (channelVersion (releaseMeta .ID $.ReleaseMeta) $.Channel)}}</a>{{end}}{{if channelIsBeta (releaseMeta .ID $.ReleaseMeta) $.Channel}} <span class="badge badge-beta" title="Pre-release build">beta</span>{{end}}{{with betaTeaser (releaseMeta .ID $.ReleaseMeta) $.Channel}} <span class="beta-teaser" title="Enable Beta channel to install this pre-release">beta {{versionStr .}} available</span>{{end}}</td>
                     <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td>
