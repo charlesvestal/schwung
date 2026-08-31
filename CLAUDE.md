@@ -429,6 +429,11 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   not "flip".
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
+- **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
+  wherever that cell's stroke already lives: a frameless dial gains a frame, the
+  enum square dots the one it has, the opaque box is left alone. The input layer
+  honoured readOnly for a long time while the DRAW layer did not, so a readout
+  was pixel-identical to a control.
 - A momentary fires from the knob too, **latched per gesture** — a rate limit
   still fires eight times across a two-second spin.
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet

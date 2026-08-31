@@ -29,7 +29,7 @@
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
 } from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
-import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
+import { asciiFold, fitText, shortenLabel, line, circle, notchCorners, CHECKER } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
 /* The DOOR rule, not a detector: this renderer never resolves viz (the caller
  * hands the groups in), it only asks whether a cell it is already drawing is
@@ -1483,7 +1483,7 @@ export function enumSquareWidth(text) {
  * behaviour it did not ask for. A missing `anim` is the normal case, not an
  * error.
  */
-export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
+export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw, readOnly) {
     const h = BOX_H;
     const target = enumSquareWidth(text);
 
@@ -1511,10 +1511,46 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
      * from both sides rather than sliding off its own cell. */
     const bx = kx + Math.floor((ENUM_W - w) / 2);
 
-    ctx.fillRect(bx, ky, w, 1, 1);
-    ctx.fillRect(bx, ky + h - 1, w, 1, 1);
-    ctx.fillRect(bx, ky, 1, h, 1);
-    ctx.fillRect(bx + w - 1, ky, 1, h, 1);
+    /*
+     * A READOUT DOTS THE FRAME IT HAS, rather than getting one added outside.
+     *
+     * The rule is "a readout is dotted", and where the stroke lives is the
+     * widget's business: a dial and a big number have no frame, so
+     * drawReadoutFrame adds one; the square already has one, so it dots that.
+     * Two dotted rectangles on one cell would be two ideas, not one.
+     *
+     * It is also the only version that WORKS HERE, and the measurement is the
+     * argument. The outer frame sits on the cell rect and the square's own
+     * frame occupies the same rows, so the wider the value the more of the
+     * mark the box absorbs:
+     *
+     *     value    box    pixels differing from the editable twin
+     *     G MAJ    28px    17      <- keydetect's real case
+     *     SAW      23px    23
+     *     ON       17px    27
+     *
+     * 17 pixels spread down two 15-row columns is not legible: side by side,
+     * the readout and the control were indistinguishable. And it fails exactly
+     * where the feature is for — keydetect's values are musical keys, always
+     * full width, and two of the three affected fleet modules are enums.
+     * Dotting the stroke inverts that gradient: a wider box has MORE perimeter
+     * to dot, so the strongest case is the common one.
+     *
+     * Same CHECKER lattice in ABSOLUTE coordinates as drawReadoutFrame, so a
+     * dotted square and a dotted added frame in adjacent cells share one phase
+     * — which is the whole reason the lattice is absolute, and it is what lets
+     * these be one treatment rather than two that happen to both be dotted.
+     */
+    if (readOnly) {
+        drawReadoutFrame(ctx, bx, ky, w, h);
+    } else {
+        ctx.fillRect(bx, ky, w, 1, 1);
+        ctx.fillRect(bx, ky + h - 1, w, 1, 1);
+        ctx.fillRect(bx, ky, 1, h, 1);
+        ctx.fillRect(bx + w - 1, ky, 1, h, 1);
+    }
+    /* Notched either way: the knockout is the SHAPE, and a readout is the same
+     * shape drawn in a lighter stroke. */
     notchCorners(ctx, bx, ky, w, h);
 
     /*
@@ -1904,6 +1940,107 @@ function drawAlsoOpensMark(ctx, g, col, rowY) {
 }
 
 /*
+ * "You can LOOK at this."
+ *
+ * A dotted 1px frame around the cell, for a param declared `access: "read"` —
+ * telemetry, not a control. The INPUT layer has honoured readOnly since it was
+ * added (shadow_ui.js's isReadoutParam shows the reading on a turn and writes
+ * nothing, refuses to open a picker on a click, and param_meta's isDivable /
+ * isTurnable both exclude it); the DRAW layer did not, so a readout was
+ * pixel-identical to a control. Reported from the device as a knob that "does
+ * not seem to do anything" — which is exactly right, and the picture was the
+ * only thing not saying so.
+ *
+ * FOR A FRAMELESS WIDGET ONLY — a dial, a big number. A widget that already
+ * has a stroke DOTS THE ONE IT HAS instead: the enum square in drawEnumSquare,
+ * and the opaque box not at all (see drawReadoutMark for both). The rule is "a
+ * readout is dotted"; where the stroke lives is the widget's business, and one
+ * cell never wears two dotted rectangles.
+ *
+ * IT WRAPS THE WIDGET; IT DOES NOT REPLACE IT. The value stays exactly where
+ * its own widget put it — an enum square, a big number, an arc knob — so this
+ * costs no centring work and cannot disagree with the thing it frames. The
+ * cell keeps its SHAPE and changes only its STROKE: the same kind of object,
+ * not editable, rather than a new form the reader has to learn.
+ *
+ * Rejected, so nobody re-litigates them:
+ *
+ *   inverted slab      inversion is already spent TWICE — the label band
+ *                      inverts for "a finger is on this knob", and a list row
+ *                      inverts for "this is the selection". A third meaning on
+ *                      the same treatment makes all three ambiguous.
+ *   corner brackets    already spoken for on knob pages: brackets mean "the
+ *                      knob works AND it opens something". A readout is the
+ *                      opposite claim, drawn identically.
+ *   a real meter       considered for 4K EQ's four peak params and deliberately
+ *                      deferred: a stereo peak meter is its own design job, and
+ *                      dotted covers every readout in the fleet today rather
+ *                      than one module's four.
+ *
+ * SAME RECT AS THE BRACKETS — cellLeft+1, BOX_H — so the two marks are the same
+ * frame drawn two ways rather than two frames at two insets, and adjacent
+ * readout cells (4K EQ has five in a row) keep a 2px gap instead of running
+ * into one continuous rule.
+ *
+ * Dotted on the CHECKER lattice in ABSOLUTE screen coordinates, not stepped by
+ * 2 from the frame's own origin. Same reason every fill in this subsystem is:
+ * two neighbouring frames share one lattice, so a row of readouts reads as a
+ * row of frames rather than as four strokes that disagree about phase. It also
+ * makes the corners fall out for free — a rect-relative step lands a dot on
+ * three corners and a gap on the fourth, depending on parity of w and h.
+ *
+ * MUST stay inside rowY..rowY+BOX_H-1, same as the brackets: one row of
+ * overflow lands on LBL0_Y and the frame merges into the label below.
+ *
+ * The arc knob's apex sits on rowY (KNOB_R 8, cy = rowY + 8), so the top edge
+ * grazes it at one pixel. That is checked in a render, not reasoned about — see
+ * tests/host/test_readout_frame.sh and the swatch in docs/MODULES.md.
+ */
+export function drawReadoutFrame(ctx, x, y, w, h) {
+    for (let i = 0; i < w; i++) {
+        if (CHECKER(x + i, y)) ctx.fillRect(x + i, y, 1, 1, 1);
+        if (CHECKER(x + i, y + h - 1)) ctx.fillRect(x + i, y + h - 1, 1, 1, 1);
+    }
+    for (let j = 1; j < h - 1; j++) {
+        if (CHECKER(x, y + j)) ctx.fillRect(x, y + j, 1, 1, 1);
+        if (CHECKER(x + w - 1, y + j)) ctx.fillRect(x + w - 1, y + j, 1, 1, 1);
+    }
+}
+
+/*
+ * NOT ON AN OPAQUE CELL, and for a sharper reason than the brackets' exclusion.
+ *
+ * `drawOpaqueBox` draws its own notched frame on the IDENTICAL rect — cellX+1,
+ * cellW-2, BOX_H — so the dots do not double a border the way the brackets
+ * would; they land invisibly on top of it, and the only place they show is the
+ * five-row CUT in its right edge where the chevron sits. Rendered, a read-only
+ * filepath was a normal opaque box with two stray pixels in its door. That is
+ * worse than no mark: it degrades the one widget that says which direction its
+ * door goes, in exchange for a mark nobody can see.
+ *
+ * No fleet module declares one — an opaque readout is close to a contradiction,
+ * since the whole point of KIND_OPAQUE is that its editor is elsewhere. If one
+ * ever needs marking, restyle that widget's own stroke; do not put a second
+ * frame on its rect.
+ */
+/**
+ * The per-cell readout mark, keyed on the widget. EXPORTED so the widget sheet
+ * draws the mark through the same rule the device does rather than
+ * re-implementing "which widgets get an outer frame" beside it — a second copy
+ * of that rule is exactly how a generated reference comes to document a
+ * drawing the grid does not make.
+ */
+export function drawReadoutMark(ctx, g, col, rowY, meta) {
+    const widget = widgetKindFor(meta);
+    if (widget === WIDGET_OPAQUE) return;
+    /* ONE DOTTED RECTANGLE PER CELL, NEVER TWO. The square dots its own stroke
+     * (see drawEnumSquare) — an outer frame as well would be two marks for one
+     * fact, and on a full-width value they would be one pixel apart. */
+    if (widget === WIDGET_ENUM) return;
+    drawReadoutFrame(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
+}
+
+/*
  * `anim` / `nowMs` / `animKey` are OPTIONAL and TRAILING, never a reorder: this
  * is exported and called from outside. Absent, every widget draws exactly as it
  * does today apart from the enum square's new static width, which is what keeps
@@ -2004,7 +2141,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
         /* Its own centring — it reserves an ENUM_W slot, not KW, and sizes
          * itself inside it. */
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text,
-                       anim, nowMs, animKey, shown);
+                       anim, nowMs, animKey, shown, !!meta.readOnly);
         return;
     }
     /*
@@ -2467,6 +2604,16 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * one is its own door.
          */
         if (!covered[col] && alsoOpens(meta)) drawAlsoOpensMark(ctx, g, col, rowY);
+
+        /*
+         * THE READOUT FRAME. Uncovered cells only, for the same reason the
+         * door mark is: a cell inside a viz graphic is not standing on its
+         * own, and no fleet module puts a read-only param inside one — a
+         * group-level frame would be a picture of a case that does not exist.
+         * If one ever appears, mark the SPAN once (see the viz loop above),
+         * never the members.
+         */
+        if (!covered[col] && meta.readOnly) drawReadoutMark(ctx, g, col, rowY, meta);
 
         /* The lock mark, mirroring the modulation tick across the cell. Drawn
          * for a COVERED cell too: unlike the door affordance above, a lock is a
