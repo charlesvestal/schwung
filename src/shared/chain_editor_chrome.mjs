@@ -186,37 +186,38 @@ export function drawChainEditorBands(ctx, o) {
  *             including the Move rows — not the raw module scan.
  */
 export function drawChainPicker(ctx, o) {
-    drawHeader(ctx, o.headerLeft, "SELECT", false);
-
-    const entries = o.entries || [];
-    if (entries.length === 0) {
-        /* Fitted with the SAME fitText the list rows use, because the two
-         * pickers name different things ("No modules available" against "No FX
-         * modules available") and the longer one runs off the 128px screen at
-         * this x. The device clips silently, so a message that overflowed would
-         * simply lose its last word with nothing to say it had. */
-        ctx.print(MENU_LIST_X, MENU_LIST_Y + 8,
-                  fitText(ctx, o.emptyMessage || "No modules available", MENU_LIST_W), 1);
-        /* Still a footer: a screen with nothing on it and no way out named is
-         * the one place a hint matters most. BACK is EXIT here by FOOTER_CANON
-         * — it leaves the picker entirely and lands back on the editor. */
-        drawFooter(ctx, [["BACK", "EXIT"]]);
-        return;
-    }
-
-    drawPageChromeList(ctx,
-        { x: MENU_LIST_X, y: MENU_LIST_Y,
-          w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
-        entries.map((item) => ({
+    /* Delegates to drawListScreen rather than restating the rect, the
+     * MENU_LIST_Y + 8 empty offset, the fitText and the row loop. This file
+     * exists to keep those singular (see the header note), and a picker that
+     * is "drawListScreen plus a currentId mapping and a fixed footer" written
+     * out longhand is the third copy it exists to prevent. What is genuinely
+     * the picker`s own is exactly what is passed in: the SELECT header, the
+     * loaded-module mark, its empty message, and the two footers. */
+    drawListScreen(ctx, {
+        headerLeft: o.headerLeft,
+        headerRight: "SELECT",
+        entries: (o.entries || []).map((item) => ({
             name: item.name || item.id || "Unknown",
             /* The one already loaded, marked where a menu page puts its value.
              * The rule lives HERE and not in either caller: a mark that only
              * one of the two pickers drew is the same bug one layer down. */
             value: (o.currentId && item.id === o.currentId) ? "*" : "",
         })),
-        o.index);
-
-    drawFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
+        index: o.index,
+        /* Fitted with the SAME fitText the list rows use, because the two
+         * pickers name different things ("No modules available" against "No FX
+         * modules available") and the longer one runs off the 128px screen at
+         * this x. The device clips silently, so a message that overflowed would
+         * simply lose its last word with nothing to say it had. */
+        emptyMessage: o.emptyMessage || "No modules available",
+        footer: [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]],
+        /* An empty picker keeps its OWN, shorter footer: a screen with nothing
+         * on it and no way out named is the one place a hint matters most, and
+         * JOG/CLK name gestures that would do nothing. BACK is EXIT here by
+         * FOOTER_CANON — it leaves the picker entirely and lands back on the
+         * editor. */
+        emptyFooter: [["BACK", "EXIT"]],
+    });
 }
 
 /*
@@ -228,8 +229,13 @@ export function drawChainPicker(ctx, o) {
  * in shadow_ui.js would be the third copy of a rectangle this file exists to
  * keep singular.
  *
- * Entries are `{ name, value }`, exactly as drawChainPicker builds; `value`
- * carries the checkbox, the member count, or nothing.
+ * Entries are `{ name, value }`, exactly as drawChainPicker passes; `value`
+ * carries the loaded mark, the checkbox, the member count, or nothing.
+ *
+ * `emptyFooter` is separate from `footer` because a screen with no rows must
+ * not name the gestures its rows would have answered — the picker`s empty
+ * state has offered BACK alone since before this function existed, and
+ * folding the two would have changed that silently.
  */
 export function drawListScreen(ctx, o) {
     drawHeader(ctx, o.headerLeft, o.headerRight || "", false);
@@ -237,7 +243,7 @@ export function drawListScreen(ctx, o) {
     if (entries.length === 0) {
         ctx.print(MENU_LIST_X, MENU_LIST_Y + 8,
                   fitText(ctx, o.emptyMessage || "Empty", MENU_LIST_W), 1);
-        drawFooter(ctx, o.footer || [["BACK", "EXIT"]]);
+        drawFooter(ctx, o.emptyFooter || o.footer || [["BACK", "EXIT"]]);
         return;
     }
     drawPageChromeList(ctx,
