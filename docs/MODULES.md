@@ -2231,7 +2231,7 @@ For native code, shared headers are in `src/host/`:
 
 ## Help Content (help.json)
 
-Modules can provide on-device help accessible from the Shadow UI's Help viewer (Shift+Vol+Menu → Help). Add a `help.json` file to your module's source directory.
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → Updates → `[Help...]`). Add a `help.json` file to your module's source directory.
 
 ### File Location
 
@@ -2304,11 +2304,42 @@ Help content is a tree of sections and leaf topics:
 - **Branch nodes** have a `children` array of other branch or leaf nodes. Nesting depth is unlimited.
 - **Leaf nodes** have a `lines` array of strings displayed as scrollable text.
 
+**The top-level object MUST have `children`.** The loader's whole test is
+`if (helpData.children) helpMap[id] = helpData.children;` — a file that parses
+as valid JSON but names its topics something else (`sections`, `pages`,
+`parameters`) is **discarded without a word**, and the viewer shows "No help
+content available for this module" as though the file were absent. A 2026-08
+sweep of the catalog found 12 modules in exactly that state, several of them
+carrying several KB of carefully written help nobody could read. `title` and
+any other sibling keys are ignored; `children` is the only one that is read.
+
 ### Text Formatting Rules
 
-The display is 128x64 pixels with a ~20 character line width. Pre-wrap your text accordingly:
+The display is 128x64 pixels and a help line is **drawn, never wrapped and
+never truncated**. `drawScrollableText` calls `print(4, y, line)`, `print()`
+walks the string one glyph at a time, and everything past x=127 is dropped by
+`set_pixel` with no error anywhere. So an over-long line loses its tail
+silently — there is no ellipsis and nothing in the log.
 
-- Keep lines to **20 characters or fewer**
+**The budget is pixels, not characters.** The atlas is fixed-pitch, but
+`load_font` auto-trims every glyph to its own inked extent, so text is
+*proportional* on screen: `.` advances 3 px and `W` advances 6 px. Roughly 20
+average characters fit, which is why the guidance below is 20 — but a line of
+narrow letters can run longer and a line of capitals can overflow sooner. If
+you are near the edge, measure rather than count.
+
+- Keep lines to about **20 characters**, and treat that as a budget to check
+  rather than a number to trust. A 2026-08 sweep of the catalog found 27
+  modules shipping lines that genuinely run off the screen, the worst by 100 px
+  — most of a second line's worth of text, invisible.
+- **Stay in ASCII.** The bitmap font carries the printable ASCII range plus
+  exactly `Ä Ö Ü ä ö ü € † ‡ °`. Any other character — an em dash, a curly
+  quote, `≥`, an arrow — has no glyph, and `glyph()` renders it as a bare 1 px
+  gap. It does not fall back to anything.
+
+`tests/host/test_help_content_width.sh` measures the host's own help content
+this way, deriving the glyph widths from the `FONT` table in
+`scripts/generate_font.py`.
 - Use empty strings (`""`) for blank lines between paragraphs
 - Indent continuation lines with a leading space for readability:
   ```json
