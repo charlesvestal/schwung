@@ -551,6 +551,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -593,6 +594,16 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                                 inst->synth_consumes_line_input = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
+                        }
+                    }
+                    /* Opt-in for raw SysEx, same both-spellings rule as
+                     * the MIDI FX path in chain_midi.c. */
+                    {
+                        int wants = 0;
+                        if ((json_get_bool_in_section(json, "capabilities", "wants_sysex", &wants) == 0
+                             || json_get_int_in_section(json, "capabilities", "wants_sysex", &wants) == 0)
+                            && wants) {
+                            inst->synth_wants_sysex = 1;
                         }
                     }
                     free(json);
@@ -1392,6 +1403,21 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
     if (strcmp(key, "midi_fx_pre_mode") == 0) {
         return snprintf(buf, buf_len, "%d", inst->midi_fx_pre_mode ? 1 : 0);
+    }
+    if (strcmp(key, "wants_sysex") == 0) {
+        /* Does ANY component in this slot want raw SysEx?
+         *
+         * One answer per slot rather than per position, because SysEx carries
+         * no channel and therefore nothing to route on -- there is no way to
+         * address a position with it. The slot either has a component that
+         * asked for SysEx or it does not, and the shim broadcasts to the ones
+         * that did. A module distinguishes its own messages by manufacturer
+         * ID, which is what that ID is for. */
+        int want = inst->synth_wants_sysex;
+        for (int i = 0; !want && i < inst->midi_fx_count; i++) {
+            if (inst->midi_fx_wants_sysex[i]) want = 1;
+        }
+        return snprintf(buf, buf_len, "%d", want);
     }
     if (strcmp(key, "midi_fx:pre_capable") == 0) {
         /* Hint from the loaded MIDI FX's module.json. Aggregated as OR
