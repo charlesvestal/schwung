@@ -284,7 +284,12 @@ The slot's **Interface: Default** toggle still shows the
 auto-generated controls for every component, so a module's own
 parameters stay reachable whatever its panel does.
 
-Master FX slots have no custom-UI path yet.
+A **Master FX** position works the same way as an audio FX: the panel
+renders inside that position's own section, with its own pop-out, and
+the Master FX tab has its own Interface toggle. The component there is
+`master_fx:fx1` … `master_fx:fx4`, so a panel that builds its keys from
+`schwungRemote.component` needs no change to work on the master bus —
+one that hardcodes `fx1:` will address a chain slot instead.
 
 **Know which component you are driving.** The manager appends
 `?component=<comp>` to the iframe URL and exposes it as
