@@ -1,0 +1,121 @@
+{
+  "title": "Freeverb",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "A plain, cheap",
+        "reverb. The one to",
+        "reach for when you",
+        "want space without",
+        "spending CPU on it.",
+        "",
+        "A chain audio FX:",
+        "put it after a",
+        "sound generator.",
+        "",
+        "For something richer",
+        "try CloudSeed or",
+        "PSXVerb from the",
+        "module store."
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Knob 1: Room Size",
+        " how big",
+        "Knob 2: Damping",
+        " how dark the tail",
+        "Knob 3: Wet",
+        " reverb level",
+        "Knob 4: Dry",
+        " original level",
+        "",
+        "Width is on the",
+        "page, not a knob."
+      ]
+    },
+    {
+      "title": "Room Size",
+      "lines": [
+        "How long the tail",
+        "rings for.",
+        "",
+        "Low is a small, tight",
+        "room - useful for",
+        "thickening drums",
+        "without smearing",
+        "them.",
+        "",
+        "High is a hall, and",
+        "near the top the",
+        "tail runs long",
+        "enough to wash over",
+        "the next note."
+      ]
+    },
+    {
+      "title": "Damping",
+      "lines": [
+        "How fast the high",
+        "frequencies die away",
+        "inside the tail.",
+        "",
+        "Low keeps it bright",
+        "and glassy.",
+        "",
+        "High makes it dark",
+        "and soft, closer to",
+        "a room with carpet",
+        "and curtains.",
+        "",
+        "Turn this up first",
+        "when a reverb is",
+        "fighting the hats."
+      ]
+    },
+    {
+      "title": "Wet and Dry",
+      "lines": [
+        "Two separate levels,",
+        "not one balance",
+        "control.",
+        "",
+        "Dry is the untouched",
+        "signal, Wet is the",
+        "reverb on top.",
+        "",
+        "For a send-style",
+        "effect on its own",
+        "slot, pull Dry to 0",
+        "and leave only Wet.",
+        "",
+        "Both up at once will",
+        "be louder than the",
+        "input - watch the",
+        "level into Master",
+        "FX."
+      ]
+    },
+    {
+      "title": "Width",
+      "lines": [
+        "How far the tail",
+        "spreads across the",
+        "stereo field.",
+        "",
+        "At 0 the reverb is",
+        "mono and sits in the",
+        "middle with the",
+        "source.",
+        "",
+        "Higher pushes it",
+        "out to the sides,",
+        "which leaves room in",
+        "the centre for the",
+        "dry sound."
+      ]
+    }
+  ]
+}
