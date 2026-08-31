@@ -2810,6 +2810,23 @@ export const BAND_H = Object.freeze({
 export function movyBandLayout(o = {}) {
     const rect = o.rect || { x: 0, y: 0, w: W, h: 64 };
     const b = o.bands || {};
+    /*
+     * `bands` SAYS WHAT TO DRAW. `rect` SAYS WHERE TO LAY OUT. They are not the
+     * same question, and conflating them was a bug.
+     *
+     * Omitting a band used to close the stack up unconditionally, so a caller
+     * that kept its own header — the whole point of the band split — got the
+     * grid moved SEVEN ROWS UP, into the header it had just drawn. Every other
+     * page kind (menu, items, preset, child) draws at absolute coordinates and
+     * simply skips the chrome it was not asked for, so the knob grid was the
+     * one kind that relaid itself out and the one kind that collided.
+     *
+     * Reflow now happens only when a rect is actually supplied. Without one,
+     * every band keeps the position the vertical rhythm gives it and an omitted
+     * band is merely not drawn — which is what movy needs and what the other
+     * kinds already did.
+     */
+    const reflow = !!o.rect;
     const want = {
         header: b.header !== false,
         bank: b.bank !== false,
@@ -2847,6 +2864,18 @@ export function movyBandLayout(o = {}) {
     const out = { header: null, bank: null, rows: [], footer: null,
                   x: rect.x, cellW: Math.floor(rect.w / 4),
                   fits: dropped.length === 0, dropped, height: need };
+
+    if (!reflow) {
+        /* The vertical rhythm's own positions, drawn or skipped. */
+        if (want.header) out.header = 0;
+        if (want.bank) out.bank = BAR_Y;
+        if (want.body) {
+            out.rows.push({ rowY: ROW0_Y, lblY: LBL0_Y });
+            out.rows.push({ rowY: ROW1_Y, lblY: LBL1_Y });
+        }
+        if (want.footer) out.footer = FOOTER_Y;
+        return out;
+    }
 
     let y = rect.y;
     if (want.header) { out.header = y; y += BAND_H.header; }

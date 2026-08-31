@@ -3374,10 +3374,13 @@ export function createController(io = {}) {
      * this page is something you can go into, and they are the same mark a
      * divable cell and an un-entered menu wear.
      */
-    function drawKnobsAsList(ctx, title, footer) {
+    /* `chrome` and `footerBand` are handed in by render() rather than rebuilt
+     * here: they are what decides whether the caller keeps its own header, and
+     * a second copy of that decision is the drift this file already argues
+     * against twice above. */
+    function drawKnobsAsList(ctx, title, footer, chrome, footerBand) {
         const mp = page();
-        drawHeaderMovy(ctx, title || "", pageLabel(mp), false);
-        drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+        chrome(pageLabel(mp));
         const bottom = footer ? RULE_Y : 64;
         const entered = menuEntered();
         drawPageChromeList(ctx,
@@ -3390,7 +3393,7 @@ export function createController(io = {}) {
                          bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                          MENU_BRACKET_LEN);
         }
-        if (footer) drawFooter(ctx, footer);
+        footerBand();
     }
 
     function render(ctx, { title, rect, footer, bands } = {}) {
@@ -3399,8 +3402,33 @@ export function createController(io = {}) {
          * picker, menu, items and preset pages are all literally the same draws.
          * Only the knob page forks, and only at the last step. */
         if (s.layout === LAYOUT_MOVY || s.layout === LAYOUT_LIST) {
+            /*
+             * THE CHROME, ONCE, FOR EVERY PAGE KIND.
+             *
+             * The header and bank bar were drawn by six separate branches —
+             * menu, picker, items, preset, child, and the grid — each with its
+             * own copy of the same two calls. That was survivable while the
+             * only caller was our own full-screen host, and stopped being so
+             * the moment a tool wanted to keep its OWN header: `bands` was
+             * honoured by the knob grid alone, so a preset page embedded in
+             * movy drew Schwung's header over movy's and its list into rows
+             * movy had already used.
+             *
+             * A consumer asking for the body alone gets the body alone,
+             * whatever kind of page it happens to be on.
+             */
+            const wantHeader = !bands || bands.header !== false;
+            const wantBank   = !bands || bands.bank   !== false;
+            const wantFooter = !bands || bands.footer !== false;
+            const pageChrome = (right, inverted = false) => {
+                if (wantHeader) drawHeaderMovy(ctx, title || "", right, inverted);
+                if (wantBank) {
+                    drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                }
+            };
+            const footerBand = () => { if (footer && wantFooter) drawFooter(ctx, footer); };
             const drawGrid = () => {
-            if (knobsAsList()) { drawKnobsAsList(ctx, title, footer); return; }
+            if (knobsAsList()) { drawKnobsAsList(ctx, title, footer, pageChrome, footerBand); return; }
             renderPageMovy(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
@@ -3478,13 +3506,12 @@ export function createController(io = {}) {
                  * only difference is what the list holds.
                  */
                 const pbottom = footer ? RULE_Y : 64;
-                drawHeaderMovy(ctx, title || "", "SECTIONS", false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome("SECTIONS");
                 drawPageChromeList(ctx,
                     { x: MENU_LIST_X, y: MENU_LIST_Y,
                       w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
                     s.pickerEntries, s.pickerIndex);
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             const mp = page();
@@ -3492,8 +3519,7 @@ export function createController(io = {}) {
                 /* A real list, so it draws like a menu page: same chrome, same
                  * five rows, same rect. Inert it highlights nothing — the page
                  * is something you can go INTO, not something you are in. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome(mp.name);
                 const ibottom = footer ? RULE_Y : 64;
                 const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
                 const entered = menuEntered();
@@ -3514,7 +3540,7 @@ export function createController(io = {}) {
                                  ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                                  MENU_BRACKET_LEN);
                 }
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             if (mp && mp.kind === PAGE_PRESET) {
@@ -3523,8 +3549,7 @@ export function createController(io = {}) {
                  * one of this module's pages rather than as somewhere else.
                  * That is the whole point: it used to eject into the list
                  * editor, which looks nothing like this. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome(mp.name);
                 const pbottom = footer ? RULE_Y : 64;
                 const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
                                 w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
@@ -3540,7 +3565,7 @@ export function createController(io = {}) {
                                  pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                                  MENU_BRACKET_LEN);
                 }
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             if (mp && mp.kind === PAGE_MENU) {
@@ -3548,8 +3573,7 @@ export function createController(io = {}) {
                  * and the bank bar all stay put, so a menu reads as one of this
                  * module's pages rather than as somewhere else. header:false
                  * because that header is already drawn. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome(mp.name);
                 const bottom = footer ? RULE_Y : 64;
                 const entered = menuEntered();
                 /*
@@ -3574,7 +3598,7 @@ export function createController(io = {}) {
                                  bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                                  MENU_BRACKET_LEN);
                 }
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             drawGrid();
