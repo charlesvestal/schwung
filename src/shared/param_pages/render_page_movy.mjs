@@ -2615,7 +2615,7 @@ export const FOOTER_CANON = Object.freeze({
  * clear `RULE_Y .. FOOTER_Y + FOOTER_H` to erase it. It is no longer a row that
  * gets drawn on.
  */
-export function drawFooter(ctx, hints) {
+export function drawFooter(ctx, hints, o = {}) {
     if (!hints || !hints.length) return 0;
     const ty = FOOTER_Y + Math.floor((FOOTER_H - FONT4_HEIGHT) / 2);
 
@@ -2651,6 +2651,27 @@ export function drawFooter(ctx, hints) {
     };
 
     let drawn = 0;
+
+    /*
+     * backLeft: a caller (e.g. a sequencer lane) owns the right edge, so the
+     * back hint moves to the left and the remaining hints flow after it —
+     * the mirror image of the default arrangement, not a variant of it.
+     * Default behaviour below is untouched by this branch.
+     */
+    if (o.backLeft && back) {
+        let x = 1;
+        drawPair(x, back);
+        x += hintPairWidth(caps(back[0]), caps(back[1]));
+        drawn++;
+        for (const h of flow) {
+            if (x + hintPairWidth(caps(h[0]), caps(h[1])) > W) break;
+            drawPair(x, h);
+            x += hintPairWidth(caps(h[0]), caps(h[1]));
+            drawn++;
+        }
+        return drawn;
+    }
+
     /* Reserve the back hint's room BEFORE laying anything else out — that is
      * what makes the middle hints lose the fight for a narrow screen instead
      * of BACK losing it. */
