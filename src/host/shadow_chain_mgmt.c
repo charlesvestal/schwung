@@ -3569,3 +3569,38 @@ void shadow_inprocess_handle_param_request(void) {
 
     shadow_param_publish_response(req_id);
 }
+
+
+/*
+ * Keep shadow_chain_slots[].wants_sysex current, one slot per call.
+ *
+ * Refreshed on a rotation rather than hooked to a load, because a slot's
+ * answer changes on every synth load, MIDI FX load, unload, insert, remove and
+ * move -- six call sites with nothing else in common, and a seventh added later
+ * would silently not update the flag. Asking is cheap and cannot go stale: the
+ * chain host is in-process here, so this is a direct call, not the ~2.8 ms
+ * shadow_ui IPC round-trip that "get_param" usually implies.
+ *
+ * One slot per frame answers every slot ~86x/second. The cost of being a frame
+ * late is that a component loaded this instant misses SysEx for a few
+ * milliseconds; the cost of hooking it wrongly is that it misses SysEx forever,
+ * which is the failure this whole change exists to remove.
+ */
+void shadow_chain_refresh_wants_sysex_tick(void)
+{
+    static int next = 0;
+    int i = next;
+    next = (next + 1) % SHADOW_CHAIN_INSTANCES;
+
+    if (!shadow_chain_slots[i].instance || !shadow_plugin_v2 ||
+        !shadow_plugin_v2->get_param) {
+        shadow_chain_slots[i].wants_sysex = 0;
+        return;
+    }
+    char buf[8];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
+                                          "wants_sysex", buf, sizeof(buf));
+    if (len <= 0) { shadow_chain_slots[i].wants_sysex = 0; return; }
+    buf[len < (int)sizeof(buf) ? len : (int)sizeof(buf) - 1] = '\0';
+    shadow_chain_slots[i].wants_sysex = (atoi(buf) == 1);
+}

@@ -105,12 +105,38 @@ Both cable-2 dispatchers gate on `cin < 0x08 || cin > 0x0E`
 `shadow_ui_midi_publish`, sits inside `if (overtake_mode && shadow_ui_midi_shm)`
 in `schwung_shim.c`.
 
-**A chain slot is therefore write-only for SysEx.** If you are building an
-editor as a slot module and waiting for the device to answer, that is the whole
-bug — no amount of fixing your encoding will help. Build it as an overtake
-tool, or expect send-only. `modules/midi_fx/sysex_probe` exists to keep that
-honest: it emits an ECHO the moment an `F0` reaches `process_midi`, so the
-claim is falsifiable rather than a code reading.
+A chain slot was therefore **write-only for SysEx** — an editor built as one
+waited forever for a reply, and no encoding fix helped. That was never a design
+decision: the gate is a *channel-voice-only* filter written for channel routing,
+with no comment, no capability and no test behind it. SysEx just fell out the
+bottom of it.
+
+**A slot can now opt in**, with `capabilities.wants_sysex: true` in its
+module.json. Slots that do not ask see exactly what they saw before: nothing.
+
+Opt-in rather than broadcast, for a specific reason: SysEx payload bytes are
+`< 0x80`, so a module switching on `msg[0] & 0xF0` would read data as a status
+type it half-recognises. A module has to have been written for this.
+
+**There is no channel to route on**, which is why a receive-channel setting
+cannot select a destination and why setting a slot to Ch 1 does nothing. So
+SysEx is broadcast to every slot that opted in, and a module tells its own
+messages apart by manufacturer ID — which is what that ID is for.
+
+You receive **fragments, not messages**: 1–3 payload bytes per call, exactly as
+a tool does, and you reassemble them yourself with the four rules below.
+Buffering in the shim would mean per-slot reassembly state on the realtime path
+with no bound on what a broken sender can make it hold.
+
+`modules/midi_fx/sysex_probe` keeps this honest — it emits an ECHO the moment an
+`F0` reaches `process_midi`. Before the capability: silence. After: an echo for
+every message.
+
+**Watch `rx_f0_seen`, not the ECHO, when the question is "how many".** The echo
+fires per `F0`, so one delivery and six look identical; the counter reads 2N for
+N messages and makes a duplication bug unmissable. That distinction is the whole
+reason a real duplication bug survived a review and a hardware check
+(#367) — the probe was adequate, the check chosen for it was not.
 
 `onMidiMessageExternal([b0,b1,b2])` hands you three bytes with the **CIN already
 stripped**, and nothing reassembles the run for you. There is no length field
@@ -194,8 +220,11 @@ is loaded, and they exercise the contention no harder.
 
 ## Testing your own module
 
-Two probes ship in-tree, scoring against one shared generator so a result from
-either is directly comparable:
+Two probes live in-tree, scoring against one shared generator so a result from
+either is directly comparable. **They are test fixtures and a release never
+carries them** — build with `SCHWUNG_BUILD_TEST_MODULES=1 ./scripts/build.sh`,
+the same gate gesture-test uses. Without it a SysEx tool would sit in every
+user'''s Tools menu and a probe in every user'''s MIDI FX picker.
 
 - `src/modules/tools/sysex-test` — the JS/tool path. Pads pick a payload size
   (64 / 158 / 316 / 632 B); any other pad sends. The screen shows TX bytes and
