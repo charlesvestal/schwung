@@ -174,18 +174,39 @@ typedef struct host_api_v1 {
      * NULL if host does not support tempo. */
     float (*get_bpm)(void);
 
-    /* Inject a USB-MIDI packet into Move's MIDI_IN as if it came from
-     * internal hardware (pads/knobs). The drain forces cable 0 so Move
-     * treats the event as native input — no MIDI_OUT cable-2 echo.
+    /* Inject a USB-MIDI packet into Move's MIDI_IN, as if it had arrived at
+     * the hardware.
+     *
+     * THE CABLE NIBBLE IS PRESERVED, AND IT CHOOSES THE ROUTE. The drain
+     * memcpy's the packet into a MIDI_IN slot verbatim
+     * (shadow_overtake_midi.c), so the caller — not the host — decides how
+     * Move reads it:
+     *
+     *   cable 0  Move treats the event as its own surface (pad/button).
+     *            Use this to simulate a press.
+     *   cable 2  Move routes it by CHANNEL to the track instrument, exactly
+     *            as it would an external USB-A device — AND ECHOES IT BACK
+     *            OUT MIDI_OUT CABLE 2, i.e. to whatever is plugged into
+     *            USB-A. This is how a chain MIDI FX in Pre mode reaches an
+     *            external synth; it is also a loop back into any chain slot
+     *            listening on that channel, so a note-generating caller must
+     *            filter its own echo (see pre_mode_is_echo in chain_midi.c).
+     *
+     * The channel byte must be the slot's RECV channel, not forward_channel
+     * — see slot_recv_channel below.
      *
      * msg: 4-byte USB-MIDI packet [cable|CIN, status, data1, data2]
-     *      The cable nibble is ignored (always forced to 0 by the drain).
      * len: must be 4
      * Returns: bytes queued, or 0 on failure (SHM unavailable, ring full).
      *
      * NULL if host does not support MIDI-IN injection (non-shadow host).
-     * Rate-limited to 8 packets/tick at the drain; callers should not
-     * burst more than that per render block. */
+     *
+     * DELIVERY IS NOT PER-TICK PACED, it is gated on MIDI_IN being idle: the
+     * drain runs only after two consecutive frames with every MIDI_IN slot
+     * empty, then fills consecutive slots and stops at the first occupied one
+     * (shadow_midi.c shadow_drain_midi_inject). Under sustained hardware input
+     * it may not run at all, so treat a queued packet as queued — never as
+     * delivered — and keep bursts small. */
     int (*midi_inject_to_move)(const uint8_t *msg, int len);
 
     /* Return the receive channel for the slot owning this plugin instance.
