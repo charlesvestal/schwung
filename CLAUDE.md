@@ -510,6 +510,13 @@ component load gate, and the input-dispatch order. Read it before editing
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
   branches on that. **A child level lists TEMPLATES** — resolve them through
   `child_key.mjs` or a drum module files 200+ keys under "Other".
+- **Module lists file a module into Favorites or your own lists, and
+  `drawFooter` DROPS a hint pair that does not fit** — silently, with every
+  pair after it, so the membership screen's PRIMARY action was the one word
+  missing from its own footer. A footer names the verb of the row under the
+  CURSOR. The swap picker's row 0 filters by list; the filter persists across
+  pickers but is re-resolved per picker, and its cursor SCANS rather than
+  counting, because the move rows sit under the loaded module.
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
