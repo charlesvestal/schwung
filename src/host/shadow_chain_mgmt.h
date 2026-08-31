@@ -346,6 +346,10 @@ void shadow_slot_load_capture(int slot, int patch_index);
 /* --- Boot --- */
 int shadow_inprocess_load_chain(void);
 
+/* Round-robin refresh of per-slot capabilities.wants_sysex. Call once per
+ * SPI frame; it advances one slot per call. */
+void shadow_chain_refresh_wants_sysex_tick(void);
+
 /* --- UI requests --- */
 void shadow_inprocess_handle_ui_request(void);
 

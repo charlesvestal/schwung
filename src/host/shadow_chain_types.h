@@ -40,6 +40,11 @@ typedef struct shadow_chain_slot_t {
     int feedback_hold;      /* 1 = booted muted as a line-input feedback guard; JS clears once jack state is safe */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
+    /* 1 = some component in this slot declared capabilities.wants_sysex, so
+     * cable-2 SysEx fragments are delivered to it. Read from the chain host at
+     * load; slots that did not ask see no SysEx at all, which is the behaviour
+     * every slot had before. */
+    int wants_sysex;
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
     slot_fade_t fade;                /* fade envelope for seamless transitions */

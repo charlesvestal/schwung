@@ -5592,6 +5592,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Advance the external-dispatch ring's age counter once per frame. */
     shadow_external_dispatch_tick();
 
+    /* One slot per frame learns whether its components want raw SysEx. */
+    shadow_chain_refresh_wants_sysex_tick();
+
     /* MIDI channel indicator: scan external (cable 2) MIDI_IN and MIDI_OUT for
      * note events and record the channels for the on-screen "i<IN> o<OUT>"
      * overlay. IN = what the controller sends; OUT = what Schwung emits back to
