@@ -686,62 +686,100 @@ export function drawMenuList({
         }
     }
 
+    /* The bar itself is drawScrollbar, below — shared with every other
+     * scrolling surface. */
+    drawScrollbar({
+        ctx,
+        topY: resolvedTopY,
+        bottomY: resolvedBottomY,
+        rowHeight: itemHeight,
+        /* DERIVED from the highlight rather than restated: the highlight covers
+         * the glyphs plus `highlightOffset` above and below, so the glyphs
+         * themselves are `highlightHeight - 2 * offset`. A caller that changes
+         * either moves the track with them. */
+        rowInk: Math.max(1, itemHighlightHeight - 2 * highlightOffset),
+        windowRows: effectiveMaxVisible,
+        total: totalItems,
+        startIdx,
+        visible: endIdx - startIdx,
+    });
+}
+
+/*
+ * THE ONE SCROLLBAR. A SCROLLBAR, NOT ARROWS — it says everything they said and
+ * two things more, in a narrower column.
+ *
+ * The arrows report only "there is more, that way". The bar reports that, plus
+ * HOW MUCH more and WHERE you are in it, which is the question a 47-model list
+ * actually raises. Keeping both would be drawing the same fact twice.
+ *
+ * It is also cheaper in the only currency this screen has. The arrows are 5px
+ * wide at indicatorX and force a 10px per-row clearance on the two rows they
+ * touch, so a value on those rows is truncated to make room for a glyph beside
+ * it. The bar owns ONE column at the far edge and overlaps no row, so that
+ * reservation goes away entirely.
+ *
+ * THE THUMB HAS A 2px FLOOR. At 47 items in 5 rows its true height is 1.4px and
+ * a 1px thumb is indistinguishable from a tick of the track: it would report
+ * position and lose extent, which is half of what a bar is for.
+ *
+ * EXPORTED, because a list is not the only thing that scrolls. This lived
+ * inline in drawMenuList and `scrollable_text.mjs` went on drawing the arrows
+ * it replaced — so the help viewer's topic LIST wore a bar and the help TEXT
+ * one row further in wore arrows, in the same session, on the same jog. One
+ * screen cannot be told it is two different products. Any new scrolling
+ * surface calls this; nothing draws its own.
+ *
+ * @param {number} topY        first row's y (the track starts here)
+ * @param {number} bottomY     hard floor — the track never runs past it
+ * @param {number} rowHeight   pitch between rows
+ * @param {number} rowInk      ink height of ONE row (glyphs, not the pitch)
+ * @param {number} windowRows  how many rows the window holds
+ * @param {number} total       total rows
+ * @param {number} startIdx    index of the first visible row
+ * @param {number} [visible]   how many are drawn right now (defaults to the window)
+ */
+export function drawScrollbar({
+    ctx = DEVICE_CTX,
+    topY,
+    bottomY,
+    rowHeight,
+    rowInk,
+    windowRows,
+    total,
+    startIdx,
+    visible = windowRows,
+}) {
+    /* Nothing to scroll: no bar, and the row budget it would have cost is
+     * given back. */
+    if (!(startIdx > 0 || startIdx + visible < total)) return;
+
+    const trackX = SCREEN_WIDTH - 2;
     /*
-     * A SCROLLBAR, NOT ARROWS — it says everything they said and two things
-     * more, in a narrower column.
+     * THE TRACK COVERS THE ROWS, NOT THE RECT.
      *
-     * The arrows report only "there is more, that way". The bar reports that,
-     * plus HOW MUCH more and WHERE you are in it, which is the question a
-     * 47-model list actually raises. Keeping both would be drawing the same
-     * fact twice.
+     * Run to bottomY and it overhangs: the rect is 10..54 but the last row's
+     * glyphs end at 52, so the final dot sat two rows below anything it was
+     * measuring, flush at the top and adrift at the bottom. Reported from a
+     * whole-screen render — and only visible there, which is why the earlier
+     * crop missed it.
      *
-     * It is also cheaper in the only currency this screen has. The arrows are
-     * 5px wide at indicatorX and force a 10px per-row clearance on the two rows
-     * they touch, so a value on those rows is truncated to make room for a
-     * glyph beside it. The bar owns ONE column at the far edge and overlaps no
-     * row, so that reservation goes away entirely — see valueRightEdgeArrow,
-     * which is now only ever the clear edge.
-     *
-     * THE THUMB HAS A 2px FLOOR. At 47 items in 5 rows its true height is 1.4px
-     * and a 1px thumb is indistinguishable from a tick of the track: it would
-     * report position and lose extent, which is half of what a bar is for.
+     * Measured on the WINDOW, not on the rows currently visible. At the end of
+     * a list keepOffLastRow draws one row fewer, and a track that shortened as
+     * you reached the bottom would read as the list itself shrinking.
      */
-    if (startIdx > 0 || endIdx < totalItems) {
-        const trackX = SCREEN_WIDTH - 2;
-        /*
-         * THE TRACK COVERS THE ROWS, NOT THE RECT.
-         *
-         * Run to resolvedBottomY and it overhangs: the rect is 10..54 but the
-         * last row's glyphs end at 52, so the final dot sat two rows below
-         * anything it was measuring, flush at the top and adrift at the bottom.
-         * Reported from a whole-screen render — and only visible there, which
-         * is why the earlier crop missed it.
-         *
-         * The row ink height is DERIVED from the highlight rather than restated:
-         * the highlight covers the glyphs plus `highlightOffset` above and
-         * below, so the glyphs themselves are `highlightHeight - 2 * offset`.
-         * A caller that changes either moves the track with them.
-         *
-         * Measured on the WINDOW, not on the items currently visible. At the
-         * end of a list keepOffLastRow draws one row fewer, and a track that
-         * shortened as you reached the bottom would read as the list itself
-         * shrinking.
-         */
-        const rowInk = Math.max(1, itemHighlightHeight - 2 * highlightOffset);
-        const trackBottom = Math.min(resolvedBottomY,
-            resolvedTopY + (effectiveMaxVisible - 1) * itemHeight + rowInk);
-        const trackH = trackBottom - resolvedTopY;
-        /* Dotted, so the track reads as the extent of the list and the thumb as
-         * a solid object on it. A solid track would make a second rule down the
-         * edge of every scrolling screen. */
-        for (let y = resolvedTopY; y < trackBottom; y += 2) px(ctx, trackX, y, 1);
-        const visible = endIdx - startIdx;
-        const thumbH = Math.max(2, Math.round((visible / totalItems) * trackH));
-        const maxStart = totalItems - visible;
-        const ty = resolvedTopY + (maxStart > 0
-            ? Math.round((startIdx / maxStart) * (trackH - thumbH)) : 0);
-        ctx.fillRect(trackX, ty, 1, thumbH, 1);
-    }
+    const trackBottom = Math.min(bottomY, topY + (windowRows - 1) * rowHeight + rowInk);
+    const trackH = trackBottom - topY;
+    if (trackH <= 0) return;
+    /* Dotted, so the track reads as the extent of the list and the thumb as a
+     * solid object on it. A solid track would make a second rule down the edge
+     * of every scrolling screen. */
+    for (let y = topY; y < trackBottom; y += 2) px(ctx, trackX, y, 1);
+    const thumbH = Math.max(2, Math.round((visible / total) * trackH));
+    const maxStart = total - visible;
+    const ty = topY + (maxStart > 0
+        ? Math.round((startIdx / maxStart) * (trackH - thumbH)) : 0);
+    ctx.fillRect(trackX, ty, 1, thumbH, 1);
 }
 
 export const menuLayoutDefaults = {
