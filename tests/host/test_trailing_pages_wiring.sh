@@ -292,6 +292,11 @@ const body = [
     // here would have gone on asserting the pre-help shape while green.
     "let helpChildren = null;",
     "function getModuleHelpChildren() { return helpChildren; }",
+    // "Add to List" is UNCONDITIONAL, but its VALUE is the number of lists
+    // holding this module, which is a file read -- stubbed the same way the
+    // help.json read above is, so the row itself stays the real one.
+    "let listCount = 0;",
+    "function moduleListsCountFor() { return listCount; }",
     grab("moduleMenuEntries"),
     grab("componentTrailingMenus"),
     "return {",
@@ -300,6 +305,7 @@ const body = [
     "  setLiveBlob: (b) => { liveBlob = b; },",
     "  setChainConfigs: (c) => { chainConfigs = c; },",
     "  setHelpChildren: (c) => { helpChildren = c; },",
+    "  setListCount: (n) => { listCount = n; },",
     "};",
 ].join("\n");
 
@@ -354,21 +360,31 @@ if (!presetRow(r.dirty).value.startsWith("*"))
     fail("the modified mark must LEAD the name (a trailing mark is the first thing a " +
          "truncating list drops), got " + JSON.stringify(presetRow(r.dirty)));
 
-// Module page, module with NO help.json: the two it has always had, and no
-// row that would open an empty viewer.
+// Module page, module with NO help.json: Add to List (unconditional) then the
+// two destructive rows, and no row that would open an empty viewer.
 const moduleActions = actions(r.clean[1]);
-if (moduleActions.join(",") !== "swap_module,remove_module")
-    fail("Module page for a module with no help content must offer exactly Swap Module " +
-         "then Remove Module, got " + moduleActions.join(","));
+if (moduleActions.join(",") !== "module_lists,swap_module,remove_module")
+    fail("Module page for a module with no help content must offer exactly Add to List, " +
+         "Swap Module, Remove Module, got " + moduleActions.join(","));
 
-// ...and with help content, Module Help LEADS -- the two rows under it are the
-// destructive ones.
+// The Add to List value is the number of lists holding the module, and BLANK
+// at zero -- a "0" is a count nobody asked for on a row that is offering to
+// make one.
+const addRow = r.clean[1].entries.find((e) => e.action === "module_lists");
+if (addRow.value !== "") fail("Add to List must show nothing at zero lists, got " + JSON.stringify(addRow.value));
+harness.setListCount(2);
+const counted = harness.run(1, "synth", "synth")[1].entries.find((e) => e.action === "module_lists");
+if (counted.value !== "2") fail("Add to List must show the list count, got " + JSON.stringify(counted.value));
+harness.setListCount(0);
+
+// ...and with help content, Module Help LEADS -- the rows under it end with
+// the destructive pair.
 harness.setHelpChildren([{ title: "Overview", lines: ["x"] }]);
 const withHelp = harness.run(1, "synth", "synth");
 const withHelpActions = actions(withHelp[1]);
-if (withHelpActions.join(",") !== "module_help,swap_module,remove_module")
-    fail("Module page for a module WITH help content must offer Module Help, Swap Module, " +
-         "Remove Module in that order, got " + withHelpActions.join(","));
+if (withHelpActions.join(",") !== "module_help,module_lists,swap_module,remove_module")
+    fail("Module page for a module WITH help content must offer Module Help, Add to List, " +
+         "Swap Module, Remove Module in that order, got " + withHelpActions.join(","));
 if (withHelp[1].entries[0].label !== "Module Help")
     fail("the help row must be labelled \"Module Help\", got " + JSON.stringify(withHelp[1].entries[0]));
 // An EMPTY children array is no help content -- getModuleHelpChildren already
