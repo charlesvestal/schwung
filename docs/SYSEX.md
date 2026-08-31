@@ -184,6 +184,14 @@ drop one buffer downstream, which is the whole failure mode being removed here.
 A single send is therefore capped at **256 packets (~765 SysEx bytes)**. Past
 that you get `false`, not truncation. Split and retry.
 
+**With contending MIDI**, the case that matters because MIDI_OUT is shared:
+25+ consecutive 632 B sends while 120 CC/s flowed in on cable 2 — all INTACT.
+Inbound cable-2 CCs are forwarded straight back out by
+`shadow_forward_external_cc_to_out()`, so each one costs a MIDI_OUT slot, which
+is the exact resource the SysEx is queueing for. Use CCs rather than notes to
+generate that load: notes make the device audible through whatever instrument
+is loaded, and they exercise the contention no harder.
+
 ## Testing your own module
 
 Two probes ship in-tree, scoring against one shared generator so a result from
