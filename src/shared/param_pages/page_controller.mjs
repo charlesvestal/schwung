@@ -31,10 +31,12 @@ import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire }
     from "./child_key.mjs";
-import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE } from "./param_meta.mjs";
+import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
+} from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
+         movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { createAnimState } from "./anim_state.mjs";
@@ -3340,12 +3342,18 @@ export function createController(io = {}) {
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
 
-    /* Movy layout is a whole separate renderer (its own fixed-geometry header
-     * and knob grid, not a `layout` value render_page.mjs understands — see
-     * render_page_movy.mjs), so it does not take decorations (a sequencer's
-     * per-slot p-locks) or an embedding `rect`: it draws its own header full
-     * width, the way Movy itself always does. Anything using those keeps
-     * LAYOUT_DIAL/LAYOUT_BAR — see setLayout. */
+    /* Movy layout is a whole separate renderer (its own header and knob grid,
+     * not a `layout` value render_page.mjs understands — see
+     * render_page_movy.mjs). It used to refuse decorations and an embedding
+     * `rect`, which made it the one layout a sequencer could not use — and it
+     * is the layout the device actually draws, so "share the grid" meant
+     * "share every grid except the real one".
+     *
+     * Both now work: `movyBandLayout` places the bands into a rect and lets a
+     * caller take the body alone, and `drawKnobRow` reads per-slot
+     * decorations. The default path — no rect, no bands — reproduces the
+     * vertical rhythm table exactly and is pinned byte-identical by the render
+     * snapshots. */
     /*
      * `footer` is [key, action] hint pairs, most important first, supplied by
      * the CALLER — the gestures belong to whoever owns the input mapping, same
@@ -3366,10 +3374,13 @@ export function createController(io = {}) {
      * this page is something you can go into, and they are the same mark a
      * divable cell and an un-entered menu wear.
      */
-    function drawKnobsAsList(ctx, title, footer) {
+    /* `chrome` and `footerBand` are handed in by render() rather than rebuilt
+     * here: they are what decides whether the caller keeps its own header, and
+     * a second copy of that decision is the drift this file already argues
+     * against twice above. */
+    function drawKnobsAsList(ctx, title, footer, chrome, footerBand) {
         const mp = page();
-        drawHeaderMovy(ctx, title || "", pageLabel(mp), false);
-        drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+        chrome(pageLabel(mp));
         const bottom = footer ? RULE_Y : 64;
         const entered = menuEntered();
         drawPageChromeList(ctx,
@@ -3382,21 +3393,54 @@ export function createController(io = {}) {
                          bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                          MENU_BRACKET_LEN);
         }
-        if (footer) drawFooter(ctx, footer);
+        footerBand();
     }
 
-    function render(ctx, { title, rect, footer } = {}) {
+    function render(ctx, { title, rect, footer, bands } = {}) {
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
          * Only the knob page forks, and only at the last step. */
         if (s.layout === LAYOUT_MOVY || s.layout === LAYOUT_LIST) {
+            /*
+             * THE CHROME, ONCE, FOR EVERY PAGE KIND.
+             *
+             * The header and bank bar were drawn by six separate branches —
+             * menu, picker, items, preset, child, and the grid — each with its
+             * own copy of the same two calls. That was survivable while the
+             * only caller was our own full-screen host, and stopped being so
+             * the moment a tool wanted to keep its OWN header: `bands` was
+             * honoured by the knob grid alone, so a preset page embedded in
+             * movy drew Schwung's header over movy's and its list into rows
+             * movy had already used.
+             *
+             * A consumer asking for the body alone gets the body alone,
+             * whatever kind of page it happens to be on.
+             */
+            const wantHeader = !bands || bands.header !== false;
+            const wantBank   = !bands || bands.bank   !== false;
+            const wantFooter = !bands || bands.footer !== false;
+            const pageChrome = (right, inverted = false) => {
+                if (wantHeader) drawHeaderMovy(ctx, title || "", right, inverted);
+                if (wantBank) {
+                    drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                }
+            };
+            const footerBand = () => { if (footer && wantFooter) drawFooter(ctx, footer); };
             const drawGrid = () => {
-            if (knobsAsList()) { drawKnobsAsList(ctx, title, footer); return; }
+            if (knobsAsList()) { drawKnobsAsList(ctx, title, footer, pageChrome, footerBand); return; }
             renderPageMovy(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                /* Both undefined for the device's own full-screen draw, which
+                 * is what keeps that path byte-identical. */
+                rect, bands,
+                /* A sequencer's per-slot parameter locks. Graphics stand down
+                 * while these are live (see the `viz` argument below): a
+                 * picture spanning four cells cannot say which of them is
+                 * locked. */
+                decorations: s.decorations,
                 displayFor: formatValue
                     ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
                     : null,
@@ -3407,7 +3451,12 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
-                viz: vizEnabled ? vizGroups() : [],
+                /* Graphics stand down while p-locks are live, the same rule the
+                 * dial/bar branch has always applied: one picture replacing
+                 * four cells cannot show which of the four is locked. Without
+                 * this the lock marks would land on cells whose widget had been
+                 * absorbed into a graphic. */
+                viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
                 /*
                  * The trigger button's press animation. Both of these have to
                  * come from here: the renderer is pure and reads the clock off
@@ -3457,13 +3506,12 @@ export function createController(io = {}) {
                  * only difference is what the list holds.
                  */
                 const pbottom = footer ? RULE_Y : 64;
-                drawHeaderMovy(ctx, title || "", "SECTIONS", false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome("SECTIONS");
                 drawPageChromeList(ctx,
                     { x: MENU_LIST_X, y: MENU_LIST_Y,
                       w: MENU_LIST_W, h: pbottom - MENU_LIST_Y },
                     s.pickerEntries, s.pickerIndex);
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             const mp = page();
@@ -3471,8 +3519,7 @@ export function createController(io = {}) {
                 /* A real list, so it draws like a menu page: same chrome, same
                  * five rows, same rect. Inert it highlights nothing — the page
                  * is something you can go INTO, not something you are in. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome(mp.name);
                 const ibottom = footer ? RULE_Y : 64;
                 const ist = itemsState(mp) || { list: [], cursor: 0, current: -1 };
                 const entered = menuEntered();
@@ -3493,7 +3540,7 @@ export function createController(io = {}) {
                                  ibottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                                  MENU_BRACKET_LEN);
                 }
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             if (mp && mp.kind === PAGE_PRESET) {
@@ -3502,8 +3549,7 @@ export function createController(io = {}) {
                  * one of this module's pages rather than as somewhere else.
                  * That is the whole point: it used to eject into the list
                  * editor, which looks nothing like this. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome(mp.name);
                 const pbottom = footer ? RULE_Y : 64;
                 const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
                                 w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
@@ -3519,7 +3565,7 @@ export function createController(io = {}) {
                                  pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                                  MENU_BRACKET_LEN);
                 }
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             if (mp && mp.kind === PAGE_MENU) {
@@ -3527,8 +3573,7 @@ export function createController(io = {}) {
                  * and the bank bar all stay put, so a menu reads as one of this
                  * module's pages rather than as somewhere else. header:false
                  * because that header is already drawn. */
-                drawHeaderMovy(ctx, title || "", mp.name, false);
-                drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                pageChrome(mp.name);
                 const bottom = footer ? RULE_Y : 64;
                 const entered = menuEntered();
                 /*
@@ -3553,7 +3598,7 @@ export function createController(io = {}) {
                                  bottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET,
                                  MENU_BRACKET_LEN);
                 }
-                if (footer) drawFooter(ctx, footer);
+                footerBand();
                 return;
             }
             drawGrid();
@@ -3704,8 +3749,141 @@ export function createController(io = {}) {
         announce(announcePage(page(), s.pageIndex, s.pages.length, pageLabel()));
     }
 
+    /**
+     * THE PAGE AS DATA, for a consumer that draws it itself.
+     *
+     * The third way to use this library. A module with no UI takes the whole
+     * stack and gets the grid; a tool that wants our drawing under its own
+     * chrome takes `render` with a rect; and a tool with its own look — a
+     * sequencer showing these params in its own style, next to its own
+     * transport — takes THIS, and draws nothing of ours.
+     *
+     * Everything above the pixels is still shared: the level walk, the
+     * metadata, the viz resolution, the staggered read cursor, the write and
+     * announce throttles, the contract tri-state and the placeholder retry. The
+     * renderer is the one layer where two projects diverging is harmless, and
+     * the derivation is the layer where it is not — schwung and movy
+     * independently found and fixed the same osirus "(loading)" bug because the
+     * derivation lived twice. See
+     * docs/plans/2026-08-28-param-pages-embeddable.md.
+     *
+     * NO DEVICE READ HAPPENS HERE, for the same reason it does not happen in a
+     * draw: values come out of `s.values`, filled by the read cursor. A param
+     * read is ~2.8 ms against a 1.68 ms whole-page render, so a consumer
+     * calling this every frame must not be paying IPC for it.
+     *
+     * `unresolved` is the tri-state, propagated rather than flattened: a failed
+     * `ui_hierarchy` read must not reach a consumer as "this module has no
+     * params". A caller seeing `unresolved: true` should hold its previous
+     * frame, exactly as our own host does.
+     *
+     * @param {object} [o]
+     * @param {string} [o.title]   left side of the header, as passed to render
+     * @param {Array}  [o.footer]  [key, action] hint pairs — echoed back, since
+     *                             the gestures belong to whoever owns the input
+     *                             mapping, not to this library
+     */
+    function describePage(o = {}) {
+        const p = page();
+        const header = movyHeaderFor({
+            page: p, metaIndex: s.metaIndex, values: s.values,
+            touched: s.touched, title: o.title || "", pageLabel: pageLabel(),
+            displayFor: formatValue
+                ? (key, raw, surface) => formatValue(fullKey(key), raw, surface)
+                : null,
+        });
+
+        const vm = {
+            header,
+            bank: {
+                index: s.pageIndex,
+                count: s.pages.length,
+                /* Section ids per page: pages sharing an id draw flush, so the
+                 * bar shows what Shift+jog steps through. */
+                groups: pageGroups(),
+            },
+            footer: o.footer || null,
+            page: p ? { name: p.name, kind: p.kind, level: p.level,
+                        childLevel: p.childLevel || null,
+                        childIndex: p.childLevel ? childIndexFor(p.level) : -1 } : null,
+            cells: [],
+            viz: [],
+            /* A failed contract read is not a statement about the module. */
+            unresolved: s.contractUnresolved,
+        };
+        if (!p || p.kind !== PAGE_KNOBS || !Array.isArray(p.keys)) return vm;
+
+        /* Which cells a graphic spans. A property of the PAGE, not of any
+         * param, which is why it is not part of widgetKindFor — a consumer that
+         * draws its own graphics can ignore `covered` and read `viz` instead. */
+        const groups = vizEnabled ? vizGroups() : [];
+        vm.viz = groups;
+        const covered = new Array(p.keys.length).fill(false);
+        for (const g of groups) {
+            if (!g || typeof g.slotStart !== "number") continue;
+            for (let i = g.slotStart; i < g.slotStart + g.slotSpan && i < covered.length; i++) {
+                covered[i] = true;
+            }
+        }
+
+        for (let slot = 0; slot < p.keys.length; slot++) {
+            const key = p.keys[slot];
+            if (!key) { vm.cells.push(null); continue; }
+            const meta = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
+            const raw = s.values[key] === undefined ? null : s.values[key];
+            const dec = s.decorations ? s.decorations[slot] : null;
+            /* The cell form and the header form are different readings on
+             * purpose — a 30px label band and a strip with room. Same split
+             * `short_options` makes for enums. */
+            const cellV = formatValue ? formatValue(fullKey(key), raw, "cell") : null;
+            const headV = formatValue ? formatValue(fullKey(key), raw, "header") : null;
+            vm.cells.push({
+                slot,
+                key,
+                fullKey: fullKey(key),
+                /* The five-character mnemonic is a property of a 32px cell. A
+                 * consumer with a wider cell wants `name`. */
+                label: labelForCell(meta && (meta.label || meta.key) || key),
+                name: (meta && (meta.label || meta.key)) || key,
+                value: (cellV === null || cellV === undefined)
+                    ? displayValue(raw, meta) : String(cellV),
+                headerValue: (headV === null || headV === undefined)
+                    ? displayValue(raw, meta) : String(headV),
+                raw,
+                normalized: normalizedOf(meta, raw),
+                widget: widgetKindFor(meta),
+                kind: meta ? meta.kind : null,
+                options: (meta && meta.options) || null,
+                /* The abbreviated option set is deliberately NOT republished
+                 * here. It belongs to the three-character enum square and
+                 * nothing else — pinned by test_knobs_list_layout.sh, which
+                 * argues that the moment it is consulted outside that widget,
+                 * the long form stops being what every roomy surface shows. A
+                 * consumer that really is drawing a square can reach it through
+                 * `metaIndex`; the view model publishes the roomy reading. */
+                enumIndex: meta && meta.kind === KIND_ENUM ? enumIndexOf(meta, raw) : -1,
+                unit: (meta && meta.unit) || null,
+                readOnly: !!(meta && meta.readOnly),
+                writeOnly: !!(meta && meta.writeOnly),
+                turnable: isTurnable(meta),
+                /* Divability is a FOOTER fact on our grid, not a mark on the
+                 * cell — a consumer is free to mark it, but should know that
+                 * most divable cells wear nothing here. */
+                divable: !!(meta && meta.divable),
+                modulated: !!s.modCache[key],
+                touched: s.touchOrder ? s.touchOrder.indexOf(slot) >= 0 : s.touched === slot,
+                /* A sequencer's parameter lock for this SLOT. */
+                decoration: dec || null,
+                locked: !!(dec && dec.locked),
+                covered: covered[slot],
+            });
+        }
+        return vm;
+    }
+
     return {
         load, reloadIfChanged, tick, refreshTrailing,
+        describePage,
         /* For a selection made OUTSIDE the controller — the list editor drives
          * the same modules through its own preset browser and has the same
          * race. Books the settle; costs nothing until it comes due. */
