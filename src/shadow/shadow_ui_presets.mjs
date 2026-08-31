@@ -41,16 +41,16 @@
  * current] if i load without saving" — the verbs had moved to the grid page
  * but the browser still offered its own copies.
  *
- * Entry points: Shift+Click any loaded chain component (synth / FX / MIDI FX)
- * -> module picker -> "[User Presets]" (indented row tucked just beneath the
- * loaded module; injected in enterComponentSelect as the __user_presets__
- * synthetic entry and cursor-defaulted there, routed from
- * applyComponentSelection with the component key + DSP prefix + module id) --
- * AND the knob grid's "My Presets" page's "Load…" action, which reaches
- * enterPresetBrowser directly. Either way, picking a row here loads it and
- * returns to the chain editor; maybeReturnToComponentGrid in shadow_ui.js
- * is what routes that arrival back onto the My Presets page for the
- * grid-driven flow (see its own note on the restorePageName it uses).
+ * Entry point: the component's knob-grid "My Presets" page — its Preset row
+ * (and the equivalent "Load…" action), which reaches enterPresetBrowser
+ * directly. That is now the ONLY way in. The module picker used to carry an
+ * indented "[User Presets]" row as a second door; it was removed once My
+ * Presets became a page on the component itself, since a swap list is for
+ * swapping and the presets belong beside the module's own controls.
+ *
+ * Picking a row here loads it and returns to the chain editor;
+ * maybeReturnToComponentGrid in shadow_ui.js is what routes that arrival back
+ * onto the My Presets page (see its own note on the restorePageName it uses).
  *
  * State accessors come from the shared `ctx` (populated by shadow_ui.js); see
  * shadow_ui_ctx.mjs. As with the other view modules, only touch ctx.* inside
@@ -686,10 +686,10 @@ export function handlePresetsSelect() {
      * click does nothing, and NOTHING is announced. Reported from hardware
      * once already for the old save row ("when I choose save, simply nothing
      * happens") — the state is contradictory and worth saying so: this screen
-     * is only reachable through a [User Presets] row, or the grid's Load…
-     * action, that are shown ONLY when the same lookup found a module, so
-     * arriving here without one means the config changed underneath us
-     * between building the picker and this click.
+     * is only reachable through the grid's My Presets page, which is planned
+     * ONLY when the same lookup found a module, so arriving here without one
+     * means the config changed underneath us between building that page and
+     * this click.
      */
     if (!presetModule) {
         announce("No module in this slot");
@@ -714,9 +714,9 @@ export function handlePresetsSelect() {
         announce(`Loaded ${entry.name}`);
         /* CHAIN_EDIT is the convergence point every hand-off from the grid's
          * My Presets page returns through — maybeReturnToComponentGrid (in
-         * shadow_ui.js) is what routes a grid-driven arrival back onto that
-         * page specifically; a [User Presets]-row arrival (no grid open)
-         * lands plainly on the chain editor, as it always has. */
+         * shadow_ui.js) is what routes the arrival back onto that page
+         * specifically, and falls through to the plain chain editor when the
+         * position no longer holds a module to show. */
         setView(VIEWS.CHAIN_EDIT);
     }
     ctx.needsRedraw = true;
@@ -754,9 +754,10 @@ export function handlePresetDetailSelect() {
 
 export function handlePresetsBack() {
     const { setView, VIEWS } = ctx;
-    /* Entered from the module picker (Shift+Click on the synth block) or the
-     * grid's Load… action; Back cancels the whole flow — revert any active
-     * audition to the original sound — and exits to the chain editor. */
+    /* Entered from the grid's My Presets page; Back cancels the whole flow —
+     * revert any active audition to the original sound — and exits through
+     * the chain editor (maybeReturnToComponentGrid routes it back to the
+     * page it came from). */
     revertToOriginal();
     setView(VIEWS.CHAIN_EDIT);
     announce("Chain Editor");

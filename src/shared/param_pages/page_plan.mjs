@@ -353,6 +353,25 @@ function balancedChunk(arr, size) {
  *                                  module in. See the note above appendTrailing.
  * @returns {{pages: Array, fingerprint: string, warnings: string[]}}
  */
+/**
+ * A level's own cell labels: { key: short_name } from its inline params/knobs.
+ *
+ * Returns null when the level declares none, so a page that wants nothing
+ * carries nothing and every existing consumer is unaffected.
+ */
+export function levelShortNames(lvl) {
+    if (!lvl) return null;
+    let out = null;
+    const take = (e) => {
+        if (!e || typeof e !== "object" || !e.key) return;
+        if (typeof e.short_name !== "string" || !e.short_name) return;
+        (out = out || {})[e.key] = e.short_name;
+    };
+    for (const e of (lvl.params || [])) take(e);
+    for (const e of (lvl.knobs || [])) take(e);
+    return out;
+}
+
 export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                             trailingMenus } = {}) {
     const warnings = [];
@@ -836,6 +855,20 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                      * hierarchy. Null for an ordinary level, which is what
                      * makes the resolution a no-op everywhere else. */
                     childLevel: hasChildren(lvl) ? lvl : null,
+                    /*
+                     * PER-PAGE cell labels, from this level's own inline
+                     * entries. The page IS the context, so it is the right
+                     * place to say what a cell is called: filter's env_amount
+                     * wants "Amt" on the Envelope page and "Env Amt" on Main,
+                     * and a param-level short_name cannot say both.
+                     *
+                     * It has to ride on the PAGE rather than the meta index,
+                     * because that index is flat by design -- inline entries
+                     * are keyed by the bare key across every level, so two
+                     * levels naming the same key would silently overwrite each
+                     * other. Collected here, where the level is still known.
+                     */
+                    shortNames: levelShortNames(lvl),
                     /* true when every key on this page came from knobs[] — i.e.
                      * the author placed it there. Pages built from params[] are
                      * false, including a page that mixes the two. */

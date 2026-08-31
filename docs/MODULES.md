@@ -284,7 +284,12 @@ The slot's **Interface: Default** toggle still shows the
 auto-generated controls for every component, so a module's own
 parameters stay reachable whatever its panel does.
 
-Master FX slots have no custom-UI path yet.
+A **Master FX** position works the same way as an audio FX: the panel
+renders inside that position's own section, with its own pop-out, and
+the Master FX tab has its own Interface toggle. The component there is
+`master_fx:fx1` … `master_fx:fx4`, so a panel that builds its keys from
+`schwungRemote.component` needs no change to work on the master bus —
+one that hardcodes `fx1:` will address a chain slot instead.
 
 **Know which component you are driving.** The manager appends
 `?component=<comp>` to the iframe URL and exposes it as
@@ -1972,6 +1977,99 @@ is not moving. `createAnimState` was written, exported, unit-tested and never
 
 <!-- END generated widgets -->
 
+### `short_name` — a cell label that differs from the full name
+
+The cell is five characters wide; the header is the width of the screen. They
+want different words, so declare both:
+
+```json
+{ "key": "osc1_pitch", "name": "Osc 1 Pitch", "short_name": "Pitch" }
+```
+
+The cell draws `PITCH` where it drew `OSC1PIT`. The held-knob header and the
+list keep `Osc 1 Pitch`, which is what tells you *which* oscillator you are
+holding. Optional, and inert when absent — this is the same split
+`short_options` already makes for enum values.
+
+**Do not repeat the page in the cell.** A page called *Filter Envelope* has
+already said "filter envelope", so its knobs are `Attack` and `Decay` — not
+`F.Atk` or `FENVAT`.
+
+Measured across the 39 catalogued modules by this author: 1766 controls on
+knob pages, 1150 of them squeezed past being words, and **500 whose name
+merely repeats their own page**. 425 of those stop being squeezed with a
+`short_name` alone, with no change to what the header says.
+
+It is still a label, so it is still fitted to the cell — a long `short_name`
+is not a way to smuggle six characters into five.
+
+**Drawn as you typed it, when it fits.** A `short_name` of `Noise` draws
+`NOISE`, not the `NSE` the abbreviation table would pick, and `Amt` stays
+`AMT` rather than being expanded back to `AMOUNT`. Only when what you typed is
+too wide does the table get a say (`Sustain` → `SUS`), and only then the
+squeeze. You are the author; the grid does not second-guess a word that fits.
+
+##### A page can override it
+
+`short_name` belongs to the parameter, and the same parameter can sit on more
+than one page. `env_amount` on an *Envelope* page wants `Amt`; on a *Main*
+page beside an LFO Amt, `Amt` would name them both. So a level may carry its
+own, in the inline entry it already uses to name its params:
+
+```json
+"levels": {
+  "envelope": { "params": [ { "key": "env_amount", "short_name": "Amt" } ] }
+}
+```
+
+The level's value wins on its own page; the parameter's applies everywhere
+else.
+
+##### Four questions, in order
+
+These came out of naming ~1100 controls across 39 modules. Each is a word you
+can delete because something on screen already says it.
+
+1. **Does the page say it?** A page titled *VCF* has said "filter", so
+   `VCF Cutoff` is just `Cutoff`. A page titled *Filter Envelope* has said
+   both, so its knobs are `Attack`, `Decay`, `Sustain`, `Release`.
+
+2. **Does the widget say it?** A fader *is* a level — `Output Level` under a
+   fader is just `Output`, and `Noise Volume` is `Noise`. A switch is an
+   enable; an LFO graphic is an LFO; a waveform is a shape.
+
+3. **Does the word imply its own domain?** Cutoff and resonance are a
+   filter's; attack, decay, sustain and release are an envelope's. So
+   `Filter 1 Cutoff` is `Cutoff 1` — the index survives and moves to the end,
+   because it is the only part that distinguishes it.
+
+4. **Do the neighbours say it?** If every cell on the page carries the same
+   word, that word is context, and the one that differs should lead.
+
+##### Two things not to do
+
+**Never reduce to a bare index.** `Volume 1` under a fader is *not* `1`. Four
+cells reading `1 2 3 4` beneath four identical faders are worse than
+`VOL 1`. A word is only redundant when something else in the label still
+carries meaning.
+
+**Never make two cells on a page draw the same thing.** Check the whole page,
+not the one control — and check every page the parameter appears on. An ugly
+long label beats an ambiguous short one. `obxd` shipped two cells both
+reading `OCTAVE`, because it names `octave` and `octave_transpose` alike.
+
+##### When a word must shrink anyway
+
+Take the **front** of it: `Compression` → `Comp`, `Panorama` → `Pano`,
+`Algorithm` → `Algo`. A leading prefix is what a reader recognises, where a
+devowelled skeleton (`CMPRS`, `PANRM`, `ALGRTH`) has to be decoded. The
+exception is a prefix that reads as a different word — `Scatter` → `SCAT` and
+`Restart` → `REST` mislead, so those devowel instead: `Scttr`, `Rstrt`.
+
+For **two** words, devowelling wins and prefixing does not: `Feedback Tone` is
+better as `FBTONE` than `FEETON`. Cut the words, not the label.
+
+
 #### Divability, and the two cell marks
 
 Every enum with a non-empty `options` array is **divable**: on the knob grid,
@@ -2133,7 +2231,7 @@ For native code, shared headers are in `src/host/`:
 
 ## Help Content (help.json)
 
-Modules can provide on-device help accessible from the Shadow UI's Help viewer (Shift+Vol+Menu → Help). Add a `help.json` file to your module's source directory.
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → Updates → `[Help...]`). Add a `help.json` file to your module's source directory.
 
 ### File Location
 
@@ -2206,11 +2304,42 @@ Help content is a tree of sections and leaf topics:
 - **Branch nodes** have a `children` array of other branch or leaf nodes. Nesting depth is unlimited.
 - **Leaf nodes** have a `lines` array of strings displayed as scrollable text.
 
+**The top-level object MUST have `children`.** The loader's whole test is
+`if (helpData.children) helpMap[id] = helpData.children;` — a file that parses
+as valid JSON but names its topics something else (`sections`, `pages`,
+`parameters`) is **discarded without a word**, and the viewer shows "No help
+content available for this module" as though the file were absent. A 2026-08
+sweep of the catalog found 12 modules in exactly that state, several of them
+carrying several KB of carefully written help nobody could read. `title` and
+any other sibling keys are ignored; `children` is the only one that is read.
+
 ### Text Formatting Rules
 
-The display is 128x64 pixels with a ~20 character line width. Pre-wrap your text accordingly:
+The display is 128x64 pixels and a help line is **drawn, never wrapped and
+never truncated**. `drawScrollableText` calls `print(4, y, line)`, `print()`
+walks the string one glyph at a time, and everything past x=127 is dropped by
+`set_pixel` with no error anywhere. So an over-long line loses its tail
+silently — there is no ellipsis and nothing in the log.
 
-- Keep lines to **20 characters or fewer**
+**The budget is pixels, not characters.** The atlas is fixed-pitch, but
+`load_font` auto-trims every glyph to its own inked extent, so text is
+*proportional* on screen: `.` advances 3 px and `W` advances 6 px. Roughly 20
+average characters fit, which is why the guidance below is 20 — but a line of
+narrow letters can run longer and a line of capitals can overflow sooner. If
+you are near the edge, measure rather than count.
+
+- Keep lines to about **20 characters**, and treat that as a budget to check
+  rather than a number to trust. A 2026-08 sweep of the catalog found 27
+  modules shipping lines that genuinely run off the screen, the worst by 100 px
+  — most of a second line's worth of text, invisible.
+- **Stay in ASCII.** The bitmap font carries the printable ASCII range plus
+  exactly `Ä Ö Ü ä ö ü € † ‡ °`. Any other character — an em dash, a curly
+  quote, `≥`, an arrow — has no glyph, and `glyph()` renders it as a bare 1 px
+  gap. It does not fall back to anything.
+
+`tests/host/test_help_content_width.sh` measures the host's own help content
+this way, deriving the glyph widths from the `FONT` table in
+`scripts/generate_font.py`.
 - Use empty strings (`""`) for blank lines between paragraphs
 - Indent continuation lines with a leading space for readability:
   ```json

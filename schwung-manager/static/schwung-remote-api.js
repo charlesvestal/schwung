@@ -69,20 +69,53 @@
         // gets this without opting in — the alternative is each module posting
         // its own height, which means the ones that never do stay cropped.
         //
-        // documentElement.scrollHeight, not body's: the body may be shorter
-        // than a floated/absolutely-positioned child, and cropping is exactly
-        // what we are fixing. Rounded up, because a fractional height the
-        // parent floors reintroduces a 1px scrollbar, which changes the width,
-        // which can change the height — a loop that never settles.
+        // MEASURE THE BODY, NOT documentElement.
+        //
+        // documentElement.scrollHeight is never LESS than the viewport it is
+        // in — which here is the iframe. So once the parent sizes the frame,
+        // that height is what gets measured and reported straight back, and it
+        // can only ever ratchet up: the frame starts at the CSS guess (60vh),
+        // the page reports 60vh because it fills it, and the frame stays that
+        // tall no matter how little content there is. On a tall window that is
+        // a panel of controls followed by several hundred pixels of nothing.
+        //
+        // Measured on device at a 2216px viewport: documentElement.scrollHeight
+        // said 1330 (exactly 60vh, exactly the frame) while body.scrollHeight
+        // said 642, which is the real content. The body is the thing that grows
+        // with content and can be shorter than its container.
+        //
+        // Body margins are added back because the rect excludes them, and
+        // documentElement remains the fallback for a layout whose body
+        // genuinely measures nothing (everything absolutely positioned), where
+        // the old ratchet is still better than collapsing to zero. Rounded up,
+        // because a fractional height the parent floors reintroduces a 1px
+        // scrollbar, which changes the width, which can change the height — a
+        // loop that never settles.
         var lastHeight = 0;
+        function contentHeight() {
+            var b = document.body;
+            if (!b) return document.documentElement.scrollHeight;
+            var h = b.scrollHeight;
+            if (!h) return document.documentElement.scrollHeight;
+            var cs = window.getComputedStyle ? window.getComputedStyle(b) : null;
+            if (cs) {
+                h += (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+            }
+            return h;
+        }
         function reportHeight() {
-            var h = Math.ceil(document.documentElement.scrollHeight);
+            var h = Math.ceil(contentHeight());
             if (!h || Math.abs(h - lastHeight) < 2) return;
             lastHeight = h;
             window.parent.postMessage({ type: "height", height: h }, "*");
         }
         if (typeof ResizeObserver === "function") {
-            new ResizeObserver(reportHeight).observe(document.documentElement);
+            // The BODY is what changes with content; documentElement only
+            // changes when the frame does, which is the signal that caused the
+            // ratchet in the first place.
+            var ro = new ResizeObserver(reportHeight);
+            ro.observe(document.documentElement);
+            if (document.body) ro.observe(document.body);
         } else {
             window.addEventListener("resize", reportHeight);
         }
@@ -171,6 +204,10 @@
     // and route sets on slot 0 (the manager dispatches by the overtake_dsp: key
     // prefix), rather than a per-slot subscribe.
     var isTool = query.get("tool") === "1";
+    // Master FX pop-out: subscribe_master_fx, and writes go through
+    // set_master_fx_param — the key already carries its "master_fx:fxN:"
+    // prefix, so there is no slot to address.
+    var isMasterFx = query.get("master_fx") === "1";
 
     var wsUrl = (window.location.protocol === "https:" ? "wss://" : "ws://") +
         window.location.host + "/ws/remote-ui";
@@ -235,7 +272,9 @@
 
         ws.onopen = function () {
             reconnectDelay = 1000;
-            if (isTool) {
+            if (isMasterFx) {
+                ws.send(JSON.stringify({ type: "subscribe_master_fx" }));
+            } else if (isTool) {
                 ws.send(JSON.stringify({ type: "subscribe_tool" }));
             } else {
                 ws.send(JSON.stringify({ type: "subscribe", slot: slot }));
@@ -273,6 +312,14 @@
 
         setParam: function (key, value) {
             if (ws && ws.readyState === WebSocket.OPEN) {
+                if (isMasterFx) {
+                    ws.send(JSON.stringify({
+                        type: "set_master_fx_param",
+                        key: key,
+                        value: String(value)
+                    }));
+                    return;
+                }
                 ws.send(JSON.stringify({
                     type: "set_param",
                     slot: isTool ? 0 : slot,
@@ -304,8 +351,10 @@
             // Re-request a fresh push over our own socket. Tool pop-out uses the
             // params-only refetch (a full subscribe would re-send custom_ui).
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(isTool ? { type: "refetch_tool" }
-                                              : { type: "subscribe", slot: slot }));
+                ws.send(JSON.stringify(
+                    isMasterFx ? { type: "subscribe_master_fx" }
+                  : isTool     ? { type: "refetch_tool" }
+                               : { type: "subscribe", slot: slot }));
             }
         }
     };

@@ -14,6 +14,7 @@
           "params": [
             {
               "key": "min",
+              "short_name": "Min",
               "name": "Min",
               "type": "int",
               "min": 1,
@@ -23,6 +24,7 @@
             },
             {
               "key": "max",
+              "short_name": "Max",
               "name": "Max",
               "type": "int",
               "min": 1,
@@ -41,6 +43,7 @@
             },
             {
               "key": "curve_preset",
+              "short_name": "Preset",
               "options_as_string": true,
               "name": "Curve Preset",
               "type": "enum",

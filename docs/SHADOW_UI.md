@@ -160,7 +160,7 @@ how long these two modules take to answer.
 
 ### User Presets
 
-Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from a component's module-swap list in the shadow UI — an indented `[User Presets]` row tucked under the loaded module, or the component's own knob-grid "My Presets" page's `Load…` action. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
+Per-component preset snapshots for any chain module (synth, audio FX, or MIDI FX). Reached from the component's own knob-grid **"My Presets"** page — its `Preset` row / `Load…` action. That is the only door: the module-swap list used to carry an indented `[User Presets]` row as a second one, and it was removed once My Presets became a page on the component itself. A swap list is for swapping, and the presets now sit one jog from the controls they belong to, beside the Save / Save As / Delete that were already there. A preset captures that component's opaque `<prefix>:state` blob (`synth` / `fx1`..`fx4` / `midi_fx1`) — the same string slot autosave and chain patches use — saved to `/data/UserData/schwung/presets/<module-id>/<name>.json`. Keyed by **module id**, so a preset saved on a module in one slot is offered wherever that module is loaded (cross-slot reuse).
 
 **The browser is exactly ONE thing: choose a preset.** Picking a row LOADS it
 immediately and commits — there is no per-preset Load/Delete detail screen.
@@ -186,9 +186,9 @@ A committed Load, or a completed Delete (still reached exclusively from the
 grid's My Presets page, via `enterPresetDeleteConfirm` — the SAME
 confirm-delete screen as before, just with no detail screen left in front of
 it), both exit through `VIEWS.CHAIN_EDIT`. `maybeReturnToComponentGrid` (see
-below) is what routes a grid-driven arrival back onto the My Presets page
-specifically, by NAME; a `[User Presets]`-row arrival (no grid open) lands
-plainly on the chain editor, as it always did.
+below) is what routes the arrival back onto the My Presets page
+specifically, by NAME, and falls through to the plain chain editor when the
+position no longer holds a module to show one for (Remove Module).
 
 ### Every component's knob grid ends with two pages it never declared
 
@@ -256,9 +256,9 @@ plan — the same rule as "a plan is a statement about what a module declares",
 under "A param read has THREE answers" in `CLAUDE.md`.
 
 **Scope is exactly the 4 chain slots' real components.** Master FX chain
-components are excluded — `__user_presets__` is injected in
-`enterComponentSelect` only, so Master FX has no user presets today and this
-inherits that gap rather than widening it. Slot Settings and Master FX
+components are excluded — user presets have only ever been offered for the 4
+chain slots' components, never for a Master FX position, so this inherits that
+gap rather than widening it. Slot Settings and Master FX
 Settings are excluded because they are settings, not modules: no module id to
 key a preset folder on, nothing to swap. The exclusion lives in ONE helper,
 `componentParamPagesIo` in `src/shadow/shadow_ui.js`, called from every
@@ -407,3 +407,82 @@ channel value separates them. Persisted like `usbc_out_persist` and parsed by
 the shim at init (`shadow_resample.c`), so the filter is in force before the
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
+
+### The LFO target picker groups by LEVEL, and the grouping must be LOSSLESS
+
+An LFO's target was chosen from ONE flat list — every modulatable key the
+component declares, in `chain_params` order. Against the 95-module fleet
+capture that is **418 rows for minijv**, 303 for surge, 250 for forge, 213 for
+mrdrums: one unbroken jog-scroll, while the module author's own section names
+sat unused in the same `ui_hierarchy` the knob grid pages from. **84 of the 95
+publish `levels`.**
+
+`src/shared/lfo_target_groups.mjs` groups them; the picker gained a step
+(`VIEWS.LFO_TARGET_GROUP`) between component and param. Two rules make that
+safe rather than merely tidier:
+
+- **Named the same as the grid's pages.** Both come out of
+  `param_pages/level_walk.mjs`, which exists for this reason — it was extracted
+  from `page_plan.mjs` when the second consumer arrived. **No screen shows a
+  page title next to the picker's row for the same level**, so a second copy of
+  the naming rule would drift and nothing would ever report it: the user would
+  find `Oper1/Env` in one place and `Env` in the other with no way to know they
+  were the same thing.
+- **Lossless.** The union of the groups is exactly the flat list — same keys,
+  same labels, no duplicates — with an orphan sweep into a trailing **"Other"**
+  (mrdrums: 193 of its 213). Grouping must never cost a target, because the
+  routing it would have made is one the DSP would have honoured.
+  `tests/host/test_lfo_target_groups.sh` asserts this over every module.
+
+**A child level lists TEMPLATES, not keys** — and matching them raw is how the
+module that needed grouping most got none of it. mrdrums declares 16 pads on
+`root` and again on `pad_settings` (`child_key_template: "p{index}_{key}"`), so
+those levels list `vol` / `pan` / `start` while `chain_params` publishes
+`p01_vol` … `p16_mode`. Both levels collected nothing, were dropped as empty,
+and **all 200+ concrete keys fell to the orphan sweep** — reported from the
+device as "mrdrums has everything under Other". `page_plan.mjs` has always
+resolved these through `child_key.mjs`. The grouper expands to **one group per
+instance** ("Pad 3"), and levels sharing a `child_index_param` **merge into one
+set of instances**, for the reason `childPickerNeeded` gives: two levels naming
+one index are two views of one focus, and keying by level splits a single pad
+across two lists.
+
+**The focused-instance alias must keep a named home.** A child module publishes
+both `p03_start` and `pad_start`, and the alias is the one an LFO should target
+— the concrete key is what left `<alias>:modulated` answering 0. It appears in
+no level, so it is **inferred** from the level's declared keys with a floor of
+two matches (one coincidence is not a family). **Order is load-bearing**: infer
+before the concrete expansion has claimed anything and "largest family wins"
+picks `p01_` over `pad_` — measured, that put pad 1's twelve keys on the root
+page, left "Pad 1" holding four, and made the union 216 of 212.
+
+**The group step is SKIPPED, not emptied**, when there is nothing to group: no
+usable hierarchy (11 of 95 publish no `levels`), a list of 8 or fewer, or a walk
+that yields one group (11 single-level modules). An extra menu level over six
+rows costs a click and saves no scrolling. `lfoTargetGroups` is cleared on both
+entry points, because **Back branches on it** — leaving a previous component's
+groups behind sends Back to a section screen this component never showed. The
+sequence that produces it needs two components in a row, so a test starting
+from a fresh state cannot see it.
+
+**No mode filter, deliberately.** `planPages` drops levels owned by an inactive
+mode; this walks every mode root. A routing at a mode-inactive param is still
+valid, and minijv has no `root` at all, so gating would reach half its tree and
+the orphan sweep would dump the rest into "Other" — a worse answer than naming
+the level it came from. The picker and the grid therefore disagree about
+minijv's level list, and the walker's "call the root Main" rule is dropped when
+there are two roots (otherwise the second is claimed as "Main - 2" when the
+module already calls it "Performance").
+
+**The cursor lands on the routing the LFO already has.** All three indices used
+to reset to 0, so re-aiming an LFO pointed at param #143 cost the same 143 jog
+steps as the first time, with the answer sitting in `target` / `target_param`
+the whole while. Nothing new is persisted — the stored routing IS the memory,
+so it cannot go stale or need a heal. Seeding is scoped to the component the
+routing names: an index carried across components points at whatever happens to
+sit at that ordinal in a module that knows nothing about it.
+
+`ui_hierarchy` is read on entry and `null` is **not** "declares no levels" —
+that is the granny bug. It is retried once and then falls back to the flat
+list; nothing caches, so the cost is one wrong-shaped menu rather than a
+latched plan.

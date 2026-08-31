@@ -28,6 +28,27 @@ void *shadow_shm_map(const char *name, size_t size, int create, int zero)
         }
         return NULL;
     }
+    /* An ATTACH must not map more than the segment actually holds.
+     *
+     * These segments outlive the processes, so after a constant is enlarged a
+     * new consumer can meet a stale short one left by the previous shim. mmap
+     * accepts the length regardless — and every touch past the file's end is
+     * SIGBUS, in whichever process attached, at some arbitrary later moment.
+     * Refusing here turns that into a NULL the callers already handle (the
+     * feature goes quiet) plus a line saying exactly why. The creator below
+     * ftruncates, so it is never the one that trips this. */
+    if (!create) {
+        struct stat st;
+        if (fstat(fd, &st) == 0 && (size_t)st.st_size < size) {
+            unified_log("shm", LOG_LEVEL_ERROR,
+                        "%s is %lld bytes but %zu were requested - refusing to map "
+                        "past the end (stale segment from an older build; restart "
+                        "the shim so it is recreated)",
+                        name, (long long)st.st_size, size);
+            close(fd);
+            return NULL;
+        }
+    }
     if (create && ftruncate(fd, (off_t)size) != 0) {
         /* A full /dev/shm fails here; without this check the first page
          * touch on the mapping SIGBUSes instead of failing cleanly. */

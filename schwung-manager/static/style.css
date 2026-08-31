@@ -395,6 +395,35 @@ footer {
     font-size: 0.8125rem;
 }
 
+/* The Actions column holds one or two small buttons rather than text, so it
+ * centres — a left-aligned icon under a left-aligned "ACTIONS" heading reads
+ * as though it belongs to the Author column beside it. Applied to the header
+ * too, so the label sits over what it labels. The forms inside are
+ * inline-flex, i.e. inline-level, so text-align centres them. */
+.col-actions {
+    text-align: center;
+}
+
+.col-actions .inline-form {
+    justify-content: center;
+}
+
+/* Square icon-only button, sized to sit beside a .btn-small without the
+ * horizontal padding a label needs. It keeps 36px — the same as .btn-small
+ * rather than the 44px .btn default — so a row action stays compact, and the
+ * SVG inside takes `currentColor`, which is what lets the trash follow
+ * --color-danger and its hover state instead of being a fixed-colour glyph. */
+.btn-icon {
+    min-height: 36px;
+    min-width: 36px;
+    padding: 0;
+    flex-shrink: 0;
+}
+
+.btn-icon svg {
+    display: block;
+}
+
 /* ---- Forms ---- */
 .form-group {
     margin-bottom: var(--space-lg);
@@ -1601,32 +1630,85 @@ a.update-available:focus {
     gap: var(--space-sm);
 }
 
-/* ---- Flash Messages ---- */
+/* ---- Flash Messages (toasts) ----
+ *
+ * Pinned to the top-right corner rather than sitting in the flow at the top of
+ * <main>. In the flow it was invisible whenever the page was scrolled — and
+ * the module list now restores your scroll position, so after an install the
+ * one thing telling you it worked was reliably off-screen.
+ *
+ * The container ignores pointer events so it can span the corner without
+ * covering the page underneath; each toast takes them back for its dismiss
+ * button. */
+#flash-messages {
+    position: fixed;
+    top: var(--space-md);
+    right: var(--space-md);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    align-items: flex-end;
+    pointer-events: none;
+    max-width: min(320px, calc(100vw - 2 * var(--space-md)));
+}
+
 .flash {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-sm) var(--space-md);
+    gap: var(--space-sm);
+    padding: var(--space-xs) var(--space-sm);
     border-radius: var(--radius-sm);
-    margin-bottom: var(--space-lg);
-    border-left: 4px solid;
-    font-size: 0.9375rem;
+    border-left: 3px solid;
+    font-size: 0.8125rem;
+    line-height: 1.35;
+    /* Floating over arbitrary content, so it needs its own opaque surface —
+     * the kind tints below are 10% alpha and were only ever readable because
+     * the banner sat on the page background. */
+    background: var(--bg-card);
+    box-shadow: var(--shadow-lg);
+    pointer-events: auto;
+    max-width: 100%;
+    animation: flash-in 180ms ease-out;
 }
 
+@keyframes flash-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .flash { animation: none; }
+}
+
+/* Narrow screens: span the width under the header instead of a corner card
+ * that would crowd the nav. */
+@media (max-width: 480px) {
+    #flash-messages {
+        left: var(--space-sm);
+        right: var(--space-sm);
+        max-width: none;
+        align-items: stretch;
+    }
+}
+
+/* The kind tint composited OVER the card surface: a bare `background` here
+ * would replace it and put 10%-alpha colour straight over the page. */
 .flash-success {
-    background: var(--color-success-bg);
+    background: linear-gradient(var(--color-success-bg), var(--color-success-bg)), var(--bg-card);
     border-left-color: var(--color-success);
     color: var(--color-success);
 }
 
 .flash-error {
-    background: var(--color-error-bg);
+    background: linear-gradient(var(--color-error-bg), var(--color-error-bg)), var(--bg-card);
     border-left-color: var(--color-error);
     color: var(--color-error);
 }
 
 .flash-info {
-    background: var(--color-info-bg);
+    background: linear-gradient(var(--color-info-bg), var(--color-info-bg)), var(--bg-card);
     border-left-color: var(--color-info);
     color: var(--color-info);
 }

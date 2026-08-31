@@ -55,7 +55,13 @@
             "master_fx:fx3": makeComponent(),
             "master_fx:fx4": makeComponent()
         },
-        collapsed: { "master_fx:fx1": false, "master_fx:fx2": true, "master_fx:fx3": true, "master_fx:fx4": true }
+        collapsed: { "master_fx:fx1": false, "master_fx:fx2": true, "master_fx:fx3": true, "master_fx:fx4": true },
+        // Keyed by component, exactly as a slot's is: two Master FX positions
+        // can each ship a panel and must not collide.
+        customUI: {},
+        // The same Custom/Default escape hatch a slot has, so a custom panel
+        // can never make a Master FX parameter unreachable.
+        useDefaultUI: false
     };
 
     // Active overtake-tool state. A tool is not a chain slot; its
@@ -230,6 +236,9 @@
                     break;
                 case "chain_params":
                     handleMasterFxChainParams(comp, msg);
+                    break;
+                case "custom_ui":
+                    handleMasterFxCustomUI(comp, msg);
                     break;
             }
             return;
@@ -455,10 +464,31 @@
     // ------------------------------------------------------------------
 
     function handleMasterFxInfo(msg) {
-        masterFx.components["master_fx:fx1"].module = msg.fx1 || "";
-        masterFx.components["master_fx:fx2"].module = msg.fx2 || "";
-        masterFx.components["master_fx:fx3"].module = msg.fx3 || "";
-        masterFx.components["master_fx:fx4"].module = msg.fx4 || "";
+        var incoming = {
+            "master_fx:fx1": msg.fx1 || "",
+            "master_fx:fx2": msg.fx2 || "",
+            "master_fx:fx3": msg.fx3 || "",
+            "master_fx:fx4": msg.fx4 || ""
+        };
+        for (var i = 0; i < MASTER_FX_KEYS.length; i++) {
+            var ck = MASTER_FX_KEYS[i];
+            if (masterFx.components[ck].module !== incoming[ck]) {
+                masterFx.components[ck].module = incoming[ck];
+                // The panel belonged to the module that just left. Dropping it
+                // here is what makes a REMOVED module lose its iframe: the
+                // server only sends custom_ui for a module that has one, so
+                // nothing would otherwise clear it and the old panel would
+                // keep addressing a position holding something else.
+                delete masterFx.customUI[ck];
+            }
+        }
+        if (activeSlot === "master") renderSlot();
+    }
+
+    function handleMasterFxCustomUI(comp, msg) {
+        var url = msg.url || "";
+        if (masterFx.customUI[comp] === url) return;  // avoid reloading a live iframe
+        masterFx.customUI[comp] = url;
         if (activeSlot === "master") renderSlot();
     }
 
@@ -494,7 +524,21 @@
                 }
             }
         }
-        if (activeSlot === "master") updateMasterFxParamValues(msg.params);
+        if (activeSlot === "master") {
+            updateMasterFxParamValues(msg.params);
+            // ...and to any custom panels. Grouped by position rather than
+            // broadcast: fx2's panel has no business seeing fx1's values, and
+            // two positions each showing a panel is explicitly supported.
+            var byComp = {};
+            for (var fk in msg.params) {
+                var pr = splitMasterFxPrefix(fk);
+                if (!pr) continue;
+                (byComp[pr.comp] || (byComp[pr.comp] = {}))[fk] = msg.params[fk];
+            }
+            for (var ck in byComp) {
+                postToIframe({ type: "paramUpdate", params: byComp[ck] }, ck);
+            }
+        }
     }
 
     /** Split "master_fx:fx1:cutoff" -> { comp: "master_fx:fx1", key: "cutoff" }. */
@@ -2063,10 +2107,20 @@
             // The Tool tab is not a numbered slot — standalone mode keys off
             // tool=1 to use the overtake-tool channel (subscribe_tool / set on
             // slot 0 / refetch_tool) instead of a per-slot subscribe.
+            // Master FX is not a numbered slot either: standalone mode keys
+            // off master_fx=1 to use subscribe_master_fx and
+            // set_master_fx_param, whose keys already carry their own
+            // "master_fx:fxN:" prefix.
             var qs = (slot === "tool") ? "schwungStandalone=1&tool=1"
-                                       : "schwungStandalone=1&slot=" + slot;
+                   : (slot === "master") ? "schwungStandalone=1&master_fx=1"
+                   : "schwungStandalone=1&slot=" + slot;
             var popUrl = url + sep + qs;
-            window.open(popUrl, "schwungPopout_" + slot);
+            // One window per COMPONENT on the master bus -- keying on the slot
+            // alone would make fx2's pop-out replace fx1's.
+            var winKey = (slot === "master")
+                ? "schwungPopout_master_" + encodeURIComponent(componentOfUrl(url))
+                : "schwungPopout_" + slot;
+            window.open(popUrl, winKey);
         };
         return popBtn;
     }
@@ -2097,6 +2151,12 @@
     /** Tag a module UI URL with the component it is driving, so the page can
      *  address the right parameter prefix ("fx1:mix" rather than "synth:mix")
      *  and a popped-out window can ask for the right metadata. */
+    /** The component customUIUrlFor stamped into a panel URL, for window naming. */
+    function componentOfUrl(url) {
+        var m = /[?&]component=([^&]*)/.exec(url || "");
+        return m ? decodeURIComponent(m[1]) : "";
+    }
+
     function customUIUrlFor(url, comp) {
         if (!url) return url;
         return url + (url.indexOf("?") >= 0 ? "&" : "?") + "component=" + encodeURIComponent(comp);
@@ -2211,6 +2271,8 @@
                 // subscribe (that would re-send custom_ui and reload the iframe).
                 if (activeSlot === "tool") {
                     send({ type: "refetch_tool" });
+                } else if (activeSlot === "master") {
+                    send({ type: "subscribe_master_fx" });
                 } else if (typeof activeSlot === "number") {
                     send({ type: "subscribe", slot: activeSlot });
                 }
@@ -2225,6 +2287,16 @@
         // Tool view: params come from the overtake tool's cache (overtake_dsp:*).
         if (slot === "tool") {
             postToIframe({ type: "paramResult", id: msg.id, value: tool.params[msg.key] || "" }, comp);
+            return;
+        }
+        // Master FX view: the key is "master_fx:fx1:cutoff", which splitPrefix
+        // cannot parse -- it splits on the FIRST colon and would look for a
+        // component called "master_fx". Read from the Master FX cache instead.
+        if (slot === "master") {
+            var mp = splitMasterFxPrefix(msg.key);
+            var mc = mp ? masterFx.components[mp.comp] : null;
+            postToIframe({ type: "paramResult", id: msg.id,
+                           value: mc ? (mc.params[msg.key] || "") : "" }, comp);
             return;
         }
         if (typeof slot !== "number") return;
@@ -2252,9 +2324,15 @@
             send({ type: "set_param", slot: 0, key: msg.key, value: String(msg.value) });
             return;
         }
+        // Master FX writes go through set_master_fx_param, not set_param: the
+        // key already carries its own "master_fx:fxN:" prefix and there is no
+        // chain slot to address.
+        if (slot === "master") {
+            send({ type: "set_master_fx_param", key: msg.key, value: String(msg.value) });
+            return;
+        }
         if (typeof slot !== "number") return;
 
-        var parts = splitPrefix(msg.key);
         send({
             type: "set_param",
             slot: slot,
@@ -2265,6 +2343,12 @@
 
     function handleIframeGetHierarchy(msg, comp) {
         var slot = activeSlot;
+        if (slot === "master") {
+            var mc = masterFx.components[comp];
+            postToIframe({ type: "hierarchy", id: msg.id || null, component: comp,
+                           data: mc ? mc.hierarchy : null }, comp);
+            return;
+        }
         if (typeof slot !== "number") return;
         var compState = slots[slot].components[comp || "synth"];
         postToIframe({
@@ -2277,6 +2361,12 @@
 
     function handleIframeGetChainParams(msg, comp) {
         var slot = activeSlot;
+        if (slot === "master") {
+            var mc = masterFx.components[comp];
+            postToIframe({ type: "chainParams", id: msg.id || null, component: comp,
+                           data: mc ? mc.chainParams : null }, comp);
+            return;
+        }
         if (typeof slot !== "number") return;
         var compState = slots[slot].components[comp || "synth"];
         postToIframe({
@@ -2324,6 +2414,15 @@
             return;
         }
 
+        // Master FX view: seed from that position's cached params. Without
+        // this the panel opens blank and only fills in when something moves.
+        if (activeSlot === "master") {
+            var mc = masterFx.components[comp];
+            if (mc && Object.keys(mc.params).length > 0)
+                postToIframe({ type: "paramUpdate", params: mc.params }, comp);
+            return;
+        }
+
         if (typeof activeSlot !== "number") return;
         var comps = slots[activeSlot].components;
         var params = {};
@@ -2366,6 +2465,13 @@
         if (!hasAnyModule) {
             slotContentEl.innerHTML = '<p class="text-muted">No effects loaded in Master FX</p>';
             return;
+        }
+
+        var hasAnyCustomUI = MASTER_FX_KEYS.some(function (k) {
+            return masterFx.components[k].module && masterFx.customUI[k];
+        });
+        if (hasAnyCustomUI && slotHeaderControlsEl) {
+            slotHeaderControlsEl.appendChild(renderUiModeToggle(masterFx));
         }
 
         var renderedCount = 0;
@@ -2413,6 +2519,24 @@
         section.appendChild(header);
 
         if (isCollapsed) return section;
+
+        // A Master FX module that ships its own web_ui.html draws it here
+        // instead of the generated rows -- the same treatment an audio FX gets
+        // in a chain slot, which is the whole point of #354. The Interface
+        // override still wins, so the generated controls stay reachable.
+        var mfxCustomUrl = masterFx.customUI[compKey] || "";
+        if (mfxCustomUrl && !masterFx.useDefaultUI) {
+            var popOut = makePopOutButton(customUIUrlFor(mfxCustomUrl, compKey), "master");
+            popOut.classList.add("component-popout");
+            popOut.onclick = (function (orig) {
+                return function (ev) { ev.stopPropagation(); return orig.apply(this, arguments); };
+            })(popOut.onclick);
+            header.appendChild(popOut);
+            section.appendChild(
+                buildCustomUIFrame(compKey, mfxCustomUrl,
+                                   (MASTER_FX_LABELS[compKey] || compKey) + " UI"));
+            return section;
+        }
 
         // Body
         var body = document.createElement("div");

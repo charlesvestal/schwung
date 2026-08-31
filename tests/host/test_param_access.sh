@@ -224,13 +224,23 @@ Promise.all([
         fillRect: (x, y, w, h) => { if (w <= 4 && h <= 6) pixels += w * h; },
         print: () => {}, textWidth: (t) => String(t).length * 4,
       };
-      const decl = { key: "rnd_preset", name: "Rnd Preset", type: "enum",
-                     options: ["\u2014", "Rnd!"] };
+      /*
+       * A NAME THE HEURISTIC WILL NOT INFER, so the two renders still differ.
+       *
+       * This used `rnd_preset` with options ["-", "Rnd!"], which the inferred
+       * -trigger heuristic now recognises on its own -- the very bug this
+       * assertion documents, fixed. Both renders became the action mark and
+       * the comparison had nothing left to measure. Keeping the assertion
+       * meaningful needs a param the heuristic leaves alone, so the DECLARED
+       * side is still the only thing that changes.
+       */
+      const decl = { key: "wave_shape", name: "Wave Shape", type: "enum",
+                     options: ["\u2014", "Alt"] };
       if (access) decl.access = access;
       const ix2 = M.buildMetaIndex({ chainParams: [decl] });
       R.renderPageMovy(ctx, {
-        page: { kind: "knobs", name: "P", keys: ["rnd_preset"], level: "root" },
-        metaIndex: ix2, values: { rnd_preset: "\u2014" },
+        page: { kind: "knobs", name: "P", keys: ["wave_shape"], level: "root" },
+        metaIndex: ix2, values: { wave_shape: "\u2014" },
         pageIndex: 0, pageCount: 1, header: "T",
       });
       return pixels;
