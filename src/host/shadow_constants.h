@@ -48,6 +48,33 @@
  * ============================================================================ */
 
 #define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area: 64 USB-MIDI packets */
+
+/* The shim -> shadow_ui MIDI ring, and NOT the mailbox size above.
+ *
+ * It was MIDI_BUFFER_SIZE, which made the ring 64 packets because that is how
+ * many fit in the hardware mailbox — a number with nothing to do with how much
+ * MIDI a tool can be sent between two drains. A Yamaha 5F bulk dump message is
+ * 158 bytes on the wire = 53 packets, so ONE nearly filled the ring and two
+ * back-to-back could not fit: shadow_ui_midi_publish() fell off the end of its
+ * scan and dropped whole packets, silently. Measured on a QY-70 at 6.9% of
+ * 3164 messages, every shortfall a multiple of 3 and every one on the largest
+ * message type (#358).
+ *
+ * Sharing the constant also made the obvious fix dangerous: MIDI_BUFFER_SIZE
+ * still bounds `memcpy(sh_midi, hw_midi, ...)` and `hotkey_prev`, which read
+ * the SPI mailbox, so enlarging IT would have read past MIDI_IN into the
+ * display status word. Hence a separate name rather than a bigger number.
+ *
+ * 1024 = 256 packets, ~4.8 of those dump messages, against 1.2 before. The
+ * cost is 768 bytes of shared memory.
+ *
+ * RESIZING THIS IS A LAYOUT CHANGE. The segment outlives the processes, so a
+ * shim that creates it at the new size and a shadow_ui built against the old
+ * one disagree — and the dangerous direction is a NEW consumer mapping 1024
+ * over a stale 256-byte segment, where every touch past the end is SIGBUS.
+ * shadow_shm_map() refuses a short attach rather than handing back that
+ * mapping; deploy the shim and shadow_ui together, as install.sh does. */
+#define SHADOW_UI_MIDI_BYTES 1024
 /* Hardware MIDI_OUT region is 20 × 4-byte USB-MIDI packets = 80 bytes.
  * The display buffer starts immediately after at offset 80. Writes to
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */

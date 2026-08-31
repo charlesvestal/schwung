@@ -1423,6 +1423,9 @@ static ext_midi_ring_t overtake_ext_ring;
  * read, so the one failure mode this path has — a packet dropped, and whatever
  * it was reporting left stale — was invisible from the device. */
 volatile int shim_ext_midi_drops = 0;
+/* Packets the shadow_ui MIDI ring had no room for. Incremented on the SPI
+ * callback by shadow_ui_midi_publish; reported by the worker (#358). */
+volatile int shim_ui_midi_drops = 0;
 
 /* Audio-thread producer for an overtake DSP (host_api midi_send_external). */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
@@ -3018,7 +3021,7 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
      * packet always carries at least one nonzero byte, so the all-zero case
      * is now rejected too. See src/host/shadow_midi_filter.c. */
     if (!shadow_midi_forwardable(head, status, d1, d2)) return;
-    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+    for (int slot = 0; slot < SHADOW_UI_MIDI_BYTES; slot += 4) {
         if (__atomic_load_n(&shadow_ui_midi_shm[slot], __ATOMIC_ACQUIRE) == 0) {
             shadow_ui_midi_shm[slot + 1] = status;
             shadow_ui_midi_shm[slot + 2] = d1;
@@ -3028,6 +3031,15 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
             return;
         }
     }
+    /* Ring full: this packet is gone.
+     *
+     * Falling off the end and returning is what made a 6.9% packet loss on
+     * QY-70 bulk dumps take two hardware captures to characterise instead of
+     * one glance at a log — framing still held and the message still parsed,
+     * so from the device an overflow was indistinguishable from a device that
+     * simply sent less. Count it here (this is the SPI callback, so no logging
+     * and no allocation) and let the worker report the rate at ~1 Hz. */
+    shim_ui_midi_drops++;
 }
 
 /* LED queue constants and state — moved to shadow_led_queue.c */
@@ -3321,7 +3333,7 @@ static void init_shadow_shm(void)
 
     /* Create/open UI MIDI shared memory */
     shadow_ui_midi_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_UI_MIDI,
-                                                   MIDI_BUFFER_SIZE, 1, 1);
+                                                   SHADOW_UI_MIDI_BYTES, 1, 1);
 
     /* Create/open display shared memory */
     shadow_display_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_DISPLAY,

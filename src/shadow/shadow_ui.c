@@ -71,7 +71,7 @@ static int open_shadow_shm(void) {
     shadow_display_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_DISPLAY, DISPLAY_BUFFER_SIZE, 0, 0);
     if (!shadow_display_shm) return -1;
 
-    shadow_ui_midi_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_UI_MIDI, MIDI_BUFFER_SIZE, 0, 0);
+    shadow_ui_midi_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_UI_MIDI, SHADOW_UI_MIDI_BYTES, 0, 0);
     if (!shadow_ui_midi_shm) return -1;
 
     shadow_control = (shadow_control_t *)shadow_shm_map(SHM_SHADOW_CONTROL, CONTROL_BUFFER_SIZE, 0, 0);
@@ -530,7 +530,7 @@ static JSValue js_shadow_set_overtake_mode(JSContext *ctx, JSValueConst this_val
         last_midi_ready = shadow_control->midi_ready;
         /* Clear MIDI buffer to start fresh */
         if (shadow_ui_midi_shm) {
-            memset(shadow_ui_midi_shm, 0, MIDI_BUFFER_SIZE);
+            memset(shadow_ui_midi_shm, 0, SHADOW_UI_MIDI_BYTES);
         }
     } else {
         /* Clear the full-overtake sysex-suppression opt-in here, the one point
@@ -3023,7 +3023,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 static int process_shadow_midi(JSContext *ctx, JSValue *onInternal, JSValue *onExternal) {
     if (!shadow_ui_midi_shm) return 0;
     int handled = 0;
-    for (int i = 0; i < MIDI_BUFFER_SIZE; i += 4) {
+    for (int i = 0; i < SHADOW_UI_MIDI_BYTES; i += 4) {
         /* Acquire-load the gate byte: pairs with the producer's release-store
          * in shadow_ui_midi_publish() (schwung_shim.c). Ensures bytes 1-3 are
          * visible whenever byte 0 is nonzero. */
