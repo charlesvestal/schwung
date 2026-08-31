@@ -80,7 +80,8 @@ import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
-import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_REST }
+import { drawChainEditorBands, drawChainPicker, drawListScreen, shiftHintsFor,
+         CHAIN_HINTS_AT_REST }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
@@ -128,6 +129,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults,
+    drawConfirmOverlay,
     LIST_INDICATOR_BOTTOM_Y,
     VALUE_RIGHT_CLEARANCE
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
@@ -160,6 +162,10 @@ import {
     textPreviewGlobal,
     setTextPreviewGlobal
 } from '/data/UserData/schwung/shared/text_entry.mjs';
+
+/* The module-lists model. Every rule lives there so it can be tested under
+ * node; this file only draws it and wires the gestures. */
+import * as ModuleLists from '/data/UserData/schwung/shared/module_lists.mjs';
 
 import {
     announce,
@@ -427,7 +433,10 @@ const VIEWS = {
     LFO_TARGET_GROUP: "lfotargetgroup",       // LFO target picker step 2: level group (skipped when ungrouped)
     LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 3: parameter
     ENUM_PICKER: "enumpick",                  // Option list for an enum param
-    COMPONENT_LOADING: "comploading"          // "Loading..." while a component's contract arrives
+    COMPONENT_LOADING: "comploading",         // "Loading..." while a component's contract arrives
+    MODULE_LISTS: "modulelists",             // Checkbox screen: which lists hold this module
+    MODULE_LISTS_EDIT: "modulelistsedit",    // The list of lists, for management
+    MODULE_LISTS_ACTIONS: "modulelistsact"   // Rename / Delete / Clear for one list
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -2080,6 +2089,53 @@ function getModuleHelpChildren(moduleId) {
     return children;
 }
 
+/* ===== MODULE LISTS =====
+ *
+ * Held in memory for the life of a screen session and written on every
+ * change. The file is small (a few hundred bytes) and the alternative is a
+ * Save row on a screen of checkboxes, which is a toggle the user can lose.
+ *
+ * `moduleListsCorrupt` is why the read is not simply re-done on each write: a
+ * file we could not parse must not be replaced by the seeded default, so a
+ * session that opened on a corrupt file works normally and persists nothing.
+ * Silently overwriting it would destroy the only copy of something a later
+ * version might read.
+ */
+const moduleListsIo = {
+    readFile: (p) => (typeof host_read_file === "function" ? host_read_file(p) : null),
+    writeFile: (p, body) => (typeof host_write_file === "function" ? host_write_file(p, body) : false),
+};
+let moduleListsState = null;        /* { version, lists } once loaded */
+let moduleListsCorrupt = false;     /* true = never write */
+let moduleListsSlot = -1;           /* the component this session is filing */
+let moduleListsKey = "";
+let moduleListsModuleId = "";
+let moduleListsIndex = 0;           /* cursor on the membership screen */
+let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
+let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
+let moduleListsTarget = "";         /* the list the actions screen is acting on */
+let moduleListsConfirmDelete = false;
+
+function moduleListsLoad() {
+    const r = ModuleLists.loadLists(moduleListsIo);
+    moduleListsState = r.state;
+    moduleListsCorrupt = r.corrupt;
+    if (r.corrupt) debugLog("module_lists.json unreadable — changes will not persist");
+}
+
+function moduleListsSave() {
+    if (!moduleListsState || moduleListsCorrupt) return false;
+    return ModuleLists.saveLists(moduleListsIo, moduleListsState);
+}
+
+/* How many lists hold a module — the Module page row's value. Reads the file
+ * once per PLAN (componentTrailingMenus is not on the draw path), same budget
+ * as the `<prefix>:state` read next to it. */
+function moduleListsCountFor(moduleId) {
+    if (!moduleListsState) moduleListsLoad();
+    return ModuleLists.listsContaining(moduleListsState, moduleId).length;
+}
+
 /*
  * The "Module" trailing page's rows.
  *
@@ -2094,6 +2150,14 @@ function moduleMenuEntries(moduleId) {
     if (getModuleHelpChildren(moduleId)) {
         entries.push({ label: "Module Help", action: "module_help" });
     }
+    /* Unconditional, unlike Module Help: there is always a list to add to,
+     * because Favorites is seeded. The count is the affordance — a row that
+     * shows "2" says the feature is doing something without opening it, and
+     * blank at zero rather than "0" for the same reason a one-page section
+     * says nothing rather than "1". */
+    const inLists = moduleListsCountFor(moduleId);
+    entries.push({ label: "Add to List", value: inLists > 0 ? String(inLists) : "",
+                   action: "module_lists" });
     entries.push({ label: "Swap Module", action: "swap_module" });
     entries.push({ label: "Remove Module", action: "remove_module" });
     return entries;
@@ -2262,6 +2326,29 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             return true;
         }
 
+        case "module_lists": {
+            if (!moduleId) return false;
+            exitParamPages();
+            moduleListsLoad();
+            moduleListsSlot = slotIndex;
+            moduleListsKey = componentKey;
+            moduleListsModuleId = moduleId;
+            moduleListsIndex = 0;
+            setView(VIEWS.MODULE_LISTS);
+            needsRedraw = true;
+            announce("Add to List, " + moduleListsRowLabel(0));
+            /* Returns straight out, exactly as module_help does: the
+             * componentModalFromGrid bookkeeping below is for hand-offs that
+             * converge on CHAIN_EDIT, and this one never goes there. Leaving
+             * the flag raised would fire it on somebody else's later arrival.
+             *
+             * No reconciler is needed either — unlike Help (hosted by
+             * GLOBAL_SETTINGS, with three ways out), these are OUR views and
+             * Back is the only exit from them, so the return is written at
+             * that one site. */
+            return true;
+        }
+
         case "swap_module": {
             const at = slotChainComponentIndex(slotIndex, componentKey);
             if (at >= 0) enterComponentSelect(slotIndex, at);
@@ -2421,6 +2508,108 @@ function maybeReturnToComponentHelp() {
                     { enter: true });
     needsRedraw = true;
     return true;
+}
+
+/*
+ * The membership screen's rows: one per list with a checkbox, then the two
+ * management doors.
+ *
+ * The checkbox is in the VALUE column, which is where a menu page puts a
+ * state — the same place the picker puts its `*` and a settings row puts
+ * "On". A prefix glyph would collide with the cursor.
+ */
+function moduleListsRows() {
+    if (!moduleListsState) moduleListsLoad();
+    const rows = moduleListsState.lists.map(l => ({
+        name: l.name,
+        value: ModuleLists.isMember(moduleListsState, l.name, moduleListsModuleId) ? "*" : "",
+        kind: "toggle",
+    }));
+    rows.push({ name: "New List...", value: "", kind: "new" });
+    rows.push({ name: "Edit Lists...", value: "", kind: "edit" });
+    return rows;
+}
+
+function moduleListsRowLabel(i) {
+    const rows = moduleListsRows();
+    const r = rows[Math.max(0, Math.min(rows.length - 1, i))];
+    if (!r) return "";
+    return r.kind === "toggle" ? `${r.name}, ${r.value ? "on" : "off"}` : r.name;
+}
+
+function drawModuleLists() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    drawListScreen(ctx, {
+        headerLeft: getModuleDisplayName(moduleListsModuleId),
+        headerRight: "LISTS",
+        entries: moduleListsRows(),
+        index: moduleListsIndex,
+        footer: [["JOG", "SEL"], ["CLK", "TOGGLE"], ["BACK", "MODULE"]],
+    });
+}
+
+/*
+ * The keyboard, for both New List and Rename. `existing` null = create.
+ *
+ * A rejected name REOPENS the keyboard with the text intact and announces
+ * why. Closing it and doing nothing is the failure mode where the user
+ * cannot tell whether the name was taken or the click was missed.
+ */
+function moduleListsOpenNameEntry(existing) {
+    openTextEntry({
+        title: existing ? "Rename List" : "New List",
+        initialText: existing || "",
+        onAnnounce: announce,
+        onConfirm: (text) => {
+            const r = existing
+                ? ModuleLists.renameList(moduleListsState, existing, text)
+                : ModuleLists.createList(moduleListsState, text);
+            if (!r.ok) {
+                announce(r.err);
+                moduleListsOpenNameEntry(existing);
+                return;
+            }
+            moduleListsSave();
+            if (existing) moduleListsTarget = String(text).trim();
+            announce(existing ? `Renamed to ${text}` : `Created ${text}`);
+            needsRedraw = true;
+        },
+        onCancel: () => { needsRedraw = true; },
+    });
+}
+
+/*
+ * Back out of the whole lists session, to the Module page with its menu open
+ * — the row the user clicked. Landing on page 1 with the menu closed reads as
+ * being dumped somewhere else, which is the hardware report that put the
+ * Load and Delete hand-offs on "My Presets" rather than page 1.
+ *
+ * Written at this one site rather than as a reconciler because these are our
+ * own views: Back is the only way out of them, so there is nothing to
+ * reconcile FROM. maybeReturnToComponentHelp exists because help is hosted by
+ * a view we do not own and has three exits.
+ */
+function exitModuleLists() {
+    const slotIndex = moduleListsSlot;
+    const componentKey = moduleListsKey;
+    moduleListsSlot = -1;
+    moduleListsKey = "";
+    moduleListsModuleId = "";
+    if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) {
+        /* Same guard maybeReturnToComponentGrid needs: a component editor
+         * entered for an empty position is a contract read with nobody to
+         * answer it, which the device draws as a permanent "Loading...". */
+        setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: true });
+    needsRedraw = true;
 }
 
 /*
@@ -16235,6 +16424,12 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem("Module", mod.name || mod.id || "Unknown");
             }
             break;
+        case VIEWS.MODULE_LISTS: {
+            const rows = moduleListsRows();
+            moduleListsIndex = Math.max(0, Math.min(rows.length - 1, moduleListsIndex + delta));
+            announceMenuItem("List", moduleListsRowLabel(moduleListsIndex));
+            break;
+        }
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
@@ -16749,6 +16944,36 @@ function handleSelect() {
             }
             applyComponentSelection();
             break;
+        case VIEWS.MODULE_LISTS: {
+            const rows = moduleListsRows();
+            const row = rows[moduleListsIndex];
+            if (!row) break;
+            if (row.kind === "toggle") {
+                const on = ModuleLists.toggleMembership(moduleListsState, row.name, moduleListsModuleId);
+                /* THREE answers, not two: null is "nothing was toggled" (the
+                 * list is gone, or we are filing a module with no id), and it
+                 * is neither an add nor a remove. Announcing "removed" for a
+                 * toggle that touched nothing reports a result that did not
+                 * happen, and writing the file would persist the non-event. */
+                if (on === null) {
+                    announce("List unavailable");
+                } else {
+                    /* Write on every change: a screen of checkboxes with a
+                     * Save row is a toggle the user can lose. A corrupt file
+                     * declines silently inside moduleListsSave. */
+                    moduleListsSave();
+                    announce(`${row.name}, ${on ? "added" : "removed"}`);
+                }
+            } else if (row.kind === "new") {
+                moduleListsOpenNameEntry(null);
+            } else {
+                moduleListsEditIndex = 0;
+                setView(VIEWS.MODULE_LISTS_EDIT);
+                announce("Edit Lists, " + (moduleListsState.lists[0] || {}).name);
+            }
+            needsRedraw = true;
+            break;
+        }
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerResultSelect();
             break;
@@ -17462,6 +17687,9 @@ function handleBack() {
             setView(VIEWS.CHAIN_EDIT);
             announce("Chain Editor");
             needsRedraw = true;
+            break;
+        case VIEWS.MODULE_LISTS:
+            exitModuleLists();
             break;
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerBack();
@@ -19854,6 +20082,7 @@ function dispatchCoRunDraw() {
         case VIEWS.PRESETS:              drawPresets(); break;
         case VIEWS.PRESET_DETAIL:        drawPresetDetail(); break;
         case VIEWS.COMPONENT_SELECT:     drawComponentSelect(); break;
+        case VIEWS.MODULE_LISTS:         drawModuleLists(); break;
         case VIEWS.CHAIN_SETTINGS:       drawChainSettings(); break;
         case VIEWS.SLOT_SETTINGS:        drawSlotSettings(); break;
         case VIEWS.COMPONENT_EDIT:
@@ -20960,6 +21189,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.COMPONENT_SELECT:
             drawComponentSelect();
+            break;
+        case VIEWS.MODULE_LISTS:
+            drawModuleLists();
             break;
         case VIEWS.CHAIN_SETTINGS:
             drawChainSettings();
