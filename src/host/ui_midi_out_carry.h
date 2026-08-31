@@ -55,12 +55,27 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "shadow_constants.h"
+
 /* 256 packets. Sized against the message that exposed the bug rather than
  * against the mailbox: a 158-byte SysEx is 53 packets, so this holds ~4.8 of
  * them back-to-back. Matching SHADOW_UI_MIDI_BYTES/4 on the inbound side is
  * deliberate — a tool that can be SENT a burst of that size can answer one. */
 #define UI_MIDI_CARRY_PACKETS 256
 #define UI_MIDI_CARRY_BYTES   (UI_MIDI_CARRY_PACKETS * 4)
+
+/* The carry must hold whatever one flush of the SHM buffer can deliver.
+ *
+ * Found on hardware: a 632-byte SysEx (212 packets) came back REFUSED because
+ * the SHM buffer was 128 packets, so the two numbers were already disagreeing
+ * about how big a single send may be. Enlarging only one of them moves the
+ * failure rather than fixing it — make the SHM side bigger and the surplus is
+ * DROPPED at the carry instead of REFUSED at the send, which converts a return
+ * value the caller can act on into a silent loss, the exact thing this file
+ * exists to remove. Keep them equal. */
+_Static_assert(UI_MIDI_CARRY_BYTES == SHADOW_MIDI_OUT_BUFFER_SIZE,
+               "carry must match SHADOW_MIDI_OUT_BUFFER_SIZE: a flush the SHM "
+               "buffer accepts has to fit downstream, or a refusal becomes a drop");
 
 /* Stop accepting new work from the SHM buffer while the carry is at least this
  * full. See ui_midi_carry_wants_more() for why this is backpressure and not
