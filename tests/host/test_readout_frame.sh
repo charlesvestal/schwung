@@ -12,15 +12,28 @@ cd "$(dirname "$0")/../.."
 # you can change. Reported from the device as a control that "does not seem to
 # do anything", which was an accurate reading of the picture.
 #
-# What this pins is the DIFFERENCE, not the drawing: a readout must render
-# differently from the same param without `access`, for every widget a readout
-# can currently be. The frame's exact pixels are pinned by the widget sheet
-# (tests/host/test_widget_sheet.sh), whose diff is the picture itself.
+# THE RULE IS "A READOUT IS DOTTED", and where the stroke lives is the widget's
+# business. A dial and a big number have no frame, so one is added around the
+# cell; the enum square already has one, so it dots that. One dotted rectangle
+# per cell, never two.
 #
-# The other half is INERTNESS, and it is the half a "they differ" assertion
-# cannot see on its own: the frame is ADDITIVE, so the readout render must be a
-# strict SUPERSET of the editable one. A change that moved or shrank the widget
-# to make room would still "differ", and would still be wrong.
+# What this pins is the DIFFERENCE, not the drawing: the frame's exact pixels
+# are pinned by the widget sheet (tests/host/test_widget_sheet.sh), whose diff
+# is the picture itself. What a "they differ" assertion cannot see on its own is
+# three things, so each is checked separately:
+#
+#   INERTNESS   an added frame must be strictly ADDITIVE, and a dotted stroke
+#               strictly SUBTRACTIVE. Either way the value may not move: a
+#               change that shrank the widget to make room would still "differ",
+#               and would still be wrong.
+#   STRENGTH    the enum square's first implementation put the frame OUTSIDE,
+#               on the cell rect, where the square's own frame absorbed it --
+#               17 differing pixels at full width against 27 at the narrow one,
+#               and side by side the two cells were indistinguishable. It failed
+#               exactly where the feature is for: keydetect's values are musical
+#               keys, always full width. Dotting the stroke inverts that
+#               gradient, so the check is that a WIDER box differs MORE.
+#   SINGULARITY a full-width square must not ALSO wear the outer frame.
 
 if ! command -v node >/dev/null 2>&1; then
   echo "FAIL: node is required" >&2
@@ -64,71 +77,157 @@ function cell(decl, raw) {
 }
 
 const at = (fb, x, y) => fb.pixels[y * fb.width + x];
+const pair = (decl, raw) =>
+    [cell(decl, raw), cell(Object.assign({}, decl, { access: "read" }), raw)];
 
-/*
- * The three widgets a readout is in the fleet today: an enum square
- * (keydetect detected_key, gesture-test detected), an arc knob (4K EQ peak
- * floats), a big number (4K EQ clip, tb3po current_bank).
- */
-const CASES = [
-    ["enum square", { key: "detected", name: "Detected", type: "enum",
-                      options: ["Alpha", "Bravo", "Charlie"] }, "1"],
-    ["arc knob",    { key: "in_peak_l", name: "In L", type: "float",
-                      min: 0, max: 1, step: 0.01 }, "0.66"],
-    ["big number",  { key: "clip", name: "Clip", type: "int", min: 0, max: 9 }, "3"],
-];
-
-for (const [what, decl, raw] of CASES) {
-    const rw = META(decl);
-    const ro = META(Object.assign({}, decl, { access: "read" }));
-
-    if (!ro.readOnly) { fail(what + ": access read did not set readOnly -- the probe is inert"); continue; }
-    if (rw.readOnly) { fail(what + ": the control half is read-only too -- nothing is being compared"); continue; }
-
-    /* SAME WIDGET. If the two draw different widgets the comparison below is
-     * about the widget, not about the frame. */
-    if (RM.widgetKindFor(ro) !== RM.widgetKindFor(rw))
-        fail(what + ": readOnly changed the widget kind -- it must only add a frame");
-
-    const a = cell(decl, raw), b = cell(Object.assign({}, decl, { access: "read" }), raw);
-
-    let same = true, lost = 0, gained = 0, outsideBox = 0, onCellEdge = 0;
-    for (let y = 0; y < BAND; y++) {
+/* Every pixel that changed between a control and its readout twin. */
+function changes(a, b) {
+    const out = { gained: [], lost: [] };
+    for (let y = 0; y < BAND; y++)
         for (let x = 0; x < CELL_W; x++) {
             const pa = at(a, x, y), pb = at(b, x, y);
-            if (pa !== pb) same = false;
-            if (pa && !pb) lost++;
-            if (!pa && pb) {
-                gained++;
-                if (y >= RM.BOX_H) outsideBox++;
-                if (x === 0 || x === CELL_W - 1) onCellEdge++;
-                const onFrame = (y === 0 || y === RM.BOX_H - 1 || x === 1 || x === CELL_W - 2);
-                if (!onFrame) fail(what + ": a pixel appeared at " + x + "," + y + ", off the frame rect");
-            }
+            if (!pa && pb) out.gained.push([x, y]);
+            if (pa && !pb) out.lost.push([x, y]);
         }
+    return out;
+}
+
+/* --- 1. a frameless widget gains a frame ---------------------------------- */
+/*
+ * The two widgets a readout is in the fleet that draw no stroke of their own:
+ * an arc knob (4K EQ peak floats) and a big number (its clip flag, tb3po
+ * current_bank).
+ */
+const FRAMELESS = [
+    ["arc knob",   { key: "in_peak_l", name: "In L", type: "float",
+                     min: 0, max: 1, step: 0.01 }, "0.66"],
+    ["big number", { key: "clip", name: "Clip", type: "int", min: 0, max: 9 }, "3"],
+];
+
+for (const [what, decl, raw] of FRAMELESS) {
+    const rw = META(decl), ro = META(Object.assign({}, decl, { access: "read" }));
+    if (!ro.readOnly) { fail(what + ": access read did not set readOnly -- the probe is inert"); continue; }
+    if (rw.readOnly) { fail(what + ": the control half is read-only too -- nothing is compared"); continue; }
+    if (RM.widgetKindFor(ro) !== RM.widgetKindFor(rw))
+        fail(what + ": readOnly changed the widget kind -- it must only change the stroke");
+
+    const [a, b] = pair(decl, raw);
+    const { gained, lost } = changes(a, b);
+
+    if (!gained.length && !lost.length)
+        fail(what + ": a readout renders IDENTICALLY to the same param without access read");
+    else ok(what + " gains a frame (+" + gained.length + " / -" + lost.length + ")");
+
+    if (lost.length) fail(what + ": the frame REMOVED " + lost.length + " widget pixels -- it must be additive");
+    for (const [x, y] of gained) {
+        if (y >= RM.BOX_H) fail(what + ": a frame pixel at " + x + "," + y + " fell past BOX_H into the label band");
+        if (x === 0 || x === CELL_W - 1)
+            fail(what + ": the frame reached the cell edge -- two adjacent readouts would merge");
+        if (!(y === 0 || y === RM.BOX_H - 1 || x === 1 || x === CELL_W - 2))
+            fail(what + ": a pixel appeared at " + x + "," + y + ", off the frame rect");
     }
+}
 
-    if (same) fail(what + ": a readout renders IDENTICALLY to the same param without access read");
-    else ok(what + " renders differently from its editable twin (" + gained + " pixels added)");
+/* --- 2. the enum square dots the stroke it already has --------------------- */
+/*
+ * Three widths, because the failure this replaced was width-dependent and
+ * invisible at one of them.
+ */
+const ENUM = (opt) => ({ key: "k", name: "Key", type: "enum", options: [opt] });
+const WIDTHS = [["G MAJ", "full width"], ["SAW", "three glyphs"], ["ON", "narrow"]];
+const strength = {};
 
-    if (lost) fail(what + ": the frame REMOVED " + lost + " widget pixels -- it must be additive");
-    if (outsideBox) fail(what + ": " + outsideBox + " frame pixels fell past BOX_H into the label band");
-    if (onCellEdge) fail(what + ": the frame reached the cell edge -- two adjacent readouts would merge");
+for (const [opt, what] of WIDTHS) {
+    const decl = ENUM(opt);
+    const ro = META(Object.assign({}, decl, { access: "read" }));
+    if (RM.widgetKindFor(ro) !== RM.WIDGET_ENUM) { fail(opt + ": not drawing an enum square"); continue; }
 
-    /*
-     * A READOUT GAINS NO AFFORDANCE. The frame says "look"; nothing about it
-     * may promise a turn or a door.
-     */
-    if (isTurnable(ro)) fail(what + ": a readout is turnable");
-    if (isDivable(ro)) fail(what + ": a readout is divable");
-    if (alsoOpens(ro)) fail(what + ": a readout wears the corner brackets");
+    const [a, b] = pair(decl, "0");
+    const { gained, lost } = changes(a, b);
+    strength[opt] = gained.length + lost.length;
+
+    if (!lost.length) fail("enum " + opt + ": the readout is IDENTICAL to its editable twin");
+    else ok("enum square " + JSON.stringify(opt) + " (" + what + ") is dotted, not solid ("
+            + strength[opt] + " pixels differ)");
+
+    /* SUBTRACTIVE: a dotted stroke is a SUBSET of the solid one it replaces.
+     * Anything gained means the box moved, resized, or grew a second frame. */
+    if (gained.length)
+        fail("enum " + opt + ": " + gained.length + " pixels APPEARED -- the dotted stroke must be a subset of the solid one");
+
+    /* Confined to the square is otherwise the whole cell width. */
+    const w = RM.enumSquareWidth(opt);
+    const bx = Math.floor((CELL_W - RM.ENUM_W) / 2) + Math.floor((RM.ENUM_W - w) / 2);
+    for (const [x, y] of lost) {
+        const onBox = (x >= bx && x < bx + w && y < RM.BOX_H)
+                      && (y === 0 || y === RM.BOX_H - 1 || x === bx || x === bx + w - 1);
+        if (!onBox) fail("enum " + opt + ": a pixel changed at " + x + "," + y + ", off the square s own stroke");
+    }
 }
 
 /*
- * The frame is on the CHECKER lattice in ABSOLUTE coordinates, which is what
- * lets two neighbouring frames share one phase. Drawn at two x origins one
- * apart, the dots must land on opposite parities -- a rect-relative step would
- * produce the same picture twice.
+ * ONE DOTTED RECTANGLE, NEVER TWO. At full width the square spans the cell all
+ * but two columns, so an outer frame would land one pixel outside it. Those two
+ * columns must be untouched.
+ */
+{
+    const [a, b] = pair(ENUM("G MAJ"), "0");
+    const { gained } = changes(a, b);
+    const outer = gained.filter(([x]) => x === 1 || x === CELL_W - 2);
+    if (outer.length) fail("a full-width enum readout ALSO wears the outer frame -- two rectangles on one cell");
+    else ok("a full-width enum readout wears one rectangle, not two");
+}
+
+/*
+ * A WIDER BOX MUST DIFFER MORE. This is the regression check: the outer-frame
+ * version was absorbed by the square, so it got WEAKER as the value got wider
+ * (17 pixels at full width against 27 at the narrow one) and was illegible on
+ * keydetect, whose values are always full width. Dotting the stroke means more
+ * perimeter to dot, so the gradient runs the other way.
+ */
+if (strength["G MAJ"] !== undefined && strength["ON"] !== undefined) {
+    if (strength["G MAJ"] <= strength["ON"])
+        fail("a full-width enum readout differs by " + strength["G MAJ"] + " pixels and a narrow one by "
+             + strength["ON"] + " -- the mark gets WEAKER as the box gets wider, which is the bug this replaced");
+    else ok("the mark strengthens with the box (" + strength["ON"] + " narrow -> "
+            + strength["G MAJ"] + " full width)");
+}
+
+/* --- 3. what must NOT be marked ------------------------------------------- */
+/*
+ * AN OPAQUE READOUT IS NOT FRAMED, and the reason is geometric rather than
+ * aesthetic: drawOpaqueBox already draws a frame on the IDENTICAL rect, so the
+ * dots land invisibly on top of it and show only in the five-row cut where the
+ * chevron sits. Marking it degrades the door mark and buys nothing.
+ */
+{
+    const decl = { key: "sample_path", name: "Sample", type: "filepath" };
+    if (RM.widgetKindFor(META(Object.assign({}, decl, { access: "read" }))) !== RM.WIDGET_OPAQUE)
+        fail("the opaque probe is not drawing an opaque box -- it proves nothing");
+    const [a, b] = pair(decl, "/x/kick_01.wav");
+    const { gained, lost } = changes(a, b);
+    if (gained.length || lost.length)
+        fail("a read-only opaque cell was marked (" + (gained.length + lost.length) + " pixels) -- it must not be");
+    else ok("an opaque readout keeps its own frame and chevron, unmarked");
+}
+
+/* --- 4. a readout gains no AFFORDANCE ------------------------------------- */
+for (const decl of [{ key: "a", name: "A", type: "float", min: 0, max: 1, step: 0.01 },
+                    { key: "b", name: "B", type: "enum", options: ["X", "Y", "Z"] },
+                    { key: "c", name: "C", type: "float", ui_type: "wav_position",
+                      min: 0, max: 1, step: 0.01 }]) {
+    const ro = META(Object.assign({}, decl, { access: "read" }));
+    if (isTurnable(ro)) fail(decl.key + ": a readout is turnable");
+    if (isDivable(ro)) fail(decl.key + ": a readout is divable");
+    if (alsoOpens(ro)) fail(decl.key + ": a readout wears the corner brackets");
+}
+ok("a readout is never turnable, divable, or bracketed");
+
+/*
+ * The dots sit on the CHECKER lattice in ABSOLUTE coordinates, which is what
+ * lets a dotted square and a dotted added frame in adjacent cells share one
+ * phase. Drawn at two x origins one apart, the dots must land on opposite
+ * parities -- a rect-relative step would produce the same picture twice.
  */
 {
     const w = 30, h = RM.BOX_H;
@@ -144,27 +243,7 @@ for (const [what, decl, raw] of CASES) {
     else ok("the dots are phased on absolute coordinates (" + shifted + " of " + w + " differ when shifted 1px)");
 }
 
-/*
- * AN OPAQUE READOUT IS NOT FRAMED, and the reason is geometric rather than
- * aesthetic: drawOpaqueBox already draws a frame on the IDENTICAL rect, so the
- * dots land invisibly on top of it and show only in the five-row cut where the
- * chevron sits. Marking it degrades the door mark and buys nothing.
- */
-{
-    const decl = { key: "sample_path", name: "Sample", type: "filepath" };
-    const a2 = cell(decl, "/x/kick_01.wav");
-    const b2 = cell(Object.assign({}, decl, { access: "read" }), "/x/kick_01.wav");
-    if (RM.widgetKindFor(META(Object.assign({}, decl, { access: "read" }))) !== RM.WIDGET_OPAQUE)
-        fail("the opaque probe is not drawing an opaque box -- it proves nothing");
-    let diff = 0;
-    for (let i = 0; i < a2.pixels.length; i++) if (a2.pixels[i] !== b2.pixels[i]) diff++;
-    if (diff) fail("a read-only opaque cell was framed (" + diff + " pixels) -- it must not be");
-    else ok("an opaque readout keeps its own frame and chevron, unmarked");
-}
-
-/* An OPAQUE cell is a door and draws its own notched frame with a chevron; a
- * write-only TRIGGER is a button. Neither is a readout, and access is one
- * field -- so this is a statement about the meta, not about the drawing. */
+/* access is ONE field, so a trigger can never also be a readout. */
 {
     const trig = META({ key: "clear", name: "Clear", type: "enum",
                         options: ["-", "Go"], access: "write" });
@@ -173,5 +252,5 @@ for (const [what, decl, raw] of CASES) {
 }
 
 if (bad) { console.error(bad + " problem(s)"); process.exit(1); }
-console.log("PASS: a readout draws its own frame, and only a frame");
+console.log("PASS: a readout is dotted, once, wherever its stroke lives");
 '

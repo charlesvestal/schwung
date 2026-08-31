@@ -1737,8 +1737,9 @@ when an enum could only be nudged one detent at a time. Enums became divable in
 was a gap in the contract, not a bug in the module: display-only was never
 expressible.
 
-The cell says so too: a readout is drawn inside a dotted frame, around whatever
-widget its value already has. See *Which widget a cell draws* above.
+The cell says so too: a readout is **dotted** — the enum square draws its own
+frame dotted, a dial or a big number gains a dotted frame around the cell. See
+*Which widget a cell draws* above.
 
 **Why a trigger needs saying, and why it is the more urgent half.** A momentary
 action modelled as a two-option enum is a live hazard. `euclidrum`'s
@@ -1959,16 +1960,25 @@ reading and writes nothing, a click opens no picker, and `isDivable` /
 pixel-identical to a control — reported from the device as a knob that "does
 not seem to do anything", which was a correct reading of the picture.
 
-- **It wraps the widget; it does not replace it.** The value stays exactly
-  where its own widget put it, so the cell keeps its shape and changes only its
-  stroke. On an enum square, whose own solid frame already occupies the same
-  rows, what remains visible is the two dotted side rails.
+- **The rule is *a readout is dotted*; where the stroke lives is the widget's
+  business.** A dial and a big number have none, so a frame is added around the
+  cell; the enum square has one, so it dots that. One dotted rectangle per cell,
+  never two. Either way the value does not move.
+- **The square dots its own stroke because an outer frame did not work there.**
+  Measured against an identical editable twin, an outer frame differed by 17
+  pixels at full width against 27 at the narrow one — the wider the value, the
+  more of the mark the square absorbed — and side by side the two cells were
+  indistinguishable. It failed exactly where the feature is for: `keydetect`'s
+  values are musical keys, always full width. Dotting the stroke inverts the
+  gradient, to 39 against 26.
 - **Not an inverted slab** — inversion already means *a finger is on this knob*
   in the label band and *this is the selection* in a list. **Not corner
   brackets** — those mean the opposite claim, that the knob works *and* opens
   something.
-- **An opaque cell is not framed either.** Its own notched frame is on the same
-  rect, so the dots would show only in the chevron's cut.
+- **An opaque cell is not marked at all.** Its own notched frame is on the same
+  rect, so an outer frame's dots would show only in the chevron's cut, and
+  dotting that frame would blunt the one widget that says which direction its
+  door goes.
 - **A readout inside a viz graphic is not framed.** No fleet module has one;
   if one appears, mark the span once, the way the door bracket does.
 

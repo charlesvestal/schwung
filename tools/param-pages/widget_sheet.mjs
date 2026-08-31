@@ -349,19 +349,26 @@ function build() {
      * big number (4K EQ peaks and its clip flag).
      */
     add("readout", strip(6, (ctx, g) => {
-        const eR = META({ key: "detected", name: "Detected", type: "enum", access: "read",
-                          options: ["Alpha", "Bravo", "Charlie"] });
+        /* A FULL-WIDTH value, deliberately: it is keydetect's real case (musical
+         * keys) and it is the width an outer frame could not mark. A narrow box
+         * would show the treatment at its easiest. */
+        const eR = META({ key: "detected_key", name: "Key", type: "enum", access: "read",
+                          options: ["G Maj", "A Min", "C Maj"] });
         const eW = META({ key: "mode", name: "Mode", type: "enum",
-                          options: ["Alpha", "Bravo", "Charlie"] });
+                          options: ["G Maj", "A Min", "C Maj"] });
         const kR = META({ key: "in_peak_l", name: "In L", type: "float", access: "read",
                           min: 0, max: 1, step: 0.01 });
         const kW = META({ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 });
         const nR = META({ key: "clip", name: "Clip", type: "int", min: 0, max: 9, access: "read" });
         const nW = META({ key: "voices", name: "Voices", type: "int", min: 0, max: 9 });
-        const cells = [[eR, "1"], [eW, "1"], [kR, "0.66"], [kW, "0.66"], [nR, "3"], [nW, "3"]];
+        const cells = [[eR, "0"], [eW, "0"], [kR, "0.66"], [kW, "0.66"], [nR, "3"], [nW, "3"]];
         cells.forEach(([m, v], i) => {
             RM.drawKnobWidget(ctx, g, i, 0, m, v, undefined, undefined, null, null);
-            if (m.readOnly) RM.drawReadoutFrame(ctx, i * CELL_W + 1, 0, CELL_W - 2, RM.BOX_H);
+            /* drawKnobRow's own call, not a re-statement of when a mark is
+             * added: the enum square dots its own stroke inside drawKnobWidget
+             * and must NOT also get an outer frame, and the sheet is the last
+             * place that rule should exist twice. */
+            if (m.readOnly) RM.drawReadoutMark(ctx, g, i, 0, m);
         });
         cellLabels(ctx, g, 6, ["READ", "EDIT", "READ", "EDIT", "READ", "EDIT"]);
     }));
@@ -632,16 +639,25 @@ reading and writes nothing, a click opens no picker, and \`isDivable\` /
 pixel-identical to a control — reported from the device as a knob that "does
 not seem to do anything", which was a correct reading of the picture.
 
-- **It wraps the widget; it does not replace it.** The value stays exactly
-  where its own widget put it, so the cell keeps its shape and changes only its
-  stroke. On an enum square, whose own solid frame already occupies the same
-  rows, what remains visible is the two dotted side rails.
+- **The rule is *a readout is dotted*; where the stroke lives is the widget's
+  business.** A dial and a big number have none, so a frame is added around the
+  cell; the enum square has one, so it dots that. One dotted rectangle per cell,
+  never two. Either way the value does not move.
+- **The square dots its own stroke because an outer frame did not work there.**
+  Measured against an identical editable twin, an outer frame differed by 17
+  pixels at full width against 27 at the narrow one — the wider the value, the
+  more of the mark the square absorbed — and side by side the two cells were
+  indistinguishable. It failed exactly where the feature is for: \`keydetect\`'s
+  values are musical keys, always full width. Dotting the stroke inverts the
+  gradient, to 39 against 26.
 - **Not an inverted slab** — inversion already means *a finger is on this knob*
   in the label band and *this is the selection* in a list. **Not corner
   brackets** — those mean the opposite claim, that the knob works *and* opens
   something.
-- **An opaque cell is not framed either.** Its own notched frame is on the same
-  rect, so the dots would show only in the chevron's cut.
+- **An opaque cell is not marked at all.** Its own notched frame is on the same
+  rect, so an outer frame's dots would show only in the chevron's cut, and
+  dotting that frame would blunt the one widget that says which direction its
+  door goes.
 - **A readout inside a viz graphic is not framed.** No fleet module has one;
   if one appears, mark the span once, the way the door bracket does.
 
