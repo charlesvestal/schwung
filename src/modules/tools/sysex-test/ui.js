@@ -20,6 +20,19 @@
  * so the backpressure path gets exercised rather than just the happy one.
  */
 import { shouldFilterMessage, setLED } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { Black, DullGreen, DarkGreen } from '/data/UserData/schwung/shared/constants.mjs';
+
+/* The display API for a tool module is clear_screen / print / draw_line /
+ * fill_rect (registered in src/host/js_display.c), and the host flushes for
+ * you. There is no display_text, no display_clear and no host_flush_display --
+ * an earlier draft of this file invented all three, and the first tick threw a
+ * ReferenceError, which the host reports by unloading the module. On screen
+ * that is indistinguishable from "the tool opened and immediately closed",
+ * with nothing in the log naming the missing symbol.
+ *
+ * setLED's second argument is a COLOUR BYTE, not a name. It becomes data2 of a
+ * note-on, so a string lands on the wire as garbage rather than raising
+ * anything. Import the constants. */
 
 const SIZES = [64, 158, 316, 632];
 const PADS = [68, 69, 70, 71];
@@ -137,14 +150,14 @@ function setupLedBatch() {
     for (let n = 0; n < 8 && ledInitIndex < 64; n++, ledInitIndex++) {
         const note = 68 + ledInitIndex;
         const isSize = PADS.indexOf(note) >= 0;
-        setLED(note, isSize ? (PADS[sizeIdx] === note ? "BrightGreen" : "DimGreen") : "Off");
+        setLED(note, isSize ? (PADS[sizeIdx] === note ? DullGreen : DarkGreen) : Black);
     }
     if (ledInitIndex >= 64) ledInitPending = false;
 }
 
 function refreshSizeLeds() {
     for (let i = 0; i < PADS.length; i++) {
-        setLED(PADS[i], i === sizeIdx ? "BrightGreen" : "DimGreen");
+        setLED(PADS[i], i === sizeIdx ? DullGreen : DarkGreen);
     }
 }
 
@@ -173,17 +186,16 @@ globalThis.tick = function () {
 };
 
 function draw() {
-    display_clear();
-    display_text(2, 1, "SysEx Test", 1);
-    display_line(0, 11, 128, 11, 1);
+    clear_screen();
+    print(2, 0, "SysEx Test", 2);
+    draw_line(0, 13, 127, 13, 1);
 
-    display_text(2, 14, "size " + SIZES[sizeIdx] + "B", 1);
-    display_text(2, 24, "tx " + txBytes + "B/" + txPackets + "p" +
+    print(2, 16, "size " + SIZES[sizeIdx] + "B", 1);
+    print(2, 26, "tx " + txBytes + "B/" + txPackets + "p" +
                         (txRefused ? " REFUSED" : ""), 1);
 
-    display_text(2, 36, "rx " + rxBytes + "B  n=" + rxMessages, 1);
-    display_text(2, 46, rxVerdict + (rxFirstBad >= 0 ? " @" + rxFirstBad : ""), 1);
+    print(2, 36, "rx " + rxBytes + "B  n=" + rxMessages, 1);
+    print(2, 46, rxVerdict + (rxFirstBad >= 0 ? " @" + rxFirstBad : ""), 1);
 
-    display_text(2, 56, "pads 1-4 size, rest=send", 1);
-    host_flush_display();
+    print(2, 56, "pad1-4=size rest=send", 1);
 }
