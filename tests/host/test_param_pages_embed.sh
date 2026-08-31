@@ -75,13 +75,36 @@ Promise.all([
 
   /* ---- 2. an omitted band closes the stack ------------------------------ */
   {
+    /*
+     * `bands` SAYS WHAT TO DRAW; `rect` SAYS WHERE TO LAY OUT.
+     *
+     * Both halves are pinned because conflating them was a real bug: omitting
+     * the header used to move the whole grid up seven rows even with no rect,
+     * so a caller keeping its OWN header got the Schwung body drawn on top.
+     * Every other page kind draws at absolute coordinates and merely skips the
+     * chrome it was not asked for; the knob grid was the one that relaid out.
+     */
     const body = R.movyBandLayout({ bands: { header: false, bank: false, footer: false } });
     if (body.header !== null || body.bank !== null || body.footer !== null) {
       fail("bands were requested off but still placed");
     }
-    if (body.rows[0].rowY !== R.BAND_H.gutter0) {
-      fail("body-only puts row 0 at " + body.rows[0].rowY + "; the stack did not close up"
-           + " (expected the first gutter alone, " + R.BAND_H.gutter0 + ")");
+    /* NO RECT: the rhythm positions, chrome simply absent. */
+    if (body.rows[0].rowY !== R.ROW0_Y) {
+      fail("with no rect, dropping the header moved row 0 to " + body.rows[0].rowY
+           + " instead of leaving it at ROW0_Y=" + R.ROW0_Y
+           + " — bands must not relayout on their own");
+    }
+    if (body.rows[1].rowY !== R.ROW1_Y) fail("row 1 moved without a rect");
+
+    /* WITH A RECT: the stack packs into it, chrome-less bands closing up. */
+    const packed = R.movyBandLayout({
+      bands: { header: false, bank: false, footer: false },
+      rect: { x: 0, y: 0, w: 128, h: 64 },
+    });
+    if (packed.rows[0].rowY !== R.BAND_H.gutter0) {
+      fail("with a rect, body-only puts row 0 at " + packed.rows[0].rowY
+           + "; the stack did not close up (expected the first gutter alone, "
+           + R.BAND_H.gutter0 + ")");
     }
     /* THE BODY IS 48 OF THE 64 ROWS — two gutters, two 15-row widget bands and
      * two 7-row label bands, none of which scale. A tool embedding it has 16
@@ -90,8 +113,8 @@ Promise.all([
      * decides whether the layout a given tool wants is possible at all. */
     const wantBody = R.BAND_H.gutter0 + R.BAND_H.gutter1
                    + 2 * (R.BAND_H.widget + R.BAND_H.label);
-    if (body.height !== wantBody) {
-      fail("the body block is " + body.height + " rows, expected " + wantBody);
+    if (packed.height !== wantBody) {
+      fail("the body block is " + packed.height + " rows, expected " + wantBody);
     }
 
     const offset = R.movyBandLayout({
