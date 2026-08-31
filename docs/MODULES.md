@@ -1722,7 +1722,7 @@ your parameter is not both.
 | value | meaning | host behaviour |
 |---|---|---|
 | `readwrite` | an ordinary control (default) | turnable, divable if it has options |
-| `read` | a **readout** — the value means something, writing means nothing | never turnable, never opens a picker, still refreshed on screen |
+| `read` | a **readout** — the value means something, writing means nothing | never turnable, never opens a picker, still refreshed on screen, and drawn inside a **dotted frame** |
 | `write` | a **trigger** — writing does something, the value means nothing | never turnable, a click **fires** it |
 
 ```json
@@ -1736,6 +1736,9 @@ when an enum could only be nudged one detent at a time. Enums became divable in
 1.0, so the picker opened on it and silently discarded whatever you chose. That
 was a gap in the contract, not a bug in the module: display-only was never
 expressible.
+
+The cell says so too: a readout is drawn inside a dotted frame, around whatever
+widget its value already has. See *Which widget a cell draws* above.
 
 **Why a trigger needs saying, and why it is the more urgent half.** A momentary
 action modelled as a two-option enum is a live hazard. `euclidrum`'s
@@ -1944,6 +1947,30 @@ wears one across its whole span when any covered cell `opensOnClick`.
 
 See *Divability, and the two cell marks* below for why the brackets and the
 chevron are not two spellings of one idea.
+
+![readout](images/widgets/readout.png)
+
+A **dotted frame** means `access: "read"` — telemetry you can look at and not
+change. Each pair above is the same declaration with and without it.
+
+The input layer has always honoured `access`: turning a readout shows the
+reading and writes nothing, a click opens no picker, and `isDivable` /
+`isTurnable` exclude it. The *drawing* did not, so a readout was
+pixel-identical to a control — reported from the device as a knob that "does
+not seem to do anything", which was a correct reading of the picture.
+
+- **It wraps the widget; it does not replace it.** The value stays exactly
+  where its own widget put it, so the cell keeps its shape and changes only its
+  stroke. On an enum square, whose own solid frame already occupies the same
+  rows, what remains visible is the two dotted side rails.
+- **Not an inverted slab** — inversion already means *a finger is on this knob*
+  in the label band and *this is the selection* in a list. **Not corner
+  brackets** — those mean the opposite claim, that the knob works *and* opens
+  something.
+- **An opaque cell is not framed either.** Its own notched frame is on the same
+  rect, so the dots would show only in the chevron's cut.
+- **A readout inside a viz graphic is not framed.** No fleet module has one;
+  if one appears, mark the span once, the way the door bracket does.
 
 #### Chrome
 
