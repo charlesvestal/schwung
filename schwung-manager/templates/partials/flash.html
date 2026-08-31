@@ -5,6 +5,28 @@
 </div>
 <script>
 (function() {
+    /*
+     * A flash is shown ONCE. It travels in the URL (post/redirect/get), so the
+     * message is still in the address bar after the redirect and every reload
+     * renders it again -- "Ruminant updated successfully" reappearing on a
+     * refresh long after the install, which reads as the action having run
+     * again.
+     *
+     * Strip it as soon as it is shown rather than when it is dismissed: a
+     * refresh during the five seconds it is up should not bring it back
+     * either. replaceState adds no history entry, so Back is unaffected, and
+     * only these two parameters are removed -- a sort or filter in the same
+     * query survives.
+     */
+    try {
+        var u = new URL(window.location.href);
+        if (u.searchParams.has('flash') || u.searchParams.has('flash_type')) {
+            u.searchParams.delete('flash');
+            u.searchParams.delete('flash_type');
+            history.replaceState(null, '', u.pathname + u.search + u.hash);
+        }
+    } catch (e) { /* no URL/history: the toast simply repeats on refresh */ }
+
     var el = document.currentScript.previousElementSibling;
     if (el) {
         setTimeout(function() {

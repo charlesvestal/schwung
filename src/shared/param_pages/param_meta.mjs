@@ -65,6 +65,11 @@ function keyOf(entry) {
  *
  * @returns {{get: (key:string)=>object|null, keys: string[], conflicts: string[]}}
  */
+/* Live octave numbering: note 0 is C-2, so 36 is C1 and 60 is C3. */
+const NOTE_PITCH_CLASSES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+export const NOTE_NAMES = Object.freeze(Array.from({ length: 128 }, (_, i) =>
+    NOTE_PITCH_CLASSES[i % 12] + (Math.floor(i / 12) - 2)));
+
 export function buildMetaIndex({ hierarchy, chainParams } = {}) {
     const inline = new Map();
     const conflicts = [];
@@ -365,9 +370,110 @@ function normalize(key, raw) {
      * One axis rather than two flags, because they are the same question asked
      * in opposite directions, and a param cannot be both.
      */
+    /*
+     * A MIDI NOTE NUMBER IS A NOTE, and 36 does not say so.
+     *
+     * Declared as int 0..127 it drew an arc: a pointer somewhere in 128
+     * semitones, telling you nothing about which note the module listens for,
+     * which is the only thing this parameter is for. It cannot be a big number
+     * either -- that widget draws digits, and a name is what is wanted.
+     *
+     * So the names are supplied here and the param becomes an ordinary enum.
+     * It then draws in the enum square as C1, and it opens as a LIST, which is
+     * what a 128-way choice should have been all along.
+     *
+     * Live`s octave numbering, matching the pads: 36 is C1, 60 is C3.
+     *
+     * SAFE ON THE WIRE because the option INDEX equals the note number: the
+     * range must be exactly 0..127, so options[36] is the value 36. A narrower
+     * range would make the index an offset and silently transpose everything,
+     * which is why this refuses anything else rather than generating a window.
+     *
+     * Matched on a key or name ENDING in "note" -- `arp_note_length` is a
+     * length and `vf_track`/`flt_key` ("KEY", "Key Track") are key-tracking
+     * amounts, all int 0..127, and all correctly left as knobs.
+     */
+    if (!meta.options && type === "int" && meta.min === 0 && meta.max === 127 &&
+        (/(^|_)note$/i.test(String(meta.key || "")) ||
+         /(^|\s)note$/i.test(String(meta.name || "").trim()))) {
+        meta.options = NOTE_NAMES;
+        meta.note_names = true;
+        type = "enum";
+    }
+
     const access = lower(meta.access);
     meta.readOnly = access === "read";
     meta.writeOnly = access === "write";
+
+    /*
+     * A TWO-STATE CONTROL NAMED FOR AN ACTION IS A BUTTON.
+     *
+     * `access: "write"` is the right way to say "this is a trigger", and
+     * almost nothing in the fleet says it: 46 controls across 13 modules are
+     * momentary actions declared as ordinary booleans. forge has 13 of them --
+     * Rnd Kit, Rnd Voice, Copy A>B, Swap A/B -- each drawing a latching switch
+     * for something you press once.
+     *
+     * The tell is unambiguous when both halves agree: the name is a VERB and
+     * the control has exactly two states. A verb is not enough on its own
+     * (`rnd_pitch_amt` is how MUCH to randomise), and two states is not enough
+     * on its own (Mono, Sync, Bypass are all real switches).
+     *
+     * `idle`/`trigger` as the option pair is taken as a declaration by itself,
+     * because that is a module spelling out a momentary in the only vocabulary
+     * it had.
+     *
+     * EXCLUSIONS, each from a real false positive found while sweeping:
+     *   *_mode           a mode is a state you set (granny trigger_mode)
+     *   *retrig*, *_sync a retrigger or sync SETTING, not an act (work
+     *                    vlfo1_trig is ["Free","Retrig"])
+     *   hard_reset       a synth envelope behaviour, not a button
+     *   *_amt, *_amount, *_depth, *_seed, *_rate  a quantity that merely has
+     *                    "rnd" in its name
+     *
+     * Inferred, so `access` still wins where a module has bothered to declare
+     * it -- including a module declaring "readwrite" to say this is NOT a
+     * trigger.
+     */
+    if (!meta.writeOnly && !meta.readOnly && !access) {
+        const key = lower(meta.key || "");
+        const name = lower(meta.name || "").replace(/[\s\/>]+/g, "_");
+        const opts = Array.isArray(meta.options) ? meta.options.map((o) => lower(o).trim()) : null;
+        const twoState = (opts && opts.length === 2 &&
+                          opts.every((o) => /^(off|on|no|yes|0|1|false|true|disabled|enabled|-|—)$/.test(o)))
+                       || (type === "int" && meta.min === 0 && meta.max === 1)
+                       || (type === "float" && meta.step === 1 && meta.min === 0 && meta.max === 1);
+        const declaredMomentary = !!opts && opts.length === 2 &&
+                                  opts.some((o) => /^(trigger|trig|fire|go|do|now|save|clear|reset|init|rnd!?)$/.test(o));
+        const VERB = /(^|_)(rnd|rand|random|randomi[sz]e|reroll|shuffle|clear|reset|init|fire|bang|panic|save|store|recall|capture|grab|arm|regen|copy|paste|swap|undo)(\d*)($|_)/;
+        /* `retrig` must match `retrigger` too, and a mode is a mode wherever
+         * the word sits. Both learned from false positives: ducker's `mode` is
+         * ["Trigger","Gate"] -- "Trigger" there NAMES a mode, it is not an act
+         * -- and hush1's `retrigger` slipped a `retrig($|_)` boundary. */
+        /*
+         * Two kinds of veto, and they do not have the same force.
+         *
+         * MODE_LIKE says the control is a STATE, whatever its options are
+         * called -- ducker's `mode` is ["Trigger","Gate"], where "Trigger"
+         * names a mode rather than an act. It overrides even a declared
+         * momentary.
+         *
+         * QUANTITY says the NAME is about an amount, so the verb in it is not
+         * a gesture -- `rnd_pitch_amt` is how much to randomise. It only vetoes
+         * the guess. A module that has actually spelled out ["idle","trigger"]
+         * is telling us directly, and webstream's `play_pause_step` should not
+         * lose that to the word "step".
+         */
+        const MODE_LIKE = /(^|_)(mode|retrig\w*|sync|hard_reset)($|_)/;
+        const QUANTITY = /_(amt|amount|depth|seed|rate|time|len|length|steps?|range|slew|chords?|octave)($|_)/;
+        const modeLike = MODE_LIKE.test(key) || MODE_LIKE.test(name);
+        const quantity = QUANTITY.test(key) || QUANTITY.test(name);
+        const verbal = (VERB.test(key) || VERB.test(name)) && !modeLike && !quantity;
+        if ((declaredMomentary && !modeLike) || (verbal && twoState)) {
+            meta.writeOnly = true;
+            meta.trigger_inferred = true;
+        }
+    }
 
     const listableEnum = type === "enum"
                        && Array.isArray(meta.options) && meta.options.length > 0;
@@ -512,42 +618,20 @@ export function isReadOnly(meta) { return !!meta && !!meta.readOnly; }
  */
 export function isTrigger(meta) { return !!meta && !!meta.writeOnly; }
 
-/* Which widget a cell wears. Not a style name — a statement about the
- * PARAMETER, which is why it is decided here beside the kinds rather than in a
- * renderer. */
-export const WIDGET_OPAQUE = "opaque";   /* framed box + chevron: a door */
-export const WIDGET_BUTTON = "button";   /* a bang: fires, shows no value */
-export const WIDGET_ENUM   = "enum";     /* the three-character square */
-export const WIDGET_KNOB   = "knob";     /* pointer on a base, dot on the arc */
-
-/**
- * ONE definition of which widget a param gets.
+/*
+ * `widgetKindFor` USED TO LIVE HERE, and deliberately does not any more.
  *
- * `drawKnobWidget` calls this and so does `describePage`, deliberately: a
- * consumer drawing our view model in its own style must reach the same verdict
- * the grid reaches, and the only way to guarantee that is for there to be one
- * answer rather than two that agree today.
+ * This branch extracted it into param_meta.mjs while main extracted it into
+ * render_page_movy.mjs — the same refactor, for the same reason, twice, and the
+ * merge produced two exported definitions of it plus a set of WIDGET_*
+ * constants in each file. That is precisely the shape both copies were written
+ * to prevent, and it was a hard error rather than a subtle one: the renderer
+ * imported the name it also declared.
  *
- * This repo has paid for the other shape. `isDoor` is exported from the
- * controller with the note "Ask the controller; do not restate the kinds",
- * because a literal list of page kinds copied into page_input.mjs stopped being
- * updated and made knobs-as-list pages silently unusable.
- *
- * The cascade's ORDER is load-bearing and matches the renderer's:
- * opaque is tested before writeOnly, so a write-only opaque param stays a door
- * rather than becoming a bang with nothing to open.
- *
- * A viz group covering a cell is NOT part of this. That is a property of the
- * PAGE (which cells a graphic spans), not of the param, and it is resolved
- * separately by viz.mjs — see `covered[]` in drawKnobRow.
+ * The renderer's is the surviving one. It knows about WIDGET_BIGNUM, which this
+ * copy did not, so keeping this one would have silently demoted every big-number
+ * cell to a knob. Import it from `render_page_movy.mjs`.
  */
-export function widgetKindFor(meta) {
-    if (!meta) return WIDGET_KNOB;
-    if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
-    if (meta.writeOnly) return WIDGET_BUTTON;
-    if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
-    return WIDGET_KNOB;
-}
 
 /**
  * One-shot repair for a param whose type/range we had to guess (`meta.guessed`).

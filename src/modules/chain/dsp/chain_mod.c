@@ -377,6 +377,65 @@ int chain_mod_get_modulated_for_subkey(chain_instance_t *inst,
     return snprintf(buf, buf_len, "0");
 }
 
+/* Plain-key interception: while 'subkey' (no suffix) is an actively modulated
+ * target, answer with the BASE value — the number the user set and the number
+ * set_param writes (chain_mod_update_base_from_set_param). Without this a
+ * plain read falls through to the plugin, which holds the last EFFECTIVE
+ * (base+mod) value the overlay wrote into it, so every mod-unaware UI reads
+ * back a value the user didn't set and the knob appears dead (#276). Callers
+ * that want the driven value ask for ':effective'. Returns -1 when the key is
+ * not an actively modulated target, so the caller falls through as before. */
+int chain_mod_get_base_for_plain_key(chain_instance_t *inst,
+                                     const char *target,
+                                     const char *subkey,
+                                     char *buf,
+                                     int buf_len) {
+    if (!inst || !target || !subkey || !buf || buf_len < 2) return -1;
+
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, subkey);
+    if (!entry || !entry->active || !chain_mod_has_active_sources(entry)) return -1;
+
+    if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+        return snprintf(buf, buf_len, "%d", (int)entry->base_value);
+    }
+    return snprintf(buf, buf_len, "%.6f", entry->base_value);
+}
+
+/* Optional getter helper: key suffix ':effective' returns the driven
+ * (base+mod) value while modulation is active. This is the value the plain
+ * key used to leak; the UIs that deliberately display it (the dot on the arc,
+ * the wav editor's mod marker) ask for it by name now. */
+int chain_mod_get_effective_for_subkey(chain_instance_t *inst,
+                                       const char *target,
+                                       const char *subkey,
+                                       char *buf,
+                                       int buf_len) {
+    if (!inst || !target || !subkey || !buf || buf_len < 2) return -1;
+
+    const size_t suffix_len = 10; /* ":effective" */
+    const size_t subkey_len = strlen(subkey);
+    if (subkey_len <= suffix_len || strcmp(subkey + subkey_len - suffix_len, ":effective") != 0) {
+        return -1;
+    }
+
+    char param[64];
+    const size_t param_len = subkey_len - suffix_len;
+    if (param_len == 0 || param_len >= sizeof(param)) return -1;
+    memcpy(param, subkey, param_len);
+    param[param_len] = '\0';
+
+    mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+    if (entry && entry->active) {
+        if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
+            return snprintf(buf, buf_len, "%d", (int)entry->effective_value);
+        }
+        return snprintf(buf, buf_len, "%.6f", entry->effective_value);
+    }
+
+    /* If not modulated, return current plugin value for compatibility. */
+    return chain_mod_get_param_string(inst, target, param, buf, buf_len);
+}
+
 /* Runtime modulation callback (initial stateful implementation).
  * Applies non-destructive contribution math and stores effective values. */
 int chain_mod_emit_value(void *ctx,

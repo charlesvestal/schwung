@@ -404,6 +404,9 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.
+- **A plain read of a modulated key answers the BASE**, never the plugin's value
+  — the plugin holds the effective value the overlay keeps writing into it. The
+  driven value is asked for as `<key>:effective` (#276).
 - **A chain shape edit is a PERMUTATION, never a reload.** `fx:insert` /
   `fx:remove` / `fx:move` keep instances running; a run of `<id>:module` writes
   rebuilds every position behind it, losing arp phase and reverb tails.
@@ -431,6 +434,9 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.
+- **`level_walk.mjs` is the walk, and the LFO target picker is its second
+  consumer.** Names must not be copied — nothing shows a grid page title beside
+  the picker's row for the same level.
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
@@ -494,6 +500,11 @@ component load gate, and the input-dispatch order. Read it before editing
 - Global Settings is seven sections = seven PAGES. **One section, one page** is
   load-bearing: a ninth param paginates silently and the bank bar takes over a
   split nobody chose.
+- **The LFO target picker groups by level, and the grouping is LOSSLESS** — an
+  orphan sweep into "Other", asserted over all 95 modules. It was one flat list
+  of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
+  branches on that. **A child level lists TEMPLATES** — resolve them through
+  `child_key.mjs` or a drum module files 200+ keys under "Other".
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
@@ -811,6 +822,7 @@ inline is how this file got to 151 KB.
 - `docs/LOGGING.md` — Unified logging
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
+- `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)

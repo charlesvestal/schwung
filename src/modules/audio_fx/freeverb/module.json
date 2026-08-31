@@ -17,6 +17,7 @@
           "params": [
             {
               "key": "room_size",
+              "short_name": "ROOM",
               "name": "Room Size",
               "type": "float",
               "min": 0.0,
@@ -28,6 +29,7 @@
             },
             {
               "key": "damping",
+              "short_name": "DAMP",
               "name": "Damping",
               "type": "float",
               "min": 0.0,

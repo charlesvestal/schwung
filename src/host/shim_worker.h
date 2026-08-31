@@ -63,6 +63,8 @@ extern volatile int shim_jack_persist;
  * delivered only on a non-zero return, so a DROP self-heals on the next turn —
  * but a burst of them means the mailbox is saturated and motors are lagging. */
 extern volatile int shim_ext_midi_drops;
+extern volatile int shim_ui_midi_drops;
+extern volatile int shim_ui_midi_out_drops;
 
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),
  * -1 until observed. Worker persists it on change and re-asserts it at boot —

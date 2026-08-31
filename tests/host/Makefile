@@ -33,6 +33,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
 	$(BUILD_DIR)/test_ext_midi_ring \
+	$(BUILD_DIR)/test_ui_midi_out_carry \
 	$(BUILD_DIR)/test_overtake_native_led_repaint \
 	$(BUILD_DIR)/test_shadow_midi_filter \
 	$(BUILD_DIR)/test_midi_in_compact \

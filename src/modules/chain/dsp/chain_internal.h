@@ -251,7 +251,8 @@ typedef struct chain_instance {
     void *synth_instance;
     char current_synth_module[MAX_NAME_LEN];
     int synth_default_forward_channel;  /* -1 = no default, 0-15 = channel */
-    int synth_consumes_line_input;      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    int synth_consumes_line_input;
+    int synth_wants_sysex;   /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
@@ -360,6 +361,10 @@ typedef struct chain_instance {
      * Informs the Shadow UI default on first placement; does not gate the
      * per-slot toggle (legacy FX can still be switched to Pre manually). */
     int midi_fx_pre_capable[MAX_MIDI_FX];
+    /* Opt-in: this component wants raw SysEx fragments delivered to its
+     * on_midi/process_midi. Off by default and per POSITION, so it permutes
+     * with everything else in chain_reorder.c. */
+     int midi_fx_wants_sysex[MAX_MIDI_FX];
 
     /* Pre-mode echo refcount: per-note counter tracking notes we injected
      * into Move's MIDI_IN cable 2. Move plays the injection and echoes it
@@ -566,7 +571,9 @@ CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
+CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
+CHAIN_INTERNAL int chain_mod_get_effective_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_modulated_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target);
