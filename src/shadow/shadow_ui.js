@@ -11003,9 +11003,12 @@ function handleStorePickerResultSelect() {
         return;
     }
     if (storePickerCategory) {
-        /* Came from the chain component picker. */
-        availableModules = scanModulesForType(
-            slotChainComponents(selectedSlot)[selectedChainComponent].key);
+        /* Came from the chain component picker. Rebuilt through
+         * enterComponentSelect rather than by re-scanning here: a bare scan
+         * has no Move rows, no list-filter row and no resolved cursor, so
+         * coming back from the store landed on a picker one row out of step
+         * with the one that was left. */
+        enterComponentSelect(selectedSlot, selectedChainComponent);
         setView(VIEWS.COMPONENT_SELECT);
         storeCatalog = null;
         storePickerCategory = null;
@@ -11022,6 +11025,83 @@ function handleStorePickerResultSelect() {
 function handleStorePickerBack() {
     handleStorePickerResultSelect();
     needsRedraw = true;
+}
+
+/* ===== SWAP-PICKER LIST FILTER =====
+ *
+ * `null` is All. Session state, not persisted: a filter that survived a reboot
+ * would be a picker that opens mysteriously short, with the explanation on the
+ * one row nobody reads on the first frame after boot.
+ *
+ * It DOES persist across pickers within a session, which is the whole workflow
+ * win — set Favorites once and every position you open honours it.
+ */
+const PICKER_FILTER_ID = "__list_filter__";
+let componentSelectFilter = null;
+
+/*
+ * The MODULE ids among a set of picker rows.
+ *
+ * A picker row is only a module if it carries an id that is not one of the
+ * synthetic ones, and the synthetic ones are not all shaped alike: `None` is
+ * the EMPTY id, while Move Left / Move Right / [Get more...] are `__`-prefixed.
+ * Written once because both callers below need exactly the same answer, and a
+ * second copy that remembered only the `__` half would quietly file `None`
+ * under every list it failed to match.
+ */
+function pickerRealIds(entries) {
+    return (entries || [])
+        .filter(m => m && m.id && String(m.id).indexOf("__") !== 0)
+        .map(m => m.id);
+}
+
+/* The lists this picker may cycle to: those with at least one member among
+ * the modules actually installed for this component type. Lists are GLOBAL, so
+ * without this a synth picker could land on an FX-only list and draw a screen
+ * with nothing on it and no explanation. */
+function pickerEligibleLists(scanned) {
+    moduleListsEnsureLoaded();
+    return ModuleLists.listsWithAnyOf(moduleListsState, pickerRealIds(scanned));
+}
+
+/*
+ * Apply the active filter to a scan result.
+ *
+ * The synthetic rows — None, Move Left/Right, [Get more...] — are never
+ * filtered: they are not modules, and a filtered picker with no way to clear
+ * the position and no way to reach the store is a dead end.
+ */
+function pickerApplyFilter(entries, filterName) {
+    if (!filterName) return entries;
+    moduleListsEnsureLoaded();
+    const kept = ModuleLists.filterIds(moduleListsState, pickerRealIds(entries), filterName);
+    /* null = no such list. Never the identity — see filterIds. The caller has
+     * already reset an ineligible filter to All, so reaching here means the
+     * list vanished under us; showing everything is the safe answer, and it is
+     * the same thing All would show. */
+    if (kept === null) return entries;
+    const keep = Object.create(null);
+    for (const id of kept) keep[id] = true;
+    return entries.filter(m => !m || !m.id || String(m.id).indexOf("__") === 0 || keep[m.id]);
+}
+
+/*
+ * Where the cursor may REST when a picker opens.
+ *
+ * Not an arithmetic offset. The obvious version — one past the filter row plus
+ * the move entries — is only right while the moves sit at the top, and they do
+ * not: chainMoveEntries is spliced in under the LOADED module, so with a
+ * filter active that hides the loaded module the moves end up in the middle of
+ * whatever survived and the arithmetic lands on "Move Right". Scan instead.
+ */
+function pickerFirstSelectableIndex(entries) {
+    for (let i = 0; i < entries.length; i++) {
+        const id = entries[i] && entries[i].id;
+        if (id === PICKER_FILTER_ID) continue;
+        if (id === "__move_left__" || id === "__move_right__") continue;
+        return i;
+    }
+    return 0;
 }
 
 /* Enter component module selection view */
@@ -11067,21 +11147,48 @@ function enterComponentSelect(slotIndex, componentIndex) {
     const moveEntries = chainMoveEntries(chainConfigs[slotIndex], comp.key);
     availableModules.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0, ...moveEntries);
 
+    /*
+     * Resolve the filter BEFORE applying it. A stored filter that matches
+     * nothing here — its list was deleted, or this component type has no
+     * member of it — falls back to All and SAYS so. A sticky filter that
+     * opens a near-empty screen is a trap: the row explaining it is one line
+     * up, and the user has no reason to suspect a filter they last touched in
+     * a different picker.
+     */
+    const eligible = pickerEligibleLists(availableModules);
+    let filterReset = false;
+    if (componentSelectFilter && eligible.indexOf(componentSelectFilter) < 0) {
+        componentSelectFilter = null;
+        filterReset = true;
+    }
+    availableModules = pickerApplyFilter(availableModules, componentSelectFilter);
+
+    /* Row 0, added LAST so the rows below are the finished, filtered set. */
+    availableModules.unshift({ id: PICKER_FILTER_ID, name: "List",
+                               value: componentSelectFilter || "All" });
+
     /* Default the cursor to the loaded module — the list opens showing you
      * what is there now, with the moves right beneath it.
      *
-     * With no loaded module to sit on (an empty position, or one whose module
-     * has been uninstalled since) the moves went in at the top instead, so
-     * step PAST them: a list must never open with the cursor on "Move Left".
-     * moveEntries is empty for an unoccupied position, so that case is 0. */
-    selectedModuleIndex = loadedIdx >= 0 ? loadedIdx : moveEntries.length;
+     * With no loaded module to sit on (an empty position, one whose module has
+     * been uninstalled since, or one the active filter hides) fall to the
+     * first row that is neither the filter nor a move: a list must never open
+     * on "List" or on "Move Left". */
+    const shownIdx = loadedId
+        ? availableModules.findIndex(m => m.id === loadedId)
+        : -1;
+    selectedModuleIndex = shownIdx >= 0 ? shownIdx
+                                        : pickerFirstSelectableIndex(availableModules);
 
     setView(VIEWS.COMPONENT_SELECT);
     needsRedraw = true;
 
-    /* Announce menu title + initial selection */
+    /* Announce menu title + initial selection, and the filter when there is
+     * one to report — including the one we just took away. */
     const moduleName = availableModules[selectedModuleIndex]?.name || "None";
-    announce(`Select ${comp.label}, ${moduleName}`);
+    announce(`Select ${comp.label}, ${moduleName}` +
+             (filterReset ? ", list filter reset to All"
+                          : (componentSelectFilter ? `, list ${componentSelectFilter}` : "")));
 }
 
 /* Apply the selected module to the component - updates DSP in realtime */
@@ -11092,6 +11199,27 @@ function applyComponentSelection() {
     if (!comp || !isChainModuleKey(comp.key)) {
         cancelPendingChainInsert();
         setView(VIEWS.CHAIN_EDIT);
+        return;
+    }
+
+    /*
+     * The filter row cycles IN PLACE — it is the one row in this picker that
+     * does not leave the view, and the one row a click leaves the cursor on,
+     * so a second click cycles again.
+     *
+     * Re-entering rebuilds the list against the new filter rather than
+     * re-filtering here, so the entry path and the click path cannot drift.
+     * The eligible set is computed from a FRESH scan, not from
+     * availableModules: those are already filtered, and asking which lists
+     * intersect them would shrink the cycle every step until it could only
+     * reach All.
+     */
+    if (selected && selected.id === PICKER_FILTER_ID) {
+        componentSelectFilter = ModuleLists.nextFilter(
+            componentSelectFilter, pickerEligibleLists(scanModulesForType(comp.key)));
+        enterComponentSelect(selectedSlot, selectedChainComponent);
+        selectedModuleIndex = 0;
+        announce("List, " + (componentSelectFilter || "All"));
         return;
     }
 
@@ -17280,7 +17408,12 @@ function handleSelect() {
             /* Apply selected module to the component */
             if (availableModules.length > 0) {
                 const selMod = availableModules[selectedModuleIndex];
-                announce(`Loading ${selMod.name || selMod.id || "module"}`);
+                /* The filter row loads nothing — it cycles in place, and
+                 * applyComponentSelection announces the list it landed on.
+                 * "Loading List" would name an action that is not happening. */
+                if (!selMod || selMod.id !== PICKER_FILTER_ID) {
+                    announce(`Loading ${selMod.name || selMod.id || "module"}`);
+                }
             }
             applyComponentSelection();
             break;
