@@ -956,6 +956,263 @@ console.log("  ok  globalThis.tick() services the pending rejected name");
 ' "$UI"
 
 # ============================================================================
+# 6e. BEHAVIOUR: the per-list actions screen — which rows a list offers, the
+#     confirm LATCH, and the save-failure branches.
+#
+# Three of these are rules that would regress SILENTLY:
+#
+#  - Favorites offers Clear ALONE. Rename and Delete are absent, not present
+#    and refusing: a row that answers a click by doing nothing teaches that
+#    the screen is broken. A regression here draws two extra rows that look
+#    exactly like working ones until they are clicked.
+#  - Back with the confirm up is "No". It must cancel and delete NOTHING --
+#    and it must not also leave the screen, because the overlay is what the
+#    press was answering.
+#  - a Delete or Clear whose write FAILED must not be announced as a saved
+#    one. moduleListsSave() returning false is the only report there is; the
+#    plan text discarded it, which is the same defect class as
+#    move_midi_internal_send returning true on a discarded write.
+# ============================================================================
+
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const R = process.cwd();
+const src = readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
+
+const grab = (name) => {
+    const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + "() out of shadow_ui.js");
+    return m[0];
+};
+
+// The REAL model, imported rather than re-typed: whether Favorites is
+// protected, and what a delete does to the state, are its rules.
+const ML = await import(R + "/src/shared/module_lists.mjs");
+
+const body = [
+    "let needsRedraw = false;",
+    "let saveOk = true;",
+    "let saveCalls = 0;",
+    "function moduleListsSave() { saveCalls++; return saveOk; }",
+    "let spoken = [];",
+    "function announce(t) { spoken.push(t); }",
+    "let view = 0;",
+    "const VIEWS = { MODULE_LISTS: 1, MODULE_LISTS_EDIT: 2, MODULE_LISTS_ACTIONS: 3 };",
+    "function setView(v) { view = v; }",
+    "let renameOpened = null;",
+    "function moduleListsOpenNameEntry(existing, prefill) { renameOpened = { existing, prefill }; }",
+    grab("moduleListsEditRows"),
+    grab("moduleListsClampEditIndex"),
+    grab("moduleListsRows"),
+    grab("moduleListsRowLabel"),
+    grab("moduleListsClampIndex"),
+    grab("moduleListsActionRows"),
+    grab("moduleListsSelectAction"),
+    grab("moduleListsActionsBack"),
+    "return {",
+    "  actionRows: () => moduleListsActionRows(),",
+    "  editRows: () => moduleListsEditRows(),",
+    "  rows: () => moduleListsRows(),",
+    "  select: () => moduleListsSelectAction(),",
+    "  back: () => moduleListsActionsBack(),",
+    "  clampIndex: () => moduleListsClampIndex(),",
+    "  view: () => view,",
+    "  spoken: () => spoken,",
+    "  clearSpoken: () => { spoken = []; },",
+    "  saveCalls: () => saveCalls,",
+    "  setSaveOk: (v) => { saveOk = v; },",
+    "  setTarget: (v) => { moduleListsTarget = v; },",
+    "  target: () => moduleListsTarget,",
+    "  setConfirm: (v) => { moduleListsConfirmDelete = v; },",
+    "  confirm: () => moduleListsConfirmDelete,",
+    "  setActionIndex: (v) => { moduleListsActionIndex = v; },",
+    "  actionIndex: () => moduleListsActionIndex,",
+    "  setEditIndex: (v) => { moduleListsEditIndex = v; },",
+    "  editIndex: () => moduleListsEditIndex,",
+    "  setIndex: (v) => { moduleListsIndex = v; },",
+    "  index: () => moduleListsIndex,",
+    "  renameOpened: () => renameOpened,",
+    "};",
+].join("\n");
+
+const build = (state) => {
+    try {
+        return new Function("ModuleLists", "moduleListsState", "moduleListsModuleId",
+                            "moduleListsTarget", "moduleListsConfirmDelete",
+                            "moduleListsActionIndex", "moduleListsEditIndex",
+                            "moduleListsIndex", body)(
+            ML, state, "obxd", "", false, 0, 0, 0);
+    } catch (e) {
+        fail("could not build the module-lists actions harness: " + e.message);
+    }
+};
+
+const seed = () => {
+    const s = ML.emptyState();
+    ML.createList(s, "Live");
+    ML.createList(s, "Studio");
+    ML.toggleMembership(s, "Favorites", "obxd");
+    ML.toggleMembership(s, "Live", "obxd");
+    return s;
+};
+
+/* ---- 1. Favorites offers Clear ALONE ---------------------------------- */
+let h = build(seed());
+h.setTarget("Favorites");
+let names = h.actionRows().map((r) => r.name);
+if (JSON.stringify(names) !== JSON.stringify(["Clear"]))
+    fail("Favorites must offer Clear ALONE -- Rename and Delete ABSENT, not present and " +
+         "refusing a click. Got " + JSON.stringify(names));
+// The case-insensitive half of the same rule: the protection is the models,
+// so a list a user typed in lower case is the same protected list.
+h.setTarget("favorites");
+names = h.actionRows().map((r) => r.name);
+if (JSON.stringify(names) !== JSON.stringify(["Clear"]))
+    fail("the Favorites protection compares names case-INSENSITIVELY (isProtected), so " +
+         "\"favorites\" must offer Clear alone too. Got " + JSON.stringify(names));
+h.setTarget("Live");
+names = h.actionRows().map((r) => r.name);
+if (JSON.stringify(names) !== JSON.stringify(["Rename", "Delete", "Clear"]))
+    fail("an ordinary list must offer all three actions, got " + JSON.stringify(names));
+
+/* ---- 2. Delete ARMS a confirm; it does not delete ---------------------- */
+h = build(seed());
+h.setTarget("Live");
+h.setActionIndex(1);              // Delete
+h.select();
+if (h.confirm() !== true) fail("clicking Delete must raise the confirm, not delete");
+if (h.saveCalls() !== 0) fail("arming the confirm must not write the file");
+if (h.editRows().length !== 3) fail("arming the confirm must not remove the list");
+if (!h.spoken().join("|").includes("Delete Live?"))
+    fail("arming the confirm must ASK, said " + JSON.stringify(h.spoken()));
+
+/* ---- 3. Back with the confirm up cancels, and deletes NOTHING ---------- */
+h.clearSpoken();
+h.back();
+if (h.confirm() !== false) fail("Back with the confirm up must disarm it");
+if (h.view() !== 0)
+    fail("Back is answering the OVERLAY, so it must not also leave the actions screen -- " +
+         "view moved to " + h.view());
+if (h.editRows().map((r) => r.name).join(",") !== "Favorites,Live,Studio")
+    fail("Back with the confirm up must leave the list INTACT, got " +
+         JSON.stringify(h.editRows().map((r) => r.name)));
+if (h.saveCalls() !== 0) fail("a cancelled delete must not write the file");
+// And the next click must be the ordinary row action again, not the delete
+// the latch was holding.
+h.select();
+if (h.editRows().length !== 3)
+    fail("the click after a cancelled confirm must NOT delete -- the latch was disarmed, " +
+         "so the click belongs to the Delete row and re-arms");
+if (h.confirm() !== true) fail("...it re-arms the confirm instead");
+
+/* ---- 4. Confirming deletes, writes, and lands on the Edit screen ------- */
+h.clearSpoken();
+h.select();
+if (h.confirm() !== false) fail("confirming must disarm the latch");
+if (h.editRows().map((r) => r.name).join(",") !== "Favorites,Studio")
+    fail("a confirmed delete must remove the list, got " +
+         JSON.stringify(h.editRows().map((r) => r.name)));
+if (h.saveCalls() !== 1) fail("a confirmed delete must write once, wrote " + h.saveCalls());
+if (h.spoken().join("|") !== "Deleted Live")
+    fail("a successful delete announces the deletion, said " + JSON.stringify(h.spoken()));
+if (h.view() !== 2) fail("a confirmed delete returns to the Edit Lists screen, view " + h.view());
+if (h.target() !== "") fail("a confirmed delete clears the target, got " + JSON.stringify(h.target()));
+
+/* ---- 5. A delete that SHRINKS the screens leaves both cursors in range -- */
+// The Edit cursor first: it was sitting on the last of three rows, and the
+// list it pointed at is the one that just went.
+h = build(seed());
+h.setTarget("Studio");
+h.setEditIndex(2);
+h.setActionIndex(1);
+h.select();                       // arm
+h.select();                       // confirm
+if (h.editRows().length !== 2) fail("the delete did not take");
+if (h.editIndex() !== 1)
+    fail("a delete that shrinks the Edit screen must re-resolve its cursor -- index " +
+         h.editIndex() + " against " + h.editRows().length + " rows");
+// Then the membership cursor, on the way back out to MODULE_LISTS. Its rows
+// are the lists PLUS the two management doors, so a delete shrinks it too.
+h.setIndex(4);                    // the last row of the pre-delete screen
+h.clampIndex();
+if (h.index() !== 3)
+    fail("a delete that shrinks the membership screen must leave moduleListsIndex in RANGE " +
+         "on the way back -- index " + h.index() + " against " + h.rows().length + " rows");
+if (h.rows()[h.index()] === undefined)
+    fail("moduleListsIndex must address a row that EXISTS, so the label and the click do not " +
+         "read undefined");
+
+/* ---- 6. A FAILED write is not announced as a saved one ----------------- */
+h = build(seed());
+h.setSaveOk(false);
+h.setTarget("Live");
+h.setActionIndex(1);
+h.select();                       // arm
+h.clearSpoken();
+h.select();                       // confirm
+if (h.spoken().length !== 1 || !/save failed/i.test(h.spoken()[0]))
+    fail("a DELETE whose write failed must not be announced as a persisted one -- the boolean " +
+         "moduleListsSave() returns is the only report there is. Said " + JSON.stringify(h.spoken()));
+
+h = build(seed());
+h.setSaveOk(false);
+h.setTarget("Favorites");
+h.setActionIndex(0);              // Clear, the only row Favorites offers
+h.clearSpoken();
+h.select();
+if (h.spoken().length !== 1 || !/save failed/i.test(h.spoken()[0]))
+    fail("a CLEAR whose write failed must not be announced as a persisted one, said " +
+         JSON.stringify(h.spoken()));
+
+/* ---- 7. ...and a successful Clear says so, once ------------------------ */
+h = build(seed());
+h.setTarget("Favorites");
+h.setActionIndex(0);
+h.select();
+if (h.saveCalls() !== 1) fail("Clear must write once, wrote " + h.saveCalls());
+if (h.spoken().join("|") !== "Cleared Favorites")
+    fail("a successful clear announces the clear, said " + JSON.stringify(h.spoken()));
+if (h.editRows()[0].value !== "0")
+    fail("Clear must empty the members -- the Edit row still reads " + h.editRows()[0].value);
+
+/* ---- 8. Rename seeds the keyboard with the CURRENT name ---------------- */
+h = build(seed());
+h.setTarget("Live");
+h.setActionIndex(0);              // Rename
+h.select();
+const opened = h.renameOpened();
+if (!opened) fail("Rename must open the keyboard");
+if (opened.existing !== "Live")
+    fail("Rename must open seeded with the CURRENT name, got " + JSON.stringify(opened.existing));
+if (h.saveCalls() !== 0) fail("opening the rename keyboard must not write anything");
+
+console.log("  ok  the per-list actions screen: Favorites offers Clear ALONE (case-insensitively), " +
+            "Delete arms a confirm that Back cancels without deleting, a confirmed delete " +
+            "re-resolves both shrunken cursors, and a failed write is announced as a failure");
+' "$UI"
+
+# The membership cursor is clamped by the BACK case, not by the drawer -- a
+# clamp that exists and is never called is the out-of-range row it was written
+# to prevent.
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const at = src.indexOf("case VIEWS.MODULE_LISTS_EDIT:\n            /*");
+const seg = at < 0 ? "" : src.slice(at, at + 600);
+const clamp = seg.indexOf("moduleListsClampIndex()");
+const set = seg.indexOf("setView(VIEWS.MODULE_LISTS)");
+if (at < 0 || clamp < 0 || set < 0 || clamp > set) {
+    console.log("FAIL: handleBack on MODULE_LISTS_EDIT must call moduleListsClampIndex() BEFORE " +
+                "returning to MODULE_LISTS -- a delete on the Edit screen removed a row from the " +
+                "screen below, and the label read on arrival is taken at the old index");
+    process.exit(1);
+}
+console.log("  ok  Back off Edit Lists re-resolves the membership cursor before returning");
+' "$UI"
+
+# ============================================================================
 # 7. BEHAVIOUR: doSavePreset (shadow_ui_presets.mjs) treats a FAILED read
 #    (null) as the error and a DECLARED-EMPTY state ("") as writable — the
 #    same tri-state rule overwriteUserPreset already applies. enterPresetSaveAs
