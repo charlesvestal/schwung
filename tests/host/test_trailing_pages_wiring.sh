@@ -292,6 +292,15 @@ const body = [
     // here would have gone on asserting the pre-help shape while green.
     "let helpChildren = null;",
     "function getModuleHelpChildren() { return helpChildren; }",
+    // "Add to List" is UNCONDITIONAL, but its VALUE is the number of lists
+    // holding this module, which is a file read -- stubbed the same way the
+    // help.json read above is, so the row itself stays the real one.
+    "let listCount = 0;",
+    // Records the ARGUMENT, not just the answer: a stub that ignores what it
+    // is handed cannot tell a call site passing the module id from one
+    // passing nothing at all, and the row would still show a count either way.
+    "let listCountArgs = [];",
+    "function moduleListsCountFor(id) { listCountArgs.push(id); return listCount; }",
     grab("moduleMenuEntries"),
     grab("componentTrailingMenus"),
     "return {",
@@ -300,6 +309,9 @@ const body = [
     "  setLiveBlob: (b) => { liveBlob = b; },",
     "  setChainConfigs: (c) => { chainConfigs = c; },",
     "  setHelpChildren: (c) => { helpChildren = c; },",
+    "  setListCount: (n) => { listCount = n; },",
+    "  listCountArgs: () => listCountArgs.slice(),",
+    "  clearListCountArgs: () => { listCountArgs = []; },",
     "};",
 ].join("\n");
 
@@ -354,21 +366,38 @@ if (!presetRow(r.dirty).value.startsWith("*"))
     fail("the modified mark must LEAD the name (a trailing mark is the first thing a " +
          "truncating list drops), got " + JSON.stringify(presetRow(r.dirty)));
 
-// Module page, module with NO help.json: the two it has always had, and no
-// row that would open an empty viewer.
+// Module page, module with NO help.json: Add to List (unconditional) then the
+// two destructive rows, and no row that would open an empty viewer.
 const moduleActions = actions(r.clean[1]);
-if (moduleActions.join(",") !== "swap_module,remove_module")
-    fail("Module page for a module with no help content must offer exactly Swap Module " +
-         "then Remove Module, got " + moduleActions.join(","));
+if (moduleActions.join(",") !== "module_lists,swap_module,remove_module")
+    fail("Module page for a module with no help content must offer exactly Add to List, " +
+         "Swap Module, Remove Module, got " + moduleActions.join(","));
 
-// ...and with help content, Module Help LEADS -- the two rows under it are the
-// destructive ones.
+// The Add to List value is the number of lists holding the module, and BLANK
+// at zero -- a "0" is a count nobody asked for on a row that is offering to
+// make one.
+harness.clearListCountArgs();
+harness.run(1, "synth", "synth");
+const countArgs = harness.listCountArgs();
+if (countArgs.length !== 1 || countArgs[0] !== "obxd")
+    fail("the Add to List count must be asked for THIS module by id -- a call site passing " +
+         "nothing would still produce a count and still look right. Got " + JSON.stringify(countArgs));
+
+const addRow = r.clean[1].entries.find((e) => e.action === "module_lists");
+if (addRow.value !== "") fail("Add to List must show nothing at zero lists, got " + JSON.stringify(addRow.value));
+harness.setListCount(2);
+const counted = harness.run(1, "synth", "synth")[1].entries.find((e) => e.action === "module_lists");
+if (counted.value !== "2") fail("Add to List must show the list count, got " + JSON.stringify(counted.value));
+harness.setListCount(0);
+
+// ...and with help content, Module Help LEADS -- the rows under it end with
+// the destructive pair.
 harness.setHelpChildren([{ title: "Overview", lines: ["x"] }]);
 const withHelp = harness.run(1, "synth", "synth");
 const withHelpActions = actions(withHelp[1]);
-if (withHelpActions.join(",") !== "module_help,swap_module,remove_module")
-    fail("Module page for a module WITH help content must offer Module Help, Swap Module, " +
-         "Remove Module in that order, got " + withHelpActions.join(","));
+if (withHelpActions.join(",") !== "module_help,module_lists,swap_module,remove_module")
+    fail("Module page for a module WITH help content must offer Module Help, Add to List, " +
+         "Swap Module, Remove Module in that order, got " + withHelpActions.join(","));
 if (withHelp[1].entries[0].label !== "Module Help")
     fail("the help row must be labelled \"Module Help\", got " + JSON.stringify(withHelp[1].entries[0]));
 // An EMPTY children array is no help content -- getModuleHelpChildren already
@@ -385,7 +414,7 @@ console.log("  ok  componentTrailingMenus(): [] when empty; (none)/Load+SaveAs-o
 ' "$UI"
 
 # ============================================================================
-# 6. BEHAVIOUR: runComponentActionFromGrid — all six actions dispatch.
+# 6. BEHAVIOUR: runComponentActionFromGrid — all eight actions dispatch.
 # ============================================================================
 
 node -e '
@@ -450,6 +479,20 @@ const body = [
     "let helpDetailScrollState = { stale: true };",
     "let componentHelpReturnSlot = -1;",
     "let componentHelpReturnKey = \"\";",
+    // "Add to List" is the second action that never converges on CHAIN_EDIT,
+    // so it too must return before the componentModalFromGrid bookkeeping.
+    // Its session state is the real set of variables, stubbed as themselves so
+    // the assertions below can read what the case actually recorded.
+    "let moduleListsSlot = -1;",
+    "let moduleListsKey = \"\";",
+    "let moduleListsModuleId = \"\";",
+    "let moduleListsMemberIndex = 99;",
+    "let moduleListsCorrupt = false;",
+    "let loadCalls = 0;",
+    "function moduleListsLoad() { loadCalls++; }",
+    "function moduleListsRowLabel() { return \"Favorites, off\"; }",
+    "VIEWS.MODULE_LISTS = 9;",
+    "VIEWS.CHAIN_EDIT = 3;",
     grab("runComponentActionFromGrid"),
     "const seen = {};",
     "for (const action of [\"up_load\",\"up_save\",\"up_save_as\",\"up_delete\",\"swap_module\",\"remove_module\"]) {",
@@ -458,11 +501,23 @@ const body = [
     "  seen[action] = calls.slice();",
     "}",
     "calls = [];",
+    "const listsRet = runComponentActionFromGrid(1, \"synth\", \"module_lists\");",
+    "const lists = { ret: listsRet, calls: calls.slice(), view, loadCalls,",
+    "                slot: moduleListsSlot, key: moduleListsKey, id: moduleListsModuleId,",
+    "                index: moduleListsMemberIndex, modalFlag: componentModalFromGrid };",
+    // A position with nothing in it has no module to file, so the action must
+    // decline rather than open a screen headed with an empty name.
+    "chainConfigs[2] = { synth: null };",
+    "calls = [];",
+    "const listsEmpty = { ret: runComponentActionFromGrid(2, \"synth\", \"module_lists\"),",
+    "                     calls: calls.slice() };",
+    "view = 0; componentModalFromGrid = false;",
+    "calls = [];",
     "const helpRet = runComponentActionFromGrid(1, \"synth\", \"module_help\");",
     "const help = { ret: helpRet, calls: calls.slice(), view, stack: helpNavStack,",
     "               detail: helpDetailScrollState, modalFlag: componentModalFromGrid,",
     "               retSlot: componentHelpReturnSlot, retKey: componentHelpReturnKey };",
-    "return { seen, setRecordCalls, help };",
+    "return { seen, setRecordCalls, help, lists, listsEmpty };",
 ].join("\n");
 
 let r;
@@ -486,8 +541,35 @@ for (const [action, want] of Object.entries(expect)) {
         fail(action + " expected to reach " + JSON.stringify(want) + ", reached " + JSON.stringify(got));
     }
 }
-console.log("  ok  runComponentActionFromGrid(): all six actions (up_load, up_save, " +
+console.log("  ok  runComponentActionFromGrid(): all six navigating actions (up_load, up_save, " +
             "up_save_as, up_delete, swap_module, remove_module) reach their real handlers");
+
+// module_lists: the SECOND action that does not converge on CHAIN_EDIT. It
+// leaves the grid, records the component it is filing so exitModuleLists can
+// come back to it, and must NOT raise componentModalFromGrid -- that flag
+// reconciles on a CHAIN_EDIT arrival this flow never makes, so leaving it up
+// fires it on somebody elses later one.
+const L = r.lists;
+if (L.ret !== true) fail("module_lists must report handled, got " + JSON.stringify(L.ret));
+if (!L.calls.includes("exitGrid"))
+    fail("module_lists must exit the param grid (exitParamPages), reached " + JSON.stringify(L.calls));
+if (L.view !== 9)
+    fail("module_lists must set the view to VIEWS.MODULE_LISTS, view is " + L.view);
+if (L.loadCalls !== 1)
+    fail("module_lists must (re)load the lists file exactly once on entry, loaded " + L.loadCalls + " times");
+if (L.slot !== 1 || L.key !== "synth" || L.id !== "obxd")
+    fail("module_lists must record slot/key/moduleId for the return, got " +
+         L.slot + "/" + JSON.stringify(L.key) + "/" + JSON.stringify(L.id));
+if (L.index !== 0) fail("module_lists must open the membership screen at row 0, got " + L.index);
+if (L.modalFlag !== false)
+    fail("module_lists must NOT raise componentModalFromGrid — its hand-off never arrives at " +
+         "CHAIN_EDIT, so that flag would fire on an unrelated arrival later");
+if (r.listsEmpty.ret !== false || r.listsEmpty.calls.length !== 0)
+    fail("module_lists on a position with no module must decline and do nothing, got " +
+         JSON.stringify(r.listsEmpty));
+console.log("  ok  module_lists: exits the grid onto VIEWS.MODULE_LISTS, records slot/key/" +
+            "moduleId, opens at row 0, declines on an empty position, and never raises " +
+            "componentModalFromGrid");
 
 // module_help: leaves the grid, seeds the help stack with EXACTLY ONE frame of
 // the module s own topics (so Back off it empties the stack and the reconcile
@@ -619,6 +701,612 @@ if (gone.retSlot !== -1) fail("...but it must still consume the pending return, 
 console.log("  ok  maybeReturnToComponentHelp(): Back off the last help frame returns to the " +
             "MODULE grid on the \"Module\" page with its menu open; inert while the viewer is " +
             "still open, with nothing pending, or when the position has emptied");
+' "$UI"
+
+# ============================================================================
+# 6c. BEHAVIOUR: exitModuleLists — Back off the membership screen returns to
+#     the MODULE grid page, clears the WHOLE session (not just the three
+#     variables that identify it), and refuses to re-enter a component editor
+#     for a position that has emptied.
+# ============================================================================
+
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+
+const grab = (name) => {
+    const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + "() out of shadow_ui.js");
+    return m[0];
+};
+
+const run = (setup) => {
+    const body = [
+        "let needsRedraw = false;",
+        "let entered = null;",
+        "function enterParamPages(slot, key, prefix, page, io, chrome, opts) {",
+        "  entered = { slot, key, prefix, page, io: !!io, chrome: !!chrome, opts };",
+        "}",
+        "function getComponentParamPrefix(k) { return k; }",
+        "function componentParamPagesIo() { return {}; }",
+        "function paramPagesChromeFor() { return {}; }",
+        "function getChainComponentModule(cfg, key) { return cfg && cfg[key]; }",
+        "let chainConfigs = { 1: { synth: { module: \"obxd\" } }, 2: {} };",
+        "let view = 0;",
+        "const VIEWS = { CHAIN_EDIT: 3 };",
+        "function setView(v) { view = v; }",
+        // The whole session, seeded DIRTY: a real visit leaves cursors moved,
+        // a target list named, and -- the one that matters -- a latched
+        // confirm-delete that would arm the next visit if it survived.
+        "let moduleListsSlot = -1;",
+        "let moduleListsKey = \"\";",
+        "let moduleListsModuleId = \"\";",
+        "let moduleListsEditIndex = 4;",
+        "let moduleListsActionIndex = 2;",
+        "let moduleListsTarget = \"Live\";",
+        "let moduleListsConfirmDelete = true;",
+        "let moduleListsPendingName = { existing: null, text: \"Live\" };",
+        setup,
+        grab("exitModuleLists"),
+        "exitModuleLists();",
+        "return { entered, view, slot: moduleListsSlot, key: moduleListsKey,",
+        "         id: moduleListsModuleId, editIndex: moduleListsEditIndex,",
+        "         actionIndex: moduleListsActionIndex, target: moduleListsTarget,",
+        "         confirmDelete: moduleListsConfirmDelete, pending: moduleListsPendingName };",
+    ].join("\n");
+    try {
+        return new Function(body)();
+    } catch (e) {
+        fail("exitModuleLists behaviour: " + e.message);
+    }
+};
+
+const ok = run("moduleListsSlot = 1; moduleListsKey = \"synth\"; moduleListsModuleId = \"obxd\";");
+if (!ok.entered) fail("Back off the membership screen must re-enter the component grid");
+if (ok.entered.slot !== 1 || ok.entered.key !== "synth")
+    fail("must return to the slot/component the lists were opened from, got " + JSON.stringify(ok.entered));
+if (ok.entered.page !== "Module")
+    fail("must land back on the \"Module\" page -- the row the user clicked -- got " +
+         JSON.stringify(ok.entered.page));
+if (!ok.entered.opts || ok.entered.opts.enter !== true)
+    fail("must land with the Module menu OPEN (restoreOpts.enter), got " + JSON.stringify(ok.entered.opts));
+if (ok.slot !== -1 || ok.key !== "" || ok.id !== "")
+    fail("the recorded slot/key/moduleId must be cleared, got " +
+         ok.slot + "/" + JSON.stringify(ok.key) + "/" + JSON.stringify(ok.id));
+
+// The rest of the session goes too. moduleListsConfirmDelete is a LATCH: left
+// armed, the next visit inherits a "yes, delete" nobody asked for.
+if (ok.confirmDelete !== false)
+    fail("exitModuleLists must disarm moduleListsConfirmDelete -- a latched confirm that " +
+         "survives the session arms the NEXT one");
+if (ok.editIndex !== 0 || ok.actionIndex !== 0 || ok.target !== "")
+    fail("exitModuleLists must reset the edit cursor, the action cursor and the target list, got " +
+         ok.editIndex + "/" + ok.actionIndex + "/" + JSON.stringify(ok.target));
+if (ok.pending !== null)
+    fail("exitModuleLists must drop any pending rejected name, got " + JSON.stringify(ok.pending));
+
+// The position emptied while the lists screen was up: re-entering a component
+// editor for a position with nothing in it is a contract read with nobody to
+// answer it, which the device draws as a permanent "Loading...".
+const gone = run("moduleListsSlot = 2; moduleListsKey = \"synth\"; moduleListsModuleId = \"obxd\";");
+if (gone.entered) fail("must not re-enter the grid for a position that no longer holds a module");
+if (gone.view !== 3) fail("an emptied position must land on VIEWS.CHAIN_EDIT, view is " + gone.view);
+if (gone.slot !== -1 || gone.confirmDelete !== false)
+    fail("...and it must still clear the session, got slot " + gone.slot +
+         ", confirmDelete " + gone.confirmDelete);
+
+// No session at all (slot -1) is the same answer: the editor, not a grid.
+const none = run("");
+if (none.entered) fail("with no recorded slot there is no grid to return to");
+if (none.view !== 3) fail("with no recorded slot the exit must land on VIEWS.CHAIN_EDIT, view is " + none.view);
+
+console.log("  ok  exitModuleLists(): returns to the MODULE grid page with its menu open, clears " +
+            "the WHOLE session (cursors, target, and the latched confirm-delete), and lands on " +
+            "CHAIN_EDIT rather than entering an editor for a position that has emptied");
+' "$UI"
+
+# ============================================================================
+# 6d. BEHAVIOUR: a REJECTED list name must leave the keyboard OPEN, carrying
+#     what the user typed — and a failed write must not be announced as a
+#     saved one.
+#
+# This is the regression test for a bug that read as correct: onConfirm called
+# moduleListsOpenNameEntry() again to reopen the keyboard, but text_entry.mjs
+# runs closeTextEntry() UNCONDITIONALLY after onConfirm returns, so the reopen
+# was torn down on the way out. A duplicate name announced "Name in use", the
+# keyboard vanished, and nothing was created -- exactly the failure the comment
+# above it said it existed to prevent. The stub below models that contract
+# (confirm = call onConfirm, then close, always), so the harness can only pass
+# if the reopen happens AFTER the callback returns.
+# ============================================================================
+
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const R = process.cwd();
+const src = readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
+
+const grab = (name) => {
+    const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + "() out of shadow_ui.js");
+    return m[0];
+};
+
+// The REAL model, imported rather than re-typed -- the rejection rule under
+// test (a case-insensitive duplicate) is its rule, not this files.
+const ML = await import(R + "/src/shared/module_lists.mjs");
+
+const body = [
+    "let needsRedraw = false;",
+    "let saveOk = true;",
+    "let saveCalls = 0;",
+    "function moduleListsSave() { saveCalls++; return saveOk; }",
+    "let spoken = [];",
+    "function announce(t) { spoken.push(t); }",
+    "let moduleListsTarget = \"\";",
+    "let moduleListsPendingName = null;",
+    // text_entry.mjs, modelled to its actual contract: open installs the
+    // callbacks and raises the flag; SPECIAL_CONFIRM calls onConfirm(buffer)
+    // and then closes, whatever the callback did.
+    "let entry = null;",
+    "function openTextEntry(opts) { entry = opts; }",
+    "function isTextEntryActive() { return entry !== null; }",
+    "function confirmWith(text) { const e = entry; e.onConfirm(text); entry = null; }",
+    grab("moduleListsOpenNameEntry"),
+    grab("moduleListsTickPendingName"),
+    "return {",
+    "  open: (existing, prefill) => moduleListsOpenNameEntry(existing, prefill),",
+    "  confirm: confirmWith,",
+    "  tick: () => moduleListsTickPendingName(),",
+    "  active: () => isTextEntryActive(),",
+    "  entry: () => entry,",
+    "  spoken: () => spoken,",
+    "  clearSpoken: () => { spoken = []; },",
+    "  saveCalls: () => saveCalls,",
+    "  setSaveOk: (v) => { saveOk = v; },",
+    "  target: () => moduleListsTarget,",
+    "  pending: () => moduleListsPendingName,",
+    "};",
+].join("\n");
+
+let h, state;
+try {
+    state = ML.emptyState();
+    ML.createList(state, "Live");
+    h = new Function("ModuleLists", "moduleListsState", body)(ML, state);
+} catch (e) {
+    fail("could not build the moduleListsOpenNameEntry harness: " + e.message);
+}
+
+// ---- 1. a rejected NEW name: the keyboard comes back, carrying the text ----
+h.open(null);
+if (h.entry().initialText !== "") fail("New List must open on an empty buffer, got " + JSON.stringify(h.entry().initialText));
+h.confirm("live");
+if (h.active())
+    fail("the confirm path closes the keyboard unconditionally -- a harness where it is still " +
+         "open here is not modelling text_entry.mjs and proves nothing");
+if (!h.spoken().includes("Name in use"))
+    fail("a duplicate name must say why, said " + JSON.stringify(h.spoken()));
+if (h.saveCalls() !== 0) fail("a rejected name must not write the file");
+h.tick();
+if (!h.active())
+    fail("a REJECTED name must leave the keyboard open -- reopening from inside onConfirm cannot " +
+         "work, because text_entry.mjs closes it after the callback returns");
+if (h.entry().initialText !== "live")
+    fail("the reopened keyboard must carry WHAT THE USER TYPED, not a blank buffer or the old " +
+         "name -- got " + JSON.stringify(h.entry().initialText));
+if (h.entry().title !== "New List")
+    fail("the reopened keyboard must still be the same one, got " + JSON.stringify(h.entry().title));
+if (h.pending() !== null) fail("servicing the pending name must consume it");
+
+// ---- 2. a rejected RENAME comes back with the typed text, not the old name --
+h.clearSpoken();
+h.open("Live");
+if (h.entry().initialText !== "Live") fail("Rename must open seeded with the current name");
+h.confirm("favorites");
+h.tick();
+if (!h.active()) fail("a rejected rename must leave the keyboard open");
+if (h.entry().initialText !== "favorites")
+    fail("a rejected rename must come back with the TYPED text, not the old name -- got " +
+         JSON.stringify(h.entry().initialText));
+if (h.entry().title !== "Rename List") fail("...still the rename keyboard");
+
+// ---- 3. an accepted name writes, and a FAILED write is not a saved one -----
+h.clearSpoken();
+h.open(null);
+h.confirm("Studio");
+h.tick();
+if (h.active()) fail("an accepted name must not reopen the keyboard");
+if (h.saveCalls() !== 1) fail("an accepted name must write once, wrote " + h.saveCalls() + " times");
+if (h.spoken().join("|") !== "Created Studio")
+    fail("a successful create announces the creation, said " + JSON.stringify(h.spoken()));
+
+h.clearSpoken();
+h.setSaveOk(false);
+h.open(null);
+h.confirm("Rehearsal");
+if (h.spoken().length !== 1 || !/save failed/i.test(h.spoken()[0]))
+    fail("a FAILED write must not be announced as a persisted change -- the boolean " +
+         "moduleListsSave() returns is the only report there is, and discarding it announces " +
+         "a save that did not happen. Said " + JSON.stringify(h.spoken()));
+
+console.log("  ok  moduleListsOpenNameEntry(): a rejected name leaves the keyboard OPEN (deferred " +
+            "past text_entry.mjs unconditional close) carrying the typed text, and a failed write " +
+            "is announced as a failure rather than as a save");
+' "$UI"
+
+# The deferral only works if tick() actually services it -- a pending name
+# recorded and never re-offered is the same vanished keyboard, one layer down.
+command grep -q "moduleListsTickPendingName()" "$UI" || \
+    fail "nothing calls moduleListsTickPendingName() -- a rejected name would be recorded and never re-offered"
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const at = src.indexOf("globalThis.tick = function()");
+if (at < 0) { console.log("FAIL: could not find globalThis.tick"); process.exit(1); }
+if (src.indexOf("moduleListsTickPendingName();", at) < 0) {
+    console.log("FAIL: globalThis.tick() must service moduleListsPendingName -- the reopen " +
+                "cannot happen inside onConfirm, so if the tick does not run it, it never runs");
+    process.exit(1);
+}
+console.log("  ok  globalThis.tick() services the pending rejected name");
+' "$UI"
+
+# ============================================================================
+# 6e. BEHAVIOUR: the per-list actions screen — which rows a list offers, the
+#     confirm LATCH, and the save-failure branches.
+#
+# Three of these are rules that would regress SILENTLY:
+#
+#  - Favorites offers Clear ALONE. Rename and Delete are absent, not present
+#    and refusing: a row that answers a click by doing nothing teaches that
+#    the screen is broken. A regression here draws two extra rows that look
+#    exactly like working ones until they are clicked.
+#  - Back with the confirm up is "No". It must cancel and delete NOTHING --
+#    and it must not also leave the screen, because the overlay is what the
+#    press was answering.
+#  - a Delete or Clear whose write FAILED must not be announced as a saved
+#    one. moduleListsSave() returning false is the only report there is; the
+#    plan text discarded it, which is the same defect class as
+#    move_midi_internal_send returning true on a discarded write.
+# ============================================================================
+
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const R = process.cwd();
+const src = readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.error("FAIL: " + m); process.exit(1); };
+
+const grab = (name) => {
+    const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + "() out of shadow_ui.js");
+    return m[0];
+};
+
+// The REAL model, imported rather than re-typed: whether Favorites is
+// protected, and what a delete does to the state, are its rules.
+const ML = await import(R + "/src/shared/module_lists.mjs");
+
+const body = [
+    "let needsRedraw = false;",
+    "let saveOk = true;",
+    "let saveCalls = 0;",
+    "function moduleListsSave() { saveCalls++; return saveOk; }",
+    "let spoken = [];",
+    "function announce(t) { spoken.push(t); }",
+    "let view = 0;",
+    "const VIEWS = { MODULE_LISTS: 1, MODULE_LISTS_EDIT: 2, MODULE_LISTS_ACTIONS: 3 };",
+    "function setView(v) { view = v; }",
+    "let renameOpened = null;",
+    "function moduleListsOpenNameEntry(existing, prefill) { renameOpened = { existing, prefill }; }",
+    grab("moduleListsEditRows"),
+    grab("moduleListsEditRowLabel"),
+    grab("moduleListsClampEditIndex"),
+    grab("moduleListsRows"),
+    grab("moduleListsRowLabel"),
+    grab("moduleListsClampMemberIndex"),
+    grab("moduleListsActionRows"),
+    grab("moduleListsSelectAction"),
+    grab("moduleListsActionsBack"),
+    "return {",
+    "  actionRows: () => moduleListsActionRows(),",
+    "  editRows: () => moduleListsEditRows(),",
+    "  rows: () => moduleListsRows(),",
+    "  select: () => moduleListsSelectAction(),",
+    "  back: () => moduleListsActionsBack(),",
+    "  clampIndex: () => moduleListsClampMemberIndex(),",
+    "  view: () => view,",
+    "  spoken: () => spoken,",
+    "  clearSpoken: () => { spoken = []; },",
+    "  saveCalls: () => saveCalls,",
+    "  setSaveOk: (v) => { saveOk = v; },",
+    "  setTarget: (v) => { moduleListsTarget = v; },",
+    "  target: () => moduleListsTarget,",
+    "  setConfirm: (v) => { moduleListsConfirmDelete = v; },",
+    "  confirm: () => moduleListsConfirmDelete,",
+    "  setActionIndex: (v) => { moduleListsActionIndex = v; },",
+    "  actionIndex: () => moduleListsActionIndex,",
+    "  setEditIndex: (v) => { moduleListsEditIndex = v; },",
+    "  editIndex: () => moduleListsEditIndex,",
+    "  setIndex: (v) => { moduleListsMemberIndex = v; },",
+    "  index: () => moduleListsMemberIndex,",
+    "  renameOpened: () => renameOpened,",
+    "};",
+].join("\n");
+
+const build = (state) => {
+    try {
+        return new Function("ModuleLists", "moduleListsState", "moduleListsModuleId",
+                            "moduleListsTarget", "moduleListsConfirmDelete",
+                            "moduleListsActionIndex", "moduleListsEditIndex",
+                            "moduleListsMemberIndex", body)(
+            ML, state, "obxd", "", false, 0, 0, 0);
+    } catch (e) {
+        fail("could not build the module-lists actions harness: " + e.message);
+    }
+};
+
+const seed = () => {
+    const s = ML.emptyState();
+    ML.createList(s, "Live");
+    ML.createList(s, "Studio");
+    ML.toggleMembership(s, "Favorites", "obxd");
+    ML.toggleMembership(s, "Live", "obxd");
+    return s;
+};
+
+/* ---- 1. Favorites offers Clear ALONE ---------------------------------- */
+let h = build(seed());
+h.setTarget("Favorites");
+let names = h.actionRows().map((r) => r.name);
+if (JSON.stringify(names) !== JSON.stringify(["Clear"]))
+    fail("Favorites must offer Clear ALONE -- Rename and Delete ABSENT, not present and " +
+         "refusing a click. Got " + JSON.stringify(names));
+// The case-insensitive half of the same rule: the protection is the models,
+// so a list a user typed in lower case is the same protected list.
+h.setTarget("favorites");
+names = h.actionRows().map((r) => r.name);
+if (JSON.stringify(names) !== JSON.stringify(["Clear"]))
+    fail("the Favorites protection compares names case-INSENSITIVELY (isProtected), so " +
+         "\"favorites\" must offer Clear alone too. Got " + JSON.stringify(names));
+h.setTarget("Live");
+names = h.actionRows().map((r) => r.name);
+if (JSON.stringify(names) !== JSON.stringify(["Rename", "Delete", "Clear"]))
+    fail("an ordinary list must offer all three actions, got " + JSON.stringify(names));
+
+/* ---- 2. Delete ARMS a confirm; it does not delete ---------------------- */
+h = build(seed());
+h.setTarget("Live");
+h.setActionIndex(1);              // Delete
+h.select();
+if (h.confirm() !== true) fail("clicking Delete must raise the confirm, not delete");
+if (h.saveCalls() !== 0) fail("arming the confirm must not write the file");
+if (h.editRows().length !== 3) fail("arming the confirm must not remove the list");
+if (!h.spoken().join("|").includes("Delete Live?"))
+    fail("arming the confirm must ASK, said " + JSON.stringify(h.spoken()));
+
+/* ---- 3. Back with the confirm up cancels, and deletes NOTHING ---------- */
+h.clearSpoken();
+h.back();
+if (h.confirm() !== false) fail("Back with the confirm up must disarm it");
+if (h.view() !== 0)
+    fail("Back is answering the OVERLAY, so it must not also leave the actions screen -- " +
+         "view moved to " + h.view());
+if (h.editRows().map((r) => r.name).join(",") !== "Favorites,Live,Studio")
+    fail("Back with the confirm up must leave the list INTACT, got " +
+         JSON.stringify(h.editRows().map((r) => r.name)));
+if (h.saveCalls() !== 0) fail("a cancelled delete must not write the file");
+if (!/^Cancelled, Live, Delete$/.test(h.spoken().join("|")))
+    fail("a cancelled delete must SAY it was cancelled and then where the user is -- announcing " +
+         "the bare target repeats the word already in the header, so a cancel reads as a stray " +
+         "repeat. Said " + JSON.stringify(h.spoken()));
+// And the next click must be the ordinary row action again, not the delete
+// the latch was holding.
+h.select();
+if (h.editRows().length !== 3)
+    fail("the click after a cancelled confirm must NOT delete -- the latch was disarmed, " +
+         "so the click belongs to the Delete row and re-arms");
+if (h.confirm() !== true) fail("...it re-arms the confirm instead");
+
+/* ---- 4. Confirming deletes, writes, and lands on the Edit screen ------- */
+h.clearSpoken();
+h.select();
+if (h.confirm() !== false) fail("confirming must disarm the latch");
+if (h.editRows().map((r) => r.name).join(",") !== "Favorites,Studio")
+    fail("a confirmed delete must remove the list, got " +
+         JSON.stringify(h.editRows().map((r) => r.name)));
+if (h.saveCalls() !== 1) fail("a confirmed delete must write once, wrote " + h.saveCalls());
+if (h.spoken().join("|") !== "Deleted Live. Edit Lists, Favorites, 1 module")
+    fail("a successful delete announces the deletion AND the screen it lands on with the row " +
+         "under the resolved cursor -- the cursor has just slid onto a list the user did not " +
+         "choose, and announce() is not a queue so it has to be ONE call. Said " +
+         JSON.stringify(h.spoken()));
+if (h.view() !== 2) fail("a confirmed delete returns to the Edit Lists screen, view " + h.view());
+if (h.target() !== "") fail("a confirmed delete clears the target, got " + JSON.stringify(h.target()));
+
+/* ---- 5. A delete that SHRINKS the screens leaves both cursors in range -- */
+// The Edit cursor first: it was sitting on the last of three rows, and the
+// list it pointed at is the one that just went.
+h = build(seed());
+h.setTarget("Studio");
+h.setEditIndex(2);
+h.setActionIndex(1);
+h.select();                       // arm
+h.select();                       // confirm
+if (h.editRows().length !== 2) fail("the delete did not take");
+if (h.editIndex() !== 1)
+    fail("a delete that shrinks the Edit screen must re-resolve its cursor -- index " +
+         h.editIndex() + " against " + h.editRows().length + " rows");
+// Then the membership cursor, on the way back out to MODULE_LISTS. Its rows
+// are the lists PLUS the two management doors, so a delete shrinks it too.
+h.setIndex(4);                    // the last row of the pre-delete screen
+h.clampIndex();
+if (h.index() !== 3)
+    fail("a delete that shrinks the membership screen must leave moduleListsMemberIndex in RANGE " +
+         "on the way back -- index " + h.index() + " against " + h.rows().length + " rows");
+if (h.rows()[h.index()] === undefined)
+    fail("moduleListsMemberIndex must address a row that EXISTS, so the label and the click do not " +
+         "read undefined");
+
+/* ---- 6. A FAILED write is not announced as a saved one ----------------- */
+h = build(seed());
+h.setSaveOk(false);
+h.setTarget("Live");
+h.setActionIndex(1);
+h.select();                       // arm
+h.clearSpoken();
+h.select();                       // confirm
+if (h.spoken().length !== 1 || !/save failed/i.test(h.spoken()[0]))
+    fail("a DELETE whose write failed must not be announced as a persisted one -- the boolean " +
+         "moduleListsSave() returns is the only report there is. Said " + JSON.stringify(h.spoken()));
+
+h = build(seed());
+h.setSaveOk(false);
+h.setTarget("Favorites");
+h.setActionIndex(0);              // Clear, the only row Favorites offers
+h.clearSpoken();
+h.select();
+if (h.spoken().length !== 1 || !/save failed/i.test(h.spoken()[0]))
+    fail("a CLEAR whose write failed must not be announced as a persisted one, said " +
+         JSON.stringify(h.spoken()));
+
+/* ---- 7. ...and a successful Clear says so, once ------------------------ */
+h = build(seed());
+h.setTarget("Favorites");
+h.setActionIndex(0);
+h.select();
+if (h.saveCalls() !== 1) fail("Clear must write once, wrote " + h.saveCalls());
+if (h.spoken().join("|") !== "Cleared Favorites")
+    fail("a successful clear announces the clear, said " + JSON.stringify(h.spoken()));
+if (h.editRows()[0].value !== "0")
+    fail("Clear must empty the members -- the Edit row still reads " + h.editRows()[0].value);
+
+/* ---- 8. Rename seeds the keyboard with the CURRENT name ---------------- */
+h = build(seed());
+h.setTarget("Live");
+h.setActionIndex(0);              // Rename
+h.select();
+const opened = h.renameOpened();
+if (!opened) fail("Rename must open the keyboard");
+if (opened.existing !== "Live")
+    fail("Rename must open seeded with the CURRENT name, got " + JSON.stringify(opened.existing));
+if (h.saveCalls() !== 0) fail("opening the rename keyboard must not write anything");
+
+/* ---- 9. Back with NO confirm up: one level out, cursor re-resolved -------- */
+// Every Back test above runs with the latch ARMED, so the ordinary branch --
+// the clamp, the setView and the announce -- was never executed by anything.
+h = build(seed());
+h.setTarget("Studio");
+h.setEditIndex(9);                // out of range for a 3-row screen
+h.setActionIndex(0);
+h.clearSpoken();
+h.back();
+if (h.confirm() !== false) fail("Back with no confirm up must leave the latch disarmed");
+if (h.view() !== 2)
+    fail("Back with no confirm up must leave the actions screen for Edit Lists, view " + h.view());
+if (h.editIndex() !== 2)
+    fail("Back must re-resolve the Edit cursor on the way -- it was out of range at 9 and the " +
+         "screen has " + h.editRows().length + " rows, got " + h.editIndex());
+if (h.spoken().join("|") !== "Edit Lists, Studio, 0 modules")
+    fail("Back must name the screen AND the row under the resolved cursor, as every other " +
+         "arrival on that screen does. Said " + JSON.stringify(h.spoken()));
+
+console.log("  ok  the per-list actions screen: Favorites offers Clear ALONE (case-insensitively), " +
+            "Delete arms a confirm that Back cancels without deleting, a confirmed delete " +
+            "re-resolves both shrunken cursors, a failed write is announced as a failure, and " +
+            "both Back branches say what changed and where the user landed");
+' "$UI"
+
+# The membership cursor is clamped by the BACK case, not by the drawer -- a
+# clamp that exists and is never called is the out-of-range row it was written
+# to prevent.
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const at = src.indexOf("case VIEWS.MODULE_LISTS_EDIT:\n            /*");
+const seg = at < 0 ? "" : src.slice(at, at + 600);
+const clamp = seg.indexOf("moduleListsClampMemberIndex()");
+const set = seg.indexOf("setView(VIEWS.MODULE_LISTS)");
+if (at < 0 || clamp < 0 || set < 0 || clamp > set) {
+    console.log("FAIL: handleBack on MODULE_LISTS_EDIT must call moduleListsClampMemberIndex() BEFORE " +
+                "returning to MODULE_LISTS -- a delete on the Edit screen removed a row from the " +
+                "screen below, and the label read on arrival is taken at the old index");
+    process.exit(1);
+}
+console.log("  ok  Back off Edit Lists re-resolves the membership cursor before returning");
+' "$UI"
+
+# Three rules in the module-lists wiring that a behaviour harness cannot see,
+# because they live in switch cases node cannot load.
+#
+#  - the three views must be drawn from the MAIN render switch, not only from
+#    dispatchCoRunDraw(). This exact mistake has already been made once here:
+#    PARAM_PAGES landed its case in the co-run dispatcher alone, the wiring
+#    test passed because it only asked whether the case existed ANYWHERE, and
+#    on device the view was entered, the controller ran, pages were announced,
+#    and nothing was ever drawn. See tests/host/test_param_pages_wiring.sh.
+#  - the confirm LATCH must be cleared when the actions screen is ENTERED.
+#    Inheriting it means the first click on a freshly opened list deletes it.
+#  - the jog must be refused while the confirm is up: it is drawn LAST so it
+#    is fed FIRST, and a cursor that moves under an overlay changes which row
+#    the Back that dismisses it announces.
+node -e '
+const fs = require("fs");
+const s = fs.readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+
+const tickAt = s.indexOf("globalThis.tick = function()");
+if (tickAt < 0) fail("could not locate globalThis.tick to check the render switch");
+for (const view of ["MODULE_LISTS", "MODULE_LISTS_EDIT", "MODULE_LISTS_ACTIONS"]) {
+    const re = new RegExp("case VIEWS\\." + view + ":(?![A-Z_])", "g");
+    const at = [...s.matchAll(re)].map((m) => m.index);
+    const draws = at.filter((i) => /draw[A-Za-z]*\(\)/.test(s.slice(i, i + 120)));
+    if (!draws.length) fail(view + " is never drawn");
+    if (!draws.some((i) => i > tickAt)) {
+        fail(view + " is only drawn from the co-run dispatcher -- the main render switch " +
+             "inside globalThis.tick has no case, so entering the view draws NOTHING. That " +
+             "is the PARAM_PAGES bug, one view over.");
+    }
+}
+
+/* The latch is cleared on ENTRY to the actions screen, before the setView. */
+{
+    /* Two cases open with this line -- the jog and the click. The click is
+     * the one that ENTERS the actions screen, so it is the one whose body
+     * contains the setView. */
+    const cases = [...s.matchAll(/case VIEWS\.MODULE_LISTS_EDIT: \{/g)].map((m) => m.index);
+    const at = cases.find((i) => s.slice(i, i + 1400).includes("setView(VIEWS.MODULE_LISTS_ACTIONS)"));
+    if (at === undefined) fail("could not find the MODULE_LISTS_EDIT select case");
+    const seg = s.slice(at, at + 1400);
+    const clear = seg.indexOf("moduleListsConfirmDelete = false");
+    const set = seg.indexOf("setView(VIEWS.MODULE_LISTS_ACTIONS)");
+    if (clear < 0 || set < 0 || clear > set) {
+        fail("clicking a list must DISARM moduleListsConfirmDelete before entering the " +
+             "actions screen -- the latch is inherited otherwise, and the first click on a " +
+             "freshly opened list deletes it without asking");
+    }
+}
+
+/* The jog is refused while the confirm is up. */
+{
+    const at = s.indexOf("case VIEWS.MODULE_LISTS_ACTIONS: {");
+    if (at < 0) fail("could not find the MODULE_LISTS_ACTIONS jog case");
+    const seg = s.slice(at, at + 700);
+    const guard = seg.indexOf("if (moduleListsConfirmDelete) break;");
+    const move = seg.indexOf("moduleListsActionIndex = Math.max");
+    if (guard < 0 || move < 0 || guard > move) {
+        fail("the jog must early-out on moduleListsConfirmDelete BEFORE moving the cursor -- " +
+             "the overlay is drawn LAST so it is fed FIRST, and a cursor that moves underneath " +
+             "it changes which row the Back that dismisses it announces");
+    }
+}
+
+console.log("  ok  all three module-lists views are drawn from the MAIN render switch, the " +
+            "confirm latch is disarmed on entry, and the jog is refused while it is up");
 ' "$UI"
 
 # ============================================================================
