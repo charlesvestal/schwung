@@ -822,10 +822,7 @@ inline is how this file got to 151 KB.
 - `docs/LOGGING.md` — Unified logging
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
-- `docs/SYSEX.md` — **SysEx, both directions.** The USB-C test rig (Standalone Port = cable 2, no external gear), the packet encoding both send doors take, and the assembler rules. Three claims worth knowing before you debug a report:
-  - **A chain slot is WRITE-ONLY for SysEx.** Both cable-2 dispatchers drop CINs `0x04`–`0x07` before any channel filter, and the one SysEx path to JS is gated on `overtake_mode`. An editor built as a slot module waits forever; no encoding fix helps.
-  - **The inbound ceiling is the sender's BURST RATE, not the message size.** 400/512/632 B all truncate at exactly 381 B, which reads as a hard cap — but two 316 B messages 100 ms apart both arrive intact. It is an XMOS FIFO below anything the host controls, and DIN devices are too slow to reach it, so it does not explain #358.
-  - **`shadow_inject_ui_midi_out` used to DESTROY anything past 20 packets** — memset its source before placing, no counter, no log. See `ui_midi_out_carry.h`.
+- `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)
