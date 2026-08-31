@@ -87,6 +87,10 @@ import { drawChainEditorBands, drawChainPicker, drawListScreen, shiftHintsFor,
  * handed a row: what each key IS (metaIndex) and which cells a viz group
  * covers. Both are pure and both are already on the device for the knob grid. */
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
+/* Pixel-fitting for text this file hands to a drawer that does not fit its own
+ * -- drawConfirmOverlay CENTRES its message lines and asks the caller to have
+ * wrapped them, so an over-wide one starts at a negative x. */
+import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
@@ -2110,7 +2114,7 @@ let moduleListsCorrupt = false;     /* true = never write */
 let moduleListsSlot = -1;           /* the component this session is filing */
 let moduleListsKey = "";
 let moduleListsModuleId = "";
-let moduleListsIndex = 0;           /* cursor on the membership screen */
+let moduleListsMemberIndex = 0;     /* cursor on the membership screen */
 let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
 let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
 let moduleListsTarget = "";         /* the list the actions screen is acting on */
@@ -2122,7 +2126,7 @@ let moduleListsConfirmDelete = false;
  * onConfirm(buffer) and then runs closeTextEntry() UNCONDITIONALLY on the way
  * out, so a keyboard opened inside the callback is torn down microseconds
  * later -- the screen vanishes, nothing is created, and with padSelect on the
- * pad LEDs are left wearing the keyboard`s own colours (the reopen snapshots
+ * pad LEDs are left wearing the keyboard's own colours (the reopen snapshots
  * them while they are up, and the trailing close restores that snapshot).
  * Recorded here and served one tick later, after the teardown has run.
  */
@@ -2147,7 +2151,7 @@ function moduleListsSave() {
  *
  * The load is cached for the life of the process, and unlike moduleHelpCache
  * beside it that cache CAN go stale: module_lists.json lives under
- * /data/UserData and schwung-manager`s file browser can replace it while we
+ * /data/UserData and schwung-manager's file browser can replace it while we
  * are running. The consequence is bounded and self-correcting — a count on one
  * row is behind until the next entry to the lists screen, which reloads — so
  * it is stated here rather than paid for with a read per plan.
@@ -2354,7 +2358,21 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             moduleListsSlot = slotIndex;
             moduleListsKey = componentKey;
             moduleListsModuleId = moduleId;
-            moduleListsIndex = 0;
+            moduleListsMemberIndex = 0;
+            /* The same reset exitModuleLists() does, done again HERE because
+             * this site is unconditional and that one is not. Back is the only
+             * exit we WROTE, but it is not the only way a session can end: a
+             * hardware shortcut (Shift+Vol+Track, Shift+Vol+Menu) leaves the
+             * view without passing through it, and moduleListsConfirmDelete is
+             * a LATCH -- a session abandoned on an armed "yes, delete" hands
+             * the arming to the next one. Inert today only because re-entry
+             * happens to land on the membership screen, which is a fact about
+             * the current wiring rather than a rule. */
+            moduleListsEditIndex = 0;
+            moduleListsActionIndex = 0;
+            moduleListsTarget = "";
+            moduleListsConfirmDelete = false;
+            moduleListsPendingName = null;
             setView(VIEWS.MODULE_LISTS);
             needsRedraw = true;
             /* Say it ONCE, on the way in, when a corrupt file means nothing
@@ -2569,15 +2587,20 @@ function moduleListsEnsureLoaded() {
 }
 
 /*
- * Clamp the cursor to the rows that exist NOW.
+ * Clamp the MEMBERSHIP screen's cursor to the rows that exist NOW.
+ *
+ * Named for the cursor it MOVES, not for the screen that calls it: its call
+ * site is the Back case of the EDIT screen, where a bare "clamp the index"
+ * reads as that screen's own cursor -- which is the other one,
+ * moduleListsClampEditIndex().
  *
  * Rows come and go while a lists session is open (deleting a list on the Edit
  * screen removes one), so every arrival back on this screen must re-resolve
  * the cursor rather than trust the index it left with.
  */
-function moduleListsClampIndex() {
+function moduleListsClampMemberIndex() {
     const n = moduleListsRows().length;
-    moduleListsIndex = Math.max(0, Math.min(n > 0 ? n - 1 : 0, moduleListsIndex));
+    moduleListsMemberIndex = Math.max(0, Math.min(n > 0 ? n - 1 : 0, moduleListsMemberIndex));
 }
 
 function moduleListsRowLabel(i) {
@@ -2594,7 +2617,7 @@ function drawModuleLists() {
         headerLeft: getModuleDisplayName(moduleListsModuleId),
         headerRight: "LISTS",
         entries: moduleListsRows(),
-        index: moduleListsIndex,
+        index: moduleListsMemberIndex,
         footer: [["JOG", "SEL"], ["CLK", "TOGGLE"], ["BACK", "MODULE"]],
     });
 }
@@ -2631,7 +2654,7 @@ function moduleListsOpenNameEntry(existing, prefill) {
             /* A write that did not happen must not be announced as one. The
              * change IS in memory and the row will show it, so the
              * announcement says both halves rather than replacing the result
-             * with the failure -- same rule as up_save`s "Save failed", one
+             * with the failure -- same rule as up_save's "Save failed", one
              * step less destructive. */
             const saved = moduleListsSave();
             if (existing) moduleListsTarget = String(text).trim();
@@ -2647,7 +2670,7 @@ function moduleListsOpenNameEntry(existing, prefill) {
  * Re-offer a rejected name, one tick after the rejection.
  *
  * Called from tick() rather than from onConfirm for the reason recorded on
- * moduleListsPendingName: the keyboard`s own confirm path tears itself down
+ * moduleListsPendingName: the keyboard's own confirm path tears itself down
  * after the callback returns, so anything opened inside the callback is
  * closed by the caller that invoked it.
  */
@@ -2733,6 +2756,24 @@ function moduleListsEditRows() {
 }
 
 /*
+ * The Edit Lists row under the cursor, as spoken.
+ *
+ * One definition for the three places that say it -- the jog, Back off the
+ * actions screen, and the arrival after a confirmed delete -- because they are
+ * the same sentence about the same row and drifted wording between them reads
+ * as three different screens.
+ *
+ * The count carries its NOUN. "Live, 2" is two of what: the sibling screen one
+ * press out speaks "Favorites, on", so a bare number in that same position
+ * reads as another state word.
+ */
+function moduleListsEditRowLabel() {
+    const r = moduleListsEditRows()[moduleListsEditIndex];
+    if (!r) return "";
+    return `${r.name}, ${r.value} module${r.value === "1" ? "" : "s"}`;
+}
+
+/*
  * Clamp the Edit Lists cursor to the rows that exist NOW — a delete removes
  * one out from under it, and the screen is arrived at again immediately
  * afterwards.
@@ -2760,7 +2801,7 @@ function drawModuleListsEdit() {
  * / Move Right off a position with nowhere to go.
  *
  * isProtected() is asked, not re-derived — the name comparison is
- * case-insensitive and that rule is the model`s, not this file`s.
+ * case-insensitive and that rule is the model's, not this file's.
  */
 function moduleListsActionRows() {
     const rows = [];
@@ -2772,6 +2813,11 @@ function moduleListsActionRows() {
     return rows;
 }
 
+/* The widest a drawConfirmOverlay message line may be. Its box is
+ * STATUS_OVERLAY_WIDTH (120) with a 2px double border, so 116 is the ink; 112
+ * keeps a pixel of air either side. */
+const CONFIRM_TEXT_W = 112;
+
 function drawModuleListsActions() {
     clear_screen();
     const ctx = { fillRect: fill_rect, print, textWidth: text_width };
@@ -2780,15 +2826,30 @@ function drawModuleListsActions() {
         entries: moduleListsActionRows(),
         index: moduleListsActionIndex,
         /* BACK names where Back ACTUALLY goes (FOOTER_CANON): the Edit Lists
-         * screen, not the membership screen one further out. */
-        footer: [["JOG", "SEL"], ["CLK", "DO"], ["BACK", "EDIT"]],
+         * screen, not the membership screen one further out.
+         *
+         * ...and while the confirm is up, Back goes somewhere ELSE, so the
+         * footer says so. drawConfirmOverlay's box is y=10..54 and FOOTER_Y is
+         * 57, so this row stays VISIBLE underneath it: leaving it be put two
+         * footers on one screen disagreeing about BACK, over a JOG that the
+         * overlay has deliberately made inert. */
+        footer: moduleListsConfirmDelete
+            ? [["CLK", "YES"], ["BACK", "NO"]]
+            : [["JOG", "SEL"], ["CLK", "DO"], ["BACK", "EDIT"]],
     });
     /* Drawn LAST, so it is fed FIRST — see moduleListsSelectAction() and the
      * jog case, which early-out on moduleListsConfirmDelete before reading
      * the rows. The draw order and the input order are the reverse of each
      * other, and nothing at either site says so. */
     if (moduleListsConfirmDelete) {
-        drawConfirmOverlay("Delete List", [moduleListsTarget + "?"], "CLK=Yes  BACK=No");
+        /* FITTED. drawConfirmOverlay centres its message lines and documents
+         * that the caller wraps them; nothing caps a list name at entry, so an
+         * unfitted one starts at a NEGATIVE x and runs out both sides of a box
+         * that is 120 wide with a 2px double border. The header above it is
+         * fine -- drawHeader fits in pixels itself. */
+        drawConfirmOverlay("Delete List",
+                           [fitText(ctx, moduleListsTarget + "?", CONFIRM_TEXT_W)],
+                           "CLK=Yes  BACK=No");
     }
 }
 
@@ -2811,16 +2872,20 @@ function moduleListsSelectAction() {
         moduleListsConfirmDelete = false;
         const name = moduleListsTarget;
         const r = ModuleLists.deleteList(moduleListsState, name);
-        if (!r.ok) {
-            announce(r.err || "Delete failed");
-        } else {
-            const saved = moduleListsSave();
-            announce("Deleted " + name + (saved ? "" : ", save failed"));
-        }
+        const saved = r.ok ? moduleListsSave() : false;
         moduleListsTarget = "";
         moduleListsActionIndex = 0;
         moduleListsClampEditIndex();
         setView(VIEWS.MODULE_LISTS_EDIT);
+        /* Name the ARRIVAL as well as the action, in ONE announce() -- the
+         * announcer is not a queue, so a second call replaces this rather than
+         * following it. Every other arrival in this feature says screen + row,
+         * and a delete is the one that moves the cursor onto a list the user
+         * did not choose: "Deleted Live" alone leaves them two words and an
+         * unnamed screen. Read AFTER the clamp, so it is the resolved row. */
+        announce((r.ok ? "Deleted " + name + (saved ? "" : ", save failed")
+                       : (r.err || "Delete failed")) +
+                 ". Edit Lists, " + moduleListsEditRowLabel());
         needsRedraw = true;
         return;
     }
@@ -2853,11 +2918,18 @@ function moduleListsSelectAction() {
 function moduleListsActionsBack() {
     if (moduleListsConfirmDelete) {
         moduleListsConfirmDelete = false;
-        announce(moduleListsTarget);
+        /* "state change, then where you are" -- the grammar its neighbours
+         * use. Announcing the target alone said "Live", which is the word
+         * already in the header, so a cancel was indistinguishable from a
+         * stray repeat and never said the delete had been called off. */
+        const row = moduleListsActionRows()[moduleListsActionIndex];
+        announce("Cancelled, " + moduleListsTarget + (row ? ", " + row.name : ""));
     } else {
         moduleListsClampEditIndex();
         setView(VIEWS.MODULE_LISTS_EDIT);
-        announce("Edit Lists");
+        /* The screen AND the row under the cursor, as every other arrival on
+         * this screen does -- the row can have moved while we were away. */
+        announce("Edit Lists, " + moduleListsEditRowLabel());
     }
     needsRedraw = true;
 }
@@ -16677,16 +16749,15 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.MODULE_LISTS: {
             moduleListsEnsureLoaded();
             const rows = moduleListsRows();
-            moduleListsIndex = Math.max(0, Math.min(rows.length - 1, moduleListsIndex + delta));
-            announceMenuItem("List", moduleListsRowLabel(moduleListsIndex));
+            moduleListsMemberIndex = Math.max(0, Math.min(rows.length - 1, moduleListsMemberIndex + delta));
+            announceMenuItem("List", moduleListsRowLabel(moduleListsMemberIndex));
             break;
         }
         case VIEWS.MODULE_LISTS_EDIT: {
             moduleListsEnsureLoaded();
             const rows = moduleListsEditRows();
             moduleListsEditIndex = Math.max(0, Math.min(rows.length - 1, moduleListsEditIndex + delta));
-            const r = rows[moduleListsEditIndex];
-            if (r) announceMenuItem("List", `${r.name}, ${r.value}`);
+            if (rows[moduleListsEditIndex]) announceMenuItem("List", moduleListsEditRowLabel());
             break;
         }
         case VIEWS.MODULE_LISTS_ACTIONS: {
@@ -17215,9 +17286,9 @@ function handleSelect() {
             break;
         case VIEWS.MODULE_LISTS: {
             moduleListsEnsureLoaded();
-            moduleListsClampIndex();
+            moduleListsClampMemberIndex();
             const rows = moduleListsRows();
-            const row = rows[moduleListsIndex];
+            const row = rows[moduleListsMemberIndex];
             if (!row) break;
             if (row.kind === "toggle") {
                 const on = ModuleLists.toggleMembership(moduleListsState, row.name, moduleListsModuleId);
@@ -17272,7 +17343,12 @@ function handleSelect() {
              * list on the next click. */
             moduleListsConfirmDelete = false;
             setView(VIEWS.MODULE_LISTS_ACTIONS);
-            announce(`${r.name}, ${(moduleListsActionRows()[0] || {}).name || ""}`);
+            /* moduleListsActionRows() always returns at least Clear, so this
+             * guard is unreachable -- the same shape and the same reason as
+             * the lists[0] one above. Its fallback is the word it would have
+             * found rather than "", because "" speaks a dangling "Live, " and
+             * teaches that the screen has no rows. */
+            announce(`${r.name}, ${(moduleListsActionRows()[0] || {}).name || "Clear"}`);
             needsRedraw = true;
             break;
         }
@@ -18000,9 +18076,9 @@ function handleBack() {
         case VIEWS.MODULE_LISTS_EDIT:
             /* One level per press, and the cursor is re-resolved on the way:
              * a delete on this screen removed a row from the one below. */
-            moduleListsClampIndex();
+            moduleListsClampMemberIndex();
             setView(VIEWS.MODULE_LISTS);
-            announce("Add to List, " + moduleListsRowLabel(moduleListsIndex));
+            announce("Add to List, " + moduleListsRowLabel(moduleListsMemberIndex));
             needsRedraw = true;
             break;
         case VIEWS.MODULE_LISTS_ACTIONS:
