@@ -116,6 +116,10 @@ uint8_t shadow_chain_remap_channel(int slot, uint8_t status);
  * (they receive MIDI via the direct MIDI_IN path instead). */
 void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *midi_log_count, int skip_direct);
 
+/* Deliver one cable-2 SysEx packet to slots whose module declared
+ * capabilities.wants_sysex. Fragments, not reassembled messages. */
+void shadow_chain_dispatch_sysex_to_slots(const uint8_t *pkt);
+
 /* Broadcast a 1-byte system-realtime message (0xF8/0xFA/0xFB/0xFC) to every
  * active chain slot, bypassing per-slot channel remap (which would corrupt the
  * status byte). For internally generated transport clock. */

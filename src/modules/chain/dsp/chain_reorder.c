@@ -84,6 +84,7 @@ static int chain_perm_collect_midi_fx(chain_instance_t *inst, chain_perm_array_t
     out[n++] = (chain_perm_array_t)PERM_OWNED(inst->midi_fx_ui_hierarchy, CHAIN_UI_HIERARCHY_LEN);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->mod_param_refresh_ms_midi_fx);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_pre_capable);
+    out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_wants_sysex);
     out[n++] = (chain_perm_array_t)PERM_FIELD(inst->midi_fx_bypassed);
     return n;
 }

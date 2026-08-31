@@ -406,6 +406,62 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
     }
 }
 
+
+/*
+ * Deliver one cable-2 SysEx packet to the slots that asked for SysEx.
+ *
+ * SEPARATE from shadow_chain_dispatch_midi_to_slots on purpose. That function
+ * is channel machinery end to end -- it matches the slot's receive channel,
+ * remaps the status nibble, applies per-slot transpose, and broadcasts to audio
+ * FX. Not one of those operations is meaningful on a SysEx fragment, whose
+ * bytes are data: remapping would rewrite payload, and transpose reads msg[1]
+ * as a note number. Threading a "but not for SysEx" flag through all of it
+ * would leave five branches that must each stay correct forever.
+ *
+ * THERE IS NO CHANNEL TO ROUTE ON. A SysEx message carries no channel byte, so
+ * no receive-channel setting can select a destination for it -- which is why
+ * setting a slot to Ch 1 does nothing, and why this broadcasts to every slot
+ * that opted in rather than picking one. A module tells its own messages apart
+ * by manufacturer ID, which is what that ID is for.
+ *
+ * Opt-in, so a slot that never asked sees exactly what it saw before: nothing.
+ * That matters because these bytes are < 0x80, and a module that switches on
+ * `msg[0] & 0xF0` would read payload as a status type it half-recognises.
+ *
+ * The fragment is passed through UNASSEMBLED, with its real length, because
+ * the whole message can span many SPI frames and buffering it here would mean
+ * the shim holding per-slot reassembly state on the RT path with no bound on
+ * what a hostile or broken sender can make it hold. A tool module already
+ * reassembles for itself (docs/SYSEX.md); a slot module does the same.
+ *
+ * RT: bounded loop over 4 slots, one on_midi call each, no allocation.
+ */
+void shadow_chain_dispatch_sysex_to_slots(const uint8_t *pkt)
+{
+    const plugin_api_v2_t *pv2 = *host_plugin_v2;
+    if (!pv2 || !pv2->on_midi || !pkt) return;
+
+    /* USB-MIDI fixes the payload length by CIN -- there is no length byte to
+     * trust, and the trailing bytes of an end-packet are padding. */
+    uint8_t cin = pkt[0] & 0x0F;
+    int n;
+    switch (cin) {
+    case 0x04: n = 3; break;
+    case 0x05: n = 1; break;
+    case 0x06: n = 2; break;
+    case 0x07: n = 3; break;
+    default: return;
+    }
+
+    for (int i = 0; i < SHADOW_CHAIN_INSTANCES; i++) {
+        if (!host_chain_slots[i].wants_sysex) continue;
+        if (!host_chain_slots[i].active || !host_chain_slots[i].instance) continue;
+        uint8_t msg[3] = { pkt[1], pkt[2], pkt[3] };
+        pv2->on_midi(host_chain_slots[i].instance, msg, n,
+                     MOVE_MIDI_SOURCE_EXTERNAL);
+    }
+}
+
 /* Broadcast a 1-byte system-realtime message to every active chain slot.
  * Realtime must NOT go through shadow_chain_dispatch_midi_to_slots: the
  * per-slot channel remap rewrites the status low nibble (0xF8 -> 0xF0|ch)
@@ -845,6 +901,12 @@ void shadow_dispatch_direct_external_midi(void)
 
         /* Only external USB MIDI (cable 2) */
         if (cable != 0x02) continue;
+        /* SysEx (0x04-0x07) has no channel and none of the routing below
+         * applies to it; hand it to the slots that opted in and move on. */
+        if (cin >= 0x04 && cin <= 0x07) {
+            shadow_chain_dispatch_sysex_to_slots(&in_src[i]);
+            continue;
+        }
         if (cin < 0x08 || cin > 0x0E) continue;
 
         uint8_t status = in_src[i + 1];
@@ -959,6 +1021,13 @@ void shadow_dispatch_cable2_channeled_slots(void)
         uint8_t type   = status & 0xF0;
         uint8_t d1     = in_src[i + 2];
         uint8_t d2     = in_src[i + 3];
+
+        /* SysEx first: it is channel-less, so the channel routing below can
+         * never select a destination for it. */
+        if (cin >= 0x04 && cin <= 0x07) {
+            shadow_chain_dispatch_sysex_to_slots(&in_src[i]);
+            continue;
+        }
 
         /* Channel voice messages only */
         if (cin < 0x08 || cin > 0x0E) continue;
