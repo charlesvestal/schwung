@@ -63,6 +63,28 @@ much can be **in flight** before the SPI drain keeps up — a FIFO in the XMOS,
 below anything Schwung controls. Nothing in the host can widen it, and no host
 change will.
 
+### A sustained run, which is the shape that actually matters
+
+One message says nothing about a bulk dump. #358 is 405 messages of 158 bytes
+back to back, so the test that counts is a long run at a realistic rate.
+100 × 158 B, scored per message:
+
+| condition | rate | intact | short | corrupt |
+|---|---|---|---|---|
+| DIN rate (50 ms gap) | 3019 B/s | **100 / 100** | 0 | 0 |
+| 5× DIN (10 ms gap) | 11730 B/s | **100 / 100** | 0 | 0 |
+| flat out (no gap) | 3.0 MB/s | 2 | 1 | 0 |
+
+**5400 packets at DIN rate with zero loss**, and the same again at nearly four
+times DIN. So on a build carrying #355 and #361 the inbound path is clean at
+every rate a MIDI device can actually produce; only an instantaneous burst
+reaches the FIFO ceiling, and nothing on a MIDI cable bursts like that.
+
+This is worth stating plainly because it **does not reproduce #358**. That
+report is ~0.8% loss over USB-A/DIN at ~3125 B/s — the rate that is perfect
+here. Whatever is dropping those packets is on the USB-A side (the interface,
+or the XMOS's USB-host path), not in the shared code both routes run through.
+
 **This is why it has never been seen over DIN.** DIN MIDI is 3125 bytes/s, so a
 158-byte message occupies ~50 ms and spreads over ~17 SPI frames — about three
 packets per frame, never 53. A DIN device cannot burst hard enough to reach the
