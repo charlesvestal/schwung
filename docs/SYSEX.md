@@ -159,6 +159,31 @@ fire usefully before. Now it is the backpressure signal: above high water the
 host stops draining the SHM buffer, the buffer fills, and your send returns
 `false`. A module that paces on it is pacing on the actual mailbox.
 
+### Measured outbound, from a tool module on hardware
+
+`tools/sysex-test`, sending in **one** `move_midi_external_send()` call, scored
+on a Mac against the same generator:
+
+| payload | packets | result |
+|---|---|---|
+| 158 B | 53 | INTACT |
+| 316 B | 107 | INTACT |
+| 632 B | 212 | INTACT, **20+ consecutive sends, zero loss** |
+
+Every one of those is past the 20 packets that fit in a single frame, so before
+the carry every one would have been truncated at 60 bytes.
+
+**632 B needed a second change, and finding it is why the size ladder matters.**
+At first it came back `REFUSED` — correctly, but from a ceiling upstream of the
+carry: `SHADOW_MIDI_OUT_BUFFER_SIZE` was 512 bytes = 128 packets, so a
+212-packet message could not be handed over in one call at all. It is now 1024,
+matching `UI_MIDI_CARRY_PACKETS`, and a `_Static_assert` keeps the two equal —
+because raising only the SHM side would convert an honest `false` into a silent
+drop one buffer downstream, which is the whole failure mode being removed here.
+
+A single send is therefore capped at **256 packets (~765 SysEx bytes)**. Past
+that you get `false`, not truncation. Split and retry.
+
 ## Testing your own module
 
 Two probes ship in-tree, scoring against one shared generator so a result from
