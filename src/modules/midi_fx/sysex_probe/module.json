@@ -1,0 +1,28 @@
+{
+  "id": "sysex_probe",
+  "name": "SysEx Probe",
+  "abbrev": "SX",
+  "version": "0.1.0",
+  "builtin": true,
+  "capabilities": {
+    "chainable": true,
+    "component_type": "midi_fx",
+    "ui_hierarchy": {
+      "levels": {
+        "root": {
+          "name": "SysEx Probe",
+          "params": [
+            { "key": "send" },
+            { "key": "size" },
+            { "key": "reset" },
+            { "key": "tx_packets" },
+            { "key": "tx_refused" },
+            { "key": "rx_f0_seen" },
+            { "key": "rx_sysex_bytes" }
+          ],
+          "knobs": ["send", "size", "reset", "tx_packets", "tx_refused", "rx_f0_seen", "rx_sysex_bytes"]
+        }
+      }
+    }
+  }
+}

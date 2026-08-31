@@ -1427,6 +1427,12 @@ volatile int shim_ext_midi_drops = 0;
  * callback by shadow_ui_midi_publish; reported by the worker (#358). */
 volatile int shim_ui_midi_drops = 0;
 
+/* Outbound counterpart: packets shadow_ui queued that the carry could not hold.
+ * Before the carry existed this condition had no counter because it had no
+ * name — the drain memset its source and walked off the end of the mailbox,
+ * so an outbound SysEx lost its tail with nothing recording that it had. */
+volatile int shim_ui_midi_out_drops = 0;
+
 /* Audio-thread producer for an overtake DSP (host_api midi_send_external). */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
     int rc = ext_midi_ring_push(&overtake_ext_ring, msg, len, EXT_SRC_OVERTAKE);
