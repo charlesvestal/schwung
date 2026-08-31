@@ -249,6 +249,78 @@ Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
 
+### A READOUT wears a DOTTED FRAME, and it is a STROKE, not a widget
+
+`access: "read"` is telemetry — a reading the module reports, not a control.
+The input layer has honoured it for a long time: `isReadoutParam` in
+`shadow_ui.js` shows the value when you turn the knob and writes nothing, a
+click opens no picker, and `param_meta.mjs` sets `meta.readOnly` from `access`
+with `isDivable` / `isTurnable` both excluding it.
+
+**The DRAW layer did not.** `render_page_movy.mjs` never consulted
+`meta.readOnly`, so a readout was pixel-identical to the same parameter you can
+change — a dial or a number you could reasonably expect to turn. Reported from
+the device as a control that "does not seem to do anything", which was an
+accurate reading of the picture.
+
+`drawReadoutFrame` draws a **dotted 1px frame on the cell rect** —
+`cellLeft + 1`, `cellW - 2`, `BOX_H`, the SAME rect the divable brackets use,
+so the two marks are one frame drawn two ways rather than two frames at two
+insets. Called from `drawKnobRow` for any uncovered cell whose meta is
+read-only, after the widget.
+
+- **It wraps the widget; it does not replace or move it.** The value stays
+  exactly where its own widget put it, so the frame costs no centring work and
+  cannot disagree with the thing it frames. The cell keeps its SHAPE and
+  changes only its STROKE — the same kind of object, not editable.
+- **Dotted on the CHECKER lattice in ABSOLUTE screen coordinates**, not stepped
+  by 2 from the frame's own origin — the same rule as every dithered fill in
+  this subsystem. Two neighbouring frames then share one phase (4K EQ has five
+  readouts in a row when its peaks are paginated), and the corners fall out for
+  free: a rect-relative step lands a dot on three corners and a gap on the
+  fourth, depending on the parity of `w` and `h`.
+- **The inset is what keeps neighbours apart.** At `cellLeft + 1` two adjacent
+  readouts keep a 2px gap; on the cell rect itself they would butt into one
+  continuous rule.
+- **On an enum square it degrades to two side rails.** `drawEnumSquare` draws
+  its own solid frame over `rowY..rowY+BOX_H-1` — the same rows — so at full
+  width (`ENUM_W` 28 in a 32px cell) only the dotted columns at +1 and +30 are
+  left. A narrower value gets the whole frame. This is honest rather than
+  ideal, and it was accepted over the alternative of restyling the square's own
+  stroke, which would have made the frame a property of one widget instead of
+  of the cell.
+- **An OPAQUE cell is excluded, and for a sharper reason than the brackets'
+  exclusion.** `drawOpaqueBox` draws its own notched frame on the IDENTICAL
+  rect, so the dots do not double a border — they land invisibly on top of one,
+  and the only place they show is the five-row CUT in its right edge where the
+  chevron sits. Rendered, a read-only filepath was an ordinary opaque box with
+  two stray pixels in its door: worse than no mark, since it degrades the one
+  widget that says which direction its door goes. No fleet module declares one.
+- **A readout gains no affordance.** `alsoOpens` requires `divable`, which
+  excludes `readOnly`, so a readout can never also wear the corner brackets,
+  and the footer never promises `CLK OPEN` for one.
+- **A readout inside a viz graphic is NOT framed.** Uncovered cells only, for
+  the same reason the door mark is: a cell inside a picture is not standing on
+  its own. No fleet module puts a read-only param in a group; if one appears,
+  mark the SPAN once in the viz loop, never the members.
+
+Rejected, so nobody re-litigates them: an **inverted slab** (inversion already
+means *a finger is on this knob* in the label band and *this is the selection*
+in a list — a third meaning makes all three ambiguous); **corner brackets only**
+(already spoken for, and they make the opposite claim); and a **real meter** for
+4K EQ's four peak floats, deliberately deferred — a stereo peak meter is its own
+design job, and one dotted treatment covers every readout in the fleet rather
+than one module's four.
+
+Pinned by `tests/host/test_readout_frame.sh`, which drives `drawKnobRow` (not
+`drawKnobWidget` plus its own frame call — that probe would pass with the branch
+deleted) and asserts, per widget kind, that the readout differs from its
+editable twin, that the difference is a strict SUPERSET (additive, nothing moved
+or removed), that no pixel lands past `BOX_H` or on the cell edge, and that the
+dot phase follows the screen rather than the rect.
+`tests/fixtures/movy-geom-baseline.txt` moved exactly two pages — `keydetect:0`
+and `gesture-test:0`, the only fixture pages that plan a read-only param.
+
 ### A filepath param opens a browser, and the knob scrolls THAT too
 
 Diving a `filepath` param from the grid — mrsample's Sample cell is the case —
