@@ -460,9 +460,16 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
  * DUPLICATION IS WORSE THAN LOSS HERE. The module reassembles for itself and
  * rule one is "start on 0xF0", so a repeated F0 silently RESTARTS the message
  * and a repeated body byte corrupts it. What comes out is a plausible message
- * that is fiction, rather than an obvious gap. sysex_probe cannot see any of
- * this: it echoes if process_midi is EVER handed an F0, so one delivery and six
- * look identical to it.
+ * that is fiction, rather than an obvious gap.
+ *
+ * AND THE INSTRUMENT MATTERS MORE THAN THE TOOL. Both the review and this
+ * comment first said sysex_probe could not detect the doubling; that was wrong,
+ * and the distinction is worth keeping. Its ECHO cannot -- it fires per F0, so
+ * one delivery and six look identical -- but its rx_f0_seen COUNTER can, and 2N
+ * for N messages is unmissable. The probe was adequate; the check chosen for it
+ * was not. Confirmed on hardware afterwards with a QY-70 over USB-A: 405
+ * messages into an overtake editor, 409 F0s into a slot, ratio 1.01 where
+ * duplication would have read ~810.
  */
 static event_dedup_entry_t g_sysex_dedup[EVENT_DEDUP_RING_SIZE];
 static int g_sysex_dedup_head = 0;
