@@ -1483,7 +1483,7 @@ export function enumSquareWidth(text) {
  * behaviour it did not ask for. A missing `anim` is the normal case, not an
  * error.
  */
-export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
+export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw, readOnly) {
     const h = BOX_H;
     const target = enumSquareWidth(text);
 
@@ -1511,10 +1511,46 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
      * from both sides rather than sliding off its own cell. */
     const bx = kx + Math.floor((ENUM_W - w) / 2);
 
-    ctx.fillRect(bx, ky, w, 1, 1);
-    ctx.fillRect(bx, ky + h - 1, w, 1, 1);
-    ctx.fillRect(bx, ky, 1, h, 1);
-    ctx.fillRect(bx + w - 1, ky, 1, h, 1);
+    /*
+     * A READOUT DOTS THE FRAME IT HAS, rather than getting one added outside.
+     *
+     * The rule is "a readout is dotted", and where the stroke lives is the
+     * widget's business: a dial and a big number have no frame, so
+     * drawReadoutFrame adds one; the square already has one, so it dots that.
+     * Two dotted rectangles on one cell would be two ideas, not one.
+     *
+     * It is also the only version that WORKS HERE, and the measurement is the
+     * argument. The outer frame sits on the cell rect and the square's own
+     * frame occupies the same rows, so the wider the value the more of the
+     * mark the box absorbs:
+     *
+     *     value    box    pixels differing from the editable twin
+     *     G MAJ    28px    17      <- keydetect's real case
+     *     SAW      23px    23
+     *     ON       17px    27
+     *
+     * 17 pixels spread down two 15-row columns is not legible: side by side,
+     * the readout and the control were indistinguishable. And it fails exactly
+     * where the feature is for — keydetect's values are musical keys, always
+     * full width, and two of the three affected fleet modules are enums.
+     * Dotting the stroke inverts that gradient: a wider box has MORE perimeter
+     * to dot, so the strongest case is the common one.
+     *
+     * Same CHECKER lattice in ABSOLUTE coordinates as drawReadoutFrame, so a
+     * dotted square and a dotted added frame in adjacent cells share one phase
+     * — which is the whole reason the lattice is absolute, and it is what lets
+     * these be one treatment rather than two that happen to both be dotted.
+     */
+    if (readOnly) {
+        drawReadoutFrame(ctx, bx, ky, w, h);
+    } else {
+        ctx.fillRect(bx, ky, w, 1, 1);
+        ctx.fillRect(bx, ky + h - 1, w, 1, 1);
+        ctx.fillRect(bx, ky, 1, h, 1);
+        ctx.fillRect(bx + w - 1, ky, 1, h, 1);
+    }
+    /* Notched either way: the knockout is the SHAPE, and a readout is the same
+     * shape drawn in a lighter stroke. */
     notchCorners(ctx, bx, ky, w, h);
 
     /*
@@ -1915,6 +1951,12 @@ function drawAlsoOpensMark(ctx, g, col, rowY) {
  * not seem to do anything" — which is exactly right, and the picture was the
  * only thing not saying so.
  *
+ * FOR A FRAMELESS WIDGET ONLY — a dial, a big number. A widget that already
+ * has a stroke DOTS THE ONE IT HAS instead: the enum square in drawEnumSquare,
+ * and the opaque box not at all (see drawReadoutMark for both). The rule is "a
+ * readout is dotted"; where the stroke lives is the widget's business, and one
+ * cell never wears two dotted rectangles.
+ *
  * IT WRAPS THE WIDGET; IT DOES NOT REPLACE IT. The value stays exactly where
  * its own widget put it — an enum square, a big number, an arc knob — so this
  * costs no centring work and cannot disagree with the thing it frames. The
@@ -1981,8 +2023,20 @@ export function drawReadoutFrame(ctx, x, y, w, h) {
  * ever needs marking, restyle that widget's own stroke; do not put a second
  * frame on its rect.
  */
-function drawReadoutMark(ctx, g, col, rowY, meta) {
-    if (widgetKindFor(meta) === WIDGET_OPAQUE) return;
+/**
+ * The per-cell readout mark, keyed on the widget. EXPORTED so the widget sheet
+ * draws the mark through the same rule the device does rather than
+ * re-implementing "which widgets get an outer frame" beside it — a second copy
+ * of that rule is exactly how a generated reference comes to document a
+ * drawing the grid does not make.
+ */
+export function drawReadoutMark(ctx, g, col, rowY, meta) {
+    const widget = widgetKindFor(meta);
+    if (widget === WIDGET_OPAQUE) return;
+    /* ONE DOTTED RECTANGLE PER CELL, NEVER TWO. The square dots its own stroke
+     * (see drawEnumSquare) — an outer frame as well would be two marks for one
+     * fact, and on a full-width value they would be one pixel apart. */
+    if (widget === WIDGET_ENUM) return;
     drawReadoutFrame(ctx, cellLeft(g, col) + 1, rowY, g.cellW - 2, BOX_H);
 }
 
@@ -2087,7 +2141,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
         /* Its own centring — it reserves an ENUM_W slot, not KW, and sizes
          * itself inside it. */
         drawEnumSquare(ctx, cellLeft(g, col) + Math.floor((g.cellW - ENUM_W) / 2), ky, text,
-                       anim, nowMs, animKey, shown);
+                       anim, nowMs, animKey, shown, !!meta.readOnly);
         return;
     }
     /*
