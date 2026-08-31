@@ -198,10 +198,17 @@ export function drawChainPicker(ctx, o) {
         headerRight: "SELECT",
         entries: (o.entries || []).map((item) => ({
             name: item.name || item.id || "Unknown",
-            /* The one already loaded, marked where a menu page puts its value.
-             * The rule lives HERE and not in either caller: a mark that only
-             * one of the two pickers drew is the same bug one layer down. */
-            value: (o.currentId && item.id === o.currentId) ? "*" : "",
+            /* An entry carrying its OWN value wins — that is the list-filter
+             * row, whose value is the current list. Everything else gets the
+             * loaded mark, drawn where a menu page puts its value.
+             *
+             * Both rules live HERE and not in either caller: a mark that only
+             * one of the two pickers drew is the same bug one layer down, and
+             * that is exactly how the two pickers came to look like different
+             * products in the first place. */
+            value: (item.value !== undefined && item.value !== null && item.value !== "")
+                ? String(item.value)
+                : ((o.currentId && item.id === o.currentId) ? "*" : ""),
         })),
         index: o.index,
         /* Fitted with the SAME fitText the list rows use, because the two
