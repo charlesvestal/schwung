@@ -339,6 +339,40 @@ function build() {
         cellLabels(ctx, g, 2, ["OPENS", "PLAIN"]);
     }));
 
+    /*
+     * READOUTS, each beside its editable twin.
+     *
+     * PAIRED on purpose: the frame's whole job is to be different from the
+     * cell next to it, and a strip of three framed cells says nothing about
+     * whether it is. Three widgets because those are the three a readout is in
+     * the fleet — an enum square (keydetect, gesture-test), an arc knob and a
+     * big number (4K EQ peaks and its clip flag).
+     */
+    add("readout", strip(6, (ctx, g) => {
+        /* A FULL-WIDTH value, deliberately: it is keydetect's real case (musical
+         * keys) and it is the width an outer frame could not mark. A narrow box
+         * would show the treatment at its easiest. */
+        const eR = META({ key: "detected_key", name: "Key", type: "enum", access: "read",
+                          options: ["G Maj", "A Min", "C Maj"] });
+        const eW = META({ key: "mode", name: "Mode", type: "enum",
+                          options: ["G Maj", "A Min", "C Maj"] });
+        const kR = META({ key: "in_peak_l", name: "In L", type: "float", access: "read",
+                          min: 0, max: 1, step: 0.01 });
+        const kW = META({ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 });
+        const nR = META({ key: "clip", name: "Clip", type: "int", min: 0, max: 9, access: "read" });
+        const nW = META({ key: "voices", name: "Voices", type: "int", min: 0, max: 9 });
+        const cells = [[eR, "0"], [eW, "0"], [kR, "0.66"], [kW, "0.66"], [nR, "3"], [nW, "3"]];
+        cells.forEach(([m, v], i) => {
+            RM.drawKnobWidget(ctx, g, i, 0, m, v, undefined, undefined, null, null);
+            /* drawKnobRow's own call, not a re-statement of when a mark is
+             * added: the enum square dots its own stroke inside drawKnobWidget
+             * and must NOT also get an outer frame, and the sheet is the last
+             * place that rule should exist twice. */
+            if (m.readOnly) RM.drawReadoutMark(ctx, g, i, 0, m);
+        });
+        cellLabels(ctx, g, 6, ["READ", "EDIT", "READ", "EDIT", "READ", "EDIT"]);
+    }));
+
     /* --- viz graphics ------------------------------------------------------ */
 
     const F = (k, extra = {}) =>
@@ -594,6 +628,39 @@ wears one across its whole span when any covered cell \`opensOnClick\`.
 See *Divability, and the two cell marks* below for why the brackets and the
 chevron are not two spellings of one idea.
 
+${img("readout")}
+
+A **dotted frame** means \`access: "read"\` — telemetry you can look at and not
+change. Each pair above is the same declaration with and without it.
+
+The input layer has always honoured \`access\`: turning a readout shows the
+reading and writes nothing, a click opens no picker, and \`isDivable\` /
+\`isTurnable\` exclude it. The *drawing* did not, so a readout was
+pixel-identical to a control — reported from the device as a knob that "does
+not seem to do anything", which was a correct reading of the picture.
+
+- **The rule is *a readout is dotted*; where the stroke lives is the widget's
+  business.** A dial and a big number have none, so a frame is added around the
+  cell; the enum square has one, so it dots that. One dotted rectangle per cell,
+  never two. Either way the value does not move.
+- **The square dots its own stroke because an outer frame did not work there.**
+  Measured against an identical editable twin, an outer frame differed by 17
+  pixels at full width against 27 at the narrow one — the wider the value, the
+  more of the mark the square absorbed — and side by side the two cells were
+  indistinguishable. It failed exactly where the feature is for: \`keydetect\`'s
+  values are musical keys, always full width. Dotting the stroke inverts the
+  gradient, to 39 against 26.
+- **Not an inverted slab** — inversion already means *a finger is on this knob*
+  in the label band and *this is the selection* in a list. **Not corner
+  brackets** — those mean the opposite claim, that the knob works *and* opens
+  something.
+- **An opaque cell is not marked at all.** Its own notched frame is on the same
+  rect, so an outer frame's dots would show only in the chevron's cut, and
+  dotting that frame would blunt the one widget that says which direction its
+  door goes.
+- **A readout inside a viz graphic is not framed.** No fleet module has one;
+  if one appears, mark the span once, the way the door bracket does.
+
 #### Chrome
 
 | | |
@@ -717,6 +784,7 @@ const MANUAL_PICKS = {
     gestures: [
         ["chrome-header-held", "<strong>Hold a knob</strong> and the header names it and shows its value. Let go and nothing has changed — looking is free."],
         ["brackets", "<strong>Corner brackets mean a door.</strong> Hold that knob and jog-click to open what is behind it; a plain cell has nothing to open."],
+        ["readout", "<strong>A dotted frame means you can only look.</strong> It is a reading the module is reporting — turning the knob shows it, and changes nothing."],
         ["chrome-bank-bar", "<strong>The bar counts the pages.</strong> The filled block is where you are; turn the jog to move along it."],
         ["chrome-list", "<strong>Click a choice</strong> and it opens as a list — the jog scrolls, the click picks."],
     ],
