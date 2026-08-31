@@ -613,20 +613,30 @@ else
     echo "Skipping velocity scale MIDI FX (up to date)"
 fi
 
-# Build SysEx Probe MIDI FX — the slot-module half of the SysEx test rig.
+# Build SysEx Probe MIDI FX — a hardware TEST FIXTURE, not a shipped module.
+#
 # A slot reaches USB-A through host->midi_send_external (the ROUTE_EXTERNAL
-# ring), not through the shadow_ui path a JS tool uses, so it has to be
-# measured separately. See src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c.
-if needs_rebuild build/modules/midi_fx/sysex_probe/dsp.so \
-    src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c src/host/midi_fx_api_v1.h \
-    src/host/plugin_api_v1.h; then
-    echo "Building sysex probe MIDI FX..."
-    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-        src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c \
-        -o build/modules/midi_fx/sysex_probe/dsp.so \
-        -Isrc -lm
-else
-    echo "Skipping sysex probe MIDI FX (up to date)"
+# ring), not the shadow_ui path a JS tool uses, so the two doors have to be
+# measured separately; this is the slot-side half. See
+# src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c and docs/SYSEX.md.
+#
+# Gated on SCHWUNG_BUILD_TEST_MODULES for the same reason as gesture-test: a
+# release must never carry it. Without the gate it would appear in every user's
+# MIDI FX picker, and the tool half in every user's Tools menu, which is how
+# ui-test/seq-test/config-test/splash-test would ship too if they were not
+# scrubbed below.
+if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
+    if needs_rebuild build/modules/midi_fx/sysex_probe/dsp.so \
+        src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c src/host/midi_fx_api_v1.h \
+        src/host/plugin_api_v1.h; then
+        echo "Building sysex probe MIDI FX (test fixture)..."
+        "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+            src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c \
+            -o build/modules/midi_fx/sysex_probe/dsp.so \
+            -Isrc -lm
+    else
+        echo "Skipping sysex probe MIDI FX (up to date)"
+    fi
 fi
 
 echo "Building Sound Generator plugins..."
@@ -839,6 +849,17 @@ rm -rf \
     ./build/modules/tools/splash-test \
     ./build/modules/store \
     2>/dev/null || true
+
+# The SysEx test rig ships only when explicitly asked for. sysex-test is JS and
+# is copied by the generic module loop above rather than compiled, so a build
+# gate alone cannot keep it out -- it has to be scrubbed here. Both go together:
+# they are the two halves of one measurement (docs/SYSEX.md).
+if [ -z "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
+    rm -rf \
+        ./build/modules/tools/sysex-test \
+        ./build/modules/midi_fx/sysex_probe \
+        2>/dev/null || true
+fi
 
 # Make shell scripts in modules executable
 find ./build/modules -type f -name "*.sh" -exec chmod +x {} \;
