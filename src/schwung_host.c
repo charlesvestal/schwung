@@ -2490,7 +2490,33 @@ int main(int argc, char *argv[])
             unsigned char midi_2 = *(byte + 3);
 
 
-            if (byte[1] + byte[2] + byte[3] == 0)
+            /*
+             * Skip UNUSED ring slots — but never a SysEx data packet that
+             * happens to carry three zero bytes.
+             *
+             * The slot-empty test is the one above, on the header byte: an
+             * unused slot is all zeroes, so `mapped_memory[i] == 0` already
+             * catches it. This second test looks at CONTENT, and for every
+             * CIN except SysEx that is harmless, because no channel-voice or
+             * system-common message is three zero bytes.
+             *
+             * SysEx is the exception, and it is not a rare one. Its data is
+             * arbitrary 7-bit bytes, so `00 00 00` is ordinary payload — a
+             * zeroed parameter run in a patch dump, which is most of a patch
+             * dump. Dropping those packets corrupts the message SILENTLY:
+             * framing still holds (F0..F7 arrive), and a Roland or Yamaha
+             * checksum still validates, because the bytes removed sum to
+             * zero. The receiver sees a short but well-formed message.
+             *
+             * Found via a Roland JV-880 patch dump over cable 2, where every
+             * reply was short by an exact multiple of 3 with a valid checksum,
+             * deterministic per patch and varying with patch CONTENT. The
+             * 9-byte SysEx prefix is a multiple of 3, so data offset 0 falls
+             * on a packet boundary: across 15 captured messages not one
+             * ALIGNED all-zero triplet survived, while 47 UNALIGNED ones did.
+             */
+            if (!(code_index_number >= 0x04 && code_index_number <= 0x07) &&
+                byte[1] + byte[2] + byte[3] == 0)
             {
                 continue;
             }
