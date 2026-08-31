@@ -257,8 +257,9 @@ function freshState(filter) {
 {
   const st = freshState(null);
   makeEnter(st)(0, 0);
-  eq(st.availableModules[0], { id: PICKER_FILTER_ID, name: "List", value: "All" },
-     "row 0 is the filter row, reading List / All");
+  eq(st.availableModules[0],
+     { id: PICKER_FILTER_ID, name: "List", value: "All", clickVerb: "LIST" },
+     "row 0 is the filter row, reading List / All, and naming its own CLK verb");
 }
 /* Criterion 2 again, with a filter set: the value is the list name. */
 {
