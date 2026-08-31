@@ -137,7 +137,8 @@ import {
     createScrollableText,
     handleScrollableTextJog,
     isActionSelected,
-    drawScrollableText
+    drawScrollableText,
+    visibleLinesFor
 } from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
 import {
@@ -2024,9 +2025,85 @@ function componentParamPagesIo(slotIndex, componentKey) {
 }
 
 /*
+ * A module's own help.json topics — the `children` array the Help viewer's
+ * "Modules" section already builds its per-module page out of — or null when
+ * the module ships none.
+ *
+ * The bases are the same five module_manager lays modules out under, and the
+ * same five host_get_module_metadata walks, because a module id does not carry
+ * its category: `component_type` decides the subdirectory at install time (see
+ * Deployment Layout) and nothing on the id says which one it landed in.
+ *
+ * CACHED BY ID, including the misses. componentTrailingMenus runs on every
+ * PLAN — page entry and after each of our own writes — and an uncached miss is
+ * five failed opens every time, for the many modules that ship no help at all.
+ * A module's help.json cannot change without an install, and an install
+ * restarts shadow_ui, so the cache has no invalidation to get wrong.
+ */
+const MODULE_HELP_BASES = [
+    "/data/UserData/schwung/modules",
+    "/data/UserData/schwung/modules/sound_generators",
+    "/data/UserData/schwung/modules/audio_fx",
+    "/data/UserData/schwung/modules/midi_fx",
+    "/data/UserData/schwung/modules/tools",
+];
+const moduleHelpCache = Object.create(null);
+
+function getModuleHelpChildren(moduleId) {
+    if (!moduleId) return null;
+    /* Same defence host_get_module_metadata applies: an id is a directory name
+     * here, and these are the only two ways one could escape the tree. */
+    if (moduleId.indexOf("/") >= 0 || moduleId.indexOf("..") >= 0) return null;
+    if (moduleId in moduleHelpCache) return moduleHelpCache[moduleId];
+
+    let children = null;
+    for (const base of MODULE_HELP_BASES) {
+        let raw = null;
+        try {
+            raw = std.loadFile(`${base}/${moduleId}/help.json`);
+        } catch (e) { /* not here */ }
+        if (!raw) continue;
+        /* Found the file — this is the module's answer whatever it says, so
+         * stop looking. A malformed or childless help.json means NO help
+         * content, not "keep searching the other categories". */
+        try {
+            const data = JSON.parse(raw);
+            if (data && Array.isArray(data.children) && data.children.length > 0) {
+                children = data.children;
+            }
+        } catch (e) {
+            debugLog("Bad help.json for " + moduleId + ": " + e);
+        }
+        break;
+    }
+    moduleHelpCache[moduleId] = children;
+    return children;
+}
+
+/*
+ * The "Module" trailing page's rows.
+ *
+ * "Module Help" is CONDITIONAL and the other two are not: a module with no
+ * help.json has nothing to show, and a row that opens an empty viewer is worse
+ * than no row — it teaches that the feature is broken. It leads because the
+ * two rows under it are the destructive ones, and reading before swapping or
+ * removing is the order the page is for.
+ */
+function moduleMenuEntries(moduleId) {
+    const entries = [];
+    if (getModuleHelpChildren(moduleId)) {
+        entries.push({ label: "Module Help", action: "module_help" });
+    }
+    entries.push({ label: "Swap Module", action: "swap_module" });
+    entries.push({ label: "Remove Module", action: "remove_module" });
+    return entries;
+}
+
+/*
  * The two trailing pages every REAL component gets: "My Presets" (an
  * informational row 1, then Load / Save / Save As / Delete) and "Module"
- * (Swap Module / Remove Module). [] when the position is empty — nothing is
+ * (Module Help, when the module ships one / Swap Module / Remove Module).
+ * [] when the position is empty — nothing is
  * loaded to show a preset for or to swap/remove.
  *
  * Called from planPages()/refreshTrailing() — i.e. on page ENTRY and after
@@ -2080,10 +2157,7 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
          * already plan a page called that, so claimName would dedupe this to
          * "Presets - 2". "My Presets" (46px) collides with nothing. */
         { name: "My Presets", entries: presetEntries },
-        { name: "Module", entries: [
-            { label: "Swap Module", action: "swap_module" },
-            { label: "Remove Module", action: "remove_module" },
-        ] },
+        { name: "Module", entries: moduleMenuEntries(loaded.module) },
     ];
 }
 
@@ -2091,8 +2165,10 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
  * Perform a "My Presets" / "Module" trailing-page ACTION, by key — the
  * fourth instance of the hand-off runSlotActionFromGrid / runMasterFxActionFromGrid
  * / runGlobalActionFromGrid perform, and it asks the same shared question
- * (gridActionOpenedSomething) rather than listing which of the six actions
- * leave.
+ * (gridActionOpenedSomething) rather than listing which of the actions leave.
+ * (Module Help is the exception: it hands off to a screen that does NOT come
+ * back through VIEWS.CHAIN_EDIT, so it returns before that question is asked
+ * and carries its own return pair — see the case and maybeReturnToComponentHelp.)
  *
  * Save and Save As never leave VIEWS.PARAM_PAGES (a text-entry overlay sits on
  * top of it, same as the browser's own "[Save current...]" row) — so for those
@@ -2150,6 +2226,42 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             result = true;
             break;
 
+        case "module_help": {
+            /*
+             * Opens the module's OWN help topics, not the Help tree with this
+             * module selected — so Back off the first frame leaves the viewer
+             * entirely and comes back here, rather than climbing up into
+             * Modules > ... > Help, which is a place the user never was.
+             *
+             * The stack is seeded with ONE frame for exactly that reason: the
+             * GLOBAL_SETTINGS back handler pops, and an empty stack is the
+             * signal maybeReturnToComponentHelp waits for.
+             */
+            const children = getModuleHelpChildren(moduleId);
+            /* Cannot happen from the row — it is only offered when this
+             * answers — but the action is reachable by key, and an empty
+             * viewer is a screen with no way to read it and no way out. */
+            if (!children) return false;
+            exitParamPages();
+            componentHelpReturnSlot = slotIndex;
+            componentHelpReturnKey = componentKey;
+            helpDetailScrollState = null;
+            helpNavStack = [{ items: children, selectedIndex: 0,
+                              title: getModuleDisplayName(moduleId) }];
+            /* The help viewer has no view of its own; GLOBAL_SETTINGS is its
+             * host (see drawGlobalSettings). helpReturnView is deliberately
+             * NOT set — that one routes back to the Global Settings grid, and
+             * this session belongs to a component grid instead. */
+            setView(VIEWS.GLOBAL_SETTINGS);
+            needsRedraw = true;
+            announce(helpNavStack[0].title + " Help, " + children[0].title);
+            /* Returns straight out: the componentModalFromGrid bookkeeping
+             * below is for the hand-offs that converge on CHAIN_EDIT, and
+             * leaving a flag raised for an arrival this flow never makes would
+             * fire it on somebody else's later one. */
+            return true;
+        }
+
         case "swap_module": {
             const at = slotChainComponentIndex(slotIndex, componentKey);
             if (at >= 0) enterComponentSelect(slotIndex, at);
@@ -2173,12 +2285,11 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     }
 
     /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
-     * four cases above that hand off to a real screen (Load, Delete, Swap,
+     * four remaining cases above that hand off to a real screen (Load, Delete, Swap,
      * Remove — the last via applyChainComponentPick, which always ends in
      * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
      * which never move `view` at all. Asking the screen rather than the key
-     * is what keeps a future seventh action from being silently wrong here
-     * too. */
+     * is what keeps a future action from being silently wrong here too. */
     if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
         componentModalFromGrid = true;
         componentGridReturnSlot = slotIndex;
@@ -2267,6 +2378,47 @@ function maybeReturnToComponentGrid() {
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "My Presets",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
                     { enter: enterOnArrival });
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * ...and back to the grid once a Module Help session is done with.
+ *
+ * The sibling of maybeReturnToComponentGrid for the one component action whose
+ * hand-off does not converge on VIEWS.CHAIN_EDIT. Help is drawn by
+ * VIEWS.GLOBAL_SETTINGS, so "idle again" here means what it means for
+ * maybeReturnToGlobalGrid: the stack has emptied and no detail is open.
+ *
+ * RECONCILES from the draw path rather than hooking the exits, for the reason
+ * spelled out on maybeReturnToGlobalGrid — help has three ways out and only
+ * one of them is a single obvious site.
+ *
+ * ...and the position must STILL HOLD A MODULE, the same guard
+ * maybeReturnToComponentGrid needs: a component editor entered for a position
+ * with nothing in it is a contract read with nobody to answer it, which the
+ * device draws as a permanent "Loading...". Nothing in this flow removes a
+ * module, but the guard costs one lookup and covers whatever reaches
+ * GLOBAL_SETTINGS next.
+ *
+ * Lands on the "Module" page with its menu OPEN — that is the row the user
+ * clicked, and returning them to page 1 with the menu closed reads as being
+ * dumped somewhere else (reported from hardware for the Load and Delete
+ * hand-offs, which is why those land on "My Presets" rather than page 1).
+ */
+function maybeReturnToComponentHelp() {
+    if (componentHelpReturnSlot < 0) return false;
+    if (helpNavStack.length > 0 || helpDetailScrollState) return false;
+    if (isTextEntryActive()) return false;
+    const slotIndex = componentHelpReturnSlot;
+    const componentKey = componentHelpReturnKey;
+    componentHelpReturnSlot = -1;
+    componentHelpReturnKey = "";
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) return false;
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: true });
     needsRedraw = true;
     return true;
 }
@@ -3201,6 +3353,16 @@ let globalModalFromGrid = false;
 let componentModalFromGrid = false;
 let componentGridReturnSlot = -1;
 let componentGridReturnKey = "";
+
+/* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
+ * "Module Help". The help viewer has no view of its own -- it is drawn by
+ * VIEWS.GLOBAL_SETTINGS and VIEWS.MASTER_FX (see drawGlobalSettings) -- so a
+ * help session opened from a component grid lands on GLOBAL_SETTINGS and
+ * cannot be reconciled by the CHAIN_EDIT arrival above. Its own pair, for the
+ * same reason the other four are separate: a return pending for one hand-off
+ * must never be spent by another. See maybeReturnToComponentHelp. */
+let componentHelpReturnSlot = -1;
+let componentHelpReturnKey = "";
 
 function saveParamViewConfig() {
     try {
@@ -8124,6 +8286,14 @@ function handleMasterFxSettingsAction(key) {
         return;
     }
     if (key === "help") {
+        /* Whoever opens a help session OWNS the way out of it. This is the one
+         * choke point for the Global Settings / Master FX entries, so a
+         * component's pending "Module Help" return (which never comes through
+         * here) is dropped rather than left to hijack the exit from a session
+         * it has nothing to do with — the flag survives a navigation away from
+         * VIEWS.GLOBAL_SETTINGS, and only a later arrival can spend it. */
+        componentHelpReturnSlot = -1;
+        componentHelpReturnKey = "";
         if (!helpContent) {
             try {
                 const raw = host_read_file("/data/UserData/schwung/shared/help_content.json");
@@ -16412,7 +16582,11 @@ function handleSelect() {
                     helpDetailScrollState = createScrollableText({
                         lines: item.lines,
                         actionLabel: "Back",
-                        visibleLines: 4,
+                        /* ASKED, not counted. This was a hard-coded 4 against a
+                         * rect that holds five rows of the shared list pitch —
+                         * a line of help thrown away per screen. drawHelpDetail
+                         * draws into exactly this rect. */
+                        visibleLines: visibleLinesFor(LIST_TOP_Y, FOOTER_RULE_Y),
                         onActionSelected: (label) => announce(label)
                     });
                     needsRedraw = true;
@@ -17165,7 +17339,11 @@ function handleSelect() {
                     helpDetailScrollState = createScrollableText({
                         lines: item.lines,
                         actionLabel: "Back",
-                        visibleLines: 4,
+                        /* ASKED, not counted. This was a hard-coded 4 against a
+                         * rect that holds five rows of the shared list pitch —
+                         * a line of help thrown away per screen. drawHelpDetail
+                         * draws into exactly this rect. */
+                        visibleLines: visibleLinesFor(LIST_TOP_Y, FOOTER_RULE_Y),
                         onActionSelected: (label) => announce(label)
                     });
                     needsRedraw = true;
@@ -18161,9 +18339,90 @@ function drawDynamicParamPicker() {
 
 /* ========== Help Viewer Draw Functions ========== */
 
+/*
+ * WHERE BACK ACTUALLY GOES, from wherever you are in the viewer.
+ *
+ * Reported from hardware: the footer read "Back: Braids" on a screen whose Back
+ * went to the "Controls" topic list, and "Back: Settings" on one whose Back went
+ * to the Braids module. Both draws asked the same question — "what is the frame
+ * BELOW the top one?" — and neither screen's Back does that:
+ *
+ *   detail            pops the detail, landing on the frame it was opened FROM
+ *                     -> that frame's own title, not its parent's
+ *   list, depth > 1   pops a frame -> the parent's title
+ *   list, depth 1     LEAVES the viewer -> wherever the session came from,
+ *                     which is the module for a "Module Help" session and the
+ *                     settings grid for a [Help...] one
+ *
+ * A footer that names a screen you do not arrive on is worse than no footer:
+ * it is the one thing on the display claiming to know the way out.
+ */
+function helpBackTarget(inDetail) {
+    const depth = helpNavStack.length;
+    if (depth === 0) return "Settings";
+    /* WHICH FRAME Back lands on. A detail pops the detail and lands on the frame
+     * it was opened FROM; a list pops itself and lands on its parent. Below 0 is
+     * "out of the viewer entirely". Deciding the frame first and labelling it
+     * second is what stopped the two screens giving different answers. */
+    const targetIdx = inDetail ? depth - 1 : depth - 2;
+
+    if (targetIdx < 0) {
+        /* The next Back LEAVES. maybeReturnToComponentHelp is what will catch
+         * that arrival, and its pending return is the only thing that knows a
+         * component grid is underneath — the same test it reconciles on, asked
+         * here so the two cannot disagree. */
+        return componentHelpReturnSlot >= 0 ? helpNavStack[0].title : "Settings";
+    }
+
+    /*
+     * "List", not the module name, for the first frame of a Module Help session.
+     *
+     * That frame is TITLED with the module — it is the module's own topic list —
+     * and so is the exit one step above it, so the module name meant two
+     * different destinations on two adjacent screens: at the top "Back: Braids"
+     * leaves for the Braids knob grid, one level in "Back: Braids" returns to the
+     * Braids topic list, and the header said "Braids" on the first of those
+     * anyway. Reported from hardware: "the top level is the module name, so it's
+     * confusing it stays the same."
+     *
+     * So the name is reserved for the one Back that really does go to the
+     * module, and the return INTO the list says so. Only for a component
+     * session: a [Help...] session's first frame is titled "Help", which
+     * collides with nothing and is a truer label than "List" would be.
+     */
+    if (targetIdx === 0 && componentHelpReturnSlot >= 0) return "List";
+    return helpNavStack[targetIdx].title;
+}
+
+/*
+ * The header for a help frame.
+ *
+ * The first frame of a Module Help session is the module's topic LIST, and it
+ * was headed with the bare module name — the same word the knob grid it was
+ * opened from already wears, so the screen did not say what it was, only what
+ * it was about. "HELP: BRAIDS" says both. Reported from hardware.
+ *
+ * Only that frame: a nested frame is headed with its own topic ("CONTROLS"),
+ * which is already unambiguous, and a [Help...] session's first frame is
+ * literally titled "Help".
+ *
+ * NOT truncated to 18 characters on the way in, which is what this used to do.
+ * The header face is PROPORTIONAL and drawHeader already fits it to the bar in
+ * PIXELS (fitText/FONT4_MEASURE), measuring the right side first and giving the
+ * left the remainder — so a char cap is a second, blinder truncation in front of
+ * a good one. It cut "Help: Junologue Chorus" to "Help: Junologue Ch" for room
+ * that was there.
+ */
+function helpHeaderTitle(frame) {
+    if (helpNavStack.length === 1 && componentHelpReturnSlot >= 0) {
+        return "Help: " + frame.title;
+    }
+    return frame.title;
+}
+
 function drawHelpList() {
     const frame = helpNavStack[helpNavStack.length - 1];
-    drawHeader(truncateText(frame.title, 18));
+    drawHeader(helpHeaderTitle(frame));
 
     drawMenuList({
         items: frame.items,
@@ -18174,16 +18433,15 @@ function drawHelpList() {
         valueAlignRight: true
     });
 
-    const backTarget = helpNavStack.length > 1
-        ? helpNavStack[helpNavStack.length - 2].title
-        : "Settings";
-    drawFooter("Back: " + backTarget);
+    drawFooter("Back: " + helpBackTarget(false));
 }
 
 function drawHelpDetail() {
     const frame = helpNavStack[helpNavStack.length - 1];
     const item = frame.items[frame.selectedIndex];
-    drawHeader(truncateText(item.title, 18));
+    /* The topic's own name, fitted in pixels by drawHeader — see
+     * helpHeaderTitle on why the 18-char cap that was here is gone. */
+    drawHeader(item.title);
 
     if (helpDetailScrollState) {
         drawScrollableText({
@@ -18194,10 +18452,7 @@ function drawHelpDetail() {
         });
     }
 
-    const backTarget = helpNavStack.length > 1
-        ? helpNavStack[helpNavStack.length - 2].title
-        : "Settings";
-    drawFooter("Back: " + backTarget);
+    drawFooter("Back: " + helpBackTarget(true));
 }
 
 /* ========== End Master Preset Draw Functions ========== */
@@ -20647,6 +20902,17 @@ globalThis.tick = function() {
     /* ...and the Global Settings half. VIEWS.GLOBAL_SETTINGS is nothing but the
      * help viewer's host now, so "the surface is idle again" means the help
      * stack has emptied. */
+    /* Two reconciles share that host view, and they are told apart by WHICH
+     * return is pending, not by anything on screen: a help session opened from
+     * [Help...] on the Global Settings grid goes back there, one opened from a
+     * component's "Module" page goes back to that component's grid. Only one
+     * can ever be pending at a time — opening either exits the grid the other
+     * would return to — and the first to fire moves `view` off
+     * GLOBAL_SETTINGS, so the second line below cannot double-fire behind it.
+     * Two flat lines rather than one nested branch: the poll site is pinned
+     * line-shaped by tests/host/test_grid_action_reconcile.sh, which is what
+     * stops one of these being dropped while the others are edited. */
+    if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToComponentHelp();
     if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToGlobalGrid();
     /* ...and the component-actions half. These hand-offs are navigations, not
      * overlays, so "idle again" is arrival back at VIEWS.CHAIN_EDIT rather than

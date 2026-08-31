@@ -812,10 +812,22 @@ through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
 
 ### Every scrolling list draws a SCROLLBAR, and no list draws arrows
 
-One dotted column at `SCREEN_WIDTH - 2`, solid thumb, in `drawMenuList` — so
-every list in the tree has it: main menu, settings, slots, patches, tools,
-store, chain views, the enum picker, the hierarchy editor and the file browser.
-A list that fits its window draws nothing.
+One dotted column at `SCREEN_WIDTH - 2`, solid thumb, drawn by the exported
+`drawScrollbar` in `menu_layout.mjs` — so every list in the tree has it: main
+menu, settings, slots, patches, tools, store, chain views, the enum picker, the
+hierarchy editor and the file browser. A list that fits its window draws nothing.
+
+**`drawScrollbar` is exported because a LIST is not the only thing that
+scrolls.** It lived inline in `drawMenuList`, and `scrollable_text.mjs` — the
+help *detail*, one click in from the help *list* — went on drawing the arrows
+this replaced. Same session, same jog, two idioms; reported from hardware as
+*"we're using the wrong scrollbars"* on the new Module Help door. It takes the
+window as `{topY, bottomY, rowHeight, rowInk, windowRows, total, startIdx}`
+rather than a list, so text (10px pitch, 7px ink) and rows (9px pitch, derived
+ink) get the identical bar. **Any new scrolling surface calls it; nothing draws
+its own.** `drawArrowUp`/`drawArrowDown` remain exported for external modules,
+and `tests/host/test_help_viewer_chrome.sh` fails if any shipped `src/shared` or
+`src/shadow` draw path calls them again.
 
 It **replaced** the up/down arrows rather than joining them. The arrows reported
 "there is more, that way"; the thumb reports that plus HOW MUCH and WHERE, which
@@ -851,6 +863,9 @@ Three geometry rules, each of which was wrong first:
 `tests/host/test_list_scrollbar.sh` asserts the GEOMETRY (position advances,
 both ends reached, a shorter list gives a TALLER thumb) rather than ink, and
 pins the phantom-thumb case on pixels because the draw calls cannot see it.
+`tests/host/test_help_viewer_chrome.sh` re-asserts the three rules through
+`drawScrollbar` directly and through `drawScrollableText`, on a framebuffer —
+including that nothing is lit in the old arrow column (122..125).
 
 ### Widget animation, and the wiring that carries it
 

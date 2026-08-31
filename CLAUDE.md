@@ -602,6 +602,25 @@ pages the PLANNER appends to the end of every component's knob grid.
   `root`, so there is no level an injection could target.
 - Scope is the 4 chain slots' real components. **Master FX is excluded**, in one
   helper, so a new call site cannot silently opt it in.
+- **`drawScrollbar` is EXPORTED from `menu_layout.mjs`** — a list is not the only
+  thing that scrolls, and `scrollable_text.mjs` kept drawing the arrows it
+  replaced, so the help list wore a bar and the help text wore arrows on the same
+  jog. The help footer now names where Back *actually* goes (`helpBackTarget`):
+  a detail returns to the list it was opened from, not that list's parent, and
+  the **module name is reserved for the Back that LEAVES** — one level in reads
+  `Back: List`, because frame 0 is titled with the module and the two adjacent
+  screens meant different destinations by the same word. That frame's header is
+  **`Help: <module>`**, and its 18-char cap is gone — `drawHeader` fits in
+  PIXELS, and the cap cut 12 of 133 fleet names that all fit. The
+  help text also had its **own 10px row pitch** against the list's 9 in the same
+  rect — four lines where the list drew five — so it uses `LIST_LINE_HEIGHT` and
+  `visibleLinesFor(topY, bottomY)` now, never a counted row total.
+- The Module page's **`Module Help`** is the ONE component action that does not
+  come back through `VIEWS.CHAIN_EDIT` — the help viewer is hosted by
+  `VIEWS.GLOBAL_SETTINGS` — so it carries its own return pair and reconciler.
+  It seeds **exactly one** help frame so Back lands on the MODULE rather than
+  climbing the Help tree, and the row is hidden when the module ships no
+  `help.json`.
 ### MIDI Cable Filtering
 
 MIDI_IN (offset 2048): cable 0 = Move hw controls, cable 2 = external USB MIDI.

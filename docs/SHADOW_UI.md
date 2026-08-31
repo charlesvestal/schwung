@@ -196,9 +196,104 @@ Load a synth, audio FX or MIDI FX in one of the 4 slots and its knob-grid jog
 sequence ends with two pages neither the module nor its author put there:
 **My Presets** (row 1 a readout — `Preset` / `(none)` or `Name` / `* Name` —
 then `Load…`, `Save` and `Delete` only with a preset loaded, `Save As`
-always) and **Module** (`Swap Module`, `Remove Module`). Both are doors: a
-`PAGE_MENU` must be entered before an entry fires, so jogging past the end
-cannot fire Remove Module by accident.
+always) and **Module** (`Module Help` when there is any, then `Swap Module`,
+`Remove Module`). Both are doors: a `PAGE_MENU` must be entered before an entry
+fires, so jogging past the end cannot fire Remove Module by accident.
+
+**`Module Help` is conditional, and Back off it returns to the MODULE.** The
+row appears only when `getModuleHelpChildren(id)` finds a `help.json` with a
+non-empty `children` array under one of the five module bases — a row that
+opens an empty viewer teaches that the feature is broken, and most of the fleet
+ships no help at all. (Cached per id, misses included: `componentTrailingMenus`
+runs on every PLAN, and an uncached miss is five failed opens each time. A
+module's `help.json` cannot change without an install, and an install restarts
+`shadow_ui`, so there is no invalidation to get wrong.)
+
+It seeds `helpNavStack` with **exactly one frame** — that module's own topics,
+titled with its display name — rather than opening the Help tree with the module
+selected. That is the whole point: Back off the first frame empties the stack and
+lands you back in the module, instead of climbing up into `Modules > … > Help`,
+a place the user was never in.
+
+The help viewer has no view of its own (`VIEWS.GLOBAL_SETTINGS` and
+`VIEWS.MASTER_FX` draw it), so this hand-off is the ONE component action that
+does not converge on `VIEWS.CHAIN_EDIT`, and `maybeReturnToComponentGrid` cannot
+see it. It carries its own return pair (`componentHelpReturnSlot` /
+`componentHelpReturnKey`) and its own reconciler, `maybeReturnToComponentHelp`,
+wired at the same poll site one line above `maybeReturnToGlobalGrid` and gated on
+the same view — the first to fire moves `view` off `GLOBAL_SETTINGS`, so the
+second cannot double-fire behind it. It lands on the **`Module`** page with its
+menu open, the row the user clicked. Opening help from anywhere else
+(`handleMasterFxSettingsAction("help")`, the one choke point both `[Help…]`
+entries route through) **drops any pending component return**: the flag survives
+a navigation away from `GLOBAL_SETTINGS`, and only a later arrival could spend
+it — on somebody else's session.
+
+`runComponentActionFromGrid` returns straight out of the `module_help` case for
+the same reason: leaving `componentModalFromGrid` raised for a `CHAIN_EDIT`
+arrival this flow never makes would fire it on an unrelated one later.
+
+**The help footer names where Back ACTUALLY goes** (`helpBackTarget`). Both help
+draws used to compute it as *the frame below the top one*, which is right for a
+nested list and wrong for the other two screens — reported from hardware as
+*"the footer shows back braids but that's not always true when you're up a
+menu"*:
+
+| screen | Back lands on | footer |
+|---|---|---|
+| detail | the frame it was opened FROM | that frame's title |
+| list, depth > 1 | the parent frame | the parent's title |
+| either, when that frame is frame 0 of a Module Help session | the module's topic list | `List` |
+| list, depth 1 | out of the viewer | the module (Module Help) or `Settings` (`[Help…]`) |
+
+It decides WHICH FRAME first (`inDetail ? depth - 1 : depth - 2`, below 0 meaning
+"leaves") and labels it second — deciding the frame first is what stopped the two
+draws giving different answers for the same destination.
+
+**The module name is reserved for the Back that really leaves.** Frame 0 of a
+Module Help session is *titled* with the module — it is that module's topic list
+— so the name meant two different destinations on adjacent screens: at the top
+`Back: Braids` leaves for the Braids knob grid, one level in `Back: Braids`
+returns to the Braids topic list, and the header already said `Braids` on the
+first of those. Reported from hardware: *"the top level is the module name, so
+it's confusing it stays the same."* One level in now reads `Back: List`. Only for
+a component session — a `[Help…]` session's frame 0 is titled `Help`, which
+collides with nothing and is a truer label than `List`.
+
+The "leaves" case asks `componentHelpReturnSlot >= 0` — the same pending return
+`maybeReturnToComponentHelp` reconciles on — rather than inspecting the frame
+title, so the footer and the actual destination cannot disagree. A footer naming
+a screen you do not arrive on is worse than no footer: it is the one thing on the
+display claiming to know the way out.
+
+The help **detail** also draws the shared scrollbar now instead of the arrows it
+had kept — see `docs/PARAM_PAGES.md` on `drawScrollbar`, which is exported for
+exactly this.
+
+**The header reads `Help: <module>` on that first frame.** It was the bare
+module name — the same word the knob grid it was opened from already wears, so
+the screen said what it was *about*, not what it *was*. Only that frame:
+a nested frame is headed with its own topic (`CONTROLS`), and a `[Help…]`
+session's first frame is literally titled `Help`.
+
+The 18-character cap in front of it is gone with it. `drawHeader` fits the left
+side to the bar in **pixels** (`fitText`/`FONT4_MEASURE`, measuring the right
+side first and giving the left the remainder — 124px with no right side), so a
+char cap is a second, blinder truncation in front of a good one: measured across
+the 133 modules installed on the device, 12 have a `Help: <name>` longer than 18
+characters and **every one of them fits** (widest, `V8 tuneSample Slicer`, is
+118px). The other screens that still cap by characters are out of scope and the
+test is scoped to the help draws accordingly.
+
+**...and it gained a fifth line, by using the list's row pitch.**
+`scrollable_text.mjs` had its own `LINE_HEIGHT = 10` against the shared list's 9.
+Both draw the same 5x7 font into the same `LIST_TOP_Y..FOOTER_RULE_Y` rect, so
+the help *list* fitted five rows there and the help *text* fitted four — a line
+of help thrown away per screen, to a constant with no reason behind it. The pitch
+is now `LIST_LINE_HEIGHT`, and the two `createScrollableText` sites ASK
+`visibleLinesFor(LIST_TOP_Y, FOOTER_RULE_Y)` (`drawMenuList`'s own formula)
+instead of passing a hard-coded 4 — which is the half that would have silently
+lost the line again the next time the rect moved.
 
 **Named "My Presets", not "User Presets"** — the header's right side is a
 MEASURED share against a `HEADER_MIN_LEFT` floor (70px), and "USER PRESETS"

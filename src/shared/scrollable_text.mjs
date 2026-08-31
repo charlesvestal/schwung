@@ -6,12 +6,43 @@
  * past all text.
  */
 
-import { drawArrowUp, drawArrowDown } from './menu_layout.mjs';
+import { drawScrollbar, LIST_LINE_HEIGHT } from './menu_layout.mjs';
 
 const SCREEN_WIDTH = 128;
 const CHAR_WIDTH = 6;
-const LINE_HEIGHT = 10;
+/*
+ * THE SAME ROW PITCH AS EVERY LIST, and that is worth a whole line.
+ *
+ * This was 10px against the shared list's 9. Both draw the same 5x7 font into
+ * the same 10..55 rect, so the list fitted FIVE rows there and the text fitted
+ * four — one line of help thrown away, per screen, to a constant nobody had a
+ * reason for. Reported from hardware: "i feel like our layout is wrong and we
+ * can fit an extra line in?"
+ *
+ * Derived, not re-typed at 9: the pitch and the row count are computed from the
+ * same two numbers `drawMenuList` uses (see visibleLinesFor), so text and list
+ * cannot drift apart again.
+ */
+const LINE_HEIGHT = LIST_LINE_HEIGHT;
 const MAX_CHARS_PER_LINE = 20;
+/* The device 5x7 font's ink height, against LINE_HEIGHT's pitch — the scrollbar
+ * track measures ROWS OF INK, not the leading under the last one. */
+const GLYPH_INK_HEIGHT = 7;
+
+/**
+ * How many lines fit between topY and bottomY — drawMenuList's own formula, so
+ * a text area and a list occupying the same rect always agree on the row count.
+ *
+ * Callers pass the result as `visibleLines` rather than counting rows by hand:
+ * a hard-coded 4 is what silently lost the fifth line when the pitch changed,
+ * and would lose it again the next time the rect moves.
+ *
+ * @param {number} topY     first line's y
+ * @param {number} bottomY  the floor (a footer rule, an action button)
+ */
+export function visibleLinesFor(topY, bottomY) {
+    return Math.max(1, Math.floor((bottomY - topY) / LINE_HEIGHT));
+}
 
 /**
  * Word-wrap text into lines
@@ -127,17 +158,32 @@ export function drawScrollableText({ state, topY, bottomY, actionY }) {
         print(4, y, lines[i], 1);
     }
 
-    /* Draw scroll indicators */
-    const indicatorX = 122;
-    if (scrollOffset > 0) {
-        /* Up arrow */
-        drawArrowUp(indicatorX, topY);
-    }
-    const maxScroll = Math.max(0, lines.length - visibleLines);
-    if (scrollOffset < maxScroll) {
-        /* Down arrow - more text below */
-        drawArrowDown(indicatorX, bottomY - 4);
-    }
+    /*
+     * THE SAME BAR EVERY LIST DRAWS, not the arrows this used to draw.
+     *
+     * This was the last surface in the shadow UI still using drawArrowUp /
+     * drawArrowDown, and the help viewer is where that showed: its topic LIST
+     * (drawMenuList) wore a scrollbar and the help TEXT one click further in
+     * wore arrows, in one session, on one jog. Reported from hardware as "we
+     * are using the wrong scrollbars".
+     *
+     * The window is FIXED at visibleLines, so `visible` is that whether or not
+     * the last screenful is short — handleScrollableTextJog clamps scrollOffset
+     * to lines.length - visibleLines, so a partial last window cannot happen.
+     *
+     * `rowInk` is 7: the device 5x7 font's glyph height, against LINE_HEIGHT's
+     * 10px pitch. It is what stops the track overhanging the last line of text
+     * by the 3px of leading underneath it.
+     */
+    drawScrollbar({
+        topY,
+        bottomY,
+        rowHeight: LINE_HEIGHT,
+        rowInk: GLYPH_INK_HEIGHT,
+        windowRows: visibleLines,
+        total: lines.length,
+        startIdx: scrollOffset,
+    });
 
     /* Draw action button (skip if actionY < 0) */
     if (actionY >= 0) {
