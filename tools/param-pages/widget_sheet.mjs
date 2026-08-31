@@ -339,6 +339,33 @@ function build() {
         cellLabels(ctx, g, 2, ["OPENS", "PLAIN"]);
     }));
 
+    /*
+     * READOUTS, each beside its editable twin.
+     *
+     * PAIRED on purpose: the frame's whole job is to be different from the
+     * cell next to it, and a strip of three framed cells says nothing about
+     * whether it is. Three widgets because those are the three a readout is in
+     * the fleet — an enum square (keydetect, gesture-test), an arc knob and a
+     * big number (4K EQ peaks and its clip flag).
+     */
+    add("readout", strip(6, (ctx, g) => {
+        const eR = META({ key: "detected", name: "Detected", type: "enum", access: "read",
+                          options: ["Alpha", "Bravo", "Charlie"] });
+        const eW = META({ key: "mode", name: "Mode", type: "enum",
+                          options: ["Alpha", "Bravo", "Charlie"] });
+        const kR = META({ key: "in_peak_l", name: "In L", type: "float", access: "read",
+                          min: 0, max: 1, step: 0.01 });
+        const kW = META({ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01 });
+        const nR = META({ key: "clip", name: "Clip", type: "int", min: 0, max: 9, access: "read" });
+        const nW = META({ key: "voices", name: "Voices", type: "int", min: 0, max: 9 });
+        const cells = [[eR, "1"], [eW, "1"], [kR, "0.66"], [kW, "0.66"], [nR, "3"], [nW, "3"]];
+        cells.forEach(([m, v], i) => {
+            RM.drawKnobWidget(ctx, g, i, 0, m, v, undefined, undefined, null, null);
+            if (m.readOnly) RM.drawReadoutFrame(ctx, i * CELL_W + 1, 0, CELL_W - 2, RM.BOX_H);
+        });
+        cellLabels(ctx, g, 6, ["READ", "EDIT", "READ", "EDIT", "READ", "EDIT"]);
+    }));
+
     /* --- viz graphics ------------------------------------------------------ */
 
     const F = (k, extra = {}) =>
@@ -594,6 +621,30 @@ wears one across its whole span when any covered cell \`opensOnClick\`.
 See *Divability, and the two cell marks* below for why the brackets and the
 chevron are not two spellings of one idea.
 
+${img("readout")}
+
+A **dotted frame** means \`access: "read"\` — telemetry you can look at and not
+change. Each pair above is the same declaration with and without it.
+
+The input layer has always honoured \`access\`: turning a readout shows the
+reading and writes nothing, a click opens no picker, and \`isDivable\` /
+\`isTurnable\` exclude it. The *drawing* did not, so a readout was
+pixel-identical to a control — reported from the device as a knob that "does
+not seem to do anything", which was a correct reading of the picture.
+
+- **It wraps the widget; it does not replace it.** The value stays exactly
+  where its own widget put it, so the cell keeps its shape and changes only its
+  stroke. On an enum square, whose own solid frame already occupies the same
+  rows, what remains visible is the two dotted side rails.
+- **Not an inverted slab** — inversion already means *a finger is on this knob*
+  in the label band and *this is the selection* in a list. **Not corner
+  brackets** — those mean the opposite claim, that the knob works *and* opens
+  something.
+- **An opaque cell is not framed either.** Its own notched frame is on the same
+  rect, so the dots would show only in the chevron's cut.
+- **A readout inside a viz graphic is not framed.** No fleet module has one;
+  if one appears, mark the span once, the way the door bracket does.
+
 #### Chrome
 
 | | |
@@ -717,6 +768,7 @@ const MANUAL_PICKS = {
     gestures: [
         ["chrome-header-held", "<strong>Hold a knob</strong> and the header names it and shows its value. Let go and nothing has changed — looking is free."],
         ["brackets", "<strong>Corner brackets mean a door.</strong> Hold that knob and jog-click to open what is behind it; a plain cell has nothing to open."],
+        ["readout", "<strong>A dotted frame means you can only look.</strong> It is a reading the module is reporting — turning the knob shows it, and changes nothing."],
         ["chrome-bank-bar", "<strong>The bar counts the pages.</strong> The filled block is where you are; turn the jog to move along it."],
         ["chrome-list", "<strong>Click a choice</strong> and it opens as a list — the jog scrolls, the click picks."],
     ],
