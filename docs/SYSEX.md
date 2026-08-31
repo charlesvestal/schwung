@@ -214,8 +214,11 @@ is loaded, and they exercise the contention no harder.
 
 ## Testing your own module
 
-Two probes ship in-tree, scoring against one shared generator so a result from
-either is directly comparable:
+Two probes live in-tree, scoring against one shared generator so a result from
+either is directly comparable. **They are test fixtures and a release never
+carries them** — build with `SCHWUNG_BUILD_TEST_MODULES=1 ./scripts/build.sh`,
+the same gate gesture-test uses. Without it a SysEx tool would sit in every
+user'''s Tools menu and a probe in every user'''s MIDI FX picker.
 
 - `src/modules/tools/sysex-test` — the JS/tool path. Pads pick a payload size
   (64 / 158 / 316 / 632 B); any other pad sends. The screen shows TX bytes and
