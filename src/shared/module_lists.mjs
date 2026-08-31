@@ -58,10 +58,21 @@ export function loadLists(io, path = LISTS_PATH) {
     for (const l of data.lists) {
         if (!l || !normName(l.name)) continue;
         if (lists.some(x => sameName(x.name, l.name))) continue;
-        lists.push({
-            name: normName(l.name),
-            modules: Array.isArray(l.modules) ? l.modules.filter(m => typeof m === "string") : []
-        });
+        /* A hand-editable file can carry a duplicate module id (or one typed
+         * twice by an older buggy writer). `toggleMembership`'s "off" branch
+         * does one indexOf + one splice, so a surviving duplicate means the
+         * checkbox does not clear on the first click — dedupe here, on read,
+         * same as list names a few lines up. */
+        const seen = Object.create(null);
+        const modules = [];
+        if (Array.isArray(l.modules)) {
+            for (const m of l.modules) {
+                if (typeof m !== "string" || seen[m]) continue;
+                seen[m] = true;
+                modules.push(m);
+            }
+        }
+        lists.push({ name: normName(l.name), modules });
     }
 
     /* Favorites is index 0 BY DEFINITION, so a file that lost it or moved it
@@ -125,10 +136,15 @@ export function isMember(state, name, moduleId) {
 }
 
 /* Returns the NEW membership, so the caller can announce it without asking
- * again. */
+ * again — true/false only for a real toggle.
+ *
+ * A list that does not exist (or a falsy moduleId) answers NULL, never
+ * false: false would read as "removed", and a caller that announces a
+ * removal for a toggle that touched nothing has reported a result that did
+ * not happen. */
 export function toggleMembership(state, name, moduleId) {
     const l = findList(state, name);
-    if (!l || !moduleId) return false;
+    if (!l || !moduleId) return null;
     const i = l.modules.indexOf(moduleId);
     if (i >= 0) { l.modules.splice(i, 1); return false; }
     l.modules.push(moduleId);
@@ -183,6 +199,11 @@ export function listsWithAnyOf(state, ids) {
 export function nextFilter(current, eligible) {
     if (!eligible.length) return null;
     if (!current) return eligible[0];
+    /* Exact-match indexOf, not sameName: `current` is always a name this
+     * function (or listsWithAnyOf) previously produced, never user-typed
+     * text, so case-insensitive compare is not needed here. If a future
+     * caller ever wires in arbitrary text, this silently falls to All
+     * instead of matching case-insensitively. */
     const i = eligible.indexOf(current);
     if (i < 0 || i === eligible.length - 1) return null;
     return eligible[i + 1];

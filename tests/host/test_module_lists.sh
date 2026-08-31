@@ -46,6 +46,9 @@ import("./src/shared/module_lists.mjs").then((M) => {
   eq(r.state.lists.map(l => l.name), ["Favorites", "Live"], "Favorites is moved to index 0");
   eq(r.state.lists[0].modules, ["braids"], "moving Favorites keeps its members");
 
+  r = M.loadLists(io(JSON.stringify({ version: 1, lists: [ { name: "Live", modules: ["braids", "braids", "dx7"] } ] })));
+  eq(r.state.lists[1].modules, ["braids", "dx7"], "a duplicate module id in the file is deduped on load, first-seen order kept");
+
   /* ---- 2. create ------------------------------------------------------- */
   let s = M.emptyState();
   eq(M.createList(s, "").ok, false, "createList rejects an empty name");
@@ -62,6 +65,8 @@ import("./src/shared/module_lists.mjs").then((M) => {
   eq(s.lists[1].name, "LIVE", "the rename took");
   eq(M.renameList(s, "LIVE", "").ok, false, "rename rejects an empty name");
   eq(M.renameList(s, "Nope", "X").ok, false, "rename rejects an unknown list");
+  eq(M.deleteList(s, "Nope").ok, false, "delete rejects an unknown list");
+  eq(M.clearList(s, "Nope").ok, false, "clear rejects an unknown list");
 
   M.toggleMembership(s, "Favorites", "braids");
   eq(M.clearList(s, "Favorites").ok, true, "Favorites CAN be cleared");
@@ -80,6 +85,8 @@ import("./src/shared/module_lists.mjs").then((M) => {
   M.toggleMembership(s, "Live", "braids");
   eq(M.listsContaining(s, "braids"), ["Favorites", "Live"], "listsContaining reports both, in list order");
   eq(M.listsContaining(s, "nope"), [], "listsContaining is empty for a stranger");
+  eq(M.toggleMembership(s, "Nope", "braids"), null, "toggling a nonexistent list answers NULL, not false, so a caller cannot announce a removal that did not happen");
+  eq(M.isMember(s, "Nope", "braids"), false, "isMember on a nonexistent list is false");
 
   /* ---- 5. filtering ---------------------------------------------------- */
   s = M.emptyState();
