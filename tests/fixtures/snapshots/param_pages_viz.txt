@@ -2,11 +2,45 @@
 303	Main	fader	detected	volume
 303	Main	filter	detected	cutoff,resonance
 303	Main - 2	waveform	detected	waveform
+4k-eq	HF	switch	declared	hf_bell
+4k-eq	LF	switch	declared	lf_bell
+4k-eq	Main	fader	detected	input_gain
+4k-eq	Main	fader	detected	output_gain
+4k-eq	Main	switch	declared	auto_gain
+4k-eq	Main	switch	declared	bypass
+6w6	Params	fader	declared	bd_level
+6w6	Params - 2	fader	declared	sd_level
+6w6	Params - 3	fader	declared	ht_level
+6w6	Params - 3	fader	declared	lt_level
+6w6	Params - 4	fader	declared	ch_level
+6w6	Params - 5	fader	declared	cy_level
+6w6	Params - 5	fader	declared	oh_level
+6w6	Params - 6	fader	declared	cp_level
+6w6	Params - 7	fader	declared	volume
+8w8	Params	fader	declared	bd_level
+8w8	Params - 10	fader	declared	ch_level
+8w8	Params - 10	fader	declared	oh_level
+8w8	Params - 11	fader	declared	cy_level
+8w8	Params - 12	fader	declared	volume
+8w8	Params - 16	fader	declared	rev_level
+8w8	Params - 17	fader	declared	dly_level
+8w8	Params - 2	fader	declared	sd_level
+8w8	Params - 3	fader	declared	lt_level
+8w8	Params - 3	fader	declared	mt_level
+8w8	Params - 4	fader	declared	ht_level
+8w8	Params - 5	fader	declared	lc_level
+8w8	Params - 5	fader	declared	mc_level
+8w8	Params - 6	fader	declared	hc_level
+8w8	Params - 6	fader	declared	rs_level
+8w8	Params - 7	fader	declared	cl_level
+8w8	Params - 8	fader	declared	cp_level
+8w8	Params - 8	fader	declared	ma_level
+8w8	Params - 9	fader	declared	cb_level
 9w9	Params - 10	fader	declared	hc_volume
-9w9	Params - 11	fader	declared	cr_volume
 9w9	Params - 11	fader	declared	ohh_volume
-9w9	Params - 11	fader	declared	rc_volume
-9w9	Params - 12	fader	declared	volume
+9w9	Params - 12	fader	declared	cr_volume
+9w9	Params - 12	fader	declared	rc_volume
+9w9	Params - 13	fader	declared	volume
 9w9	Params - 2	fader	declared	bd_c_level
 9w9	Params - 3	fader	declared	sd_c_level
 9w9	Params - 5	fader	declared	lt_c_level
@@ -20,9 +54,6 @@ aphex	MG / ESP	fader	detected	esp_in_gain
 aphex	Main	fader	detected	volume
 aphex	Modern	switch	detected	ms10_mode
 aphex	Patch	switch	detected	mutate
-aphex	Patch	switch	detected	reset_patch
-aphex	Patch	switch	detected	rnd_mod
-aphex	Patch	switch	detected	rnd_patch
 aphex	Patch - 2	switch	detected	trigger
 aphex	VCO 1+2	waveform	detected	v1_wave
 aphex	VCO 1+2	waveform	detected	v2_wave
@@ -36,14 +67,13 @@ braids	Amp Envelope	envelope	declared	attack,decay,sustain,release
 braids	Filter	envelope	declared	f_attack,f_decay,f_sustain,f_release
 braids	Filter	filter	declared	cutoff,resonance
 braids	Global	fader	declared	volume
-braids	Main	envelope	declared	attack,decay,sustain
+braids	Main	envelope	declared	attack,decay,sustain,release
 braids	Main	filter	declared	cutoff
 branchage	Params - 2	switch	detected	kick_branch_enabled
 branchage	Params - 3	switch	detected	hat_branch_enabled
 branchage	Params - 3	switch	detected	snare_branch_enabled
 breakbeat	Main	sample	detected	A_sample_path
 breakbeat	Main	sample	detected	B_sample_path
-breakbeat	Main - 2	switch	detected	save_preset
 chiptune	Main	envelope	detected	env_attack,env_decay,env_sustain,env_release
 chiptune	Main	fader	detected	volume
 chordism	Arp	switch	detected	arp_enabled
@@ -68,6 +98,8 @@ chordism	Oscillators	waveform	detected	wave_1
 chordism	Oscillators	waveform	detected	wave_2
 chordism	Oscillators	waveform	detected	wave_3
 chordism	Oscillators	waveform	detected	wave_4
+chowtape	Main - 2	fader	detected	output
+clap	Main	fader	detected	param_5
 denis	Control	envelope	detected	attack,decay,sustain,release
 denis	Control	filter	detected	filter_cutoff,filter_q
 denis	Mod & Patch - 2	switch	detected	legato
@@ -75,6 +107,7 @@ dexed	Global	fader	detected	output_level
 dexed	Global	switch	detected	osc_sync
 dexed	LFO	switch	detected	lfo_sync
 dexed	Main	fader	detected	output_level
+dexed	Main	lfo	detected	lfo_speed,lfo_pmd
 dexed	Operat/Operator 1	fader	detected	op1_level
 dexed	Operat/Operator 1	switch	detected	op1_osc_mode
 dexed	Operat/Operator 1 - 2	fader	detected	op1_amp_mod
@@ -136,6 +169,7 @@ euclidrum	Main	switch	detected	lane8_enabled
 filter	Envelope	envelope	detected	env_attack,env_release
 filter	LFO	waveform	detected	lfo_shape
 filter	Main	filter	detected	cutoff,resonance
+filter	Output	fader	detected	output
 fizzik	Exciter	envelope	detected	exc_attack,exc_decay
 fizzik	Exciter	fader	detected	vel_level
 fizzik	Mod	lfo	detected	lfo1_rate,lfo1_depth,lfo1_shape
@@ -146,30 +180,19 @@ fizzik	Voice	fader	detected	level
 forge	FX - 2	switch	detected	dly_pp
 forge	General	eq	detected	eq_lo,eq_mid,eq_hi
 forge	General - 3	switch	detected	limiter
-forge	Main	switch	detected	rnd_kit
-forge	Main	switch	detected	rnd_kit_params
-forge	Main	switch	detected	rnd_pan
-forge	Main	switch	detected	rnd_voice
 forge	Patch	switch	detected	all_mono
-forge	Patch	switch	detected	copy_a_b
-forge	Patch	switch	detected	init_decay
-forge	Patch	switch	detected	init_freq
-forge	Patch	switch	detected	rnd_pitch
-forge	Patch - 2	switch	detected	copy_b_a
-forge	Patch - 2	switch	detected	rnd_b_from_a
-forge	Patch - 2	switch	detected	swap_ab
 forge	Voice/Filter - 2	switch	detected	cv_bw_on
 forge	Voice/Mod - 2	switch	detected	cv_lfo_rt
 forge	Voice/Osc	fader	detected	cv_level
 forge	Voice/Osc	waveform	detected	cv_wave
 forge	Voice/Osc - 2	switch	detected	cv_xfm
-forge	Voice/Setup	switch	detected	cv_init
 forge	Voice/Setup - 2	switch	detected	cv_mute
 fork	Global Settings	switch	detected	fallthrough
 freak	Cycling Envelope	envelope	detected	cycle_attack_ms,cycle_decay_ms
 freak	Cycling Envelope	switch	detected	cycle_bipolar
 freak	Cycling Envelope	switch	detected	cycle_retrig
 freak	Cycling Envelope	switch	detected	cycle_sync
+freak	Envelope	envelope	detected	env_attack_ms,env_decay_ms,env_sustain,env_release_ms
 freak	Envelope	switch	detected	env_retrig
 freak	Filter	filter	detected	filter_mode,filter_cutoff,filter_resonance
 freak	LFO	switch	detected	lfo_retrig
@@ -179,10 +202,7 @@ freak	Voice & Mix	fader	detected	volume
 gate	Main	envelope	detected	attack,hold,release
 gesture-test	Main	sample	detected	sample_path
 gesture-test	Main	switch	detected	power
-granny	ADSR Envelope	fader	detected	amp_attack_ms
-granny	ADSR Envelope	fader	detected	amp_decay_ms
-granny	ADSR Envelope	fader	detected	amp_release_ms
-granny	ADSR Envelope	fader	detected	amp_sustain
+granny	ADSR Envelope	envelope	detected	amp_attack_ms,amp_decay_ms,amp_sustain,amp_release_ms
 granny	Main	fader	detected	grain_gain
 granny	Main	sample	detected	position,spray
 granny	Main - 2	fader	detected	grain_gain
@@ -210,8 +230,8 @@ helm	Main	fader	detected	amp_sustain
 helm	Main	fader	detected	volume
 helm	Main	filter	detected	cutoff,resonance
 helm	Mod Envelope	envelope	detected	mod_attack,mod_decay,mod_sustain,mod_release
-helm	Mono LFO 1	waveform	detected	mono_lfo_1_waveform
-helm	Mono LFO 2	waveform	detected	mono_lfo_2_waveform
+helm	Mono LFO 1	lfo	detected	mono_lfo_1_waveform,mono_lfo_1_amplitude,mono_lfo_1_frequency
+helm	Mono LFO 2	lfo	detected	mono_lfo_2_waveform,mono_lfo_2_amplitude,mono_lfo_2_frequency
 helm	Noise / Feedback	fader	detected	noise_volume
 helm	Oscillator 1	fader	detected	osc_1_volume
 helm	Oscillator 1	switch	detected	unison_1_harmonize
@@ -219,7 +239,7 @@ helm	Oscillator 1	waveform	detected	osc_1_waveform
 helm	Oscillator 2	fader	detected	osc_2_volume
 helm	Oscillator 2	switch	detected	unison_2_harmonize
 helm	Oscillator 2	waveform	detected	osc_2_waveform
-helm	Poly LFO	waveform	detected	poly_lfo_waveform
+helm	Poly LFO	lfo	detected	poly_lfo_waveform,poly_lfo_amplitude,poly_lfo_frequency
 helm	Reverb	switch	detected	reverb_on
 helm	Settings	fader	detected	volume
 helm	Settings	switch	detected	legato
@@ -274,6 +294,7 @@ linein	Guitar Settings	switch	detected	soft_clip
 linein	Line Settings	switch	detected	safety_limiter
 linein	Phono Settings	switch	detected	hum_notch
 linein	Phono Settings	switch	detected	riaa_eq
+magneto	Channel	eq	detected	low,mid,high
 magneto	Channel	fader	detected	chan_vol
 magneto	Deck	switch	detected	bwd
 magneto	Deck	switch	detected	fwd
@@ -324,14 +345,17 @@ moog	Oscillator 2	fader	detected	osc2_volume
 moog	Oscillator 3	fader	detected	osc3_volume
 moog	Oscillator 4	fader	detected	osc4_volume
 mrdrums	Global	fader	detected	g_master_vol
-mrdrums	Main	envelope	detected	pad_attack_ms,pad_decay_ms
-mrdrums	Main	fader	detected	pad_vol
-mrdrums	Main	sample	detected	pad_start
-mrdrums	Main	switch	detected	ui_auto_select_pad
-mrdrums	Pad Settings	fader	detected	pad_rand_vol_amt
-mrdrums	Pad Settings	sample	detected	pad_sample_path
+mrdrums	Global	switch	detected	ui_auto_select_pad
+mrdrums	Main	envelope	detected	attack_ms,decay_ms
+mrdrums	Main	fader	detected	vol
+mrdrums	Main	sample	detected	start
+mrdrums	Pad Settings	fader	detected	rand_vol_amt
+mrdrums	Pad Settings	sample	detected	sample_path
+mrsample	Amp Env	envelope	detected	attack_ms,decay_ms,sustain,release_ms
 mrsample	Filter	filter	detected	filter_type,filter_cutoff,filter_res
 mrsample	Global	fader	detected	gain
+mrsample	LFO	lfo	detected	lfo_rate_hz,lfo_depth
+mrsample	Main	envelope	detected	attack_ms,decay_ms,sustain,release_ms
 mrsample	Main	fader	detected	gain
 mrsample	Main	filter	detected	filter_cutoff,filter_res
 mrsample	Main	sample	detected	sample_start
@@ -436,18 +460,17 @@ osirus	Oscillators - 3	waveform	detected	sub_osc_shape
 osirus	Performance	fader	detected	patch_volume
 osirus	Settings	fader	detected	gain
 ottx	Advanced	eq	detected	lgain,mgain,hgain
+ottx	Main	fader	detected	in_gain
+ottx	Main	fader	detected	out_gain
 palette	PRESETS&RND	fader	detected	input_vol
 palette	PRESETS&RND	switch	detected	rnd_amount
-palette	PRESETS&RND	switch	detected	rnd_effect
-palette	PRESETS&RND	switch	detected	rnd_macro
-palette	PRESETS&RND	switch	detected	rnd_patch
-palette	PRESETS&RND	switch	detected	rnd_values
 plaits	Main - 2	switch	detected	legato
 po32-drum	Params	fader	detected	level
 psxverb	Main	fader	detected	input_gain
 psxverb	Main	fader	detected	reverb_level
 punchfx	Main	fader	detected	volume
 pushnpull	Filter	filter	detected	cutoff,resonance
+pushnpull	Main	fader	detected	output
 pushnpull	Main - 2	switch	detected	band_on
 radiogarden	Params	fader	detected	gain
 rex	Main	envelope	detected	attack,decay,sustain,release
@@ -493,15 +516,13 @@ smack	Perform - 2	switch	detected	pad_play
 smack-in	Params - 2	switch	detected	pad_play
 spectra	Control - 2	switch	detected	limiter
 spectra	Motion	waveform	detected	motion_shape
-spectra	Patch	switch	detected	rnd_motion
-spectra	Patch	switch	detected	rnd_pan
-spectra	Patch	switch	detected	rnd_preset
-spectra	Patch	switch	detected	rnd_spectra
 streamrtsp	Params	fader	detected	gain
 structor	Randomize	switch	detected	seq_on
 superarp	Global	switch	detected	latch
 superarp	Global	switch	detected	triplet
 superarp	Main	switch	detected	latch
+superboom	Main	fader	detected	inputGain
+superboom	Main	fader	detected	output
 superboom	Seal	switch	detected	limiter
 superboom	Skulpt - 2	switch	detected	micControl
 surge	Amp Envelope	envelope	detected	env1_attack,env1_decay,env1_sustain,env1_release
@@ -599,20 +620,26 @@ tablor	Filter	filter	declared	flt_freq,flt_res,flt_type
 tablor	Filter	waveform	declared	sub_wave
 tablor	Global	fader	declared	volume
 tablor	Global	switch	declared	legato
-tablor	Global	switch	declared	save_preset
 tablor	Lfo 1	lfo	declared	lfo1_shape,lfo1_rate,lfo1_depth,lfo1_phase
 tablor	Lfo 1	switch	declared	lfo1_sync
 tablor	Lfo 2	lfo	declared	lfo2_shape,lfo2_rate,lfo2_depth,lfo2_phase
 tablor	Lfo 2	switch	declared	lfo2_sync
 tablor	Main	fader	declared	wt1_level
 tablor	Main	fader	declared	wt2_level
-tablor	Main - 2	sample	declared	wt1_table
-tablor	Main - 2	sample	declared	wt2_table
 tablor	Mod 1-2	switch	declared	m1_on
 tablor	Mod 1-2	switch	declared	m2_on
 tablor	Mod 3-4	switch	declared	m3_on
 tablor	Mod 3-4	switch	declared	m4_on
+tape-echo2	Advanced	eq	detected	bass,treble
+tape-echo2	Advanced	fader	detected	input_volume
+tape-echo2	Main	switch	detected	tempo_sync
+tape-echo2	Out	fader	detected	echo_volume
+tape-echo2	Out	fader	detected	reverb_volume
+tape-echo2	Out	switch	detected	ping_pong
+tapescam	Main	fader	detected	output
+tapescam	Main - 2	fader	detected	input
 tapescam	Main - 2	switch	detected	widen
+usefulity	Main	fader	detected	gain_db
 usefulity	Main	switch	detected	bass_mono
 usefulity	Main	switch	detected	mono
 usefulity	Main	switch	detected	mute
@@ -637,14 +664,8 @@ war_bells	Perform	switch	detected	hold
 war_bells	Perform	switch	detected	reverse
 war_bells	Tone	fader	detected	effect_vol
 webstream	Params	fader	detected	gain
-weird-dreams	General - 2	switch	detected	reset_eq
 weird-dreams	Main	fader	detected	cv_vol
 weird-dreams	Patch	switch	detected	all_mono
-weird-dreams	Patch	switch	detected	init_freq
-weird-dreams	Patch	switch	detected	rnd_kit
-weird-dreams	Patch	switch	detected	rnd_pan
-weird-dreams	Patch	switch	detected	rnd_pitch
-weird-dreams	Patch	switch	detected	rnd_voice
 weird-dreams	Voice - 2	envelope	detected	cv_nattack,cv_ndecay
 weird-dreams	Voice - 2	fader	detected	cv_level
 work	Main	fader	detected	level

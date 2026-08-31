@@ -302,6 +302,7 @@ int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) 
      * This informs the Shadow UI default on first placement; does not gate
      * the per-slot Pre/Post toggle (the user can still flip it manually). */
     inst->midi_fx_pre_capable[slot] = 0;
+    inst->midi_fx_wants_sysex[slot] = 0;
     char mj_path[MAX_PATH_LEN];
     snprintf(mj_path, sizeof(mj_path), "%s/module.json", fx_dir);
     FILE *mj = fopen(mj_path, "r");
@@ -318,6 +319,17 @@ int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) 
                 if (json_get_int_in_section(mj_buf, "capabilities", "pre_capable", &cap) == 0
                     && cap) {
                     inst->midi_fx_pre_capable[slot] = 1;
+                }
+                /* Opt-in for raw SysEx. Accept the JSON boolean AND the 1/0
+                 * spelling: json_get_int_in_section would atoi("true") to 0,
+                 * which is the same trap the audio_in parse hit and is why
+                 * json_get_bool_in_section exists. Trying both means a module
+                 * author cannot get this subtly wrong and be silently ignored. */
+                int wants = 0;
+                if ((json_get_bool_in_section(mj_buf, "capabilities", "wants_sysex", &wants) == 0
+                     || json_get_int_in_section(mj_buf, "capabilities", "wants_sysex", &wants) == 0)
+                    && wants) {
+                    inst->midi_fx_wants_sysex[slot] = 1;
                 }
                 free(mj_buf);
             }
@@ -376,6 +388,7 @@ void v2_unload_midi_fx_slot(chain_instance_t *inst, int slot) {
     inst->mod_param_refresh_ms_midi_fx[slot] = 0;
     inst->midi_fx_ui_hierarchy[slot][0] = '\0';
     inst->midi_fx_pre_capable[slot] = 0;
+    inst->midi_fx_wants_sysex[slot] = 0;
     inst->midi_fx_bypassed[slot] = 0;
 
     /* Stale refcount entries from a now-unloaded MIDI FX would orphan future

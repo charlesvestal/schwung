@@ -4,8 +4,8 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "0.12.1",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v0.12.1/schwung.tar.gz",
+    "latest_version": "1.0.0",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.0.0/schwung.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -889,7 +889,7 @@
       "github_repo": "charlesvestal/schwung-tb3po",
       "default_branch": "main",
       "asset_name": "tb3po-module.tar.gz",
-      "min_host_version": "0.9.10"
+      "min_host_version": "1.0.0"
     },
     {
       "id": "breakbeat",
@@ -1031,7 +1031,7 @@
       "author": "andree182",
       "component_type": "midi_fx",
       "github_repo": "andree182/schwung-fork",
-      "default_branch": "master",
+      "default_branch": "main",
       "asset_name": "fork-module.tar.gz",
       "min_host_version": "0.8.8"
     },
@@ -1196,7 +1196,7 @@
       "author": "Patrick Kunz / TAL (engine) · port: legsmechanical",
       "component_type": "sound_generator",
       "github_repo": "legsmechanical/schwung-noisemaker",
-      "default_branch": "main",
+      "default_branch": "master",
       "asset_name": "noisemaker-module.tar.gz",
       "min_host_version": "0.11.0"
     },
@@ -1281,7 +1281,7 @@
     {
       "id": "6w6",
       "name": "6W6",
-      "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 \u2014 the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
+      "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 — the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
       "author": "athousanddetails; voices after 606-Inspired-Synth-Drums (Matthew Fecher / AudioKit Pro)",
       "component_type": "sound_generator",
       "github_repo": "athousanddetails/schwung-6W6",
@@ -1355,6 +1355,39 @@
       "default_branch": "main",
       "asset_name": "8w8-module.tar.gz",
       "min_host_version": "0.12.1"
+    },
+    {
+      "id": "cw78",
+      "name": "CW-78",
+      "description": "Roland CR-78 style drum machine. Fourteen voices, all synthesized, no samples — every one a circuit model built from the 1979 service notes and held to Roland's own factory alignment table. The machine's 34 preset rhythms ship with it, transcribed from the same document, transport-synced with the A/B variation lever live on all seventeen style buttons. Decay is loop gain on the kick, bongos, conga and snare shell rather than an envelope; one noise source feeds the hats, maracas, tambourine and the snare's snap as the hardware busses it. Seven distortion characters per voice and on the master, bit-exactly bypassed at zero; reverb and delay sends on every voice but the kick; one-knob bus compressor; CR-78-style remote web panel with the hardware's own rhythm buttons, Movy template.",
+      "author": "athousanddetails; every voice modelled from the Roland CR-78 service notes (June 1979), VG-11A voicing board",
+      "component_type": "sound_generator",
+      "github_repo": "athousanddetails/schwung-cw-78",
+      "default_branch": "main",
+      "asset_name": "cw78-module.tar.gz",
+      "min_host_version": "0.12.1"
+    },
+    {
+      "id": "forgetful",
+      "name": "Forgetful",
+      "description": "One live input sent by hand into four tape memories, each one already forgetting itself — drifting out of tune, breaking up, until it's gone",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "github_repo": "kliegsablaze/forgetful",
+      "default_branch": "main",
+      "asset_name": "forgetful-module.tar.gz",
+      "min_host_version": "0.12.1"
+    },
+    {
+      "id": "wayward",
+      "name": "Wayward",
+      "description": "Six loops recorded from the input, each keeping its own tempo, sliding out of alignment and back over minutes \u2014 tape phasing on eight knobs",
+      "author": "kliegsablaze",
+      "component_type": "audio_fx",
+      "github_repo": "kliegsablaze/wayward",
+      "default_branch": "main",
+      "asset_name": "wayward-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }

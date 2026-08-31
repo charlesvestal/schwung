@@ -551,6 +551,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -593,6 +594,16 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                                 inst->synth_consumes_line_input = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
+                        }
+                    }
+                    /* Opt-in for raw SysEx, same both-spellings rule as
+                     * the MIDI FX path in chain_midi.c. */
+                    {
+                        int wants = 0;
+                        if ((json_get_bool_in_section(json, "capabilities", "wants_sysex", &wants) == 0
+                             || json_get_int_in_section(json, "capabilities", "wants_sysex", &wants) == 0)
+                            && wants) {
+                            inst->synth_wants_sysex = 1;
                         }
                     }
                     free(json);
@@ -909,6 +920,24 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         memset(inst->lfos, 0, sizeof(inst->lfos));
         memset(inst->lfo_base_values, 0, sizeof(inst->lfo_base_values));
         memset(inst->lfo_base_valid, 0, sizeof(inst->lfo_base_valid));
+        /*
+         * Knob mappings go too, for the identical reason the LFOs do: they
+         * are per-SLOT state, not per-module, so unloading everything they
+         * could point at used to leave a mapping "assigned" to a component
+         * that no longer exists.
+         *
+         * Reported from the device: a knob assigned to a param in one Set
+         * still read (and, if turned, still forwarded to whatever now
+         * occupies that position) after switching to an empty Set. Two-pass
+         * set switching only calls load_file when the new Set has SAVED
+         * slot state; an empty Set has none, so pass 2 never runs and this
+         * clear is the only reset the mapping gets. Loading a patch assigns
+         * the whole array from the patch (chain_patch.c, `memcpy(inst->
+         * knob_mappings, patch->knob_mappings, ...)`), so nothing a patch
+         * defines can be lost by clearing first.
+         */
+        memset(inst->knob_mappings, 0, sizeof(inst->knob_mappings));
+        inst->knob_mapping_count = 0;
         inst->current_patch = -1;
         inst->dirty = 0;
         malloc_trim(0);
@@ -1375,6 +1404,21 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "midi_fx_pre_mode") == 0) {
         return snprintf(buf, buf_len, "%d", inst->midi_fx_pre_mode ? 1 : 0);
     }
+    if (strcmp(key, "wants_sysex") == 0) {
+        /* Does ANY component in this slot want raw SysEx?
+         *
+         * One answer per slot rather than per position, because SysEx carries
+         * no channel and therefore nothing to route on -- there is no way to
+         * address a position with it. The slot either has a component that
+         * asked for SysEx or it does not, and the shim broadcasts to the ones
+         * that did. A module distinguishes its own messages by manufacturer
+         * ID, which is what that ID is for. */
+        int want = inst->synth_wants_sysex;
+        for (int i = 0; !want && i < inst->midi_fx_count; i++) {
+            if (inst->midi_fx_wants_sysex[i]) want = 1;
+        }
+        return snprintf(buf, buf_len, "%d", want);
+    }
     if (strcmp(key, "midi_fx:pre_capable") == 0) {
         /* Hint from the loaded MIDI FX's module.json. Aggregated as OR
          * across slots — in practice only one MIDI FX is loaded per slot. */
@@ -1630,6 +1674,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (base_result >= 0) return base_result;
         int mod_result = chain_mod_get_modulated_for_subkey(inst, "synth", subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
+        int eff_result = chain_mod_get_effective_for_subkey(inst, "synth", subkey, buf, buf_len);
+        if (eff_result >= 0) return eff_result;
+        /* A plain read of an actively modulated key answers with the BASE —
+         * the plugin holds the effective value the overlay keeps writing into
+         * it, which is not what the user set (#276). */
+        int plain_base = chain_mod_get_base_for_plain_key(inst, "synth", subkey, buf, buf_len);
+        if (plain_base >= 0) return plain_base;
 
         /* Return synth's default forward channel from module.json capabilities */
         if (strcmp(subkey, "default_forward_channel") == 0) {
@@ -1703,6 +1754,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (base_result >= 0) return base_result;
         int mod_result = chain_mod_get_modulated_for_subkey(inst, fx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
+        int eff_result = chain_mod_get_effective_for_subkey(inst, fx_id, subkey, buf, buf_len);
+        if (eff_result >= 0) return eff_result;
+        int plain_base = chain_mod_get_base_for_plain_key(inst, fx_id, subkey, buf, buf_len);
+        if (plain_base >= 0) return plain_base;
 
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->fx_count > fxi) {
@@ -1779,6 +1834,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         if (base_result >= 0) return base_result;
         int mod_result = chain_mod_get_modulated_for_subkey(inst, mfx_id, subkey, buf, buf_len);
         if (mod_result >= 0) return mod_result;
+        int eff_result = chain_mod_get_effective_for_subkey(inst, mfx_id, subkey, buf, buf_len);
+        if (eff_result >= 0) return eff_result;
+        int plain_base = chain_mod_get_base_for_plain_key(inst, mfx_id, subkey, buf, buf_len);
+        if (plain_base >= 0) return plain_base;
         /* For ui_hierarchy: return cached JSON from module.json, fall through to plugin if empty */
         if (strcmp(subkey, "ui_hierarchy") == 0 && inst->midi_fx_count > mfi) {
             if (inst->midi_fx_ui_hierarchy[mfi][0]) {

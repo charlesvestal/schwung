@@ -820,6 +820,11 @@ static uint8_t track_longpress_fired[4];
  * Once set, that track's long-press is suppressed for the remainder of the press,
  * so adjusting a track's volume never opens the shadow UI. Cleared on press/release. */
 static uint8_t track_vol_touched_during_press[4];
+/* Set when a track long-press fires and a synthetic tap has been injected to
+ * Move (see the fire site): the user's REAL release for that track is then
+ * swallowed, so Move never sees an orphan release for a press it already had
+ * closed. Cleared when the swallowed release goes by. */
+static uint8_t track_swallow_release[4];
 
 static struct timespec menu_press_time;
 static uint8_t menu_longpress_pending;
@@ -1418,6 +1423,15 @@ static ext_midi_ring_t overtake_ext_ring;
  * read, so the one failure mode this path has — a packet dropped, and whatever
  * it was reporting left stale — was invisible from the device. */
 volatile int shim_ext_midi_drops = 0;
+/* Packets the shadow_ui MIDI ring had no room for. Incremented on the SPI
+ * callback by shadow_ui_midi_publish; reported by the worker (#358). */
+volatile int shim_ui_midi_drops = 0;
+
+/* Outbound counterpart: packets shadow_ui queued that the carry could not hold.
+ * Before the carry existed this condition had no counter because it had no
+ * name — the drain memset its source and walked off the end of the mailbox,
+ * so an outbound SysEx lost its tail with nothing recording that it had. */
+volatile int shim_ui_midi_out_drops = 0;
 
 /* Audio-thread producer for an overtake DSP (host_api midi_send_external). */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {
@@ -3013,7 +3027,7 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
      * packet always carries at least one nonzero byte, so the all-zero case
      * is now rejected too. See src/host/shadow_midi_filter.c. */
     if (!shadow_midi_forwardable(head, status, d1, d2)) return;
-    for (int slot = 0; slot < MIDI_BUFFER_SIZE; slot += 4) {
+    for (int slot = 0; slot < SHADOW_UI_MIDI_BYTES; slot += 4) {
         if (__atomic_load_n(&shadow_ui_midi_shm[slot], __ATOMIC_ACQUIRE) == 0) {
             shadow_ui_midi_shm[slot + 1] = status;
             shadow_ui_midi_shm[slot + 2] = d1;
@@ -3023,6 +3037,15 @@ static inline void shadow_ui_midi_publish(uint8_t head, uint8_t status,
             return;
         }
     }
+    /* Ring full: this packet is gone.
+     *
+     * Falling off the end and returning is what made a 6.9% packet loss on
+     * QY-70 bulk dumps take two hardware captures to characterise instead of
+     * one glance at a log — framing still held and the message still parsed,
+     * so from the device an overflow was indistinguishable from a device that
+     * simply sent less. Count it here (this is the SPI callback, so no logging
+     * and no allocation) and let the worker report the rate at ~1 Hz. */
+    shim_ui_midi_drops++;
 }
 
 /* LED queue constants and state — moved to shadow_led_queue.c */
@@ -3316,7 +3339,7 @@ static void init_shadow_shm(void)
 
     /* Create/open UI MIDI shared memory */
     shadow_ui_midi_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_UI_MIDI,
-                                                   MIDI_BUFFER_SIZE, 1, 1);
+                                                   SHADOW_UI_MIDI_BYTES, 1, 1);
 
     /* Create/open display shared memory */
     shadow_display_shm = (uint8_t *)shadow_shm_map(SHM_SHADOW_DISPLAY,
@@ -5569,6 +5592,9 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Advance the external-dispatch ring's age counter once per frame. */
     shadow_external_dispatch_tick();
 
+    /* One slot per frame learns whether its components want raw SysEx. */
+    shadow_chain_refresh_wants_sysex_tick();
+
     /* MIDI channel indicator: scan external (cable 2) MIDI_IN and MIDI_OUT for
      * note events and record the channels for the on-screen "i<IN> o<OUT>"
      * overlay. IN = what the controller sends; OUT = what Schwung emits back to
@@ -6296,7 +6322,34 @@ pre_done:
                     launch_shadow_ui_reset_backoff();
                     launch_shadow_ui();
                 }
-                shadow_log("Track long-press: opening slot settings");
+                /* Make MOVE's selected track follow the slot.
+                 *
+                 * Without this the long-press switches the shadow UI to slot i
+                 * while Move stays on the previous track — and with a HiJack
+                 * kit the pads play the SELECTED track's rack, so the editor
+                 * shows one module and the pads play another. The field
+                 * report: "it does change to slot 2 on schwung, but still
+                 * shows me the [old] pads".
+                 *
+                 * Move selects a track on a TAP (press+release inside its own
+                 * threshold); the 500 ms hold that got us here does not read
+                 * as one. So: close the real hold with a synthetic release,
+                 * then inject a crisp press+release pair — a tap Move cannot
+                 * mistake — and swallow the user's eventual real release so
+                 * Move is not handed a release for a press it never saw
+                 * open. Ring order is preserved by the MPSC writer, and the
+                 * drain feeds MIDI_IN after filtering, so the three packets
+                 * land in sequence. */
+                if (shadow_midi_inject_shm) {
+                    uint8_t cc = (uint8_t)(43 - i);   /* CC43=Track1 ... CC40=Track4 */
+                    uint8_t rel[4] = {0x0B, 0xB0, cc, 0};
+                    uint8_t prs[4] = {0x0B, 0xB0, cc, 127};
+                    shadow_midi_inject_push(shadow_midi_inject_shm, rel);
+                    shadow_midi_inject_push(shadow_midi_inject_shm, prs);
+                    shadow_midi_inject_push(shadow_midi_inject_shm, rel);
+                    track_swallow_release[i] = 1;
+                }
+                shadow_log("Track long-press: opening slot settings (Move track follows)");
             }
         }
         /* Menu button */
@@ -7422,7 +7475,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     /* Long-press detection for Track buttons */
                     if (LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
                         int lp_slot = 43 - d1;
+                        /* A fired long-press already closed this press for
+                         * Move with a synthetic release and tapped the track
+                         * on its behalf — the real release must not reach
+                         * Move on top of that. Same double-zero as the
+                         * Shift+Vol+Track block above: the shadow buffer is
+                         * what Move reads, src keeps the debug scan honest. */
+                        if (!pressed && track_swallow_release[lp_slot]) {
+                            track_swallow_release[lp_slot] = 0;
+                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
+                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
+                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        }
                         if (pressed) {
+                            track_swallow_release[lp_slot] = 0;
                             /* Start long-press timer */
                             clock_gettime(CLOCK_MONOTONIC, &track_press_time[lp_slot]);
                             track_longpress_pending[lp_slot] = 1;
