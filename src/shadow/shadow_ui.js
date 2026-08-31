@@ -2115,6 +2115,18 @@ let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
 let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
 let moduleListsTarget = "";         /* the list the actions screen is acting on */
 let moduleListsConfirmDelete = false;
+/*
+ * A name the keyboard REJECTED, waiting to be re-offered from tick().
+ *
+ * It cannot be re-offered from inside onConfirm: text_entry.mjs calls
+ * onConfirm(buffer) and then runs closeTextEntry() UNCONDITIONALLY on the way
+ * out, so a keyboard opened inside the callback is torn down microseconds
+ * later -- the screen vanishes, nothing is created, and with padSelect on the
+ * pad LEDs are left wearing the keyboard`s own colours (the reopen snapshots
+ * them while they are up, and the trailing close restores that snapshot).
+ * Recorded here and served one tick later, after the teardown has run.
+ */
+let moduleListsPendingName = null;  /* { existing, text } */
 
 function moduleListsLoad() {
     const r = ModuleLists.loadLists(moduleListsIo);
@@ -2128,9 +2140,18 @@ function moduleListsSave() {
     return ModuleLists.saveLists(moduleListsIo, moduleListsState);
 }
 
-/* How many lists hold a module — the Module page row's value. Reads the file
+/*
+ * How many lists hold a module — the Module page row's value. Reads the file
  * once per PLAN (componentTrailingMenus is not on the draw path), same budget
- * as the `<prefix>:state` read next to it. */
+ * as the `<prefix>:state` read next to it.
+ *
+ * The load is cached for the life of the process, and unlike moduleHelpCache
+ * beside it that cache CAN go stale: module_lists.json lives under
+ * /data/UserData and schwung-manager`s file browser can replace it while we
+ * are running. The consequence is bounded and self-correcting — a count on one
+ * row is behind until the next entry to the lists screen, which reloads — so
+ * it is stated here rather than paid for with a read per plan.
+ */
 function moduleListsCountFor(moduleId) {
     if (!moduleListsState) moduleListsLoad();
     return ModuleLists.listsContaining(moduleListsState, moduleId).length;
@@ -2336,7 +2357,13 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             moduleListsIndex = 0;
             setView(VIEWS.MODULE_LISTS);
             needsRedraw = true;
-            announce("Add to List, " + moduleListsRowLabel(0));
+            /* Say it ONCE, on the way in, when a corrupt file means nothing
+             * done on this screen will persist. The alternative is the user
+             * finding out per click, or -- as it was -- not at all, because
+             * the only record was a debugLog line in a file nobody reading
+             * this screen is watching. */
+            announce("Add to List, " + moduleListsRowLabel(0) +
+                     (moduleListsCorrupt ? ", lists file unreadable, changes will not save" : ""));
             /* Returns straight out, exactly as module_help does: the
              * componentModalFromGrid bookkeeping below is for hand-offs that
              * converge on CHAIN_EDIT, and this one never goes there. Leaving
@@ -2519,7 +2546,13 @@ function maybeReturnToComponentHelp() {
  * "On". A prefix glyph would collide with the cursor.
  */
 function moduleListsRows() {
-    if (!moduleListsState) moduleListsLoad();
+    /* NO load here. This is reached from drawModuleLists, i.e. from the DRAW
+     * path, and a host_read_file on the draw path is what the read budget
+     * forbids (docs/PARAM_PAGES.md). The entry loads, and the jog and click
+     * paths call moduleListsEnsureLoaded() before they read; a draw that
+     * somehow arrived with no state shows an empty screen rather than reading
+     * a file to fill one. */
+    if (!moduleListsState) return [];
     const rows = moduleListsState.lists.map(l => ({
         name: l.name,
         value: ModuleLists.isMember(moduleListsState, l.name, moduleListsModuleId) ? "*" : "",
@@ -2528,6 +2561,23 @@ function moduleListsRows() {
     rows.push({ name: "New List...", value: "", kind: "new" });
     rows.push({ name: "Edit Lists...", value: "", kind: "edit" });
     return rows;
+}
+
+/* The load, for the INPUT paths — never the draw path. */
+function moduleListsEnsureLoaded() {
+    if (!moduleListsState) moduleListsLoad();
+}
+
+/*
+ * Clamp the cursor to the rows that exist NOW.
+ *
+ * Rows come and go while a lists session is open (deleting a list on the Edit
+ * screen removes one), so every arrival back on this screen must re-resolve
+ * the cursor rather than trust the index it left with.
+ */
+function moduleListsClampIndex() {
+    const n = moduleListsRows().length;
+    moduleListsIndex = Math.max(0, Math.min(n > 0 ? n - 1 : 0, moduleListsIndex));
 }
 
 function moduleListsRowLabel(i) {
@@ -2552,14 +2602,22 @@ function drawModuleLists() {
 /*
  * The keyboard, for both New List and Rename. `existing` null = create.
  *
- * A rejected name REOPENS the keyboard with the text intact and announces
- * why. Closing it and doing nothing is the failure mode where the user
- * cannot tell whether the name was taken or the click was missed.
+ * A rejected name REOPENS the keyboard carrying WHAT THE USER TYPED, and
+ * announces why. Closing it and doing nothing is the failure mode where the
+ * user cannot tell whether the name was taken or the click was missed; and
+ * reopening it seeded with `existing` would be the same loss one step
+ * quieter -- a rename would come back showing the OLD name and a new list
+ * would come back blank, both of them looking like the typing was discarded.
+ * Hence `prefill` as its own parameter rather than a reuse of `existing`.
+ *
+ * The reopen is DEFERRED to the next tick (moduleListsPendingName), because
+ * text_entry.mjs closes the keyboard unconditionally after onConfirm returns
+ * -- see the note on that variable.
  */
-function moduleListsOpenNameEntry(existing) {
+function moduleListsOpenNameEntry(existing, prefill) {
     openTextEntry({
         title: existing ? "Rename List" : "New List",
-        initialText: existing || "",
+        initialText: prefill === undefined ? (existing || "") : prefill,
         onAnnounce: announce,
         onConfirm: (text) => {
             const r = existing
@@ -2567,16 +2625,37 @@ function moduleListsOpenNameEntry(existing) {
                 : ModuleLists.createList(moduleListsState, text);
             if (!r.ok) {
                 announce(r.err);
-                moduleListsOpenNameEntry(existing);
+                moduleListsPendingName = { existing: existing, text: text };
                 return;
             }
-            moduleListsSave();
+            /* A write that did not happen must not be announced as one. The
+             * change IS in memory and the row will show it, so the
+             * announcement says both halves rather than replacing the result
+             * with the failure -- same rule as up_save`s "Save failed", one
+             * step less destructive. */
+            const saved = moduleListsSave();
             if (existing) moduleListsTarget = String(text).trim();
-            announce(existing ? `Renamed to ${text}` : `Created ${text}`);
+            announce((existing ? `Renamed to ${text}` : `Created ${text}`) +
+                     (saved ? "" : ", save failed"));
             needsRedraw = true;
         },
         onCancel: () => { needsRedraw = true; },
     });
+}
+
+/*
+ * Re-offer a rejected name, one tick after the rejection.
+ *
+ * Called from tick() rather than from onConfirm for the reason recorded on
+ * moduleListsPendingName: the keyboard`s own confirm path tears itself down
+ * after the callback returns, so anything opened inside the callback is
+ * closed by the caller that invoked it.
+ */
+function moduleListsTickPendingName() {
+    if (!moduleListsPendingName) return;
+    const pending = moduleListsPendingName;
+    moduleListsPendingName = null;
+    moduleListsOpenNameEntry(pending.existing, pending.text);
 }
 
 /*
@@ -2596,6 +2675,16 @@ function exitModuleLists() {
     moduleListsSlot = -1;
     moduleListsKey = "";
     moduleListsModuleId = "";
+    /* The rest of the session, not just the three that identify it. The one
+     * that matters is moduleListsConfirmDelete: it is a LATCH, so a session
+     * left on an armed "yes, delete" would arm the next one, and the next
+     * click after entering would delete a list nobody asked about. The three
+     * cursors are cheap correctness beside it. */
+    moduleListsEditIndex = 0;
+    moduleListsActionIndex = 0;
+    moduleListsTarget = "";
+    moduleListsConfirmDelete = false;
+    moduleListsPendingName = null;
     if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
     if (!stillLoaded || !stillLoaded.module) {
@@ -16425,6 +16514,7 @@ function handleJog(delta, shift = isShiftHeld()) {
             }
             break;
         case VIEWS.MODULE_LISTS: {
+            moduleListsEnsureLoaded();
             const rows = moduleListsRows();
             moduleListsIndex = Math.max(0, Math.min(rows.length - 1, moduleListsIndex + delta));
             announceMenuItem("List", moduleListsRowLabel(moduleListsIndex));
@@ -16945,6 +17035,8 @@ function handleSelect() {
             applyComponentSelection();
             break;
         case VIEWS.MODULE_LISTS: {
+            moduleListsEnsureLoaded();
+            moduleListsClampIndex();
             const rows = moduleListsRows();
             const row = rows[moduleListsIndex];
             if (!row) break;
@@ -16959,17 +17051,31 @@ function handleSelect() {
                     announce("List unavailable");
                 } else {
                     /* Write on every change: a screen of checkboxes with a
-                     * Save row is a toggle the user can lose. A corrupt file
-                     * declines silently inside moduleListsSave. */
-                    moduleListsSave();
-                    announce(`${row.name}, ${on ? "added" : "removed"}`);
+                     * Save row is a toggle the user can lose.
+                     *
+                     * And BRANCH on the write. moduleListsSave() declines on a
+                     * corrupt file and can fail on the host write, and the old
+                     * code discarded that boolean and announced a persisted
+                     * change either way -- so with an unreadable file the box
+                     * ticked, the voice said "added", and the next entry
+                     * showed it unticked, with the only evidence in a debug
+                     * log. Same defect class as move_midi_internal_send
+                     * returning true on a discarded write. */
+                    const saved = moduleListsSave();
+                    announce(`${row.name}, ${on ? "added" : "removed"}` +
+                             (saved ? "" : ", save failed"));
                 }
             } else if (row.kind === "new") {
                 moduleListsOpenNameEntry(null);
             } else {
                 moduleListsEditIndex = 0;
                 setView(VIEWS.MODULE_LISTS_EDIT);
-                announce("Edit Lists, " + (moduleListsState.lists[0] || {}).name);
+                /* lists[0] is Favorites BY CONSTRUCTION -- loadLists moves it
+                 * there or inserts it -- so the fallback is unreachable. It is
+                 * here because the alternative when it is not is interpolating
+                 * the string "undefined" into speech. */
+                announce("Edit Lists, " +
+                         ((moduleListsState.lists[0] || {}).name || ModuleLists.FAVORITES));
             }
             needsRedraw = true;
             break;
@@ -20962,6 +21068,11 @@ globalThis.tick = function() {
             refreshSlotModuleSignature(currentTargetSlot);
         }
     }
+
+    /* Re-offer a name the keyboard rejected. Serviced HERE and not from
+     * onConfirm because text_entry.mjs runs closeTextEntry() unconditionally
+     * after the callback returns -- see moduleListsPendingName. */
+    moduleListsTickPendingName();
 
     /* Update text entry state */
     if (isTextEntryActive()) {
