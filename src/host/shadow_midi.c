@@ -11,6 +11,8 @@
 #include "shadow_chain_mgmt.h"
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
+#include "ui_midi_out_carry.h"  /* outbound packets that did not fit this frame */
+#include "shim_worker.h"        /* shim_ui_midi_out_drops */
 
 static void shadow_chain_transpose_reset(void);
 
@@ -473,13 +475,35 @@ void shadow_forward_external_cc_to_out(void)
  * ============================================================================ */
 
 /* Inject shadow UI MIDI out into mailbox before ioctl. */
+/* Packets from shadow_ui that did not fit in a previous frame's MIDI_OUT.
+ * See ui_midi_out_carry.h for why they now have somewhere to live. */
+static ui_midi_carry_t ui_midi_carry;
+
 void shadow_inject_ui_midi_out(void)
 {
     shadow_midi_out_t *midi_out_shm = *host_shadow_midi_out_shm;
     static uint8_t last_ready = 0;
 
     if (!midi_out_shm) return;
+
+    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
+    uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
+
+    /* Drain the carry FIRST, and unconditionally — before the `ready` check,
+     * not after it. The old early-return keyed the whole function to "did JS
+     * flush since last time", which is a 60 Hz question, while the mailbox
+     * empties at 344 Hz. Anything held over has to go out on frames where JS
+     * said nothing, or the extra frames buy us nothing at all. */
+    ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
+    shim_ui_midi_out_drops = ui_midi_carry.drops;
+
     if (midi_out_shm->ready == last_ready) return;
+
+    /* Backpressure: leave the SHM buffer alone while the carry is deep. It
+     * fills, js_shadow_midi_send() starts returning false, and a module that
+     * paces on that return value is now pacing on the actual mailbox. Do NOT
+     * advance last_ready — this snapshot is deferred, not skipped. */
+    if (!ui_midi_carry_wants_more(&ui_midi_carry)) return;
 
     last_ready = midi_out_shm->ready;
     if (host_init_led_queue) host_init_led_queue();
@@ -498,10 +522,6 @@ void shadow_inject_ui_midi_out(void)
     midi_out_shm->write_idx = 0;
     memset(midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
 
-    /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
-    uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
-
-    int hw_offset = 0;
     for (int i = 0; i < copy_len; i += 4) {
         uint8_t cin = local_buf[i];
         uint8_t cable = (cin >> 4) & 0x0F;
@@ -516,20 +536,16 @@ void shadow_inject_ui_midi_out(void)
             continue;  /* Don't copy directly, will be flushed later */
         }
 
-        /* All other messages: copy directly to mailbox */
-        /* MIDI_OUT region is 80 bytes; display starts at 80. Don't write past. */
-        while (hw_offset < HW_MIDI_OUT_SIZE) {
-            if (midi_out[hw_offset] == 0 && midi_out[hw_offset+1] == 0 &&
-                midi_out[hw_offset+2] == 0 && midi_out[hw_offset+3] == 0) {
-                break;
-            }
-            hw_offset += 4;
-        }
-        if (hw_offset >= HW_MIDI_OUT_SIZE) break;  /* Buffer full */
-
-        memcpy(&midi_out[hw_offset], &local_buf[i], 4);
-        hw_offset += 4;
+        /* Everything else goes through the carry — including the packets that
+         * would have fit this frame. Placing some here and queueing the rest
+         * would put this frame's packets AHEAD of a message still draining
+         * from the last one, and a reordered SysEx run assembles into a
+         * well-framed lie. One queue, one order. */
+        ui_midi_carry_push(&ui_midi_carry, &local_buf[i]);
     }
+
+    ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
+    shim_ui_midi_out_drops = ui_midi_carry.drops;
 }
 
 /* ---- Shim-originated packets bound for Move's firmware --------------------
