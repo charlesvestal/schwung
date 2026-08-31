@@ -486,7 +486,7 @@ const body = [
     "let moduleListsSlot = -1;",
     "let moduleListsKey = \"\";",
     "let moduleListsModuleId = \"\";",
-    "let moduleListsIndex = 99;",
+    "let moduleListsMemberIndex = 99;",
     "let moduleListsCorrupt = false;",
     "let loadCalls = 0;",
     "function moduleListsLoad() { loadCalls++; }",
@@ -504,7 +504,7 @@ const body = [
     "const listsRet = runComponentActionFromGrid(1, \"synth\", \"module_lists\");",
     "const lists = { ret: listsRet, calls: calls.slice(), view, loadCalls,",
     "                slot: moduleListsSlot, key: moduleListsKey, id: moduleListsModuleId,",
-    "                index: moduleListsIndex, modalFlag: componentModalFromGrid };",
+    "                index: moduleListsMemberIndex, modalFlag: componentModalFromGrid };",
     // A position with nothing in it has no module to file, so the action must
     // decline rather than open a screen headed with an empty name.
     "chainConfigs[2] = { synth: null };",
@@ -1004,10 +1004,11 @@ const body = [
     "let renameOpened = null;",
     "function moduleListsOpenNameEntry(existing, prefill) { renameOpened = { existing, prefill }; }",
     grab("moduleListsEditRows"),
+    grab("moduleListsEditRowLabel"),
     grab("moduleListsClampEditIndex"),
     grab("moduleListsRows"),
     grab("moduleListsRowLabel"),
-    grab("moduleListsClampIndex"),
+    grab("moduleListsClampMemberIndex"),
     grab("moduleListsActionRows"),
     grab("moduleListsSelectAction"),
     grab("moduleListsActionsBack"),
@@ -1017,7 +1018,7 @@ const body = [
     "  rows: () => moduleListsRows(),",
     "  select: () => moduleListsSelectAction(),",
     "  back: () => moduleListsActionsBack(),",
-    "  clampIndex: () => moduleListsClampIndex(),",
+    "  clampIndex: () => moduleListsClampMemberIndex(),",
     "  view: () => view,",
     "  spoken: () => spoken,",
     "  clearSpoken: () => { spoken = []; },",
@@ -1031,8 +1032,8 @@ const body = [
     "  actionIndex: () => moduleListsActionIndex,",
     "  setEditIndex: (v) => { moduleListsEditIndex = v; },",
     "  editIndex: () => moduleListsEditIndex,",
-    "  setIndex: (v) => { moduleListsIndex = v; },",
-    "  index: () => moduleListsIndex,",
+    "  setIndex: (v) => { moduleListsMemberIndex = v; },",
+    "  index: () => moduleListsMemberIndex,",
     "  renameOpened: () => renameOpened,",
     "};",
 ].join("\n");
@@ -1042,7 +1043,7 @@ const build = (state) => {
         return new Function("ModuleLists", "moduleListsState", "moduleListsModuleId",
                             "moduleListsTarget", "moduleListsConfirmDelete",
                             "moduleListsActionIndex", "moduleListsEditIndex",
-                            "moduleListsIndex", body)(
+                            "moduleListsMemberIndex", body)(
             ML, state, "obxd", "", false, 0, 0, 0);
     } catch (e) {
         fail("could not build the module-lists actions harness: " + e.message);
@@ -1099,6 +1100,10 @@ if (h.editRows().map((r) => r.name).join(",") !== "Favorites,Live,Studio")
     fail("Back with the confirm up must leave the list INTACT, got " +
          JSON.stringify(h.editRows().map((r) => r.name)));
 if (h.saveCalls() !== 0) fail("a cancelled delete must not write the file");
+if (!/^Cancelled, Live, Delete$/.test(h.spoken().join("|")))
+    fail("a cancelled delete must SAY it was cancelled and then where the user is -- announcing " +
+         "the bare target repeats the word already in the header, so a cancel reads as a stray " +
+         "repeat. Said " + JSON.stringify(h.spoken()));
 // And the next click must be the ordinary row action again, not the delete
 // the latch was holding.
 h.select();
@@ -1115,8 +1120,11 @@ if (h.editRows().map((r) => r.name).join(",") !== "Favorites,Studio")
     fail("a confirmed delete must remove the list, got " +
          JSON.stringify(h.editRows().map((r) => r.name)));
 if (h.saveCalls() !== 1) fail("a confirmed delete must write once, wrote " + h.saveCalls());
-if (h.spoken().join("|") !== "Deleted Live")
-    fail("a successful delete announces the deletion, said " + JSON.stringify(h.spoken()));
+if (h.spoken().join("|") !== "Deleted Live. Edit Lists, Favorites, 1 module")
+    fail("a successful delete announces the deletion AND the screen it lands on with the row " +
+         "under the resolved cursor -- the cursor has just slid onto a list the user did not " +
+         "choose, and announce() is not a queue so it has to be ONE call. Said " +
+         JSON.stringify(h.spoken()));
 if (h.view() !== 2) fail("a confirmed delete returns to the Edit Lists screen, view " + h.view());
 if (h.target() !== "") fail("a confirmed delete clears the target, got " + JSON.stringify(h.target()));
 
@@ -1138,10 +1146,10 @@ if (h.editIndex() !== 1)
 h.setIndex(4);                    // the last row of the pre-delete screen
 h.clampIndex();
 if (h.index() !== 3)
-    fail("a delete that shrinks the membership screen must leave moduleListsIndex in RANGE " +
+    fail("a delete that shrinks the membership screen must leave moduleListsMemberIndex in RANGE " +
          "on the way back -- index " + h.index() + " against " + h.rows().length + " rows");
 if (h.rows()[h.index()] === undefined)
-    fail("moduleListsIndex must address a row that EXISTS, so the label and the click do not " +
+    fail("moduleListsMemberIndex must address a row that EXISTS, so the label and the click do not " +
          "read undefined");
 
 /* ---- 6. A FAILED write is not announced as a saved one ----------------- */
@@ -1188,9 +1196,29 @@ if (opened.existing !== "Live")
     fail("Rename must open seeded with the CURRENT name, got " + JSON.stringify(opened.existing));
 if (h.saveCalls() !== 0) fail("opening the rename keyboard must not write anything");
 
+/* ---- 9. Back with NO confirm up: one level out, cursor re-resolved -------- */
+// Every Back test above runs with the latch ARMED, so the ordinary branch --
+// the clamp, the setView and the announce -- was never executed by anything.
+h = build(seed());
+h.setTarget("Studio");
+h.setEditIndex(9);                // out of range for a 3-row screen
+h.setActionIndex(0);
+h.clearSpoken();
+h.back();
+if (h.confirm() !== false) fail("Back with no confirm up must leave the latch disarmed");
+if (h.view() !== 2)
+    fail("Back with no confirm up must leave the actions screen for Edit Lists, view " + h.view());
+if (h.editIndex() !== 2)
+    fail("Back must re-resolve the Edit cursor on the way -- it was out of range at 9 and the " +
+         "screen has " + h.editRows().length + " rows, got " + h.editIndex());
+if (h.spoken().join("|") !== "Edit Lists, Studio, 0 modules")
+    fail("Back must name the screen AND the row under the resolved cursor, as every other " +
+         "arrival on that screen does. Said " + JSON.stringify(h.spoken()));
+
 console.log("  ok  the per-list actions screen: Favorites offers Clear ALONE (case-insensitively), " +
             "Delete arms a confirm that Back cancels without deleting, a confirmed delete " +
-            "re-resolves both shrunken cursors, and a failed write is announced as a failure");
+            "re-resolves both shrunken cursors, a failed write is announced as a failure, and " +
+            "both Back branches say what changed and where the user landed");
 ' "$UI"
 
 # The membership cursor is clamped by the BACK case, not by the drawer -- a
@@ -1201,15 +1229,84 @@ const fs = require("fs");
 const src = fs.readFileSync(process.argv[1], "utf8");
 const at = src.indexOf("case VIEWS.MODULE_LISTS_EDIT:\n            /*");
 const seg = at < 0 ? "" : src.slice(at, at + 600);
-const clamp = seg.indexOf("moduleListsClampIndex()");
+const clamp = seg.indexOf("moduleListsClampMemberIndex()");
 const set = seg.indexOf("setView(VIEWS.MODULE_LISTS)");
 if (at < 0 || clamp < 0 || set < 0 || clamp > set) {
-    console.log("FAIL: handleBack on MODULE_LISTS_EDIT must call moduleListsClampIndex() BEFORE " +
+    console.log("FAIL: handleBack on MODULE_LISTS_EDIT must call moduleListsClampMemberIndex() BEFORE " +
                 "returning to MODULE_LISTS -- a delete on the Edit screen removed a row from the " +
                 "screen below, and the label read on arrival is taken at the old index");
     process.exit(1);
 }
 console.log("  ok  Back off Edit Lists re-resolves the membership cursor before returning");
+' "$UI"
+
+# Three rules in the module-lists wiring that a behaviour harness cannot see,
+# because they live in switch cases node cannot load.
+#
+#  - the three views must be drawn from the MAIN render switch, not only from
+#    dispatchCoRunDraw(). This exact mistake has already been made once here:
+#    PARAM_PAGES landed its case in the co-run dispatcher alone, the wiring
+#    test passed because it only asked whether the case existed ANYWHERE, and
+#    on device the view was entered, the controller ran, pages were announced,
+#    and nothing was ever drawn. See tests/host/test_param_pages_wiring.sh.
+#  - the confirm LATCH must be cleared when the actions screen is ENTERED.
+#    Inheriting it means the first click on a freshly opened list deletes it.
+#  - the jog must be refused while the confirm is up: it is drawn LAST so it
+#    is fed FIRST, and a cursor that moves under an overlay changes which row
+#    the Back that dismisses it announces.
+node -e '
+const fs = require("fs");
+const s = fs.readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+
+const tickAt = s.indexOf("globalThis.tick = function()");
+if (tickAt < 0) fail("could not locate globalThis.tick to check the render switch");
+for (const view of ["MODULE_LISTS", "MODULE_LISTS_EDIT", "MODULE_LISTS_ACTIONS"]) {
+    const re = new RegExp("case VIEWS\\." + view + ":(?![A-Z_])", "g");
+    const at = [...s.matchAll(re)].map((m) => m.index);
+    const draws = at.filter((i) => /draw[A-Za-z]*\(\)/.test(s.slice(i, i + 120)));
+    if (!draws.length) fail(view + " is never drawn");
+    if (!draws.some((i) => i > tickAt)) {
+        fail(view + " is only drawn from the co-run dispatcher -- the main render switch " +
+             "inside globalThis.tick has no case, so entering the view draws NOTHING. That " +
+             "is the PARAM_PAGES bug, one view over.");
+    }
+}
+
+/* The latch is cleared on ENTRY to the actions screen, before the setView. */
+{
+    /* Two cases open with this line -- the jog and the click. The click is
+     * the one that ENTERS the actions screen, so it is the one whose body
+     * contains the setView. */
+    const cases = [...s.matchAll(/case VIEWS\.MODULE_LISTS_EDIT: \{/g)].map((m) => m.index);
+    const at = cases.find((i) => s.slice(i, i + 1400).includes("setView(VIEWS.MODULE_LISTS_ACTIONS)"));
+    if (at === undefined) fail("could not find the MODULE_LISTS_EDIT select case");
+    const seg = s.slice(at, at + 1400);
+    const clear = seg.indexOf("moduleListsConfirmDelete = false");
+    const set = seg.indexOf("setView(VIEWS.MODULE_LISTS_ACTIONS)");
+    if (clear < 0 || set < 0 || clear > set) {
+        fail("clicking a list must DISARM moduleListsConfirmDelete before entering the " +
+             "actions screen -- the latch is inherited otherwise, and the first click on a " +
+             "freshly opened list deletes it without asking");
+    }
+}
+
+/* The jog is refused while the confirm is up. */
+{
+    const at = s.indexOf("case VIEWS.MODULE_LISTS_ACTIONS: {");
+    if (at < 0) fail("could not find the MODULE_LISTS_ACTIONS jog case");
+    const seg = s.slice(at, at + 700);
+    const guard = seg.indexOf("if (moduleListsConfirmDelete) break;");
+    const move = seg.indexOf("moduleListsActionIndex = Math.max");
+    if (guard < 0 || move < 0 || guard > move) {
+        fail("the jog must early-out on moduleListsConfirmDelete BEFORE moving the cursor -- " +
+             "the overlay is drawn LAST so it is fed FIRST, and a cursor that moves underneath " +
+             "it changes which row the Back that dismisses it announces");
+    }
+}
+
+console.log("  ok  all three module-lists views are drawn from the MAIN render switch, the " +
+            "confirm latch is disarmed on entry, and the jog is refused while it is up");
 ' "$UI"
 
 # ============================================================================
