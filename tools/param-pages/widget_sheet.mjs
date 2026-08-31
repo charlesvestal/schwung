@@ -651,9 +651,13 @@ function spliced(doc, block) {
  * it actually is — a dial, a fader, an envelope, a switch". That sentence is
  * describing pictures, so it should be showing them.
  *
- * A SUBSET, not the sheet. manual.html is prose with exactly one image in it
- * (the logo); twenty-five would change what the page is. These fourteen are
- * the ones prose is worst at.
+ * EVERY widget, plus the chrome that carries the gestures. This started as a
+ * fourteen-image subset on the reasoning that manual.html is prose and
+ * twenty-five pictures would change what the page is. That was the wrong
+ * trade: a reader looking for "what does this cell mean" wants the one they
+ * are looking at, and a partial set sends them to MODULES.md -- a document
+ * written for module authors -- to find it. The page is a reference now, and
+ * it should be complete.
  *
  * Between MARKERS, and generated, because the alternative is a hand-copied
  * block in another repo that silently stops matching the device — which is the
@@ -703,6 +707,23 @@ const MANUAL_PICKS = {
         ["viz-filter", "<strong>Filter</strong> — the response curve, from cutoff and resonance."],
         ["viz-lfo", "<strong>LFO</strong> — the actual waveform, at its rate and depth."],
         ["viz-sample", "<strong>Sample</strong> — the file's real waveform, play position and loop points."],
+    ],
+    more: [
+        ["viz-fader", "<strong>Fader</strong> — a level, drawn as the travel it has."],
+        ["viz-eq", "<strong>EQ band</strong> — gain, frequency and Q as one curve."],
+        ["viz-waveform", "<strong>Waveform</strong> — an oscillator's shape, drawn as itself."],
+        ["arc-knob-modulated", "<strong>Modulated</strong> — an LFO on a knob shows the range it sweeps."],
+    ],
+    gestures: [
+        ["chrome-header-held", "<strong>Hold a knob</strong> and the header names it and shows its value. Let go and nothing has changed — looking is free."],
+        ["brackets", "<strong>Corner brackets mean a door.</strong> Hold that knob and jog-click to open what is behind it; a plain cell has nothing to open."],
+        ["chrome-bank-bar", "<strong>The bar counts the pages.</strong> The filled block is where you are; turn the jog to move along it."],
+        ["chrome-list", "<strong>Click a choice</strong> and it opens as a list — the jog scrolls, the click picks."],
+    ],
+    chrome: [
+        ["chrome-header", "<strong>Header</strong> — the slot and module you are in, and the page name."],
+        ["chrome-footer", "<strong>Footer</strong> — what the jog, shift and click do on this page."],
+        ["chrome-label-cell", "<strong>Cell</strong> — the control, with its name beneath it."],
     ],
     motion: [
         ["motion-waveform.gif", "One shape bends into the next."],
@@ -782,6 +803,13 @@ ${grid(MANUAL_PICKS.values)}
                     <p>Where several knobs describe one thing, Schwung draws the thing
                     instead of the knobs, across the cells they occupy.</p>
 ${grid(MANUAL_PICKS.pictures)}
+${grid(MANUAL_PICKS.more)}
+
+                    <p>The gestures are the same on every page of every module.</p>
+${grid(MANUAL_PICKS.gestures)}
+
+                    <p>And the furniture around them.</p>
+${grid(MANUAL_PICKS.chrome)}
 
                     <p>Four of them move when their value changes, so a change is visible
                     rather than just present. <em>(Slowed 5&times; here — on the device
@@ -808,8 +836,11 @@ function syncManual(images, check) {
     }
     const next = html.slice(0, i) + manualFragment(images) + html.slice(j + END.length);
 
-    const names = [...MANUAL_PICKS.values, ...MANUAL_PICKS.pictures, ...MANUAL_PICKS.motion]
-        .map(([n]) => fileFor(n));
+    /* EVERY group, flattened -- not a second hand-kept list. This named three
+     * of the groups explicitly, so adding a fourth wrote figures into the
+     * manual whose images were never copied: eleven broken <img> in the
+     * sibling repo, and nothing here to say so. */
+    const names = Object.values(MANUAL_PICKS).flat().map(([n]) => fileFor(n));
     let stale = [];
     if (next !== html) stale.push("manual.html");
     for (const n of names) {

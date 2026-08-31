@@ -43,6 +43,27 @@ Modules expose `ui_hierarchy` (menu structure + knob mappings) via get_param:
 
 Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `default`, `unit`, `display_format`.
 
+### Reading a modulated parameter — four forms, one rule
+
+While a chain-mod source (slot LFO, etc.) drives `<prefix>:<key>`, the overlay
+holds two numbers: the **base** (what the user set — what `set_param` writes)
+and the **effective** value (base + contributions — what the overlay keeps
+writing into the plugin so the modulation is audible). The read forms
+(`chain_mod.c`, dispatched from every `get_param` branch in `chain_host.c`):
+
+```
+<key>              BASE while actively modulated; otherwise the plugin's value
+<key>:base         BASE (explicit; falls back to the plugin value if unmodulated)
+<key>:effective    driven base+mod value (the dot on the arc; same fallback)
+<key>:modulated    "1" / "0"
+```
+
+**A plain read answers with the base** — read-after-write must return what was
+written, or every mod-unaware UI (module web UIs, anything polling plain keys)
+shows the LFO's number and the knob reads as dead (#276). A UI that wants the
+driven value asks for `:effective` by name; the plugin itself is not the place
+to ask, since it holds whatever effective value the overlay last wrote.
+
 ### Chain Architecture
 
 Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch,reorder}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.

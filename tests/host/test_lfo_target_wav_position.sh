@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 
 # A wav_position must be offerable as a modulation target.
 #
-# lfoTargetParamsFor filters chain_params by TYPE, and the list was written
+# The picker filters chain_params by TYPE, and the list was written
 # before wav_position existed. Excluding it does not merely hide a menu row: the
 # param cannot be routed, so an LFO aimed at a sample start has to be pointed at
 # the concrete per-pad key while the grid draws the ALIAS. `<alias>:modulated`
@@ -25,8 +25,9 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-node -e '
-const fs = require("fs");
+node --input-type=module -e '
+import fs from "node:fs";
+import { flatLfoTargetParams } from "./src/shared/lfo_target_groups.mjs";
 const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
 
 const src = fs.readFileSync("./src/shadow/shadow_ui.js", "utf8");
@@ -48,10 +49,13 @@ if (!alias) fail("mrdrums no longer declares pad_start");
 if (alias.type !== "wav_position")
   fail("pad_start is now type " + alias.type + " -- this test no longer covers wav_position");
 
+/* The type allowlist itself now lives in shared/lfo_target_groups.mjs, so the
+   real one is injected rather than a copy -- this still measures the filter
+   the picker actually applies, one indirection further out. */
 const lfoTargetParamsFor = new Function(
-  "chainTargetGetParam", "debugLog", "LFO_TARGET_PARAMS",
+  "chainTargetGetParam", "debugLog", "LFO_TARGET_PARAMS", "flatLfoTargetParams",
   m[0] + "; return lfoTargetParamsFor;"
-)(() => cpRaw, () => {}, []);
+)(() => cpRaw, () => {}, [], flatLfoTargetParams);
 
 const offered = lfoTargetParamsFor("synth", "synth", "test").map((x) => x.key);
 

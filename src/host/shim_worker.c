@@ -20,6 +20,7 @@
 #include "unified_log.h"
 #include "usbc_out_gate.h"
 #include "shadow_resample.h"   /* usbc_out_persist_enabled */
+#include "ui_midi_out_carry.h" /* UI_MIDI_CARRY_PACKETS */
 
 volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
@@ -544,6 +545,51 @@ static void ext_midi_drop_tick(void)
     LOG_DEBUG("shim", msg);
 }
 
+/* The same shape for the shadow_ui MIDI ring. A large SysEx burst -- a Yamaha
+ * 5F bulk dump is 53 USB-MIDI packets per message -- can outrun the drain, and
+ * a dropped packet leaves the message still well-framed and still parseable,
+ * so nothing downstream can tell. Only the dump's own declared byte count
+ * disagrees. Reporting the rate is what turns that into something a user can
+ * see without a capture rig (#358). */
+static void ui_midi_drop_tick(void)
+{
+    static int last_total = 0;
+    int total = shim_ui_midi_drops;
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "ui-midi: %d shadow_ui ring drop(s) this window (%d total) - "
+             "MIDI to tools is being lost; a large SysEx burst is outrunning "
+             "the %d-packet ring",
+             delta, total, SHADOW_UI_MIDI_BYTES / 4);
+    LOG_DEBUG("shim", msg);
+}
+
+/* And the outbound direction, which had no counter at all until the carry gave
+ * the condition a name. This one firing means a module is queueing MIDI faster
+ * than the 20-slot mailbox can carry it for long enough to fill a 256-packet
+ * backlog — i.e. it is ignoring the `false` that move_midi_external_send()
+ * returns once backpressure engages, not merely sending something large. */
+static void ui_midi_out_drop_tick(void)
+{
+    static int last_total = 0;
+    int total = shim_ui_midi_out_drops;
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d carry drop(s) this window (%d total) - MIDI from "
+             "a module is being lost on the way OUT; it is outrunning the "
+             "%d-packet carry and ignoring the send() return",
+             delta, total, UI_MIDI_CARRY_PACKETS);
+    LOG_DEBUG("shim", msg);
+}
+
 static void *worker_main(void *arg) {
     (void)arg;
 
@@ -680,7 +726,11 @@ static void *worker_main(void *arg) {
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
-        if (tick % 5 == 0) ext_midi_drop_tick();  /* ~1 Hz, silent unless dropping */
+        if (tick % 5 == 0) {
+            ext_midi_drop_tick();
+            ui_midi_drop_tick();
+            ui_midi_out_drop_tick();
+        }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
     }

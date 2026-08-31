@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -924,6 +924,15 @@ func (ru *RemoteUI) handleSubscribeMasterFx(ctx context.Context, c *ruClient) {
 			continue
 		}
 		compName := "master_fx:" + fxSlot
+		modID = masterFxModuleID(modID)
+		// A Master FX position is an ordinary audio FX module in a different
+		// place, so it may ship a web_ui.html exactly as it does in a chain
+		// slot — findModuleWebUI already searches audio_fx. Only this send was
+		// missing, which is why the same module offered its panel on a track
+		// and the generated rows on the master bus (#354).
+		if url := ru.findModuleWebUI(modID); url != "" {
+			ru.sendCustomUI(ctx, c, 0, compName, url)
+		}
 		ru.sendHierarchy(ctx, c, 0, compName)
 		ru.sendChainParams(ctx, c, 0, compName)
 		ru.sendInitialParamValues(ctx, c, 0, compName)
@@ -1437,11 +1446,32 @@ func (ru *RemoteUI) sendSlotInfo(ctx context.Context, c *ruClient, slot uint8) {
 	ru.writeJSON(ctx, c, info)
 }
 
+// masterFxModuleID turns what the shim stores for a Master FX position into a
+// module id.
+//
+// A chain slot's "<comp>_module" holds an id ("4k-eq"), but a Master FX
+// position is loaded by PATH — shadow_master_fx_slot_load takes a dsp path —
+// and reading the key back returns that path. So the same module is "4k-eq" on
+// a track and "/data/UserData/schwung/modules/audio_fx/4k-eq/4k-eq.so" on the
+// master bus, which is why findModuleWebUI found nothing here and why the tab
+// labelled the position with a .so path.
+//
+// The id is the directory the dsp lives in, which is how every module is laid
+// out. A value with no separator is passed through unchanged, so this keeps
+// working if the shim ever stores an id.
+func masterFxModuleID(v string) string {
+	if v == "" || !strings.ContainsAny(v, "/") {
+		return v
+	}
+	return filepath.Base(filepath.Dir(v))
+}
+
 func (ru *RemoteUI) sendMasterFxInfo(ctx context.Context, c *ruClient) {
 	info := wsMasterFxInfo{Type: "master_fx_info"}
 	for _, fxSlot := range masterFxSlots {
 		moduleKey := "master_fx:" + fxSlot + ":module"
-		modID, _ := ru.shm.GetParam(0, moduleKey)
+		raw, _ := ru.shm.GetParam(0, moduleKey)
+		modID := masterFxModuleID(raw)
 		switch fxSlot {
 		case "fx1":
 			info.FX1 = modID
@@ -1956,6 +1986,14 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 			cache.modules[fxSlot] = modID
 			ru.broadcastMasterFxInfo(ctx)
 			if modID != "" {
+				// Swapping the module swaps its panel. Sent BEFORE the
+				// hierarchy so a position that gains a custom UI does not
+				// paint generated rows first and replace them a moment later;
+				// a position that loses one is handled client-side, which
+				// clears the panel on the master_fx_info above.
+				if url := ru.findModuleWebUI(masterFxModuleID(modID)); url != "" {
+					ru.broadcastMasterFxCustomUI(ctx, compName, url)
+				}
 				ru.broadcastMasterFxHierarchy(ctx, compName)
 				ru.broadcastMasterFxChainParams(ctx, compName)
 			}
@@ -1979,6 +2017,16 @@ func (ru *RemoteUI) pollMasterFx(ctx context.Context, cache *slotCache) {
 func (ru *RemoteUI) broadcastMasterFxInfo(ctx context.Context) {
 	for _, c := range ru.masterFxSubscribedClients() {
 		ru.sendMasterFxInfo(ctx, c)
+	}
+}
+
+// broadcastMasterFxCustomUI tells every Master FX subscriber that a position
+// now has a custom panel. Separate from broadcastCustomUI, which addresses
+// slot subscribers: a client can be on the Master FX tab without being
+// subscribed to any chain slot.
+func (ru *RemoteUI) broadcastMasterFxCustomUI(ctx context.Context, compName, url string) {
+	for _, c := range ru.masterFxSubscribedClients() {
+		ru.sendCustomUI(ctx, c, 0, compName, url)
 	}
 }
 

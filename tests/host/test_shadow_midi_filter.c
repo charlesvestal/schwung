@@ -36,15 +36,44 @@ static void test_voice_messages(void) {
 }
 
 static void test_sysex_zero_payload_dropped(void) {
-    /* THE BUG: these are the events that flooded the overtake tools. */
-    CHECK(!shadow_midi_forwardable(0x04, 0x00, 0x00, 0x00),
-          "SysEx start CIN with all-zero payload is a stale slot");
+    /* The stale slots that flooded the overtake tools, still dropped — but by
+     * the END-BYTE rule now, not by "some byte is nonzero".  For 0x05-0x07
+     * that is STRICTLY STRONGER: a stale slot has to forge an F7 in exactly
+     * the right position to pass, where before any stray bit anywhere did. */
     CHECK(!shadow_midi_forwardable(0x05, 0x00, 0x00, 0x00),
           "SysEx 1-byte-end CIN with all-zero payload is a stale slot");
     CHECK(!shadow_midi_forwardable(0x06, 0x00, 0x00, 0x00),
           "SysEx 2-byte-end CIN with all-zero payload is a stale slot");
     CHECK(!shadow_midi_forwardable(0x07, 0x00, 0x00, 0x00),
           "SysEx 3-byte-end CIN with all-zero payload is a stale slot");
+    /* And the cases the old nonzero rule let through, which the end-byte rule
+     * now catches — protection GAINED, not merely preserved. */
+    CHECK(!shadow_midi_forwardable(0x06, 0x11, 0x22, 0x00),
+          "2-byte-end whose final byte is not F7 is stale");
+    CHECK(!shadow_midi_forwardable(0x07, 0x11, 0x22, 0x33),
+          "3-byte-end whose final byte is not F7 is stale");
+    CHECK(!shadow_midi_forwardable(0x05, 0x40, 0x00, 0x00),
+          "1-byte-end carrying a data byte rather than a status byte is stale");
+}
+
+static void test_sysex_continuation_of_zeros_is_real_data(void) {
+    /* THE 2026-08-30 BUG, and the reason the rule above is per-CIN.
+     *
+     * CIN 0x04 is a three-byte continuation of arbitrary 7-bit data, so
+     * `00 00 00` is ordinary payload — a zeroed parameter run, which is most
+     * of a patch dump.  Dropping it corrupts the message silently: framing
+     * survives (F0/F7 ride in other packets) and the device checksum still
+     * validates, because the removed bytes sum to zero.
+     *
+     * Found on a JV-880 patch dump — every area reply short by an exact
+     * multiple of 3, checksums valid, deterministic per patch, varying with
+     * patch content, and no ALIGNED all-zero triplet surviving anywhere in 15
+     * captured messages while 47 unaligned ones did. */
+    CHECK(shadow_midi_forwardable(0x04, 0x00, 0x00, 0x00),
+          "a SysEx continuation of three zero data bytes is REAL DATA and "
+          "must be forwarded — dropping it silently truncates patch dumps");
+    CHECK(shadow_midi_forwardable(0x24, 0x00, 0x00, 0x00),
+          "the same on cable 2, which is where external gear replies arrive");
 }
 
 static void test_real_sysex_still_forwarded(void) {
@@ -71,6 +100,7 @@ int main(void) {
     test_empty_slot_dropped();
     test_voice_messages();
     test_sysex_zero_payload_dropped();
+    test_sysex_continuation_of_zeros_is_real_data();
     test_real_sysex_still_forwarded();
     test_non_packet_cins_dropped();
 

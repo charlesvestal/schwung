@@ -1,0 +1,37 @@
+{{/*
+  Uninstall action for an installed module, as a compact red trash button.
+
+  Defined once and used from both the card and the list, so the icon and the
+  confirm wording cannot drift between the two views.
+
+  Expects: dict "ID" <module id> "Name" <display name> "CSRFToken" <token>
+
+  The icon is an inline SVG rather than the entity icons used elsewhere in this
+  UI (the view toggle's ▦/☰) because a wastebasket emoji renders in its own
+  colour and would not follow --color-danger or the hover state; `currentColor`
+  does. `onclick="event.stopPropagation()"` matches the sibling forms: the row
+  and card are themselves clickable, and without it a click on the button would
+  also open the module's detail page.
+*/}}
+{{define "uninstall-button"}}
+<form method="POST" action="/modules/{{.ID}}/uninstall" class="inline-form"
+      onclick="event.stopPropagation()"
+      data-confirm="Uninstall {{.Name}}? This removes it from the device."
+      data-confirm-title="Uninstall Module"
+      data-confirm-label="Uninstall"
+      data-confirm-danger="true">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <input type="hidden" name="return_to" value="/modules" class="js-return-to">
+    <button type="submit" class="btn btn-danger btn-icon" title="Uninstall {{.Name}}"
+            aria-label="Uninstall {{.Name}}">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M3 6h18"/>
+            <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/>
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            <path d="M10 11v6M14 11v6"/>
+        </svg>
+    </button>
+</form>
+{{end}}

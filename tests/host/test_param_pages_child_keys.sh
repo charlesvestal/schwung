@@ -131,30 +131,48 @@ Promise.all([
 
   /* ---- 7. the validator stops calling covered keys unreachable ---------- */
   {
-    const mrdrums = JSON.parse(JSON.stringify(fx.modules.find((m) => m.id === "mrdrums")));
-    const before = V.validateContract({
-      id: "mrdrums", hierarchy: mrdrums.ui_hierarchy, chainParams: mrdrums.chain_params,
-    }).findings.find((f) => f.rule === "unreachable-params");
-    if (!before || !/^209 /.test(before.message)) {
-      fail("expected mrdrums to start with 209 unreachable params: " + (before && before.message));
-    }
+    /*
+     * Measured BOTH WAYS from the shipping contract, not against a pinned 209.
+     *
+     * This used to read mrdrums straight out of the fixture as the "before"
+     * case and assert it began at exactly 209 unreachable params, because at
+     * the time mrdrums declared no child keys. It ships them now (the
+     * 2026-08-28 recapture has it at 14), so the pinned number failed -- on
+     * the module getting FIXED, which is the one outcome a test guarding a fix
+     * should never punish.
+     *
+     * The invariant was never the number. It is that expressing per-pad
+     * scoping through child keys turns a wall of unreachable concrete keys
+     * into addressable ones. So derive the unextended case by STRIPPING the
+     * child declarations, and compare the two. That holds whatever mrdrums
+     * ships next, and it keeps working when some other module becomes the
+     * interesting one.
+     */
+    const shipped = JSON.parse(JSON.stringify(fx.modules.find((m) => m.id === "mrdrums")));
+    const unreachable = (mod) => {
+      const f = V.validateContract({
+        id: "mrdrums", hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params,
+      }).findings.find((x) => x.rule === "unreachable-params");
+      return f ? parseInt(f.message, 10) : 0;
+    };
 
-    /* Express the pad scoping in the extended contract. */
-    const lvl = mrdrums.ui_hierarchy.levels.pad_settings;
-    const strip = (k) => String(k).replace(/^pad_/, "");
-    lvl.knobs = (lvl.knobs || []).map(strip);
-    lvl.params = (lvl.params || []).map((p) =>
-      (p && p.level) ? p : (typeof p === "string" ? strip(p) : Object.assign({}, p, { key: strip(p.key) })));
-    Object.assign(lvl, {
-      child_count: 16, child_label: "Pad", child_key_template: "p{index}_{key}",
-      child_index_base: 1, child_index_digits: 2,
-    });
+    const stripped = JSON.parse(JSON.stringify(shipped));
+    for (const lv of Object.values(stripped.ui_hierarchy.levels || {}))
+      for (const k of Object.keys(lv)) if (k.startsWith("child_")) delete lv[k];
 
-    const after = V.validateContract({
-      id: "mrdrums", hierarchy: mrdrums.ui_hierarchy, chainParams: mrdrums.chain_params,
-    }).findings.find((f) => f.rule === "unreachable-params");
-    const left = after ? parseInt(after.message, 10) : 0;
-    if (left > 12) fail("the extension should leave only module-level globals unreachable, got " + left);
+    const before = unreachable(stripped);
+    const after = unreachable(shipped);
+
+    /* Without child keys the per-pad params are simply not addressable: 16
+     * pads worth of concrete keys listed in no level. 200 is a floor, not a
+     * pin -- it must not become the next 209. */
+    if (before < 200)
+      fail("stripping child declarations should leave the per-pad keys unreachable, got " + before);
+    if (after > 20)
+      fail("with child keys declared only module-level globals should remain unreachable, got " + after);
+    if (!(after * 10 < before))
+      fail("child keys should make an order of magnitude more params addressable: " +
+           before + " -> " + after);
   }
 
   /* ---- 8. malformed declarations are reported, not guessed -------------- */
@@ -173,6 +191,6 @@ Promise.all([
   }
 
   console.log("PASS: child keys — legacy child_prefix byte-identical, templates with base/padding/overrides, " +
-              "mrdrums 209 unreachable params become addressable");
+              "mrdrums per-pad params become addressable when child keys are declared");
 });
 '

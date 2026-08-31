@@ -95,6 +95,8 @@ import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_
  * the live blob, and never turns a failed read into a `*`. */
 import { makeRecord, presetRowValue, isModified } from '/data/UserData/schwung/shared/param_pages/current_preset.mjs';
 import { describeLfoTarget } from '/data/UserData/schwung/shared/lfo_target_label.mjs';
+import { groupLfoTargetParams, flatLfoTargetParams, locateLfoTargetParam, indexOfKey }
+    from '/data/UserData/schwung/shared/lfo_target_groups.mjs';
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
@@ -421,7 +423,8 @@ const VIEWS = {
     LFO_EDIT: "lfoedit",                      // LFO sub-menu editor
     ANALYTICS_PROMPT: "analyticsprompt",       // First-run analytics opt-out prompt
     LFO_TARGET_COMPONENT: "lfotargetcomp",    // LFO target picker step 1: component
-    LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 2: parameter
+    LFO_TARGET_GROUP: "lfotargetgroup",       // LFO target picker step 2: level group (skipped when ungrouped)
+    LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 3: parameter
     ENUM_PICKER: "enumpick",                  // Option list for an enum param
     COMPONENT_LOADING: "comploading"          // "Loading..." while a component's contract arrives
 };
@@ -1180,6 +1183,36 @@ function activateLedQueue() {
             /* Non-LED messages (sysex, etc.) pass through immediately */
             return originalMidiInternalSend(arr);
         }
+        /*
+         * QUEUED IS ACCEPTED, AND THE CALLER NEEDS TO BE TOLD SO.
+         *
+         * This used to fall off the end and return undefined. Harmless while
+         * nothing read the result -- and then #319 made input_filter's setLED
+         * read it:
+         *
+         *     const sent = move_midi_internal_send(...);
+         *     ledCache[note] = sent ? color : -1;
+         *
+         * which is right against the real binding (false = the MIDI-out buffer
+         * was full, so don't record a colour we failed to make true) and wrong
+         * against this one. Every LED write under overtake recorded -1, so the
+         * cache never suppressed anything and EVERY module repainted its whole
+         * surface every frame -- ~58 writes into a 16-per-tick flush budget.
+         * Notes flush before CCs, so the budget went entirely to pads and steps
+         * and the button LEDs never flushed at all.
+         *
+         * That is the "LEDs don't work at all" failure that overtake authors
+         * have written progressive-init workarounds around; tb3po's refreshLeds
+         * carries a comment naming it. It hit every overtake module that paints
+         * through shared setLED -- davebox, tb3po, control, mark, mono, and the
+         * rest -- but NOT the ones declaring skip_led_clear (chorddex,
+         * song-mode), because those never activate this queue.
+         *
+         * `true` is honest: the packet is retained under its note/CC key and
+         * coalesced with any later write to the same key, so it IS delivered.
+         * The queue drops nothing on a full frame -- it only defers.
+         */
+        return true;
     };
 }
 
@@ -1965,10 +1998,10 @@ function paramPagesChromeFor(componentKey) {
  * ONE helper, called from every enterParamPages site that opens a chain
  * component (as opposed to a synthesised contract like Slot Settings or
  * Global Settings, which supply their own io and never reach here). Master FX
- * is excluded HERE rather than remembered at each call site: __user_presets__
- * is injected in enterComponentSelect only, never in enterMasterFxModuleSelect,
- * so Master FX has no user presets today and this inherits that gap rather
- * than widening it. masterFxIndexFromComponentKey is the same test
+ * is excluded HERE rather than remembered at each call site: user presets have
+ * only ever been offered for the four chain slots' components, never for a
+ * Master FX position, so this inherits that gap rather than widening it.
+ * masterFxIndexFromComponentKey is the same test
  * paramPagesChromeFor already uses to tell the two chains apart.
  *
  * `setParam` marks the write PENDING for the debounced `*` refresh
@@ -3702,6 +3735,8 @@ function restoreMasterFxLfo(lfoIndex, lfoConfig) {
 /* LFO target picker state */
 let lfoTargetComponents = [];  /* Available components [{key, label}] */
 let selectedLfoTargetComp = 0;
+let lfoTargetGroups = [];      /* Level groups [{key, label, params}] — see lfo_target_groups.mjs */
+let selectedLfoTargetGroup = 0;
 let lfoTargetParams = [];      /* Params for selected component [{key, label}] */
 let selectedLfoTargetParam = 0;
 
@@ -9130,15 +9165,65 @@ function cancelToolProcess() {
  */
 const GLOBAL_SETTINGS_COMPONENT = "global_settings";
 
+/*
+ * Where leaving Global Settings goes, when it is not "out of shadow mode".
+ *
+ * VIEWS.OVERTAKE_MODULE when Settings was opened OVER a foregrounded Tool,
+ * -1 otherwise. Captured on the way IN, because `view` is what distinguishes
+ * the two cases and enterParamPages overwrites it.
+ *
+ * NOT `overtakeModuleLoaded` on its own: hideToolOvertake parks a Tool with
+ * that flag still true (deliberately — it is how a re-launch detects the live
+ * session), so a Tool hidden behind the Tools menu would be restored by a
+ * Back the user aimed at Settings.
+ */
+let globalSettingsReturnView = -1;
+
+/*
+ * Leaving Global Settings hands the surface back to WHOEVER OWNS IT.
+ *
+ * `shadow_request_exit()` is one statement — `display_mode = 0` — and it gives
+ * the OLED to Move. That is right when Settings sits over the shadow UI, and
+ * wrong when a Tool is running: Shift+Vol+Step2 opens Settings straight over a
+ * live Tool (the JUMP_TO_SETTINGS branch does no overtake bookkeeping at all,
+ * unlike JUMP_TO_TOOLS beside it), so Back dropped the user on Move's
+ * instrument screen with the Tool still loaded and no way back to it but
+ * re-entering by hand (#339).
+ *
+ * Returning is only a view change: entering Settings never tore the Tool down,
+ * so its callbacks and page state are untouched and only its tick was gated on
+ * the view. The Tool is re-checked HERE rather than trusted from entry, since
+ * it can be exited from inside Settings.
+ *
+ * ONE helper, called by both exit sites, so a third cannot quietly exit past a
+ * running Tool again.
+ */
+function leaveGlobalSettings() {
+    const returnToTool = (globalSettingsReturnView === VIEWS.OVERTAKE_MODULE) &&
+                         overtakeModuleLoaded && overtakeModuleCallbacks;
+    globalSettingsReturnView = -1;
+    if (returnToTool) {
+        setView(VIEWS.OVERTAKE_MODULE);
+        needsRedraw = true;
+        return;
+    }
+    if (typeof shadow_request_exit === "function") shadow_request_exit();
+}
+
 function enterGlobalSettingsGrid(restorePageName) {
+    /* Captured BEFORE enterParamPages moves the view off the Tool. */
+    globalSettingsReturnView =
+        (view === VIEWS.OVERTAKE_MODULE && overtakeModuleLoaded && overtakeModuleCallbacks)
+            ? VIEWS.OVERTAKE_MODULE : -1;
     /* A fresh entry is not a return from a modal. Whatever hand-off was
      * outstanding has been served by getting here. */
     globalModalFromGrid = false;
     enterParamPages(0, GLOBAL_SETTINGS_COMPONENT, GLOBAL_SETTINGS_COMPONENT,
                     restorePageName || null, globalGridIoFor(),
                     /* No moduleKey: there is no module behind this contract to
-                     * abbreviate. Back leaves shadow mode, which is not a view,
-                     * so it is an onExit rather than a returnView. */
+                     * abbreviate. Back usually leaves shadow mode, which is not
+                     * a view, so it is an onExit rather than a returnView —
+                     * leaveGlobalSettings picks the destination. */
                     { label: "Global", name: "Settings",
                       /* PINNED TO THE LIST, whatever Param View says.
                        *
@@ -9153,9 +9238,7 @@ function enterGlobalSettingsGrid(restorePageName) {
                        * pin — their Volume, Mute and Solo really are
                        * performance controls. */
                       layout: LAYOUT_LIST,
-                      onExit: () => {
-                          if (typeof shadow_request_exit === "function") shadow_request_exit();
-                      } });
+                      onExit: () => { leaveGlobalSettings(); } });
     needsRedraw = true;
 }
 
@@ -10274,34 +10357,23 @@ function enterComponentSelect(slotIndex, componentIndex) {
     /* Scan for available modules of this type */
     availableModules = scanModulesForType(comp.key);
 
-    /* Surface this component's User Presets manager (see shadow_ui_presets.mjs)
-     * as an indented row tucked directly beneath the loaded module — for any
-     * loaded chain component (synth, audio FX, MIDI FX). It rides alongside the
-     * module it belongs to (rather than at the top of the swap list) so the
-     * picker reads "<loaded module> / its presets" in place. Only shown when a
-     * module is loaded, since a preset snapshots its <component>:state. */
-    let presetsRowIndex = -1;
-    {
-        const loaded = getChainComponentModule(chainConfigs[slotIndex], comp.key);
-        const loadedId = loaded && loaded.module;
-        if (loadedId) {
-            const presetsRow = {
-                id: "__user_presets__",
-                /* No module abbrev needed — the indented row sits directly
-                 * under the module it belongs to, so context is implicit. */
-                name: "  [User Presets]"
-            };
-            /* Slot it right under the loaded module's entry; if that module
-             * isn't in the scan list (e.g. uninstalled), fall back to the top. */
-            const loadedIdx = availableModules.findIndex(m => m.id === loadedId);
-            presetsRowIndex = loadedIdx >= 0 ? loadedIdx + 1 : 0;
-            availableModules.splice(presetsRowIndex, 0, presetsRow);
-        }
-    }
+    /* Where the loaded module sits in the scan list, or -1 if nothing is
+     * loaded (or the loaded module is no longer installed). The rows added
+     * below are tucked directly under it, and it is where the cursor starts.
+     *
+     * This list used to carry an indented `[User Presets]` row here too. It
+     * doesn't any more: User Presets is the component's own "My Presets"
+     * trailing page in the knob grid, one jog from the module's own controls,
+     * which is both nearer to the sound it belongs to and where Save / Save As
+     * / Delete already live. A swap list is for swapping. */
+    const loaded = getChainComponentModule(chainConfigs[slotIndex], comp.key);
+    const loadedId = loaded && loaded.module;
+    const loadedIdx = loadedId
+        ? availableModules.findIndex(m => m.id === loadedId)
+        : -1;
 
     /*
-     * Move Left / Move Right, tucked under the loaded module beside its
-     * presets.
+     * Move Left / Move Right, tucked under the loaded module.
      *
      * They exist so Shift+jog is not the ONLY way to reorder a chain: a
      * modifier gesture with no discoverable equivalent is a feature only the
@@ -10311,23 +10383,17 @@ function enterComponentSelect(slotIndex, componentIndex) {
      * why the synth has neither: it is not a list position, and the sections
      * either side of it are not the same kind of thing.
      */
-    availableModules.splice(presetsRowIndex >= 0 ? presetsRowIndex + 1 : 0, 0,
-        ...chainMoveEntries(chainConfigs[slotIndex], comp.key));
+    const moveEntries = chainMoveEntries(chainConfigs[slotIndex], comp.key);
+    availableModules.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0, ...moveEntries);
 
-    selectedModuleIndex = 0;
-
-    if (presetsRowIndex >= 0) {
-        /* A module is loaded — default the cursor to its presets row (entering
-         * here is usually to reach presets, not to swap modules). */
-        selectedModuleIndex = presetsRowIndex;
-    } else {
-        /* Nothing loaded — default the cursor to the current module if any. */
-        const current = getChainComponentModule(chainConfigs[slotIndex], comp.key);
-        if (current && current.module) {
-            const idx = availableModules.findIndex(m => m.id === current.module);
-            if (idx >= 0) selectedModuleIndex = idx;
-        }
-    }
+    /* Default the cursor to the loaded module — the list opens showing you
+     * what is there now, with the moves right beneath it.
+     *
+     * With no loaded module to sit on (an empty position, or one whose module
+     * has been uninstalled since) the moves went in at the top instead, so
+     * step PAST them: a list must never open with the cursor on "Move Left".
+     * moveEntries is empty for an unoccupied position, so that case is 0. */
+    selectedModuleIndex = loadedIdx >= 0 ? loadedIdx : moveEntries.length;
 
     setView(VIEWS.COMPONENT_SELECT);
     needsRedraw = true;
@@ -10351,14 +10417,6 @@ function applyComponentSelection() {
     /* Was this picker opened from a `+` box? Read BEFORE the choice is applied,
      * because applying it fills the very hole this recognises. */
     const pending = pendingChainInsertFor(slotChainTarget(selectedSlot), comp.key);
-
-    /* Check if user selected this component's User Presets manager */
-    if (selected && selected.id === "__user_presets__") {
-        const loaded = getChainComponentModule(chainConfigs[selectedSlot], comp.key);
-        enterPresetBrowser(selectedSlot, comp.key, loaded && loaded.module,
-                           getComponentParamPrefix(comp.key));
-        return;
-    }
 
     /* Check if user selected "[Get more...]" - enter store picker */
     if (selected && selected.id === "__get_more__") {
@@ -13167,7 +13225,11 @@ function seedWavEditorMod(key, meta, fullKey) {
     wavEditorMod = null;
     if (!meta || meta.ui_type !== "wav_position") return;
     if (!isHierarchyParamModulated(hierEditorSlot, fullKey)) return;
-    const raw = getSlotParam(hierEditorSlot, fullKey);
+    /* The plain key answers with the BASE for a modulated target (#276);
+     * the marker wants where the source is driving it, so ask `:effective`
+     * and fall back for targets that don't serve it ("" is a miss). */
+    let raw = getSlotParam(hierEditorSlot, `${fullKey}:effective`);
+    if (raw === null || raw === "") raw = getSlotParam(hierEditorSlot, fullKey);
     /* A FAILED read is not a position. Drawing nothing is honest; inventing 0
      * would plant a marker at the head of the file and claim the source is
      * there. */
@@ -16207,6 +16269,12 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem(lfoTargetComponents[selectedLfoTargetComp].label);
             }
             break;
+        case VIEWS.LFO_TARGET_GROUP:
+            selectedLfoTargetGroup = Math.max(0, Math.min(lfoTargetGroups.length - 1, selectedLfoTargetGroup + delta));
+            if (lfoTargetGroups.length > 0) {
+                announceMenuItem(lfoTargetGroups[selectedLfoTargetGroup].label);
+            }
+            break;
         case VIEWS.LFO_TARGET_PARAM:
             selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam + delta));
             if (lfoTargetParams.length > 0) {
@@ -17054,6 +17122,11 @@ function handleSelect() {
             }
             break;
         }
+        case VIEWS.LFO_TARGET_GROUP: {
+            if (lfoTargetGroups.length > 0) enterLfoTargetGroupParams(selectedLfoTargetGroup);
+            needsRedraw = true;
+            break;
+        }
         case VIEWS.LFO_TARGET_PARAM: {
             if (lfoTargetParams.length > 0 && lfoCtx) {
                 const comp = lfoTargetComponents[selectedLfoTargetComp];
@@ -17369,10 +17442,14 @@ function handleBack() {
             break;
         }
         case VIEWS.KNOB_EDITOR:
-            /* Return to chain settings */
-            setView(VIEWS.CHAIN_SETTINGS);
-            announce("Chain Settings");
-            needsRedraw = true;
+            /* Re-derive Slot Settings rather than hardcoding the legacy list
+             * view: enterChainSettings is the one place that gates grid vs.
+             * list (paramPagesEnabled()/param_view), and the grid is the
+             * DEFAULT entry into Slot Settings for virtually everyone (TTS
+             * off). Hardcoding VIEWS.CHAIN_SETTINGS here dropped every such
+             * user onto the list on the way back out, regardless of which
+             * one they actually came from. */
+            enterChainSettings(knobEditorSlot);
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder !== null) {
@@ -17510,7 +17587,24 @@ function handleBack() {
             announce(lfoCtx ? lfoCtx.title : "LFO");
             needsRedraw = true;
             break;
+        case VIEWS.LFO_TARGET_GROUP:
+            setView(VIEWS.LFO_TARGET_COMPONENT);
+            if (lfoTargetComponents.length > 0) {
+                announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
+            }
+            needsRedraw = true;
+            break;
         case VIEWS.LFO_TARGET_PARAM:
+            /* One step back is the group when there IS one — the component
+             * picker is two. `lfoTargetGroups` is emptied whenever the group
+             * step was skipped, so this cannot strand the user on a screen
+             * that was never shown. */
+            if (lfoTargetGroups.length > 0) {
+                setView(VIEWS.LFO_TARGET_GROUP);
+                announce("Section, " + lfoTargetGroups[selectedLfoTargetGroup].label);
+                needsRedraw = true;
+                break;
+            }
             setView(VIEWS.LFO_TARGET_COMPONENT);
             if (lfoTargetComponents.length > 0) {
                 announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
@@ -17543,9 +17637,9 @@ function handleBack() {
                     const frame = helpNavStack[helpNavStack.length - 1];
                     announce(frame.title + ", " + frame.items[frame.selectedIndex].title);
                 }
-            } else if (typeof shadow_request_exit === "function") {
+            } else {
                 /* Nothing left on this view to back out of. */
-                shadow_request_exit();
+                leaveGlobalSettings();
             }
             break;
     }
@@ -18686,6 +18780,9 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         getTargetParams: function(compKey) {
             return lfoTargetParamsFor(slotChainTarget(slot), compKey, "LFO");
         },
+        getTargetGroups: function(compKey) {
+            return lfoTargetGroupsFor(slotChainTarget(slot), compKey, "LFO");
+        },
         title: "LFO " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
         returnAnnounce: "Chain Settings",
@@ -18705,56 +18802,71 @@ const LFO_TARGET_PARAMS = [
  *
  * The slot and Master FX LFO editors held two copies of this that differed
  * only in how the chain_params key was spelled, which the chain target now
- * answers. Only continuous types are offered: a string or an action has no
- * range for a depth to mean anything against.
+ * answers. The type allowlist itself (and the story of `wav_position`, which
+ * was missing from it and cost the whole modulation-indicator chain) now lives
+ * in `flatLfoTargetParams` — this is the IPC half.
  */
 function lfoTargetParamsFor(target, compKey, logLabel) {
     /* LFO-to-LFO: return hardcoded LFO params */
     if (compKey === "lfo1" || compKey === "lfo2") return LFO_TARGET_PARAMS.slice();
-    const result = [];
     try {
         const json = chainTargetGetParam(target, compKey, "chain_params");
-        if (json) {
-            const params = JSON.parse(json);
-            for (let i = 0; i < params.length; i++) {
-                const p = params[i];
-                /*
-                 * `wav_position` IS a modulation target, and leaving it out
-                 * cost the whole indicator chain.
-                 *
-                 * This is a TYPE ALLOWLIST written before wav_position
-                 * existed, and it silently excluded every sample-position
-                 * param in the fleet -- mrdrums Sample Start, granny, mrsample.
-                 * A wav_position is a ranged number a knob turns (min/max
-                 * declared, 0..1), which is the only property the modulation
-                 * engine needs: chain_mod_emit_value looks the key up with
-                 * find_param_by_key and scales by the declared range, and
-                 * neither cares what the UI calls the type.
-                 *
-                 * The consequence was not "one missing menu row". Because the
-                 * param could not be picked, an LFO aimed at a sample start
-                 * had to be routed to the CONCRETE per-pad key instead, while
-                 * the grid draws the ALIAS -- so `<alias>:modulated` answered
-                 * 0, the read cursor never asked for `:base`, and the key
-                 * never entered refreshModulatedValues. Reported from the
-                 * device as a lost LFO dot and a choppy cell: the cell was
-                 * being fed the effective value by the ordinary rotation at
-                 * ~6Hz instead of the base plus a 44Hz dot.
-                 *
-                 * Confirmed on hardware with param_tally: `synth:pad_start`
-                 * and `synth:pad_start:modulated` both read 6x/window, and
-                 * `synth:pad_start:base` NEVER read.
-                 */
-                if (p.type === "float" || p.type === "int" || p.type === "enum"
-                    || p.type === "wav_position") {
-                    result.push({ key: p.key, label: p.name || p.label || p.key });
-                }
-            }
-        }
+        if (json) return flatLfoTargetParams(JSON.parse(json));
     } catch (e) {
         debugLog(logLabel + ": Failed to parse chain_params: " + e);
     }
-    return result;
+    return [];
+}
+
+/*
+ * The same list, grouped by the levels the component's hierarchy declares —
+ * see `shared/lfo_target_groups.mjs` for why, and for the losslessness rule.
+ *
+ * TWO reads, once, on entry to the picker. Not a draw path.
+ *
+ * `null` from the hierarchy read is the third answer: the read did not
+ * complete. It is NOT "this module declares no levels", and treating it as one
+ * is the granny bug — a timed-out `ui_hierarchy` read paginating chain_params
+ * instead, and then latching. Nothing here caches (the list is rebuilt on every
+ * entry), so the cost is one wrong-shaped menu rather than a stuck plan, but
+ * the branch is on the RAW value before parsing, and one retry is cheaper than
+ * showing the user a flat 418-row list they were not meant to see.
+ */
+function lfoTargetGroupsFor(target, compKey, logLabel) {
+    if (compKey === "lfo1" || compKey === "lfo2") {
+        return { grouped: false, flat: LFO_TARGET_PARAMS.slice(), groups: [] };
+    }
+
+    /* chain_params is read ONCE here and both halves come out of it — the flat
+     * list AND the grouping. Calling lfoTargetParamsFor for the first would
+     * make this three reads (~8 ms) where two will do. */
+    let chainParams = [];
+    try {
+        chainParams = JSON.parse(chainTargetGetParam(target, compKey, "chain_params") || "[]");
+    } catch (e) {
+        debugLog(logLabel + ": Failed to parse chain_params: " + e);
+    }
+    const flat = flatLfoTargetParams(chainParams);
+
+    let raw = chainTargetGetParam(target, compKey, "ui_hierarchy");
+    if (raw === null) raw = chainTargetGetParam(target, compKey, "ui_hierarchy");
+    if (raw === null) {
+        debugLog(logLabel + ": ui_hierarchy read failed twice for " + compKey +
+                 " — offering the flat list rather than inventing a grouping");
+        return { grouped: false, flat, groups: [] };
+    }
+
+    let hierarchy = null;
+    if (raw) {
+        try { hierarchy = JSON.parse(raw); }
+        catch (e) { debugLog(logLabel + ": Failed to parse ui_hierarchy: " + e); }
+    }
+    try {
+        return groupLfoTargetParams({ hierarchy, chainParams });
+    } catch (e) {
+        debugLog(logLabel + ": Failed to group targets: " + e);
+        return { grouped: false, flat, groups: [] };
+    }
 }
 
 function makeMfxLfoCtx(lfoIdx) {
@@ -18793,6 +18905,9 @@ function makeMfxLfoCtx(lfoIdx) {
         },
         getTargetParams: function(compKey) {
             return lfoTargetParamsFor(MASTER_CHAIN_TARGET, compKey, "MFX LFO");
+        },
+        getTargetGroups: function(compKey) {
+            return lfoTargetGroupsFor(MASTER_CHAIN_TARGET, compKey, "MFX LFO");
         },
         title: "MFX LFO " + (lfoIdx + 1),
         returnView: VIEWS.MASTER_FX,
@@ -18952,28 +19067,99 @@ function drawLfoEdit() {
     });
 }
 
-/* LFO target picker: step 1 - select component */
+/*
+ * LFO target picker: step 1 — select component.
+ *
+ * Lands on the component the LFO is ALREADY routed at, not on index 0. The
+ * reset was free to write and expensive to use: re-aiming an LFO pointed at
+ * param #143 of 418 cost the same 143 jog steps as the first time, with the
+ * answer sitting in `target` the whole while. Nothing new is persisted for
+ * this — the stored routing IS the memory, so it cannot go stale.
+ */
 function enterLfoTargetPicker() {
     if (!lfoCtx) return;
     lfoTargetComponents = lfoCtx.getTargetComponents();
-    selectedLfoTargetComp = 0;
+    /* Cleared here, not only in step 2: a group list left over from the last
+     * component would send Back to a screen this component never showed. */
+    lfoTargetGroups = [];
+    selectedLfoTargetGroup = 0;
+    selectedLfoTargetComp = indexOfKey(lfoTargetComponents, lfoCtx.getParam("target"));
     setView(VIEWS.LFO_TARGET_COMPONENT);
     if (lfoTargetComponents.length > 0) {
-        announce("Target, " + lfoTargetComponents[0].label);
+        announce("Target, " + lfoTargetComponents[selectedLfoTargetComp].label);
     }
 }
 
-/* LFO target picker: step 2 - select parameter for chosen component */
+/*
+ * LFO target picker: step 2 — the component's level groups, or straight to its
+ * params when grouping would not pay (no hierarchy, a short list, or one
+ * group). See `shared/lfo_target_groups.mjs`.
+ */
 function enterLfoTargetParamPicker(componentKey) {
     if (!lfoCtx) return;
-    lfoTargetParams = lfoCtx.getTargetParams(componentKey);
-    selectedLfoTargetParam = 0;
+    const grouping = lfoCtx.getTargetGroups
+        ? lfoCtx.getTargetGroups(componentKey)
+        : { grouped: false, flat: lfoCtx.getTargetParams(componentKey), groups: [] };
+
+    /* Seed only within the component the routing actually names. Carrying a
+     * param index across components would land the cursor on whatever happens
+     * to sit at that ordinal in a module that knows nothing about it. */
+    const routedHere = lfoCtx.getParam("target") === componentKey;
+    const storedParam = routedHere ? lfoCtx.getParam("target_param") : "";
+
+    if (!grouping.grouped) {
+        lfoTargetGroups = [];
+        lfoTargetParams = grouping.flat;
+        selectedLfoTargetParam = indexOfKey(lfoTargetParams, storedParam);
+        setView(VIEWS.LFO_TARGET_PARAM);
+        if (lfoTargetParams.length > 0) {
+            announce("Param, " + lfoTargetParams[selectedLfoTargetParam].label);
+        } else {
+            announce("No parameters available");
+        }
+        return;
+    }
+
+    lfoTargetGroups = grouping.groups;
+    const at = locateLfoTargetParam(lfoTargetGroups, storedParam);
+    selectedLfoTargetGroup = at.groupIndex;
+    selectedLfoTargetParam = at.paramIndex;
+    setView(VIEWS.LFO_TARGET_GROUP);
+    announce("Section, " + lfoTargetGroups[selectedLfoTargetGroup].label);
+}
+
+/* LFO target picker: step 3 — the params in the chosen group. */
+function enterLfoTargetGroupParams(groupIndex) {
+    const group = lfoTargetGroups[groupIndex];
+    if (!group) return;
+    lfoTargetParams = group.params;
+    /* selectedLfoTargetParam is already the stored routing's index when this
+     * is the group it lives in; anywhere else, start at the top. */
+    if (selectedLfoTargetGroup !== groupIndex) selectedLfoTargetParam = 0;
+    selectedLfoTargetGroup = groupIndex;
+    selectedLfoTargetParam = Math.max(0, Math.min(lfoTargetParams.length - 1, selectedLfoTargetParam));
     setView(VIEWS.LFO_TARGET_PARAM);
     if (lfoTargetParams.length > 0) {
-        announce("Param, " + lfoTargetParams[0].label);
+        announce("Param, " + lfoTargetParams[selectedLfoTargetParam].label);
     } else {
         announce("No parameters available");
     }
+}
+
+function drawLfoTargetGroup() {
+    clear_screen();
+    const compIdx = selectedLfoTargetComp;
+    const compLabel = (compIdx >= 0 && compIdx < lfoTargetComponents.length)
+        ? lfoTargetComponents[compIdx].label : "Target";
+    drawHeader(truncateText((lfoCtx ? lfoCtx.title : "LFO") + " > " + compLabel, 22));
+
+    drawMenuList({
+        items: lfoTargetGroups,
+        selectedIndex: selectedLfoTargetGroup,
+        getLabel: function(item) { return item.label; },
+        getValue: function(item) { return String(item.params.length); },
+        valueAlignRight: true,
+    });
 }
 
 function drawLfoTargetComponent() {
@@ -18992,7 +19178,13 @@ function drawLfoTargetParam() {
     const compIdx = selectedLfoTargetComp;
     const compLabel = (compIdx >= 0 && compIdx < lfoTargetComponents.length)
         ? lfoTargetComponents[compIdx].label : "Param";
-    drawHeader((lfoCtx ? lfoCtx.title : "LFO") + " > " + compLabel);
+    /* Grouped: the SECTION, not the component. The component is one row back
+     * and the section is what you cannot see from here — the same reasoning
+     * that makes the long LFO target label name the module and not the slot
+     * (shared/lfo_target_label.mjs). */
+    const group = lfoTargetGroups.length ? lfoTargetGroups[selectedLfoTargetGroup] : null;
+    drawHeader(truncateText((lfoCtx ? lfoCtx.title : "LFO") + " > " +
+                            (group ? group.label : compLabel), 22));
 
     if (lfoTargetParams.length === 0) {
         print(LIST_LABEL_X, LIST_TOP_Y, "No parameters", 1);
@@ -19431,6 +19623,7 @@ function dispatchCoRunDraw() {
         case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
         case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
+        case VIEWS.LFO_TARGET_GROUP:     drawLfoTargetGroup(); break;
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
         case VIEWS.STORE_PICKER_RESULT:  drawStorePickerResult(); break;
         case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
@@ -20580,6 +20773,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.LFO_TARGET_COMPONENT:
             drawLfoTargetComponent();
+            break;
+        case VIEWS.LFO_TARGET_GROUP:
+            drawLfoTargetGroup();
             break;
         case VIEWS.LFO_TARGET_PARAM:
             drawLfoTargetParam();

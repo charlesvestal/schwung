@@ -27,7 +27,7 @@
  */
 
 import { KIND_ENUM, KIND_OPAQUE, enumIndexOf, alsoOpens, opensOnClick,
-         widgetKindFor, WIDGET_OPAQUE, WIDGET_BUTTON, WIDGET_ENUM } from "./param_meta.mjs";
+} from "./param_meta.mjs";
 import { formatParamValue } from "../param_format.mjs";
 import { asciiFold, fitText, shortenLabel, line, circle, notchCorners } from "./render_page.mjs";
 import { drawVizGroup } from "./viz_draw.mjs";
@@ -295,6 +295,56 @@ export { WORD_ABBREV };
  * @param {string} text    the declared name or key
  * @param {number} cellW   cell width in px; the grid is 32, the knob card 29
  */
+/**
+ * An EXPLICIT label, fitted but never re-worded.
+ *
+ * labelForCell runs the word pass first, and that pass EXPANDS a known
+ * mnemonic when the full word fits -- deliberately, so a derived family reads
+ * as ATK/DEC/SUS/REL rather than ATK/DECAY/SUS/REL. Right for a label we
+ * derived; wrong for one an author typed. Asked for "Amt", the grid drew
+ * AMOUNT: the author said the short form and got the long one back.
+ *
+ * So a declared short_name is capped and squeezed to fit -- it is still a
+ * five-character cell and a long one is not a way in -- but its WORDS are
+ * left alone.
+ */
+export function labelVerbatim(text, cellW = CELL_W) {
+    const labelWidth = Math.min(cellW, fontWidth4x5("M".repeat(LABEL_CHARS)));
+    /*
+     * preAbbreviate with NO BUDGET, which is the whole distinction.
+     *
+     * The word pass does two opposite things. Given a budget it EXPANDS a
+     * mnemonic to the full word when that fits -- which is what turned a
+     * declared "Amt" into AMOUNT, overriding the author. Given none it only
+     * ABBREVIATES, which is what turns "Sustain" into SUS.
+     *
+     * Dropping the pass altogether was the first attempt and it lost the
+     * second half: a declared "Sustain" drew SUSTAI, a tail-truncation, where
+     * the derived path had correctly drawn SUS. So the budget goes, not the
+     * pass.
+     */
+    /*
+     * VERBATIM IF IT FITS; the table only as a fallback.
+     *
+     * Two wrong answers were tried first, and both came from treating the word
+     * pass as all-or-nothing:
+     *
+     *   with a budget   it EXPANDS a mnemonic -- a declared "Amt" drew AMOUNT,
+     *                   overriding the author.
+     *   with no budget  it ABBREVIATES unconditionally -- a declared "Noise"
+     *                   drew NSE, "Color" drew CLR. The author typed a word
+     *                   that fits and got a mnemonic back.
+     *   skipping it     loses the good mnemonics -- "Sustain" tail-truncated to
+     *                   SUSTAI where the table would have said SUS.
+     *
+     * So: if what the author typed fits the cell, draw exactly that. Only when
+     * it does not does the table get a say, and only then does the squeeze.
+     */
+    const asked = caps(text);
+    if (fontWidth4x5(asked) <= labelWidth) return asked;
+    return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text)), labelWidth);
+}
+
 export function labelForCell(text, cellW = CELL_W) {
     /*
      * The CAP governs, not the cell.
@@ -359,6 +409,26 @@ export function labelForCell(text, cellW = CELL_W) {
      * devowel, whose vowel test is /[aeiou]/i.
      */
     return shortenLabel(LBL_MEASURE, caps(preAbbreviate(text, labelWidth)), labelWidth);
+}
+
+/**
+ * Did the label have to be SQUEEZED — devowelled or cut — to fit its cell?
+ *
+ * Not the same question as "is this label abbreviated", and the difference is
+ * the whole point. The word table turning Attack into ATK is the design
+ * working; comparing against labelUnsqueezed() reports that as a change and
+ * fires on 651 of the fleet's 759 pages, which is a finding nobody can read.
+ * What a reviewer wants is the residue: the label that the table could not
+ * save and shortenLabel had to cut into something that may no longer be a
+ * word. So the comparison is taken AFTER the word pass, against the same
+ * budget labelForCell uses.
+ *
+ * @returns {boolean}
+ */
+export function labelSqueezed(text, cellW = CELL_W) {
+    const labelWidth = Math.min(cellW, fontWidth4x5("M".repeat(LABEL_CHARS)));
+    const worded = caps(preAbbreviate(text, labelWidth));
+    return shortenLabel(LBL_MEASURE, worded, labelWidth) !== worded;
 }
 
 /**
@@ -1558,12 +1628,76 @@ export function drawEnumSquare(ctx, kx, ky, text, anim, nowMs, animKey, raw) {
 export const BIG_NUM_MAX_SPAN = 24;
 export const BIG_NUM_BIPOLAR_MAX_SPAN = 48;
 
+/*
+ * A COUNTED QUANTITY reads as its value, whatever its range.
+ *
+ * The span cap below is the right rule for a quantity where POSITION is the
+ * information -- a cutoff declared int 0..127 wants a pointer, and 1383 fleet
+ * int params on knob pages are exactly that shape, so the cap cannot simply be
+ * widened.
+ *
+ * But some numbers are not positions at all. A tempo is 124, not "40% of the
+ * way between 40 and 240". Steps, pulses and rotation are counts you set
+ * exactly; so are voice and polyphony limits. For those the arc is the widget
+ * that tells you nothing, and the number is the whole point -- reported from
+ * the fleet as bpm, lane steps and tempo all drawing as unreadable dials.
+ *
+ * Recognised by NAME, because nothing in the range distinguishes a tempo from
+ * a filter cutoff: both are ints with a wide span. That is the same basis the
+ * fader and LFO detectors work on, and it is deliberately a short closed list
+ * rather than a guess -- measured on the fleet it takes 64 params, every one a
+ * count or a tempo, and leaves every continuous int alone.
+ */
+const COUNTED_WORDS = /(^|_)(bpm|tempo|steps?|pulses?|rotation|count|voices|polyphony|divisions?)($|_)/i;
+
+/*
+ * THREE DIGITS, measured: the big number is 27px wide at 3 digits in a 32px
+ * cell, 37px at 4 and 96px at 10 -- and an overflow does NOT clip, because the
+ * panel is 128px wide and the digits simply run over the cell next door. So
+ * `clipped()` reports nothing and the page looks fine to every automated check
+ * while two labels sit under one smear of numerals.
+ *
+ * A count is therefore only drawn as a number when its whole range fits. Every
+ * one of the 64 fleet params this rule takes is within it (the widest is a
+ * tempo at 999), but a module is free to declare `steps 1..9999` and the guard
+ * is what stops that from wrecking the row. Seeds are the real casualty --
+ * 0..65535 is an identity if anything is, and it cannot be shown this way.
+ */
+const BIG_NUM_MAX_DIGITS = 3;
+
+function digitsOf(n) { return String(Math.trunc(Math.abs(n))).length; }
+
+/*
+ * A FLOAT THAT STEPS BY 1 IS AN INTEGER RANGE.
+ *
+ * krautdrums declares `tempo` as float 60..200 with step 1 -- whole numbers
+ * throughout, and no more continuous than an int. The rule below required
+ * type "int" exactly, so it drew a dial where every other tempo in the fleet
+ * draws a number. Reported from the review as "didn't we fix that?", and the
+ * answer was that we fixed it for the declaration, not for the quantity.
+ */
+function isWholeNumbered(meta) {
+    if (!meta) return false;
+    if (meta.type === "int") return true;
+    return meta.type === "float" && meta.step === 1;
+}
+
+export function isCountedQuantity(meta) {
+    if (!isWholeNumbered(meta)) return false;
+    if (!COUNTED_WORDS.test(String(meta.key || "")) &&
+        !COUNTED_WORDS.test(String(meta.name || ""))) return false;
+    if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
+    return Math.max(digitsOf(meta.min), digitsOf(meta.max)) <= BIG_NUM_MAX_DIGITS;
+}
+
 export function shouldDrawBigNumber(meta) {
     if (!meta) return false;
     if (meta.kind === KIND_ENUM || meta.kind === KIND_OPAQUE) return false;
-    if (meta.type !== "int") return false;
+    if (!isWholeNumbered(meta)) return false;
     if (typeof meta.min !== "number" || typeof meta.max !== "number") return false;
     if (!isFinite(meta.min) || !isFinite(meta.max)) return false;
+    /* A count or a tempo is read, not aimed -- see isCountedQuantity. */
+    if (isCountedQuantity(meta)) return true;
     const span = meta.max - meta.min;
     return span <= (meta.min < 0 ? BIG_NUM_BIPOLAR_MAX_SPAN : BIG_NUM_MAX_SPAN);
 }
@@ -1775,6 +1909,35 @@ function drawAlsoOpensMark(ctx, g, col, rowY) {
  * does today apart from the enum square's new static width, which is what keeps
  * the harness, the tests and the device unaffected until a caller opts in.
  */
+export const WIDGET_OPAQUE  = "opaque";   /* drawOpaqueBox  — a path/canvas, chevron box */
+export const WIDGET_BUTTON  = "button";   /* drawButton     — a write-only trigger */
+export const WIDGET_ENUM    = "enum";     /* drawEnumSquare — a named option */
+export const WIDGET_BIGNUM  = "bignum";   /* drawBigNumber  — a small int, read as a number */
+export const WIDGET_KNOB    = "knob";     /* drawArcKnob    — a position on a range */
+
+/**
+ * Which widget a cell draws, from its meta alone.
+ *
+ * Extracted from drawKnobWidget's branch chain rather than restated beside it,
+ * and drawKnobWidget switches on THIS — so a tool that reports "what type is
+ * this cell" cannot drift from what the device draws. A second copy of the
+ * order is exactly the failure this codebase keeps finding: the audit sheet
+ * exists to catch a parameter rendered as the wrong type, and it would have
+ * been reading its own re-implementation of the rule.
+ *
+ * Value-independent by construction. Every branch below tests `meta`, never
+ * the reading — which is what makes it answerable for a page nobody has read
+ * a value for yet.
+ */
+export function widgetKindFor(meta) {
+    if (!meta) return WIDGET_KNOB;
+    if (meta.kind === KIND_OPAQUE) return WIDGET_OPAQUE;
+    if (meta.writeOnly) return WIDGET_BUTTON;
+    if (meta.kind === KIND_ENUM) return WIDGET_ENUM;
+    if (shouldDrawBigNumber(meta)) return WIDGET_BIGNUM;
+    return WIDGET_KNOB;
+}
+
 export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, cellText, btnPhase,
                                anim, nowMs, animKey) {
     const kx = cellLeft(g, col) + Math.floor((g.cellW - KW) / 2), ky = rowY;
@@ -1849,7 +2012,7 @@ export function drawKnobWidget(ctx, g, col, rowY, meta, raw, modRaw, liveRaw, ce
      * shouldDrawBigNumber. Checked here, after the opaque/writeOnly/enum branches
      * that own their cells outright, and before the arc it replaces.
      */
-    if (shouldDrawBigNumber(meta)) {
+    if (widget === WIDGET_BIGNUM) {
         drawBigNumber(ctx, cellLeft(g, col) + Math.floor(g.cellW / 2), ky,
                       bigNumberText(meta, raw));
         return;
@@ -2312,7 +2475,38 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * cannot hide which of the cells it spans is locked. */
         if (locked) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
 
-        const label = labelForCell(meta.label || meta.key, g.cellW);
+        /*
+         * `short_name` is for the CELL only -- the same split as short_options.
+         *
+         * The cell is five characters wide and the header is the full width of
+         * the screen, so they want different words. Without a way to say so the
+         * only lever is the name itself, and shortening that fixes the cell by
+         * damaging the header and the list: "Osc 1 Pitch" has to become "Pitch"
+         * everywhere, and on a module with four oscillators the header then
+         * cannot tell you which one you are holding.
+         *
+         * Measured on the 39 modules charlesvestal owns: 1766 controls, 1150 of
+         * them squeezed, and 500 whose name simply repeats their own page
+         * ("VCF Cutoff" on the VCF page drawing VCFCUT where CUTOFF would fit).
+         * 425 of those stop being squeezed with a shorter cell label alone --
+         * with no change to what the header says.
+         *
+         * Falls back to `label` so every module that declares nothing is
+         * unaffected.
+         */
+        /*
+         * PAGE first, then param, then the full name.
+         *
+         * A page-level short_name (page.shortNames, collected by page_plan
+         * from the level's own inline entries) beats the param's, because the
+         * page is the narrower context and it is what makes the cell
+         * unambiguous: the same param can want "Amt" on the Envelope page and
+         * "Env Amt" on Main, where an LFO Amt sits beside it.
+         */
+        const pageShort = (o && o.page && o.page.shortNames) ? o.page.shortNames[key] : null;
+        const declared = pageShort || meta.short_name || null;
+        const label = declared ? labelVerbatim(declared, g.cellW)
+                               : labelForCell(meta.label || meta.key, g.cellW);
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);

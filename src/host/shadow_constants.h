@@ -48,6 +48,33 @@
  * ============================================================================ */
 
 #define MIDI_BUFFER_SIZE    256   /* Hardware mailbox MIDI area: 64 USB-MIDI packets */
+
+/* The shim -> shadow_ui MIDI ring, and NOT the mailbox size above.
+ *
+ * It was MIDI_BUFFER_SIZE, which made the ring 64 packets because that is how
+ * many fit in the hardware mailbox — a number with nothing to do with how much
+ * MIDI a tool can be sent between two drains. A Yamaha 5F bulk dump message is
+ * 158 bytes on the wire = 53 packets, so ONE nearly filled the ring and two
+ * back-to-back could not fit: shadow_ui_midi_publish() fell off the end of its
+ * scan and dropped whole packets, silently. Measured on a QY-70 at 6.9% of
+ * 3164 messages, every shortfall a multiple of 3 and every one on the largest
+ * message type (#358).
+ *
+ * Sharing the constant also made the obvious fix dangerous: MIDI_BUFFER_SIZE
+ * still bounds `memcpy(sh_midi, hw_midi, ...)` and `hotkey_prev`, which read
+ * the SPI mailbox, so enlarging IT would have read past MIDI_IN into the
+ * display status word. Hence a separate name rather than a bigger number.
+ *
+ * 1024 = 256 packets, ~4.8 of those dump messages, against 1.2 before. The
+ * cost is 768 bytes of shared memory.
+ *
+ * RESIZING THIS IS A LAYOUT CHANGE. The segment outlives the processes, so a
+ * shim that creates it at the new size and a shadow_ui built against the old
+ * one disagree — and the dangerous direction is a NEW consumer mapping 1024
+ * over a stale 256-byte segment, where every touch past the end is SIGBUS.
+ * shadow_shm_map() refuses a short attach rather than handing back that
+ * mapping; deploy the shim and shadow_ui together, as install.sh does. */
+#define SHADOW_UI_MIDI_BYTES 1024
 /* Hardware MIDI_OUT region is 20 × 4-byte USB-MIDI packets = 80 bytes.
  * The display buffer starts immediately after at offset 80. Writes to
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
@@ -56,7 +83,28 @@
 #define CONTROL_BUFFER_SIZE 84  /* corun masks widened to uint32 + flags byte (cede-default model); static-asserted below */
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
-#define SHADOW_MIDI_OUT_BUFFER_SIZE 512  /* MIDI out buffer from shadow UI (128 packets) */
+/* The shadow_ui -> shim MIDI out buffer: 256 USB-MIDI packets.
+ *
+ * It was 512 bytes = 128 packets, and that made ONE js_shadow_midi_send() call
+ * of more than 128 packets impossible: the writes past the end were refused and
+ * the send returned false. A 632-byte SysEx is 212 packets, so a module could
+ * not hand over a bulk dump in one call however well it was written. Measured
+ * on hardware 2026-08-31: 158 B (53 pkt) and 316 B (107 pkt) went out intact,
+ * 632 B came back REFUSED.
+ *
+ * Sized to match UI_MIDI_CARRY_PACKETS deliberately, and the two must stay
+ * equal. The carry is what the shim drains this into; if this were the larger
+ * of the two, a flush that the SHM buffer accepted could not fit downstream and
+ * would be dropped at the carry instead -- moving the refusal one buffer along
+ * and making it a drop rather than a return value, which is the exact shape
+ * ui_midi_out_carry.h exists to remove.
+ *
+ * RESIZING THIS IS A LAYOUT CHANGE, same as SHADOW_UI_MIDI_BYTES (#361): the
+ * segment outlives the processes, so deploy the shim and shadow_ui together.
+ * shadow_shm_map() refuses a short attach rather than handing back a mapping
+ * whose tail is SIGBUS. write_idx is a uint16_t byte offset and still addresses
+ * this fine; the _Static_assert below fails if that ever stops being true. */
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 1024
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
 /* MIDI inject ring capacity is SHADOW_MIDI_INJECT_SLOTS (defined with the
  * struct below) — the old flat byte-buffer size is gone. */
@@ -529,8 +577,9 @@ typedef struct shadow_param_t {
  * to external USB devices (cable 2) or control Move LEDs (cable 0).
  */
 typedef struct shadow_midi_out_t {
-    /* uint16_t, and it MUST be: the buffer is 512 bytes and this is a BYTE
-     * offset into it. As a uint8_t it saturated at 255, so
+    /* uint16_t, and it MUST be: the buffer is SHADOW_MIDI_OUT_BUFFER_SIZE
+     * bytes (now 1024) and this is a BYTE offset into it. As a uint8_t it
+     * saturated at 255, so
      *   - only the first 63 packets of a 128-packet buffer were addressable,
      *     and the back half was never read at all;
      *   - `write_idx = write_offset + 4` wrapped 252 -> 0, silently rewinding

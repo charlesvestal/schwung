@@ -27,6 +27,7 @@
             },
             {
               "key": "input_mode",
+              "short_name": "Input",
               "label": "Input Mode",
               "type": "enum",
               "options": ["Stereo", "Mono (L)", "Mono (R)"],
@@ -45,6 +46,7 @@
             },
             {
               "key": "output_trim",
+              "short_name": "Output",
               "label": "Output Trim",
               "type": "float",
               "min": -24,
@@ -63,6 +65,7 @@
             },
             {
               "key": "gate_amount",
+              "short_name": "GATEAM",
               "label": "Gate Amount",
               "type": "float",
               "min": 0,
@@ -166,6 +169,7 @@
           "params": [
             {
               "key": "cable_comp",
+              "short_name": "Comp",
               "label": "Cable Comp",
               "type": "enum",
               "options": ["Off", "Low", "Med", "High"],
@@ -173,6 +177,7 @@
             },
             {
               "key": "soft_clip",
+              "short_name": "Clip",
               "label": "Soft Clip",
               "type": "enum",
               "options": ["Off", "On"],
@@ -193,6 +198,7 @@
             },
             {
               "key": "subsonic_freq",
+              "short_name": "Filter",
               "label": "Sub Filter",
               "type": "enum",
               "options": ["10 Hz", "15 Hz", "20 Hz", "30 Hz", "40 Hz"],
@@ -200,6 +206,7 @@
             },
             {
               "key": "hum_notch",
+              "short_name": "Notch",
               "label": "Hum Notch",
               "type": "enum",
               "options": ["Off", "On"],
@@ -207,6 +214,7 @@
             },
             {
               "key": "hum_freq",
+              "short_name": "Freq",
               "label": "Hum Freq",
               "type": "enum",
               "options": ["50 Hz", "60 Hz"],
@@ -220,6 +228,7 @@
           "params": [
             {
               "key": "hum_filter",
+              "short_name": "Filter",
               "label": "Hum Filter",
               "type": "enum",
               "options": ["Off", "50 Hz", "60 Hz"],

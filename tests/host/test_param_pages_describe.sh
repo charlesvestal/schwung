@@ -33,10 +33,11 @@ node -e '
 Promise.all([
   import("./src/shared/param_pages/page_controller.mjs"),
   import("./src/shared/param_pages/param_meta.mjs"),
+  import("./src/shared/param_pages/render_page_movy.mjs"),
   import("./src/shared/param_pages/page_plan.mjs"),
   import("./tools/param-pages/fake_device.mjs"),
   import("node:fs"),
-]).then(([C, M, P, D, fs]) => {
+]).then(([C, M, RM, P, D, fs]) => {
   const fail = (msg) => { console.log("FAIL: " + msg); process.exit(1); };
   const fx = JSON.parse(fs.readFileSync("tests/fixtures/module-contracts.json", "utf8"));
 
@@ -59,6 +60,11 @@ Promise.all([
     if (meta.kind === M.KIND_OPAQUE) return "opaque";
     if (meta.writeOnly) return "button";
     if (meta.kind === M.KIND_ENUM) return "enum";
+    /* BIGNUM came from main while this branch was extracting the same rule
+     * elsewhere. Restated here from the renderer'"'"'s own predicate, not
+     * reimplemented — the point of the copy is to notice the ORDER changing,
+     * not to re-derive what counts as a small integer. */
+    if (RM.shouldDrawBigNumber(meta)) return "bignum";
     return "knob";
   };
 
@@ -75,16 +81,16 @@ Promise.all([
    */
   {
     const both = { kind: M.KIND_OPAQUE, writeOnly: true, key: "x" };
-    if (M.widgetKindFor(both) !== M.WIDGET_OPAQUE) {
-      fail("an opaque write-only param must stay a door, got " + M.widgetKindFor(both));
+    if (RM.widgetKindFor(both) !== RM.WIDGET_OPAQUE) {
+      fail("an opaque write-only param must stay a door, got " + RM.widgetKindFor(both));
     }
     const enumWriteOnly = { kind: M.KIND_ENUM, writeOnly: true, key: "x" };
-    if (M.widgetKindFor(enumWriteOnly) !== M.WIDGET_BUTTON) {
+    if (RM.widgetKindFor(enumWriteOnly) !== RM.WIDGET_BUTTON) {
       fail("a write-only enum is a trigger, not an enum square");
     }
-    if (M.widgetKindFor(null) !== M.WIDGET_KNOB) fail("absent metadata must fall back to a knob");
-    if (M.widgetKindFor({ kind: M.KIND_ENUM, key: "x" }) !== M.WIDGET_ENUM) fail("enum misclassified");
-    if (M.widgetKindFor({ kind: M.KIND_NUMBER, key: "x" }) !== M.WIDGET_KNOB) fail("number misclassified");
+    if (RM.widgetKindFor(null) !== RM.WIDGET_KNOB) fail("absent metadata must fall back to a knob");
+    if (RM.widgetKindFor({ kind: M.KIND_ENUM, key: "x" }) !== RM.WIDGET_ENUM) fail("enum misclassified");
+    if (RM.widgetKindFor({ kind: M.KIND_NUMBER, key: "x" }) !== RM.WIDGET_KNOB) fail("number misclassified");
   }
 
   let cells = 0, modules = 0;
@@ -134,7 +140,7 @@ Promise.all([
   if (cells < 500) fail("only " + cells + " cells described; expected the fleet");
   /* All four widgets must actually occur, or the agreement check above is
    * passing on a subset and would not notice three of the four branches. */
-  for (const w of ["knob", "enum", "opaque", "button"]) {
+  for (const w of ["knob", "enum", "opaque", "button", "bignum"]) {
     if (!seen[w]) fail("no " + w + " cell in the whole fleet — the widget check is not covering it");
   }
 

@@ -51,7 +51,7 @@
     <main id="main-content">
         {{if .Flash}}
         <div id="flash-messages" aria-live="polite">
-            {{template "flash" (dict "Message" .Flash "Type" "info")}}
+            {{template "flash" (dict "Message" .Flash "Type" (or .FlashType "info"))}}
         </div>
         {{end}}
         {{block "content" .}}{{end}}
