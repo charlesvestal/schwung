@@ -1,0 +1,17 @@
+{
+    "id": "sysex-test",
+    "name": "SysEx Test",
+    "version": "0.1.0",
+    "author": "Schwung",
+    "description": "Sends and validates large SysEx over cable 2. Pads pick a payload size; the tool packetizes, sends in one burst, and reports how many packets the host refused. Inbound SysEx is reassembled and checked byte-for-byte against the same generator, so a run of lost packets shows as a byte count and a first-bad-offset rather than as silence.",
+    "component_type": "tool",
+    "tool_config": {
+        "interactive": true,
+        "skip_file_browser": true,
+        "overtake": true
+    },
+    "capabilities": {
+        "midi_out": true,
+        "suspend_keeps_js": true
+    }
+}

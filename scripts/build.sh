@@ -167,6 +167,7 @@ mkdir -p ./build/modules/audio_fx/freeverb/
 mkdir -p ./build/modules/midi_fx/chord/
 mkdir -p ./build/modules/midi_fx/arp/
 mkdir -p ./build/modules/midi_fx/velocity_scale/
+mkdir -p ./build/modules/midi_fx/sysex_probe/
 mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/tools/wav-player/
 mkdir -p ./build/lib/jack
@@ -610,6 +611,22 @@ if needs_rebuild build/modules/midi_fx/velocity_scale/dsp.so \
         -Isrc -lm
 else
     echo "Skipping velocity scale MIDI FX (up to date)"
+fi
+
+# Build SysEx Probe MIDI FX — the slot-module half of the SysEx test rig.
+# A slot reaches USB-A through host->midi_send_external (the ROUTE_EXTERNAL
+# ring), not through the shadow_ui path a JS tool uses, so it has to be
+# measured separately. See src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c.
+if needs_rebuild build/modules/midi_fx/sysex_probe/dsp.so \
+    src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c src/host/midi_fx_api_v1.h \
+    src/host/plugin_api_v1.h; then
+    echo "Building sysex probe MIDI FX..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/midi_fx/sysex_probe/dsp/sysex_probe.c \
+        -o build/modules/midi_fx/sysex_probe/dsp.so \
+        -Isrc -lm
+else
+    echo "Skipping sysex probe MIDI FX (up to date)"
 fi
 
 echo "Building Sound Generator plugins..."
