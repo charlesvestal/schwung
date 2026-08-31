@@ -618,6 +618,21 @@ export function isReadOnly(meta) { return !!meta && !!meta.readOnly; }
  */
 export function isTrigger(meta) { return !!meta && !!meta.writeOnly; }
 
+/*
+ * `widgetKindFor` USED TO LIVE HERE, and deliberately does not any more.
+ *
+ * This branch extracted it into param_meta.mjs while main extracted it into
+ * render_page_movy.mjs — the same refactor, for the same reason, twice, and the
+ * merge produced two exported definitions of it plus a set of WIDGET_*
+ * constants in each file. That is precisely the shape both copies were written
+ * to prevent, and it was a hard error rather than a subtle one: the renderer
+ * imported the name it also declared.
+ *
+ * The renderer's is the surviving one. It knows about WIDGET_BIGNUM, which this
+ * copy did not, so keeping this one would have silently demoted every big-number
+ * cell to a knob. Import it from `render_page_movy.mjs`.
+ */
+
 /**
  * One-shot repair for a param whose type/range we had to guess (`meta.guessed`).
  * Mirrors how the enum layer learns its exchange format: on the first successful
