@@ -2702,6 +2702,167 @@ function exitModuleLists() {
 }
 
 /*
+ * ===== EDIT LISTS =====
+ *
+ * The list of lists, with a member count each, and the per-list actions
+ * behind it. Every RULE below belongs to module_lists.mjs (which lists may be
+ * renamed, which may be deleted, what a clear does); what lives here is the
+ * drawing and the gestures.
+ */
+
+/*
+ * The Edit Lists rows.
+ *
+ * NO load here, for the same reason moduleListsRows() does not: this is
+ * reached from drawModuleListsEdit(), i.e. from the DRAW path, and a
+ * host_read_file on the draw path is what the read budget forbids
+ * (docs/PARAM_PAGES.md). The input paths call moduleListsEnsureLoaded()
+ * first.
+ */
+function moduleListsEditRows() {
+    if (!moduleListsState) return [];
+    return moduleListsState.lists.map(l => ({
+        name: l.name,
+        /* The count is the only thing distinguishing two lists at a glance,
+         * and it is what tells you a list is safe to delete. Printed even at
+         * zero, unlike the Module page row: there the blank says "this
+         * feature is doing nothing for this module", here a blank column
+         * beside a filled one would read as a missing value. */
+        value: String(l.modules.length),
+    }));
+}
+
+/*
+ * Clamp the Edit Lists cursor to the rows that exist NOW — a delete removes
+ * one out from under it, and the screen is arrived at again immediately
+ * afterwards.
+ */
+function moduleListsClampEditIndex() {
+    const n = moduleListsEditRows().length;
+    moduleListsEditIndex = Math.max(0, Math.min(n > 0 ? n - 1 : 0, moduleListsEditIndex));
+}
+
+function drawModuleListsEdit() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    drawListScreen(ctx, {
+        headerLeft: "Edit Lists",
+        entries: moduleListsEditRows(),
+        index: moduleListsEditIndex,
+        footer: [["JOG", "SEL"], ["CLK", "EDIT"], ["BACK", "LISTS"]],
+    });
+}
+
+/*
+ * Favorites gets Clear alone. The other two rows are ABSENT rather than
+ * present and refusing: a row that answers a click by doing nothing teaches
+ * that the screen is broken, which is the same reasoning that keeps Move Left
+ * / Move Right off a position with nowhere to go.
+ *
+ * isProtected() is asked, not re-derived — the name comparison is
+ * case-insensitive and that rule is the model`s, not this file`s.
+ */
+function moduleListsActionRows() {
+    const rows = [];
+    if (!ModuleLists.isProtected(moduleListsTarget)) {
+        rows.push({ name: "Rename", kind: "rename" });
+        rows.push({ name: "Delete", kind: "delete" });
+    }
+    rows.push({ name: "Clear", kind: "clear" });
+    return rows;
+}
+
+function drawModuleListsActions() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    drawListScreen(ctx, {
+        headerLeft: moduleListsTarget,
+        entries: moduleListsActionRows(),
+        index: moduleListsActionIndex,
+        /* BACK names where Back ACTUALLY goes (FOOTER_CANON): the Edit Lists
+         * screen, not the membership screen one further out. */
+        footer: [["JOG", "SEL"], ["CLK", "DO"], ["BACK", "EDIT"]],
+    });
+    /* Drawn LAST, so it is fed FIRST — see moduleListsSelectAction() and the
+     * jog case, which early-out on moduleListsConfirmDelete before reading
+     * the rows. The draw order and the input order are the reverse of each
+     * other, and nothing at either site says so. */
+    if (moduleListsConfirmDelete) {
+        drawConfirmOverlay("Delete List", [moduleListsTarget + "?"], "CLK=Yes  BACK=No");
+    }
+}
+
+/*
+ * A click on the actions screen.
+ *
+ * Its own function rather than the body of a switch case so that the confirm
+ * LATCH and the save-failure branches are reachable by a test: everything
+ * inside handleSelect() is behind 21k lines node cannot load.
+ *
+ * Every write BRANCHES on moduleListsSave(). A write that did not happen must
+ * not be announced as one — with an unreadable file the list would vanish
+ * from the screen, the voice would say "Deleted", and the next entry would
+ * show it back.
+ */
+function moduleListsSelectAction() {
+    if (moduleListsConfirmDelete) {
+        /* Fed FIRST because it is drawn LAST. Disarm before acting, so no
+         * path can leave the latch set. */
+        moduleListsConfirmDelete = false;
+        const name = moduleListsTarget;
+        const r = ModuleLists.deleteList(moduleListsState, name);
+        if (!r.ok) {
+            announce(r.err || "Delete failed");
+        } else {
+            const saved = moduleListsSave();
+            announce("Deleted " + name + (saved ? "" : ", save failed"));
+        }
+        moduleListsTarget = "";
+        moduleListsActionIndex = 0;
+        moduleListsClampEditIndex();
+        setView(VIEWS.MODULE_LISTS_EDIT);
+        needsRedraw = true;
+        return;
+    }
+    const row = moduleListsActionRows()[moduleListsActionIndex];
+    if (!row) return;
+    if (row.kind === "rename") {
+        /* Seeded with the current name; a rejected one comes back carrying
+         * what was TYPED — see moduleListsOpenNameEntry. */
+        moduleListsOpenNameEntry(moduleListsTarget);
+    } else if (row.kind === "delete") {
+        moduleListsConfirmDelete = true;
+        announce("Delete " + moduleListsTarget + "?");
+    } else {
+        const r = ModuleLists.clearList(moduleListsState, moduleListsTarget);
+        if (!r.ok) {
+            announce(r.err || "Clear failed");
+        } else {
+            const saved = moduleListsSave();
+            announce("Cleared " + moduleListsTarget + (saved ? "" : ", save failed"));
+        }
+    }
+    needsRedraw = true;
+}
+
+/*
+ * Back on the actions screen: one level per press. With the confirm up, Back
+ * is "No" and cancels it — it does not also leave the screen, because the
+ * overlay is what the press was answering.
+ */
+function moduleListsActionsBack() {
+    if (moduleListsConfirmDelete) {
+        moduleListsConfirmDelete = false;
+        announce(moduleListsTarget);
+    } else {
+        moduleListsClampEditIndex();
+        setView(VIEWS.MODULE_LISTS_EDIT);
+        announce("Edit Lists");
+    }
+    needsRedraw = true;
+}
+
+/*
  * Keep the grid's "which User Preset is loaded" record in step with the three
  * flows that can move it — Load, Save (including Save As), and Delete — all
  * of which live in shadow_ui_presets.mjs. Registered on ctx (see the wiring
@@ -16520,6 +16681,24 @@ function handleJog(delta, shift = isShiftHeld()) {
             announceMenuItem("List", moduleListsRowLabel(moduleListsIndex));
             break;
         }
+        case VIEWS.MODULE_LISTS_EDIT: {
+            moduleListsEnsureLoaded();
+            const rows = moduleListsEditRows();
+            moduleListsEditIndex = Math.max(0, Math.min(rows.length - 1, moduleListsEditIndex + delta));
+            const r = rows[moduleListsEditIndex];
+            if (r) announceMenuItem("List", `${r.name}, ${r.value}`);
+            break;
+        }
+        case VIEWS.MODULE_LISTS_ACTIONS: {
+            /* The confirm owns the jog while it is up — it is drawn LAST, so
+             * it is fed FIRST. */
+            if (moduleListsConfirmDelete) break;
+            const rows = moduleListsActionRows();
+            moduleListsActionIndex = Math.max(0, Math.min(rows.length - 1, moduleListsActionIndex + delta));
+            const r = rows[moduleListsActionIndex];
+            if (r) announceMenuItem(moduleListsTarget, r.name);
+            break;
+        }
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
@@ -17080,6 +17259,27 @@ function handleSelect() {
             needsRedraw = true;
             break;
         }
+        case VIEWS.MODULE_LISTS_EDIT: {
+            moduleListsEnsureLoaded();
+            moduleListsClampEditIndex();
+            const rows = moduleListsEditRows();
+            const r = rows[moduleListsEditIndex];
+            if (!r) break;
+            moduleListsTarget = r.name;
+            moduleListsActionIndex = 0;
+            /* Never inherit a latch across an entry: arriving on a fresh
+             * list with "yes, delete" already armed would delete the NEXT
+             * list on the next click. */
+            moduleListsConfirmDelete = false;
+            setView(VIEWS.MODULE_LISTS_ACTIONS);
+            announce(`${r.name}, ${(moduleListsActionRows()[0] || {}).name || ""}`);
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.MODULE_LISTS_ACTIONS:
+            moduleListsEnsureLoaded();
+            moduleListsSelectAction();
+            break;
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerResultSelect();
             break;
@@ -17796,6 +17996,17 @@ function handleBack() {
             break;
         case VIEWS.MODULE_LISTS:
             exitModuleLists();
+            break;
+        case VIEWS.MODULE_LISTS_EDIT:
+            /* One level per press, and the cursor is re-resolved on the way:
+             * a delete on this screen removed a row from the one below. */
+            moduleListsClampIndex();
+            setView(VIEWS.MODULE_LISTS);
+            announce("Add to List, " + moduleListsRowLabel(moduleListsIndex));
+            needsRedraw = true;
+            break;
+        case VIEWS.MODULE_LISTS_ACTIONS:
+            moduleListsActionsBack();
             break;
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerBack();
@@ -20189,6 +20400,8 @@ function dispatchCoRunDraw() {
         case VIEWS.PRESET_DETAIL:        drawPresetDetail(); break;
         case VIEWS.COMPONENT_SELECT:     drawComponentSelect(); break;
         case VIEWS.MODULE_LISTS:         drawModuleLists(); break;
+        case VIEWS.MODULE_LISTS_EDIT:    drawModuleListsEdit(); break;
+        case VIEWS.MODULE_LISTS_ACTIONS: drawModuleListsActions(); break;
         case VIEWS.CHAIN_SETTINGS:       drawChainSettings(); break;
         case VIEWS.SLOT_SETTINGS:        drawSlotSettings(); break;
         case VIEWS.COMPONENT_EDIT:
@@ -21303,6 +21516,12 @@ globalThis.tick = function() {
             break;
         case VIEWS.MODULE_LISTS:
             drawModuleLists();
+            break;
+        case VIEWS.MODULE_LISTS_EDIT:
+            drawModuleListsEdit();
+            break;
+        case VIEWS.MODULE_LISTS_ACTIONS:
+            drawModuleListsActions();
             break;
         case VIEWS.CHAIN_SETTINGS:
             drawChainSettings();
