@@ -1,0 +1,124 @@
+{
+  "title": "Arpeggiator",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Plays the notes you",
+        "are holding one at a",
+        "time, in order,",
+        "instead of together.",
+        "",
+        "A chain MIDI FX: put",
+        "it before a synth",
+        "and hold a chord.",
+        "",
+        "Hold more notes and",
+        "the pattern grows.",
+        "Let go and it stops."
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Knob 1: Mode",
+        " direction, or off",
+        "Knob 2: BPM",
+        " 40 to 240",
+        "Knob 3: Division",
+        " note length",
+        "Knob 4: Sync",
+        " internal or clock",
+        "",
+        "BPM only does",
+        "anything when Sync",
+        "is internal."
+      ]
+    },
+    {
+      "title": "Mode",
+      "lines": [
+        "Off passes the notes",
+        "straight through, so",
+        "you can A/B without",
+        "removing the module.",
+        "",
+        "Up climbs from the",
+        "lowest note held.",
+        "Down falls from the",
+        "highest.",
+        "",
+        "Up/Down goes up then",
+        "back down.",
+        "",
+        "Random picks freely",
+        "from the held notes."
+      ]
+    },
+    {
+      "title": "Division",
+      "lines": [
+        "How long each step",
+        "lasts, relative to",
+        "the beat.",
+        "",
+        "Plain values are",
+        "straight: 1/4, 1/8,",
+        "1/16, 1/32.",
+        "",
+        "A trailing dot is",
+        "dotted - half again",
+        "as long.",
+        "",
+        "A trailing T is a",
+        "triplet - three in",
+        "the space of two.",
+        "",
+        "1/16 is the usual",
+        "starting point."
+      ]
+    },
+    {
+      "title": "Sync",
+      "lines": [
+        "Internal runs from",
+        "the BPM knob and",
+        "ignores everything",
+        "else.",
+        "",
+        "Clock follows",
+        "incoming MIDI clock,",
+        "so it locks to Move",
+        "and to anything else",
+        "on the same clock.",
+        "",
+        "On Clock the BPM",
+        "knob does nothing -",
+        "if the tempo will",
+        "not change, check",
+        "this first."
+      ]
+    },
+    {
+      "title": "Tips",
+      "lines": [
+        "Put Chord before Arp",
+        "and one pad becomes",
+        "a whole arpeggio.",
+        "",
+        "The pattern rebuilds",
+        "as you change which",
+        "notes are held, so",
+        "you can walk a line",
+        "by moving one",
+        "finger.",
+        "",
+        "Short Division with",
+        "a slow release on",
+        "the synth is how you",
+        "get the sound to",
+        "blur together."
+      ]
+    }
+  ]
+}
