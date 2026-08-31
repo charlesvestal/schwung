@@ -166,6 +166,11 @@ const RECONCILERS = [
   ["maybeReturnToMasterGrid", "VIEWS.MASTER_FX", "masterModalFromGrid"],
   ["maybeReturnToGlobalGrid", "VIEWS.GLOBAL_SETTINGS", "globalModalFromGrid"],
   ["maybeReturnToComponentGrid", "VIEWS.CHAIN_EDIT", "componentModalFromGrid"],
+  /* The fifth: "Module Help" off the Module page of a component. It shares
+     GLOBAL_SETTINGS with maybeReturnToGlobalGrid (the help viewer has no view
+     of its own) and is told apart by its own pending return, not by a
+     *ModalFromGrid flag. */
+  ["maybeReturnToComponentHelp", "VIEWS.GLOBAL_SETTINGS", "componentHelpReturnSlot"],
 ];
 for (const [fn, gateView, flag] of RECONCILERS) {
   const body = findBody(fn);
@@ -186,15 +191,15 @@ for (const [fn, gateView, flag] of RECONCILERS) {
   }
 }
 
-/* All four poll-site lines must appear together, in the same block, so a
+/* All the poll-site lines must appear together, in the same block, so a
    later edit cannot silently drop one while touching the others. */
 {
   const pollAt = src.indexOf("maybeReturnToSlotGrid();");
   const pollEnd = src.indexOf("maybeReturnToComponentGrid();");
   if (pollAt >= 0 && pollEnd > pollAt && pollEnd - pollAt < 2000) {
-    ok("all four poll-site calls sit together in one block");
+    ok("all poll-site calls sit together in one block");
   } else {
-    fail("the four poll-site calls are not co-located -- expected all within ~2000 chars of each other");
+    fail("the poll-site calls are not co-located -- expected all within ~2000 chars of each other");
   }
 }
 

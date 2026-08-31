@@ -286,12 +286,20 @@ const body = [
     // note above userPresetLiveBlobCache in shadow_ui.js.
     "const userPresetLiveBlobCache = Object.create(null);",
     "const userPresetKey = (slot, prefix) => slot + \":\" + prefix;",
+    // The "Module Help" row is CONDITIONAL on the module shipping a help.json
+    // with topics in it, so the real moduleMenuEntries is lifted too and the
+    // file read under it is the one thing stubbed -- a hard-coded row list
+    // here would have gone on asserting the pre-help shape while green.
+    "let helpChildren = null;",
+    "function getModuleHelpChildren() { return helpChildren; }",
+    grab("moduleMenuEntries"),
     grab("componentTrailingMenus"),
     "return {",
     "  run: (slot, key, prefix) => componentTrailingMenus(slot, key, prefix),",
     "  setRecord: (r) => { userRecord = r; },",
     "  setLiveBlob: (b) => { liveBlob = b; },",
     "  setChainConfigs: (c) => { chainConfigs = c; },",
+    "  setHelpChildren: (c) => { helpChildren = c; },",
     "};",
 ].join("\n");
 
@@ -346,13 +354,34 @@ if (!presetRow(r.dirty).value.startsWith("*"))
     fail("the modified mark must LEAD the name (a trailing mark is the first thing a " +
          "truncating list drops), got " + JSON.stringify(presetRow(r.dirty)));
 
+// Module page, module with NO help.json: the two it has always had, and no
+// row that would open an empty viewer.
 const moduleActions = actions(r.clean[1]);
 if (moduleActions.join(",") !== "swap_module,remove_module")
-    fail("Module page must offer exactly Swap Module then Remove Module, got " + moduleActions.join(","));
+    fail("Module page for a module with no help content must offer exactly Swap Module " +
+         "then Remove Module, got " + moduleActions.join(","));
+
+// ...and with help content, Module Help LEADS -- the two rows under it are the
+// destructive ones.
+harness.setHelpChildren([{ title: "Overview", lines: ["x"] }]);
+const withHelp = harness.run(1, "synth", "synth");
+const withHelpActions = actions(withHelp[1]);
+if (withHelpActions.join(",") !== "module_help,swap_module,remove_module")
+    fail("Module page for a module WITH help content must offer Module Help, Swap Module, " +
+         "Remove Module in that order, got " + withHelpActions.join(","));
+if (withHelp[1].entries[0].label !== "Module Help")
+    fail("the help row must be labelled \"Module Help\", got " + JSON.stringify(withHelp[1].entries[0]));
+// An EMPTY children array is no help content -- getModuleHelpChildren already
+// answers null for that, and this pins that the row follows the answer rather
+// than the presence of a file.
+harness.setHelpChildren(null);
+if (actions(harness.run(1, "synth", "synth")[1]).includes("module_help"))
+    fail("Module Help must disappear again when the module reports no help content");
 
 console.log("  ok  componentTrailingMenus(): [] when empty; (none)/Load+SaveAs-only when no " +
             "record; Save+Delete when a record exists; the real presetRowValue() decides the " +
-            "* (imported from current_preset.mjs, not re-typed)");
+            "* (imported from current_preset.mjs, not re-typed); Module Help present only " +
+            "when the module reports help content, and leading the two destructive rows");
 ' "$UI"
 
 # ============================================================================
@@ -409,6 +438,18 @@ const body = [
     // dispatch assertions below only care that Save reaches it.
     "let exitMenuCalls = 0;",
     "function paramPagesExitMenu() { exitMenuCalls++; }",
+    // Module Help hands off to the HELP VIEWER, which is hosted by
+    // VIEWS.GLOBAL_SETTINGS and never comes back through CHAIN_EDIT -- so it
+    // carries its own return pair and must NOT raise componentModalFromGrid.
+    "VIEWS.GLOBAL_SETTINGS = 7;",
+    "function getModuleHelpChildren() { return [{ title: \"Overview\", lines: [\"x\"] }]; }",
+    "function getModuleDisplayName(id) { return id.toUpperCase(); }",
+    "function exitParamPages() { calls.push(\"exitGrid\"); }",
+    "function setView(v) { calls.push(\"view:\" + v); view = v; }",
+    "let helpNavStack = [];",
+    "let helpDetailScrollState = { stale: true };",
+    "let componentHelpReturnSlot = -1;",
+    "let componentHelpReturnKey = \"\";",
     grab("runComponentActionFromGrid"),
     "const seen = {};",
     "for (const action of [\"up_load\",\"up_save\",\"up_save_as\",\"up_delete\",\"swap_module\",\"remove_module\"]) {",
@@ -416,7 +457,12 @@ const body = [
     "  runComponentActionFromGrid(1, \"synth\", action);",
     "  seen[action] = calls.slice();",
     "}",
-    "return { seen, setRecordCalls };",
+    "calls = [];",
+    "const helpRet = runComponentActionFromGrid(1, \"synth\", \"module_help\");",
+    "const help = { ret: helpRet, calls: calls.slice(), view, stack: helpNavStack,",
+    "               detail: helpDetailScrollState, modalFlag: componentModalFromGrid,",
+    "               retSlot: componentHelpReturnSlot, retKey: componentHelpReturnKey };",
+    "return { seen, setRecordCalls, help };",
 ].join("\n");
 
 let r;
@@ -443,6 +489,33 @@ for (const [action, want] of Object.entries(expect)) {
 console.log("  ok  runComponentActionFromGrid(): all six actions (up_load, up_save, " +
             "up_save_as, up_delete, swap_module, remove_module) reach their real handlers");
 
+// module_help: leaves the grid, seeds the help stack with EXACTLY ONE frame of
+// the module s own topics (so Back off it empties the stack and the reconcile
+// brings the user back to the module, instead of climbing into the Help tree),
+// hosts it on VIEWS.GLOBAL_SETTINGS, drops any stale detail scroll, and raises
+// its OWN return pair -- never componentModalFromGrid, whose reconcile fires on
+// a CHAIN_EDIT arrival this flow never makes.
+const h = r.help;
+if (h.ret !== true) fail("module_help must report handled, got " + JSON.stringify(h.ret));
+if (!h.calls.includes("exitGrid")) fail("module_help must exit the param grid, reached " + JSON.stringify(h.calls));
+if (h.view !== 7) fail("module_help must host the viewer on VIEWS.GLOBAL_SETTINGS, view is " + h.view);
+if (!Array.isArray(h.stack) || h.stack.length !== 1)
+    fail("module_help must seed EXACTLY ONE help frame (Back off it must leave the viewer, " +
+         "not climb the Help tree), got " + JSON.stringify(h.stack));
+if (h.stack[0].title !== "OBXD" || h.stack[0].items[0].title !== "Overview")
+    fail("the seeded frame must be the module s own topics under its display name, got " +
+         JSON.stringify(h.stack[0]));
+if (h.detail !== null) fail("module_help must clear any stale help detail scroll, got " + JSON.stringify(h.detail));
+if (h.modalFlag !== false)
+    fail("module_help must NOT raise componentModalFromGrid — its hand-off never arrives at " +
+         "CHAIN_EDIT, so that flag would fire on an unrelated arrival later");
+if (h.retSlot !== 1 || h.retKey !== "synth")
+    fail("module_help must record its own return pair (slot 1, \"synth\"), got " +
+         h.retSlot + "/" + JSON.stringify(h.retKey));
+console.log("  ok  module_help: exits the grid, seeds one help frame of the module s own " +
+            "topics on VIEWS.GLOBAL_SETTINGS, and records its own return pair rather than " +
+            "componentModalFromGrid");
+
 // remove_module must clear the record BEFORE the removal write, not after —
 // only remove_module calls setUserPresetRecord in this harness (the other
 // five reach it only through onUserPresetSaved/Loaded/Deleted, which are
@@ -456,6 +529,96 @@ if (JSON.stringify(r.setRecordCalls) !== JSON.stringify(wantSetRecordCalls)) {
          ", got " + JSON.stringify(r.setRecordCalls));
 }
 console.log("  ok  remove_module clears the User Preset record (setUserPresetRecord(1, \"synth\", null))");
+' "$UI"
+
+# ============================================================================
+# 6b. BEHAVIOUR: maybeReturnToComponentHelp — Back off the last help frame
+#     returns to the MODULE (its grid, on the "Module" page), and does not
+#     fire on a stack that is still open, on a position whose module has
+#     since gone, or when nothing was pending.
+# ============================================================================
+
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[1], "utf8");
+const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
+
+const grab = (name) => {
+    const re = new RegExp("^function " + name + "\\([^]*?^}", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + "() out of shadow_ui.js");
+    return m[0];
+};
+
+const run = (setup) => {
+    const body = [
+        "let needsRedraw = false;",
+        "let entered = null;",
+        "function enterParamPages(slot, key, prefix, page, io, chrome, opts) {",
+        "  entered = { slot, key, prefix, page, io: !!io, chrome: !!chrome, opts };",
+        "}",
+        "function getComponentParamPrefix(k) { return k; }",
+        "function componentParamPagesIo() { return {}; }",
+        "function paramPagesChromeFor() { return {}; }",
+        "function getChainComponentModule(cfg, key) { return cfg && cfg[key]; }",
+        "let chainConfigs = { 1: { synth: { module: \"obxd\" } }, 2: {} };",
+        "let helpNavStack = [];",
+        "let helpDetailScrollState = null;",
+        "let textEntry = false;",
+        "function isTextEntryActive() { return textEntry; }",
+        "let componentHelpReturnSlot = -1;",
+        "let componentHelpReturnKey = \"\";",
+        setup,
+        grab("maybeReturnToComponentHelp"),
+        "const fired = maybeReturnToComponentHelp();",
+        "return { fired, entered, retSlot: componentHelpReturnSlot, retKey: componentHelpReturnKey };",
+    ].join("\n");
+    try {
+        return new Function(body)();
+    } catch (e) {
+        fail("maybeReturnToComponentHelp behaviour: " + e.message);
+    }
+};
+
+// The real case: a return is pending and the help stack has emptied.
+const ok = run("componentHelpReturnSlot = 1; componentHelpReturnKey = \"synth\";");
+if (ok.fired !== true) fail("an emptied help stack with a pending return must fire");
+if (!ok.entered) fail("firing must re-enter the component grid");
+if (ok.entered.slot !== 1 || ok.entered.key !== "synth")
+    fail("must return to the slot/component the help was opened from, got " + JSON.stringify(ok.entered));
+if (ok.entered.page !== "Module")
+    fail("must land back on the \"Module\" page — the row the user clicked — got " +
+         JSON.stringify(ok.entered.page));
+if (!ok.entered.opts || ok.entered.opts.enter !== true)
+    fail("must land with the Module menu OPEN (restoreOpts.enter), got " + JSON.stringify(ok.entered.opts));
+if (ok.retSlot !== -1 || ok.retKey !== "")
+    fail("the pending return must be consumed, got " + ok.retSlot + "/" + JSON.stringify(ok.retKey));
+
+// Still reading: a non-empty stack, or an open detail, is NOT done.
+const openStack = run("componentHelpReturnSlot = 1; componentHelpReturnKey = \"synth\"; helpNavStack = [{}];");
+if (openStack.fired !== false || openStack.entered)
+    fail("must not fire while help frames remain on the stack");
+if (openStack.retSlot !== 1)
+    fail("a still-open help stack must LEAVE the return pending, got " + openStack.retSlot);
+const openDetail = run("componentHelpReturnSlot = 1; componentHelpReturnKey = \"synth\"; helpDetailScrollState = {};");
+if (openDetail.fired !== false || openDetail.entered)
+    fail("must not fire while a help detail is open");
+
+// Nothing pending — the ordinary case on every other GLOBAL_SETTINGS frame.
+const idle = run("");
+if (idle.fired !== false || idle.entered) fail("must not fire with no return pending");
+
+// The position emptied while the viewer was up: re-entering a component editor
+// for a position with nothing in it is a contract read with nobody to answer
+// it, which the device draws as a permanent "Loading...".
+const gone = run("componentHelpReturnSlot = 2; componentHelpReturnKey = \"synth\";");
+if (gone.fired !== false || gone.entered)
+    fail("must not re-enter the grid for a position that no longer holds a module");
+if (gone.retSlot !== -1) fail("...but it must still consume the pending return, got " + gone.retSlot);
+
+console.log("  ok  maybeReturnToComponentHelp(): Back off the last help frame returns to the " +
+            "MODULE grid on the \"Module\" page with its menu open; inert while the viewer is " +
+            "still open, with nothing pending, or when the position has emptied");
 ' "$UI"
 
 # ============================================================================

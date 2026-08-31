@@ -2244,6 +2244,13 @@ src/modules/your-module/
 
 The host scans all installed module directories for `help.json` at runtime. Module help topics appear alphabetically in the "Modules" section of the Help viewer.
 
+They are also reachable **in place**: a chain component whose module ships a
+`help.json` with a non-empty `children` array gets a **`Module Help`** row on the
+`Module` page at the end of its knob-grid jog sequence, which opens that module's
+topics directly (Back returns to the module, not up into the Help tree). A module
+with no help content gets no row — an empty viewer is worse than no door — so
+shipping `help.json` is what puts your help one jog from your controls.
+
 ### Format
 
 Help content is a tree of sections and leaf topics:
