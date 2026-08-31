@@ -251,7 +251,8 @@ typedef struct chain_instance {
     void *synth_instance;
     char current_synth_module[MAX_NAME_LEN];
     int synth_default_forward_channel;  /* -1 = no default, 0-15 = channel */
-    int synth_consumes_line_input;      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    int synth_consumes_line_input;
+    int synth_wants_sysex;   /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
@@ -360,6 +361,10 @@ typedef struct chain_instance {
      * Informs the Shadow UI default on first placement; does not gate the
      * per-slot toggle (legacy FX can still be switched to Pre manually). */
     int midi_fx_pre_capable[MAX_MIDI_FX];
+    /* Opt-in: this component wants raw SysEx fragments delivered to its
+     * on_midi/process_midi. Off by default and per POSITION, so it permutes
+     * with everything else in chain_reorder.c. */
+     int midi_fx_wants_sysex[MAX_MIDI_FX];
 
     /* Pre-mode echo refcount: per-note counter tracking notes we injected
      * into Move's MIDI_IN cable 2. Move plays the injection and echoes it
