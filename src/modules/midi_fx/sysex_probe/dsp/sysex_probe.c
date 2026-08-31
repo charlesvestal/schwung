@@ -63,7 +63,42 @@ typedef struct {
     int  rx_sysex_bytes; /* payload bytes seen with the SysEx framing intact */
     int  rx_f0_seen;
     int  echo_pending;
+    int  size_idx;       /* index into SIZES */
 } probe_t;
+
+/*
+ * chain_params IS where the knob grid gets its metadata -- module.json's
+ * ui_hierarchy declares STRUCTURE, not types. Publishing no chain_params does
+ * not mean "no metadata", it means INVENTED metadata: the grid falls back to a
+ * float 0..1 step 0.01 knob and writes things like "0.058750" into it
+ * (CLAUDE.md records this as a real fleet bug).
+ *
+ * That is exactly what happened here on the first hardware run -- "send isn't a
+ * momentary, but I hit it" -- because a trigger is not a type. There is no
+ * "momentary": a trigger is a two-option enum carrying access:"write", which
+ * makes the grid draw a push button instead of a latching switch.
+ *
+ * The counters declare access:"read" for the same reason in reverse: they are
+ * readouts, and without it an enum-shaped readout opens a picker whose choice
+ * is silently discarded.
+ */
+static const char CHAIN_PARAMS_JSON[] =
+    "["
+    "{\"key\":\"send\",\"name\":\"Send Dump\",\"short_name\":\"Send\","
+      "\"type\":\"enum\",\"options\":[\"-\",\"Send!\"],\"access\":\"write\"},"
+    "{\"key\":\"size\",\"name\":\"Payload\",\"short_name\":\"Size\","
+      "\"type\":\"enum\",\"options\":[\"64\",\"158\",\"316\",\"632\"]},"
+    "{\"key\":\"reset\",\"name\":\"Reset Counters\",\"short_name\":\"Reset\","
+      "\"type\":\"enum\",\"options\":[\"-\",\"Reset!\"],\"access\":\"write\"},"
+    "{\"key\":\"tx_packets\",\"name\":\"TX Packets\",\"short_name\":\"TxPkt\","
+      "\"type\":\"int\",\"min\":0,\"max\":9999,\"step\":1,\"access\":\"read\"},"
+    "{\"key\":\"tx_refused\",\"name\":\"TX Refused\",\"short_name\":\"TxRef\","
+      "\"type\":\"int\",\"min\":0,\"max\":9999,\"step\":1,\"access\":\"read\"},"
+    "{\"key\":\"rx_f0_seen\",\"name\":\"RX F0 Seen\",\"short_name\":\"RxF0\","
+      "\"type\":\"int\",\"min\":0,\"max\":9999,\"step\":1,\"access\":\"read\"},"
+    "{\"key\":\"rx_sysex_bytes\",\"name\":\"RX Bytes\",\"short_name\":\"RxByt\","
+      "\"type\":\"int\",\"min\":0,\"max\":9999,\"step\":1,\"access\":\"read\"}"
+    "]";
 
 /* Body byte generator — byte-identical to the tool's bodyByte(), including the
  * aligned 00 00 00 run at 60..62 that #355 used to drop. Two senders, one
@@ -139,6 +174,7 @@ static void *probe_create(const char *module_dir, const char *config_json)
 {
     (void)module_dir; (void)config_json;
     probe_t *p = (probe_t *)calloc(1, sizeof(probe_t));
+    if (p) p->size_idx = 1;   /* 158 B, the QY-70 message from #358 */
     return p;
 }
 
@@ -188,17 +224,48 @@ static int probe_tick(void *instance, int frames, int sample_rate,
     return 0;
 }
 
+/*
+ * Does this write to a trigger mean FIRE?
+ *
+ * The grid may send the option INDEX ("0"/"1") or the option TEXT, and the two
+ * have to agree about which one is idle. euclidrum's rnd_preset is the warning
+ * param_meta.mjs records as "the more dangerous end": it fires on anything that
+ * is not its em-dash, so an index write of "0" -- which MEANS idle --
+ * randomises all eight lanes and destroys the kit.
+ *
+ * So this fires only on the EXPLICIT fire spelling, in either encoding, and
+ * treats everything else -- empty string, a stray float from invented
+ * metadata, the idle option in either form -- as idle. Getting it wrong in
+ * this direction is a no-op; getting it wrong the other way is an action
+ * nobody asked for.
+ */
+static int trigger_fired(const char *val, const char *fire_text)
+{
+    if (!val || !val[0]) return 0;
+    if (strcmp(val, "1") == 0) return 1;
+    return fire_text && strcmp(val, fire_text) == 0;
+}
+
 static void probe_set_param(void *instance, const char *key, const char *val)
 {
     probe_t *p = (probe_t *)instance;
     if (!p || !key || !val) return;
     /* A manual trigger, so the TX half can be exercised from the knob grid
-     * with no MIDI flowing at all — which is the control condition for the
-     * interleaving test. */
-    if (strcmp(key, "send") == 0 && val[0] == '1') emit_sysex(p, SIZES[1]);
-    else if (strcmp(key, "reset") == 0 && val[0] == '1') {
-        p->tx_messages = p->tx_packets = p->tx_refused = 0;
-        p->rx_sysex_bytes = p->rx_f0_seen = 0;
+     * with no MIDI flowing at all -- the control condition for the interleaving
+     * test, and the only way to fire it without making the device audible. */
+    if (strcmp(key, "send") == 0) {
+        if (trigger_fired(val, "Send!")) emit_sysex(p, SIZES[p->size_idx]);
+    } else if (strcmp(key, "reset") == 0) {
+        if (trigger_fired(val, "Reset!")) {
+            p->tx_messages = p->tx_packets = p->tx_refused = 0;
+            p->rx_sysex_bytes = p->rx_f0_seen = 0;
+        }
+    } else if (strcmp(key, "size") == 0) {
+        int i = atoi(val);
+        /* Accept the index or the literal byte count: which one arrives depends
+         * on the caller, and both are unambiguous against this option list. */
+        for (int k = 0; k < 4; k++) if (SIZES[k] == i) { p->size_idx = k; return; }
+        if (i >= 0 && i < 4) p->size_idx = i;
     }
 }
 
@@ -211,8 +278,16 @@ static int probe_get_param(void *instance, const char *key, char *buf, int buf_l
     if (strcmp(key, "tx_refused") == 0)     return snprintf(buf, buf_len, "%d", p->tx_refused);
     if (strcmp(key, "rx_f0_seen") == 0)     return snprintf(buf, buf_len, "%d", p->rx_f0_seen);
     if (strcmp(key, "rx_sysex_bytes") == 0) return snprintf(buf, buf_len, "%d", p->rx_sysex_bytes);
+    if (strcmp(key, "size") == 0)           return snprintf(buf, buf_len, "%d", p->size_idx);
+    /* A trigger reports a constant idle spelling; the value means nothing. */
     if (strcmp(key, "send") == 0)           return snprintf(buf, buf_len, "0");
     if (strcmp(key, "reset") == 0)          return snprintf(buf, buf_len, "0");
+    if (strcmp(key, "chain_params") == 0) {
+        int n = (int)strlen(CHAIN_PARAMS_JSON);
+        if (n >= buf_len) return -1;
+        memcpy(buf, CHAIN_PARAMS_JSON, (size_t)n + 1);
+        return n;
+    }
     return -1;
 }
 
