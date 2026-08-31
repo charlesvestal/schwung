@@ -218,3 +218,32 @@ export function drawChainPicker(ctx, o) {
 
     drawFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
 }
+
+/*
+ * A plain header/list/footer screen in the picker's rectangle.
+ *
+ * The module-lists screens are the picker's neighbours — one click from it in
+ * both directions — so they draw through the same rect and the same row
+ * renderer for the reason stated at the top of this file. A hand-rolled list
+ * in shadow_ui.js would be the third copy of a rectangle this file exists to
+ * keep singular.
+ *
+ * Entries are `{ name, value }`, exactly as drawChainPicker builds; `value`
+ * carries the checkbox, the member count, or nothing.
+ */
+export function drawListScreen(ctx, o) {
+    drawHeader(ctx, o.headerLeft, o.headerRight || "", false);
+    const entries = o.entries || [];
+    if (entries.length === 0) {
+        ctx.print(MENU_LIST_X, MENU_LIST_Y + 8,
+                  fitText(ctx, o.emptyMessage || "Empty", MENU_LIST_W), 1);
+        drawFooter(ctx, o.footer || [["BACK", "EXIT"]]);
+        return;
+    }
+    drawPageChromeList(ctx,
+        { x: MENU_LIST_X, y: MENU_LIST_Y,
+          w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
+        entries.map((e) => ({ name: e.name, value: e.value || "" })),
+        o.index);
+    drawFooter(ctx, o.footer || [["BACK", "EXIT"]]);
+}
