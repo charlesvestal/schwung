@@ -57,6 +57,18 @@ CHAIN_INTERNAL int json_get_int_in_section(const char *json, const char *section
     (void)json; (void)section_key; (void)key; (void)out;
     return -1;
 }
+/* This file deliberately does not link chain_json.c, so every JSON accessor
+ * chain_midi.c reaches for needs a stub here. capabilities.wants_sysex is read
+ * with BOTH accessors -- json_get_int_in_section atoi()s "true" to 0 -- so
+ * adding the bool one broke the link and nothing local caught it: this repo's
+ * hooks are the opt-in kind (scripts/install-hooks.sh) and were not installed
+ * in the worktree the change was made in. CI caught it, which is the backstop
+ * working, but a link error is a cheap thing to find locally. */
+CHAIN_INTERNAL int json_get_bool_in_section(const char *json, const char *section_key,
+                                            const char *key, int *out) {
+    (void)json; (void)section_key; (void)key; (void)out;
+    return -1;
+}
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst,
                                                    const char *target, int restore_base) {
     (void)inst; (void)target; (void)restore_base;
