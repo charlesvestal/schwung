@@ -132,6 +132,12 @@ with no bound on what a broken sender can make it hold.
 `F0` reaches `process_midi`. Before the capability: silence. After: an echo for
 every message.
 
+**Watch `rx_f0_seen`, not the ECHO, when the question is "how many".** The echo
+fires per `F0`, so one delivery and six look identical; the counter reads 2N for
+N messages and makes a duplication bug unmissable. That distinction is the whole
+reason a real duplication bug survived a review and a hardware check
+(#367) — the probe was adequate, the check chosen for it was not.
+
 `onMidiMessageExternal([b0,b1,b2])` hands you three bytes with the **CIN already
 stripped**, and nothing reassembles the run for you. There is no length field
 to trust — an end-packet's trailing bytes are padding. Your assembler needs
