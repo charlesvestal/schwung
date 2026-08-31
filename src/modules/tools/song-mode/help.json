@@ -8,12 +8,12 @@
         "time to build songs.",
         "",
         "Reads your set's clip",
-        "layout and tempo, then",
-        "lets you arrange pads",
-        "into an ordered song.",
+        "layout and tempo,",
+        "then arranges your",
+        "pads into a song.",
         "",
-        "Playback triggers pads",
-        "automatically based on",
+        "Playback fires pads",
+        "automatically from",
         "bar timing."
       ]
     },
@@ -23,12 +23,12 @@
         "Each step sets pads",
         "for 4 tracks.",
         "",
-        "Select a step with jog",
-        "or step buttons, then",
+        "Select a step with",
+        "jog or step buttons,",
         "tap pads to assign.",
         "",
-        "First pad press copies",
-        "the previous step so",
+        "First pad press",
+        "copies the previous",
         "you only change what",
         "differs.",
         "",
@@ -37,7 +37,7 @@
         "trailing quote \"",
         "(continue).",
         "",
-        "Steps show track clips",
+        "Steps show clips",
         "as column letters",
         "(A-H) per track."
       ]
@@ -55,9 +55,9 @@
         "to the step where",
         "playback started.",
         "",
-        "Menu has Play Song and",
-        "Record Song items at",
-        "the bottom of the list."
+        "Menu has Play Song",
+        "and Record Song at",
+        "the bottom of the"
       ]
     },
     {
@@ -68,7 +68,7 @@
         "",
         "Rec: record from the",
         " current step",
-        "Shift+Rec: record from",
+        "Shift+Rec: from",
         " the beginning",
         "Rec again: stop",
         "",
@@ -82,7 +82,7 @@
         "bars (default 2).",
         "",
         "Files saved to:",
-        " Recordings/Song Mode/",
+        " Recordings/SongMode",
         " with set name"
       ]
     },
@@ -198,7 +198,7 @@
     {
       "title": "Persistence",
       "lines": [
-        "Song arrangements are",
+        "Song arrangements",
         "saved automatically",
         "per set (by UUID).",
         "",
