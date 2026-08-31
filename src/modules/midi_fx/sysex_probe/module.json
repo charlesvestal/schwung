@@ -12,62 +12,15 @@
         "root": {
           "name": "SysEx Probe",
           "params": [
-            {
-              "key": "send",
-              "short_name": "Send",
-              "name": "Send Dump",
-              "type": "momentary",
-              "default": 0
-            },
-            {
-              "key": "reset",
-              "short_name": "Reset",
-              "name": "Reset Counters",
-              "type": "momentary",
-              "default": 0
-            },
-            {
-              "key": "tx_packets",
-              "short_name": "TxPkt",
-              "name": "TX Packets",
-              "type": "int",
-              "min": 0,
-              "max": 9999,
-              "default": 0,
-              "step": 1
-            },
-            {
-              "key": "tx_refused",
-              "short_name": "TxRef",
-              "name": "TX Refused",
-              "type": "int",
-              "min": 0,
-              "max": 9999,
-              "default": 0,
-              "step": 1
-            },
-            {
-              "key": "rx_f0_seen",
-              "short_name": "RxF0",
-              "name": "RX F0 Seen",
-              "type": "int",
-              "min": 0,
-              "max": 9999,
-              "default": 0,
-              "step": 1
-            },
-            {
-              "key": "rx_sysex_bytes",
-              "short_name": "RxByt",
-              "name": "RX SysEx Bytes",
-              "type": "int",
-              "min": 0,
-              "max": 9999,
-              "default": 0,
-              "step": 1
-            }
+            { "key": "send" },
+            { "key": "size" },
+            { "key": "reset" },
+            { "key": "tx_packets" },
+            { "key": "tx_refused" },
+            { "key": "rx_f0_seen" },
+            { "key": "rx_sysex_bytes" }
           ],
-          "knobs": ["send", "reset", "tx_packets", "tx_refused", "rx_f0_seen", "rx_sysex_bytes"]
+          "knobs": ["send", "size", "reset", "tx_packets", "tx_refused", "rx_f0_seen", "rx_sysex_bytes"]
         }
       }
     }
