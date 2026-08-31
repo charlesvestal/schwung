@@ -581,3 +581,64 @@ sit at that ordinal in a module that knows nothing about it.
 that is the granny bug. It is retried once and then falls back to the flat
 list; nothing caches, so the cost is one wrong-shaped menu rather than a
 latched plan.
+
+### Module Lists
+
+Named collections of module ids at `/data/UserData/schwung/module_lists.json`,
+with `Favorites` seeded at index 0. Filed from the knob grid's **Module** page
+(`Add to List`, whose value column counts the lists holding this module), and
+consumed by the swap picker's filter row.
+
+Every rule lives in `src/shared/module_lists.mjs`, which imports nothing and
+takes its `{ readFile, writeFile }` injected — so `tests/host` runs it under
+node. `shadow_ui.js` draws it and wires the gestures; it holds no rules,
+because a rule reachable only through a 22k-line UI file is a rule with no
+test.
+
+- **A corrupt file is reported, not replaced.** `loadLists` answers
+  `{ state, corrupt }`; a missing file is *not* corrupt (that is the first
+  run), an unparseable one is, and a corrupt session persists nothing. A file
+  this version cannot read may be one a later version can, and overwriting it
+  destroys the only copy — the same distinction the param channel draws
+  between `""` and `null`.
+- **`filterIds` answers `null` for a list that does not exist**, never the
+  identity. Showing every module under a filter name that means nothing reads
+  as the filter being broken rather than as the list being gone. So does
+  `toggleMembership` for a list it cannot find: `false` there would read as
+  "removed", and a caller announced a removal that never happened.
+- **Lists are global; the picker hides the ones that do not apply.** A synth
+  picker offers only lists with an installed sound generator in them
+  (`listsWithAnyOf`), so it can never land on an FX-only list and draw an empty
+  screen.
+- **The picker filter is re-resolved on every entry, before it is applied.** It
+  persists across pickers within a session — that is the workflow win — but a
+  filter whose list was deleted, or which has no member of this type, falls
+  back to All and announces it.
+- **The cursor scans; it does not count.** `chainMoveEntries` is spliced in
+  *under the loaded module*, so with a filter that hides that module the moves
+  end up mid-list and the obvious "one past the filter row plus the moves"
+  arithmetic opens the picker on `Move Right`. `pickerFirstSelectableIndex`
+  walks instead.
+- **The synthetic rows are never filtered.** `None`, `Move Left` / `Move
+  Right` and `[Get more...]` survive every filter; a filtered picker with no
+  way to clear the position and no way to the store is a dead end. They are not
+  all shaped alike either — `None` carries the EMPTY id while the others are
+  `__`-prefixed, so `pickerRealIds` is written once rather than twice.
+- **Favorites cannot be renamed or deleted**, and its Rename/Delete rows are
+  **absent** rather than present-and-refusing — a row that answers a click by
+  doing nothing teaches that the screen is broken. Clear works.
+- The lists views are OURS, so `Back` is their only exit and the return to the
+  Module page is written at that one site. There is no reconciler:
+  `maybeReturnToComponentHelp` exists because help is hosted by
+  `GLOBAL_SETTINGS` and has three ways out.
+
+**`drawFooter` DROPS a pair that does not fit — silently, and along with every
+pair after it.** The membership screen asked for `JOG SEL, CLK TOGGLE, BACK
+MODULE` and rendered `JOG SEL … BACK MODULE`: the screen's primary action was
+the one word missing from its own footer, and nothing reported it. Found by
+rendering it and looking (`tools/param-pages/preview_module_lists.mjs`), not by
+reading it. JOG is the pair worth losing when a footer is tight — every list on
+this device jogs. Two related rules fell out of the same render: a footer must
+name the verb of the row **under the cursor** (the picker's filter row cycles
+and loads nothing, so `drawChainPicker` reads `clickVerb` off the row), and a
+one-row screen must not name a JOG with nowhere to go.
