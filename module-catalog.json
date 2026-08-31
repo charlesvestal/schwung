@@ -889,7 +889,7 @@
       "github_repo": "charlesvestal/schwung-tb3po",
       "default_branch": "main",
       "asset_name": "tb3po-module.tar.gz",
-      "min_host_version": "0.9.10"
+      "min_host_version": "1.0.0"
     },
     {
       "id": "breakbeat",
