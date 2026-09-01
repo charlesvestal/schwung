@@ -115,6 +115,7 @@ export const GLOBAL_ENUM_VALUES = {
     screen_reader_engine: ["espeak", "flite"],
     shadow_ui_trigger: [0, 1, 2],
     recall_quantize: [0, 1, 2, 3],
+    metronome_mode: [0, 1, 2],
 };
 
 /* ------------------------------------------------------------ accessor routing
@@ -202,6 +203,11 @@ export const GLOBAL_ROUTING = {
     skipback_seconds:       { read: "skipback_seconds.get",   write: "skipback_seconds.set",   persist: null,   cache: null,                     modal: null },
     browser_preview:        { read: "js.previewEnabled",      write: "js.previewEnabled",      persist: "own",  cache: "previewEnabled",         modal: null },
     usbc_out_persist:       { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedUsbcOutPersist",   modal: null },
+    /* persist: null — shadow_metronome_set writes features.json itself, the
+     * same way shadow_recall_quantize_set does, because the register it also
+     * writes lives in SHM and does not survive a reboot. */
+    metronome_mode:         { read: "metronome.get_mode",     write: "metronome.set_mode",     persist: null,   cache: null,                     modal: null },
+    metronome_level:        { read: "metronome.get_level",    write: "metronome.set_level",    persist: null,   cache: null,                     modal: null },
 
     screen_reader_enabled:  { read: "tts.get_enabled",        write: "tts.set_enabled",        persist: null,   cache: null,                     modal: null },
     screen_reader_engine:   { read: "tts.get_engine",         write: "tts.set_engine",         persist: null,   cache: null,                     modal: null },
@@ -378,13 +384,6 @@ export const AUDIO_PARAMS = [
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
     { key: "resample_bridge", name: "Resample", type: "enum",
       options: ["Native", "Mix"], short_options: ["NAT", "MIX"], default: 0 },
-    { key: "skipback_shortcut", name: "Skipback", type: "enum",
-      options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
-    /* Every option already fits the square, so there is no short form to
-     * declare. short_options exists for the ones that do not fit; declaring it
-     * where it is not needed is a second list to keep in step for nothing. */
-    { key: "skipback_seconds", name: "Skipback Len", type: "enum",
-      options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
     /*
      * Gates BOTH the file browser WAV preview and the User Presets scroll
      * audition -- one "hear it before you pick it" switch, not one each.
@@ -430,6 +429,28 @@ export const AUDIO_PARAMS = [
      */
     { key: "usbc_out_persist", name: "USB-C", type: "enum",
       options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    /*
+     * THREE OPTIONS, NOT A BOOL, and the third one is load-bearing.
+     *
+     * Under Move->Schwung the shim zeroes the mailbox and rebuilds it from the
+     * four per-track Link Audio slots. Move mixes its metronome at MASTER, so
+     * it is absent from that reconstruction by construction, not by a bug --
+     * nothing recovers it but playing our own.
+     *
+     * "Follow" tracks Move's own metronome, learned from its "Metronome On" /
+     * "Metronome Off" announcement. "On" ignores that and clicks whenever the
+     * transport runs: the hedge for a firmware whose announcement text is
+     * shaped differently, so the feature stays usable while detection is fixed
+     * rather than silently doing nothing.
+     *
+     * In EVERY mode the click sounds only under Move->Schwung. Outside it
+     * Move's own metronome is audible, so that rule prevents doubling by
+     * construction rather than by a second condition someone can forget.
+     */
+    { key: "metronome_mode", name: "Metronome", type: "enum",
+      options: ["Off", "Follow", "On"], short_options: ["OFF", "FOL", "ON"], default: 0 },
+    { key: "metronome_level", name: "Click Vol", type: "int",
+      min: 0, max: 100, step: 5, default: 50, unit: "%" },
 ];
 
 /* ------------------------------------------------------------ accessibility */
@@ -498,6 +519,26 @@ export const SHORTCUTS_PARAMS = [
     { key: "recall_quantize", name: "Recall Q", type: "enum",
       options: ["Off", "Beat", "Bar", "2 Bars"],
       short_options: ["OFF", "BET", "BAR", "2BR"], default: 0 },
+    /*
+     * Both Skipback rows moved here from Audio to make room for the metronome.
+     *
+     * They move as a PAIR: one names the button combo and the other its
+     * length, and splitting them across two sections would be worse than
+     * leaving both in Audio. Skipback IS a shortcut -- Shift+Capture -- so the
+     * combo belonged here anyway.
+     *
+     * The knob grid holds 8 per page and a section is not capped at one page,
+     * but a 9th param in Audio does not error: it plans a second page named
+     * "Audio - 2" holding one lonely knob. Moving two out keeps Audio at
+     * exactly 8 and the whole contract at 7 pages.
+     */
+    { key: "skipback_shortcut", name: "Skipback", type: "enum",
+      options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
+    /* Every option already fits the square, so there is no short form to
+     * declare. short_options exists for the ones that do not fit; declaring it
+     * where it is not needed is a second list to keep in step for nothing. */
+    { key: "skipback_seconds", name: "Skipback Len", type: "enum",
+      options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
 ];
 
 export const SERVICES_PARAMS = [
