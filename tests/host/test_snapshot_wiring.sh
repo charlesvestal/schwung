@@ -58,6 +58,38 @@ grep -q "!snapshotToastActive()" "$UI"    || note "toast does not force a redraw
 grep -q "shadow_set_display_overlay(1, g.x, g.y, g.w, g.h)" "$UI" \
   || note "toast blit rect is not the returned geometry"
 
+# 7b. TWO toast paths, and only the Move-native one may clear the screen.
+#     When the shadow UI is displayed, the shadow display IS the screen —
+#     clear_screen() there wipes the view behind the toast and the early
+#     return means nothing redraws it. Reported from hardware as "it didn't
+#     overlay, it blanked the screen behind it".
+grep -q "function shadowDisplayHidden" "$UI"    || note "no display-mode split for the toast"
+grep -q "snapshotToastActive() && shadowDisplayHidden()" "$UI" \
+  || note "the clearing toast branch is not gated on Move's screen being up"
+ontop=$(awk '/^function drawSnapshotToastOnTop/,/^}/' "$UI")
+[ -n "$ontop" ] || note "drawSnapshotToastOnTop missing"
+echo "$ontop" | grep -q "clear_screen" \
+  && note "the on-top toast clears the screen — that is the blanking bug"
+echo "$ontop" | grep -q "shadow_set_display_overlay" \
+  && note "the on-top toast sets an overlay rect — it would composite the screen onto itself"
+grep -q "drawSnapshotToastOnTop();" "$UI" || note "drawSnapshotToastOnTop is never called"
+
+# 7c. A recall must invalidate the grid's cached values. Nothing reads on the
+#     draw path and onKnobTurn steps FROM the cache, so without this the first
+#     knob move after a recall departs from the PRE-recall value and writes the
+#     tweak back over what was just restored. Reported from hardware.
+echo "$recall" | grep -q "paramPagesRevalue()" || note "recall does not re-read the grid's values"
+grep -q "export function paramPagesRevalue" src/shadow/shadow_ui_param_pages.mjs \
+  || note "paramPagesRevalue not exported"
+grep -q "load, reloadIfChanged, tick, refreshTrailing, revalue," src/shared/param_pages/page_controller.mjs \
+  || note "controller does not expose revalue"
+rev=$(awk '/^    function revalue\(\)/,/^    }/' src/shared/param_pages/page_controller.mjs)
+echo "$rev" | grep -q "s.values = Object.create(null)" || note "revalue does not drop cached values"
+echo "$rev" | grep -q "s.knobStates = Object.create(null)" || note "revalue does not drop knob states"
+echo "$rev" | grep -q "warmCurrentPage()" || note "revalue does not re-read the page"
+echo "$rev" | grep -q "flushDueWritesUnconditionally()" \
+  || note "revalue discards an in-flight write instead of flushing it"
+
 # 8. Toast geometry, for real.
 #    The shared modules import by DEVICE path (/data/UserData/schwung/shared/),
 #    which node cannot resolve, so rewrite it into the source tree the same way
@@ -71,31 +103,58 @@ let f = 0;
 const w = (s) => s.length * 6;          /* deterministic stand-in for text_width */
 const ok = (what, c) => { if (!c) { console.error("FAIL " + what); f++; } };
 
+const GLYPH_H = 7;   /* measured inked height of the font */
+
 const one = toastGeometry(["Snapshot saved"], w);
+const two = toastGeometry(["Snapshot restored", "2 skipped"], w);
+
 ok("box is on screen horizontally", one.x >= 0 && one.x + one.w <= 128);
 ok("box is on screen vertically",   one.y >= 0 && one.y + one.h <= 64);
-ok("box is wider than its text",    one.w > w("Snapshot saved"));
 ok("one line, one row",             one.rows.length === 1);
 ok("nothing clipped",               one.clipped === 0);
-
-const two = toastGeometry(["Snapshot restored", "2 skipped"], w);
+ok("two lines kept",                two.rows.length === 2);
 ok("two lines are taller",          two.h > one.h);
 ok("two lines still fit",           two.y >= 0 && two.y + two.h <= 64);
-ok("width follows the WIDEST line", two.w > w("Snapshot restored"));
-ok("both lines kept",               two.rows.length === 2);
 ok("still nothing clipped",         two.clipped === 0);
 
-/* Empty/absent lines are dropped rather than drawn as blank rows. */
+/*
+ * The width is FIXED. It used to be sized to its content, so the box was 100px
+ * for "Snapshot saved" and 118px for "Snapshot restored" — the toast changed
+ * shape depending on which thing had happened.
+ */
+ok("width does not depend on the message", one.w === two.w);
+ok("width does not depend on length",
+   toastGeometry(["x"], w).w === toastGeometry(["Snapshot restored"], w).w);
+
+/*
+ * VERTICALLY CENTRED, and this is the assertion the first version of this file
+ * did not have. `print(x, y, ...)` takes y as the GLYPH TOP, not a baseline;
+ * treating it as a baseline put a 7px glyph 14px down a 23px box — text jammed
+ * against the bottom with a band of empty space above it. Geometry alone
+ * cannot catch that unless the gaps are compared, so compare them.
+ */
+for (const [name, g] of [["one line", one], ["two lines", two]]) {
+  const above = g.lineTops[0] - g.y;
+  const below = (g.y + g.h) - (g.lineTops[g.lineTops.length - 1] + GLYPH_H);
+  ok(name + ": text is vertically centred (above=" + above + " below=" + below + ")",
+     Math.abs(above - below) <= 1);
+  ok(name + ": every line is inside the box",
+     g.lineTops.every(t => t >= g.y && t + GLYPH_H <= g.y + g.h));
+}
+ok("line spacing is uniform",
+   two.lineTops[1] - two.lineTops[0] === GLYPH_H + 4);
+
+/* Blank rows are dropped rather than drawn as empty lines. */
 ok("blank rows dropped", toastGeometry(["a", "", null], w).rows.length === 1);
 
-/* A line too wide for the screen must REPORT — it is drawn off the edge with
- * no error, which is exactly the class of bug a character-count budget hides.
- * And the BOX must still be on screen: without the clamp it grows with the
- * text and x goes negative, so the frame vanishes too and the only evidence
- * left is text running off both edges. */
-const over = toastGeometry(["x".repeat(60)], w);
+/*
+ * A line too wide for the BOX must report. It is drawn past the border with no
+ * error, which is the class of bug a character-count budget hides — and with a
+ * fixed-width box the text can now overflow without the box growing to tell us.
+ */
+const over = toastGeometry(["x".repeat(40)], w);
 ok("overflow is reported", over.clipped === 1);
-ok("overflowing box stays on screen", over.x >= 0 && over.x + over.w <= 128);
+ok("box still on screen when text overflows", over.x >= 0 && over.x + over.w <= 128);
 
 if (f) process.exit(1);
 ' || note "toast geometry assertions failed"

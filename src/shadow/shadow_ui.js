@@ -266,7 +266,7 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
-    paramPagesRefreshTrailing, paramPagesExitMenu
+    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue
 } from './shadow_ui_param_pages.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
@@ -8635,11 +8635,26 @@ function snapshotRecall() {
     }
     debugLog("snapshot: restored " + plan.writes.length + ", skipped " + plan.skipped);
 
+    /*
+     * Every value the grid is holding now describes the sound from before the
+     * gesture, so re-read the page.
+     *
+     * Not cosmetic. Nothing reads on the draw path, and `onKnobTurn` steps
+     * FROM the cached value — so without this the first knob move after a
+     * recall departed from the PRE-recall number and wrote the tweak straight
+     * back over what had just been restored. Reported from hardware.
+     *
+     * Both calls: revalue re-reads the page's params, refreshTrailing rebuilds
+     * "My Presets" (whose `*` modified-mark rides on the live state blob a
+     * recall has just replaced).
+     */
+    paramPagesRevalue();
+    paramPagesRefreshTrailing();
+    needsRedraw = true;
+
     const lines = recallMessage(plan.skipped);
     snapshotShowToast(lines);
     announce(lines.join(", "));
-    paramPagesRefreshTrailing();
-    needsRedraw = true;
 }
 
 /* Toast state. Purely JS-owned — the shim has no field for this overlay; it
@@ -8656,6 +8671,29 @@ function snapshotShowToast(lines) {
 
 function snapshotToastActive() {
     return snapshotToastLines !== null && snapshotToastFrames > 0;
+}
+
+/* True when Move's own screen is up, i.e. the shadow display is a scratch
+ * surface the shim blits FROM rather than the screen itself. */
+function shadowDisplayHidden() {
+    return (typeof shadow_get_display_mode === "function") &&
+           shadow_get_display_mode() !== 1;
+}
+
+/*
+ * Paint the toast over whatever the shadow UI just drew. No clear_screen, no
+ * display_overlay — the shadow display already IS the screen in this mode, so
+ * clearing it wipes the view behind and setting an overlay rect would ask the
+ * shim to composite a picture onto itself.
+ */
+function drawSnapshotToastOnTop() {
+    if (!snapshotToastActive() || shadowDisplayHidden()) return;
+    snapshotToastFrames--;
+    const g = drawSnapshotToast(snapshotToastLines);
+    if (g.clipped > 0) {
+        debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
+    }
+    if (snapshotToastFrames <= 0) snapshotToastLines = null;
 }
 
 /* Service the two gesture flags. Called from the flag block in tick(). */
@@ -21831,26 +21869,28 @@ globalThis.tick = function() {
     }
 
     /*
-     * Snapshot / recall toast.
+     * Snapshot / recall toast, MOVE-NATIVE case only.
      *
-     * BELOW the fullscreen sampler, ABOVE the shim's rect toasts. The sampler
-     * owns the whole screen while it is up and a box painted into the middle
-     * of it would be unreadable and unexplained; the rect toasts are peers of
-     * this one and whichever is newest should win, but a gesture the user just
-     * pressed is newer than a set-page toast still counting down.
+     * This branch clears the screen and returns, which is right when Move's
+     * own screen is up: the shadow display is a scratch surface, and the shim
+     * blits only the toast's rect onto Move's picture.
      *
-     * Purely JS-owned: the shim has no state for this overlay, it only
-     * composites whatever display_overlay points at. The rect handed to
-     * shadow_set_display_overlay is the SAME geometry the box was drawn with,
-     * returned by drawSnapshotToast rather than recomputed — computing it
-     * twice is how a blit rect and its contents drift apart.
+     * It is exactly WRONG when the shadow UI is displayed, because then the
+     * shadow display IS the screen. Reported from hardware as "it didn't
+     * overlay, it blanked the screen behind it" — clear_screen() wiped the
+     * knob grid and the early return meant nothing redrew it. The shim's own
+     * toasts get away with the same shape because they are only ever raised
+     * over Move; this one is raised from a gesture that works in both modes.
+     *
+     * The display_mode == 1 case is painted after the view switch instead,
+     * with the other on-top overlays. See drawSnapshotToastOnTop.
      */
-    if (snapshotToastActive()) {
+    if (snapshotToastActive() && shadowDisplayHidden()) {
         snapshotToastFrames--;
         clear_screen();
         const g = drawSnapshotToast(snapshotToastLines);
         if (g.clipped > 0) {
-            debugLog("snapshot toast: " + g.clipped + " line(s) wider than the screen");
+            debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
         }
         if (typeof shadow_set_display_overlay === "function") {
             shadow_set_display_overlay(1, g.x, g.y, g.w, g.h);
@@ -22262,6 +22302,11 @@ globalThis.tick = function() {
 
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
+
+        /* The snapshot toast, when the shadow UI is the screen. Its
+         * Move-native twin sits before the view switch and clears instead —
+         * see the comment there for why the two cannot be one branch. */
+        drawSnapshotToastOnTop();
     }
 
     } catch (e) {
