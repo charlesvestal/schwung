@@ -239,6 +239,7 @@ if needs_rebuild build/schwung-shim.so \
     src/lib/schwung_spi_lib.c src/lib/schwung_spi_lib.h \
     src/lib/schwung_jack_bridge.c src/lib/schwung_jack_bridge.h src/lib/schwung_jack_shm.h \
     src/host/shadow_sampler.c src/host/shadow_transport.c src/host/shadow_set_pages.c src/host/shadow_dbus.c \
+    src/host/shadow_metronome.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
     src/host/shadow_led_queue.c src/host/shadow_state.c \
@@ -272,6 +273,7 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_transport.c \
         src/host/shadow_set_pages.c \
         src/host/shadow_dbus.c \
+        src/host/shadow_metronome.c \
         src/host/shadow_chain_mgmt.c \
         src/host/shadow_link_audio.c \
         src/host/shadow_process.c \
