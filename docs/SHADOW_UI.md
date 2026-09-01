@@ -83,8 +83,27 @@ Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
 ### A Track tap dismisses, and "Keep Schwung" is the ONLY thing that changes
 
 Global Settings -> Display -> **Keep Schwung** (`stay_in_shadow` in
-`features.json`, default Off). On, tapping a Track button while the shadow UI is
-up switches to that slot's editor instead of handing the screen back to Move.
+`features.json`, **default ON**). Tapping a Track button while the shadow UI is
+up switches to that slot's editor; off, it hands the screen back to Move.
+
+**The default is a REVERSAL of what Schwung shipped with**, and deliberate: a
+track button selects a track everywhere else on this hardware, and the dismiss
+was never a decision — it was the only way out before Shift+Track existed. Every
+exit survives the flip (tap Note/Session, Shift+Track, Back), so what changes is
+a reflex and not the reachability of Move. An existing install keeps whatever it
+has: `install.sh` preserves the key and falls back to the default only when it
+is absent, so a device that already wrote `false` stays off until the user says
+otherwise.
+
+**A default-ON flag is parsed by testing for `"false"`.** The first cut tested
+for `"true"` while defaulting off; flipping the default without flipping the
+test would leave a flag the file can only ever turn ON, so switching it off in
+the UI would persist a value the next boot ignores. `set_pages_enabled` and
+`ext_midi_remap_enabled` are the two neighbours that already get this right, and
+`tests/host/test_stay_in_shadow.sh` pins all five sites that decide the default
+(shim boot value, the parse, the JS binding fallback, the declared contract,
+install.sh) because a default that is on in some paths and off in others reads
+as flakiness rather than as a wrong constant.
 
 **It is a BOOL because of the WIDGET.** It shipped for one round as an enum of
 `["Exit", "Stay"]` — two options, identical meta, identical click behaviour

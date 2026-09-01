@@ -2233,11 +2233,14 @@ static JSValue js_stay_in_shadow_set_shm(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-/* stay_in_shadow_get() -> bool - Read from shared memory */
+/* stay_in_shadow_get() -> bool - Read from shared memory.
+ * Unmapped answers the DEFAULT (on), the way shadow_ui_trigger_get answers 2 —
+ * a fallback that reports the opposite of the default draws the switch wrong
+ * for the frames before the segment is there. */
 static JSValue js_stay_in_shadow_get(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
-    if (!shadow_control) return JS_NewBool(ctx, 0);
+    if (!shadow_control) return JS_NewBool(ctx, 1);
     return JS_NewBool(ctx, shadow_control->stay_in_shadow != 0);
 }
 
