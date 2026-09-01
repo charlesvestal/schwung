@@ -538,7 +538,7 @@
     {
       "id": "stems",
       "name": "Stems",
-      "description": "Separate audio into stems: drums, vocals, accompaniment (0.5x realtime)",
+      "description": "Separate audio into stems: drums, vocals, accompaniment (0.85x realtime)",
       "author": "charlesvestal",
       "component_type": "tool",
       "github_repo": "charlesvestal/schwung-stems",
