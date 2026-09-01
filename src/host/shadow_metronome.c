@@ -15,10 +15,19 @@
 static metronome_voice_t g_voice;
 static int g_last_pulses = -1;
 
+/* Frames until the scheduled click sounds, and which beat it is. Negative =
+ * nothing scheduled. One slot only: the delay is 15.9 ms and the shortest
+ * musically reachable beat is 200 ms at 300 BPM, so two cannot be in flight —
+ * and if one ever were, the later boundary replacing the earlier is the right
+ * answer anyway. */
+static int g_pending_frames = -1;
+static int g_pending_beat = 0;
+
 void shadow_metronome_reset(void)
 {
     g_voice.amp = 0.0f;
     g_last_pulses = -1;
+    g_pending_frames = -1;
 }
 
 int shadow_metronome_render(int16_t *out_lr, int frames,
@@ -51,21 +60,39 @@ int shadow_metronome_render(int16_t *out_lr, int frames,
     if (g_last_pulses >= 0) {
         int beat = metronome_beat_crossed(g_last_pulses, pulses, beats_per_bar);
         if (beat >= 0) {
-            if (level_pct < 0) level_pct = 0;
-            if (level_pct > 100) level_pct = 100;
-            float amp = (float)level_pct / 100.0f;
-            metronome_voice_trigger(&g_voice,
-                                    beat == 0 ? METRONOME_FREQ_DOWNBEAT_HZ
-                                              : METRONOME_FREQ_BEAT_HZ,
-                                    amp, METRONOME_DECAY_SECONDS,
-                                    METRONOME_SAMPLE_RATE);
+            /* SCHEDULED, not sounded. The boundary is "now" on Move's clock,
+             * but Move's audio in this same block came through Link Audio and
+             * is a transit older — so a click sounded here leads the music.
+             * Hold it back to meet the audio it is a reference for. */
+            g_pending_frames = METRONOME_LA_COMP_FRAMES;
+            g_pending_beat = beat;
         }
     }
     g_last_pulses = pulses;
 
-    if (!metronome_voice_active(&g_voice)) return 0;
+    if (level_pct < 0) level_pct = 0;
+    if (level_pct > 100) level_pct = 100;
+
+    int start_at = metronome_pending_advance(&g_pending_frames, frames);
+
+    /* The countdown still advances at level 0 — the schedule is state, not
+     * output — but nothing is triggered, so the block is genuinely untouched
+     * and must be REPORTED as untouched. Triggering a zero-amplitude voice and
+     * returning 1 would claim audio we did not add, which is the same defect
+     * class as a write that discards and reports success. */
+    if (level_pct == 0) start_at = -1;
+
+    if (start_at < 0 && !metronome_voice_active(&g_voice)) return 0;
 
     for (int i = 0; i < frames; i++) {
+        if (i == start_at) {
+            metronome_voice_trigger(&g_voice,
+                                    g_pending_beat == 0 ? METRONOME_FREQ_DOWNBEAT_HZ
+                                                        : METRONOME_FREQ_BEAT_HZ,
+                                    (float)level_pct / 100.0f,
+                                    METRONOME_DECAY_SECONDS,
+                                    METRONOME_SAMPLE_RATE);
+        }
         float s = metronome_voice_next(&g_voice) * METRONOME_FULL_SCALE;
         for (int ch = 0; ch < 2; ch++) {
             int idx = i * 2 + ch;
