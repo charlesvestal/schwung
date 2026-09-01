@@ -12248,6 +12248,10 @@ function globalGridIoFor() {
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "recall_quantize":
                 return String(recallQuantizeValue);
+            case "metronome_mode":
+                return String(metronomeMode);
+            case "metronome_level":
+                return String(metronomeLevel);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
@@ -12370,6 +12374,12 @@ function globalGridIoFor() {
             case "recall_quantize":
                 setRecallQuantize(parseInt(value, 10) || 0);
                 break;
+            case "metronome_mode":
+                setMetronome(parseInt(value, 10) || 0, metronomeLevel);
+                return;
+            case "metronome_level":
+                setMetronome(metronomeMode, Math.round(parseFloat(value)));
+                return;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
                 return;
