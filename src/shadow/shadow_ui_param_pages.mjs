@@ -51,9 +51,6 @@ import { invalidateLedCache } from '/data/UserData/schwung/shared/input_filter.m
  * shadow_ui.js is the only file in the shadow UI that node never imports. */
 import { wavPeaksTick, wavPeaksDone } from '/data/UserData/schwung/shared/param_pages/wav_peaks.mjs';
 import { VIZ_SAMPLE } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
-/* The enum option screen, shared with the picker view in shadow_ui.js — one
- * screen, two entries, opposite commit semantics. See enum_list.mjs. */
-import { drawEnumList } from '/data/UserData/schwung/shared/param_pages/enum_list.mjs';
 import { flipsOnClick, isTurnable } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { announce } from '/data/UserData/schwung/shared/screen_reader.mjs';
 import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs';
@@ -1054,29 +1051,22 @@ export function drawParamPages() {
      * Full-screen rather than a card: while you are turning a knob you are not
      * reading the rest of the grid, and a card-sized rect would show fewer
      * options than the picker does, which is the whole thing the list is for.
-     * Sharing enum_list.mjs is what keeps the two one screen; the only
-     * difference is the header word.
      *
      * Drawn AFTER the grid and over it, so a frame in which the peek expires
      * falls back to a complete page rather than to a hole.
+     *
+     * The draw itself lives in the controller (renderOverlays) rather than
+     * here, because this file is not the only consumer: a module binding
+     * page_controller from its own ui_chain.js owns its frame too, and while
+     * the peek lived in this file it simply did not exist for those modules —
+     * tracked on every detent, painted never. It is delegated, not moved: the
+     * clear stays OURS, because clearing the screen is what a frame owner does
+     * and the library must never assume it owns one.
      */
-    const peek = controller.enumPeek();
-    if (peek) {
-        clear_screen();
-        drawEnumList({ fillRect: fill_rect, print, textWidth: text_width }, {
-            title: peek.title,
-            /* Not "SELECT". Nothing is being selected — the value is already
-             * set — and naming a gesture the screen does not have is how a
-             * user learns to press a button that does nothing. */
-            headerRight: "TURNING",
-            options: peek.options,
-            index: peek.index,
-            /* Cursor and live value are the SAME here, unlike the picker where
-             * the `*` marks what Back would return you to. */
-            markIndex: peek.index,
-            footer: [["TURN", "SET"]],
-        });
-    }
+    controller.renderOverlays(
+        { fillRect: fill_rect, print, textWidth: text_width },
+        { clearScreen: clear_screen }
+    );
     return true;
 }
 
