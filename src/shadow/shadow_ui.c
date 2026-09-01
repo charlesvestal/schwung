@@ -257,6 +257,53 @@ static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_v
     return JS_UNDEFINED;
 }
 
+/* shadow_metronome_set(mode, level) -> void   (mode 0=off, 1=follow, 2=on)
+ *
+ * Writes shadow_control_t.metronome_mode / metronome_level, which the shim
+ * reads on the SPI callback, and persists both to features.json — the register
+ * lives in SHM and does not survive a reboot, exactly as for recall_quantize.
+ */
+static JSValue js_shadow_metronome_set(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int mode = 0, level = 50;
+    if (JS_ToInt32(ctx, &mode, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &level, argv[1])) return JS_UNDEFINED;
+    if (mode < 0) mode = 0;
+    if (mode > 2) mode = 2;
+    if (level < 0) level = 0;
+    if (level > 100) level = 100;
+    shadow_control->metronome_mode = (uint8_t)mode;
+    shadow_control->metronome_level = (uint8_t)level;
+
+    static const char *NAMES[3] = { "off", "follow", "on" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[mode]);
+    features_json_set("metronome_mode", quoted);
+    snprintf(quoted, sizeof(quoted), "%d", level);
+    features_json_set("metronome_level", quoted);
+    return JS_UNDEFINED;
+}
+
+/* shadow_metronome_beats_set(n) -> void
+ *
+ * Bar length for the downbeat accent, from the set's time signature. NOT
+ * persisted: it belongs to the set, and the shadow UI re-reads it on every
+ * SET_CHANGED. 0 means unknown and the shim clamps to 4.
+ */
+static JSValue js_shadow_metronome_beats_set(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int n = 0;
+    if (JS_ToInt32(ctx, &n, argv[0])) return JS_UNDEFINED;
+    if (n < 0) n = 0;
+    if (n > 32) n = 32;
+    shadow_control->metronome_beats_per_bar = (uint8_t)n;
+    return JS_UNDEFINED;
+}
+
 /* shadow_clear_ui_flags(mask) -> void
  * Clears the specified flags, splitting the flat mask back across the two
  * fields it came from in js_shadow_get_ui_flags.
@@ -2902,6 +2949,8 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_set", JS_NewCFunction(ctx, js_shadow_metronome_set, "shadow_metronome_set", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_beats_set", JS_NewCFunction(ctx, js_shadow_metronome_beats_set, "shadow_metronome_beats_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_move_inject_active", JS_NewCFunction(ctx, js_shadow_overtake_move_inject_active, "shadow_overtake_move_inject_active", 0));

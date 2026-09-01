@@ -8796,6 +8796,45 @@ function loadRecallQuantize() {
     setRecallQuantize(v);
 }
 
+/*
+ * Metronome. Mirrors recallQuantizeValue above: the setting persists in
+ * features.json, the register in SHM does not, so JS reads the file at startup
+ * and pushes the value down.
+ */
+let metronomeMode = 0;                 /* 0 off, 1 follow, 2 on */
+let metronomeLevel = 50;               /* percent */
+const METRONOME_MODE_NAMES = ["off", "follow", "on"];
+
+function setMetronome(mode, level) {
+    metronomeMode = (mode >= 0 && mode <= 2) ? mode : 0;
+    metronomeLevel = (level >= 0 && level <= 100) ? level : 50;
+    if (typeof shadow_metronome_set === "function") {
+        shadow_metronome_set(metronomeMode, metronomeLevel);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadMetronome() {
+    let mode = 0, level = 50;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const mm = /"metronome_mode"\s*:\s*"([^"]*)"/.exec(raw);
+            if (mm) {
+                const i = METRONOME_MODE_NAMES.indexOf(mm[1]);
+                if (i >= 0) mode = i;
+            }
+            const ml = /"metronome_level"\s*:\s*([0-9]+)/.exec(raw);
+            if (ml && ml[1]) {
+                const v = parseInt(ml[1], 10);
+                if (v >= 0 && v <= 100) level = v;
+            }
+        }
+    } catch (e) { debugLog("metronome read failed: " + e); }
+    setMetronome(mode, level);
+}
+
 /* Service the snapshot gesture flags. Called from the flag block in tick(). */
 function snapshotServiceFlags(flags) {
     const SNAPSHOT_FLAGS = SHADOW_UI_FLAG_SNAPSHOT_TAKE |
@@ -20905,6 +20944,7 @@ globalThis.init = function() {
      * this whole feature is written to avoid. */
     try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
 
     /* Analytics: emit app_launched + census + diff against previous snapshot.
      * app_launched must emit here (not in shadow_ui.c main()) because
