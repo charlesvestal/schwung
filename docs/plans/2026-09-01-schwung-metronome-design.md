@@ -89,20 +89,28 @@ Confirm on hardware when the build lands.
 
 ## Settings
 
-Global Settings' Audio section **sits at exactly eight params** and
-`tests/host/test_global_settings_contract.sh` pins the per-section counts,
-because a ninth would paginate silently and hand the split to the bank bar. So
-the metronome gets its **own section**, the way Display (2) and Shortcuts (2)
-already are:
+The knob grid holds **8 params per page** (`KNOBS_PER_PAGE`); a section is not
+capped at one page — the bank bar and page picker page through them like any
+other grid — but a section that spills leaves an orphan page. Measured: adding a
+9th param to Audio plans a second page named `Audio - 2` holding one lonely knob.
 
-```js
-{ id: "metronome", label: "Metronome", params: METRONOME_PARAMS }
-```
+Audio is at exactly 8, so room is made rather than spilled. **`skipback_shortcut`
+and `skipback_seconds` move to Shortcuts** — the first names the button combo and
+the second its length, and Skipback is a shortcut feature (Shift+Capture). They
+move as a pair; splitting them across two sections would be worse than leaving
+both in Audio.
+
+| Section | Before | After |
+|---|---|---|
+| Audio | 8 | 6 + `metronome_mode` + `metronome_level` = **8** |
+| Shortcuts | 2 | 2 + `skipback_shortcut` + `skipback_seconds` = **4** |
+
+Still seven pages, one per section, so sections-as-levels keeps holding.
 
 | Key | Type | Options / range | Default |
 |---|---|---|---|
-| `metronome_mode` | enum | `Off` / `Follow` / `On` | `Off` |
-| `metronome_level` | int | 0–100 % | 50 |
+| `metronome_mode` | enum | `Off` / `Follow` / `On` (short `OFF`/`FOL`/`ON`) | `Off` |
+| `metronome_level` | int | 0-100 % | 50 |
 
 - **Off** — never sounds.
 - **Follow** — sounds while Move's metronome is on (`shadow_metronome_on`).
@@ -179,8 +187,10 @@ and **before** the `rebuild_from_la && mv < 0.9999f` master-volume scaling
   their whitespace/case variants flip the flag; near misses
   (`"Metronome"`, `"Metronome On Track"`, `"unmuted"`) do not. Mutate the
   matcher to prove the test can fail.
-- `tests/host/test_global_settings_contract.sh` updated for the eighth section,
-  asserting Metronome plans to exactly one page and Audio is still eight.
+- `tests/host/test_global_settings_contract.sh` updated for the moved pair:
+  `WANT_COUNT` becomes audio 8, shortcuts 4, and the "exactly 7 pages" and
+  "Audio is at KNOBS_PER_PAGE exactly" assertions must still pass unchanged —
+  they are what would catch a spill.
 - Beat/downbeat boundary maths in a header so `tests/host/` can run it, the way
   `recall_quantize.h` is: pulse 0 is a downbeat, `24*n` is a beat, a
   `beats_per_bar` of 3 accents every third.
