@@ -253,6 +253,27 @@ One drop, two stuck consumers, with the note-off sitting present and correctly
 ordered in the raw hardware mailbox the whole time. That last part is what makes
 this look like it must be somewhere else; it isn't.
 
+### An SHM buffer sized to `sizeof` reads as FULL, and is not
+
+`CONTROL_BUFFER_SIZE` was 84 with a `sizeof(...) == BUFFER` assert — not a
+designed size, just wherever the struct happened to end after the corun masks
+were widened. Adding a byte failed the build, which looks like a hard limit,
+and is why Recall Quantize was first squeezed into two spare bits of
+`ui_flags_ext` — costing a mask, a shift and one real bug (a flat mask applied
+to ext space, which reads zero always).
+
+**It costs nothing.** `/dev/shm` is tmpfs and allocates by page: measured on the
+device, an 84-byte segment occupied 4096 — the same 8 blocks as a 512-byte one.
+Both buffers are containers with headroom now (256 / 512) under a `<=` assert
+plus a floor, so adding a field is free and only SHRINKING fails the build.
+
+**And a resize is not a SIGBUS.** `shadow_shm_map()` fstats on attach and
+refuses a segment shorter than requested, logging "restart the shim so it is
+recreated" — the feature goes quiet rather than crashing. Two earlier resizes
+(#358, #361) used exactly that procedure. Deploy the shim and shadow_ui
+together, as `install.sh` does; growing is also safe for an old consumer, which
+asks for less than the segment holds.
+
 ### Blocking an event means silencing TWO buffers, and eleven sites silenced one
 
 `shadow` (`= global_mmap_addr`) is **what Move sees**. `hardware_mmap_addr` is
@@ -603,10 +624,9 @@ Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
 - **Recall Quantize** (Global Settings → Shortcuts, default Off) makes
   Shift+Delete wait for the next beat / bar / 2 bars. A SETTING, not a second
   gesture. Ignored while the transport is stopped — a queue with no clock never
-  fires. The division is a **two-bit register inside `ui_flags_ext`**, because
-  both SHM structs are exactly at their pinned size with zero padding
-  (*measured*), and `load_feature_config()` runs once at init so a setting
-  parsed there would need a reboot. `sampler_clock_count` is NOT a beat
+  fires. The division is a field in `shadow_control_t`;
+  `load_feature_config()` runs once at init, so a setting parsed there would
+  need a reboot. `sampler_clock_count` is NOT a beat
   counter — it only advances while the sampler is RECORDING — so the queue uses
   `shadow_transport_pulses`. The boundary maths is in `recall_quantize.h` so
   `tests/host/` can run it: the next boundary is never the current one, and the
