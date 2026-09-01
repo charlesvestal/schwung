@@ -788,11 +788,17 @@ hihat in one `mailbox_out.pcm` capture, at two tempos so the terms separate:
    that first clock **is** the downbeat. So beats land at `24N+1`, and firing at
    `24N` is one pulse early forever. Tempo-scaled: 20.8 ms at 120 BPM, 125 ms at
    20. Corrected in `METRONOME_BEAT_PULSE_OFFSET` rather than in the counter,
-   because a local shift is right under *both* explanations of the pulse (the
-   counter being off by one, or Move's clock leading its audio) whereas retiming
-   the shared counter is right under only one — **and would also move
-   `recall_quantize`,** which shares it. **That is a real, unfixed off-by-one in
-   recall quantize**, worth ~20 ms at 120 BPM; left alone deliberately.
+   because the counter is a truthful count of clocks received — it is the
+   *interpretation* of where beats sit that was wrong. Rebasing the counter so
+   pulse 0 is the downbeat would also remove the 0 → 1 transition the metronome
+   needs to detect its very first downbeat, so the first click of every take
+   would go missing: a fix that breaks the thing it repairs.
+
+   **`recall_quantize` had the identical off-by-one** and is fixed here too —
+   same counter, same wrong grid, but ~20 ms early on a snapshot recall is
+   inaudible where the same error on a metronome is not, which is how it
+   survived. The constant now lives once, in `src/host/transport_grid.h`, and
+   reverting it fails both test suites.
 2. **One Link Audio transit**, the 19.6 ms constant — the click is generated from
    Move's clock (frame-aligned to *now*) while Move's audio in the same block is
    a transit older. The trigger is scheduled `METRONOME_LA_COMP_FRAMES` ahead,
