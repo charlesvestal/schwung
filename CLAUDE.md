@@ -600,6 +600,17 @@ Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
   which is the opposite of an A/B. A position whose module was swapped since is
   skipped and **counted**; the count is the whole feature, because a partial
   restore that reports nothing is indistinguishable from a working one.
+- **Recall Quantize** (Global Settings → Shortcuts, default Off) makes
+  Shift+Delete wait for the next beat / bar / 2 bars. A SETTING, not a second
+  gesture. Ignored while the transport is stopped — a queue with no clock never
+  fires. The division is a **two-bit register inside `ui_flags_ext`**, because
+  both SHM structs are exactly at their pinned size with zero padding
+  (*measured*), and `load_feature_config()` runs once at init so a setting
+  parsed there would need a reboot. `sampler_clock_count` is NOT a beat
+  counter — it only advances while the sampler is RECORDING — so the queue uses
+  `shadow_transport_pulses`. The boundary maths is in `recall_quantize.h` so
+  `tests/host/` can run it: the next boundary is never the current one, and the
+  lead is clamped below the division or a fast tempo degrades it to instant.
 - **The snapshot is re-seeded from the set on every set load**, so it means one
   sentence and is never older than the session. It lives in
   `set_state/<uuid>/snapshot/` — a global dir would be the one piece of chain

@@ -230,6 +230,40 @@ static JSValue js_shadow_get_open_tool_cmd(JSContext *ctx, JSValueConst this_val
     return JS_NewInt32(ctx, cmd);
 }
 
+static void features_json_set(const char *key, const char *value_json);
+
+/* shadow_recall_quantize_set(v) -> void   (0=off, 1=beat, 2=bar, 3=two bars)
+ *
+ * Writes the two-bit Recall Quantize register inside ui_flags_ext, which the
+ * shim reads when Shift+Delete is pressed. A REGISTER, not a flag: it is never
+ * cleared by shadow_clear_ui_flags, which only clears the mask it is handed.
+ *
+ * The read-modify-write leaves every other bit alone, so a settings change
+ * cannot swallow a snapshot event raised on the same frame.
+ */
+static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    if (v < 0) v = 0;
+    if (v > 3) v = 3;
+    const uint16_t mask = (uint16_t)(SHADOW_UI_RECALL_Q_MASK >> SHADOW_UI_FLAG_EXT_SHIFT);
+    const int sh = SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT;
+    shadow_control->ui_flags_ext =
+        (uint16_t)((shadow_control->ui_flags_ext & ~mask) | ((uint16_t)v << sh));
+
+    /* Persisted here rather than from JS, same as shadow_ui_trigger_set: the
+     * register lives in SHM and does not survive a reboot, so the file is the
+     * only copy that does. JS reads it back at startup and pushes it down. */
+    static const char *NAMES[4] = { "off", "beat", "bar", "2bars" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[v]);
+    features_json_set("recall_quantize", quoted);
+    return JS_UNDEFINED;
+}
+
 /* shadow_clear_ui_flags(mask) -> void
  * Clears the specified flags, splitting the flat mask back across the two
  * fields it came from in js_shadow_get_ui_flags.
@@ -2833,6 +2867,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_move_inject_active", JS_NewCFunction(ctx, js_shadow_overtake_move_inject_active, "shadow_overtake_move_inject_active", 0));

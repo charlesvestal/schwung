@@ -47,7 +47,7 @@ echo "$take" | grep -q "saveMasterFxChainConfig()" || note "take does not flush 
 # 5. The flags are serviced and cleared. Without the clear the shim's flag
 #    stays raised and the gesture repeats every tick, forever.
 grep -q "snapshotServiceFlags(flags)" "$UI" || note "snapshotServiceFlags never called from the flag block"
-grep -q "shadow_clear_ui_flags(SHADOW_UI_FLAG_SNAPSHOT_TAKE" "$UI" || note "snapshot flags never cleared"
+grep -q "shadow_clear_ui_flags(SNAPSHOT_FLAGS)" "$UI" || note "snapshot flags never cleared"
 
 # 6. The toast clears itself and drives its own redraws.
 grep -q "snapshotToastFrames--" "$UI"     || note "toast frame counter never decrements"

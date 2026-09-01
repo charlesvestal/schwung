@@ -40,6 +40,16 @@ int sampler_duration_index = 3;  /* Default: 4 bars */
 
 /* MIDI clock counting */
 int sampler_clock_count = 0;
+/*
+ * A FREE-RUNNING count of MIDI clock pulses (24 PPQN) since the last MIDI
+ * Start, for anything that needs to know where the beat is.
+ *
+ * Deliberately not `sampler_clock_count`, which looks like it would do and
+ * does not: that one only advances while sampler_state == SAMPLER_RECORDING
+ * and is reset to 0 when recording begins. A caller wanting "where are we in
+ * the bar" would read 0 forever with the sampler idle, which is almost always.
+ */
+int shadow_transport_pulses = 0;
 int sampler_target_pulses = 0;
 int sampler_bars_completed = 0;
 
@@ -929,6 +939,7 @@ void sampler_on_clock(uint8_t status) {
         sampler_clock_active = 1;
         sampler_clock_stale_frames = 0;
         sampler_clock_beat_ticks++;
+        shadow_transport_pulses++;
 
         /* Measure BPM every 24 ticks (one beat) */
         if (sampler_clock_beat_ticks >= 24) {
@@ -990,8 +1001,12 @@ void sampler_on_clock(uint8_t status) {
             }
         }
     } else if (status == 0xFA) {
-        /* MIDI Start — transport is now playing */
+        /* MIDI Start — transport is now playing, from the top. */
         sampler_transport_playing = 1;
+        /* Start means bar 1 beat 1, so the free-running count restarts with
+         * it. Continue (0xFB) deliberately does NOT reset — it resumes, and a
+         * reset there would put the grid a beat out for the rest of the take. */
+        shadow_transport_pulses = 0;
         s_host.overlay_sync();
         s_host.log("Sampler: transport_playing=1 (MIDI Start)");
         if (sampler_state == SAMPLER_ARMED) {

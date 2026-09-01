@@ -100,13 +100,64 @@ if echo "$block" | grep -q "ui_flags |="; then
     note "gesture writes ui_flags (8-bit) — a 0x0100 flag truncates to 0 there"
 fi
 
+# --- the queue ------------------------------------------------------------
+#
+# Shift+Delete keeps ONE meaning; whether it fires now or at the next boundary
+# is a setting. The shim owns the decision because it owns the MIDI clock.
+gest=$(awk '/^static uint16_t snapshot_recall_gesture/,/^}/' "$SHIM")
+[ -n "$gest" ] || note "snapshot_recall_gesture missing"
+
+# A queue with no clock never fires, so with the transport stopped the setting
+# must be IGNORED rather than honoured into silence — otherwise the button goes
+# dead with nothing on screen to say why.
+echo "$gest" | grep -q "!sampler_transport_playing" \
+  || note "a queued recall is armed with the transport stopped — it would never fire"
+
+# Pressed again while armed, it cancels. Re-arming to the same boundary is a
+# no-op indistinguishable from a dead button, and there is no other way back.
+echo "$gest" | grep -q "SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED" \
+  || note "a second press while armed does not cancel"
+
+bnd=$(awk '/^static void snapshot_recall_check_boundary/,/^}/' "$SHIM")
+[ -n "$bnd" ] || note "snapshot_recall_check_boundary missing"
+echo "$bnd" | grep -q "recall_should_fire" || note "the boundary test is hand-rolled, not the tested helper"
+echo "$bnd" | grep -q "recall_lead_pulses" || note "no lead compensation — the change lands ~36ms late"
+# The clock can stop under an armed recall. Dropping it is the only way the
+# on-screen mark ever clears.
+echo "$bnd" | grep -q "!sampler_transport_playing" \
+  || note "an armed recall survives the transport stopping — the mark never clears"
+grep -q "snapshot_recall_check_boundary();" "$SHIM" \
+  || note "the boundary check is never called"
+
+# The division comes from ui_flags_ext every time, not a cached copy:
+# load_feature_config runs ONCE at init, so a cached setting would not take
+# effect until the next reboot.
+q=$(awk '/^static int recall_quantize_pulses\(void\)/,/^}/' "$SHIM")
+echo "$q" | grep -q "ui_flags_ext" || note "the quantize setting is not read from ui_flags_ext"
+echo "$q" | grep -q "SHADOW_UI_FLAG_EXT_SHIFT" \
+  || note "the flat mask is applied to ext space — it would read zero always"
+
+# The free-running pulse counter, which is NOT sampler_clock_count (that one
+# only advances while the sampler is recording and resets when it starts).
+echo "$bnd$gest" | grep -q "sampler_clock_count" \
+  && note "the queue uses sampler_clock_count, which is 0 unless the sampler is recording"
+grep -q "shadow_transport_pulses" "$SHIM" || note "the queue does not use the free-running pulse count"
+
 # The JS side must actually service both flags, or the shim raises them forever.
 for f in SHADOW_UI_FLAG_SNAPSHOT_TAKE SHADOW_UI_FLAG_SNAPSHOT_RECALL; do
     grep -q "$f" src/shadow/shadow_ui.js || note "shadow_ui.js never handles $f"
 done
-grep -q "SHADOW_UI_FLAG_SNAPSHOT_TAKE | SHADOW_UI_FLAG_SNAPSHOT_RECALL" src/shadow/shadow_ui.js \
-    || grep -q "shadow_clear_ui_flags(SHADOW_UI_FLAG_SNAPSHOT" src/shadow/shadow_ui.js \
+grep -q "shadow_clear_ui_flags(SNAPSHOT_FLAGS)" src/shadow/shadow_ui.js \
     || note "shadow_ui.js never clears the snapshot flags — the gesture would repeat every tick"
+# The clear must NOT take the quantize register with it: that is a setting
+# living in the same field, not an event, and clearing it would silently reset
+# Recall Quantize to Off the first time any snapshot gesture fired.
+svc=$(awk '/^function snapshotServiceFlags/,/^}/' src/shadow/shadow_ui.js)
+echo "$svc" | grep -q "RECALL_Q" \
+  && note "the flag clear touches the quantize register — the setting would reset itself"
+for f in SNAPSHOT_TAKE SNAPSHOT_RECALL SNAPSHOT_QUEUED SNAPSHOT_UNQUEUED; do
+  echo "$svc" | grep -q "$f" || note "snapshotServiceFlags ignores SHADOW_UI_FLAG_$f"
+done
 
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "PASS test_snapshot_gesture"

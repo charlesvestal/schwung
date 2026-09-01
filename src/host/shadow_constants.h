@@ -161,7 +161,34 @@
  */
 #define SHADOW_UI_FLAG_EXT_SHIFT 8
 #define SHADOW_UI_FLAG_SNAPSHOT_TAKE   0x0100  /* Shift+Copy: snapshot whole rig */
-#define SHADOW_UI_FLAG_SNAPSHOT_RECALL 0x0200  /* Shift+Delete: recall snapshot */
+#define SHADOW_UI_FLAG_SNAPSHOT_RECALL 0x0200  /* Shift+Delete: recall snapshot NOW */
+#define SHADOW_UI_FLAG_SNAPSHOT_QUEUED 0x0400  /* recall armed for the next boundary */
+#define SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED 0x0800 /* armed recall cancelled */
+
+/*
+ * Recall Quantize, as a two-bit REGISTER inside ui_flags_ext rather than a flag.
+ *
+ * 0 = Off, 1 = beat, 2 = bar, 3 = two bars. Written by JS when the setting
+ * changes and once at startup; read by the shim, which is where the MIDI clock
+ * is counted. It is not an event and is never cleared by the flag-clearing
+ * path, which only ever clears the mask it is handed.
+ *
+ * It lives here because there is nowhere else. shadow_control_t is exactly
+ * CONTROL_BUFFER_SIZE (84) and shadow_overlay_state_t exactly
+ * SHADOW_OVERLAY_BUFFER_SIZE (256), both with ZERO trailing padding —
+ * measured, by adding a byte and watching the static assert fail. Growing
+ * either would put a new shadow_ui over a possibly-older shim's shorter
+ * segment, and touching the tail of an undersized mapping is a SIGBUS, not a
+ * mismatch (the Link Audio ring lesson).
+ *
+ * And it cannot be read from features.json by the shim: load_feature_config()
+ * runs ONCE at init, so a setting parsed there would not take effect until the
+ * next reboot — which for a performance control is the same as not working.
+ */
+#define SHADOW_UI_RECALL_Q_SHIFT 12
+#define SHADOW_UI_RECALL_Q_MASK  0x3000
+#define SHADOW_UI_RECALL_Q_PULSES(v) \
+    ((v) == 1 ? 24 : (v) == 2 ? 96 : (v) == 3 ? 192 : 0)
 
 /* ============================================================================
  * Special Values

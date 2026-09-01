@@ -48,6 +48,7 @@
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/recall_quantize.h"
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
@@ -3603,6 +3604,104 @@ static void shadow_check_screenreader(void)
  * cannot be gated on Shift.
  */
 static int snapshot_gesture_swallow[2] = {0, 0};
+
+/*
+ * Recall Quantize, in MIDI clock pulses. 0 = Off.
+ *
+ * Read from ui_flags_ext every time it is needed rather than cached, so a
+ * change made in Global Settings takes effect on the very next press. See the
+ * register's note in shadow_constants.h for why it lives there.
+ */
+static int recall_quantize_pulses(void)
+{
+    if (!shadow_control) return 0;
+    /*
+     * ui_flags_ext is in EXT SPACE — it holds bits 8+ of the flat word, already
+     * shifted down. The mask and shift are declared FLAT, so both have to come
+     * down by SHADOW_UI_FLAG_EXT_SHIFT before they touch this field. Masking
+     * with the flat 0x3000 reads a field whose bits live at 0x30: always zero,
+     * so the setting would silently never apply.
+     */
+    int v = (shadow_control->ui_flags_ext
+             & (SHADOW_UI_RECALL_Q_MASK >> SHADOW_UI_FLAG_EXT_SHIFT))
+            >> (SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT);
+    return SHADOW_UI_RECALL_Q_PULSES(v);
+}
+
+/* The armed recall: the pulse count at which it fires, or -1 for none. */
+static int recall_pending_target = -1;
+
+/*
+ * What Shift+Delete does, and which flag to raise for it.
+ *
+ * Immediate unless quantize is on AND the transport is running. A queue with
+ * no clock never fires, so with the transport stopped the setting is ignored
+ * rather than honoured into silence — that is the one case where doing the
+ * literal thing would be worse than useless.
+ *
+ * Pressed again while armed, it CANCELS. Re-arming to the same boundary would
+ * be a no-op you could not tell from a dead button, and there is no other way
+ * to call one back.
+ */
+static uint16_t snapshot_recall_gesture(void)
+{
+    if (recall_pending_target >= 0) {
+        recall_pending_target = -1;
+        return SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED;
+    }
+    if (recall_quantize_pulses() <= 0 || !sampler_transport_playing) {
+        return SHADOW_UI_FLAG_SNAPSHOT_RECALL;
+    }
+    /*
+     * The NEXT boundary, never the one we are standing on. `pulses / div * div
+     * + div` lands on the following division even when the press arrives
+     * exactly on the beat — pressing on the downbeat should give you the next
+     * one, not fire instantly and read as if quantize were off.
+     */
+    recall_pending_target =
+        recall_next_boundary(shadow_transport_pulses, recall_quantize_pulses());
+    return SHADOW_UI_FLAG_SNAPSHOT_QUEUED;
+}
+
+/*
+ * Fire an armed recall, slightly EARLY.
+ *
+ * The recall is ~13 param writes at ~2.8ms — about 36ms — so starting it on
+ * the boundary lands the change a fourteenth of a beat late at 120bpm.
+ * Starting it early enough to finish there is the difference between "on the
+ * beat" and "just after it".
+ *
+ * The lead is computed from the measured tempo rather than fixed in pulses:
+ * one pulse is 20.8ms at 120bpm and 41.7ms at 60, so a constant would be
+ * either useless or a whole beat early depending on the track. Clamped below
+ * the division so a slow tempo can never make the lead reach back past the
+ * previous boundary and fire immediately.
+ */
+#define RECALL_WRITE_MS 36
+static void snapshot_recall_check_boundary(void)
+{
+    if (recall_pending_target < 0 || !shadow_control) return;
+    if (!sampler_transport_playing) {
+        /* The clock stopped under an armed recall. Nothing will ever reach the
+         * target, so drop it rather than leave a mark on screen forever. */
+        recall_pending_target = -1;
+        shadow_control->ui_flags_ext |=
+            (uint16_t)(SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED >> SHADOW_UI_FLAG_EXT_SHIFT);
+        return;
+    }
+
+    tempo_source_t tsrc;
+    float bpm = sampler_get_bpm(&tsrc);
+    int d = recall_quantize_pulses();
+    int lead = recall_lead_pulses(bpm, d > 0 ? d : RECALL_PULSES_PER_BEAT,
+                                  RECALL_WRITE_MS);
+
+    if (recall_should_fire(shadow_transport_pulses, recall_pending_target, lead)) {
+        recall_pending_target = -1;
+        shadow_control->ui_flags_ext |=
+            (uint16_t)(SHADOW_UI_FLAG_SNAPSHOT_RECALL >> SHADOW_UI_FLAG_EXT_SHIFT);
+    }
+}
 static uint64_t shift_menu_pending_ms = 0;
 static int shift_menu_pending = 0;
 
@@ -7394,6 +7493,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Scan for track button CCs (40-43) for D-Bus volume sync,
      * and volume knob touch (note 8) for master volume display reading.
      * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow buffer is already filtered. */
+    /* An armed recall fires on the clock, not on a button, so it is checked
+     * every frame rather than from the CC scan. Cheap: a compare against a
+     * counter, and an early-out when nothing is armed. */
+    snapshot_recall_check_boundary();
+
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
@@ -7671,10 +7775,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     int gi = (d1 == CC_COPY) ? 0 : 1;
                     if (d2 > 0) {
                         if (shadow_shift_held && shadow_ui_enabled && shadow_control) {
-                            shadow_control->ui_flags_ext |= (uint16_t)
-                                ((d1 == CC_COPY ? SHADOW_UI_FLAG_SNAPSHOT_TAKE
-                                                : SHADOW_UI_FLAG_SNAPSHOT_RECALL)
-                                 >> SHADOW_UI_FLAG_EXT_SHIFT);
+                            uint16_t raise;
+                            if (d1 == CC_COPY) {
+                                raise = SHADOW_UI_FLAG_SNAPSHOT_TAKE;
+                            } else {
+                                raise = snapshot_recall_gesture();
+                            }
+                            shadow_control->ui_flags_ext |=
+                                (uint16_t)(raise >> SHADOW_UI_FLAG_EXT_SHIFT);
                             snapshot_gesture_swallow[gi] = 1;
                         }
                     }

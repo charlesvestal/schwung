@@ -315,6 +315,8 @@ const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
  * which field a flag came from. See shadow_constants.h. */
 const SHADOW_UI_FLAG_SNAPSHOT_TAKE = 0x0100;
 const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
+const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
+const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -8718,6 +8720,25 @@ function shadowDisplayHidden() {
  * clearing it wipes the view behind and setting an overlay rect would ask the
  * shim to composite a picture onto itself.
  */
+/*
+ * A recall is armed and waiting for its boundary.
+ *
+ * Small, top-right, drawn last so it survives whatever the screen underneath
+ * is doing — the toast that announced the arming is gone after a second, and
+ * without a persistent mark there is nothing to tell you the button is loaded.
+ *
+ * It DOES overdraw the last few pixels of a header. That is deliberate: for
+ * the beat or two it is up, "a recall is about to fire" outranks the tail of a
+ * module name. It is the smallest thing that can be seen from playing
+ * position, and it is gone the moment the recall lands.
+ */
+function drawSnapshotPendingMark() {
+    if (!snapshotQueuedPending || shadowDisplayHidden()) return;
+    const w = 9, h = 9, x = 128 - w, y = 0;
+    fill_rect(x, y, w, h, 1);
+    print(x + 2, y + 1, "Q", 0);
+}
+
 function drawSnapshotToastOnTop() {
     if (!snapshotToastActive() || shadowDisplayHidden()) return;
     snapshotToastFrames--;
@@ -8728,18 +8749,83 @@ function drawSnapshotToastOnTop() {
     if (snapshotToastFrames <= 0) snapshotToastLines = null;
 }
 
-/* Service the two gesture flags. Called from the flag block in tick(). */
+/*
+ * Is a recall armed and waiting for its boundary?
+ *
+ * Tracked here rather than read from the shim because there is nowhere to read
+ * it FROM — both SHM structs are exactly at their pinned size with no padding,
+ * so the shim reports arming and firing as edges (flags) and this is the state
+ * they imply. Every edge that ends the wait clears it, including the one the
+ * shim raises when the transport stops under an armed recall.
+ */
+let snapshotQueuedPending = false;
+
+/*
+ * Recall Quantize: 0 = Off, 1 = beat, 2 = bar, 3 = two bars.
+ *
+ * Held here AND pushed into the shim's register, because the two need it for
+ * different halves of the job: the shim decides when Shift+Delete fires, this
+ * side reports the setting back to the settings grid. Persisted to
+ * features.json so it survives a reboot, and pushed down again at startup —
+ * the register lives in SHM, which does not.
+ */
+let recallQuantizeValue = 0;
+const RECALL_QUANTIZE_NAMES = ["off", "beat", "bar", "2bars"];
+
+function setRecallQuantize(v) {
+    recallQuantizeValue = (v >= 0 && v <= 3) ? v : 0;
+    if (typeof shadow_recall_quantize_set === "function") {
+        shadow_recall_quantize_set(recallQuantizeValue);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadRecallQuantize() {
+    let v = 0;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const m = /"recall_quantize"\s*:\s*"([^"]*)"/.exec(raw);
+            if (m) {
+                const i = RECALL_QUANTIZE_NAMES.indexOf(m[1]);
+                if (i >= 0) v = i;
+            }
+        }
+    } catch (e) { debugLog("recall_quantize read failed: " + e); }
+    setRecallQuantize(v);
+}
+
+/* Service the snapshot gesture flags. Called from the flag block in tick(). */
 function snapshotServiceFlags(flags) {
+    const SNAPSHOT_FLAGS = SHADOW_UI_FLAG_SNAPSHOT_TAKE |
+                           SHADOW_UI_FLAG_SNAPSHOT_RECALL |
+                           SHADOW_UI_FLAG_SNAPSHOT_QUEUED |
+                           SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED;
     if (flags & SHADOW_UI_FLAG_SNAPSHOT_TAKE) {
         snapshotTake();
     }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_QUEUED) {
+        snapshotQueuedPending = true;
+        snapshotShowToast(["queued"]);
+        announce("Snapshot queued");
+        needsRedraw = true;
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED) {
+        snapshotQueuedPending = false;
+        snapshotShowToast(["cancelled"]);
+        announce("Snapshot recall cancelled");
+        needsRedraw = true;
+    }
     if (flags & SHADOW_UI_FLAG_SNAPSHOT_RECALL) {
+        /* Clear FIRST. snapshotRecall spends ~36ms writing state, and the mark
+         * must not still be on screen for the frame that draws its result. */
+        snapshotQueuedPending = false;
         snapshotRecall();
     }
-    if (flags & (SHADOW_UI_FLAG_SNAPSHOT_TAKE | SHADOW_UI_FLAG_SNAPSHOT_RECALL)) {
+    if (flags & SNAPSHOT_FLAGS) {
         if (typeof shadow_clear_ui_flags === "function") {
-            shadow_clear_ui_flags(SHADOW_UI_FLAG_SNAPSHOT_TAKE |
-                                  SHADOW_UI_FLAG_SNAPSHOT_RECALL);
+            shadow_clear_ui_flags(SNAPSHOT_FLAGS);
         }
     }
 }
@@ -12105,6 +12191,8 @@ function globalGridIoFor() {
                 return bit(typeof set_pages_get === "function" && set_pages_get());
             case "shadow_ui_trigger":
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
+            case "recall_quantize":
+                return String(recallQuantizeValue);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
@@ -12221,6 +12309,9 @@ function globalGridIoFor() {
             case "set_pages_enabled":
                 if (typeof set_pages_set === "function") set_pages_set(on ? 1 : 0);
                 return;
+            case "recall_quantize":
+                setRecallQuantize(parseInt(value, 10) || 0);
+                break;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
                 return;
@@ -20794,6 +20885,7 @@ globalThis.init = function() {
      * empty directory and do nothing — silently, which is the failure mode
      * this whole feature is written to avoid. */
     try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
+    try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
 
     /* Analytics: emit app_launched + census + diff against previous snapshot.
      * app_launched must emit here (not in shadow_ui.c main()) because
@@ -21887,6 +21979,7 @@ globalThis.tick = function() {
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
     if (!needsRedraw && !overlayActive && !snapshotToastActive() &&
+        !snapshotQueuedPending &&
         (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
     }
@@ -22335,6 +22428,9 @@ globalThis.tick = function() {
          * Move-native twin sits before the view switch and clears instead —
          * see the comment there for why the two cannot be one branch. */
         drawSnapshotToastOnTop();
+        /* ...and the armed-recall mark, after it: the toast is transient and
+         * the mark outlives it, so the mark must not be painted under it. */
+        drawSnapshotPendingMark();
     }
 
     } catch (e) {
