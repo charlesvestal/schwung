@@ -23,6 +23,35 @@
 #define METRONOME_DEFAULT_BEATS_PER_BAR 4
 
 /*
+ * THE DOWNBEAT IS AT PULSE 1, NOT 0.
+ *
+ * shadow_transport_pulses is zeroed on MIDI Start (0xFA) and then INCREMENTED
+ * by every clock (0xF8) — and per the MIDI spec the first clock after Start IS
+ * the downbeat. So beats land at 24N+1, and firing at 24N is one pulse early,
+ * forever.
+ *
+ * That error is TEMPO-SCALED, which is what makes it so much worse than it
+ * sounds: one pulse is 20.8 ms at 120 BPM but 125 ms at 20 BPM.
+ *
+ * Measured on hardware 2026-09-01, click against a sequenced hihat in the same
+ * mailbox capture:
+ *
+ *     20 BPM   click early by 144.3 ms  (sd 0.7, n=7)
+ *    120 BPM   click early by  40.4 ms  (sd 1.0, n=40)
+ *
+ * Two tempos, two unknowns:  125.00k + L = 144.3,  20.83k + L = 40.4
+ * gives k = 0.997 pulses and L = 19.6 ms — one clock pulse of phase, plus a
+ * constant that is the Link Audio transit (see METRONOME_LA_COMP_FRAMES).
+ *
+ * Corrected HERE rather than in shadow_transport_pulses itself, deliberately.
+ * A local shift is right under BOTH explanations of the pulse — the counter
+ * being off by one, or Move's clock genuinely leading its audio — whereas
+ * changing the shared counter is only right under the first, and would also
+ * move recall_quantize, a shipped feature nobody asked us to retime.
+ */
+#define METRONOME_BEAT_PULSE_OFFSET 1
+
+/*
  * Did a beat boundary fall in (prev, now]?
  *
  * Returns the beat's index within the bar — 0 is the downbeat — or -1 if no
@@ -52,15 +81,26 @@ static inline int metronome_beat_crossed(int prev_pulses, int now_pulses,
     if (prev_pulses < 0) return -1;
 
     if (now_pulses < prev_pulses) {
-        /* Transport restarted. Pulse 0 is bar 1 beat 1. */
-        return 0;
+        /* Transport restarted (MIDI Start zeroed the counter). NOT a beat yet:
+         * the downbeat is the FIRST CLOCK after Start, so it arrives on the
+         * next call, at pulse 1, and the grid maths below catches it there.
+         * Clicking here instead would fire one pulse early on every take —
+         * the very error this offset exists to remove. */
+        return -1;
     }
     if (now_pulses == prev_pulses) return -1;
 
     const int div = METRONOME_PULSES_PER_BEAT;
-    /* The greatest multiple of div in (prev, now]. */
-    int last = (now_pulses / div) * div;
-    if (last <= prev_pulses) return -1;
+    /* Shift onto the beat grid: pulse 1 is the downbeat, so pulse
+     * METRONOME_BEAT_PULSE_OFFSET maps to grid position 0. Both ends shift, so
+     * crossing detection is unchanged — only where the boundaries sit moves. */
+    int p_prev = prev_pulses - METRONOME_BEAT_PULSE_OFFSET;
+    int p_now  = now_pulses  - METRONOME_BEAT_PULSE_OFFSET;
+    if (p_now < 0) return -1;
+
+    /* The greatest multiple of div in (p_prev, p_now]. */
+    int last = (p_now / div) * div;
+    if (last <= p_prev) return -1;
 
     int beat = (last / div) % beats_per_bar;
     return beat;
@@ -112,6 +152,29 @@ static inline float metronome_voice_next(metronome_voice_t *v)
     if (v->phase > 2.0f * (float)M_PI) v->phase -= 2.0f * (float)M_PI;
     v->amp *= v->decay;
     return s;
+}
+
+/* ---------------------------------------------------------------- pending */
+
+/*
+ * Advance a pending-click countdown across one block of `frames`.
+ *
+ * `*pending` is frames remaining before the click sounds, or negative for
+ * "nothing pending". Returns the frame offset WITHIN THIS BLOCK at which the
+ * click starts, or -1 if it does not start in this block. `*pending` is
+ * updated either way.
+ *
+ * A countdown rather than a delay ring: the click is generated, not delayed
+ * audio, so postponing the TRIGGER costs one int instead of a 1400-sample
+ * buffer, and lands the attack on an exact sample rather than a block edge.
+ */
+static inline int metronome_pending_advance(int *pending, int frames)
+{
+    if (!pending || *pending < 0) return -1;
+    if (frames <= 0) return -1;
+    if (*pending < frames) { int off = *pending; *pending = -1; return off; }
+    *pending -= frames;
+    return -1;
 }
 
 static inline int metronome_voice_active(const metronome_voice_t *v)
