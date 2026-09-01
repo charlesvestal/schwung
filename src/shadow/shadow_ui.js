@@ -9372,8 +9372,22 @@ function getWavDurationSec(filePath) {
  * SpleeterRT (3-stem): ~0.5x realtime on Move's Cortex-A72.
  * Spleeter TFLite (4-stem): ~3.0x realtime. */
 function getToolProcessingRatio() {
+    /* A tool's wall time relative to the input's duration, used only for the
+     * "about N remaining" estimate.
+     *
+     * Order matters: a per-engine value is more specific than the module's, and
+     * a module that ships several engines (each with its own speed) declares
+     * both. tool_config.processing_ratio was declared by stems from the start
+     * but never read here — and because the value it declared, 0.5, happened to
+     * equal the hardcoded default below, the field looked like it worked. It
+     * only showed up when stems corrected itself to a measured figure and the
+     * estimate did not move. */
     if (toolSelectedEngine && toolSelectedEngine.processing_ratio) {
         return toolSelectedEngine.processing_ratio;
+    }
+    if (toolActiveTool && toolActiveTool.tool_config &&
+        toolActiveTool.tool_config.processing_ratio) {
+        return toolActiveTool.tool_config.processing_ratio;
     }
     return 0.5;  /* default for legacy/unknown engines */
 }
