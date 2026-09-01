@@ -373,6 +373,34 @@ typedef struct shadow_control_t {
      * it. Default 0 keeps the tap-dismisses behaviour.
      */
     volatile uint8_t stay_in_shadow;
+
+    /*
+     * Metronome. All three APPENDED after stay_in_shadow so nothing behind
+     * them moves: sizeof is a contract between two binaries, and
+     * schwung-manager reads stay_in_shadow at a RAW OFFSET (shmconfig.go).
+     * Appending is free; inserting is not.
+     *
+     * Free in the other sense too — CONTROL_BUFFER_SIZE is 256 for a struct
+     * that uses ~86, and /dev/shm allocates by page, so three bytes cost
+     * nothing. Only SHRINKING the container fails the build.
+     *
+     * These live here rather than in features.json because
+     * load_feature_config() runs ONCE at init: a value parsed there would need
+     * a reboot to change. Same reason recall_quantize is a field.
+     */
+
+    /* 0 = off, 1 = follow Move's metronome, 2 = always on while playing. */
+    volatile uint8_t metronome_mode;
+
+    /* 0-100 %. */
+    volatile uint8_t metronome_level;
+
+    /*
+     * Beats per bar, for the downbeat accent. From timeSignature.upper in the
+     * current set's Song.abl, read by the shadow UI on SET_CHANGED — never on
+     * the SPI callback. 0 means "not yet known"; the consumer clamps to 4.
+     */
+    volatile uint8_t metronome_beats_per_bar;
 } shadow_control_t;
 
 /* Co-run control-surface groups. A co-running overtake tool declares which
