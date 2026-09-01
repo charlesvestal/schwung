@@ -116,8 +116,28 @@ Tool modules (`"component_type": "tool"`) appear in the Tools menu and support a
 | `allow_new_file` | Show a "+ New File" action in the file browser |
 | `command` | Shell command to run for non-interactive tools |
 | `overtake` | `true` to use overtake display mode (full LED clear, ~500ms init delay, Shift+Vol+Jog-Click exit). Default is `false`. |
+| `stems` | Array of stem names a separation tool produces, used for the progress readout |
+| `processing_ratio` | Wall time as a fraction of the input's duration, used only for the "about N remaining" estimate. `0.5` means a 4-minute file takes about 2 minutes. Default `0.5`. |
 
 Interactive tools use `host_exit_module()` to return to the tools menu when the user presses Back.
+
+**`processing_ratio` is a measurement, not an aspiration, and it should err
+LONG.** An estimate that runs out while the tool is still working reads as a
+hang; one that finishes early reads as a pleasant surprise.
+
+A tool that ships several engines of different speeds puts a `processing_ratio`
+on each entry of `tool_config.engines[]` instead; the per-engine value wins over
+the module-level one.
+
+The module-level field went unread for the life of the field — `getToolProcessingRatio()`
+consulted only the per-engine value and otherwise returned a hardcoded `0.5`.
+It stayed invisible because the single module declaring it declared `0.5`, the
+same number as the default, so a working declaration and an ignored one were
+indistinguishable. It surfaced only when that module corrected itself to a
+measured figure and the on-screen estimate did not move.
+`tests/host/test_tool_processing_ratio.sh` now runs both copies of the function
+— `shadow_ui.js` drives the confirm screen, `shadow_ui_tools.mjs` the processing
+screen — against the same cases and fails if they disagree.
 
 ### Defaults
 
