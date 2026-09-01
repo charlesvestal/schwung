@@ -44,6 +44,23 @@ int main(void)
     expect("Metronome Onn",      METRONOME_ANNOUNCE_NONE, "trailing char");
     expect("Metronome Offset",   METRONOME_ANNOUNCE_NONE, "off is a prefix of a real word");
     expect("Lay Down Kit muted", METRONOME_ANNOUNCE_NONE, "the mute-bug shape");
+
+    /* ---- OBSERVED ON HARDWARE, 2026-09-01 ----
+     *
+     * These are not hypothetical. They are the exact strings SCHWUNG'S OWN
+     * screen reader emitted while the user navigated to Global Settings ->
+     * Audio -> Metronome, captured from the D-Bus log on the device. Every one
+     * of them arrives back through shadow_dbus_handle_text, which is the same
+     * loopback that made the mute auto-correct unsafe.
+     *
+     * A suffix or substring rule would read the first two as Move's metronome
+     * turning OFF — so merely SCROLLING ONTO THE ROW would silently disable the
+     * feature. Whole-string equality is what makes them inert.
+     */
+    expect("Metronome, Off, 7 of 8", METRONOME_ANNOUNCE_NONE, "our own grid cell announcement");
+    expect("Metronome, Off, 1 of 3", METRONOME_ANNOUNCE_NONE, "our own enum list announcement");
+    expect("Metronome: Follow",      METRONOME_ANNOUNCE_NONE, "our own confirmation announcement");
+    expect("Metronome, On, 7 of 8",  METRONOME_ANNOUNCE_NONE, "the same row reading On");
     expect("unmuted",            METRONOME_ANNOUNCE_NONE, "unrelated");
     expect("",                   METRONOME_ANNOUNCE_NONE, "empty");
     expect("   ",                METRONOME_ANNOUNCE_NONE, "whitespace only");
