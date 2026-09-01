@@ -599,6 +599,19 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 
 Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track) — these stay in sync, which is intended. Shadow slot mute/solo is set **only** by these combos — there is no D-Bus screen-reader text sync. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
 
+### A master-bus metronome is gone under Move→Schwung by CONSTRUCTION
+
+- Not by a bug: `rebuild_from_la` composites only the four per-track Link Audio
+  slots, and Move mixes its click at master. Schwung plays its own, detected
+  from Move's `"Metronome On"` / `"Metronome Off"` announcement — **exact
+  equality on the whole normalised string**, which is what separates it from
+  the removed mute auto-correct that matched a suffix and fired on Move's own
+  drum-kit names. **Never persisted, because Move does not persist it either**
+  — that is what makes off-at-boot the truth rather than a guess. The click
+  mixes **between the `unity_view` snapshot and the master-volume scaling**, so
+  it is on the DAC and in no recording. `Main − Σ(tracks)` is NOT the
+  metronome (`returnTracks`, `masterTrack`). See `docs/SHADOW_UI.md`.
+
 ### Quantized Sampler
 
 Shift+Sample. Source: resample (incl. Schwung synths) or Move Input. Duration in bars (or until stopped); uses MIDI clock, falls back to project tempo. Starts on note event or play. Saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`.

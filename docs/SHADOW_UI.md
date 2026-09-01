@@ -716,6 +716,64 @@ name the verb of the row **under the cursor** (the picker's filter row cycles
 and loads nothing, so `drawChainPicker` reads `clickVerb` off the row), and a
 one-row screen must not name a JOG with nowhere to go.
 
+### The metronome is missing by CONSTRUCTION, and detection is one exact string
+
+Under Move→Schwung, `rebuild_from_la` zeroes the mailbox and rebuilds it from
+Link Audio slots 0–3 — the four per-track channels — so it can insert per-slot
+FX. **Move mixes its metronome at MASTER, not into a track**, so it is absent
+from the reconstruction by construction. This is not a bug with a fix; nothing
+recovers it but generating our own click.
+
+**`Main − Σ(tracks)` is not the metronome.** Main is deliberately unsubscribed
+by the sidecar for measured reasons ("Main's ring overran", `link_subscriber.cpp`),
+and `Song.abl` carries `returnTracks` and a `masterTrack` — so the residual is
+metronome *plus* returns *plus* master-chain colouring. Two people have now
+reached for that subtraction; it does not work.
+
+**Detection is Move's own announcement, and the match is EXACT.** `MoveOriginal`
+holds `"Metronome\nOn"` and `"Metronome\nOff"` at 0x169474 and 0x1909d8, in the
+middle of its notification strings (`"Clip\ncreated"`, `"Notes\ndeleted"`), and
+pushes them out as `com.ableton.move.ScreenReader.text` — which `shadow_dbus.c`
+already receives through its catch-all `type='signal'` match.
+
+This is **not** the removed mute auto-correct. That rule matched any text
+*ending in* `" muted"` / `" soloed"`, so Move's own "Lay Down Kit muted" and
+Schwung's TTS looping back through the same handler both fired it, and it
+**persisted** the result — silencing slots across projects. Here the comparison
+is whole-string equality after normalising case and whitespace, Schwung never
+utters either string, and a `NONE` result changes nothing, so no unrelated
+announcement can clear the flag.
+
+**It is never persisted, and that is what makes boot correct.** `metronome`
+appears in neither `/data/UserData/settings/Settings.json` nor `Song.abl`, so
+**Move does not persist it either** — the metronome is off at every boot, and
+initialising `shadow_metronome_on = 0` is the truth rather than a guess. Writing
+it to disk is the one change that could make it wrong.
+
+Two rejected sources, so they are not re-litigated: the **step-6 icon LED** also
+lights while Shift is held and in other step contexts, so lit ≠ metronome on;
+and **`mIsMetronomeOn` is an assert-expression string** (it sits beside
+`iPos != mSteps.end()`), not a reflection table, in a stripped binary — there is
+no deterministic memory anchor.
+
+**Where the click is mixed is the whole design.** It goes into `mailbox_audio`
+*after* `native_capture_total_mix_snapshot_from_buffer(unity_view)` and *before*
+the `rebuild_from_la && mv < 0.9999f` scaling: out of the Quantized Sampler,
+Skipback and the resample bridge, so a resample stays clean — and still tracking
+the volume knob and getting speaker EQ. `tests/host/test_metronome_mix_point.sh`
+pins that order, because moving the call up one block keeps the click working and
+silently starts recording it.
+
+The render is gated on `rebuild_from_la` in **every** mode, `On` included.
+Outside Move→Schwung, Move's own metronome is audible, so the gate is what stops
+it doubling — placed once, where it cannot be forgotten, rather than expressed as
+a fourth mode.
+
+**Known gap:** the one-bar **count-in** click plays even with the metronome off
+(`isUsingCountIn` in Settings.json), is equally silent under `rebuild_from_la`,
+and has no announcement to key off. Record + transport is not a sufficient
+signal. Not covered.
+
 ### Snapshot / recall: what it restores, and what it deliberately does not
 
 Shift+Copy snapshots all 4 slots plus all 8 Master FX positions; Shift+Delete
