@@ -582,6 +582,29 @@ globalThis.chain_ui = {
 };
 ```
 
+#### If your `ui_chain.js` draws the knob grid (`param_pages`)
+
+A module may bind Schwung's own page engine instead of drawing its own screens
+— import `page_controller.mjs` from `/data/UserData/schwung/shared/param_pages/`
+and you get the whole knob grid, the widgets, the viz graphics, the section
+picker and the gestures for free.
+
+**Then two calls are yours, not one:**
+
+```javascript
+clear_screen();                                   /* the frame is YOURS */
+controller.render(ctx, { title: title() });
+controller.renderOverlays(ctx, { clearScreen: clear_screen });
+```
+
+The library never clears the screen — that is what lets `render()` place a page
+inside a rect you own — so anything full-screen is handed back to you.
+Today that is the enum peek: turn a multi-option enum and its option list
+should rise over the grid for ~700 ms. Skip `renderOverlays` and the controller
+still tracks the peek and still swallows the Back that dismisses it; it is
+simply never painted, with no error anywhere. Two shipped modules had exactly
+that bug.
+
 #### Back-button handling (`handleBack`)
 
 A chain module's `ui_chain.js` may export `handleBack()`. When the shadow UI is in
