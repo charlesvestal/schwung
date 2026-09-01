@@ -21708,6 +21708,35 @@ globalThis.tick = function() {
                                 debugLog("SET_CHANGED: requested Link tempo override " + bpm.toFixed(2) + " BPM");
                             }
                         }
+
+                        /*
+                         * Bar length for the metronome's downbeat accent.
+                         *
+                         * Parsed from the SAME songJson the tempo override
+                         * above already read — a second host_read_file for the
+                         * same file on the same event would be two reads that
+                         * can disagree.
+                         *
+                         * This is the shadow UI thread (SCHED_OTHER), which is
+                         * where every file op on SET_CHANGED belongs:
+                         * shadow_handle_set_loaded runs on the audio thread and
+                         * deliberately does no I/O at all.
+                         *
+                         * The [^}]*? keeps the match INSIDE the timeSignature
+                         * object, so an unrelated top-level "upper" cannot be
+                         * picked up. Unknown pushes 0 and the shim clamps to 4.
+                         */
+                        const ts = /"timeSignature"\s*:\s*\{[^}]*?"upper"\s*:\s*([0-9]+)/.exec(songJson);
+                        let upper = 0;
+                        if (ts && ts[1]) {
+                            const n = parseInt(ts[1], 10);
+                            if (n >= 1 && n <= 32) upper = n;
+                        }
+                        if (typeof shadow_metronome_beats_set === "function") {
+                            shadow_metronome_beats_set(upper);
+                        }
+                        debugLog("SET_CHANGED: metronome beats_per_bar = " +
+                                 (upper || "unknown (shim clamps to 4)"));
                     }
                 } catch (e) {
                     debugLog("SET_CHANGED: tempo-override write failed: " + e);
