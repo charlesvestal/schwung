@@ -177,10 +177,12 @@ static bool midi_indicator_enabled_setting = false; /* Off by default; persisted
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
-/* "Stay in Schwung": a plain Track tap while the shadow UI is up switches slot
+/* "Keep Schwung": a plain Track tap while the shadow UI is up switches slot
  * instead of dismissing back to Move. Boot value from features.json; the live
- * value rides in shadow_control->stay_in_shadow. Default off. */
-static bool stay_in_shadow_setting = false;
+ * value rides in shadow_control->stay_in_shadow. DEFAULT ON — a track button
+ * selects a track, which is what it does everywhere else on this hardware; the
+ * dismiss was never a decision, it was the only way out before Shift+Track. */
+static bool stay_in_shadow_setting = true;
 
 /* Skipback resize hook — runs on the shim worker (off the audio path). */
 static void shim_hook_skipback_resize(void) {
@@ -1064,15 +1066,18 @@ static void load_feature_config(void)
         }
     }
 
-    /* Parse stay_in_shadow (defaults to false) */
+    /* Parse stay_in_shadow (defaults to true). Tests for "false", not for
+     * "true": a default-on flag parsed the other way round can only ever be
+     * turned ON by the file, so switching it off would silently do nothing —
+     * the same shape as ext_midi_remap_enabled and set_pages_enabled above. */
     const char *stay_key = strstr(config_buf, "\"stay_in_shadow\"");
     if (stay_key) {
         const char *colon = strchr(stay_key, ':');
         if (colon) {
             colon++;
             while (*colon == ' ' || *colon == '\t') colon++;
-            if (strncmp(colon, "true", 4) == 0) {
-                stay_in_shadow_setting = true;
+            if (strncmp(colon, "false", 5) == 0) {
+                stay_in_shadow_setting = false;
             }
         }
     }

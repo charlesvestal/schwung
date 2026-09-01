@@ -552,8 +552,8 @@ component load gate, and the input-dispatch order. Read it before editing
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
   branches on that. **A child level lists TEMPLATES** — resolve them through
   `child_key.mjs` or a drum module files 200+ keys under "Other".
-- **A Track tap dismisses, and `Keep Schwung` is the only thing that changes
-  it** — enforced in the SHIM, on the PRESS, *outside* the long-press block
+- **A Track tap switches SLOT (`Keep Schwung`, default ON — a reversal); off it
+  dismisses** — enforced in the SHIM, on the PRESS, *outside* the long-press block
   (that block is gated on the trigger mode, so a jump inside it works on
   `Both`/`Hold` and silently not on `Shift+Vol`). Shift+Track still exits. It is
   a **bool**, not a two-option enum: same click path, but only `off|on|…` words
@@ -587,9 +587,9 @@ is on screen):
 - Hold Menu (500ms) → Master FX
 - Shift + hold Step 2 (500ms) → Global Settings
 - Shift + Step 13 (immediate) → Tools menu
-- Tap Track / Menu while shadow UI shown → dismiss (Track only: **Global
-  Settings → Display → Keep Schwung** switches slot and stays in Schwung
-  instead; Shift+Track still exits either way)
+- Tap Menu while shadow UI shown → dismiss. **Tap Track → switch to that slot**
+  (**Global Settings → Display → Keep Schwung**, default ON; off restores the
+  old dismiss). Shift+Track dismisses either way.
 
 Long-press is suppressed once the volume knob is touched during a track press (so Track-hold + knob adjusts track volume without opening shadow UI). See `track_vol_touched_during_press[]` in `schwung_shim.c`.
 
