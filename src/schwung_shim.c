@@ -42,6 +42,7 @@
 #include "host/shadow_constants.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_test_stream.h"
+#include "host/shadow_metronome.h"
 #include "host/shadow_chain_types.h"
 #include "host/unified_log.h"
 #include "host/schwung_trace.h"
@@ -2806,6 +2807,33 @@ skip_la_rebuild:
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(unity_view);
+
+    /*
+     * Schwung's metronome. Move mixes its own at MASTER, which rebuild_from_la
+     * discards along with everything outside the four per-track channels, so
+     * under Move->Schwung there is no click unless we make one.
+     *
+     * POSITION IS THE WHOLE DESIGN. unity_view was snapshotted immediately
+     * above, so the click is absent from the Quantized Sampler, Skipback and
+     * the native resample bridge — a resample stays clean. It goes in before
+     * the master-volume scaling below, so it tracks the knob and gets speaker
+     * EQ like everything else on the DAC.
+     *
+     * Gated on rebuild_from_la in EVERY mode, "On" included: outside it Move's
+     * own metronome is audible and this would double it. That is why the gate
+     * is here rather than a fourth mode option — it cannot be forgotten.
+     */
+    if (rebuild_from_la && shadow_control) {
+        shadow_metronome_render(mailbox_audio, FRAMES_PER_BLOCK,
+                                shadow_control->metronome_mode,
+                                shadow_metronome_on,
+                                sampler_transport_playing,
+                                shadow_transport_pulses,
+                                shadow_control->metronome_beats_per_bar,
+                                shadow_control->metronome_level);
+    } else {
+        shadow_metronome_reset();
+    }
 
     /* Under rebuild_from_la, the mailbox was built at unity (per-slot vol only,
      * no master vol). Apply master volume now so DAC output respects the knob.
