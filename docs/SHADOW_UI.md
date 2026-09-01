@@ -80,13 +80,29 @@ shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
 hand-listed), a key-specific saver welded to the assignment, or backend-owned.
 Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
 
-### A Track tap dismisses, and "Track Tap: Stay" is the ONLY thing that changes
+### A Track tap dismisses, and "Keep Schwung" is the ONLY thing that changes
 
-Global Settings -> Display -> **Track Tap** (`stay_in_shadow` in `features.json`,
-default `Exit`). On `Stay`, tapping a Track button while the shadow UI is up
-switches to that slot's editor instead of handing the screen back to Move.
+Global Settings -> Display -> **Keep Schwung** (`stay_in_shadow` in
+`features.json`, default Off). On, tapping a Track button while the shadow UI is
+up switches to that slot's editor instead of handing the screen back to Move.
 
-Three things about it are easy to get wrong, and each fails silently:
+**It is a BOOL because of the WIDGET.** It shipped for one round as an enum of
+`["Exit", "Stay"]` — two options, identical meta, identical click behaviour
+(`flipsOnClick` focuses it in a list and flips it on a grid) — and still drew
+differently from every switch beside it: `detectSwitch` picks the switch pill
+via `isBooleanMeta`, whose option test is `BOOL_OPTION`
+(`off|on|no|yes|0|1|false|true|disabled|enabled`), so "Exit"/"Stay" fell through
+to the ENUM SQUARE, the widget that means "there is a list behind this", and
+peeked its options on the knob. Reported from the device as *"why is the setting
+a menu, unlike display mirroring?"*. The rule is right and stays — a switch
+draws its state as a POSITION and cannot show the word "Stay", which is what
+`docs/PARAM_PAGES.md` records as "suppressed on the WIDGET, never on the option
+count" over 134 fleet cells. A genuine two-way choice (Saw/Square) is an enum
+square; a boolean is spelled as a boolean. **A two-option enum and a bool are
+NOT interchangeable, and nothing about the click path tells you so** — the whole
+difference is which widget draws it.
+
+Three things about the behaviour are easy to get wrong, and each fails silently:
 
 - **It is enforced in the SHIM, not in JS.** The dismiss it suppresses is a
   shim-side state change (`shadow_display_mode = 0` in the cable-0 Track CC

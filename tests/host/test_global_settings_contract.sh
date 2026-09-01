@@ -284,7 +284,7 @@ const plan = planPages({ hierarchy, chainParams });
     display_mirror: "Mirror Display", overlay_knobs: "Overlay",
     pad_typing: "Pad Typing", text_preview: "Show Typed",
     midi_indicator_enabled: "Show MIDI", param_view: "Param View",
-    stay_in_shadow: "Track Tap",
+    stay_in_shadow: "Keep Schwung",
     link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
     latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
     skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",

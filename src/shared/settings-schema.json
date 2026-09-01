@@ -55,16 +55,8 @@
       },
       {
         "key": "stay_in_shadow",
-        "label": "Track Tap",
-        "type": "enum",
-        "options": [
-          "Exit to Move",
-          "Stay in Schwung"
-        ],
-        "values": [
-          0,
-          1
-        ]
+        "label": "Keep Schwung",
+        "type": "bool"
       }
     ]
   },

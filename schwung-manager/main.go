@@ -2314,7 +2314,7 @@ func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
 		values["screen_reader_volume"] = float64(app.shm.TTSVolume())
 		values["screen_reader_debounce"] = float64(app.shm.TTSDebounce())
 		values["set_pages_enabled"] = app.shm.SetPagesEnabled()
-		values["stay_in_shadow"] = float64(boolToInt(app.shm.StayInShadow()))
+		values["stay_in_shadow"] = app.shm.StayInShadow()
 		values["skipback_shortcut"] = float64(boolToInt(app.shm.SkipbackRequireVolume()))
 		if s := app.shm.SkipbackSeconds(); s > 0 {
 			values["skipback_seconds"] = float64(s)
@@ -2372,7 +2372,7 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 		// Feature flag — read, update, write features.json.
 		ft := readJSONFile(featuresPath)
 		switch key {
-		case "skipback_shortcut", "stay_in_shadow":
+		case "skipback_shortcut":
 			val, _ := strconv.Atoi(value)
 			ft[featKey] = val != 0
 		case "skipback_seconds":
@@ -2502,7 +2502,7 @@ func (app *App) applyShmSetting(key, value string) {
 	case "set_pages_enabled":
 		app.shm.SetSetPagesEnabled(value == "true")
 	case "stay_in_shadow":
-		app.shm.SetStayInShadow(value != "0" && value != "false")
+		app.shm.SetStayInShadow(value == "true")
 	case "skipback_shortcut":
 		app.shm.SetSkipbackRequireVolume(value != "0" && value != "false")
 	case "skipback_seconds":
