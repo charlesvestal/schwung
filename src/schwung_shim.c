@@ -6548,6 +6548,43 @@ static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
  *   - MIDI_IN filtering
  *   - All post-ioctl domain logic (track detection, shortcuts, DSP rendering)
  * ============================================================================ */
+/*
+ * Swallow one MIDI_IN event so NOBODY sees it — Move or us.
+ *
+ * There are two buffers and they have different readers, which is the whole
+ * reason this helper exists:
+ *
+ *   shadow  (= global_mmap_addr) is WHAT MOVE SEES.
+ *   src     (= hardware_mmap_addr) is the real mailbox, which Move never
+ *           reads; Schwung's own post-ioctl scans and shadow_forward_midi do.
+ *
+ * Twelve sites in shim_post_transfer meant "block this from reaching Move" and
+ * eleven of them zeroed only the HARDWARE mailbox. That does not block Move at
+ * all — and it is worse than a no-op, because a zeroed slot is a TERMINATOR,
+ * so it hid every event behind it from our own readers. Precisely backwards
+ * from the intent, at every one of them. It surfaced when Shift+Delete reached
+ * Move and deleted a clip; the other ten leak into Capture, Sample, Back, Jog
+ * Click and the arrows, none of which is destructive, which is why they had
+ * gone unnoticed and why the broken pattern looked like the house style.
+ *
+ * Index-paired, and safe only because shadow_midi_in_compact() runs LAST in
+ * shim_post_transfer: nothing may move a slot between the two writes.
+ *
+ * Takes both bases rather than reading globals so it stays usable from the
+ * loops that have already offset their own pointer.
+ */
+static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in, int j)
+{
+    if (shadow_midi_in) {
+        shadow_midi_in[j] = 0; shadow_midi_in[j + 1] = 0;
+        shadow_midi_in[j + 2] = 0; shadow_midi_in[j + 3] = 0;
+    }
+    if (hw_midi_in) {
+        hw_midi_in[j] = 0; hw_midi_in[j + 1] = 0;
+        hw_midi_in[j + 2] = 0; hw_midi_in[j + 3] = 0;
+    }
+}
+
 static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
 {
     (void)ctx;
@@ -7463,9 +7500,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
-                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                            midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         }
 
                         /* Shift + Track (without Volume / Mute) while shadow UI is displayed = dismiss shadow UI
@@ -7492,9 +7527,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * what Move reads, src keeps the debug scan honest. */
                         if (!pressed && track_swallow_release[lp_slot]) {
                             track_swallow_release[lp_slot] = 0;
-                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                            midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         }
                         if (pressed) {
                             track_swallow_release[lp_slot] = 0;
@@ -7561,7 +7594,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         shadow_control->suspend_overtake = 1;
                         shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                         /* Block Back from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7580,7 +7613,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                         }
                         /* Block Jog Click from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7592,7 +7625,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (require_vol && !SHIFT_VOL_ACTIVE()) require_vol = 0;
                     if (!require_vol || shadow_volume_knob_touched) {
                         skipback_trigger_save();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7658,9 +7691,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * runs LAST in this function — nothing may move a slot
                          * between these two writes.
                          */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         if (d2 == 0) snapshot_gesture_swallow[gi] = 0;
                     }
                 }
@@ -7670,10 +7701,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_shift_held && shadow_volume_knob_touched && d2 > 0) {
                     if (d1 == CC_LEFT && set_page_current > 0) {
                         shadow_change_set_page(set_page_current - 1);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (d1 == CC_RIGHT && set_page_current < SET_PAGES_TOTAL - 1) {
                         shadow_change_set_page(set_page_current + 1);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7720,17 +7751,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_log("Sampler: preroll cancelled via Shift+Sample");
                             sampler_request_stop();
                         }
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (sampler_state == SAMPLER_RECORDING) {
                         /* Bare Sample while recording: stop */
                         shadow_log("Sampler: stopped via Sample button");
                         sampler_request_stop();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (sampler_state == SAMPLER_PREROLL) {
                         /* Bare Sample while preroll: cancel back to armed */
                         shadow_log("Sampler: preroll cancelled via Sample button");
                         sampler_request_stop();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7743,7 +7774,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_overlay_sync();
                     shadow_log("Sampler: fullscreen dismissed via Back");
                     send_screenreader_announcement("Sampler hidden. Shift+Sample to resume.");
-                    src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
 
                 /* Jog wheel while sampler is armed = navigate menu */
@@ -7760,7 +7791,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
                     /* Block jog from reaching Move/shadow UI */
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
 
                 /* Jog click while sampler is armed = cycle selected menu item */
@@ -7776,7 +7807,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
             }
 
@@ -7826,9 +7857,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7843,9 +7872,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (LONG_PRESS_ACTIVE() && shadow_shift_held &&
                                !shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                         /* Shift+Step13 without Vol — immediate tools shortcut.
@@ -7859,9 +7886,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         clock_gettime(CLOCK_MONOTONIC, &step13_press_time);
                         step13_longpress_pending = 1;
                         step13_longpress_fired = 0;
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         shadow_log("Shift+Step13: opening tools");
                     }
                 }

@@ -63,12 +63,10 @@ echo "$block" | grep -q "if (snapshot_gesture_swallow\[gi\]) {" \
 #
 # Index-paired and safe only because shadow_midi_in_compact runs LAST in
 # shim_post_transfer — nothing may move a slot between the two writes.
-echo "$block" | grep -q "uint8_t \*sh = shadow + MIDI_IN_OFFSET;" \
-  || note "the gesture does not zero the SHADOW buffer — Move still sees the button"
-echo "$block" | grep -q "sh\[j\] = 0; sh\[j+1\] = 0; sh\[j+2\] = 0; sh\[j+3\] = 0;" \
-  || note "the shadow buffer slot is not zeroed"
-echo "$block" | grep -q "src\[j\] = 0; src\[j+1\] = 0; src\[j+2\] = 0; src\[j+3\] = 0;" \
-  || note "the hardware mailbox slot is not zeroed"
+echo "$block" | grep -q "midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);" \
+  || note "the gesture does not go through midi_in_swallow — it will silence only one buffer"
+echo "$block" | grep -qE "^\s*src\[j\] = 0;" \
+  && note "the gesture zeroes the hardware mailbox by hand — Move reads the SHADOW buffer"
 echo "$block" | grep -q "if (d2 == 0) snapshot_gesture_swallow\[gi\] = 0;" \
   || note "the latch is never cleared — Copy/Delete would be dead to Move forever"
 grep -q "static int snapshot_gesture_swallow\[2\] = {0, 0};" "$SHIM" \

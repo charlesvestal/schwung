@@ -253,6 +253,27 @@ One drop, two stuck consumers, with the note-off sitting present and correctly
 ordered in the raw hardware mailbox the whole time. That last part is what makes
 this look like it must be somewhere else; it isn't.
 
+### Blocking an event means silencing TWO buffers, and eleven sites silenced one
+
+`shadow` (`= global_mmap_addr`) is **what Move sees**. `hardware_mmap_addr` is
+the real mailbox, which **Move never reads** — Schwung's own post-ioctl scans
+do. Twelve sites in `shim_post_transfer` meant "block this from reaching Move"
+and **eleven zeroed only the hardware mailbox**: no block at all, and worse than
+a no-op, because a zeroed slot is a terminator, so they hid every event *behind*
+them from our own readers. Exactly backwards, at every one.
+
+It surfaced only when **Shift+Delete reached Move and deleted a clip**. The
+other ten leaked into Capture, Sample, Back, Jog Click and the arrows — none
+destructive, which is why they went unnoticed and why the broken form read as
+the house style. `midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)` is now the
+only sanctioned way; `tests/host/test_midi_in_swallow_pairs_buffers.sh` fails on
+any hand-rolled hardware-mailbox zeroing.
+
+**Swallowing a button needs BOTH EDGES, latched.** Press-only leaves Move a lone
+button-up for a key it never saw go down, and Move acts on it. The release
+cannot be gated on `shadow_shift_held` either — Shift is usually let go *before*
+the button.
+
 `shadow_midi_in_compact()` (`src/host/shadow_midi_filter.c`) closes the gaps and
 runs **last** in `shim_post_transfer` — the blocking sites above it pair `sh[j]`
 with `hw[j]` by index, so nothing may move while they run. Zero a slot after it
