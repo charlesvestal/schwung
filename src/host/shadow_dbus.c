@@ -31,6 +31,7 @@
 #endif
 
 #include "shadow_dbus.h"
+#include "metronome_announce.h"
 
 /* ============================================================================
  * Internal state
@@ -49,6 +50,20 @@ volatile int     native_knob_any_touched = 0;
 volatile uint8_t native_knob_mapped[8] = {0};
 
 volatile int in_set_overview = 0;
+
+/*
+ * 1 = Move's metronome is on, learned from Move's own "Metronome On" /
+ * "Metronome Off" announcement (see metronome_announce.h).
+ *
+ * NOT PERSISTED, deliberately. Move does not persist it either — `metronome`
+ * appears in neither /data/UserData/settings/Settings.json nor Song.abl — so
+ * the metronome is off at every boot and 0 is the TRUTH, not a guess. Writing
+ * it to disk is the one thing that could make it wrong.
+ *
+ * Written on the D-Bus monitor thread, read on the SPI callback. A plain
+ * volatile int, the same as in_set_overview above.
+ */
+volatile int shadow_metronome_on = 0;
 
 bool tts_priority_announcement_active = false;
 uint64_t tts_priority_announcement_time_ms = 0;
@@ -241,6 +256,28 @@ static void shadow_dbus_handle_text(const char *text)
 
     /* Track native Move sampler source from stock announcements. */
     host.native_sampler_update(text);
+
+    /*
+     * Move's metronome, from Move's own notification.
+     *
+     * EXACT equality on the whole normalised string — see metronome_announce.h
+     * for why this is not the mute auto-correct that had to be removed. A NONE
+     * result changes NOTHING, so no unrelated announcement, and no Schwung TTS
+     * looping back through this same handler, can ever clear the flag.
+     */
+    {
+        metronome_announce_t m = metronome_announce_classify(text);
+        if (m != METRONOME_ANNOUNCE_NONE) {
+            int now_on = (m == METRONOME_ANNOUNCE_ON);
+            if (now_on != shadow_metronome_on) {
+                shadow_metronome_on = now_on;
+                char msg[64];
+                snprintf(msg, sizeof(msg), "Metronome: Move reports %s",
+                         now_on ? "ON" : "OFF");
+                host.log(msg);
+            }
+        }
+    }
 
     /* Set page: detect Set Overview screen for Shift+Vol+Left/Right interception */
     if (strcasecmp(text, "Set Overview") == 0 || strcasecmp(text, "Sets") == 0) {

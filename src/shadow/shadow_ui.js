@@ -8796,6 +8796,48 @@ function loadRecallQuantize() {
     setRecallQuantize(v);
 }
 
+/*
+ * Metronome. Mirrors recallQuantizeValue above: the setting persists in
+ * features.json, the register in SHM does not, so JS reads the file at startup
+ * and pushes the value down.
+ */
+let metronomeMode = 1;                 /* 0 off, 1 follow, 2 on — default Follow */
+let metronomeLevel = 50;               /* percent */
+const METRONOME_MODE_NAMES = ["off", "follow", "on"];
+
+function setMetronome(mode, level) {
+    metronomeMode = (mode >= 0 && mode <= 2) ? mode : 0;
+    metronomeLevel = (level >= 0 && level <= 100) ? level : 50;
+    if (typeof shadow_metronome_set === "function") {
+        shadow_metronome_set(metronomeMode, metronomeLevel);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadMetronome() {
+    /* Default Follow: under Move->Schwung the click is missing, so shipping the
+     * fix switched off would leave it missing for everyone who has the problem.
+     * Follow is silent unless Move's own metronome is on. */
+    let mode = 1, level = 50;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const mm = /"metronome_mode"\s*:\s*"([^"]*)"/.exec(raw);
+            if (mm) {
+                const i = METRONOME_MODE_NAMES.indexOf(mm[1]);
+                if (i >= 0) mode = i;
+            }
+            const ml = /"metronome_level"\s*:\s*([0-9]+)/.exec(raw);
+            if (ml && ml[1]) {
+                const v = parseInt(ml[1], 10);
+                if (v >= 0 && v <= 100) level = v;
+            }
+        }
+    } catch (e) { debugLog("metronome read failed: " + e); }
+    setMetronome(mode, level);
+}
+
 /* Service the snapshot gesture flags. Called from the flag block in tick(). */
 function snapshotServiceFlags(flags) {
     const SNAPSHOT_FLAGS = SHADOW_UI_FLAG_SNAPSHOT_TAKE |
@@ -12209,6 +12251,10 @@ function globalGridIoFor() {
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
             case "recall_quantize":
                 return String(recallQuantizeValue);
+            case "metronome_mode":
+                return String(metronomeMode);
+            case "metronome_level":
+                return String(metronomeLevel);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
@@ -12331,6 +12377,12 @@ function globalGridIoFor() {
             case "recall_quantize":
                 setRecallQuantize(parseInt(value, 10) || 0);
                 break;
+            case "metronome_mode":
+                setMetronome(parseInt(value, 10) || 0, metronomeLevel);
+                return;
+            case "metronome_level":
+                setMetronome(metronomeMode, Math.round(parseFloat(value)));
+                return;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
                 return;
@@ -20905,6 +20957,7 @@ globalThis.init = function() {
      * this whole feature is written to avoid. */
     try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
 
     /* Analytics: emit app_launched + census + diff against previous snapshot.
      * app_launched must emit here (not in shadow_ui.c main()) because
@@ -21658,6 +21711,35 @@ globalThis.tick = function() {
                                 debugLog("SET_CHANGED: requested Link tempo override " + bpm.toFixed(2) + " BPM");
                             }
                         }
+
+                        /*
+                         * Bar length for the metronome's downbeat accent.
+                         *
+                         * Parsed from the SAME songJson the tempo override
+                         * above already read — a second host_read_file for the
+                         * same file on the same event would be two reads that
+                         * can disagree.
+                         *
+                         * This is the shadow UI thread (SCHED_OTHER), which is
+                         * where every file op on SET_CHANGED belongs:
+                         * shadow_handle_set_loaded runs on the audio thread and
+                         * deliberately does no I/O at all.
+                         *
+                         * The [^}]*? keeps the match INSIDE the timeSignature
+                         * object, so an unrelated top-level "upper" cannot be
+                         * picked up. Unknown pushes 0 and the shim clamps to 4.
+                         */
+                        const ts = /"timeSignature"\s*:\s*\{[^}]*?"upper"\s*:\s*([0-9]+)/.exec(songJson);
+                        let upper = 0;
+                        if (ts && ts[1]) {
+                            const n = parseInt(ts[1], 10);
+                            if (n >= 1 && n <= 32) upper = n;
+                        }
+                        if (typeof shadow_metronome_beats_set === "function") {
+                            shadow_metronome_beats_set(upper);
+                        }
+                        debugLog("SET_CHANGED: metronome beats_per_bar = " +
+                                 (upper || "unknown (shim clamps to 4)"));
                     }
                 } catch (e) {
                     debugLog("SET_CHANGED: tempo-override write failed: " + e);

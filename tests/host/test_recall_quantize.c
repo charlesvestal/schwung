@@ -13,11 +13,20 @@
 int main(void) {
     const int BEAT = 24, BAR = 96, TWO_BAR = 192;
 
-    /* ---- the NEXT boundary, never the current one -------------------- */
+    /* ---- the NEXT boundary, never the current one --------------------
+     *
+     * THE GRID IS OFFSET BY ONE PULSE. The downbeat is pulse 1, not pulse 0:
+     * shadow_transport_pulses is zeroed on MIDI Start and the first clock
+     * increments it, and that first clock IS the downbeat (transport_grid.h).
+     * These assertions all used to read one pulse lower, and were green while
+     * every quantized recall fired one pulse early — 20.8 ms at 120 BPM.
+     * Inaudible for a snapshot recall in a way it was not for the metronome,
+     * which is how it survived: same counter, same off-by-one, one complaint.
+     */
 
-    /* Mid-beat: the following beat. */
-    assert(recall_next_boundary(5, BEAT) == 24);
-    assert(recall_next_boundary(23, BEAT) == 24);
+    /* Mid-beat: the following beat, which is at 24N+1. */
+    assert(recall_next_boundary(5, BEAT) == 25);
+    assert(recall_next_boundary(24, BEAT) == 25);
 
     /*
      * EXACTLY on the boundary still means the NEXT one. Pressing on the
@@ -25,20 +34,31 @@ int main(void) {
      * quantize being off, which is the one outcome that makes the feature look
      * broken rather than merely early or late.
      */
-    assert(recall_next_boundary(0, BEAT) == 24);
-    assert(recall_next_boundary(24, BEAT) == 48);
-    assert(recall_next_boundary(96, BAR) == 192);
+    assert(recall_next_boundary(1, BEAT) == 25);
+    assert(recall_next_boundary(25, BEAT) == 49);
+    assert(recall_next_boundary(97, BAR) == 193);
 
     /* Bars and two-bars land on their own grid, not on beats. */
-    assert(recall_next_boundary(1, BAR) == 96);
-    assert(recall_next_boundary(95, BAR) == 96);
-    assert(recall_next_boundary(97, BAR) == 192);
-    assert(recall_next_boundary(1, TWO_BAR) == 192);
-    assert(recall_next_boundary(191, TWO_BAR) == 192);
+    assert(recall_next_boundary(2, BAR) == 97);
+    assert(recall_next_boundary(96, BAR) == 97);
+    assert(recall_next_boundary(98, BAR) == 193);
+    assert(recall_next_boundary(2, TWO_BAR) == 193);
+    assert(recall_next_boundary(192, TWO_BAR) == 193);
+
+    /* The old, WRONG answers must now be impossible. Inverted rather than
+     * deleted: these are the exact values that were asserted while the bug
+     * was live. */
+    assert(recall_next_boundary(5, BEAT) != 24);
+    assert(recall_next_boundary(2, BAR) != 96);
+
+    /* Before the first clock after Start, the next boundary IS that downbeat —
+     * there is no earlier one to stand on. */
+    assert(recall_next_boundary(0, BEAT) == 1);
+    assert(recall_next_boundary(0, BAR) == 1);
 
     /* Off, and defensive inputs. */
     assert(recall_next_boundary(50, 0) == -1);
-    assert(recall_next_boundary(-5, BEAT) == 24);
+    assert(recall_next_boundary(-5, BEAT) == 1);
 
     /* ---- the lead ---------------------------------------------------- */
 
@@ -82,9 +102,9 @@ int main(void) {
     {
         int target = recall_next_boundary(5, BEAT);
         int lead = recall_lead_pulses(120.0f, BEAT, 36);
-        assert(target == 24 && lead == 1);
-        for (int p = 5; p < 23; p++) assert(!recall_should_fire(p, target, lead));
-        assert(recall_should_fire(23, target, lead));
+        assert(target == 25 && lead == 1);
+        for (int p = 5; p < 24; p++) assert(!recall_should_fire(p, target, lead));
+        assert(recall_should_fire(24, target, lead));
     }
 
     printf("PASS test_recall_quantize\n");
