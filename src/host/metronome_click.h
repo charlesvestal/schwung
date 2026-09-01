@@ -15,6 +15,18 @@
 
 #include <math.h>
 
+/*
+ * M_PI IS NOT IN C11. It is a POSIX/X-Open extension, so gcc with -std=c11 on
+ * glibc does not define it — while clang on macOS does, unconditionally. The
+ * dev machine therefore compiled this happily and CI did not:
+ *
+ *   metronome_click.h:138: error: 'M_PI' undeclared (first use in this function)
+ *
+ * Spelled out rather than reached for through a feature-test macro, so this
+ * header stays dependency-free and compiles the same everywhere.
+ */
+#define METRONOME_TWO_PI 6.28318530717958647692f
+
 #include "transport_grid.h"
 
 /* Both of these are properties of shadow_transport_pulses, not of the
@@ -110,7 +122,7 @@ static inline void metronome_voice_trigger(metronome_voice_t *v, float freq_hz,
     if (!(sr > 0.0f)) sr = 44100.0f;
     if (!(decay_s > 0.0f)) decay_s = METRONOME_DECAY_SECONDS;
     v->phase = 0.0f;
-    v->phase_inc = 2.0f * (float)M_PI * freq_hz / sr;
+    v->phase_inc = METRONOME_TWO_PI * freq_hz / sr;
     v->amp = amp;
     /* Reach -60 dB in decay_s. */
     v->decay = expf(-6.907755f / (decay_s * sr));
@@ -124,7 +136,7 @@ static inline float metronome_voice_next(metronome_voice_t *v)
     if (v->amp <= METRONOME_SILENCE_EPS) { v->amp = 0.0f; return 0.0f; }
     float s = sinf(v->phase) * v->amp;
     v->phase += v->phase_inc;
-    if (v->phase > 2.0f * (float)M_PI) v->phase -= 2.0f * (float)M_PI;
+    if (v->phase > METRONOME_TWO_PI) v->phase -= METRONOME_TWO_PI;
     v->amp *= v->decay;
     return s;
 }
