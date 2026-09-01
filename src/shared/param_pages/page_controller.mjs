@@ -41,6 +41,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
 import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
+import { drawEnumList } from "./enum_list.mjs";
 
 export { LAYOUT_MOVY };
 
@@ -3670,6 +3671,65 @@ export function createController(io = {}) {
         });
     }
 
+    /*
+     * WHAT render() DOES NOT DRAW, AND WHY IT CANNOT.
+     *
+     * render() paints a page into a rect the CALLER owns. Nothing in
+     * src/shared/param_pages/ clears the screen -- grep it, there is not one
+     * clear_screen in the whole library -- and that is the contract `rect` and
+     * `bands` depend on: a consumer hosting a page inside its own chrome
+     * (movy's header, a tool's status row) must get the body alone. See the
+     * bands comment in render().
+     *
+     * The enum peek is the opposite kind of screen: FULL, over the top, on
+     * purpose, because while you are turning a knob you are not reading the
+     * rest of the grid. It therefore cannot live inside render() -- it would
+     * ignore the caller's rect and blank a frame the caller composed -- and it
+     * lived in the host binding instead, where the clear was available.
+     *
+     * That made it INVISIBLE TO EVERY OTHER CONSUMER. A module binding
+     * page_controller from its own ui_chain.js calls render() and stops, which
+     * is what every line of the library suggests is the whole draw; the
+     * controller then tracks a peek on every enum detent that is never
+     * painted, and applyInput dutifully routes Back to dismissPeek() to take
+     * down a panel nobody can see. Silent, with no error, and not discoverable
+     * from the API -- CW-78 and 6W6 both shipped that way, with a correct
+     * integration in every other respect.
+     *
+     * So the obligation is a FUNCTION rather than a paragraph in a doc. A
+     * caller that owns the frame calls render() then renderOverlays(), and a
+     * caller embedding a page in its own chrome passes no clearScreen and
+     * simply gets nothing -- a full-screen overlay is meaningless there.
+     *
+     * `ctx` is render()'s, plus `clearScreen`. Returns true when something was
+     * drawn, so a caller that flushes conditionally can tell.
+     */
+    function renderOverlays(ctx, { clearScreen } = {}) {
+        const peek = enumPeek();
+        if (!peek) return false;
+        /*
+         * No clear, no overlay. Drawing the list into a frame we may not blank
+         * would leave it interleaved with the grid underneath -- two screens at
+         * once, which is worse than the one we have.
+         */
+        if (typeof clearScreen !== "function") return false;
+        clearScreen();
+        drawEnumList(ctx, {
+            title: peek.title,
+            /* Not "SELECT". Nothing is being selected -- the value is already
+             * set -- and naming a gesture the screen does not have is how a
+             * user learns to press a button that does nothing. */
+            headerRight: "TURNING",
+            options: peek.options,
+            index: peek.index,
+            /* Cursor and live value are the SAME here, unlike the picker where
+             * the `*` marks what Back would return you to. */
+            markIndex: peek.index,
+            footer: [["TURN", "SET"]],
+        });
+        return true;
+    }
+
     let vizCache = null;
     function vizGroups() {
         const p = page();
@@ -3954,7 +4014,8 @@ export function createController(io = {}) {
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },
-        setLayout, setReveal, setDecorations, render, announceContents,
+        setLayout, setReveal, setDecorations, render, renderOverlays,
+        announceContents,
         get state() { return s; },
         get page() { return page(); },
         get pages() { return s.pages; },

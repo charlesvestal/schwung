@@ -467,6 +467,34 @@ at a time. `dismissPeek` goes through `enumPeek()` so an EXPIRED peek is not a
 layer: swallowing one press is a layer, swallowing two is a trap, and this
 screen has no other way out.
 
+**`render()` is not the whole draw — the peek is `renderOverlays()`.** Nothing
+in `src/shared/param_pages/` clears the screen; grep it. That is the contract
+`render(ctx, {rect, bands})` depends on — a consumer hosting a page inside its
+own chrome must get the body alone — and it is why a FULL-SCREEN overlay cannot
+live inside `render()`. So the peek is a second call the frame owner makes:
+
+```javascript
+clear_screen();
+controller.render(ctx, { title });
+controller.renderOverlays(ctx, { clearScreen: clear_screen });
+```
+
+Pass no `clearScreen` and it declines to draw rather than interleaving its list
+with the grid underneath, which is what an embedded consumer wants.
+
+**A module binding the controller from its own `ui_chain.js` owes that second
+call**, and until 2026-09 nothing said so: the draw lived in
+`shadow_ui_param_pages.mjs`, so for every other consumer the controller tracked
+a peek on each enum detent that was painted nowhere, while `applyInput`
+dutifully routed Back to `dismissPeek()` to take down a panel nobody could see.
+Silent, no error, not visible from the API. CW-78 and 6W6 both shipped that way
+— correct integrations in every other respect, which is the point: the
+obligation had to become a FUNCTION rather than a paragraph.
+`tests/host/test_enum_peek.sh` now draws through a real framebuffer, because
+the rows go through `menu_layout` (global `print`) while the header is a pixel
+font that never calls `print` at all — a recording `print()` reports a
+headerless screen as complete.
+
 **A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
 The peek exists because a 30px cell cannot show a list; once the picture has
 the room, a panel over the top hides the rest of the row to show nothing new.

@@ -466,6 +466,15 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   draw path — values arrive on touch-down, on the rotation, or in the entry warm.
 - **A read that did not answer must never become a picture.** Placeholder frames
   animated the first page of 46 of 95 fleet modules in.
+- **`render()` is not the whole draw.** Nothing in `src/shared/param_pages/`
+  clears the screen — that is what lets `render(ctx, {rect, bands})` place a
+  page inside a caller's chrome — so anything full-screen is the frame owner's
+  second call: `controller.renderOverlays(ctx, { clearScreen })`. Today that is
+  the enum peek. It lived in `shadow_ui_param_pages.mjs`, where it was
+  invisible to every module binding the controller from its own `ui_chain.js`:
+  the peek was tracked on each detent, `applyInput` swallowed the Back that
+  dismissed it, and it was painted nowhere. CW-78 and 6W6 both shipped that
+  way.
 - **Two-option enums: the GRID flips on click, a LIST focuses instead** — and a
   detent TOGGLES, latched to one flick. `flipsOnClick` defines "is a two-way",
   not "flip".
