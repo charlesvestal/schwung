@@ -7,7 +7,17 @@
  */
 
 import { drawRect } from '/data/UserData/schwung/shared/menu_layout.mjs';
-import { drawOverlayCard, cardRect } from './overlay_card.mjs';
+/*
+ * No BOX_W/BOX_H/BOX_X/BOX_Y constants here any more.
+ *
+ * Each toast RETURNS the rect it drew, and the caller hands that to the shim.
+ * The constants were the drift: the skipback branch in shadow_ui.js passed a
+ * hardcoded `9, 22, 110, 20` — the pre-card geometry — so once these became
+ * cards the blit copied a window narrower than the card and clipped both side
+ * borders off. A number that has to agree with a drawing by hand eventually
+ * does not.
+ */
+import { drawOverlayCard } from './overlay_card.mjs';
 
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
@@ -216,33 +226,8 @@ export function drawSamplerSaved() {
  * Draws on top of the current display content.
  */
 export function drawSkipbackToast() {
-    drawOverlayCard(null, { title: "Skipback", titleRight: "saved" });
+    return drawOverlayCard(null, { title: "Skipback", titleRight: "saved" });
 }
-
-/*
- * Where the toasts land, for the shim's blit rect.
- *
- * DERIVED from the card, not written beside it. These used to be four literals
- * per overlay (110x20 here, 110x38 for shift+knob) that had to agree with the
- * drawing by hand — and the blit rect is invisible when it is wrong in the
- * shadow UI, because there the shadow display IS the screen and nothing is
- * blitted at all. Only over Move's picture does a stale rect show, as a box
- * clipped on one edge.
- */
-const skipbackR = cardRect({ band: true });
-export const SKIPBACK_BOX_W = skipbackR.w;
-export const SKIPBACK_BOX_H = skipbackR.h;
-export const SKIPBACK_BOX_X = skipbackR.x;
-export const SKIPBACK_BOX_Y = skipbackR.y;
-
-/**
- * Shift+knob overlay box dimensions (exported for rect blit coordinates).
- */
-const shiftKnobR = cardRect({ band: true, lines: 1 });
-export const SHIFT_KNOB_BOX_W = shiftKnobR.w;
-export const SHIFT_KNOB_BOX_H = shiftKnobR.h;
-export const SHIFT_KNOB_BOX_X = shiftKnobR.x;
-export const SHIFT_KNOB_BOX_Y = shiftKnobR.y;
 
 /**
  * Draw the shift+knob parameter overlay (patch, param name, value).
@@ -252,21 +237,12 @@ export function drawShiftKnobOverlay(state) {
      * while the knob is moving — and the patch beneath as context. It used to
      * be three equal left-aligned lines, which made the value, the one thing
      * changing, the least prominent of the three. */
-    drawOverlayCard(null, {
+    return drawOverlayCard(null, {
         title: state.shiftKnobParam || "",
         titleRight: state.shiftKnobValue || "",
         lines: [state.shiftKnobPatch || ""],
     });
 }
-
-/**
- * Set page toast overlay box dimensions (exported for rect blit coordinates).
- */
-const setPageR = cardRect({ band: true });
-export const SET_PAGE_BOX_W = setPageR.w;
-export const SET_PAGE_BOX_H = setPageR.h;
-export const SET_PAGE_BOX_X = setPageR.x;
-export const SET_PAGE_BOX_Y = setPageR.y;
 
 /**
  * Draw the "Page N / 8" set page toast overlay.
@@ -275,7 +251,7 @@ export const SET_PAGE_BOX_Y = setPageR.y;
 export function drawSetPageToast(state) {
     const page = (state.setPageCurrent || 0) + 1;
     const total = state.setPageTotal || 8;
-    drawOverlayCard(null, {
+    return drawOverlayCard(null, {
         title: state.setPageLoading ? "Loading Page" : "Page",
         titleRight: page + "/" + total,
     });

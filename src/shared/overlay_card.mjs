@@ -173,9 +173,28 @@ export function drawOverlayCard(ctx, o = {}) {
         rows.push({ y, text: footer });
     }
 
+    /*
+     * The rect to hand the shim when this card is drawn over MOVE's picture,
+     * gutter included and clamped to the screen.
+     *
+     * The gutter is not decoration: drawCardFrame clears it so the card lifts
+     * off what is behind it, and a blit of the bare card leaves Move's pixels
+     * hard against the border. Clamped because a card at CARD_X = 3 has only
+     * 3px of room for a 2px gutter — an unclamped rect would ask the shim to
+     * blit from x = 1 with a width running one pixel past the display.
+     */
+    const gx = Math.max(0, r.x - GUTTER);
+    const gy = Math.max(0, r.y - GUTTER);
+    const blit = {
+        x: gx, y: gy,
+        w: Math.min(SCREEN_WIDTH - gx, r.w + (r.x - gx) + GUTTER),
+        h: Math.min(SCREEN_HEIGHT - gy, r.h + (r.y - gy) + GUTTER),
+    };
+
     const all = lines.concat(footer ? [footer] : []);
     return {
         ...r,
+        blit,
         /* Where each text row was actually drawn, top-aligned (print takes y as
          * the glyph TOP). Returned so a test can assert placement without a
          * framebuffer — that every row is inside the card, and that no row

@@ -104,6 +104,48 @@ ok("cardHeight agrees with band only", OC.cardHeight({ band: true }) === one.h);
 ok("cardHeight agrees with band+line",
    OC.cardHeight({ band: true, lines: 1 }) === two.h);
 
+/* ---- the blit rect covers every pixel drawn ---------------------------- */
+/*
+ * When a card is drawn over MOVE (not the shadow UI), the shim copies only
+ * the rect it is handed. A rect narrower than the card silently clips it, and the clipping
+ * is invisible in the shadow UI — there the shadow display IS the screen and
+ * nothing is blitted at all. It only shows over Move.
+ *
+ * Reported from hardware as "skipback saved looks cut off... missing the side
+ * borders": the caller was passing a hardcoded 9,22,110,20 from before these
+ * were cards, so the blit copied x 9..118 while the card inked x 3..124 —
+ * exactly the two side borders. Callers use the returned rect now; this
+ * asserts the returned rect is actually big enough.
+ */
+for (const [name, o] of [["band only", { title: "Skipback", titleRight: "saved" }],
+                         ["band+line", { title: "Snapshot", titleRight: "restored",
+                                         lines: ["2 skipped"] }],
+                         ["with footer", { title: "Delete", lines: ["Sure?"],
+                                           footer: "Back:No  Jog:Yes" }]]) {
+  const fb = H.createFramebuffer();
+  const ctx = { fillRect: fb.fillRect, print: fb.print, textWidth: fb.textWidth };
+  const g = OC.drawOverlayCard(ctx, o);
+  const rows = fb.toAscii().split("\n");
+  let minx = 999, maxx = -1, miny = 999, maxy = -1;
+  rows.forEach((r, y) => {
+    for (let x = 0; x < OC.SCREEN_WIDTH; x++) if (r[x] === "#") {
+      if (x < minx) minx = x; if (x > maxx) maxx = x;
+      if (y < miny) miny = y; if (y > maxy) maxy = y;
+    }
+  });
+  const b = g.blit;
+  ok(name + ": blit covers every inked pixel (ink x " + minx + ".." + maxx +
+     ", blit x " + b.x + ".." + (b.x + b.w - 1) + ")",
+     minx >= b.x && maxx < b.x + b.w && miny >= b.y && maxy < b.y + b.h);
+  ok(name + ": blit is on screen",
+     b.x >= 0 && b.y >= 0 &&
+     b.x + b.w <= OC.SCREEN_WIDTH && b.y + b.h <= OC.SCREEN_HEIGHT);
+  /* The gutter is part of it — drawCardFrame clears it so the card lifts off
+     what is behind, and a blit of the bare card leaves Move pixels hard
+     against the border. */
+  ok(name + ": blit includes the gutter", b.x < g.x && b.y < g.y);
+}
+
 /* ---- overflow --------------------------------------------------------- */
 {
   const wide = render({ title: "x", lines: ["y".repeat(60)] }).r;
@@ -123,3 +165,18 @@ ok("cardHeight agrees with band+line",
 if (f) { console.error(f + " assertion(s) failed"); process.exit(1); }
 console.log("PASS test_overlay_card");
 '
+
+# No caller may hardcode a blit rect. Every rect-mode overlay hands the shim
+# the geometry the card RETURNED; a literal is how skipback ended up copying a
+# 110px window over a 126px card and clipping both side borders off.
+UI=src/shadow/shadow_ui.js
+bad=$(grep -nE 'shadow_set_display_overlay\(1,[^)]*[0-9]' "$UI" || true)
+if [ -n "$bad" ]; then
+  echo "$bad"
+  echo "FAIL: a rect blit is hardcoded — use the rect returned by the draw call"
+  exit 1
+fi
+# ...and every rect-mode call passes a blit rect from a card.
+rects=$(grep -c 'shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);' "$UI" || true)
+[ "$rects" -ge 4 ] || { echo "FAIL: only $rects rect blits use a returned card rect (expected >= 4)"; exit 1; }
+echo "PASS test_overlay_card blit wiring ($rects rect blits)"

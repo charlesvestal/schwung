@@ -55,8 +55,8 @@ grep -q "snapshotToastLines = null" "$UI" || note "toast never clears"
 grep -q "!snapshotToastActive()" "$UI"    || note "toast does not force a redraw (it would draw at 1/Nth rate)"
 
 # 7. The blit rect is the geometry the box was drawn with, not a recomputation.
-grep -q "shadow_set_display_overlay(1, g.x, g.y, g.w, g.h)" "$UI" \
-  || note "toast blit rect is not the returned geometry"
+grep -q "shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h)" "$UI" \
+  || note "toast blit rect is not the card's returned blit rect"
 
 # 7b. TWO toast paths, and only the Move-native one may clear the screen.
 #     When the shadow UI is displayed, the shadow display IS the screen —

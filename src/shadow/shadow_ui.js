@@ -195,15 +195,7 @@ import {
     drawSamplerOverlay,
     drawSkipbackToast,
     drawShiftKnobOverlay,
-    drawSetPageToast,
-    SHIFT_KNOB_BOX_X,
-    SHIFT_KNOB_BOX_Y,
-    SHIFT_KNOB_BOX_W,
-    SHIFT_KNOB_BOX_H,
-    SET_PAGE_BOX_X,
-    SET_PAGE_BOX_Y,
-    SET_PAGE_BOX_W,
-    SET_PAGE_BOX_H
+    drawSetPageToast
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
@@ -21933,7 +21925,7 @@ globalThis.tick = function() {
             debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
         }
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1, g.x, g.y, g.w, g.h);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         if (snapshotToastFrames <= 0) snapshotToastLines = null;
         return;
@@ -21943,9 +21935,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SKIPBACK &&
         overlayState.skipbackActive && overlayState.skipbackOverlayTimeout > 0) {
         clear_screen();
-        drawSkipbackToast();
+        const g = drawSkipbackToast();
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1, 9, 22, 110, 20);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -21954,11 +21946,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SET_PAGE &&
         overlayState.setPageActive && overlayState.setPageTimeout > 0) {
         clear_screen();
-        drawSetPageToast(overlayState);
+        const g = drawSetPageToast(overlayState);
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1,
-                SET_PAGE_BOX_X, SET_PAGE_BOX_Y,
-                SET_PAGE_BOX_W, SET_PAGE_BOX_H);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -21967,11 +21957,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SHIFT_KNOB &&
         overlayState.shiftKnobActive && overlayState.shiftKnobTimeout > 0) {
         clear_screen();
-        drawShiftKnobOverlay(overlayState);
+        const g = drawShiftKnobOverlay(overlayState);
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1,
-                SHIFT_KNOB_BOX_X, SHIFT_KNOB_BOX_Y,
-                SHIFT_KNOB_BOX_W, SHIFT_KNOB_BOX_H);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
