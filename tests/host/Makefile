@@ -43,7 +43,9 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_master_fx_snapshot \
 	$(BUILD_DIR)/test_spi_tally \
 	$(BUILD_DIR)/test_align_capture \
-	$(BUILD_DIR)/test_host_api_reserved_tail
+	$(BUILD_DIR)/test_host_api_reserved_tail \
+	$(BUILD_DIR)/test_ui_flags_layout \
+	$(BUILD_DIR)/test_recall_quantize
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising

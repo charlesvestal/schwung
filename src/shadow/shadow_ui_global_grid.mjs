@@ -114,6 +114,7 @@ export const GLOBAL_ENUM_VALUES = {
     skipback_seconds: [30, 60, 120, 180, 240, 300],
     screen_reader_engine: ["espeak", "flite"],
     shadow_ui_trigger: [0, 1, 2],
+    recall_quantize: [0, 1, 2, 3],
 };
 
 /* ------------------------------------------------------------ accessor routing
@@ -155,6 +156,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   screen_reader_debounce | tts_get_debounce        | tts_set_debounce         | -       | -                      | -
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
+ *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
  *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
@@ -208,6 +210,10 @@ export const GLOBAL_ROUTING = {
 
     set_pages_enabled:      { read: "set_pages.get",          write: "set_pages.set",          persist: null,   cache: null,                     modal: null },
     shadow_ui_trigger:      { read: "shadow_ui_trigger.get",  write: "shadow_ui_trigger.set",  persist: null,   cache: null,                     modal: null },
+    /* persist: null — shadow_recall_quantize_set writes features.json itself,
+     * the same way shadow_ui_trigger_set does, because the register it also
+     * writes lives in SHM and does not survive a reboot. */
+    recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
     filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
@@ -418,6 +424,30 @@ export const SHORTCUTS_PARAMS = [
     { key: "shadow_ui_trigger", name: "Open With", type: "enum",
       options: ["Hold", "Sh+Vol", "Both"],
       short_options: ["LNG", "S+V", "BTH"], default: 2 },
+    /*
+     * When Shift+Delete puts the snapshot back.
+     *
+     * Off fires on the button, which is what it has always done. The rest wait
+     * for the next boundary so a recall lands in time with what is playing —
+     * the whole point being that you can set it up mid-phrase and let it drop.
+     *
+     * A SETTING and not a second gesture. The obvious alternative was
+     * Shift+Vol+Delete for "queued", which is free — but this is the mode you
+     * want held for a whole set, not chosen per press, and a three-key combo
+     * mid-performance is the wrong shape for it. Shift+Delete keeps one
+     * meaning.
+     *
+     * Read by schwung_shim.c out of features.json, because the queue has to be
+     * timed against MIDI clock the shim already counts, and neither SHM struct
+     * has a spare byte to push a setting down through.
+     *
+     * Ignored while the transport is stopped: a queue with no clock never
+     * fires, and honouring the setting there would turn the button off with no
+     * way to tell.
+     */
+    { key: "recall_quantize", name: "Recall Q", type: "enum",
+      options: ["Off", "Beat", "Bar", "2 Bars"],
+      short_options: ["OFF", "BET", "BAR", "2BR"], default: 0 },
 ];
 
 export const SERVICES_PARAMS = [
