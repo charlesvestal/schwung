@@ -616,8 +616,10 @@ Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) 
   by the first clock — which IS the downbeat — so beats sit at **24N+1**, and
   firing at 24N was one pulse early (125 ms at 20 BPM, 20.8 at 120). Measured
   at two tempos to separate it from the 19.6 ms Link Audio transit stacked on
-  top; **one tempo cannot separate two terms.** `recall_quantize` shares that
-  counter and still has the off-by-one. See `docs/SHADOW_UI.md`.
+  top; **one tempo cannot separate two terms.** `recall_quantize` had the
+  identical off-by-one and is fixed with it — the grid now lives once, in
+  `src/host/transport_grid.h`, because one fact with two consumers written
+  down nowhere is how both got it wrong. See `docs/SHADOW_UI.md`.
 
 ### Quantized Sampler
 
