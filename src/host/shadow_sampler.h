@@ -115,6 +115,10 @@ extern const int sampler_duration_options[];
 extern int sampler_duration_index;
 
 extern int sampler_clock_count;
+/* Free-running MIDI clock pulses (24 PPQN) since the last MIDI Start. Unlike
+ * sampler_clock_count, advances whatever the sampler is doing — see the
+ * definition. */
+extern int shadow_transport_pulses;
 extern int sampler_target_pulses;
 extern int sampler_bars_completed;
 extern int sampler_fallback_blocks;

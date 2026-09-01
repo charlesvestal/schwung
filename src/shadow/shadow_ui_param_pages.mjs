@@ -362,6 +362,17 @@ export function paramPagesRefreshTrailing() {
     if (controller) controller.refreshTrailing();
 }
 
+/*
+ * Drop every cached value on the current page and read it again.
+ *
+ * For a change made to the module from outside the grid while the grid is
+ * standing on it — the snapshot recall writes `<prefix>:state` for every
+ * position at once. No-op when the grid is not up.
+ */
+export function paramPagesRevalue() {
+    if (controller) controller.revalue();
+}
+
 export function paramPagesActive() {
     return controller !== null;
 }

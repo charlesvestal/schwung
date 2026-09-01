@@ -110,6 +110,9 @@ import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
+    from '/data/UserData/schwung/shared/snapshot.mjs';
+import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
     ENTRY_ENTER, ENTRY_HOLD,
@@ -192,15 +195,7 @@ import {
     drawSamplerOverlay,
     drawSkipbackToast,
     drawShiftKnobOverlay,
-    drawSetPageToast,
-    SHIFT_KNOB_BOX_X,
-    SHIFT_KNOB_BOX_Y,
-    SHIFT_KNOB_BOX_W,
-    SHIFT_KNOB_BOX_H,
-    SET_PAGE_BOX_X,
-    SET_PAGE_BOX_Y,
-    SET_PAGE_BOX_W,
-    SET_PAGE_BOX_H
+    drawSetPageToast
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
@@ -263,7 +258,7 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
-    paramPagesRefreshTrailing, paramPagesExitMenu
+    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue
 } from './shadow_ui_param_pages.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
@@ -314,6 +309,14 @@ const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
 const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
+/* 0x0100 and up live in the shim's `ui_flags_ext`, not `ui_flags` — the 8-bit
+ * field is full. js_shadow_get_ui_flags presents both as one flat word and
+ * shadow_clear_ui_flags splits a mask back apart, so nothing here has to know
+ * which field a flag came from. See shadow_constants.h. */
+const SHADOW_UI_FLAG_SNAPSHOT_TAKE = 0x0100;
+const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
+const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
+const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -1491,6 +1494,30 @@ let knobCardName = null;        /* the ANNOUNCED name, null when the card is not
 let knobCardCardName = null;    /* the name DRAWN in the header band — see below */
 let knobCardHeaderValue = null; /* header value, ditto */
 let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
+
+/*
+ * The knob card does not survive the shadow UI being dismissed.
+ *
+ * It used to. Press Back to hand the screen to Move with a card up, come back,
+ * and the card was still there — sitting over the editor, showing a value read
+ * before you left. Reported from hardware.
+ *
+ * Watched as a display_mode TRANSITION rather than fixed at the Back handler,
+ * because Back is not the only way out and is not even the common one: the
+ * SHIM dismisses the shadow UI on a Track tap and a Menu tap (see
+ * schwung_shim.c, "Track tap: dismissing shadow UI"), writing display_mode = 0
+ * directly. JS never runs a handler for those at all, so a fix at any input
+ * site would have covered one exit of three.
+ */
+let lastDisplayMode = -1;
+function reconcileDisplayModeExit() {
+    const mode = (typeof shadow_get_display_mode === "function")
+        ? shadow_get_display_mode() : 1;
+    if (mode === lastDisplayMode) return;
+    /* Leaving, by any route. -1 is the first tick, which is not a transition. */
+    if (lastDisplayMode === 1 && mode !== 1) knobCardClose();
+    lastDisplayMode = mode;
+}
 
 function knobCardClose() {
     if (knobCardKnob < 0) return;
@@ -8464,6 +8491,345 @@ function autosaveAllSlots() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) autosaveOneSlot(i);
 }
 
+/* ==========================================================================
+ * Snapshot / recall  —  Shift+Copy takes, Shift+Delete puts back
+ *
+ * Snapshot the whole rig, tweak everything, get back. The pure decisions live
+ * in shared/snapshot.mjs (and are unit-tested there); this is the I/O.
+ *
+ * WHY THERE IS NO SECOND SERIALIZER. A take is `autosaveAllSlots()` +
+ * `saveMasterFxChainConfig()` — the writers the set state already uses, with
+ * every guard they have accumulated (the bail-if-empty that protects a good
+ * file from a timed-out read, the skip-if-unchanged that keeps eMMC quiet, the
+ * shim-reports-empty cross-check) — followed by a COPY of the twelve files
+ * they wrote. Building a parallel capture path would mean re-deriving all of
+ * that and then keeping the two in step forever.
+ *
+ * WHY IT LIVES IN THE SET DIRECTORY. Sets are per-directory. A global snapshot
+ * would be the one piece of chain state that does not travel with the set, and
+ * would be wrong the moment you changed sets or booted into a different one.
+ * Here it is deleted with the set for free.
+ *
+ * WHY IT IS RE-SEEDED ON EVERY SET LOAD. So the snapshot means one sentence:
+ * "how this set was when you loaded it, or the last time you pressed
+ * Shift+Copy in this session." A snapshot that outlived a set load would be
+ * invisible state a two-button gesture can trigger — recalling something you
+ * do not remember taking. It is still on DISK, so a shadow_ui restart
+ * mid-session does not lose it; being overwritten on load is what stops
+ * persistence outliving the explanation.
+ * ========================================================================== */
+
+const SNAPSHOT_SUBDIR = "/snapshot";
+
+function snapshotDir() { return activeSlotStateDir + SNAPSHOT_SUBDIR; }
+
+/* The twelve files a snapshot is: four slots and eight Master FX positions. */
+function snapshotFileNames() {
+    const names = [];
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/slot_" + i + ".json");
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) names.push("/master_fx_" + i + ".json");
+    return names;
+}
+
+/*
+ * Copy the set's current state files into the snapshot dir.
+ *
+ * A file that reads back empty is written as "{}" rather than skipped. Leaving
+ * the previous snapshot's file in place would splice two snapshots together —
+ * three positions from now and one from an hour ago — and nothing downstream
+ * could tell, because each file parses fine on its own. An empty marker is the
+ * honest answer: that position had nothing.
+ */
+function snapshotCopyFrom(srcDir) {
+    const dst = snapshotDir();
+    host_ensure_dir(dst);
+    let copied = 0;
+    for (const name of snapshotFileNames()) {
+        let content = null;
+        try { content = host_read_file(srcDir + name); } catch (e) { content = null; }
+        if (host_write_file(dst + name, content || "{}\n")) copied++;
+    }
+    return copied;
+}
+
+/* Take: flush live state to the set dir through the normal writers, then copy. */
+function snapshotTake() {
+    autosaveAllSlots();
+    saveMasterFxChainConfig();
+    const copied = snapshotCopyFrom(activeSlotStateDir);
+    debugLog("snapshot: took " + copied + "/" + snapshotFileNames().length +
+             " files into " + snapshotDir());
+    snapshotShowToast(["saved"]);
+    announce("Snapshot saved");
+}
+
+/*
+ * Seed: same copy, but only when there is no snapshot yet, or when a set has
+ * just loaded (`force`). The unforced form runs once at startup — without it a
+ * device that upgrades and boots straight into its existing set has no
+ * snapshot at all and the first Shift+Delete does nothing at all, silently.
+ */
+function snapshotSeed(force) {
+    if (!force && host_file_exists(snapshotDir() + "/slot_0.json")) return false;
+    snapshotCopyFrom(activeSlotStateDir);
+    debugLog("snapshot: seeded from set state (" +
+             (force ? "set load" : "startup, none present") + ")");
+    return true;
+}
+
+/*
+ * What is loaded at each position RIGHT NOW, for planRestore's id guard.
+ *
+ * Read from `chainConfigs` and `masterFxConfig`, which the UI already holds —
+ * no IPC. That matters: the guard is consulted once per position and a read
+ * per position would double the cost of a recall for information already in
+ * memory.
+ */
+function snapshotLiveIds() {
+    const live = {};
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const cfg = chainConfigs[i] || createEmptyChainConfig();
+        live[i + ":synth"] = (cfg.synth && cfg.synth.module) || "";
+        for (let k = 0; k < cfg.midiFx.length; k++)
+            live[i + ":midi_fx" + (k + 1)] = (cfg.midiFx[k] && cfg.midiFx[k].module) || "";
+        for (let k = 0; k < cfg.fx.length; k++)
+            live[i + ":fx" + (k + 1)] = (cfg.fx[k] && cfg.fx[k].module) || "";
+    }
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++)
+        live["master_fx:fx" + i] = (masterFxConfig["fx" + i] || {}).module || "";
+    return live;
+}
+
+/*
+ * Recall.
+ *
+ * Writes STATE, never SHAPE. `load_file` is what restores module identity and
+ * it reinstantiates — cutting reverb tails and resetting arp phase, which is
+ * the opposite of what an A/B gesture is for. A position whose module changed
+ * since the snapshot is skipped and counted; see planRestore.
+ */
+function snapshotRecall() {
+    const dir = snapshotDir();
+    const live = snapshotLiveIds();
+    const records = [];
+
+    /* Slot records carry a per-slot prefix so one flat liveIds map can address
+     * all four slots plus Master FX without four separate plans. */
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        let content = null;
+        try { content = host_read_file(dir + "/slot_" + i + ".json"); } catch (e) {}
+        if (!content) continue;
+        for (const r of parseSlotSnapshot(content)) {
+            records.push({ ...r, slot: i, prefix: i + ":" + r.prefix, key: r.prefix });
+        }
+    }
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+        let content = null;
+        try { content = host_read_file(dir + "/master_fx_" + i + ".json"); } catch (e) {}
+        if (!content) continue;
+        for (const r of parseMasterFxSnapshot(content, i)) {
+            records.push({ ...r, slot: 0, key: r.prefix });
+        }
+    }
+
+    if (records.length === 0) {
+        debugLog("snapshot: recall found nothing in " + dir);
+        snapshotShowToast(["none"]);
+        announce("No snapshot");
+        return;
+    }
+
+    const plan = planRestore(records, live);
+    const byPrefix = {};
+    for (const r of records) byPrefix[r.prefix] = r;
+
+    for (const w of plan.writes) {
+        const rec = byPrefix[w.prefix];
+        setSlotParam(rec.slot, rec.key + ":state", w.state);
+        setSlotParam(rec.slot, rec.key + ":bypassed", String(w.bypassed));
+    }
+    for (const r of plan.reasons) {
+        debugLog("snapshot: skipped " + r.prefix + " (" + r.reason +
+                 (r.was ? ", was " + r.was : "") + (r.now ? ", now " + r.now : "") + ")");
+    }
+    debugLog("snapshot: restored " + plan.writes.length + ", skipped " + plan.skipped);
+
+    /*
+     * Every value the grid is holding now describes the sound from before the
+     * gesture, so re-read the page.
+     *
+     * Not cosmetic. Nothing reads on the draw path, and `onKnobTurn` steps
+     * FROM the cached value — so without this the first knob move after a
+     * recall departed from the PRE-recall number and wrote the tweak straight
+     * back over what had just been restored. Reported from hardware.
+     *
+     * Both calls: revalue re-reads the page's params, refreshTrailing rebuilds
+     * "My Presets" (whose `*` modified-mark rides on the live state blob a
+     * recall has just replaced).
+     */
+    paramPagesRevalue();
+    paramPagesRefreshTrailing();
+    /*
+     * ...and the knob caches OUTSIDE the grid, which hold the same stale
+     * numbers for the same reason.
+     *
+     * paramPagesRevalue only reaches the knob-grid controller. The slot
+     * editor's own knob path keeps `knobValueCache` — read once on first touch
+     * and then advanced by local arithmetic precisely so a turn costs no IPC —
+     * and the knob card keeps a row of values captured on touch-down. Both
+     * described the sound from before the recall, so the first turn there
+     * jumped back exactly as it did on the grid. Reported from hardware
+     * separately, which is the tell that this is one defect with several
+     * caches rather than several defects.
+     */
+    invalidateKnobValueCache();
+    knobCardClose();
+    needsRedraw = true;
+
+    const lines = recallMessage(plan.skipped);
+    snapshotShowToast(lines);
+    announce("Snapshot " + lines.join(", "));
+}
+
+/* Toast state. Purely JS-owned — the shim has no field for this overlay; it
+ * composites whatever `display_overlay` points at. */
+let snapshotToastLines = null;
+let snapshotToastFrames = 0;
+const SNAPSHOT_TOAST_FRAMES = 45;   /* ~1s at the 45Hz redraw cadence */
+
+function snapshotShowToast(lines) {
+    snapshotToastLines = lines;
+    snapshotToastFrames = SNAPSHOT_TOAST_FRAMES;
+    needsRedraw = true;
+}
+
+function snapshotToastActive() {
+    return snapshotToastLines !== null && snapshotToastFrames > 0;
+}
+
+/* True when Move's own screen is up, i.e. the shadow display is a scratch
+ * surface the shim blits FROM rather than the screen itself. */
+function shadowDisplayHidden() {
+    return (typeof shadow_get_display_mode === "function") &&
+           shadow_get_display_mode() !== 1;
+}
+
+/*
+ * Paint the toast over whatever the shadow UI just drew. No clear_screen, no
+ * display_overlay — the shadow display already IS the screen in this mode, so
+ * clearing it wipes the view behind and setting an overlay rect would ask the
+ * shim to composite a picture onto itself.
+ */
+/*
+ * A recall is armed and waiting for its boundary.
+ *
+ * Small, top-right, drawn last so it survives whatever the screen underneath
+ * is doing — the toast that announced the arming is gone after a second, and
+ * without a persistent mark there is nothing to tell you the button is loaded.
+ *
+ * It DOES overdraw the last few pixels of a header. That is deliberate: for
+ * the beat or two it is up, "a recall is about to fire" outranks the tail of a
+ * module name. It is the smallest thing that can be seen from playing
+ * position, and it is gone the moment the recall lands.
+ */
+function drawSnapshotPendingMark() {
+    if (!snapshotQueuedPending || shadowDisplayHidden()) return;
+    const w = 9, h = 9, x = 128 - w, y = 0;
+    fill_rect(x, y, w, h, 1);
+    print(x + 2, y + 1, "Q", 0);
+}
+
+function drawSnapshotToastOnTop() {
+    if (!snapshotToastActive() || shadowDisplayHidden()) return;
+    snapshotToastFrames--;
+    const g = drawSnapshotToast(snapshotToastLines);
+    if (g.clipped > 0) {
+        debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
+    }
+    if (snapshotToastFrames <= 0) snapshotToastLines = null;
+}
+
+/*
+ * Is a recall armed and waiting for its boundary?
+ *
+ * Tracked here rather than read from the shim because there is nowhere to read
+ * it FROM — both SHM structs are exactly at their pinned size with no padding,
+ * so the shim reports arming and firing as edges (flags) and this is the state
+ * they imply. Every edge that ends the wait clears it, including the one the
+ * shim raises when the transport stops under an armed recall.
+ */
+let snapshotQueuedPending = false;
+
+/*
+ * Recall Quantize: 0 = Off, 1 = beat, 2 = bar, 3 = two bars.
+ *
+ * Held here AND pushed into the shim's register, because the two need it for
+ * different halves of the job: the shim decides when Shift+Delete fires, this
+ * side reports the setting back to the settings grid. Persisted to
+ * features.json so it survives a reboot, and pushed down again at startup —
+ * the register lives in SHM, which does not.
+ */
+let recallQuantizeValue = 0;
+const RECALL_QUANTIZE_NAMES = ["off", "beat", "bar", "2bars"];
+
+function setRecallQuantize(v) {
+    recallQuantizeValue = (v >= 0 && v <= 3) ? v : 0;
+    if (typeof shadow_recall_quantize_set === "function") {
+        shadow_recall_quantize_set(recallQuantizeValue);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadRecallQuantize() {
+    let v = 0;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const m = /"recall_quantize"\s*:\s*"([^"]*)"/.exec(raw);
+            if (m) {
+                const i = RECALL_QUANTIZE_NAMES.indexOf(m[1]);
+                if (i >= 0) v = i;
+            }
+        }
+    } catch (e) { debugLog("recall_quantize read failed: " + e); }
+    setRecallQuantize(v);
+}
+
+/* Service the snapshot gesture flags. Called from the flag block in tick(). */
+function snapshotServiceFlags(flags) {
+    const SNAPSHOT_FLAGS = SHADOW_UI_FLAG_SNAPSHOT_TAKE |
+                           SHADOW_UI_FLAG_SNAPSHOT_RECALL |
+                           SHADOW_UI_FLAG_SNAPSHOT_QUEUED |
+                           SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED;
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_TAKE) {
+        snapshotTake();
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_QUEUED) {
+        snapshotQueuedPending = true;
+        snapshotShowToast(["queued"]);
+        announce("Snapshot queued");
+        needsRedraw = true;
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED) {
+        snapshotQueuedPending = false;
+        snapshotShowToast(["cancelled"]);
+        announce("Snapshot recall cancelled");
+        needsRedraw = true;
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_RECALL) {
+        /* Clear FIRST. snapshotRecall spends ~36ms writing state, and the mark
+         * must not still be on screen for the frame that draws its result. */
+        snapshotQueuedPending = false;
+        snapshotRecall();
+    }
+    if (flags & SNAPSHOT_FLAGS) {
+        if (typeof shadow_clear_ui_flags === "function") {
+            shadow_clear_ui_flags(SNAPSHOT_FLAGS);
+        }
+    }
+}
+
 /* Actually save the preset */
 function doSavePreset(slotIndex, name) {
     const json = buildSlotPatchJson(slotIndex, name);
@@ -11839,6 +12205,8 @@ function globalGridIoFor() {
                 return bit(typeof set_pages_get === "function" && set_pages_get());
             case "shadow_ui_trigger":
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
+            case "recall_quantize":
+                return String(recallQuantizeValue);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
@@ -11955,6 +12323,9 @@ function globalGridIoFor() {
             case "set_pages_enabled":
                 if (typeof set_pages_set === "function") set_pages_set(on ? 1 : 0);
                 return;
+            case "recall_quantize":
+                setRecallQuantize(parseInt(value, 10) || 0);
+                break;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
                 return;
@@ -20515,6 +20886,21 @@ globalThis.init = function() {
     }
     saveSlotsToConfig(slots);
 
+    /* Seed the snapshot if the active set has none.
+     *
+     * CONDITIONAL here, unlike the forced re-seed on set load. A snapshot the
+     * user took earlier this session must survive a shadow_ui restart — that
+     * is the entire reason it is on disk rather than in RAM, and shadow_ui
+     * restarts for ordinary reasons (overtake exit, a set change).
+     *
+     * It exists at all because the forced seed only fires on a set LOAD. A
+     * device that upgrades and boots straight into the set it was already in
+     * never sees one, so without this the first Shift+Delete would find an
+     * empty directory and do nothing — silently, which is the failure mode
+     * this whole feature is written to avoid. */
+    try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
+    try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+
     /* Analytics: emit app_launched + census + diff against previous snapshot.
      * app_launched must emit here (not in shadow_ui.c main()) because
      * analytics_enabled() returns false until the opt-in prompt resolves,
@@ -20848,6 +21234,7 @@ globalThis.tick = function() {
          * `synth_module` the last session logged and attributed elsewhere.
          * Predicted, not yet measured — this span is the test. */
         const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.feedback_guard") : 0;
+        try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
     }
@@ -20973,6 +21360,7 @@ globalThis.tick = function() {
                 }
             }
         }
+        snapshotServiceFlags(flags);
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
@@ -21225,6 +21613,21 @@ globalThis.tick = function() {
             }
             saveSlotsToConfig(slots);
             needsRedraw = true;
+
+            /* 8b. Re-seed the snapshot from the set we just loaded.
+             *
+             * FORCED, not conditional. This is what makes the snapshot mean
+             * "how this set loaded" and never anything older: without the
+             * overwrite, a snapshot taken in the previous set would survive
+             * into this one, and Shift+Delete would restore a rig that has
+             * nothing to do with what is on screen.
+             *
+             * It runs HERE, after step 8 has restored the slots and refreshed
+             * their names — the files in activeSlotStateDir are the set's own
+             * state at this point, and the periodic autosave has not yet had a
+             * chance to overwrite them with anything the user has since
+             * touched. */
+            snapshotSeed(true);
 
             /* 9. Show overlay notification (~2 seconds) */
             if (setName) {
@@ -21589,7 +21992,9 @@ globalThis.tick = function() {
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
-    if (!needsRedraw && !overlayActive && (redrawCounter % REDRAW_INTERVAL !== 0)) {
+    if (!needsRedraw && !overlayActive && !snapshotToastActive() &&
+        !snapshotQueuedPending &&
+        (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
     }
     needsRedraw = false;
@@ -21602,13 +22007,44 @@ globalThis.tick = function() {
         return;
     }
 
+    /*
+     * Snapshot / recall toast, MOVE-NATIVE case only.
+     *
+     * This branch clears the screen and returns, which is right when Move's
+     * own screen is up: the shadow display is a scratch surface, and the shim
+     * blits only the toast's rect onto Move's picture.
+     *
+     * It is exactly WRONG when the shadow UI is displayed, because then the
+     * shadow display IS the screen. Reported from hardware as "it didn't
+     * overlay, it blanked the screen behind it" — clear_screen() wiped the
+     * knob grid and the early return meant nothing redrew it. The shim's own
+     * toasts get away with the same shape because they are only ever raised
+     * over Move; this one is raised from a gesture that works in both modes.
+     *
+     * The display_mode == 1 case is painted after the view switch instead,
+     * with the other on-top overlays. See drawSnapshotToastOnTop.
+     */
+    if (snapshotToastActive() && shadowDisplayHidden()) {
+        snapshotToastFrames--;
+        clear_screen();
+        const g = drawSnapshotToast(snapshotToastLines);
+        if (g.clipped > 0) {
+            debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
+        }
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
+        }
+        if (snapshotToastFrames <= 0) snapshotToastLines = null;
+        return;
+    }
+
     /* Skipback toast - render to shadow display, request rect overlay on native */
     if (overlayState && overlayState.type === OVERLAY_SKIPBACK &&
         overlayState.skipbackActive && overlayState.skipbackOverlayTimeout > 0) {
         clear_screen();
-        drawSkipbackToast();
+        const g = drawSkipbackToast();
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1, 9, 22, 110, 20);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -21617,11 +22053,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SET_PAGE &&
         overlayState.setPageActive && overlayState.setPageTimeout > 0) {
         clear_screen();
-        drawSetPageToast(overlayState);
+        const g = drawSetPageToast(overlayState);
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1,
-                SET_PAGE_BOX_X, SET_PAGE_BOX_Y,
-                SET_PAGE_BOX_W, SET_PAGE_BOX_H);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -21630,11 +22064,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SHIFT_KNOB &&
         overlayState.shiftKnobActive && overlayState.shiftKnobTimeout > 0) {
         clear_screen();
-        drawShiftKnobOverlay(overlayState);
+        const g = drawShiftKnobOverlay(overlayState);
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1,
-                SHIFT_KNOB_BOX_X, SHIFT_KNOB_BOX_Y,
-                SHIFT_KNOB_BOX_W, SHIFT_KNOB_BOX_H);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -22005,6 +22437,14 @@ globalThis.tick = function() {
 
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
+
+        /* The snapshot toast, when the shadow UI is the screen. Its
+         * Move-native twin sits before the view switch and clears instead —
+         * see the comment there for why the two cannot be one branch. */
+        drawSnapshotToastOnTop();
+        /* ...and the armed-recall mark, after it: the toast is transient and
+         * the mark outlives it, so the mark must not be painted under it. */
+        drawSnapshotPendingMark();
     }
 
     } catch (e) {

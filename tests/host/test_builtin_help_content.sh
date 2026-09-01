@@ -108,6 +108,46 @@ import("./tools/param-pages/harness.mjs").then((H) => {
   if (checked === 0) fail("no modules were checked -- the discovery walk found nothing, so this test proves nothing");
   else ok("checked " + checked + " shipped built-in modules");
 
+  /* The built-in help — Shortcuts, Slots, Master FX and the rest. Same
+     viewer, same budget; only the shape of the file differs (a `sections`
+     array of {title, lines} rather than `children`). */
+  const SHARED_HELP = "src/shared/help_content.json";
+  let shared = null;
+  try { shared = JSON.parse(fs.readFileSync(SHARED_HELP, "utf8")); }
+  catch (e) { fail(SHARED_HELP + " does not parse: " + e.message); }
+  if (shared) {
+    if (!Array.isArray(shared.sections) || shared.sections.length === 0) {
+      fail(SHARED_HELP + " has no sections array");
+    } else {
+      /* RECURSE. The tree is sections -> children -> {title, lines}, so a
+         walker that reads `sec.lines` measures section TITLES and nothing
+         else — 64px, comfortably under budget, and every actual help line
+         unexamined. That is the shape of a probe reporting green about the
+         wrong thing, which is why the count below is asserted too. */
+      let over = 0, nonAscii = 0, widest = 0, measured = 0;
+      const visit = (node) => {
+        if (!node || typeof node !== "object") return;
+        for (const line of [].concat(node.title || [], node.lines || [])) {
+          if (typeof line !== "string" || line === "") continue;
+          measured++;
+          const w = fb.textWidth(line);
+          if (w > widest) widest = w;
+          if (w > BUDGET) { over++; console.error("     over: " + w + "px " + JSON.stringify(line)); }
+          if (/[^\x20-\x7e]/.test(line)) { nonAscii++; console.error("     non-ascii: " + JSON.stringify(line)); }
+        }
+        for (const c of (node.children || [])) visit(c);
+      };
+      for (const sec of shared.sections) visit(sec);
+      /* A floor, so a future restructure that hides the lines from this walk
+         fails loudly instead of passing on section titles alone. */
+      if (measured < 100) fail(SHARED_HELP + " walk measured only " + measured +
+                               " lines — the walker is missing the tree");
+      if (over) fail(SHARED_HELP + " has " + over + " line(s) past the " + BUDGET + "px the viewer has");
+      else if (nonAscii) fail(SHARED_HELP + " has " + nonAscii + " non-ASCII line(s)");
+      else ok("help_content.json: " + measured + " lines, widest " + widest + "px");
+    }
+  }
+
   if (failures) { console.error(failures + " failure(s)"); process.exit(1); }
   console.log("PASS");
 }).catch((e) => { console.error("FAIL: " + e); process.exit(1); });

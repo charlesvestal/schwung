@@ -7,6 +7,17 @@
  */
 
 import { drawRect } from '/data/UserData/schwung/shared/menu_layout.mjs';
+/*
+ * No BOX_W/BOX_H/BOX_X/BOX_Y constants here any more.
+ *
+ * Each toast RETURNS the rect it drew, and the caller hands that to the shim.
+ * The constants were the drift: the skipback branch in shadow_ui.js passed a
+ * hardcoded `9, 22, 110, 20` — the pre-card geometry — so once these became
+ * cards the blit copied a window narrower than the card and clipped both side
+ * borders off. A number that has to agree with a drawing by hand eventually
+ * does not.
+ */
+import { drawOverlayCard } from './overlay_card.mjs';
 
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
@@ -202,10 +213,12 @@ export function drawSamplerPreroll(state) {
  * Draw the "Sample saved!" confirmation.
  */
 export function drawSamplerSaved() {
+    /* Fullscreen (the sampler owns the screen here), but the confirmation
+     * itself is the same card as Skipback's, so the two reads of "it worked"
+     * look like one thing. The centring was `msg.length * 6`, which reserves
+     * the widest glyph for every character — the font is proportional. */
     clear_screen();
-    const msg = "Sample saved!";
-    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
-    print(msgX, 24, msg, 1);
+    drawOverlayCard(null, { title: "Sample", titleRight: "saved" });
 }
 
 /**
@@ -213,77 +226,35 @@ export function drawSamplerSaved() {
  * Draws on top of the current display content.
  */
 export function drawSkipbackToast() {
-    const boxW = 110;
-    const boxH = 20;
-    const boxX = Math.floor((SCREEN_WIDTH - boxW) / 2);
-    const boxY = Math.floor((SCREEN_HEIGHT - boxH) / 2);
-
-    /* Background and border */
-    fill_rect(boxX, boxY, boxW, boxH, 0);
-    drawRect(boxX, boxY, boxW, boxH, 1);
-
-    const msg = "Skipback saved!";
-    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
-    print(msgX, boxY + 7, msg, 1);
+    return drawOverlayCard(null, { title: "Skipback", titleRight: "saved" });
 }
-
-/**
- * Shift+knob overlay box dimensions (exported for rect blit coordinates).
- */
-export const SHIFT_KNOB_BOX_W = 110;
-export const SHIFT_KNOB_BOX_H = 38;
-export const SHIFT_KNOB_BOX_X = Math.floor((SCREEN_WIDTH - SHIFT_KNOB_BOX_W) / 2);
-export const SHIFT_KNOB_BOX_Y = Math.floor((SCREEN_HEIGHT - SHIFT_KNOB_BOX_H) / 2);
 
 /**
  * Draw the shift+knob parameter overlay (patch, param name, value).
  */
 export function drawShiftKnobOverlay(state) {
-    const bx = SHIFT_KNOB_BOX_X;
-    const by = SHIFT_KNOB_BOX_Y;
-    const bw = SHIFT_KNOB_BOX_W;
-    const bh = SHIFT_KNOB_BOX_H;
-
-    /* Background and border */
-    fill_rect(bx, by, bw, bh, 0);
-    drawRect(bx, by, bw, bh, 1);
-
-    /* Three lines of text */
-    const tx = bx + 4;
-    print(tx, by + 3, state.shiftKnobPatch || "", 1);
-    print(tx, by + 14, state.shiftKnobParam || "", 1);
-    print(tx, by + 25, state.shiftKnobValue || "", 1);
+    /* The parameter NAME and its VALUE in the band — the pair you are reading
+     * while the knob is moving — and the patch beneath as context. It used to
+     * be three equal left-aligned lines, which made the value, the one thing
+     * changing, the least prominent of the three. */
+    return drawOverlayCard(null, {
+        title: state.shiftKnobParam || "",
+        titleRight: state.shiftKnobValue || "",
+        lines: [state.shiftKnobPatch || ""],
+    });
 }
-
-/**
- * Set page toast overlay box dimensions (exported for rect blit coordinates).
- */
-export const SET_PAGE_BOX_W = 110;
-export const SET_PAGE_BOX_H = 20;
-export const SET_PAGE_BOX_X = Math.floor((SCREEN_WIDTH - SET_PAGE_BOX_W) / 2);
-export const SET_PAGE_BOX_Y = Math.floor((SCREEN_HEIGHT - SET_PAGE_BOX_H) / 2);
 
 /**
  * Draw the "Page N / 8" set page toast overlay.
  * Draws on top of the current display content.
  */
 export function drawSetPageToast(state) {
-    const boxW = SET_PAGE_BOX_W;
-    const boxH = SET_PAGE_BOX_H;
-    const boxX = SET_PAGE_BOX_X;
-    const boxY = SET_PAGE_BOX_Y;
-
-    /* Background and border */
-    fill_rect(boxX, boxY, boxW, boxH, 0);
-    drawRect(boxX, boxY, boxW, boxH, 1);
-
     const page = (state.setPageCurrent || 0) + 1;
     const total = state.setPageTotal || 8;
-    const msg = state.setPageLoading
-        ? "Loading Page " + page + "/" + total + "..."
-        : "Page " + page + "/" + total;
-    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
-    print(msgX, boxY + 7, msg, 1);
+    return drawOverlayCard(null, {
+        title: state.setPageLoading ? "Loading Page" : "Page",
+        titleRight: page + "/" + total,
+    });
 }
 
 /**

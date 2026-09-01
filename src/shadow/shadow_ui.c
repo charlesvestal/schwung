@@ -206,12 +206,19 @@ static JSValue js_shadow_set_focused_slot(JSContext *ctx, JSValueConst this_val,
 }
 
 /* shadow_get_ui_flags() -> int
- * Returns the UI flags from shared memory.
+ * Returns the UI flags from shared memory as ONE flat word.
+ *
+ * The flags live in two fields — `ui_flags` (bits 0-7) and `ui_flags_ext`
+ * (bits 8+) — because `ui_flags` ran out of bits and cannot be widened
+ * without moving every field behind it. See the note in shadow_constants.h.
+ * JS is shown a single space so a caller never has to know which byte a flag
+ * sits in; shadow_clear_ui_flags() splits the mask back apart.
  */
 static JSValue js_shadow_get_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
-    return JS_NewInt32(ctx, shadow_control->ui_flags);
+    return JS_NewInt32(ctx, (int)shadow_control->ui_flags |
+                            ((int)shadow_control->ui_flags_ext << SHADOW_UI_FLAG_EXT_SHIFT));
 }
 
 /* shadow_get_open_tool_cmd() -> int (0=none, 1=open_tool; auto-clears) */
@@ -223,15 +230,44 @@ static JSValue js_shadow_get_open_tool_cmd(JSContext *ctx, JSValueConst this_val
     return JS_NewInt32(ctx, cmd);
 }
 
+static void features_json_set(const char *key, const char *value_json);
+
+/* shadow_recall_quantize_set(v) -> void   (0=off, 1=beat, 2=bar, 3=two bars)
+ *
+ * Writes shadow_control_t.recall_quantize, which the shim reads when
+ * Shift+Delete is pressed.
+ */
+static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    if (v < 0) v = 0;
+    if (v > 3) v = 3;
+    shadow_control->recall_quantize = (uint8_t)v;
+
+    /* Persisted here rather than from JS, same as shadow_ui_trigger_set: the
+     * register lives in SHM and does not survive a reboot, so the file is the
+     * only copy that does. JS reads it back at startup and pushes it down. */
+    static const char *NAMES[4] = { "off", "beat", "bar", "2bars" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[v]);
+    features_json_set("recall_quantize", quoted);
+    return JS_UNDEFINED;
+}
+
 /* shadow_clear_ui_flags(mask) -> void
- * Clears the specified flags from ui_flags.
+ * Clears the specified flags, splitting the flat mask back across the two
+ * fields it came from in js_shadow_get_ui_flags.
  */
 static JSValue js_shadow_clear_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (!shadow_control || argc < 1) return JS_UNDEFINED;
     int mask = 0;
     if (JS_ToInt32(ctx, &mask, argv[0])) return JS_UNDEFINED;
-    shadow_control->ui_flags &= ~(uint8_t)mask;
+    shadow_control->ui_flags &= ~(uint8_t)(mask & 0xFF);
+    shadow_control->ui_flags_ext &= ~(uint16_t)((unsigned)mask >> SHADOW_UI_FLAG_EXT_SHIFT);
     return JS_UNDEFINED;
 }
 
@@ -2824,6 +2860,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_move_inject_active", JS_NewCFunction(ctx, js_shadow_overtake_move_inject_active, "shadow_overtake_move_inject_active", 0));

@@ -48,6 +48,7 @@
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/recall_quantize.h"
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
@@ -3594,6 +3595,104 @@ static void shadow_check_screenreader(void)
 /* PIN scanner state — moved to shadow_pin_scanner.c */
 
 /* Shift+Menu double-click detection state */
+/*
+ * Snapshot gesture: did we swallow this button's PRESS?
+ *
+ * [0] = Copy, [1] = Delete. Set when the press is consumed for the gesture,
+ * cleared by the matching release, and the only thing that decides whether a
+ * release reaches Move. See the branch in the CC scan for why the release
+ * cannot be gated on Shift.
+ */
+static int snapshot_gesture_swallow[2] = {0, 0};
+
+/*
+ * Recall Quantize, in MIDI clock pulses. 0 = Off.
+ *
+ * Read from shadow_control every time it is needed rather than cached, so a
+ * change made in Global Settings takes effect on the very next press —
+ * load_feature_config() runs once at init, so anything parsed there would need
+ * a reboot.
+ */
+static int recall_quantize_pulses(void)
+{
+    if (!shadow_control) return 0;
+    return SHADOW_RECALL_Q_PULSES(shadow_control->recall_quantize);
+}
+
+/* The armed recall: the pulse count at which it fires, or -1 for none. */
+static int recall_pending_target = -1;
+
+/*
+ * What Shift+Delete does, and which flag to raise for it.
+ *
+ * Immediate unless quantize is on AND the transport is running. A queue with
+ * no clock never fires, so with the transport stopped the setting is ignored
+ * rather than honoured into silence — that is the one case where doing the
+ * literal thing would be worse than useless.
+ *
+ * Pressed again while armed, it CANCELS. Re-arming to the same boundary would
+ * be a no-op you could not tell from a dead button, and there is no other way
+ * to call one back.
+ */
+static uint16_t snapshot_recall_gesture(void)
+{
+    if (recall_pending_target >= 0) {
+        recall_pending_target = -1;
+        return SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED;
+    }
+    if (recall_quantize_pulses() <= 0 || !sampler_transport_playing) {
+        return SHADOW_UI_FLAG_SNAPSHOT_RECALL;
+    }
+    /*
+     * The NEXT boundary, never the one we are standing on. `pulses / div * div
+     * + div` lands on the following division even when the press arrives
+     * exactly on the beat — pressing on the downbeat should give you the next
+     * one, not fire instantly and read as if quantize were off.
+     */
+    recall_pending_target =
+        recall_next_boundary(shadow_transport_pulses, recall_quantize_pulses());
+    return SHADOW_UI_FLAG_SNAPSHOT_QUEUED;
+}
+
+/*
+ * Fire an armed recall, slightly EARLY.
+ *
+ * The recall is ~13 param writes at ~2.8ms — about 36ms — so starting it on
+ * the boundary lands the change a fourteenth of a beat late at 120bpm.
+ * Starting it early enough to finish there is the difference between "on the
+ * beat" and "just after it".
+ *
+ * The lead is computed from the measured tempo rather than fixed in pulses:
+ * one pulse is 20.8ms at 120bpm and 41.7ms at 60, so a constant would be
+ * either useless or a whole beat early depending on the track. Clamped below
+ * the division so a slow tempo can never make the lead reach back past the
+ * previous boundary and fire immediately.
+ */
+#define RECALL_WRITE_MS 36
+static void snapshot_recall_check_boundary(void)
+{
+    if (recall_pending_target < 0 || !shadow_control) return;
+    if (!sampler_transport_playing) {
+        /* The clock stopped under an armed recall. Nothing will ever reach the
+         * target, so drop it rather than leave a mark on screen forever. */
+        recall_pending_target = -1;
+        shadow_control->ui_flags_ext |=
+            (uint16_t)(SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED >> SHADOW_UI_FLAG_EXT_SHIFT);
+        return;
+    }
+
+    tempo_source_t tsrc;
+    float bpm = sampler_get_bpm(&tsrc);
+    int d = recall_quantize_pulses();
+    int lead = recall_lead_pulses(bpm, d > 0 ? d : RECALL_PULSES_PER_BEAT,
+                                  RECALL_WRITE_MS);
+
+    if (recall_should_fire(shadow_transport_pulses, recall_pending_target, lead)) {
+        recall_pending_target = -1;
+        shadow_control->ui_flags_ext |=
+            (uint16_t)(SHADOW_UI_FLAG_SNAPSHOT_RECALL >> SHADOW_UI_FLAG_EXT_SHIFT);
+    }
+}
 static uint64_t shift_menu_pending_ms = 0;
 static int shift_menu_pending = 0;
 
@@ -6539,6 +6638,43 @@ static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
  *   - MIDI_IN filtering
  *   - All post-ioctl domain logic (track detection, shortcuts, DSP rendering)
  * ============================================================================ */
+/*
+ * Swallow one MIDI_IN event so NOBODY sees it — Move or us.
+ *
+ * There are two buffers and they have different readers, which is the whole
+ * reason this helper exists:
+ *
+ *   shadow  (= global_mmap_addr) is WHAT MOVE SEES.
+ *   src     (= hardware_mmap_addr) is the real mailbox, which Move never
+ *           reads; Schwung's own post-ioctl scans and shadow_forward_midi do.
+ *
+ * Twelve sites in shim_post_transfer meant "block this from reaching Move" and
+ * eleven of them zeroed only the HARDWARE mailbox. That does not block Move at
+ * all — and it is worse than a no-op, because a zeroed slot is a TERMINATOR,
+ * so it hid every event behind it from our own readers. Precisely backwards
+ * from the intent, at every one of them. It surfaced when Shift+Delete reached
+ * Move and deleted a clip; the other ten leak into Capture, Sample, Back, Jog
+ * Click and the arrows, none of which is destructive, which is why they had
+ * gone unnoticed and why the broken pattern looked like the house style.
+ *
+ * Index-paired, and safe only because shadow_midi_in_compact() runs LAST in
+ * shim_post_transfer: nothing may move a slot between the two writes.
+ *
+ * Takes both bases rather than reading globals so it stays usable from the
+ * loops that have already offset their own pointer.
+ */
+static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in, int j)
+{
+    if (shadow_midi_in) {
+        shadow_midi_in[j] = 0; shadow_midi_in[j + 1] = 0;
+        shadow_midi_in[j + 2] = 0; shadow_midi_in[j + 3] = 0;
+    }
+    if (hw_midi_in) {
+        hw_midi_in[j] = 0; hw_midi_in[j + 1] = 0;
+        hw_midi_in[j + 2] = 0; hw_midi_in[j + 3] = 0;
+    }
+}
+
 static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
 {
     (void)ctx;
@@ -7348,6 +7484,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Scan for track button CCs (40-43) for D-Bus volume sync,
      * and volume knob touch (note 8) for master volume display reading.
      * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow buffer is already filtered. */
+    /* An armed recall fires on the clock, not on a button, so it is checked
+     * every frame rather than from the CC scan. Cheap: a compare against a
+     * counter, and an early-out when nothing is armed. */
+    snapshot_recall_check_boundary();
+
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
@@ -7454,9 +7595,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
-                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                            midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         }
 
                         /* Shift + Track (without Volume / Mute) while shadow UI is displayed = dismiss shadow UI
@@ -7483,9 +7622,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * what Move reads, src keeps the debug scan honest. */
                         if (!pressed && track_swallow_release[lp_slot]) {
                             track_swallow_release[lp_slot] = 0;
-                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                            midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         }
                         if (pressed) {
                             track_swallow_release[lp_slot] = 0;
@@ -7552,7 +7689,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         shadow_control->suspend_overtake = 1;
                         shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                         /* Block Back from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7571,7 +7708,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                         }
                         /* Block Jog Click from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7583,7 +7720,78 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (require_vol && !SHIFT_VOL_ACTIVE()) require_vol = 0;
                     if (!require_vol || shadow_volume_knob_touched) {
                         skipback_trigger_save();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    }
+                }
+
+                /*
+                 * Snapshot / recall: Shift+Copy takes, Shift+Delete recalls.
+                 *
+                 * The shim only RAISES A FLAG. The work is ~20 param round
+                 * trips at ~2.8ms each, and this is the SPI callback — it does
+                 * none of it. shadow_ui.js (SCHED_OTHER, and running even with
+                 * the display hidden) services the flag, which is also why the
+                 * gesture works whether or not the shadow UI is on screen.
+                 *
+                 * BOTH EDGES ARE SWALLOWED, and that is not tidiness.
+                 *
+                 * Blocking only the press (d2 > 0) left Move a lone BUTTON-UP
+                 * for a key it never saw go down — and Move acted on it. On
+                 * hardware that deleted the clip. Every press in the log had
+                 * fired the gesture correctly and been zeroed; the release was
+                 * the whole leak, and for CC_DELETE the consequence is
+                 * destructive rather than cosmetic.
+                 *
+                 * The latch is why this cannot just test shadow_shift_held on
+                 * the release too: Shift is very often let go BEFORE the
+                 * button, so the release arrives with shift already down and
+                 * would sail through. `snapshot_gesture_swallow` remembers
+                 * that we ate the press and eats the matching release whatever
+                 * Shift is doing by then. A press we did NOT consume never
+                 * sets it, so Move's own bare Copy and Delete are untouched.
+                 *
+                 * The cost is Move's own Shift+Copy and Shift+Delete while
+                 * Schwung's UI is enabled, which is the accepted price.
+                 *
+                 * Overtake is already handled: the `overtake_active` early-out
+                 * above `continue`s past this for every CC but its own three.
+                 *
+                 * Nothing is LOGGED here. shadow_log() calls unified_log(),
+                 * which the RT rules forbid on this path; the neighbouring
+                 * skipback and sampler branches do it anyway and that is a
+                 * known wart, not a licence. shadow_ui logs both gestures from
+                 * SCHED_OTHER where logging is legal.
+                 */
+                if (d1 == CC_COPY || d1 == CC_DELETE) {
+                    int gi = (d1 == CC_COPY) ? 0 : 1;
+                    if (d2 > 0) {
+                        if (shadow_shift_held && shadow_ui_enabled && shadow_control) {
+                            uint16_t raise;
+                            if (d1 == CC_COPY) {
+                                raise = SHADOW_UI_FLAG_SNAPSHOT_TAKE;
+                            } else {
+                                raise = snapshot_recall_gesture();
+                            }
+                            shadow_control->ui_flags_ext |=
+                                (uint16_t)(raise >> SHADOW_UI_FLAG_EXT_SHIFT);
+                            snapshot_gesture_swallow[gi] = 1;
+                        }
+                    }
+                    if (snapshot_gesture_swallow[gi]) {
+                        /*
+                         * BOTH BUFFERS. `src` is hardware_mmap_addr — the real
+                         * mailbox — and Move does not read it. What Move reads
+                         * is `shadow` (see the declarations: "library shadow
+                         * buffer (what Move sees)"). Zeroing only `src`
+                         * blocks nothing at all, which is how Shift+Delete
+                         * reached Move and deleted a clip.
+                         *
+                         * Index-paired, and safe because shadow_midi_in_compact
+                         * runs LAST in this function — nothing may move a slot
+                         * between these two writes.
+                         */
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        if (d2 == 0) snapshot_gesture_swallow[gi] = 0;
                     }
                 }
 
@@ -7592,10 +7800,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_shift_held && shadow_volume_knob_touched && d2 > 0) {
                     if (d1 == CC_LEFT && set_page_current > 0) {
                         shadow_change_set_page(set_page_current - 1);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (d1 == CC_RIGHT && set_page_current < SET_PAGES_TOTAL - 1) {
                         shadow_change_set_page(set_page_current + 1);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7642,17 +7850,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_log("Sampler: preroll cancelled via Shift+Sample");
                             sampler_request_stop();
                         }
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (sampler_state == SAMPLER_RECORDING) {
                         /* Bare Sample while recording: stop */
                         shadow_log("Sampler: stopped via Sample button");
                         sampler_request_stop();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (sampler_state == SAMPLER_PREROLL) {
                         /* Bare Sample while preroll: cancel back to armed */
                         shadow_log("Sampler: preroll cancelled via Sample button");
                         sampler_request_stop();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7665,7 +7873,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_overlay_sync();
                     shadow_log("Sampler: fullscreen dismissed via Back");
                     send_screenreader_announcement("Sampler hidden. Shift+Sample to resume.");
-                    src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
 
                 /* Jog wheel while sampler is armed = navigate menu */
@@ -7682,7 +7890,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
                     /* Block jog from reaching Move/shadow UI */
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
 
                 /* Jog click while sampler is armed = cycle selected menu item */
@@ -7698,7 +7906,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
             }
 
@@ -7748,9 +7956,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7765,9 +7971,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (LONG_PRESS_ACTIVE() && shadow_shift_held &&
                                !shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                         /* Shift+Step13 without Vol — immediate tools shortcut.
@@ -7781,9 +7985,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         clock_gettime(CLOCK_MONOTONIC, &step13_press_time);
                         step13_longpress_pending = 1;
                         step13_longpress_fired = 0;
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         shadow_log("Shift+Step13: opening tools");
                     }
                 }

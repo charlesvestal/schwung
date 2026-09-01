@@ -253,6 +253,48 @@ One drop, two stuck consumers, with the note-off sitting present and correctly
 ordered in the raw hardware mailbox the whole time. That last part is what makes
 this look like it must be somewhere else; it isn't.
 
+### An SHM buffer sized to `sizeof` reads as FULL, and is not
+
+`CONTROL_BUFFER_SIZE` was 84 with a `sizeof(...) == BUFFER` assert — not a
+designed size, just wherever the struct happened to end after the corun masks
+were widened. Adding a byte failed the build, which looks like a hard limit,
+and is why Recall Quantize was first squeezed into two spare bits of
+`ui_flags_ext` — costing a mask, a shift and one real bug (a flat mask applied
+to ext space, which reads zero always).
+
+**It costs nothing.** `/dev/shm` is tmpfs and allocates by page: measured on the
+device, an 84-byte segment occupied 4096 — the same 8 blocks as a 512-byte one.
+Both buffers are containers with headroom now (256 / 512) under a `<=` assert
+plus a floor, so adding a field is free and only SHRINKING fails the build.
+
+**And a resize is not a SIGBUS.** `shadow_shm_map()` fstats on attach and
+refuses a segment shorter than requested, logging "restart the shim so it is
+recreated" — the feature goes quiet rather than crashing. Two earlier resizes
+(#358, #361) used exactly that procedure. Deploy the shim and shadow_ui
+together, as `install.sh` does; growing is also safe for an old consumer, which
+asks for less than the segment holds.
+
+### Blocking an event means silencing TWO buffers, and eleven sites silenced one
+
+`shadow` (`= global_mmap_addr`) is **what Move sees**. `hardware_mmap_addr` is
+the real mailbox, which **Move never reads** — Schwung's own post-ioctl scans
+do. Twelve sites in `shim_post_transfer` meant "block this from reaching Move"
+and **eleven zeroed only the hardware mailbox**: no block at all, and worse than
+a no-op, because a zeroed slot is a terminator, so they hid every event *behind*
+them from our own readers. Exactly backwards, at every one.
+
+It surfaced only when **Shift+Delete reached Move and deleted a clip**. The
+other ten leaked into Capture, Sample, Back, Jog Click and the arrows — none
+destructive, which is why they went unnoticed and why the broken form read as
+the house style. `midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)` is now the
+only sanctioned way; `tests/host/test_midi_in_swallow_pairs_buffers.sh` fails on
+any hand-rolled hardware-mailbox zeroing.
+
+**Swallowing a button needs BOTH EDGES, latched.** Press-only leaves Move a lone
+button-up for a key it never saw go down, and Move acts on it. The release
+cannot be gated on `shadow_shift_held` either — Shift is usually let go *before*
+the button.
+
 `shadow_midi_in_compact()` (`src/host/shadow_midi_filter.c`) closes the gaps and
 runs **last** in `shim_post_transfer` — the blocking sites above it pair `sh[j]`
 with `hw[j]` by index, so nothing may move while they run. Zero a slot after it
@@ -529,6 +571,11 @@ Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger*
 - **Shift+Sample** — Quantized Sampler
 - **Shift+Capture** — Skipback (last 30 s)
 
+**Anywhere** (independent of the trigger mode, and whether or not the shadow UI
+is on screen):
+- **Shift+Copy** — snapshot every slot + Master FX
+- **Shift+Delete** — put the snapshot back
+
 **Long-press** (modes Both / Long Press):
 - Hold Track 1–4 (500ms) → slot editor
 - Hold Menu (500ms) → Master FX
@@ -565,6 +612,36 @@ Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.
 ### Skipback
 
 Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/Skipback/YYYY-MM-DD/`.
+### Snapshot / recall — `docs/SHADOW_UI.md`
+
+Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
+
+- **A recall writes STATE, never SHAPE.** `load_file` is what restores module
+  identity and it REINSTANTIATES — cutting reverb tails, resetting arp phase,
+  which is the opposite of an A/B. A position whose module was swapped since is
+  skipped and **counted**; the count is the whole feature, because a partial
+  restore that reports nothing is indistinguishable from a working one.
+- **Recall Quantize** (Global Settings → Shortcuts, default Off) makes
+  Shift+Delete wait for the next beat / bar / 2 bars. A SETTING, not a second
+  gesture. Ignored while the transport is stopped — a queue with no clock never
+  fires. The division is a field in `shadow_control_t`;
+  `load_feature_config()` runs once at init, so a setting parsed there would
+  need a reboot. `sampler_clock_count` is NOT a beat
+  counter — it only advances while the sampler is RECORDING — so the queue uses
+  `shadow_transport_pulses`. The boundary maths is in `recall_quantize.h` so
+  `tests/host/` can run it: the next boundary is never the current one, and the
+  lead is clamped below the division or a fast tempo degrades it to instant.
+- **The snapshot is re-seeded from the set on every set load**, so it means one
+  sentence and is never older than the session. It lives in
+  `set_state/<uuid>/snapshot/` — a global dir would be the one piece of chain
+  state that does not travel with the set.
+- **There is no second serializer.** A take is `autosaveAllSlots()` +
+  `saveMasterFxChainConfig()` and a file copy; those writers already carry every
+  guard (bail-if-empty, skip-if-unchanged, shim-reports-empty).
+- **`ui_flags` is FULL and cannot be widened** — `ui_patch_index` sits at +8
+  with no padding, so a uint16 moves every field behind it and `sizeof` is a
+  contract between two binaries. Flags 0x0100+ live in `ui_flags_ext` (was
+  `reserved16`); the JS binding presents one flat word.
 ### USB-C Audio-Out Source
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
@@ -588,7 +665,7 @@ governs whether Schwung restores it.
 
 SHM segments: `/schwung-audio` (mixed shadow output), `/schwung-control` (`shadow_control_t`), `/schwung-param` (param requests, `shadow_param_t`), `/schwung-ui` (`shadow_ui_state_t`).
 
-`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`.
+`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`. **Flags 0x0100+ live in `ui_flags_ext`, not here** — the 8-bit field is full and widening it moves every field behind it.
 
 ### Shadow Slot Features
 

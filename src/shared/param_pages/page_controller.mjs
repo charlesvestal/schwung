@@ -969,6 +969,41 @@ export function createController(io = {}) {
     }
 
     /**
+     * Every cached value is now wrong — re-read the page.
+     *
+     * For a change made to the module from OUTSIDE this controller while the
+     * grid is standing on a page. The snapshot recall is the case: it writes
+     * `<prefix>:state` for every position at once, so every value the grid
+     * holds describes the sound from before the gesture.
+     *
+     * Nothing reads on the draw path — values arrive on touch-down, on the
+     * rotation, or in the entry warm — which is why a stale cache is not
+     * merely a late repaint. `onKnobTurn` steps FROM the cached value, so the
+     * first knob move after a recall departed from the pre-recall number and
+     * wrote the tweak back over the thing that had just been restored.
+     * Reported from hardware as "my next knob move is from the pre-restore
+     * state".
+     *
+     * A preset Load does not need this only because it comes back through the
+     * browser, and the re-entry replans and re-warms. A recall happens under
+     * your hands with no re-entry at all.
+     *
+     * Drops the same three maps a child-instance change drops, for the same
+     * reason and with the same caveat: `pendingWrite` is deliberately FLUSHED
+     * rather than discarded, because a write still in flight belongs to the
+     * user's own gesture and dropping it cancels it. Then re-warms, bounded
+     * the way every other warm here is, so a module that has stopped
+     * answering costs one timeout rather than a page of them.
+     */
+    function revalue() {
+        flushDueWritesUnconditionally();
+        s.values = Object.create(null);
+        s.knobStates = Object.create(null);
+        s.pendingWrite = Object.create(null);
+        warmCurrentPage();
+    }
+
+    /**
      * Land on the page with this NAME, now or as soon as it exists.
      *
      * The caller (returnToParamPagesFromEditor) knows which page you left; it
@@ -3882,7 +3917,7 @@ export function createController(io = {}) {
     }
 
     return {
-        load, reloadIfChanged, tick, refreshTrailing,
+        load, reloadIfChanged, tick, refreshTrailing, revalue,
         describePage,
         /* For a selection made OUTSIDE the controller — the list editor drives
          * the same modules through its own preset browser and has the same
