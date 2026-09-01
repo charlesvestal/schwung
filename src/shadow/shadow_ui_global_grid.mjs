@@ -447,8 +447,12 @@ export const AUDIO_PARAMS = [
      * Move's own metronome is audible, so that rule prevents doubling by
      * construction rather than by a second condition someone can forget.
      */
+    /* Default FOLLOW, not Off. Under Move->Schwung the click is simply missing,
+     * and a default of Off means the fix ships switched off for everyone who
+     * hits the problem. Follow is inert until Move's own metronome is on, so
+     * it costs nothing for anyone who never uses one. */
     { key: "metronome_mode", name: "Metronome", type: "enum",
-      options: ["Off", "Follow", "On"], short_options: ["OFF", "FOL", "ON"], default: 0 },
+      options: ["Off", "Follow", "On"], short_options: ["OFF", "FOL", "ON"], default: 1 },
     { key: "metronome_level", name: "Click Vol", type: "int",
       min: 0, max: 100, step: 5, default: 50, unit: "%" },
 ];
