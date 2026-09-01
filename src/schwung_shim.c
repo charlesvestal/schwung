@@ -3608,24 +3608,15 @@ static int snapshot_gesture_swallow[2] = {0, 0};
 /*
  * Recall Quantize, in MIDI clock pulses. 0 = Off.
  *
- * Read from ui_flags_ext every time it is needed rather than cached, so a
- * change made in Global Settings takes effect on the very next press. See the
- * register's note in shadow_constants.h for why it lives there.
+ * Read from shadow_control every time it is needed rather than cached, so a
+ * change made in Global Settings takes effect on the very next press —
+ * load_feature_config() runs once at init, so anything parsed there would need
+ * a reboot.
  */
 static int recall_quantize_pulses(void)
 {
     if (!shadow_control) return 0;
-    /*
-     * ui_flags_ext is in EXT SPACE — it holds bits 8+ of the flat word, already
-     * shifted down. The mask and shift are declared FLAT, so both have to come
-     * down by SHADOW_UI_FLAG_EXT_SHIFT before they touch this field. Masking
-     * with the flat 0x3000 reads a field whose bits live at 0x30: always zero,
-     * so the setting would silently never apply.
-     */
-    int v = (shadow_control->ui_flags_ext
-             & (SHADOW_UI_RECALL_Q_MASK >> SHADOW_UI_FLAG_EXT_SHIFT))
-            >> (SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT);
-    return SHADOW_UI_RECALL_Q_PULSES(v);
+    return SHADOW_RECALL_Q_PULSES(shadow_control->recall_quantize);
 }
 
 /* The armed recall: the pulse count at which it fires, or -1 for none. */

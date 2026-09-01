@@ -133,9 +133,16 @@ grep -q "snapshot_recall_check_boundary();" "$SHIM" \
 # load_feature_config runs ONCE at init, so a cached setting would not take
 # effect until the next reboot.
 q=$(awk '/^static int recall_quantize_pulses\(void\)/,/^}/' "$SHIM")
-echo "$q" | grep -q "ui_flags_ext" || note "the quantize setting is not read from ui_flags_ext"
-echo "$q" | grep -q "SHADOW_UI_FLAG_EXT_SHIFT" \
-  || note "the flat mask is applied to ext space — it would read zero always"
+echo "$q" | grep -q "shadow_control->recall_quantize" \
+  || note "the quantize setting is not read from shadow_control->recall_quantize"
+# It must be a FIELD, not bits packed into ui_flags_ext. It was the latter, on
+# the belief that shadow_control_t was full — it was not, the buffer was merely
+# sized to the struct with an == assert, and /dev/shm allocates a page either
+# way. The packing cost a mask, a shift and one real bug.
+echo "$q" | grep -q "ui_flags_ext" \
+  && note "the quantize setting is packed into ui_flags_ext — give it a field"
+grep -q "SHADOW_UI_RECALL_Q_MASK" "$SHIM" src/host/shadow_constants.h \
+  && note "the packed-register defines are back"
 
 # The free-running pulse counter, which is NOT sampler_clock_count (that one
 # only advances while the sampler is recording and resets when it starts).

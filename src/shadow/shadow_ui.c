@@ -234,12 +234,8 @@ static void features_json_set(const char *key, const char *value_json);
 
 /* shadow_recall_quantize_set(v) -> void   (0=off, 1=beat, 2=bar, 3=two bars)
  *
- * Writes the two-bit Recall Quantize register inside ui_flags_ext, which the
- * shim reads when Shift+Delete is pressed. A REGISTER, not a flag: it is never
- * cleared by shadow_clear_ui_flags, which only clears the mask it is handed.
- *
- * The read-modify-write leaves every other bit alone, so a settings change
- * cannot swallow a snapshot event raised on the same frame.
+ * Writes shadow_control_t.recall_quantize, which the shim reads when
+ * Shift+Delete is pressed.
  */
 static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_val,
                                              int argc, JSValueConst *argv) {
@@ -249,10 +245,7 @@ static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_v
     if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
     if (v < 0) v = 0;
     if (v > 3) v = 3;
-    const uint16_t mask = (uint16_t)(SHADOW_UI_RECALL_Q_MASK >> SHADOW_UI_FLAG_EXT_SHIFT);
-    const int sh = SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT;
-    shadow_control->ui_flags_ext =
-        (uint16_t)((shadow_control->ui_flags_ext & ~mask) | ((uint16_t)v << sh));
+    shadow_control->recall_quantize = (uint8_t)v;
 
     /* Persisted here rather than from JS, same as shadow_ui_trigger_set: the
      * register lives in SHM and does not survive a reboot, so the file is the

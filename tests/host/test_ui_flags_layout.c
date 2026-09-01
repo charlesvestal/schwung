@@ -77,42 +77,38 @@ int main(void) {
     assert(offsetof(shadow_control_t, ui_flags_ext) == 10);
     assert(offsetof(shadow_control_t, ui_request_id) == 12);
 
-    /* 4b. The Recall Quantize REGISTER round-trips through ext space.
+    /* 4b. Recall Quantize is a FIELD, not bits packed into ui_flags_ext.
      *
-     *     Its mask and shift are declared FLAT (0x3000, 12) while ui_flags_ext
-     *     holds bits 8+ already shifted down, so both must come down by
-     *     EXT_SHIFT before touching the field. Masking the field with the flat
-     *     0x3000 reads bits that live at 0x30 — always zero, so the setting
-     *     silently never applies. Written wrong first time; this is the check
-     *     that would have caught it. */
-    assert((SHADOW_UI_RECALL_Q_MASK & LOW_FLAGS) == 0);
-    assert((SHADOW_UI_RECALL_Q_MASK & EXT_FLAGS) == 0);
-    for (int v = 0; v <= 3; v++) {
-        c.ui_flags_ext = (uint16_t)(v << (SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT));
-        int back = (c.ui_flags_ext
-                    & (SHADOW_UI_RECALL_Q_MASK >> SHADOW_UI_FLAG_EXT_SHIFT))
-                   >> (SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT);
-        assert(back == v);
-    }
-    /* The register must not collide with the event flags that share the field. */
-    c.ui_flags_ext = (uint16_t)((SHADOW_UI_FLAG_SNAPSHOT_QUEUED >> SHADOW_UI_FLAG_EXT_SHIFT)
-                                | (3 << (SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT)));
-    assert((c.ui_flags_ext & (SHADOW_UI_FLAG_SNAPSHOT_QUEUED >> SHADOW_UI_FLAG_EXT_SHIFT)) != 0);
-    assert(((c.ui_flags_ext & (SHADOW_UI_RECALL_Q_MASK >> SHADOW_UI_FLAG_EXT_SHIFT))
-            >> (SHADOW_UI_RECALL_Q_SHIFT - SHADOW_UI_FLAG_EXT_SHIFT)) == 3);
-    /* Pulse mapping: off / beat / bar / two bars at 24 PPQN. */
-    assert(SHADOW_UI_RECALL_Q_PULSES(0) == 0);
-    assert(SHADOW_UI_RECALL_Q_PULSES(1) == 24);
-    assert(SHADOW_UI_RECALL_Q_PULSES(2) == 96);
-    assert(SHADOW_UI_RECALL_Q_PULSES(3) == 192);
+     *     It was a two-bit register there, on the belief that this struct was
+     *     full. It was not — the buffer was merely sized to the struct with an
+     *     `==` assert, and /dev/shm allocates a whole page either way. The
+     *     register cost a mask, a shift and one real bug: the flat 0x3000
+     *     applied to a field holding ext space, which reads zero always. */
+    c.recall_quantize = 3;
+    assert(c.recall_quantize == 3);
+    assert(sizeof(c.recall_quantize) == 1);
+    assert(SHADOW_RECALL_Q_PULSES(0) == 0);
+    assert(SHADOW_RECALL_Q_PULSES(1) == 24);
+    assert(SHADOW_RECALL_Q_PULSES(2) == 96);
+    assert(SHADOW_RECALL_Q_PULSES(3) == 192);
 
-    /* 5. The struct is EXACTLY its buffer — shadow_constants.h asserts `==`,
-     *    not `<=`, so the SHM size is a fixed contract between two binaries
-     *    and not merely an upper bound. Restated here so a failure names the
-     *    reason instead of a numbered typedef. */
-    assert(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE);
+    /* 5. The struct FITS its buffer, with headroom, and the buffer never
+     *    shrinks.
+     *
+     *    The headroom is the point. This used to assert `==`, so adding a
+     *    field failed the build and read as "the struct is full" — which is
+     *    exactly the wrong conclusion, and the one that produced the packed
+     *    register above. The buffer is a container; size it and move on.
+     *
+     *    Shrinking is the only dangerous direction: every already-deployed
+     *    consumer maps CONTROL_BUFFER_SIZE, and shadow_shm_map refuses an
+     *    attach to a segment smaller than requested. */
+    assert(sizeof(shadow_control_t) <= CONTROL_BUFFER_SIZE);
+    assert(CONTROL_BUFFER_SIZE >= 256);
+    assert(sizeof(shadow_control_t) < CONTROL_BUFFER_SIZE);   /* room to grow */
 
-    printf("PASS test_ui_flags_layout (control=%zu bytes, ext space holds 16 flags)\n",
-           sizeof(shadow_control_t));
+    printf("PASS test_ui_flags_layout (control=%zu of %d bytes, %zu spare)\n",
+           sizeof(shadow_control_t), CONTROL_BUFFER_SIZE,
+           (size_t)CONTROL_BUFFER_SIZE - sizeof(shadow_control_t));
     return 0;
 }
