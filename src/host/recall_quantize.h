@@ -13,8 +13,10 @@
 #ifndef RECALL_QUANTIZE_H
 #define RECALL_QUANTIZE_H
 
+#include "transport_grid.h"
+
 /* MIDI clock is 24 PPQN; a 4/4 bar is 96. */
-#define RECALL_PULSES_PER_BEAT 24
+#define RECALL_PULSES_PER_BEAT TRANSPORT_PULSES_PER_BEAT
 
 /*
  * The pulse count at which a recall armed *now* should land.
@@ -28,7 +30,18 @@ static inline int recall_next_boundary(int pulses, int div)
 {
     if (div <= 0) return -1;
     if (pulses < 0) pulses = 0;
-    return (pulses / div) * div + div;
+
+    /* The grid is offset: the downbeat is pulse 1, not 0 (transport_grid.h).
+     * This used to return multiples of `div`, so every quantized recall fired
+     * one pulse early — 20.8 ms at 120 BPM, 125 ms at 20. Inaudible for a
+     * snapshot recall in a way it was not for the metronome, which is how it
+     * survived: same counter, same off-by-one, only one of them complained. */
+    int p = pulses - TRANSPORT_DOWNBEAT_PULSE_OFFSET;
+
+    /* Before the first clock after Start, the next boundary IS that downbeat. */
+    if (p < 0) return TRANSPORT_DOWNBEAT_PULSE_OFFSET;
+
+    return (p / div) * div + div + TRANSPORT_DOWNBEAT_PULSE_OFFSET;
 }
 
 /*
