@@ -121,7 +121,11 @@ const plan = planPages({ hierarchy, chainParams });
    * another keeps the total at 24 and both totals-based checks green. */
   /* Display sits at seven of the eight a page holds, Audio at eight — one more
    * param in either and the section paginates silently. */
-  const WANT_COUNT = { display: 7, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 2, services: 2 };
+  /* Audio is still 8: the two Skipback rows moved to Shortcuts to make room
+   * for the metronome pair. The "exactly 7 pages" and "Audio is at
+   * KNOBS_PER_PAGE exactly" assertions below are UNCHANGED — they are what
+   * catches a spill, and a spill is the thing that move exists to avoid. */
+  const WANT_COUNT = { display: 7, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 4, services: 2 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -298,6 +302,9 @@ const plan = planPages({ hierarchy, chainParams });
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
     set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
     recall_quantize: "Recall Q",
+    /* Names written out in full, like every row above: the cell renderer
+       abbreviates (labelForCell / WORD_ABBREV), the declaration does not. */
+    metronome_mode: "Metronome", metronome_level: "Click Vol",
     filebrowser_enabled: "File Browser",
     analytics_enabled: "Analytics",
   };
@@ -544,7 +551,7 @@ const plan = planPages({ hierarchy, chainParams });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (7/8/6/1/2/2 params + Updates as a " +
+console.log("PASS: global settings contract — seven levels (7/8/6/1/4/2 params + Updates as a " +
             "menu), every section one page with Audio at the limit, every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
