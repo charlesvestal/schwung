@@ -206,12 +206,19 @@ static JSValue js_shadow_set_focused_slot(JSContext *ctx, JSValueConst this_val,
 }
 
 /* shadow_get_ui_flags() -> int
- * Returns the UI flags from shared memory.
+ * Returns the UI flags from shared memory as ONE flat word.
+ *
+ * The flags live in two fields — `ui_flags` (bits 0-7) and `ui_flags_ext`
+ * (bits 8+) — because `ui_flags` ran out of bits and cannot be widened
+ * without moving every field behind it. See the note in shadow_constants.h.
+ * JS is shown a single space so a caller never has to know which byte a flag
+ * sits in; shadow_clear_ui_flags() splits the mask back apart.
  */
 static JSValue js_shadow_get_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
-    return JS_NewInt32(ctx, shadow_control->ui_flags);
+    return JS_NewInt32(ctx, (int)shadow_control->ui_flags |
+                            ((int)shadow_control->ui_flags_ext << SHADOW_UI_FLAG_EXT_SHIFT));
 }
 
 /* shadow_get_open_tool_cmd() -> int (0=none, 1=open_tool; auto-clears) */
@@ -224,14 +231,16 @@ static JSValue js_shadow_get_open_tool_cmd(JSContext *ctx, JSValueConst this_val
 }
 
 /* shadow_clear_ui_flags(mask) -> void
- * Clears the specified flags from ui_flags.
+ * Clears the specified flags, splitting the flat mask back across the two
+ * fields it came from in js_shadow_get_ui_flags.
  */
 static JSValue js_shadow_clear_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (!shadow_control || argc < 1) return JS_UNDEFINED;
     int mask = 0;
     if (JS_ToInt32(ctx, &mask, argv[0])) return JS_UNDEFINED;
-    shadow_control->ui_flags &= ~(uint8_t)mask;
+    shadow_control->ui_flags &= ~(uint8_t)(mask & 0xFF);
+    shadow_control->ui_flags_ext &= ~(uint16_t)((unsigned)mask >> SHADOW_UI_FLAG_EXT_SHIFT);
     return JS_UNDEFINED;
 }
 

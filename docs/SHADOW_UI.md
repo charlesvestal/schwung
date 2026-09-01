@@ -642,3 +642,82 @@ this device jogs. Two related rules fell out of the same render: a footer must
 name the verb of the row **under the cursor** (the picker's filter row cycles
 and loads nothing, so `drawChainPicker` reads `clickVerb` off the row), and a
 one-row screen must not name a JOG with nowhere to go.
+
+### Snapshot / recall: what it restores, and what it deliberately does not
+
+Shift+Copy snapshots all 4 slots plus all 8 Master FX positions; Shift+Delete
+puts it back. One snapshot, overwritten each time.
+
+**A recall writes STATE, never SHAPE.** For each position it writes
+`<prefix>:state` and `<prefix>:bypassed`, and nothing else. It does not call
+`load_file`, which is what the set-change path uses — `load_file` restores
+module *identity*, and doing so reinstantiates: reverb tails cut, arp phase
+resets, delay buffers empty. That is precisely the opposite of what an A/B
+gesture is for. A position whose module was swapped since the snapshot is
+skipped rather than reloaded.
+
+**The skip count is the feature, not decoration.** A partial restore that
+reports nothing is indistinguishable from a working one until you notice by
+ear, and one bad experience of that makes the whole gesture untrustworthy.
+`planRestore` (`src/shared/snapshot.mjs`) counts three distinct misses and the
+toast shows the total:
+
+| reason | meaning |
+|---|---|
+| `swapped` | a different module sits there now |
+| `nostate` | right module, but it implements no `state` key — `denis` and `branchage` are the known cases (see `getSlotStateWithRetry`) |
+| `empty` | the position held a module in the snapshot and holds nothing now |
+
+A position empty in *both* is not counted. Counting it would make every
+partly-filled rig report skips forever and the number would stop meaning
+anything.
+
+**Storage is set-associated and re-seeded on every set load.** It lives in
+`set_state/<uuid>/snapshot/` as twelve files in the same format as set state.
+A global snapshot directory would be the one piece of chain state that does not
+travel with the set, and would be wrong the moment you changed sets or booted
+into a different one; here it is deleted with the set for free. The forced
+re-seed on `SET_CHANGED` is what makes the snapshot mean one sentence — *how
+this set was when you loaded it, or the last time you pressed Shift+Copy in
+this session* — so nothing invisible survives a set change. A second,
+**conditional** seed runs at `shadow_ui` startup when the set has no snapshot
+dir: without it a device that upgrades and boots straight into its existing set
+would have no snapshot until the next set change, and the first Shift+Delete
+would do nothing at all. It stays on disk rather than in RAM so a `shadow_ui`
+restart mid-session (overtake exit, set change) does not lose a snapshot the
+user took; being overwritten on load is what stops that persistence outliving
+the explanation. Set duplication does **not** copy it — the duplicate loads
+fresh and would be re-seeded immediately anyway.
+
+**There is no second serializer.** A take is `autosaveAllSlots()` +
+`saveMasterFxChainConfig()` followed by a file copy. Those writers already
+carry every guard the format has accumulated — the bail-if-empty that protects
+a good file from a timed-out read, the skip-if-unchanged that keeps eMMC quiet,
+the shim-reports-empty cross-check. A parallel capture path would have to
+re-derive all of it and then stay in step with it forever. The copy writes `{}`
+for a file that reads back empty rather than skipping it: leaving the previous
+snapshot's file in place would splice two snapshots together, and each file
+parses fine on its own so nothing downstream could tell.
+
+**`ui_flags` is full, and widening it is not free.** All eight bits are taken,
+and `ui_patch_index` (uint16) sits immediately after it at offset 8 with no
+padding — so a uint16 `ui_flags` moves every field behind it and changes
+`sizeof(shadow_control_t)`, which `shadow_constants.h` asserts as `==`, not
+`<=`. The shim and shadow_ui are separate binaries mapping one segment; a
+layout change reaching one before the other is silent corruption, not a build
+error. Flags 0x0100+ therefore live in `ui_flags_ext`, which was `reserved16`.
+`js_shadow_get_ui_flags` presents both as one flat word and
+`js_shadow_clear_ui_flags` splits a mask back apart, so JS never has to know
+which byte a flag sits in — and `SHADOW_UI_FLAG_EXT_SHIFT` is asserted equal to
+`8 * sizeof(ui_flags)` rather than written as `8`, because at any smaller shift
+the ext space aliases onto low flags in that flat word.
+
+**The shim only raises the flag.** A take is ~20 param round trips at ~2.8 ms;
+the gesture is detected inside the SPI callback, which does none of that.
+`shadow_ui` (SCHED_OTHER, running even with the display hidden) does the work,
+which is also why the gesture works whether or not the shadow UI is on screen —
+and why the shim branch logs nothing: `shadow_log` calls `unified_log`.
+
+Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
+`test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
+wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).

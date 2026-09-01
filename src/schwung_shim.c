@@ -7587,6 +7587,40 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                 }
 
+                /*
+                 * Snapshot / recall: Shift+Copy takes, Shift+Delete recalls.
+                 *
+                 * The shim only RAISES A FLAG. The work is ~20 param round
+                 * trips at ~2.8ms each, and this is the SPI callback — it does
+                 * none of it. shadow_ui.js (SCHED_OTHER, and running even with
+                 * the display hidden) services the flag, which is also why the
+                 * gesture works whether or not the shadow UI is on screen.
+                 *
+                 * Both zero the slot so Move never sees the button. That costs
+                 * Move's own Shift+Copy and Shift+Delete while Schwung's UI is
+                 * enabled, which is the accepted price of the combo.
+                 *
+                 * Overtake is already handled: the `overtake_active` early-out
+                 * above `continue`s past this for every CC but its own three.
+                 *
+                 * Nothing is LOGGED here. shadow_log() calls unified_log(),
+                 * which the RT rules forbid on this path; the neighbouring
+                 * skipback and sampler branches do it anyway and that is a
+                 * known wart, not a licence. shadow_ui logs both gestures from
+                 * SCHED_OTHER where logging is legal.
+                 */
+                if (d2 > 0 && shadow_shift_held && shadow_ui_enabled && shadow_control) {
+                    if (d1 == CC_COPY) {
+                        shadow_control->ui_flags_ext |=
+                            (SHADOW_UI_FLAG_SNAPSHOT_TAKE >> SHADOW_UI_FLAG_EXT_SHIFT);
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    } else if (d1 == CC_DELETE) {
+                        shadow_control->ui_flags_ext |=
+                            (SHADOW_UI_FLAG_SNAPSHOT_RECALL >> SHADOW_UI_FLAG_EXT_SHIFT);
+                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    }
+                }
+
                 /* Shift+Vol+Left/Right: set page navigation (when enabled) */
                 if (SHIFT_VOL_ACTIVE() && shadow_control && shadow_control->set_pages_enabled &&
                     shadow_shift_held && shadow_volume_knob_touched && d2 > 0) {

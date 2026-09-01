@@ -529,6 +529,11 @@ Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger*
 - **Shift+Sample** — Quantized Sampler
 - **Shift+Capture** — Skipback (last 30 s)
 
+**Anywhere** (independent of the trigger mode, and whether or not the shadow UI
+is on screen):
+- **Shift+Copy** — snapshot every slot + Master FX
+- **Shift+Delete** — put the snapshot back
+
 **Long-press** (modes Both / Long Press):
 - Hold Track 1–4 (500ms) → slot editor
 - Hold Menu (500ms) → Master FX
@@ -565,6 +570,26 @@ Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.
 ### Skipback
 
 Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/Skipback/YYYY-MM-DD/`.
+### Snapshot / recall — `docs/SHADOW_UI.md`
+
+Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
+
+- **A recall writes STATE, never SHAPE.** `load_file` is what restores module
+  identity and it REINSTANTIATES — cutting reverb tails, resetting arp phase,
+  which is the opposite of an A/B. A position whose module was swapped since is
+  skipped and **counted**; the count is the whole feature, because a partial
+  restore that reports nothing is indistinguishable from a working one.
+- **The snapshot is re-seeded from the set on every set load**, so it means one
+  sentence and is never older than the session. It lives in
+  `set_state/<uuid>/snapshot/` — a global dir would be the one piece of chain
+  state that does not travel with the set.
+- **There is no second serializer.** A take is `autosaveAllSlots()` +
+  `saveMasterFxChainConfig()` and a file copy; those writers already carry every
+  guard (bail-if-empty, skip-if-unchanged, shim-reports-empty).
+- **`ui_flags` is FULL and cannot be widened** — `ui_patch_index` sits at +8
+  with no padding, so a uint16 moves every field behind it and `sizeof` is a
+  contract between two binaries. Flags 0x0100+ live in `ui_flags_ext` (was
+  `reserved16`); the JS binding presents one flat word.
 ### USB-C Audio-Out Source
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
@@ -588,7 +613,7 @@ governs whether Schwung restores it.
 
 SHM segments: `/schwung-audio` (mixed shadow output), `/schwung-control` (`shadow_control_t`), `/schwung-param` (param requests, `shadow_param_t`), `/schwung-ui` (`shadow_ui_state_t`).
 
-`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`.
+`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`. **Flags 0x0100+ live in `ui_flags_ext`, not here** — the 8-bit field is full and widening it moves every field behind it.
 
 ### Shadow Slot Features
 

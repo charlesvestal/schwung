@@ -141,6 +141,28 @@
 #define SHADOW_UI_FLAG_JUMP_TO_SETTINGS 0x40     /* Jump to Global Settings */
 #define SHADOW_UI_FLAG_JUMP_TO_TOOLS 0x80        /* Jump to Tools menu */
 
+/*
+ * Flags 0x0100 and up live in `ui_flags_ext`, NOT in `ui_flags`.
+ *
+ * `ui_flags` is a uint8_t and all eight bits above are taken. Widening it is
+ * not free: `ui_patch_index` (uint16_t) sits IMMEDIATELY after it at offset 8
+ * with no padding to absorb the growth, so a uint16_t `ui_flags` would move
+ * every field behind it and change sizeof(shadow_control_t). The shim and
+ * shadow_ui are separate binaries mapping the same segment; a layout change
+ * that lands in one before the other is silent corruption, not a build error.
+ *
+ * `ui_flags_ext` was `reserved16` — already at that offset, already the right
+ * width, referenced nowhere. Using it costs zero layout change.
+ *
+ * js_shadow_get_ui_flags() presents the two as ONE 24-bit word
+ * (`ui_flags | (ui_flags_ext << 8)`) and js_shadow_clear_ui_flags() splits a
+ * mask back across them, so JS sees a flat flag space and never has to know
+ * which byte a flag lives in. Keep new flags dense from 0x0100 upward.
+ */
+#define SHADOW_UI_FLAG_EXT_SHIFT 8
+#define SHADOW_UI_FLAG_SNAPSHOT_TAKE   0x0100  /* Shift+Copy: snapshot whole rig */
+#define SHADOW_UI_FLAG_SNAPSHOT_RECALL 0x0200  /* Shift+Delete: recall snapshot */
+
 /* ============================================================================
  * Special Values
  * ============================================================================ */
@@ -165,7 +187,7 @@ typedef struct shadow_control_t {
     volatile uint8_t ui_slot;         /* UI-highlighted slot for knob routing */
     volatile uint8_t ui_flags;        /* UI flags (SHADOW_UI_FLAG_*) */
     volatile uint16_t ui_patch_index; /* Requested patch index */
-    volatile uint16_t reserved16;
+    volatile uint16_t ui_flags_ext;   /* UI flags 0x0100+ (see SHADOW_UI_FLAG_EXT_SHIFT) */
     volatile uint32_t ui_request_id;  /* Incremented on patch request */
     volatile uint32_t shim_counter;   /* Debug: shim tick counter */
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
