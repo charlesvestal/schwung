@@ -54,8 +54,9 @@ there. Entry is `enterGlobalSettingsGrid()`, modelled on
 picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
 Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
 load-bearing: a ninth param in any section paginates silently and the bank bar
-takes over a split nobody chose. Audio sits at exactly eight. The contract test
-pins the per-section counts rather than trusting the shapes.
+takes over a split nobody chose. Audio sits at exactly eight and Display at
+seven. The contract test pins the per-section counts rather than trusting the
+shapes.
 
 Three consequences worth knowing:
 
@@ -78,6 +79,43 @@ Persistence is **three** things and conflating them loses a write silently: a
 shared `saveMasterFxChainConfig()` sink (derived from the routing table, never
 hand-listed), a key-specific saver welded to the assignment, or backend-owned.
 Stored values are **not** indexes — `resample_bridge` stores 0 and **2**.
+
+### A Track tap dismisses, and "Track Tap: Stay" is the ONLY thing that changes
+
+Global Settings -> Display -> **Track Tap** (`stay_in_shadow` in `features.json`,
+default `Exit`). On `Stay`, tapping a Track button while the shadow UI is up
+switches to that slot's editor instead of handing the screen back to Move.
+
+Three things about it are easy to get wrong, and each fails silently:
+
+- **It is enforced in the SHIM, not in JS.** The dismiss it suppresses is a
+  shim-side state change (`shadow_display_mode = 0` in the cable-0 Track CC
+  block of `schwung_shim.c`); JS never sees the tap. What the setting
+  substitutes is the `SHADOW_UI_FLAG_JUMP_TO_SLOT` hand-off Shift+Vol+Track
+  already raises, so the JS side needed no new code path at all.
+- **The jump fires on the PRESS, outside the long-press block.** That block is
+  gated on `LONG_PRESS_ACTIVE()`, i.e. on the shadow-UI trigger mode — put the
+  jump inside it and the setting works on `Both`/`Hold` and does nothing on
+  `Shift+Vol`, which reads as a broken toggle rather than a gated one. The
+  tap-dismiss in that block is guarded by `!STAY_IN_SHADOW()`; without the
+  guard the jump lands and the release undoes it a frame later.
+- **Shift+Track still dismisses, on either setting.** It is the way out of the
+  screen once a plain tap no longer is, and a setting that closes the only
+  remaining exit is not a setting. Mute+Track (slot mute), Shift+Mute+Track
+  (solo) and a volume touch during the press are excluded for the same reason
+  the dismiss excludes them.
+
+The byte rides in `shadow_control_t.stay_in_shadow`, appended at the end of the
+struct and read live so the toggle takes effect on the next tap. Appending is
+free only because `CONTROL_BUFFER_SIZE` is 256 for a struct that uses ~86 —
+before that the `==` assert on an exactly-sized segment made growth read as
+forbidden. The schwung-manager reads the same byte by RAW OFFSET, so
+`tests/host/test_stay_in_shadow.sh` compiles an `offsetof` probe and compares it
+to the Go constant rather than trusting two hand-kept numbers; the manager also
+maps `min(declared, on-disk)` bytes and bounds-checks every accessor, because a
+segment an older shim left behind is SHORTER and reading past its end is SIGBUS,
+not a zero. `install.sh` REWRITES `features.json` from a fixed key list, so the key
+is carried over there too — one that is not listed resets on every deploy.
 
 ### A timed-out read empties NOTHING, and latches nothing
 

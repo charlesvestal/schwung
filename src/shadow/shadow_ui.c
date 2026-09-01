@@ -2203,6 +2203,44 @@ static JSValue js_midi_indicator_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->midi_indicator_enabled != 0);
 }
 
+/* stay_in_shadow_set(enabled) - Write to shared memory + persist to features.json.
+ * The shim reads the SHM byte from the SPI callback path, so the toggle takes
+ * effect on the next Track tap without any file I/O on the realtime path. */
+static JSValue js_stay_in_shadow_set(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->stay_in_shadow = enabled ? 1 : 0;
+
+    /* Persist to features.json (off the SPI callback path - safe). */
+    features_json_set("stay_in_shadow", enabled ? "true" : "false");
+
+    return JS_UNDEFINED;
+}
+
+/* stay_in_shadow_set_shm(enabled) - Write to shared memory ONLY (no file I/O).
+ * Safe to call from tick() for web->device config sync. */
+static JSValue js_stay_in_shadow_set_shm(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->stay_in_shadow = enabled ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
+/* stay_in_shadow_get() -> bool - Read from shared memory */
+static JSValue js_stay_in_shadow_get(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 0);
+    return JS_NewBool(ctx, shadow_control->stay_in_shadow != 0);
+}
+
 /* shadow_ui_trigger value names. Index matches the uint8 stored in shadow_control. */
 static const char *SHADOW_UI_TRIGGER_NAMES[3] = {"long_press", "shift_vol", "both"};
 
@@ -3009,6 +3047,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "midi_indicator_get", JS_NewCFunction(ctx, js_midi_indicator_get, "midi_indicator_get", 0));
 
     /* Register long-press shadow shortcut functions */
+    JS_SetPropertyStr(ctx, global_obj, "stay_in_shadow_set", JS_NewCFunction(ctx, js_stay_in_shadow_set, "stay_in_shadow_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "stay_in_shadow_get", JS_NewCFunction(ctx, js_stay_in_shadow_get, "stay_in_shadow_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "stay_in_shadow_set_shm", JS_NewCFunction(ctx, js_stay_in_shadow_set_shm, "stay_in_shadow_set_shm", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set", JS_NewCFunction(ctx, js_shadow_ui_trigger_set, "shadow_ui_trigger_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_get", JS_NewCFunction(ctx, js_shadow_ui_trigger_get, "shadow_ui_trigger_get", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set_shm", JS_NewCFunction(ctx, js_shadow_ui_trigger_set_shm, "shadow_ui_trigger_set_shm", 1));

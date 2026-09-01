@@ -1273,6 +1273,10 @@ fi
 existing_link_audio=$(get_existing_feature "link_audio_enabled" "$link_audio_val")
 existing_display_mirror=$(get_existing_feature "display_mirror_enabled" "false")
 existing_ext_midi_remap=$(get_existing_feature "ext_midi_remap_enabled" "true")
+# "Stay in Schwung" (Global Settings -> Display -> Track Tap). Preserved across
+# installs: this file is REWRITTEN from the keys listed below, so a key that is
+# not carried over here is silently reset to its default on every deploy.
+existing_stay_in_shadow=$(get_existing_feature "stay_in_shadow" "false")
 
 # Shadow UI trigger: prefer the new "shadow_ui_trigger" string key. If only the
 # legacy bool "long_press_shadow" exists, migrate (true→both, false→shift_vol).
@@ -1295,7 +1299,8 @@ features_json="{
   \"link_audio_enabled\": $existing_link_audio,
   \"display_mirror_enabled\": $existing_display_mirror,
   \"ext_midi_remap_enabled\": $existing_ext_midi_remap,
-  \"shadow_ui_trigger\": \"$existing_trigger\"
+  \"shadow_ui_trigger\": \"$existing_trigger\",
+  \"stay_in_shadow\": $existing_stay_in_shadow
 }"
 
 # Write features.json

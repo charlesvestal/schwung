@@ -140,6 +140,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   text_preview           | textPreviewGlobal       | setTextPreviewGlobal     | own     | textPreviewGlobal      | -
  *   midi_indicator_enabled | midiIndicatorEnabled    | midi_indicator_set       | -       | midiIndicatorEnabled   | -
  *   param_view             | paramViewGlobal         | paramViewGlobal =        | own     | paramViewGlobal        | -
+ *   stay_in_shadow         | stay_in_shadow_get      | stay_in_shadow_set       | -       | -                      | -
  *   link_audio_routing     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioRouting | warnIfLinkDisabled
  *   link_audio_publish     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioPublish | warnIfLinkDisabled
  *   latency_comp_enabled   | master_fx: param        | master_fx: param         | SAVE    | cachedLatencyCompEnabled | -
@@ -191,6 +192,7 @@ export const GLOBAL_ROUTING = {
     text_preview:           { read: "js.textPreviewGlobal",   write: "js.setTextPreviewGlobal",persist: "own",  cache: "textPreviewGlobal",      modal: null },
     midi_indicator_enabled: { read: "js.midiIndicatorEnabled",write: "midi_indicator.set",     persist: null,   cache: "midiIndicatorEnabled",   modal: null },
     param_view:             { read: "js.paramViewGlobal",     write: "js.paramViewGlobal",     persist: "own",  cache: "paramViewGlobal",        modal: null },
+    stay_in_shadow:         { read: "stay_in_shadow.get",     write: "stay_in_shadow.set",     persist: null,   cache: null,                     modal: null },
 
     link_audio_routing:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioRouting",   modal: "link" },
     link_audio_publish:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioPublish",   modal: "link" },
@@ -315,6 +317,29 @@ export const DISPLAY_PARAMS = [
      * paramViewGlobal = 1), so the default index here is Knobs. */
     { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
+    /*
+     * What a Track tap does while the shadow UI is up: Exit hands the screen
+     * back to Move (the long-standing behaviour), Stay switches to that slot
+     * and stays in Schwung.
+     *
+     * NAMED FOR THE GESTURE, NOT THE STATE. It began as a bool called "Stay in
+     * Schwung" and that name is 87px in a row with 85px of room — two pixels
+     * over, so it would truncate on the list. An Off/On switch also says
+     * nothing about what Off does; naming the gesture puts both outcomes in
+     * the row, which is what the user is choosing between.
+     *
+     * The setting is enforced in the SHIM (schwung_shim.c, the cable-0 Track CC
+     * block), not in JS — the dismiss it suppresses is a shim-side state change
+     * (shadow_display_mode), and the slot switch it substitutes is the same
+     * JUMP_TO_SLOT hand-off Shift+Vol+Track already raises. This row is the
+     * toggle and nothing else. Stored as the index, so the shim's byte is 1 for
+     * Stay; features.json spells it `stay_in_shadow`.
+     *
+     * Shift+Track still dismisses on either setting. A setting that closes the
+     * only remaining way out of a screen is not a setting.
+     */
+    { key: "stay_in_shadow", name: "Track Tap", type: "enum",
+      options: ["Exit", "Stay"], short_options: ["EXT", "STY"], default: 0 },
 ];
 
 /* -------------------------------------------------------------------- audio */
