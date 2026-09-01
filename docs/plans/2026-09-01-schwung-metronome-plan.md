@@ -811,8 +811,17 @@ Expected: build succeeds. If `shadow_control_size_check` fires, the struct excee
 
 `node --check` on a `.js` file silently passes source the QuickJS host rejects, so it is not sufficient on its own. Confirm the file is syntactically whole by loading it the way a test does:
 
-Run: `node --input-type=module -e 'import("fs").then(fs=>{const s=fs.readFileSync("src/shadow/shadow_ui.js","utf8"); new Function(s); console.log("parsed", s.length, "bytes");})'`
-Expected: `parsed <N> bytes` with no SyntaxError
+`node --check` on a `.js` file treats it as CommonJS and silently passes source
+the host rejects. `new Function(src)` is no better here — `shadow_ui.js` has
+top-level `import` statements, so it must be parsed AS A MODULE:
+
+Run: `node --input-type=module --check < src/shadow/shadow_ui.js && echo "PARSE OK"`
+Expected: `PARSE OK`
+
+And prove that check can fail, once:
+
+Run: `(cat src/shadow/shadow_ui.js; echo "function {{{ broken") | node --input-type=module --check`
+Expected: a SyntaxError, non-zero exit
 
 - [ ] **Step 6: Confirm no existing field moved**
 
@@ -1358,8 +1367,8 @@ PASS: did not match outside
 
 - [ ] **Step 3: Parse check**
 
-Run: `node --input-type=module -e 'import("fs").then(fs=>{new Function(fs.readFileSync("src/shadow/shadow_ui.js","utf8")); console.log("parsed");})'`
-Expected: `parsed`
+Run: `node --input-type=module --check < src/shadow/shadow_ui.js && echo "PARSE OK"`
+Expected: `PARSE OK`
 
 - [ ] **Step 4: Commit**
 
