@@ -7646,6 +7646,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         }
                     }
                     if (snapshot_gesture_swallow[gi]) {
+                        /*
+                         * BOTH BUFFERS. `src` is hardware_mmap_addr — the real
+                         * mailbox — and Move does not read it. What Move reads
+                         * is `shadow` (see the declarations: "library shadow
+                         * buffer (what Move sees)"). Zeroing only `src`
+                         * blocks nothing at all, which is how Shift+Delete
+                         * reached Move and deleted a clip.
+                         *
+                         * Index-paired, and safe because shadow_midi_in_compact
+                         * runs LAST in this function — nothing may move a slot
+                         * between these two writes.
+                         */
+                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
+                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
                         if (d2 == 0) snapshot_gesture_swallow[gi] = 0;
                     }

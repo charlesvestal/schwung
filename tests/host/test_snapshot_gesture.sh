@@ -52,6 +52,23 @@ echo "$block" | grep -q "snapshot_gesture_swallow\[gi\] = 1;" \
   || note "the press does not latch — the release will reach Move"
 echo "$block" | grep -q "if (snapshot_gesture_swallow\[gi\]) {" \
   || note "the zeroing is not driven by the latch, so it cannot cover the release"
+
+# BOTH BUFFERS, and this is the one that actually mattered.
+#
+# `src` is hardware_mmap_addr, the real mailbox — MOVE DOES NOT READ IT. What
+# Move reads is `shadow`, the library shadow buffer (see the declarations at
+# the top of schwung_shim.c). Zeroing only `src` blocks nothing whatsoever,
+# which is how Shift+Delete reached Move and deleted a clip. The press had
+# never been blocked; the release was a second, smaller bug on top.
+#
+# Index-paired and safe only because shadow_midi_in_compact runs LAST in
+# shim_post_transfer — nothing may move a slot between the two writes.
+echo "$block" | grep -q "uint8_t \*sh = shadow + MIDI_IN_OFFSET;" \
+  || note "the gesture does not zero the SHADOW buffer — Move still sees the button"
+echo "$block" | grep -q "sh\[j\] = 0; sh\[j+1\] = 0; sh\[j+2\] = 0; sh\[j+3\] = 0;" \
+  || note "the shadow buffer slot is not zeroed"
+echo "$block" | grep -q "src\[j\] = 0; src\[j+1\] = 0; src\[j+2\] = 0; src\[j+3\] = 0;" \
+  || note "the hardware mailbox slot is not zeroed"
 echo "$block" | grep -q "if (d2 == 0) snapshot_gesture_swallow\[gi\] = 0;" \
   || note "the latch is never cleared — Copy/Delete would be dead to Move forever"
 grep -q "static int snapshot_gesture_swallow\[2\] = {0, 0};" "$SHIM" \
