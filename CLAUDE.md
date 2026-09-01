@@ -610,7 +610,14 @@ Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) 
   — that is what makes off-at-boot the truth rather than a guess. The click
   mixes **between the `unity_view` snapshot and the master-volume scaling**, so
   it is on the DAC and in no recording. `Main − Σ(tracks)` is NOT the
-  metronome (`returnTracks`, `masterTrack`). See `docs/SHADOW_UI.md`.
+  metronome (`returnTracks`, `masterTrack`).
+- **A click that is "early, worse at low tempo" is a PHASE error, not a
+  latency.** `shadow_transport_pulses` is zeroed on MIDI Start and incremented
+  by the first clock — which IS the downbeat — so beats sit at **24N+1**, and
+  firing at 24N was one pulse early (125 ms at 20 BPM, 20.8 at 120). Measured
+  at two tempos to separate it from the 19.6 ms Link Audio transit stacked on
+  top; **one tempo cannot separate two terms.** `recall_quantize` shares that
+  counter and still has the off-by-one. See `docs/SHADOW_UI.md`.
 
 ### Quantized Sampler
 
