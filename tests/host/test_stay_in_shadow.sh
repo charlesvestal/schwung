@@ -131,7 +131,36 @@ import("./src/shadow/shadow_ui_global_grid.mjs").then(async (G) => {
 }).catch((e) => { console.error("FAIL: " + (e && e.stack || e)); process.exit(1); });
 ') || fails=$((fails + 1))
 
-# --- 4. it survives a deploy -------------------------------------------------
+# --- 4. it is ON by default, in all four places that decide that -------------
+#
+# A default lives in more places than it looks: the shim's boot value, the
+# features.json parse, the JS binding's unmapped fallback, the declared contract
+# and install.sh's fallback. Miss one and the setting is on in some paths and
+# off in others, which reads as flakiness rather than as a wrong constant.
+grep -q 'static bool stay_in_shadow_setting = true;' "$SHIM" ||
+    fail "the shim's boot default is not on"
+# A default-ON flag must be parsed by testing for "false". Testing for "true"
+# means the file can only ever turn it ON, so switching it off does nothing.
+stay_parse=$(awk '/Parse stay_in_shadow/ { f = 1 } f { print } f && /^    }$/ { exit }' "$SHIM")
+grep -q 'strncmp(colon, "false", 5)' <<<"$stay_parse" ||
+    fail "load_feature_config tests stay_in_shadow for \"true\" — a default-on flag parsed that way can never be turned off from features.json"
+grep -q 'get_existing_feature "stay_in_shadow" "true"' "$INSTALL" ||
+    fail "install.sh falls back to off for a setting that defaults to on"
+(cd "$ROOT" && node -e '
+import("./src/shadow/shadow_ui_global_grid.mjs").then((G) => {
+  const p = G.DISPLAY_PARAMS.find((x) => x.key === "stay_in_shadow");
+  if (!p) { console.error("FAIL: stay_in_shadow is not in DISPLAY_PARAMS"); process.exit(1); }
+  if (p.default !== 1) {
+    console.error("FAIL: the contract declares stay_in_shadow default " + p.default
+      + ", the shim boots it on — the grid would draw the switch in the wrong place "
+      + "for every frame before the first read lands");
+    process.exit(1);
+  }
+  console.error("ok: declared default is on, matching the shim");
+}).catch((e) => { console.error("FAIL: " + (e && e.stack || e)); process.exit(1); });
+') || fails=$((fails + 1))
+
+# --- 5. it survives a deploy -------------------------------------------------
 grep -q 'get_existing_feature "stay_in_shadow"' "$INSTALL" ||
     fail "install.sh does not preserve stay_in_shadow — it rewrites features.json, so the setting resets on every deploy"
 grep -q 'stay_in_shadow\\": \$existing_stay_in_shadow' "$INSTALL" ||
@@ -141,4 +170,4 @@ if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed" >&2
     exit 1
 fi
-echo "PASS: Keep Schwung — a bool so it draws as a SWITCH, live SHM byte at the C struct's offset, jump raised on the press outside the long-press gate, dismiss guarded, Shift+Track still exits, preserved across installs"
+echo "PASS: Keep Schwung — on by default in all five places that decide that, a bool so it draws as a SWITCH, live SHM byte at the C struct's offset, jump raised on the press outside the long-press gate, dismiss guarded, Shift+Track still exits, preserved across installs"

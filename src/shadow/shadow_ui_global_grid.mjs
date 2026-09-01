@@ -318,8 +318,18 @@ export const DISPLAY_PARAMS = [
     { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
     /*
-     * A Track tap while the shadow UI is up hands the screen back to Move. On,
-     * it switches to that slot and stays in Schwung.
+     * A Track tap while the shadow UI is up switches to that slot. Off, it
+     * hands the screen back to Move instead.
+     *
+     * DEFAULT ON, and that is a reversal of the behaviour Schwung shipped with
+     * for a year. A track button SELECTS A TRACK everywhere else on this
+     * hardware; the dismiss was never a decision, it was the only way out
+     * before Shift+Track existed. The exits all survive the flip — tap
+     * Note/Session, Shift+Track, or Back — so this changes a reflex, not the
+     * reachability of Move.
+     *
+     * An existing install keeps whatever it has: install.sh preserves the key
+     * and only falls back to the default when it is absent.
      *
      * IT IS A BOOL, AND THAT IS A WIDGET DECISION, NOT A WORDING ONE.
      *
@@ -354,7 +364,7 @@ export const DISPLAY_PARAMS = [
      * Shift+Track still dismisses either way. A setting that closes the only
      * remaining way out of a screen is not a setting.
      */
-    bool("stay_in_shadow", "Keep Schwung", 0),
+    bool("stay_in_shadow", "Keep Schwung", 1),
 ];
 
 /* -------------------------------------------------------------------- audio */
