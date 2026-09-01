@@ -45,7 +45,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_align_capture \
 	$(BUILD_DIR)/test_host_api_reserved_tail \
 	$(BUILD_DIR)/test_ui_flags_layout \
-	$(BUILD_DIR)/test_recall_quantize
+	$(BUILD_DIR)/test_recall_quantize \
+	$(BUILD_DIR)/test_metronome_click
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -90,6 +91,13 @@ $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_captu
 
 $(BUILD_DIR)/test_master_fx_snapshot: test_master_fx_snapshot.c ../../src/host/master_fx_snapshot.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+# -lm on top of the shared LDFLAGS: the click voice is a decaying sine, so
+# metronome_click.h calls sinf/expf. The generic pattern rule above does not
+# link libm, and on glibc the failure is a link error rather than anything
+# subtle.
+$(BUILD_DIR)/test_metronome_click: test_metronome_click.c ../../src/host/metronome_click.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)
