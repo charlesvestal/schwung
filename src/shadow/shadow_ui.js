@@ -8801,7 +8801,7 @@ function loadRecallQuantize() {
  * features.json, the register in SHM does not, so JS reads the file at startup
  * and pushes the value down.
  */
-let metronomeMode = 0;                 /* 0 off, 1 follow, 2 on */
+let metronomeMode = 1;                 /* 0 off, 1 follow, 2 on — default Follow */
 let metronomeLevel = 50;               /* percent */
 const METRONOME_MODE_NAMES = ["off", "follow", "on"];
 
@@ -8816,7 +8816,10 @@ function setMetronome(mode, level) {
 /* Restore from features.json and push the register down. Called once at
  * startup: the setting persists in the file, the register does not. */
 function loadMetronome() {
-    let mode = 0, level = 50;
+    /* Default Follow: under Move->Schwung the click is missing, so shipping the
+     * fix switched off would leave it missing for everyone who has the problem.
+     * Follow is silent unless Move's own metronome is on. */
+    let mode = 1, level = 50;
     try {
         const raw = host_read_file("/data/UserData/schwung/config/features.json");
         if (raw) {
