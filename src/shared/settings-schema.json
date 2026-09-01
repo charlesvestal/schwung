@@ -52,6 +52,11 @@
           0,
           1
         ]
+      },
+      {
+        "key": "stay_in_shadow",
+        "label": "Keep Schwung",
+        "type": "bool"
       }
     ]
   },

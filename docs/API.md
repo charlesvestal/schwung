@@ -273,6 +273,7 @@ overlay_knobs_get_mode() / overlay_knobs_set_mode(v)
 skipback_seconds_get() / skipback_seconds_set(v)
 skipback_shortcut_get() / skipback_shortcut_set(v)
 shadow_ui_trigger_get() / shadow_ui_trigger_set(v) / shadow_ui_trigger_set_shm(v)
+stay_in_shadow_get() / stay_in_shadow_set(v) / stay_in_shadow_set_shm(v)  // Keep Schwung: a Track tap switches slot instead of dismissing
 
 // TTS / screen reader bindings (shadow_ui only)
 tts_get_enabled() / tts_set_enabled(v)

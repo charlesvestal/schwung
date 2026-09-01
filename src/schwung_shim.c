@@ -177,6 +177,10 @@ static bool midi_indicator_enabled_setting = false; /* Off by default; persisted
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
+/* "Stay in Schwung": a plain Track tap while the shadow UI is up switches slot
+ * instead of dismissing back to Move. Boot value from features.json; the live
+ * value rides in shadow_control->stay_in_shadow. Default off. */
+static bool stay_in_shadow_setting = false;
 
 /* Skipback resize hook — runs on the shim worker (off the audio path). */
 static void shim_hook_skipback_resize(void) {
@@ -812,6 +816,11 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
     (shadow_control ? shadow_control->shadow_ui_trigger : shadow_ui_trigger_setting)
 #define LONG_PRESS_ACTIVE() (SHADOW_UI_TRIGGER_MODE() == 0 || SHADOW_UI_TRIGGER_MODE() == 2)
 #define SHIFT_VOL_ACTIVE()  (SHADOW_UI_TRIGGER_MODE() == 1 || SHADOW_UI_TRIGGER_MODE() == 2)
+/* "Stay in Schwung" — read live from SHM so the toggle takes effect on the
+ * next frame, same as SHADOW_UI_TRIGGER_MODE(). */
+#define STAY_IN_SHADOW() \
+    (shadow_control ? shadow_control->stay_in_shadow != 0 : stay_in_shadow_setting)
+
 #define LONG_PRESS_MS 500
 
 static struct timespec track_press_time[4];
@@ -1051,6 +1060,19 @@ static void load_feature_config(void)
             while (*colon == ' ' || *colon == '\t') colon++;
             if (strncmp(colon, "true", 4) == 0) {
                 midi_indicator_enabled_setting = true;
+            }
+        }
+    }
+
+    /* Parse stay_in_shadow (defaults to false) */
+    const char *stay_key = strstr(config_buf, "\"stay_in_shadow\"");
+    if (stay_key) {
+        const char *colon = strchr(stay_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "true", 4) == 0) {
+                stay_in_shadow_setting = true;
             }
         }
     }
@@ -4839,6 +4861,7 @@ static void shim_init_subsystems(void)
         shadow_control->skipback_seconds = (uint16_t)skipback_seconds_setting;
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
         shadow_control->midi_indicator_enabled = midi_indicator_enabled_setting ? 1 : 0;
+        shadow_control->stay_in_shadow = stay_in_shadow_setting ? 1 : 0;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
         /* Speaker-EQ auto stability clock starts now; EQ stays off until a
          * speaker reading has been stable for SPK_EQ_STABLE_SEC. */
@@ -7598,6 +7621,31 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         }
 
+                        /* "Stay in Schwung": a plain Track tap while the shadow
+                         * UI is up switches to that slot instead of handing the
+                         * screen back to Move. Fired on the PRESS, not the
+                         * release, so it is independent of the long-press
+                         * bookkeeping below — that whole block is gated on
+                         * LONG_PRESS_ACTIVE(), and with the trigger set to
+                         * Shift+Vol a tap would otherwise do nothing at all.
+                         *
+                         * Every modifier is excluded: Shift+Vol+Track already
+                         * jumped above, Shift+Track is the deliberate dismiss
+                         * below (the escape hatch this setting must not close),
+                         * Mute+Track is slot mute and Shift+Mute+Track is solo,
+                         * and a volume touch during a track press is the track
+                         * volume gesture.
+                         *
+                         * The Track CC is NOT blocked from Move: Move's own
+                         * selected track stays in step with the slot, which is
+                         * what it did when the tap dismissed. */
+                        if (STAY_IN_SHADOW() && shadow_display_mode && shadow_ui_enabled &&
+                            shadow_control && !shadow_shift_held && !shadow_mute_held &&
+                            !shadow_volume_knob_touched) {
+                            shadow_control->ui_slot = (uint8_t)new_slot;
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
+                        }
+
                         /* Shift + Track (without Volume / Mute) while shadow UI is displayed = dismiss shadow UI
                          * and let the Track CC pass through to Move for native track settings.
                          * Excluded: Shift+Mute+Track is the solo combo handled above — must not
@@ -7638,12 +7686,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              * releasing Track shouldn't immediately dismiss it).
                              * Skip if vol was touched during the press (volume tweak gesture
                              * shouldn't side-effect into dismissing shadow UI).
+                             * Skip if "Stay in Schwung" is on — a plain tap
+                             * switches slot instead (handled on the press above),
+                             * and dismissing here would undo it.
                              * Skip if Mute is held — Mute+Track (slot mute) and
                              * Shift+Mute+Track (solo) are modifier combos; releasing
                              * Track must not dismiss the shadow UI, or the trailing
                              * Mute release leaks to Move firmware and latches Mute. */
                             if (track_longpress_pending[lp_slot] && !track_longpress_fired[lp_slot] &&
                                 shadow_display_mode && shadow_control &&
+                                !STAY_IN_SHADOW() &&
                                 !track_vol_touched_during_press[lp_slot] &&
                                 !shadow_mute_held &&
                                 !(shadow_shift_held && shadow_volume_knob_touched)) {

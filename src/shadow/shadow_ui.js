@@ -12163,6 +12163,8 @@ function globalGridIoFor() {
             case "text_preview":       return bit(textPreviewGlobal);
             case "midi_indicator_enabled": return bit(midiIndicatorEnabled);
             case "param_view":         return String(paramViewGlobal === 1 ? 1 : 0);
+            case "stay_in_shadow":
+                return bit(typeof stay_in_shadow_get === "function" && stay_in_shadow_get());
 
             /* ---- audio. These four are the ONLY reads that cost IPC. */
             case "link_audio_routing":
@@ -12246,6 +12248,9 @@ function globalGridIoFor() {
                 paramViewGlobal = on ? 1 : 0;
                 saveParamViewConfig();
                 announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
+                return;
+            case "stay_in_shadow":
+                if (typeof stay_in_shadow_set === "function") stay_in_shadow_set(on ? 1 : 0);
                 return;
 
             /* ---- audio. The cache var is not a cache of the write; it is what

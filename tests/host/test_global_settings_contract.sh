@@ -119,7 +119,9 @@ const plan = planPages({ hierarchy, chainParams });
   /* The counts from GLOBAL_SETTINGS_SECTIONS, transcribed. Asserted per level
    * rather than only in aggregate: a param that moved from one section to
    * another keeps the total at 24 and both totals-based checks green. */
-  const WANT_COUNT = { display: 6, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 2, services: 2 };
+  /* Display sits at seven of the eight a page holds, Audio at eight — one more
+   * param in either and the section paginates silently. */
+  const WANT_COUNT = { display: 7, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 2, services: 2 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -282,6 +284,7 @@ const plan = planPages({ hierarchy, chainParams });
     display_mirror: "Mirror Display", overlay_knobs: "Overlay",
     pad_typing: "Pad Typing", text_preview: "Show Typed",
     midi_indicator_enabled: "Show MIDI", param_view: "Param View",
+    stay_in_shadow: "Keep Schwung",
     link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
     latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
     skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
@@ -541,7 +544,7 @@ const plan = planPages({ hierarchy, chainParams });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (6/8/6/1/2/2 params + Updates as a " +
+console.log("PASS: global settings contract — seven levels (7/8/6/1/2/2 params + Updates as a " +
             "menu), every section one page with Audio at the limit, every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
