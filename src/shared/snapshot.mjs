@@ -153,11 +153,16 @@ export function planRestore(records, liveIds) {
 }
 
 /*
- * The toast / announce line. One string, so the OLED and the screen reader
- * cannot disagree about what just happened.
+ * The toast lines. Row 0 is the outcome, which the card puts in its band
+ * beside the word "Snapshot"; row 1, when there is one, is the body.
+ *
+ * The word "Snapshot" is the card's, not this function's — every card names
+ * its subject in the band's left half. announce() joins these with the noun so
+ * the screen reader still hears a whole sentence; the OLED and the speech say
+ * the same words in the same order.
  */
 export function recallMessage(skipped) {
     return (skipped > 0)
-        ? ["Snapshot restored", `${skipped} skipped`]
-        : ["Snapshot restored"];
+        ? ["restored", `${skipped} skipped`]
+        : ["restored"];
 }

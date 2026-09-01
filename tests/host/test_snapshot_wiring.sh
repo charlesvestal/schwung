@@ -90,74 +90,14 @@ echo "$rev" | grep -q "warmCurrentPage()" || note "revalue does not re-read the 
 echo "$rev" | grep -q "flushDueWritesUnconditionally()" \
   || note "revalue discards an in-flight write instead of flushing it"
 
-# 8. Toast geometry, for real.
-#    The shared modules import by DEVICE path (/data/UserData/schwung/shared/),
-#    which node cannot resolve, so rewrite it into the source tree the same way
-#    test_param_pages_view.sh does.
-REPO="$(pwd)"
-sed "s#/data/UserData/schwung/shared/#${REPO}/src/shared/#g" \
-    src/shared/snapshot_toast.mjs > "$TMP/toast_local.mjs"
-node --input-type=module -e '
-import { toastGeometry } from "'"$TMP"'/toast_local.mjs";
-let f = 0;
-const w = (s) => s.length * 6;          /* deterministic stand-in for text_width */
-const ok = (what, c) => { if (!c) { console.error("FAIL " + what); f++; } };
-
-const GLYPH_H = 7;   /* measured inked height of the font */
-
-const one = toastGeometry(["Snapshot saved"], w);
-const two = toastGeometry(["Snapshot restored", "2 skipped"], w);
-
-ok("box is on screen horizontally", one.x >= 0 && one.x + one.w <= 128);
-ok("box is on screen vertically",   one.y >= 0 && one.y + one.h <= 64);
-ok("one line, one row",             one.rows.length === 1);
-ok("nothing clipped",               one.clipped === 0);
-ok("two lines kept",                two.rows.length === 2);
-ok("two lines are taller",          two.h > one.h);
-ok("two lines still fit",           two.y >= 0 && two.y + two.h <= 64);
-ok("still nothing clipped",         two.clipped === 0);
-
-/*
- * The width is FIXED. It used to be sized to its content, so the box was 100px
- * for "Snapshot saved" and 118px for "Snapshot restored" — the toast changed
- * shape depending on which thing had happened.
- */
-ok("width does not depend on the message", one.w === two.w);
-ok("width does not depend on length",
-   toastGeometry(["x"], w).w === toastGeometry(["Snapshot restored"], w).w);
-
-/*
- * VERTICALLY CENTRED, and this is the assertion the first version of this file
- * did not have. `print(x, y, ...)` takes y as the GLYPH TOP, not a baseline;
- * treating it as a baseline put a 7px glyph 14px down a 23px box — text jammed
- * against the bottom with a band of empty space above it. Geometry alone
- * cannot catch that unless the gaps are compared, so compare them.
- */
-for (const [name, g] of [["one line", one], ["two lines", two]]) {
-  const above = g.lineTops[0] - g.y;
-  const below = (g.y + g.h) - (g.lineTops[g.lineTops.length - 1] + GLYPH_H);
-  ok(name + ": text is vertically centred (above=" + above + " below=" + below + ")",
-     Math.abs(above - below) <= 1);
-  ok(name + ": every line is inside the box",
-     g.lineTops.every(t => t >= g.y && t + GLYPH_H <= g.y + g.h));
-}
-ok("line spacing is uniform",
-   two.lineTops[1] - two.lineTops[0] === GLYPH_H + 4);
-
-/* Blank rows are dropped rather than drawn as empty lines. */
-ok("blank rows dropped", toastGeometry(["a", "", null], w).rows.length === 1);
-
-/*
- * A line too wide for the BOX must report. It is drawn past the border with no
- * error, which is the class of bug a character-count budget hides — and with a
- * fixed-width box the text can now overflow without the box growing to tell us.
- */
-const over = toastGeometry(["x".repeat(40)], w);
-ok("overflow is reported", over.clipped === 1);
-ok("box still on screen when text overflows", over.x >= 0 && over.x + over.w <= 128);
-
-if (f) process.exit(1);
-' || note "toast geometry assertions failed"
+# 8. The toast is a CARD, not a hand-rolled box. Its own geometry moved into
+#    overlay_card.mjs and is asserted in test_overlay_card.sh; what matters
+#    here is that this file no longer draws its own frame.
+toast=src/shared/snapshot_toast.mjs
+grep -q "drawOverlayCard" "$toast" || note "the toast does not use the shared card"
+for own in "fill_rect" "drawRect" "BOX_W" "PAD_X"; do
+  grep -q "$own" "$toast" && note "the toast still draws its own chrome ($own)"
+done
 
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed"; exit 1; fi
 echo "PASS test_snapshot_wiring"

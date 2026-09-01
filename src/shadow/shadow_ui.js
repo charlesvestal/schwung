@@ -1501,6 +1501,30 @@ let knobCardCardName = null;    /* the name DRAWN in the header band — see bel
 let knobCardHeaderValue = null; /* header value, ditto */
 let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
 
+/*
+ * The knob card does not survive the shadow UI being dismissed.
+ *
+ * It used to. Press Back to hand the screen to Move with a card up, come back,
+ * and the card was still there — sitting over the editor, showing a value read
+ * before you left. Reported from hardware.
+ *
+ * Watched as a display_mode TRANSITION rather than fixed at the Back handler,
+ * because Back is not the only way out and is not even the common one: the
+ * SHIM dismisses the shadow UI on a Track tap and a Menu tap (see
+ * schwung_shim.c, "Track tap: dismissing shadow UI"), writing display_mode = 0
+ * directly. JS never runs a handler for those at all, so a fix at any input
+ * site would have covered one exit of three.
+ */
+let lastDisplayMode = -1;
+function reconcileDisplayModeExit() {
+    const mode = (typeof shadow_get_display_mode === "function")
+        ? shadow_get_display_mode() : 1;
+    if (mode === lastDisplayMode) return;
+    /* Leaving, by any route. -1 is the first tick, which is not a transition. */
+    if (lastDisplayMode === 1 && mode !== 1) knobCardClose();
+    lastDisplayMode = mode;
+}
+
 function knobCardClose() {
     if (knobCardKnob < 0) return;
     knobCardKnob = -1;
@@ -8541,7 +8565,8 @@ function snapshotTake() {
     const copied = snapshotCopyFrom(activeSlotStateDir);
     debugLog("snapshot: took " + copied + "/" + snapshotFileNames().length +
              " files into " + snapshotDir());
-    snapshotShowToast(["Snapshot saved"]);
+    snapshotShowToast(["saved"]);
+    announce("Snapshot saved");
 }
 
 /*
@@ -8615,7 +8640,7 @@ function snapshotRecall() {
 
     if (records.length === 0) {
         debugLog("snapshot: recall found nothing in " + dir);
-        snapshotShowToast(["No snapshot"]);
+        snapshotShowToast(["none"]);
         announce("No snapshot");
         return;
     }
@@ -8650,11 +8675,26 @@ function snapshotRecall() {
      */
     paramPagesRevalue();
     paramPagesRefreshTrailing();
+    /*
+     * ...and the knob caches OUTSIDE the grid, which hold the same stale
+     * numbers for the same reason.
+     *
+     * paramPagesRevalue only reaches the knob-grid controller. The slot
+     * editor's own knob path keeps `knobValueCache` — read once on first touch
+     * and then advanced by local arithmetic precisely so a turn costs no IPC —
+     * and the knob card keeps a row of values captured on touch-down. Both
+     * described the sound from before the recall, so the first turn there
+     * jumped back exactly as it did on the grid. Reported from hardware
+     * separately, which is the tell that this is one defect with several
+     * caches rather than several defects.
+     */
+    invalidateKnobValueCache();
+    knobCardClose();
     needsRedraw = true;
 
     const lines = recallMessage(plan.skipped);
     snapshotShowToast(lines);
-    announce(lines.join(", "));
+    announce("Snapshot " + lines.join(", "));
 }
 
 /* Toast state. Purely JS-owned — the shim has no field for this overlay; it
@@ -8699,7 +8739,6 @@ function drawSnapshotToastOnTop() {
 /* Service the two gesture flags. Called from the flag block in tick(). */
 function snapshotServiceFlags(flags) {
     if (flags & SHADOW_UI_FLAG_SNAPSHOT_TAKE) {
-        announce("Snapshot saved");
         snapshotTake();
     }
     if (flags & SHADOW_UI_FLAG_SNAPSHOT_RECALL) {
@@ -21097,6 +21136,7 @@ globalThis.tick = function() {
          * `synth_module` the last session logged and attributed elsewhere.
          * Predicted, not yet measured — this span is the test. */
         const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.feedback_guard") : 0;
+        try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
     }

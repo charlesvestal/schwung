@@ -7,6 +7,7 @@
  */
 
 import { drawRect } from '/data/UserData/schwung/shared/menu_layout.mjs';
+import { drawOverlayCard, cardRect } from './overlay_card.mjs';
 
 const SCREEN_WIDTH = 128;
 const SCREEN_HEIGHT = 64;
@@ -202,10 +203,12 @@ export function drawSamplerPreroll(state) {
  * Draw the "Sample saved!" confirmation.
  */
 export function drawSamplerSaved() {
+    /* Fullscreen (the sampler owns the screen here), but the confirmation
+     * itself is the same card as Skipback's, so the two reads of "it worked"
+     * look like one thing. The centring was `msg.length * 6`, which reserves
+     * the widest glyph for every character — the font is proportional. */
     clear_screen();
-    const msg = "Sample saved!";
-    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
-    print(msgX, 24, msg, 1);
+    drawOverlayCard(null, { title: "Sample", titleRight: "saved" });
 }
 
 /**
@@ -213,77 +216,69 @@ export function drawSamplerSaved() {
  * Draws on top of the current display content.
  */
 export function drawSkipbackToast() {
-    const boxW = 110;
-    const boxH = 20;
-    const boxX = Math.floor((SCREEN_WIDTH - boxW) / 2);
-    const boxY = Math.floor((SCREEN_HEIGHT - boxH) / 2);
-
-    /* Background and border */
-    fill_rect(boxX, boxY, boxW, boxH, 0);
-    drawRect(boxX, boxY, boxW, boxH, 1);
-
-    const msg = "Skipback saved!";
-    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
-    print(msgX, boxY + 7, msg, 1);
+    drawOverlayCard(null, { title: "Skipback", titleRight: "saved" });
 }
+
+/*
+ * Where the toasts land, for the shim's blit rect.
+ *
+ * DERIVED from the card, not written beside it. These used to be four literals
+ * per overlay (110x20 here, 110x38 for shift+knob) that had to agree with the
+ * drawing by hand — and the blit rect is invisible when it is wrong in the
+ * shadow UI, because there the shadow display IS the screen and nothing is
+ * blitted at all. Only over Move's picture does a stale rect show, as a box
+ * clipped on one edge.
+ */
+const skipbackR = cardRect({ band: true });
+export const SKIPBACK_BOX_W = skipbackR.w;
+export const SKIPBACK_BOX_H = skipbackR.h;
+export const SKIPBACK_BOX_X = skipbackR.x;
+export const SKIPBACK_BOX_Y = skipbackR.y;
 
 /**
  * Shift+knob overlay box dimensions (exported for rect blit coordinates).
  */
-export const SHIFT_KNOB_BOX_W = 110;
-export const SHIFT_KNOB_BOX_H = 38;
-export const SHIFT_KNOB_BOX_X = Math.floor((SCREEN_WIDTH - SHIFT_KNOB_BOX_W) / 2);
-export const SHIFT_KNOB_BOX_Y = Math.floor((SCREEN_HEIGHT - SHIFT_KNOB_BOX_H) / 2);
+const shiftKnobR = cardRect({ band: true, lines: 1 });
+export const SHIFT_KNOB_BOX_W = shiftKnobR.w;
+export const SHIFT_KNOB_BOX_H = shiftKnobR.h;
+export const SHIFT_KNOB_BOX_X = shiftKnobR.x;
+export const SHIFT_KNOB_BOX_Y = shiftKnobR.y;
 
 /**
  * Draw the shift+knob parameter overlay (patch, param name, value).
  */
 export function drawShiftKnobOverlay(state) {
-    const bx = SHIFT_KNOB_BOX_X;
-    const by = SHIFT_KNOB_BOX_Y;
-    const bw = SHIFT_KNOB_BOX_W;
-    const bh = SHIFT_KNOB_BOX_H;
-
-    /* Background and border */
-    fill_rect(bx, by, bw, bh, 0);
-    drawRect(bx, by, bw, bh, 1);
-
-    /* Three lines of text */
-    const tx = bx + 4;
-    print(tx, by + 3, state.shiftKnobPatch || "", 1);
-    print(tx, by + 14, state.shiftKnobParam || "", 1);
-    print(tx, by + 25, state.shiftKnobValue || "", 1);
+    /* The parameter NAME and its VALUE in the band — the pair you are reading
+     * while the knob is moving — and the patch beneath as context. It used to
+     * be three equal left-aligned lines, which made the value, the one thing
+     * changing, the least prominent of the three. */
+    drawOverlayCard(null, {
+        title: state.shiftKnobParam || "",
+        titleRight: state.shiftKnobValue || "",
+        lines: [state.shiftKnobPatch || ""],
+    });
 }
 
 /**
  * Set page toast overlay box dimensions (exported for rect blit coordinates).
  */
-export const SET_PAGE_BOX_W = 110;
-export const SET_PAGE_BOX_H = 20;
-export const SET_PAGE_BOX_X = Math.floor((SCREEN_WIDTH - SET_PAGE_BOX_W) / 2);
-export const SET_PAGE_BOX_Y = Math.floor((SCREEN_HEIGHT - SET_PAGE_BOX_H) / 2);
+const setPageR = cardRect({ band: true });
+export const SET_PAGE_BOX_W = setPageR.w;
+export const SET_PAGE_BOX_H = setPageR.h;
+export const SET_PAGE_BOX_X = setPageR.x;
+export const SET_PAGE_BOX_Y = setPageR.y;
 
 /**
  * Draw the "Page N / 8" set page toast overlay.
  * Draws on top of the current display content.
  */
 export function drawSetPageToast(state) {
-    const boxW = SET_PAGE_BOX_W;
-    const boxH = SET_PAGE_BOX_H;
-    const boxX = SET_PAGE_BOX_X;
-    const boxY = SET_PAGE_BOX_Y;
-
-    /* Background and border */
-    fill_rect(boxX, boxY, boxW, boxH, 0);
-    drawRect(boxX, boxY, boxW, boxH, 1);
-
     const page = (state.setPageCurrent || 0) + 1;
     const total = state.setPageTotal || 8;
-    const msg = state.setPageLoading
-        ? "Loading Page " + page + "/" + total + "..."
-        : "Page " + page + "/" + total;
-    const msgX = Math.floor((SCREEN_WIDTH - msg.length * 6) / 2);
-    print(msgX, boxY + 7, msg, 1);
+    drawOverlayCard(null, {
+        title: state.setPageLoading ? "Loading Page" : "Page",
+        titleRight: page + "/" + total,
+    });
 }
 
 /**

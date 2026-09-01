@@ -69,9 +69,12 @@ eq("reasons are attributable",
 eq("empty-in-snapshot is not counted",
    planRestore([{ prefix: "fx3", moduleId: "", state: null, bypassed: 0 }], {}).skipped, 0);
 
-/* A perfect recall reports no number at all. */
-eq("clean recall message", recallMessage(0), ["Snapshot restored"]);
-eq("lossy recall message", recallMessage(3), ["Snapshot restored", "3 skipped"]);
+/* The card supplies the noun: "Snapshot" sits in the left half of its band,
+ * and these are the right half and the body. (No apostrophes in this file --
+ * the whole script is one single-quoted bash string.) A perfect recall
+ * reports no number at all. */
+eq("clean recall message", recallMessage(0), ["restored"]);
+eq("lossy recall message", recallMessage(3), ["restored", "3 skipped"]);
 
 if (fails) { console.error(`\n${fails} assertion(s) failed`); process.exit(1); }
 console.log("PASS test_snapshot_plan");

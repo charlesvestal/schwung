@@ -27,18 +27,46 @@ note() { echo "FAIL: $1"; fails=$((fails+1)); }
 block=$(sed -n '/Snapshot \/ recall: Shift+Copy takes/,/Shift+Vol+Left\/Right: set page navigation/p' "$SHIM")
 [ -n "$block" ] || { echo "FAIL: snapshot gesture block not found in $SHIM"; exit 1; }
 
-# The guard line that both branches sit under.
-guard=$(grep -n "d2 > 0 && shadow_shift_held && shadow_ui_enabled && shadow_control" "$SHIM" || true)
-[ -n "$guard" ] || note "gesture is not gated on (d2 > 0 && shadow_shift_held && shadow_ui_enabled && shadow_control)"
+# The gesture FIRES only on a press, with Shift, while Schwung's UI is enabled.
+# (The swallowing is separate and covers both edges — see the latch below.)
+echo "$block" | grep -q "if (d2 > 0) {" \
+  || note "the gesture is not gated on a key press"
+echo "$block" | grep -q "shadow_shift_held && shadow_ui_enabled && shadow_control" \
+  || note "the gesture is not gated on Shift + shadow_ui_enabled"
 
 # Both CCs are claimed, and only inside that guard.
 echo "$block" | grep -q "d1 == CC_COPY"   || note "CC_COPY (60) not claimed"
 echo "$block" | grep -q "d1 == CC_DELETE" || note "CC_DELETE (119) not claimed"
 
-# Each branch zeroes its slot. Two zeroing lines, one per branch — a single
-# one would mean one gesture leaks its button to Move.
-zeros=$(echo "$block" | grep -c "src\[j\] = 0; src\[j+1\] = 0; src\[j+2\] = 0; src\[j+3\] = 0;" || true)
-[ "$zeros" -eq 2 ] || note "expected 2 slot-zeroing lines in the gesture block, found $zeros"
+# BOTH EDGES are swallowed, via a latch.
+#
+# This is the assertion that was missing, and it cost a deleted clip on
+# hardware. Blocking only the press (d2 > 0) left Move a lone BUTTON-UP for a
+# key it never saw go down, and Move acted on it. Every press in the device log
+# had been zeroed correctly; the release was the entire leak.
+#
+# The latch is load-bearing and cannot be replaced by testing shadow_shift_held
+# on the release: Shift is usually let go BEFORE the button, so the release
+# arrives with shift already down and would sail through.
+echo "$block" | grep -q "snapshot_gesture_swallow\[gi\] = 1;" \
+  || note "the press does not latch — the release will reach Move"
+echo "$block" | grep -q "if (snapshot_gesture_swallow\[gi\]) {" \
+  || note "the zeroing is not driven by the latch, so it cannot cover the release"
+echo "$block" | grep -q "if (d2 == 0) snapshot_gesture_swallow\[gi\] = 0;" \
+  || note "the latch is never cleared — Copy/Delete would be dead to Move forever"
+grep -q "static int snapshot_gesture_swallow\[2\] = {0, 0};" "$SHIM" \
+  || note "no snapshot_gesture_swallow latch"
+
+# The zeroing must NOT sit inside the d2 > 0 arm — that is exactly the shape
+# that leaked. It belongs under the latch test, which sees both edges.
+press_arm=$(echo "$block" | awk '/if \(d2 > 0\) \{/,/^                    \}$/')
+echo "$press_arm" | grep -q "src\[j\] = 0" \
+  && note "the slot is zeroed inside the press arm — the release leaks (the deleted-clip bug)"
+
+# A press we did not consume must leave the latch alone, or Move loses its own
+# bare Copy and Delete entirely.
+echo "$block" | grep -q "if (shadow_shift_held && shadow_ui_enabled && shadow_control) {" \
+  || note "the latch is set without checking Shift — Move's own Copy/Delete would be swallowed"
 
 # The shim raises a flag and does nothing else. Any param traffic here is on
 # the SPI callback.

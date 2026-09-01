@@ -3594,6 +3594,15 @@ static void shadow_check_screenreader(void)
 /* PIN scanner state — moved to shadow_pin_scanner.c */
 
 /* Shift+Menu double-click detection state */
+/*
+ * Snapshot gesture: did we swallow this button's PRESS?
+ *
+ * [0] = Copy, [1] = Delete. Set when the press is consumed for the gesture,
+ * cleared by the matching release, and the only thing that decides whether a
+ * release reaches Move. See the branch in the CC scan for why the release
+ * cannot be gated on Shift.
+ */
+static int snapshot_gesture_swallow[2] = {0, 0};
 static uint64_t shift_menu_pending_ms = 0;
 static int shift_menu_pending = 0;
 
@@ -7596,9 +7605,25 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * the display hidden) services the flag, which is also why the
                  * gesture works whether or not the shadow UI is on screen.
                  *
-                 * Both zero the slot so Move never sees the button. That costs
-                 * Move's own Shift+Copy and Shift+Delete while Schwung's UI is
-                 * enabled, which is the accepted price of the combo.
+                 * BOTH EDGES ARE SWALLOWED, and that is not tidiness.
+                 *
+                 * Blocking only the press (d2 > 0) left Move a lone BUTTON-UP
+                 * for a key it never saw go down — and Move acted on it. On
+                 * hardware that deleted the clip. Every press in the log had
+                 * fired the gesture correctly and been zeroed; the release was
+                 * the whole leak, and for CC_DELETE the consequence is
+                 * destructive rather than cosmetic.
+                 *
+                 * The latch is why this cannot just test shadow_shift_held on
+                 * the release too: Shift is very often let go BEFORE the
+                 * button, so the release arrives with shift already down and
+                 * would sail through. `snapshot_gesture_swallow` remembers
+                 * that we ate the press and eats the matching release whatever
+                 * Shift is doing by then. A press we did NOT consume never
+                 * sets it, so Move's own bare Copy and Delete are untouched.
+                 *
+                 * The cost is Move's own Shift+Copy and Shift+Delete while
+                 * Schwung's UI is enabled, which is the accepted price.
                  *
                  * Overtake is already handled: the `overtake_active` early-out
                  * above `continue`s past this for every CC but its own three.
@@ -7609,15 +7634,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * known wart, not a licence. shadow_ui logs both gestures from
                  * SCHED_OTHER where logging is legal.
                  */
-                if (d2 > 0 && shadow_shift_held && shadow_ui_enabled && shadow_control) {
-                    if (d1 == CC_COPY) {
-                        shadow_control->ui_flags_ext |=
-                            (SHADOW_UI_FLAG_SNAPSHOT_TAKE >> SHADOW_UI_FLAG_EXT_SHIFT);
+                if (d1 == CC_COPY || d1 == CC_DELETE) {
+                    int gi = (d1 == CC_COPY) ? 0 : 1;
+                    if (d2 > 0) {
+                        if (shadow_shift_held && shadow_ui_enabled && shadow_control) {
+                            shadow_control->ui_flags_ext |= (uint16_t)
+                                ((d1 == CC_COPY ? SHADOW_UI_FLAG_SNAPSHOT_TAKE
+                                                : SHADOW_UI_FLAG_SNAPSHOT_RECALL)
+                                 >> SHADOW_UI_FLAG_EXT_SHIFT);
+                            snapshot_gesture_swallow[gi] = 1;
+                        }
+                    }
+                    if (snapshot_gesture_swallow[gi]) {
                         src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
-                    } else if (d1 == CC_DELETE) {
-                        shadow_control->ui_flags_ext |=
-                            (SHADOW_UI_FLAG_SNAPSHOT_RECALL >> SHADOW_UI_FLAG_EXT_SHIFT);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        if (d2 == 0) snapshot_gesture_swallow[gi] = 0;
                     }
                 }
 
