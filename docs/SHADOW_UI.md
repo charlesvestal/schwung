@@ -769,6 +769,45 @@ Outside Move→Schwung, Move's own metronome is audible, so the gate is what sto
 it doubling — placed once, where it cannot be forgotten, rather than expressed as
 a fourth mode.
 
+**The click was early by TWO stacked errors, and only one of them was a latency.**
+Reported from the device as "sounds early, moreso at lower tempos, it is tempo
+scaled" — which is the sentence that rules out a latency, because a Link Audio
+transit is the same milliseconds at any tempo. Measured against a sequenced
+hihat in one `mailbox_out.pcm` capture, at two tempos so the terms separate:
+
+```
+ 20 BPM   click early by 144.3 ms  (sd 0.7, n=7)
+120 BPM   click early by  40.4 ms  (sd 1.0, n=40)
+
+125.00k + L = 144.3        k = 0.997 pulses
+ 20.83k + L =  40.4        L = 19.6 ms
+```
+
+1. **The downbeat is at pulse 1, not 0.** `shadow_transport_pulses` is zeroed on
+   MIDI Start and then *incremented* by the first clock — and per the MIDI spec
+   that first clock **is** the downbeat. So beats land at `24N+1`, and firing at
+   `24N` is one pulse early forever. Tempo-scaled: 20.8 ms at 120 BPM, 125 ms at
+   20. Corrected in `METRONOME_BEAT_PULSE_OFFSET` rather than in the counter,
+   because a local shift is right under *both* explanations of the pulse (the
+   counter being off by one, or Move's clock leading its audio) whereas retiming
+   the shared counter is right under only one — **and would also move
+   `recall_quantize`,** which shares it. **That is a real, unfixed off-by-one in
+   recall quantize**, worth ~20 ms at 120 BPM; left alone deliberately.
+2. **One Link Audio transit**, the 19.6 ms constant — the click is generated from
+   Move's clock (frame-aligned to *now*) while Move's audio in the same block is
+   a transit older. The trigger is scheduled `METRONOME_LA_COMP_FRAMES` ahead,
+   derived from `LATENCY_COMP_TARGET_SAMPLES` so a retune of the LA target —
+   which has already moved once, 800 → 1400 — carries the metronome with it.
+
+After: **0.0 ms mean, sd 1.0, range ±1.5 ms over 40 beats**, and ±1.5 ms is the
+analysis hop, so the residual is under the measurement floor.
+
+Two lessons worth keeping. **"Tempo-scaled" names the mechanism**: an error
+proportional to beat length is a phase error in a pulse count, never a latency,
+and the word alone eliminated the hypothesis I had already traced through the
+code. And **one tempo cannot separate two terms** — 144 ms at 20 BPM fits a
+pulse error, a latency, or any mix; it took a second tempo to solve for both.
+
 **Known gap:** the one-bar **count-in** click plays even with the metronome off
 (`isUsingCountIn` in Settings.json), is equally silent under `rebuild_from_la`,
 and has no announcement to key off. Record + transport is not a sufficient
