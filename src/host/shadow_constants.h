@@ -358,6 +358,21 @@ typedef struct shadow_control_t {
      * (schwung_shim.c); a mid-session flip has no equivalent. A tool should
      * raise and lower the flag OUTSIDE a held master-volume touch. */
     volatile uint8_t overtake_suppress_master_volume;
+    /*
+     * 1 = a plain Track tap while the shadow UI is up SWITCHES SLOT instead of
+     * dismissing back to Move ("Keep Schwung", Global Settings -> Display).
+     *
+     * APPENDED, which is only free because CONTROL_BUFFER_SIZE is 256 for a
+     * struct that uses ~86. It was first written into the low byte of
+     * `reserved16` — the tail had no padding at 84, so growing the struct meant
+     * bumping an `==` assert that read as a hard limit. That is exactly the
+     * misreading the sizing comment at the top of this file records, and
+     * `reserved16` is `ui_flags_ext` now, so the byte lives at the end where a
+     * new field belongs. Read live by the shim (STAY_IN_SHADOW) and by
+     * schwung-manager at a raw offset — see shmconfig.go, which must move with
+     * it. Default 0 keeps the tap-dismisses behaviour.
+     */
+    volatile uint8_t stay_in_shadow;
 } shadow_control_t;
 
 /* Co-run control-surface groups. A co-running overtake tool declares which

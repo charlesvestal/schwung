@@ -140,6 +140,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   text_preview           | textPreviewGlobal       | setTextPreviewGlobal     | own     | textPreviewGlobal      | -
  *   midi_indicator_enabled | midiIndicatorEnabled    | midi_indicator_set       | -       | midiIndicatorEnabled   | -
  *   param_view             | paramViewGlobal         | paramViewGlobal =        | own     | paramViewGlobal        | -
+ *   stay_in_shadow         | stay_in_shadow_get      | stay_in_shadow_set       | -       | -                      | -
  *   link_audio_routing     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioRouting | warnIfLinkDisabled
  *   link_audio_publish     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioPublish | warnIfLinkDisabled
  *   latency_comp_enabled   | master_fx: param        | master_fx: param         | SAVE    | cachedLatencyCompEnabled | -
@@ -191,6 +192,7 @@ export const GLOBAL_ROUTING = {
     text_preview:           { read: "js.textPreviewGlobal",   write: "js.setTextPreviewGlobal",persist: "own",  cache: "textPreviewGlobal",      modal: null },
     midi_indicator_enabled: { read: "js.midiIndicatorEnabled",write: "midi_indicator.set",     persist: null,   cache: "midiIndicatorEnabled",   modal: null },
     param_view:             { read: "js.paramViewGlobal",     write: "js.paramViewGlobal",     persist: "own",  cache: "paramViewGlobal",        modal: null },
+    stay_in_shadow:         { read: "stay_in_shadow.get",     write: "stay_in_shadow.set",     persist: null,   cache: null,                     modal: null },
 
     link_audio_routing:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioRouting",   modal: "link" },
     link_audio_publish:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioPublish",   modal: "link" },
@@ -315,6 +317,44 @@ export const DISPLAY_PARAMS = [
      * paramViewGlobal = 1), so the default index here is Knobs. */
     { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
+    /*
+     * A Track tap while the shadow UI is up hands the screen back to Move. On,
+     * it switches to that slot and stays in Schwung.
+     *
+     * IT IS A BOOL, AND THAT IS A WIDGET DECISION, NOT A WORDING ONE.
+     *
+     * It shipped for one round as an enum of ["Exit", "Stay"] — two options,
+     * same click behaviour (`flipsOnClick` focuses it in a list and flips it on
+     * a grid), and structurally identical meta. It still drew differently:
+     * `detectSwitch` in viz.mjs picks the switch pill via `isBooleanMeta`,
+     * whose option test is `BOOL_OPTION` — off/on/no/yes/0/1/false/true — so
+     * "Exit"/"Stay" fell through to the ENUM SQUARE, the widget that means
+     * "there is a list behind this", and peeked its options on the knob.
+     * Reported from the device as "why is the setting a menu, unlike display
+     * mirroring?".
+     *
+     * That rule is right and stays: a switch draws its state as a POSITION and
+     * cannot show the word "Stay", which is why `docs/PARAM_PAGES.md` records
+     * "suppressed on the WIDGET, never on the option count" over 134 fleet
+     * cells (Saw/Square, Legato/Trig, Bipolar/Unipolar). Those are genuine
+     * two-way CHOICES. This one is a boolean, so it is spelled as one.
+     *
+     * The name is "Keep Schwung" because the honest "Stay in Schwung" is 87px
+     * in a row with 85px of room — the width pin in
+     * tests/host/test_global_settings_contract.sh catches it. Naming it for
+     * the gesture ("Track Tap") was the previous escape from that 2px and is
+     * what forced the enum; the switch matters more than the phrasing.
+     *
+     * The setting is enforced in the SHIM (schwung_shim.c, the cable-0 Track CC
+     * block), not in JS — the dismiss it suppresses is a shim-side state change
+     * (shadow_display_mode), and the slot switch it substitutes is the same
+     * JUMP_TO_SLOT hand-off Shift+Vol+Track already raises. This row is the
+     * toggle and nothing else. features.json spells it `stay_in_shadow`.
+     *
+     * Shift+Track still dismisses either way. A setting that closes the only
+     * remaining way out of a screen is not a setting.
+     */
+    bool("stay_in_shadow", "Keep Schwung", 0),
 ];
 
 /* -------------------------------------------------------------------- audio */

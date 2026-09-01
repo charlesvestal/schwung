@@ -2211,6 +2211,7 @@ var settingsToFeatures = map[string]string{
 	"skipback_shortcut":      "skipback_require_volume",
 	"skipback_seconds":       "skipback_seconds",
 	"midi_indicator_enabled": "midi_indicator_enabled",
+	"stay_in_shadow":         "stay_in_shadow",
 }
 
 func (app *App) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -2313,6 +2314,7 @@ func (app *App) handleConfigValues(w http.ResponseWriter, r *http.Request) {
 		values["screen_reader_volume"] = float64(app.shm.TTSVolume())
 		values["screen_reader_debounce"] = float64(app.shm.TTSDebounce())
 		values["set_pages_enabled"] = app.shm.SetPagesEnabled()
+		values["stay_in_shadow"] = app.shm.StayInShadow()
 		values["skipback_shortcut"] = float64(boolToInt(app.shm.SkipbackRequireVolume()))
 		if s := app.shm.SkipbackSeconds(); s > 0 {
 			values["skipback_seconds"] = float64(s)
@@ -2499,6 +2501,8 @@ func (app *App) applyShmSetting(key, value string) {
 		}
 	case "set_pages_enabled":
 		app.shm.SetSetPagesEnabled(value == "true")
+	case "stay_in_shadow":
+		app.shm.SetStayInShadow(value == "true")
 	case "skipback_shortcut":
 		app.shm.SetSkipbackRequireVolume(value != "0" && value != "false")
 	case "skipback_seconds":
