@@ -109,11 +109,11 @@ Still seven pages, one per section, so sections-as-levels keeps holding.
 
 | Key | Type | Options / range | Default |
 |---|---|---|---|
-| `metronome_mode` | enum | `Off` / `Follow` / `On` (short `OFF`/`FOL`/`ON`) | `Off` |
+| `metronome_mode` | enum | `Off` / `Follow` / `On` (short `OFF`/`FOL`/`ON`) | `Follow` |
 | `metronome_level` | int | 0-100 % | 50 |
 
 - **Off** — never sounds.
-- **Follow** — sounds while Move's metronome is on (`shadow_metronome_on`).
+- **Follow** (default) — sounds while Move's metronome is on (`shadow_metronome_on`).
 - **On** — sounds whenever the transport plays, regardless of Move's state.
 
 `On` exists as the hedge: if the announcement text turns out to be shaped
@@ -201,3 +201,27 @@ and **before** the `rebuild_from_la && mv < 0.9999f` master-volume scaling
 
 `CLAUDE.md` (one bullet), `docs/SHADOW_UI.md` (the section, and why it is its
 own), `src/shared/help_content.json`, `../schwung-catalog-site/manual.html`.
+
+
+---
+
+## Addendum, 2026-09-01: measured on hardware
+
+Two things the design did not anticipate, both found by measurement.
+
+**The click was early by one MIDI pulse plus one Link Audio transit.** Reported
+as "early, moreso at lower tempos, it is tempo scaled" — and tempo-scaled rules
+out a latency. Measured at 20 and 120 BPM against a sequenced hihat, the terms
+solve to `k = 0.997` pulses and `L = 19.6 ms`. The downbeat is at pulse **1**,
+because `shadow_transport_pulses` is zeroed on Start and incremented by the
+first clock, which *is* the downbeat. Fixed by `METRONOME_BEAT_PULSE_OFFSET`
+and `METRONOME_LA_COMP_FRAMES`; after, 0.0 ms mean over 40 beats.
+`recall_quantize` shares the counter and retains the off-by-one — noted, not
+fixed here.
+
+**The default is Follow, not Off.** Under Move→Schwung the click is missing, so
+shipping the fix switched off leaves it missing for exactly the people who have
+the problem. Follow is inert unless Move's own metronome is on.
+
+**Confirmed as designed:** the click is absent from Quantized Sampler and
+Skipback captures, verified on the device.
