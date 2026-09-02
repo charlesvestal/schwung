@@ -249,7 +249,7 @@ const scenario = (name, setup) => {
         const VIEWS = { CHAIN_EDIT: 3, COMPONENT_EDIT: 5 };
         let selectedSlot = 1, needsRedraw = false;
         let componentModalFromGrid = true, componentGridReturnSlot = 1, componentGridReturnKey = "synth";
-        let componentGridReturnModuleUi = false, componentGridReturnEnter = false;
+        let componentGridReturnModuleUi = false, componentGridReturnEnter = false, componentGridReturnModule = "";
         let componentHelpReturnSlot = 1, componentHelpReturnKey = "synth", componentHelpReturnModuleUi = false;
         let helpNavStack = [], helpDetailScrollState = null;
         let moduleListsSlot = 1, moduleListsKey = "synth", moduleListsModuleId = "9w9", moduleListsReturnModuleUi = false;
@@ -265,6 +265,7 @@ const scenario = (name, setup) => {
         function unloadModuleUi() { calls.push("unload"); }
         function enterComponentEditFallback(slot, key) { calls.push("module:" + key); }
         function restoreModuleUiPage(name, enter) { calls.push("restore:" + name + ":" + enter); }
+        function openComponentEditor(slot, key, mfx) { calls.push("door:" + key + ":" + mfx); }
         ${setup}
         ${lift(name)}
         const fired = ${name}();
@@ -286,6 +287,25 @@ if (r.calls.some(c => c.startsWith("module:"))) throw new Error("host origin mus
 r = scenario("maybeReturnToComponentGrid", "componentGridReturnModuleUi = true; chainConfigs = { 1: {} };");
 if (r.fired) throw new Error("a removed module must not be re-entered");
 if (!r.calls.includes("unload")) throw new Error("...but its stale UI must be unloaded");
+
+/* a completed SWAP from the module grid: the position now holds a DIFFERENT
+ * module. Neither door assumption survives that -- the new module may have a
+ * hierarchy (stock editor) and may still be loading. Old UI out, then the one
+ * door every editor opens with, page 1, nothing restored. Hardware: 9W9 ->
+ * 303 landed on a fallback with nothing to draw. */
+r = scenario("maybeReturnToComponentGrid",
+             'componentGridReturnModuleUi = true; componentGridReturnModule = "9w9"; chainConfigs = { 1: { synth: { module: "303" } } };');
+if (!r.fired) throw new Error("swap: must fire");
+if (!r.calls.includes("unload")) throw new Error("swap: the old module UI must be unloaded: " + r.calls);
+if (!r.calls.includes("door:synth:-1")) throw new Error("swap: must open the NEW module through openComponentEditor: " + r.calls);
+if (r.calls.some(c => c.startsWith("module:") || c.startsWith("host:") || c.startsWith("restore:")))
+    throw new Error("swap: must not re-enter the old grid's door or restore its page: " + r.calls);
+/* ...and the same swap from the STOCK grid into a module-UI module (303 -> 9W9):
+ * enterParamPages would be a contract read nobody answers. */
+r = scenario("maybeReturnToComponentGrid",
+             'componentGridReturnModule = "303";');
+if (!r.calls.includes("door:synth:-1") || r.calls.some(c => c.startsWith("host:")))
+    throw new Error("swap from stock grid: must go through the door, not enterParamPages: " + r.calls);
 
 /* help return */
 r = scenario("maybeReturnToComponentHelp", "componentHelpReturnModuleUi = true;");

@@ -2733,6 +2733,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
         componentGridReturnSlot = slotIndex;
         componentGridReturnKey = componentKey;
         componentGridReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
+        componentGridReturnModule = moduleId || "";
     }
     return result;
 }
@@ -2800,6 +2801,8 @@ function maybeReturnToComponentGrid() {
     componentModalFromGrid = false;
     const fromModuleUi = componentGridReturnModuleUi;
     componentGridReturnModuleUi = false;
+    const moduleBefore = componentGridReturnModule;
+    componentGridReturnModule = "";
     const slotIndex = componentGridReturnSlot;
     const componentKey = componentGridReturnKey;
     componentGridReturnSlot = -1;
@@ -2813,6 +2816,22 @@ function maybeReturnToComponentGrid() {
          * round Back, so unload it here. */
         if (fromModuleUi) unloadModuleUi();
         return false;
+    }
+    /* A SWAP left a different module in the position. Nothing about the old
+     * grid applies to it: not the page to restore, not which editor drew it,
+     * not whether its contract is even in yet. Go through the one door the
+     * host opens every editor with: it waits for the new module's contract,
+     * then picks its hierarchy editor or its own UI, on page 1. Reported from
+     * hardware both ways: module-UI -> stock re-entered the module door for a
+     * module that has a hierarchy and was still loading (nothing to draw);
+     * stock -> module-UI called enterParamPages for a module with no host
+     * hierarchy (a contract read nobody answers, drawn as Loading...). */
+    if (moduleBefore && stillLoaded.module !== moduleBefore) {
+        componentGridReturnEnter = true;
+        if (fromModuleUi) unloadModuleUi();
+        openComponentEditor(slotIndex, componentKey, -1);
+        needsRedraw = true;
+        return true;
     }
     if (fromModuleUi) {
         /* Back to the MODULE's grid, through the same door the host opens it
@@ -5066,6 +5085,9 @@ let componentGridReturnKey = "";
  * its own pages publishes no ui_hierarchy, so re-entering it through
  * enterParamPages is a contract read with nobody to answer it. */
 let componentGridReturnModuleUi = false;
+/* ...and WHICH module held the position when it was raised. A swap leaves a
+ * different one there, and nothing about the old grid applies to it. */
+let componentGridReturnModule = "";
 
 /* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
  * "Module Help". The help viewer has no view of its own -- it is drawn by

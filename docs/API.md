@@ -391,6 +391,8 @@ globalThis.chain_ui = {
 };
 ```
 
+**Swap Module.** After a completed swap the position holds a different module, so the host does not restore anything: it unloads the old module UI (if one was up) and opens the new module through its normal editor door (`openComponentEditor`), which waits for the new module's contract and then shows its hierarchy editor or its own UI on page 1. A module needs no hook for this.
+
 The pages arrive as `PAGE_MENU`, which the param_pages library draws itself —
 so a chain UI whose render guard only admits `PAGE_KNOBS` will paint its
 unsupported-page fallback over them. Admit `PAGE_MENU` too.
