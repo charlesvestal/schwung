@@ -1,0 +1,139 @@
+package main
+
+import (
+	"encoding/binary"
+	"errors"
+	"testing"
+)
+
+// buildSnapshot lays out a synthetic /schwung-perf payload. Offsets mirror
+// src/host/perf_snapshot.h; tests/host/test_perf_shm_offsets.sh pins them for real.
+func buildSnapshot(magic, version, seq uint32) []byte {
+	b := make([]byte, perfShmSize)
+	binary.LittleEndian.PutUint32(b[perfOffMagic:], magic)
+	binary.LittleEndian.PutUint32(b[perfOffVersion:], version)
+	binary.LittleEndian.PutUint32(b[perfOffSeq:], seq)
+	binary.LittleEndian.PutUint64(b[perfOffFramePeriodUs:], 2902)
+	binary.LittleEndian.PutUint32(b[perfOffSampleWindow:], 1000)
+	binary.LittleEndian.PutUint64(b[perfOffSlotSynthAvg:], 412)
+	return b
+}
+
+func TestPerfReadGood(t *testing.T) {
+	p := &PerfShm{data: buildSnapshot(perfMagic, perfVersion, 8)}
+	snap, err := p.Read()
+	if err != nil {
+		t.Fatalf("wanted a clean read, got %v", err)
+	}
+	if snap.FramePeriodUs != 2902 {
+		t.Fatalf("FramePeriodUs = %d, want 2902", snap.FramePeriodUs)
+	}
+	if snap.SlotSynthAvg[0] != 412 {
+		t.Fatalf("SlotSynthAvg[0] = %d, want 412", snap.SlotSynthAvg[0])
+	}
+	if snap.SampleWindowFrames != 1000 {
+		t.Fatalf("SampleWindowFrames = %d, want 1000", snap.SampleWindowFrames)
+	}
+}
+
+// An odd seq means the writer is mid-snapshot. Returning zeros here would say
+// "everything is idle", which is the exact lie a failed read must never tell.
+func TestPerfOddSeqIsAFailureNotZeros(t *testing.T) {
+	p := &PerfShm{data: buildSnapshot(perfMagic, perfVersion, 7)}
+	snap, err := p.Read()
+	if !errors.Is(err, ErrPerfTorn) {
+		t.Fatalf("odd seq must report ErrPerfTorn, got err=%v", err)
+	}
+	if snap != nil {
+		t.Fatal("a failed read must return no snapshot at all - a caller " +
+			"handed zeros will draw a picture of an idle device")
+	}
+}
+
+// seq changing between the two samples means the writer landed a snapshot
+// while we were copying it.
+func TestPerfTornReadIsReported(t *testing.T) {
+	p := &PerfShm{data: buildSnapshot(perfMagic, perfVersion, 8)}
+	p.testHookAfterCopy = func() {
+		binary.LittleEndian.PutUint32(p.data[perfOffSeq:], 10)
+	}
+	_, err := p.Read()
+	if !errors.Is(err, ErrPerfTorn) {
+		t.Fatalf("a seq that moved during the read must report ErrPerfTorn, got %v", err)
+	}
+}
+
+func TestPerfBadMagic(t *testing.T) {
+	p := &PerfShm{data: buildSnapshot(0xDEADBEEF, perfVersion, 8)}
+	if _, err := p.Read(); !errors.Is(err, ErrPerfMagic) {
+		t.Fatalf("wanted ErrPerfMagic, got %v", err)
+	}
+}
+
+// A version mismatch is the deploy-coupling failure: shim and manager ship
+// together, so the page must say so by name rather than render garbage.
+func TestPerfVersionMismatchNamesBothVersions(t *testing.T) {
+	p := &PerfShm{data: buildSnapshot(perfMagic, perfVersion+1, 8)}
+	_, err := p.Read()
+	var ve *PerfVersionError
+	if !errors.As(err, &ve) {
+		t.Fatalf("wanted a PerfVersionError, got %v", err)
+	}
+	if ve.Got != perfVersion+1 || ve.Want != perfVersion {
+		t.Fatalf("PerfVersionError must carry both versions, got %+v", ve)
+	}
+}
+
+// The offset block is hand-mirrored from the C header, and the derived ones are
+// written as arithmetic so a cap change cannot leave two of them disagreeing.
+// This pins the arithmetic against the numbers dumped from the compiler.
+func TestPerfOffsetsMatchTheHeader(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		got  int
+		want int
+	}{
+		{"magic", perfOffMagic, 0},
+		{"version", perfOffVersion, 4},
+		{"seq", perfOffSeq, 8},
+		{"frame_ready", perfOffFrameReady, 12},
+		{"granular_ready", perfOffGranularReady, 16},
+		{"sample_window_frames", perfOffSampleWindow, 20},
+		{"frame_period_us", perfOffFramePeriodUs, 24},
+		{"frame_total_avg", perfOffFrameTotalAvg, 32},
+		{"frame_total_max", perfOffFrameTotalMax, 40},
+		{"frame_pre_avg", perfOffFramePreAvg, 48},
+		{"frame_pre_max", perfOffFramePreMax, 56},
+		{"frame_ioctl_avg", perfOffFrameIoctlAvg, 64},
+		{"frame_ioctl_max", perfOffFrameIoctlMax, 72},
+		{"frame_post_avg", perfOffFramePostAvg, 80},
+		{"frame_post_max", perfOffFramePostMax, 88},
+		{"sections", perfOffSections, 96},
+		{"post chunks", perfOffPostChunks, 432},
+		{"slot_render_avg", perfOffSlotRenderAvg, 480},
+		{"slot_render_max", perfOffSlotRenderMax, 512},
+		{"slot_synth_avg", perfOffSlotSynthAvg, 544},
+		{"slot_synth_max", perfOffSlotSynthMax, 576},
+		{"slot_fx_avg", perfOffSlotFxAvg, 608},
+		{"slot_fx_max", perfOffSlotFxMax, 640},
+		{"mfx_avg", perfOffMfxAvg, 672},
+		{"mfx_max", perfOffMfxMax, 736},
+		{"overtake_gen_avg", perfOffOvertakeGenAvg, 800},
+		{"overtake_gen_max", perfOffOvertakeGenMax, 808},
+		{"overtake_fx_avg", perfOffOvertakeFxAvg, 816},
+		{"overtake_fx_max", perfOffOvertakeFxMax, 824},
+		{"slot_probe_burst_max", perfOffProbeBurstMax, 832},
+		{"jack_audio_hits", perfOffJackAudioHits, 836},
+		{"jack_audio_misses", perfOffJackAudioMisses, 840},
+		{"overrun_count", perfOffOverrunCount, 844},
+	} {
+		if c.got != c.want {
+			t.Errorf("offset %s = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+	if len(perfSectionNames) != perfSectionCount {
+		t.Fatalf("perfSectionNames has %d entries, want %d - a name without a "+
+			"matching C field relabels every section after it",
+			len(perfSectionNames), perfSectionCount)
+	}
+}
