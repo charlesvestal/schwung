@@ -46,6 +46,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_host_api_reserved_tail \
 	$(BUILD_DIR)/test_ui_flags_layout \
 	$(BUILD_DIR)/test_recall_quantize \
+	$(BUILD_DIR)/test_forward_channel \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
 	$(BUILD_DIR)/test_shadow_metronome
@@ -98,6 +99,9 @@ $(BUILD_DIR)/test_master_fx_snapshot: test_master_fx_snapshot.c ../../src/host/m
 # metronome_click.h calls sinf/expf. The generic pattern rule above does not
 # link libm, and on glibc the failure is a link error rather than anything
 # subtle.
+$(BUILD_DIR)/test_forward_channel: test_forward_channel.c ../../src/host/forward_channel.h ../../src/host/shadow_chain_types.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
 $(BUILD_DIR)/test_metronome_click: test_metronome_click.c ../../src/host/metronome_click.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
