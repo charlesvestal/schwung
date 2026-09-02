@@ -1301,6 +1301,18 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     /* Parse knob_cc_out (top-level; absence = off). */
     json_get_int(json, "knob_cc_out", &patch->knob_cc_out);
 
+    /* Parse parameter locks. Shape and migration both live in
+     * host/lock_common.h — see lock_from_json.
+     *
+     * Called unconditionally: patch_info_t is reused across scans, and a
+     * zeroed lock_state_t reads as pattern_len 0, so a patch with no "locks"
+     * key must still be reset to real defaults rather than inheriting the
+     * previous patch's. lock_from_json initialises before it parses. */
+    {
+        const char *locks_pos = strstr(json, "\"locks\"");
+        lock_from_json(&patch->locks, locks_pos, lfo_migrate_division_index);
+    }
+
     /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
     const char *lfos_pos = strstr(json, "\"lfos\"");
     if (lfos_pos) {
@@ -1571,6 +1583,19 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
             inst->lfos[i].phase = 0.0;
         }
     }
+
+    /* Parameter locks, on the same terms as the LFOs above: clear whatever the
+     * outgoing patch had published BEFORE adopting the new lanes, or a source
+     * from a lane that no longer exists keeps driving a parameter with nothing
+     * left to clear it. cur_step is parked so the first tick republishes rather
+     * than comparing equal to a step the previous patch happened to be on. */
+    for (int i = 0; i < LOCK_MAX_LANES; i++) {
+        char source_id[8];
+        lock_source_id(i, source_id, sizeof(source_id));
+        chain_mod_clear_source(inst, source_id);
+    }
+    inst->locks = patch->locks;
+    inst->locks.cur_step = LOCK_STEP_NONE;
 
     snprintf(msg, sizeof(msg), "Patch loaded: %s", patch->name);
     v2_chain_log(inst, msg);

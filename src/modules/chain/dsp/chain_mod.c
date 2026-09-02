@@ -110,9 +110,26 @@ static float chain_mod_sum_contributions(const mod_target_state_t *entry) {
 
     for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
         if (!entry->sources[i].active) continue;
+        /* Absolute sources replace the origin rather than adding to it —
+         * see chain_mod_active_absolute. */
+        if (entry->sources[i].absolute) continue;
         sum += entry->sources[i].contribution;
     }
     return sum;
+}
+
+/* The absolute source in effect, or NULL. Lowest occupied slot wins, so the
+ * result does not depend on the order sources happened to be allocated in;
+ * with one lock engine per chain there is never more than one anyway. */
+static const mod_source_contribution_t *chain_mod_active_absolute(const mod_target_state_t *entry) {
+    if (!entry) return NULL;
+
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        if (entry->sources[i].active && entry->sources[i].absolute) {
+            return &entry->sources[i];
+        }
+    }
+    return NULL;
 }
 
 static mod_source_contribution_t *chain_mod_find_source_contribution(mod_target_state_t *entry,
@@ -156,7 +173,12 @@ static void chain_mod_remove_source_contribution(mod_target_state_t *entry, cons
 static void chain_mod_recompute_effective(mod_target_state_t *entry) {
     if (!entry) return;
 
-    float effective = chain_mod_clampf(entry->base_value + chain_mod_sum_contributions(entry),
+    /* An absolute source (a parameter lock) supplies the origin in place of the
+     * saved base; relative sources still sum on top of whichever it is. */
+    const mod_source_contribution_t *abs_src = chain_mod_active_absolute(entry);
+    const float origin = abs_src ? abs_src->contribution : entry->base_value;
+
+    float effective = chain_mod_clampf(origin + chain_mod_sum_contributions(entry),
                                        entry->min_val,
                                        entry->max_val);
     if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
@@ -436,6 +458,56 @@ int chain_mod_get_effective_for_subkey(chain_instance_t *inst,
     return chain_mod_get_param_string(inst, target, param, buf, buf_len);
 }
 
+/* Resolve a target and hand back the source slot to write into.
+ *
+ * Shared by both emit paths so the non-destructive contract — snapshot the
+ * user's saved value ONCE, before any source drives the parameter — is written
+ * down in exactly one place. Returns NULL when the parameter cannot be
+ * resolved, dropping any stale contribution the source still held for it. */
+static mod_source_contribution_t *chain_mod_prepare_source(chain_instance_t *inst,
+                                                           const char *source_id,
+                                                           const char *target,
+                                                           const char *param,
+                                                           mod_target_state_t **out_entry) {
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 0);
+            }
+        }
+        return NULL;
+    }
+
+    mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
+    if (!entry) return NULL;
+
+    mod_source_contribution_t *source_entry = chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    if (!source_entry) return NULL;
+
+    /* Base is captured from the LIVE parameter the first time anything drives
+     * it, and never again while it stays driven — re-reading later would read
+     * back our own overlay and ratchet. chain_mod_update_base_from_set_param is
+     * the one path that moves it afterwards, and that is the user's own edit. */
+    if (!entry->enabled) {
+        float base = pinfo->default_val;
+        char val_buf[64];
+        if (chain_mod_get_param_string(inst, target, param, val_buf, sizeof(val_buf)) > 0) {
+            base = dsp_value_to_float(val_buf, pinfo, base);
+        }
+        entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
+    }
+
+    entry->type = pinfo->type;
+    entry->min_val = pinfo->min_val;
+    entry->max_val = pinfo->max_val;
+
+    if (out_entry) *out_entry = entry;
+    return source_entry;
+}
+
 /* Runtime modulation callback (initial stateful implementation).
  * Applies non-destructive contribution math and stores effective values. */
 int chain_mod_emit_value(void *ctx,
@@ -455,35 +527,10 @@ int chain_mod_emit_value(void *ctx,
         return 0;
     }
 
-    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
-    if (!pinfo) {
-        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
-        if (stale && stale->active) {
-            chain_mod_remove_source_contribution(stale, source_id);
-            if (!chain_mod_has_active_sources(stale)) {
-                chain_mod_clear_target_entry(inst, stale, 0);
-            }
-        }
-        return -1;
-    }
-    mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
-    if (!entry) return -1;
-
-    mod_source_contribution_t *source_entry = chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    mod_target_state_t *entry = NULL;
+    mod_source_contribution_t *source_entry =
+        chain_mod_prepare_source(inst, source_id, target, param, &entry);
     if (!source_entry) return -1;
-
-    if (!entry->enabled) {
-        float base = pinfo->default_val;
-        char val_buf[64];
-        if (chain_mod_get_param_string(inst, target, param, val_buf, sizeof(val_buf)) > 0) {
-            base = dsp_value_to_float(val_buf, pinfo, base);
-        }
-        entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
-    }
-
-    entry->type = pinfo->type;
-    entry->min_val = pinfo->min_val;
-    entry->max_val = pinfo->max_val;
 
     /* For unipolar sources, map [-1,1] into [0,1] before depth scaling. */
     float mod_signal = signal;
@@ -499,6 +546,39 @@ int chain_mod_emit_value(void *ctx,
     }
     float range_scale = bipolar ? (0.5f * range_span) : range_span;
     source_entry->contribution = ((mod_signal * depth) + offset) * range_scale;
+    source_entry->absolute = 0;
+    entry->enabled = chain_mod_has_active_sources(entry);
+    chain_mod_apply_effective_value(inst, entry, 0);
+    return 0;
+}
+
+/* Absolute overlay — the parameter reads `value`, not base + something.
+ *
+ * This is what a parameter lock needs and what chain_mod_emit_value cannot
+ * express: an offset is defined against a base that moves when the user turns
+ * the knob, so the same lock would land on a different value each time. Here
+ * the value is stated outright and the base is only what we restore to. */
+int chain_mod_emit_absolute(void *ctx,
+                            const char *source_id,
+                            const char *target,
+                            const char *param,
+                            float value,
+                            int enabled) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst || !source_id || !target || !param) return -1;
+
+    if (!enabled) {
+        chain_mod_clear_source(inst, source_id);
+        return 0;
+    }
+
+    mod_target_state_t *entry = NULL;
+    mod_source_contribution_t *source_entry =
+        chain_mod_prepare_source(inst, source_id, target, param, &entry);
+    if (!source_entry) return -1;
+
+    source_entry->contribution = chain_mod_clampf(value, entry->min_val, entry->max_val);
+    source_entry->absolute = 1;
     entry->enabled = chain_mod_has_active_sources(entry);
     chain_mod_apply_effective_value(inst, entry, 0);
     return 0;

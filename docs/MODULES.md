@@ -2947,6 +2947,66 @@ Audio FX modules can define capture rules in their `module.json`:
 
 **Note:** Audio FX modules that want to receive captured MIDI must implement `on_midi` in their API. If `on_midi` is NULL, captured MIDI is blocked from Move but not routed to the FX.
 
+### Parameter Locks
+
+A patch that captures the steps also gets **parameter locks**: hold a step
+button, turn an encoder, and that value belongs to that step. It is a host
+feature, not a module one — any module in a chain slot gets it, and a module
+needs to do nothing to opt in beyond declaring its parameters as it already
+does.
+
+```json
+{
+    "name": "9W9",
+    "chain": { "synth": { "module": "9w9" } },
+    "capture": { "groups": ["steps"] }
+}
+```
+
+**Every grid gets the gesture.** The editor half lives in the shared
+`page_controller` (`onStepButton`), fed by `page_input`'s `step` intent — so a
+module that draws its own grid through `createController` + `decodeInput` +
+`applyInput` (9W9 and its ports) places locks with no changes of its own, and so
+does the native shadow grid. A module whose sequencer also reads the step
+buttons should toggle on a short *tap's release*, not on the press: a held step
+is the lock gesture, and the note still reaches the module's `on_midi`.
+
+**Non-destructive.** A lock is published as an *absolute* modulation source
+while its step plays and cleared when the step passes, so the saved value is
+never written. Turning locks off restores exactly the sound that was saved.
+Relative sources (an LFO) still sum on top, so a locked parameter can still be
+modulated.
+
+**Timing is explicit, not inferred.** Nothing reports Move's clip length to
+Schwung — `get_beat_position()` gives beats since transport start and there is
+no Song Position Pointer anywhere in the stack. The step is therefore derived
+from a pattern length and a step rate that the **user sets**, defaulting to 16
+steps of 1/16. Guessing these would put every lock on the wrong step whenever a
+clip was 32 steps or a triplet feel, with nothing on screen to explain it.
+
+| key | direction | meaning |
+|---|---|---|
+| `lock:enabled` | set/get | master on/off; off clears every lock source |
+| `lock:pattern_len` | set/get | steps in the loop, 1–64 (default 16) |
+| `lock:rate_div` | set/get | index into `lfo_divisions[]` (default `1/16`) |
+| `lock:rate_div_label` | get | that division's label, e.g. `"1/16"` |
+| `lock:set` | set | `"<target>:<param>:<step>:<value>"` |
+| `lock:clear` | set | `"<target>:<param>:<step>"` |
+| `lock:clear_all` | set | drop every lock; keeps the timing settings |
+| `lock:step` | get | the playing step, or `-1` when stopped |
+| `lock:at:<step>` | get | every lock on one step, as `{"synth:key":value}` |
+| `lock:steps:<target>:<param>` | get | that parameter's step mask, as a decimal bitmap |
+| `lock:lane_count` | get | lanes in use (see the cap below) |
+| `lock_config` | get | the whole thing as JSON, for patch save |
+
+Locks persist in the patch, beside `lfos`, and are restored with it.
+
+**Limits.** Up to 16 *lanes* — distinct `(target, param)` pairs holding locks —
+and 64 steps. Lanes are capped because each one that fires on the current step
+consumes one of the chain's 32 modulation entries, which the LFOs also draw
+from; only the current step's lanes are live at once. Asking for a 17th lane
+does not silently do nothing: it is refused and logged.
+
 ### Shadow Mode Configuration
 
 Shadow slot configuration is stored in `/data/UserData/schwung/shadow_chain_config.json`:

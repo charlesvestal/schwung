@@ -583,6 +583,13 @@ export function createController(io = {}) {
          * arrived inside the throttle window — see SETPARAM_THROTTLE_MS. */
         lastWriteMs: Object.create(null),
         pendingWrite: Object.create(null),
+        /* Parameter locks — see onStepButton. heldStep is the step button under
+         * the finger (-1 = none); lockValues is that step's locks by FULL key;
+         * pendingLockStep tags a throttled write with the step it was made
+         * against, so a flush after the release still lands on the lock. */
+        heldStep: -1,
+        lockValues: null,
+        pendingLockStep: Object.create(null),
         /* the caller acts on these; the controller never opens a screen itself */
         pending: null,
         /* Page picker: the answer to 76 pages. Open, jog to scroll, click to
@@ -757,6 +764,152 @@ export function createController(io = {}) {
     const fullKey = (key, pg) => `${s.prefix}:${childResolve(key, pg)}`;
     const page = () => s.pages[s.pageIndex] || null;
 
+    /* ------------------------------------------------------------------
+     * Parameter locks.
+     *
+     * Hold a step button, turn a knob, and the value belongs to that step —
+     * Elektron's gesture on Move's own buttons. The DSP plays them back
+     * (host/lock_common.h); this is the editor half, and it lives in the
+     * controller for two reasons that are really one:
+     *
+     *   1. Only the controller knows which PARAMETER the knob under the finger
+     *      is bound to on the page currently drawn, through the prefix and
+     *      childResolve. A module that draws its own grid (9W9 and its ports)
+     *      builds one of these; so does the native shadow grid. Putting the
+     *      editor here is what makes locks a Schwung feature every module
+     *      gets, rather than something each ui_chain.js has to rebuild.
+     *
+     *   2. Every write the controller makes — a detent, a throttled flush, an
+     *      enum commit — passes through writeParam below. There is no route to
+     *      the base value that can forget a step is held.
+     *
+     * The base is NEVER written while a step is held. What the DSP reports for
+     * the plain key stays the saved value (chain_mod answers the base while a
+     * source drives the key), which is why lockValues is kept separately and
+     * shown through `decorations` rather than by moving s.values.
+     * ------------------------------------------------------------------ */
+    const LOCK_STEP_NONE = -1;
+
+    /* Only a chain component carries locks. A synthesised contract — slot
+     * settings, Master FX settings — addresses `slot:*` or `master_fx:*` and
+     * has no lanes behind it, so a held step must not swallow its edits. */
+    function lockablePrefix() {
+        const p = s.prefix || "";
+        return p === "synth" || /^fx\d+$/.test(p) || /^midi_fx\d*$/.test(p);
+    }
+
+    function heldLockStep() {
+        return (s.heldStep >= 0 && lockablePrefix()) ? s.heldStep : LOCK_STEP_NONE;
+    }
+
+    /* One IPC read per step-down, not one per cell: the DSP answers the whole
+     * step as {"synth:key": value, ...}. */
+    function readLocksAt(step) {
+        let json = null;
+        try { json = getParam(`lock:at:${step}`); } catch (e) { json = null; }
+        if (!json) return {};
+        try {
+            const o = JSON.parse(json);
+            return (o && typeof o === "object") ? o : {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function applyLocks() {
+        setLockedValues((s.heldStep >= 0 && s.lockValues) ? s.lockValues : null);
+    }
+
+    /* The single write. `step` overrides the held step — a flush passes the
+     * step the write was ENQUEUED against, which is what keeps a throttled
+     * detent from the moment before a release from landing on the base. */
+    function writeParam(key, wire, step) {
+        const fk = fullKey(key);
+        const target = (step === undefined) ? heldLockStep() : step;
+        if (target >= 0) {
+            /* "<target>:<param>:<step>:<value>" — fk is already the first two. */
+            setParam("lock:set", `${fk}:${target}:${wire}`);
+            return true;
+        }
+        setParam(fk, wire);
+        return false;
+    }
+
+    /* Write out one pending key. Returns true if it went to a lock. */
+    function flushKey(key) {
+        const step = (s.pendingLockStep[key] === undefined) ? LOCK_STEP_NONE : s.pendingLockStep[key];
+        const locked = writeParam(key, s.pendingWrite[key], step);
+        delete s.pendingLockStep[key];
+        /* A lock does not move the base, so it cannot change what visible_if
+         * would have shown — no re-plan. */
+        if (!locked) replanIfCondition(key);
+        return locked;
+    }
+
+    /* Knob feel is seeded from the value under the knob, and that value is a
+     * different one on each side of a step press: the lock while held, the
+     * base after release. Dropping the states makes the next turn re-seed. */
+    function resetKnobStates() {
+        for (const k in s.knobStates) delete s.knobStates[k];
+    }
+
+    function releaseHeldStep() {
+        /* Anything still throttled was enqueued against the held step and is
+         * tagged as such — write it now, as a lock, before the step is gone. */
+        for (const key in s.pendingWrite) {
+            if (s.pendingLockStep[key] === undefined) continue;
+            flushKey(key);
+            s.lastWriteMs[key] = now();
+            delete s.pendingWrite[key];
+        }
+        s.heldStep = LOCK_STEP_NONE;
+        s.lockValues = null;
+        resetKnobStates();
+        setLockedValues(null);
+    }
+
+    /**
+     * A step button went down or up. Returns true when the event was taken.
+     *
+     * One step at a time: holding two and turning a knob has no agreed meaning
+     * on the hardware this imitates, so the latest press wins. A release for a
+     * step that is not the held one is ignored — its press landed on another
+     * screen.
+     */
+    function onStepButton(step, down) {
+        if (!lockablePrefix()) return false;
+        if (typeof step !== "number" || step < 0) return false;
+
+        if (down) {
+            if (s.heldStep === step) return true;
+            if (s.heldStep >= 0) releaseHeldStep();
+            /* A base write throttled from BEFORE the press is a base write;
+             * flush it as one so it cannot be re-tagged by what follows. */
+            for (const key in s.pendingWrite) {
+                if (s.pendingLockStep[key] !== undefined) continue;
+                flushKey(key);
+                s.lastWriteMs[key] = now();
+                delete s.pendingWrite[key];
+            }
+            s.heldStep = step;
+            s.lockValues = readLocksAt(step);
+            resetKnobStates();
+            applyLocks();
+            return true;
+        }
+
+        if (s.heldStep !== step) return true;
+        releaseHeldStep();
+        return true;
+    }
+
+    /** Drop any held step. For a host whose grid is going away: the note-off
+     *  will reach whichever screen took over, never this controller. */
+    function clearHeldStep() {
+        if (s.heldStep < 0) return;
+        releaseHeldStep();
+    }
+
     /*
      * What the header calls this page.
      *
@@ -878,6 +1031,7 @@ export function createController(io = {}) {
             s.knobStates = Object.create(null);
             s.lastWriteMs = Object.create(null);
             s.pendingWrite = Object.create(null);
+        s.pendingLockStep = Object.create(null);
             return true;
         }
         s.contractUnresolved = false;
@@ -967,6 +1121,7 @@ export function createController(io = {}) {
         s.knobStates = Object.create(null);
         s.lastWriteMs = Object.create(null);
         s.pendingWrite = Object.create(null);
+        s.pendingLockStep = Object.create(null);
         /* A rebuild after a module finishes loading shifts every index, so land
          * by name rather than by position; a first load lands on a grid. */
         s.pageIndex = oldPages.length ? reanchor(oldPages, oldIndex, s.pages) : firstGrid(s.pages);
@@ -1018,6 +1173,7 @@ export function createController(io = {}) {
         s.values = Object.create(null);
         s.knobStates = Object.create(null);
         s.pendingWrite = Object.create(null);
+        s.pendingLockStep = Object.create(null);
         warmCurrentPage();
     }
 
@@ -1305,8 +1461,7 @@ export function createController(io = {}) {
         const t = now();
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
-            setParam(fullKey(key), s.pendingWrite[key]);
-                replanIfCondition(key);
+            flushKey(key);
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
         }
@@ -1316,8 +1471,7 @@ export function createController(io = {}) {
      * swap, visible_if re-plan) must never silently drop one. */
     function flushDueWritesUnconditionally() {
         for (const key in s.pendingWrite) {
-            setParam(fullKey(key), s.pendingWrite[key]);
-                replanIfCondition(key);
+            flushKey(key);
         }
     }
 
@@ -2308,9 +2462,17 @@ export function createController(io = {}) {
      * against a 1.68ms whole-page render, so reading on the draw path would cost
      * more than the screen.
      */
-    function knobRowValue(key) {
+    /* `slot` is optional and only decorations need it — a decoration is
+     * addressed by KNOB SLOT, while a row is addressed by key. */
+    function knobRowValue(key, slot) {
         const meta = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
-        const raw = s.values[key] === undefined ? null : s.values[key];
+        const dec = (s.decorations && slot !== undefined) ? s.decorations[slot] : null;
+        /* A locked row reads the STEP's value, not the patch's. Same override
+         * the grid applies, so the two layouts cannot disagree about what a
+         * held step plays. */
+        const raw = (dec && dec.value !== undefined && dec.value !== null)
+            ? dec.value
+            : (s.values[key] === undefined ? null : s.values[key]);
         if (formatValue) {
             const resolved = formatValue(fullKey(key), raw, "header");
             if (resolved !== null && resolved !== undefined) return String(resolved);
@@ -2320,12 +2482,19 @@ export function createController(io = {}) {
 
     function knobListEntries(p) {
         const pg = p === undefined ? page() : p;
-        return knobRows(pg).map(({ key }) => {
+        return knobRows(pg).map(({ key, slot }) => {
             const meta = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
             /* The FULL label, not labelForCell's five-character mnemonic: that
              * budget is a property of a 32px cell, and this row has ~90px. */
-            return { name: (meta && (meta.label || meta.key)) || key,
-                     value: knobRowValue(key) };
+            const name = (meta && (meta.label || meta.key)) || key;
+            /* A locked row is marked on its NAME, the way this editor already
+             * marks a modulated one with "~". The grid inverts the cell
+             * instead; a list row has no strip to invert, and a suffix is the
+             * mark this surface already uses for "the value you see is not the
+             * value you set". */
+            const dec = s.decorations ? s.decorations[slot] : null;
+            return { name: (dec && dec.locked) ? name + "*" : name,
+                     value: knobRowValue(key, slot) };
         });
     }
 
@@ -2342,12 +2511,16 @@ export function createController(io = {}) {
         const r = rows[at];
         if (!r) return;
         const meta = s.metaIndex ? s.metaIndex.getOrGuess(r.key) : null;
-        let spoken = s.values[r.key];
+        const dec = s.decorations ? s.decorations[r.slot] : null;
+        /* Speak what the row SHOWS. A locked row displaying the step's value
+         * while announcing the patch's would be worse than saying nothing. */
+        let spoken = (dec && dec.value !== undefined && dec.value !== null)
+            ? dec.value
+            : s.values[r.key];
         if (formatValue) {
             const resolved = formatValue(fullKey(r.key), spoken, "header");
             if (resolved !== null && resolved !== undefined) spoken = resolved;
         }
-        const dec = s.decorations ? s.decorations[r.slot] : null;
         announce(`${announceTouch(meta, spoken, r.slot, dec)}, ${at + 1} of ${rows.length}`);
     }
 
@@ -2778,6 +2951,12 @@ export function createController(io = {}) {
              * it is also allowed to settle the enum wire format, for a page
              * whose first gesture beats its first read. */
             let raw = s.values[key];
+            /* While a step is held the knob starts from THAT STEP's value when
+             * it has one — you are turning the lock, not the sound underneath. */
+            if (heldLockStep() >= 0 && s.lockValues) {
+                const lv = s.lockValues[fullKey(key)];
+                if (lv !== undefined && lv !== null) raw = lv;
+            }
             if (raw === undefined) {
                 raw = getParam(fullKey(key));
                 learnEnumWireFormat(meta, raw);
@@ -2855,19 +3034,31 @@ export function createController(io = {}) {
             s.peek = null;
         }
 
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        const lockStep = heldLockStep();
+        if (lockStep >= 0) {
+            /* The BASE does not move. The lock is what changed, and the cell
+             * shows it through the decoration — updated here, on the detent,
+             * so it never waits for the throttled write behind it. */
+            if (s.lockValues) { s.lockValues[fullKey(key)] = wire; applyLocks(); }
+        } else {
+            s.values[key] = wire;
+            s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        }
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
          * left in pendingWrite for tick() to flush once the window passes,
-         * and onKnobTouch(false) flushes immediately on release. */
+         * and onKnobTouch(false) flushes immediately on release. A throttled
+         * write is TAGGED with the step it was made against, so releasing the
+         * step before the window passes cannot turn it into a base write. */
         const lastWrite = s.lastWriteMs[key] || 0;
         if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
-            setParam(fullKey(key), wire);
-        replanIfCondition(key);
+            delete s.pendingLockStep[key];
+            if (!writeParam(key, wire, lockStep)) replanIfCondition(key);
         } else {
             s.pendingWrite[key] = wire;
+            if (lockStep >= 0) s.pendingLockStep[key] = lockStep;
+            else delete s.pendingLockStep[key];
         }
         /* Throttled — see ANNOUNCE_THROTTLE_MS. A continuous fast turn still
          * announces regularly, just not once per raw MIDI detent. */
@@ -2910,13 +3101,18 @@ export function createController(io = {}) {
         const n = Array.isArray(meta.options) ? meta.options.length : 0;
         if (n > 0) i = Math.max(0, Math.min(n - 1, i));
         const wire = enumWireValue(meta, i);
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        const lockStep = heldLockStep();
+        if (lockStep >= 0) {
+            if (s.lockValues) { s.lockValues[fullKey(key)] = wire; applyLocks(); }
+        } else {
+            s.values[key] = wire;
+            s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        }
         s.lastWriteMs[key] = now();
         delete s.pendingWrite[key];
+        delete s.pendingLockStep[key];
         delete s.knobStates[key];
-        setParam(fullKey(key), wire);
-        replanIfCondition(key);
+        if (!writeParam(key, wire, lockStep)) replanIfCondition(key);
         return wire;
     }
 
@@ -3070,8 +3266,7 @@ export function createController(io = {}) {
              */
             if (key) delete s.triggerKnobLastMs[key];
             if (key && s.pendingWrite[key] !== undefined) {
-                setParam(fullKey(key), s.pendingWrite[key]);
-                replanIfCondition(key);
+                flushKey(key);
                 s.lastWriteMs[key] = now();
                 delete s.pendingWrite[key];
             }
@@ -3397,6 +3592,46 @@ export function createController(io = {}) {
     function setReveal(on) { s.revealValues = !!on; }
     function setDecorations(d) { s.decorations = d || null; }
 
+    /*
+     * Parameter locks, keyed by FULL param key, mapped onto knob slots here.
+     *
+     * The caller has locks as {"synth:sd_c_snappy": 0.2} — that is how the DSP
+     * reports them (`lock:at:<step>`) and the only form that is unambiguous
+     * across child levels. Turning that into per-slot decorations needs BOTH
+     * the prefix and childResolve, and both live in here: a page's `keys` are
+     * bare, and on a child level the bare key is not even the real one. Done
+     * outside, the caller would have to reimplement fullKey, which is exactly
+     * how the two would drift apart the first time child addressing changed.
+     *
+     * Passing null clears — a released step must return every cell to the
+     * value the patch actually saved.
+     */
+    function setLockedValues(byFullKey) {
+        if (!byFullKey) { s.decorations = null; return; }
+
+        const pg = page();
+        const keys = (pg && pg.keys) || [];
+        const dec = [];
+        let any = false;
+
+        for (let i = 0; i < keys.length; i++) {
+            const k = keys[i];
+            if (!k) { dec[i] = null; continue; }
+            const fk = fullKey(k, pg);
+            if (Object.prototype.hasOwnProperty.call(byFullKey, fk)) {
+                dec[i] = { locked: true, value: byFullKey[fk] };
+                any = true;
+            } else {
+                dec[i] = null;
+            }
+        }
+
+        /* null rather than an array of nulls when this page holds no locks:
+         * decorations being present at all stands the graphics down, and a
+         * page with nothing locked should keep them. */
+        s.decorations = any ? dec : null;
+    }
+
     /* Movy layout is a whole separate renderer (its own header and knob grid,
      * not a `layout` value render_page.mjs understands — see
      * render_page_movy.mjs). It used to refuse decorations and an embedding
@@ -3452,6 +3687,9 @@ export function createController(io = {}) {
     }
 
     function render(ctx, { title, rect, footer, bands } = {}) {
+        /* A step can be held while the jog changes page, and the eight cells
+         * its locks belong to are then a different eight. Local data only. */
+        if (s.heldStep >= 0 && s.lockValues) applyLocks();
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
@@ -3504,6 +3742,7 @@ export function createController(io = {}) {
                 touchedSlots: s.hintLines ? [] : s.touchOrder,
                 modulated: (key) => !!s.modCache[key],
                 modValues: s.modValues,
+                decorations: s.decorations,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
                 /* Graphics stand down while p-locks are live, the same rule the
@@ -4033,8 +4272,11 @@ export function createController(io = {}) {
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },
-        setLayout, setReveal, setDecorations, render, renderOverlays,
+        setLayout, setReveal, setDecorations, setLockedValues, render, renderOverlays,
         announceContents,
+        /* Parameter locks — see onStepButton. */
+        onStepButton, clearHeldStep,
+        get heldStep() { return s.heldStep; },
         get state() { return s; },
         get page() { return page(); },
         get pages() { return s.pages; },

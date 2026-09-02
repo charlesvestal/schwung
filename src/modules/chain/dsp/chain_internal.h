@@ -40,6 +40,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
 #include "host/lfo_common.h"
+#include "host/lock_common.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -138,7 +139,15 @@ typedef struct {
 typedef struct mod_source_contribution {
     int active;
     char source_id[32];
+    /* Relative source: signed amount added to base_value.
+     * Absolute source: the effective value itself, replacing base_value. */
     float contribution;
+    /* An ABSOLUTE source states the value outright instead of nudging the one
+     * the user saved. A parameter lock is absolute by definition — "step 9 has
+     * Snappy 0.2" is not an offset, and expressing it as one drifts the moment
+     * the knob moves and re-bases underneath it. Relative sources still sum on
+     * top, so an LFO keeps wobbling around a locked value. */
+    int absolute;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -213,6 +222,12 @@ typedef struct {
     int knob_cc_out;       /* 0 = off (default), 1 = echo chain-knob changes out
                             * as CC 102-109 on the slot's recv channel */
     lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
+    /* Parameter locks. Inline rather than a pointer: patch_info_t is already
+     * ~158 KB (synth_state alone is 16 KB) and the patches array ~5 MB, so a
+     * 5 KB lock_state_t is 3% of a struct that is copied by qsort anyway.
+     * Measured, not assumed — a pointer here would buy lifetime bugs for a
+     * rounding error's worth of memory. */
+    lock_state_t locks;
 } patch_info_t;
 
 /* ============================================================================
@@ -314,6 +329,10 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
+
+    /* Per-slot parameter locks: per-step absolute overrides, played back from
+     * transport position by lock_tick(). See host/lock_common.h. */
+    lock_state_t locks;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
@@ -570,6 +589,10 @@ CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_
 CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
+/* Publish an ABSOLUTE overlay: the target reads `value` outright, whatever the
+ * user's saved base is. Same non-destructive contract as chain_mod_emit_value —
+ * base is untouched and chain_mod_clear_source restores it exactly. */
+CHAIN_INTERNAL int chain_mod_emit_absolute(void *ctx, const char *source_id, const char *target, const char *param, float value, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);

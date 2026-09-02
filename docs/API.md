@@ -407,6 +407,16 @@ knowing:
 - A patch load re-sends every mapped knob, since nothing else would tell a
   control surface that all eight moved at once.
 
+### Step Buttons (Notes 16-31)
+
+Not forwarded to the shadow UI in general — they belong to Move's own
+sequencer. **One exception:** when the focused slot's patch declares
+`capture: {groups: ["steps"]}`, the steps are already blocked from Move and
+routed to that slot's DSP, and they are additionally forwarded to the shadow UI
+so the parameter grid can see a held step. That is what makes parameter locks
+placeable (see MODULES.md, "Parameter Locks"); a patch that has not opted in is
+unaffected.
+
 ### Knob Touch (Capacitive)
 Notes 0-9 are generated when knobs are touched. Filter these if you don't need them:
 ```javascript
@@ -545,6 +555,18 @@ int16_t *audio_in = (int16_t *)(host->mapped_memory + host->audio_in_offset);
 Note: Audio input routing depends on the last selected input in the stock Move interface before launching Schwung.
 
 ### Chain Runtime Modulation Callbacks (DSP)
+
+Two kinds of source can drive a parameter without overwriting it:
+
+- **Relative** — `mod_emit_value`, what the LFOs use. A signed contribution
+  added to the saved base value.
+- **Absolute** — `chain_mod_emit_absolute` (internal to the chain host), what
+  parameter locks use. The value is stated outright and *replaces* the base as
+  the origin; relative sources still sum on top, so a locked parameter can
+  still be modulated by an LFO.
+
+An offset cannot express a lock: the base moves when the user turns the knob,
+so the same lock would land on a different value each time.
 
 When a DSP plugin runs inside Signal Chain, `host_api_v1_t` may expose optional modulation callbacks:
 

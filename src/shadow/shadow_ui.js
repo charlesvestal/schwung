@@ -8347,6 +8347,21 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
     }
 
+    /* Include parameter locks. Written whenever any lane holds a lock — the
+     * pattern length and step rate ride along with them because a lock without
+     * the timing it was placed against lands on a different step. */
+    const lockConfigJson = getSlotParam(slotIndex, "lock_config");
+    if (lockConfigJson) {
+        try {
+            const locks = JSON.parse(lockConfigJson);
+            if (locks && locks.lanes && locks.lanes.length > 0) {
+                patch.locks = locks;
+            }
+        } catch (e) {
+            /* Ignore parse errors */
+        }
+    }
+
     return JSON.stringify(patch);
 }
 

@@ -79,6 +79,11 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
 
     strncpy(inst->module_dir, module_dir, MAX_PATH_LEN - 1);
 
+    /* Locks need real defaults, not calloc's zeroes: a zeroed lock_state_t
+     * reads as pattern_len 0 and rate_div 0 (16 bars per step). Inert either
+     * way, but the UI shows these and "0 steps" is not a thing to show. */
+    lock_state_init(&inst->locks);
+
     /* Channel fields default to "absent" — getters return empty length until
      * a patch sets them, so callers won't clobber the shim's slot config. */
     inst->loaded_receive_channel = PATCH_CHANNEL_UNSET;
@@ -725,6 +730,8 @@ void parse_debug_log(const char *msg) {
 }
 
 static void lfo_tick(chain_instance_t *inst, int frames);
+static void lock_tick(chain_instance_t *inst);
+static void lock_clear_all(chain_instance_t *inst);
 
 static void v2_set_param(void *instance, const char *key, const char *val) {
     chain_instance_t *inst = (chain_instance_t *)instance;
@@ -751,6 +758,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
      */
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
         lfo_tick(inst, val ? atoi(val) : 128);
+        /* Locks ride this path for a reason the LFOs only had to learn:
+         * a step's lock has to be IN PLACE BEFORE the note that plays it.
+         * On a silent slot render_block is skipped, so waiting for it would
+         * apply step 9's Snappy after step 9's hit had already sounded — the
+         * lock would audibly land one step late, every time the sequence came
+         * back from silence. */
+        lock_tick(inst);
         return;
     }
 
@@ -920,6 +934,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         memset(inst->lfos, 0, sizeof(inst->lfos));
         memset(inst->lfo_base_values, 0, sizeof(inst->lfo_base_values));
         memset(inst->lfo_base_valid, 0, sizeof(inst->lfo_base_valid));
+        /* Parameter locks are per-slot too, and name the same targets the LFOs
+         * do — a lock on "synth:sd_c_snappy" outliving the synth is the same
+         * bug in the same shape. Cleared through lock_clear_all so the
+         * modulation sources go with them rather than being left published
+         * against a component that is being unloaded. */
+        lock_clear_all(inst);
+        lock_state_init(&inst->locks);
         /*
          * Knob mappings go too, for the identical reason the LFOs do: they
          * are per-SLOT state, not per-module, so unloading everything they
@@ -1098,6 +1119,106 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->midi_fx_plugins[mfi]->set_param(inst->midi_fx_instances[mfi], subkey, val);
             inst->dirty = 1;
         }
+    }
+    /* Parameter locks: lock:*
+     *
+     * Addressing follows knob_N_set — "<target>:<param>" — extended with the
+     * step and the value. No fleet parameter key contains a colon, so splitting
+     * left to right is unambiguous. */
+    else if (strncmp(key, "lock:", 5) == 0) {
+        const char *subkey = key + 5;
+        lock_state_t *st = &inst->locks;
+
+        if (strcmp(subkey, "enabled") == 0) {
+            st->enabled = val ? (atoi(val) ? 1 : 0) : 0;
+            /* Force the next tick to re-evaluate: without this, disabling on
+             * the same step the engine last published would compare equal and
+             * leave the lock hanging. */
+            st->cur_step = LOCK_STEP_NONE;
+            if (!st->enabled) {
+                char source_id[8];
+                for (int i = 0; i < LOCK_MAX_LANES; i++) {
+                    lock_source_id(i, source_id, sizeof(source_id));
+                    chain_mod_clear_source(inst, source_id);
+                }
+            }
+        } else if (strcmp(subkey, "pattern_len") == 0) {
+            st->pattern_len = lock_clamp_pattern_len(val ? atoi(val) : LOCK_DEFAULT_STEPS);
+            st->cur_step = LOCK_STEP_NONE;
+        } else if (strcmp(subkey, "rate_div") == 0) {
+            st->rate_div = lock_clamp_rate_div(val ? atoi(val) : LOCK_DEFAULT_RATE_DIV);
+            st->cur_step = LOCK_STEP_NONE;
+        } else if (strcmp(subkey, "set") == 0 && val) {
+            /* "<target>:<param>:<step>:<value>" */
+            char target[16] = "", param[32] = "";
+            int step = -1;
+            float value = 0.0f;
+            const char *c1 = strchr(val, ':');
+            const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+            const char *c3 = c2 ? strchr(c2 + 1, ':') : NULL;
+            if (c1 && c2 && c3) {
+                size_t tlen = (size_t)(c1 - val);
+                size_t plen = (size_t)(c2 - c1 - 1);
+                if (tlen > 0 && tlen < sizeof(target) && plen > 0 && plen < sizeof(param)) {
+                    memcpy(target, val, tlen); target[tlen] = '\0';
+                    memcpy(param, c1 + 1, plen); param[plen] = '\0';
+                    step = atoi(c2 + 1);
+                    value = strtof(c3 + 1, NULL);
+
+                    if (step >= 0 && step < LOCK_MAX_STEPS) {
+                        lock_lane_t *lane = lock_alloc_lane(st, target, param);
+                        if (!lane) {
+                            /* All LOCK_MAX_LANES in use. Say so — a lock that
+                             * silently does not exist is the failure mode this
+                             * whole feature is least able to afford. */
+                            char msg[128];
+                            snprintf(msg, sizeof(msg),
+                                     "lock:set dropped - all %d lanes in use (%s:%s)",
+                                     LOCK_MAX_LANES, target, param);
+                            v2_chain_log(inst, msg);
+                        } else {
+                            lock_lane_set(lane, step, value);
+                            /* Re-evaluate now: locking the step that is
+                             * currently playing should be audible immediately,
+                             * which is the whole feel of the gesture. */
+                            st->cur_step = LOCK_STEP_NONE;
+                        }
+                    }
+                }
+            }
+        } else if (strcmp(subkey, "clear") == 0 && val) {
+            /* "<target>:<param>:<step>" */
+            char target[16] = "", param[32] = "";
+            const char *c1 = strchr(val, ':');
+            const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+            if (c1 && c2) {
+                size_t tlen = (size_t)(c1 - val);
+                size_t plen = (size_t)(c2 - c1 - 1);
+                if (tlen > 0 && tlen < sizeof(target) && plen > 0 && plen < sizeof(param)) {
+                    memcpy(target, val, tlen); target[tlen] = '\0';
+                    memcpy(param, c1 + 1, plen); param[plen] = '\0';
+                    int step = atoi(c2 + 1);
+
+                    lock_lane_t *lane = lock_find_lane(st, target, param);
+                    if (lane) {
+                        lock_lane_clear(lane, step);
+                        if (lane->mask == 0) {
+                            /* Retiring the lane frees its modulation entry too,
+                             * and must clear the source FIRST — after the
+                             * memset the lane no longer knows its own index. */
+                            char source_id[8];
+                            lock_source_id((int)(lane - st->lanes), source_id, sizeof(source_id));
+                            chain_mod_clear_source(inst, source_id);
+                            lock_retire_lane_if_empty(st, lane);
+                        }
+                        st->cur_step = LOCK_STEP_NONE;
+                    }
+                }
+            }
+        } else if (strcmp(subkey, "clear_all") == 0) {
+            lock_clear_all(inst);
+        }
+        inst->dirty = 1;
     }
     /* LFO configuration: lfo1:* and lfo2:* */
     else if (strncmp(key, "lfo1:", 5) == 0 || strncmp(key, "lfo2:", 5) == 0) {
@@ -1489,6 +1610,72 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->fx_count);
     }
 
+    /* Parameter lock queries */
+    if (strncmp(key, "lock:", 5) == 0) {
+        const char *subkey = key + 5;
+        lock_state_t *st = &inst->locks;
+
+        if (strcmp(subkey, "enabled") == 0)
+            return snprintf(buf, buf_len, "%d", st->enabled);
+        if (strcmp(subkey, "pattern_len") == 0)
+            return snprintf(buf, buf_len, "%d", st->pattern_len);
+        if (strcmp(subkey, "rate_div") == 0)
+            return snprintf(buf, buf_len, "%d", st->rate_div);
+        if (strcmp(subkey, "rate_div_label") == 0)
+            return snprintf(buf, buf_len, "%s",
+                   lfo_divisions[lock_clamp_rate_div(st->rate_div)].label);
+        if (strcmp(subkey, "lane_count") == 0)
+            return snprintf(buf, buf_len, "%d", st->lane_count);
+        /* The playhead. LOCK_STEP_NONE (-1) means no transport is running —
+         * the UI shows locks but no position, which is the honest answer. */
+        if (strcmp(subkey, "step") == 0)
+            return snprintf(buf, buf_len, "%d", st->cur_step);
+
+        /* "lock:at:<step>" — every lock on one step, as
+         * {"synth:sd_c_snappy":0.200000,...}. This is what the editor asks for
+         * the moment a step button goes down: it needs the held step's values
+         * to decorate the eight cells, and asking per parameter would be eight
+         * round trips through get_param for one gesture. */
+        if (strncmp(subkey, "at:", 3) == 0) {
+            const int step = atoi(subkey + 3);
+            int off = 0;
+            off += snprintf(buf + off, buf_len - off, "{");
+            int first = 1;
+            if (step >= 0 && step < LOCK_MAX_STEPS) {
+                for (int i = 0; i < st->lane_count && i < LOCK_MAX_LANES; i++) {
+                    const lock_lane_t *lane = &st->lanes[i];
+                    if (!lock_lane_has_step(lane, step)) continue;
+                    if (off >= buf_len) break;
+                    off += snprintf(buf + off, buf_len - off, "%s\"%s:%s\":%.6f",
+                                    first ? "" : ",", lane->target, lane->param,
+                                    lane->values[step]);
+                    first = 0;
+                }
+            }
+            if (off < buf_len) off += snprintf(buf + off, buf_len - off, "}");
+            return off;
+        }
+
+        /* "lock:steps:<target>:<param>" — the step mask for one parameter, as
+         * a decimal bitmap. Lets the editor light the steps that hold a lock
+         * for the knob under the finger without pulling every lane. */
+        if (strncmp(subkey, "steps:", 6) == 0) {
+            const char *spec = subkey + 6;
+            const char *colon = strchr(spec, ':');
+            if (!colon) return -1;
+            char target[16] = "", param[32] = "";
+            size_t tlen = (size_t)(colon - spec);
+            if (tlen == 0 || tlen >= sizeof(target)) return -1;
+            memcpy(target, spec, tlen); target[tlen] = '\0';
+            strncpy(param, colon + 1, sizeof(param) - 1);
+
+            const lock_lane_t *lane = lock_find_lane(st, target, param);
+            return snprintf(buf, buf_len, "%llu",
+                            (unsigned long long)(lane ? lane->mask : 0u));
+        }
+        return -1;
+    }
+
     /* LFO configuration queries */
     if (strncmp(key, "lfo1:", 5) == 0 || strncmp(key, "lfo2:", 5) == 0) {
         int lfo_idx = (key[3] == '1') ? 0 : 1;
@@ -1552,6 +1739,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         }
         off += snprintf(buf + off, buf_len - off, "}");
         return off;
+    }
+
+    /* Lock config as JSON (for patch save). The format itself lives in
+     * host/lock_common.h so the writer here and the reader in chain_patch.c
+     * cannot drift apart, and so a round trip is testable without a device. */
+    if (strcmp(key, "lock_config") == 0) {
+        return lock_to_json(&inst->locks, buf, buf_len);
     }
 
     /* Knob mapping info */
@@ -1925,6 +2119,90 @@ static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
 };
 #define SLOT_LFO_PARAM_META_COUNT 3
 
+/* ============================================================================
+ * Parameter locks
+ * ============================================================================ */
+
+/* Drop every lock and hand each locked parameter back to its saved base.
+ *
+ * Per-SLOT state, like the LFOs and the knob mappings above it, so it is
+ * cleared for the same reason they are: locks name a target ("synth", "fx1")
+ * and unloading everything they could point at would otherwise leave them
+ * aimed at a component that no longer exists. */
+static void lock_clear_all(chain_instance_t *inst) {
+    if (!inst) return;
+
+    /* Every possible lane index, not just the occupied ones: a source can
+     * outlive its lane if the lane was retired while its lock was playing. */
+    char source_id[8];
+    for (int i = 0; i < LOCK_MAX_LANES; i++) {
+        lock_source_id(i, source_id, sizeof(source_id));
+        chain_mod_clear_source(inst, source_id);
+    }
+
+    /* Lanes go; pattern_len, rate_div and enabled STAY. Those describe the
+     * clip the user is playing along to, not the locks in it — throwing away
+     * a 32-step setting because the locks were cleared would be a surprise. */
+    memset(inst->locks.lanes, 0, sizeof(inst->locks.lanes));
+    inst->locks.lane_count = 0;
+    inst->locks.cur_step = LOCK_STEP_NONE;
+}
+
+/* Publish the current step's locks; retire the ones that just stopped applying.
+ *
+ * Structurally the LFO's twin — read transport position, derive a phase, push
+ * through the modulation bus, never touch a base value — with two differences
+ * that both fall out of what a lock IS:
+ *
+ *   ABSOLUTE. The lock states the value; it is not an offset from a base that
+ *   moves when the user turns the knob. Hence chain_mod_emit_absolute.
+ *
+ *   DISCRETE. It changes only when the step changes, so the early return below
+ *   skips the whole body for the ~5,200 audio blocks a 1/16 step lasts at
+ *   120 BPM. This runs in the SPI callback; the common case must be free. */
+static void lock_tick(chain_instance_t *inst) {
+    if (!inst) return;
+
+    lock_state_t *st = &inst->locks;
+
+    /* No lanes means no locks and no work — before touching the transport, so
+     * an ordinary slot pays one compare for a feature it does not use. */
+    if (st->lane_count <= 0) return;
+
+    double beat_position = -1.0;
+    if (inst->host && inst->host->get_beat_position) {
+        beat_position = inst->host->get_beat_position();
+    }
+
+    /* Disabled, or no transport: LOCK_STEP_NONE clears every source below, so
+     * switching locks off restores exactly the values the user saved. */
+    const int step = st->enabled
+        ? lock_step_at(beat_position, st->rate_div, st->pattern_len)
+        : LOCK_STEP_NONE;
+
+    if (step == st->cur_step) return;
+    st->cur_step = step;
+
+    char source_id[8];
+    for (int i = 0; i < st->lane_count && i < LOCK_MAX_LANES; i++) {
+        lock_lane_t *lane = &st->lanes[i];
+        if (!lane->active) continue;
+
+        lock_source_id(i, source_id, sizeof(source_id));
+
+        if (step != LOCK_STEP_NONE && lock_lane_has_step(lane, step)) {
+            chain_mod_emit_absolute(inst, source_id, lane->target, lane->param,
+                                    lane->values[step], 1);
+        } else {
+            /* This lane has nothing to say about this step. Clearing rather
+             * than holding the last value is what makes a lock a LOCK and not
+             * a latch: steps 1-8 play what the user saved, step 9 plays the
+             * lock, step 10 goes back. */
+            chain_mod_clear_source(inst, source_id);
+        }
+    }
+}
+
 static void lfo_tick(chain_instance_t *inst, int frames) {
     if (!inst) return;
     float sample_rate = (float)(inst->host ? inst->host->sample_rate : MOVE_SAMPLE_RATE);
@@ -2052,8 +2330,9 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         }
     }
 
-    /* Tick LFOs — emit modulation before audio render */
+    /* Tick LFOs and parameter locks — emit modulation before audio render */
     lfo_tick(inst, frames);
+    lock_tick(inst);
 
     /* Process MIDI FX tick (for arpeggiator timing) */
     v2_tick_midi_fx(inst, frames);

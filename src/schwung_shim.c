@@ -8643,6 +8643,31 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     continue;  /* Skip DSP routing for blocked pads */
                 }
 
+                /* Step buttons the focused slot has captured ALSO go to the
+                 * shadow UI, not only to the slot's DSP.
+                 *
+                 * This is what makes a parameter lock placeable. The gesture is
+                 * "hold step 9, turn an encoder", and its two halves arrive on
+                 * different sides of the process: the step is a note the shim
+                 * routes to DSP, while the encoder is CC 71-78, which is handled
+                 * by the shadow UI and deliberately NOT routed to DSP (see the
+                 * knob branch above). Neither side could see the whole gesture.
+                 * The UI is the half that knows which parameter the knob under
+                 * the finger is bound to on the current page, so the step goes
+                 * there.
+                 *
+                 * Narrow on purpose — steps only, and only when the focused
+                 * slot's patch already declares `capture: {groups:["steps"]}`.
+                 * That opt-in is the same one that already takes these buttons
+                 * away from Move, so this adds a listener to a decision the
+                 * patch has made rather than making a new one. Pads are not
+                 * forwarded: they are Move's performance surface and are
+                 * already handled by the pad_block path above. */
+                if (d1 >= CAPTURE_STEPS_NOTE_MIN && d1 <= CAPTURE_STEPS_NOTE_MAX &&
+                    shadow_ui_midi_shm && shadow_focused_captures_note(d1)) {
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
+                }
+
                 /* Check capture rules for focused slot.
                  * Never route knob touch notes (0-9) to DSP even if in capture rules. */
                 {

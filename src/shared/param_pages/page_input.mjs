@@ -30,6 +30,12 @@ export const BACK_CC = 51;
 export const MUTE_CC = 88;
 export const TOUCH_NOTE_FIRST = 0;
 export const TOUCH_NOTE_LAST = 7;
+/* Move's sixteen step buttons. They reach a grid only when the focused slot's
+ * patch captures them (`capture: {groups:["steps"]}`), which is also what takes
+ * them away from Move's own sequencer — so decoding them here claims nothing
+ * a patch has not already claimed. */
+export const STEP_NOTE_FIRST = 16;
+export const STEP_NOTE_LAST = 31;
 
 /**
  * @param {number[]|Uint8Array} data  [status, d1, d2]
@@ -44,6 +50,8 @@ export const TOUCH_NOTE_LAST = 7;
  *   { type: "back" }
  *   { type: "shift",  down }              modifier state changed
  *   { type: "mute",   down }              modifier state changed
+ *   { type: "step",   step, down }        step button 0-15 — a held step turns
+ *                                         every edit into a parameter lock
  */
 export function decodeInput(data, mods = {}) {
     if (!data || data.length < 3) return null;
@@ -80,6 +88,11 @@ export function decodeInput(data, mods = {}) {
         if (d1 >= TOUCH_NOTE_FIRST && d1 <= TOUCH_NOTE_LAST) {
             const down = status === 0x90 && d2 > 0;
             return { type: "touch", slot: d1 - TOUCH_NOTE_FIRST, down, mute: !!mods.mute };
+        }
+        /* Same two spellings of a release as the touch above. */
+        if (d1 >= STEP_NOTE_FIRST && d1 <= STEP_NOTE_LAST) {
+            const down = status === 0x90 && d2 > 0;
+            return { type: "step", step: d1 - STEP_NOTE_FIRST, down };
         }
         return null;
     }
@@ -205,6 +218,15 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
              * every label for its value, which is the one thing the dial layout
              * cannot do on its own. */
             if (reveal !== false) controller.setReveal(intent.down);
+            return null;
+
+        case "step":
+            /* A held step makes every edit a PARAMETER LOCK on that step. The
+             * controller owns it, not the caller: it is the only thing that
+             * knows which parameter the knob under the finger is bound to, and
+             * it is the one place every write already passes through. A
+             * controller built before locks existed simply has no method. */
+            if (controller.onStepButton) controller.onStepButton(intent.step, intent.down);
             return null;
 
         default:
