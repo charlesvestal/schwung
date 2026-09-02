@@ -523,6 +523,7 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].muted = 0;
         shadow_chain_slots[i].soloed = 0;
         shadow_chain_slots[i].forward_channel = -1;
+        shadow_chain_slots[i].default_forward_channel = -1;
         shadow_chain_slots[i].transpose = 0;
         capture_clear(&shadow_chain_slots[i].capture);
         shadow_chain_slots[i].fade.gain = 0.0f;
@@ -1487,7 +1488,7 @@ int shadow_inprocess_load_chain(void) {
                 shadow_chain_slots[i].fade.target = 1.0f;
                 shadow_chain_slots[i].patch_index = -1;
                 /* Query channel settings from loaded autosave */
-                if (shadow_chain_slots[i].forward_channel == -1 && shadow_plugin_v2->get_param) {
+                if (shadow_plugin_v2->get_param) {
                     char fwd_buf[16];
                     int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
                         "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
@@ -1495,7 +1496,7 @@ int shadow_inprocess_load_chain(void) {
                         fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                         int default_fwd = atoi(fwd_buf);
                         if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                            shadow_chain_slots[i].forward_channel = default_fwd;
+                            shadow_chain_slots[i].default_forward_channel = default_fwd;
                         }
                     }
                 }
@@ -1526,15 +1527,15 @@ int shadow_inprocess_load_chain(void) {
             shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, "load_patch", idx_str);
             shadow_chain_slots[i].active = 1;
             shadow_slot_load_capture(i, idx);
-            if (shadow_chain_slots[i].forward_channel == -1 && shadow_plugin_v2->get_param) {
+            if (shadow_plugin_v2->get_param) {
                 char fwd_buf[16];
                 int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
                     "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
                 if (len > 0) {
                     fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                     int default_fwd = atoi(fwd_buf);
-                    if (default_fwd >= 0 && default_fwd <= 15) {
-                        shadow_chain_slots[i].forward_channel = default_fwd;
+                    if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
+                        shadow_chain_slots[i].default_forward_channel = default_fwd;
                     }
                 }
             }
@@ -3443,7 +3444,7 @@ void shadow_inprocess_handle_param_request(void) {
                 if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
     shadow_chain_slots[slot].fade.target = 1.0f;
-                    if (shadow_chain_slots[slot].forward_channel == -1 && shadow_plugin_v2->get_param) {
+                    if (shadow_plugin_v2->get_param) {
                         char fwd_buf[16];
                         int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                             "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
@@ -3451,7 +3452,7 @@ void shadow_inprocess_handle_param_request(void) {
                             fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                             int default_fwd = atoi(fwd_buf);
                             if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                                shadow_chain_slots[slot].forward_channel = default_fwd;
+                                shadow_chain_slots[slot].default_forward_channel = default_fwd;
                                 shadow_ui_state_update_slot(slot);
                             }
                         }
@@ -3510,7 +3511,7 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_chain_slots[slot].patch_index = idx;
                     shadow_slot_load_capture(slot, idx);
 
-                    if (shadow_chain_slots[slot].forward_channel == -1 && shadow_plugin_v2->get_param) {
+                    if (shadow_plugin_v2->get_param) {
                         char fwd_buf[16];
                         int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
                             "synth:default_forward_channel", fwd_buf, sizeof(fwd_buf));
@@ -3518,7 +3519,7 @@ void shadow_inprocess_handle_param_request(void) {
                             fwd_buf[len < (int)sizeof(fwd_buf) ? len : (int)sizeof(fwd_buf) - 1] = '\0';
                             int default_fwd = atoi(fwd_buf);
                             if (default_fwd == -2 || (default_fwd >= 0 && default_fwd <= 15)) {
-                                shadow_chain_slots[slot].forward_channel = default_fwd;
+                                shadow_chain_slots[slot].default_forward_channel = default_fwd;
                             }
                         }
                     }
