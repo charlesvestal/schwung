@@ -386,6 +386,8 @@ over your grid; declare an optional hook so your "My Presets" row updates:
 globalThis.chain_ui = {
     init, tick, onMidiMessageInternal, handleBack,
     onPresetsChanged: () => { if (controller) controller.refreshTrailing(); },
+    // the host reloads you after Load/Delete/Swap/Help; land where you left from
+    restorePage: (name, opts) => { if (controller) controller.restorePage(name, opts || {}); },
 };
 ```
 

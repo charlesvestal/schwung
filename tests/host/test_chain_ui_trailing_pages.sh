@@ -264,6 +264,7 @@ const scenario = (name, setup) => {
         function enterParamPages(slot, key, prefix, page) { calls.push("host:" + page); }
         function unloadModuleUi() { calls.push("unload"); }
         function enterComponentEditFallback(slot, key) { calls.push("module:" + key); }
+        function restoreModuleUiPage(name, enter) { calls.push("restore:" + name + ":" + enter); }
         ${setup}
         ${lift(name)}
         const fired = ${name}();
@@ -278,6 +279,7 @@ if (!r.calls.includes("module:synth")) throw new Error("module origin must retur
 if (r.calls.some(c => c.startsWith("host:"))) throw new Error("module origin must NOT re-enter through enterParamPages: " + r.calls);
 if (!r.calls.includes("unload")) throw new Error("the stale module UI must be unloaded before reloading");
 if (r.gridFlag !== false) throw new Error("the flag must be consumed");
+if (!r.calls.includes("restore:My Presets:false")) throw new Error("must land the reloaded module on My Presets with the saved disposition: " + r.calls);
 r = scenario("maybeReturnToComponentGrid", "");
 if (!r.calls.includes("host:My Presets")) throw new Error("host origin must still land on My Presets: " + r.calls);
 if (r.calls.some(c => c.startsWith("module:"))) throw new Error("host origin must not touch the module path");
@@ -289,6 +291,7 @@ if (!r.calls.includes("unload")) throw new Error("...but its stale UI must be un
 r = scenario("maybeReturnToComponentHelp", "componentHelpReturnModuleUi = true;");
 if (!r.calls.includes("module:synth") || r.calls.some(c => c.startsWith("host:")))
     throw new Error("help: module origin must return through the module: " + r.calls);
+if (!r.calls.includes("restore:Module:true")) throw new Error("help: must land on the Module page, entered: " + r.calls);
 r = scenario("maybeReturnToComponentHelp", "");
 if (!r.calls.includes("host:Module")) throw new Error("help: host origin unchanged: " + r.calls);
 
@@ -296,10 +299,33 @@ if (!r.calls.includes("host:Module")) throw new Error("help: host origin unchang
 r = scenario("exitModuleLists", "moduleListsReturnModuleUi = true;");
 if (!r.calls.includes("module:synth") || r.calls.some(c => c.startsWith("host:")))
     throw new Error("lists: module origin must return through the module: " + r.calls);
+if (!r.calls.includes("restore:Module:true")) throw new Error("lists: must land on the Module page, entered: " + r.calls);
 r = scenario("exitModuleLists", "");
 if (!r.calls.includes("host:Module")) throw new Error("lists: host origin unchanged: " + r.calls);
 NODE
-pass "every hand-off returns through the module when it came from one, and through enterParamPages when it did not"
+pass "every hand-off returns through the module when it came from one, lands on the page it left from, and through enterParamPages when it did not"
+
+node - "$UI" <<'NODE' || fail "restoreModuleUiPage is not gated"
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const i = src.indexOf("function restoreModuleUiPage(");
+if (i < 0) throw new Error("restoreModuleUiPage missing");
+const fn = src.slice(i, src.indexOf("\n}\n", i) + 3);
+const run = (view, hook) => new Function(`
+    const VIEWS = { COMPONENT_EDIT: 5 };
+    let view = ${view};
+    let got = null;
+    const loadedModuleUi = ${hook ? "{ restorePage: (n, o) => { got = [n, o.enter]; } }" : "{}"};
+    ${fn}
+    restoreModuleUiPage("Module", true);
+    return got;
+`)();
+const a = run(5, true);
+if (!a || a[0] !== "Module" || a[1] !== true) throw new Error("must hand the name and disposition to the module: " + JSON.stringify(a));
+if (run(3, true) !== null) throw new Error("must not fire from another view");
+if (run(5, false) !== null) throw new Error("must be inert for a chain UI that declares no hook");
+NODE
+pass "the reloaded module is told which page to land on, only while it is on screen"
 
 node - "$UI" <<'NODE' || fail "the module is not told its presets changed"
 const fs = require("fs");

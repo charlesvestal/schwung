@@ -2821,9 +2821,11 @@ function maybeReturnToComponentGrid() {
          * with nobody to answer it. Reload rather than resume: the module's
          * init() rebuilds its controller and re-asks for the trailing menus,
          * so a preset saved or loaded on the way round is what it shows. */
-        componentGridReturnEnter = true;
+        const moduleEnter = componentGridReturnEnter;
+        componentGridReturnEnter = true;    /* back to the nothing-happened default */
         unloadModuleUi();
         enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("My Presets", moduleEnter);
         needsRedraw = true;
         return true;
     }
@@ -2887,6 +2889,7 @@ function maybeReturnToComponentHelp() {
          * through the module, never through enterParamPages. */
         unloadModuleUi();
         enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("Module", true);
         needsRedraw = true;
         return true;
     }
@@ -3075,6 +3078,7 @@ function exitModuleLists() {
          * through the module, never through enterParamPages. */
         unloadModuleUi();
         enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("Module", true);
         needsRedraw = true;
         return;
     }
@@ -3351,6 +3355,22 @@ let componentGridReturnEnter = true;
  * "(none)" after a Save. Tell the module instead; it refreshes its own
  * trailing pages. Optional — a chain UI that does not declare it is left alone.
  */
+/*
+ * Land a reloaded module UI on the page the hand-off left from. The host's
+ * own grid restores by NAME on the way back (enterParamPages's
+ * restorePageName); a module-owned grid is reloaded from scratch and knows
+ * nothing, so it landed on page 1 — reported from hardware as "Swap, Back,
+ * and I am on Main instead of the Module page". Optional hook; the module
+ * hands the name to its own controller.restorePage, which stays armed until
+ * its pages arrive, exactly as the host's does.
+ */
+function restoreModuleUiPage(name, enter) {
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.restorePage === "function") {
+        loadedModuleUi.restorePage(name, { enter: !!enter });
+    }
+}
+
 function notifyModuleUiPresetsChanged() {
     if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
         typeof loadedModuleUi.onPresetsChanged === "function") {

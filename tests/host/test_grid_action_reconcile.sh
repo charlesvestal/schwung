@@ -278,6 +278,7 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
       const enterParamPages = (...args) => { log.entered++; log.args = args; };
       const unloadModuleUi = () => { log.unloaded = (log.unloaded || 0) + 1; };
       const enterComponentEditFallback = (...args) => { log.module = (log.module || 0) + 1; log.moduleArgs = args; };
+      const restoreModuleUiPage = (name, enter) => { log.restore = [name, enter]; };
       const patched = body
         .replace(/\bcomponentModalFromGrid\b/g, "s.componentModalFromGrid")
         .replace(/\bcomponentGridReturnSlot\b/g, "s.componentGridReturnSlot")
@@ -290,10 +291,10 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
       const fn = new Function(
         "s", "isTextEntryActive", "getComponentParamPrefix",
         "componentParamPagesIo", "paramPagesChromeFor", "enterParamPages",
-        "getChainComponentModule", "unloadModuleUi", "enterComponentEditFallback",
+        "getChainComponentModule", "unloadModuleUi", "enterComponentEditFallback", "restoreModuleUiPage",
         patched + "\nreturn maybeReturnToComponentGrid;"
       )(s, isTextEntryActive, getComponentParamPrefix, componentParamPagesIo, paramPagesChromeFor, enterParamPages,
-        getChainComponentModule, unloadModuleUi, enterComponentEditFallback);
+        getChainComponentModule, unloadModuleUi, enterComponentEditFallback, restoreModuleUiPage);
       return { fired: fn(), log, s };
     };
 
