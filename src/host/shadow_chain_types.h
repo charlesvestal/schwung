@@ -27,7 +27,7 @@ typedef struct slot_fade_t {
 
 /* forward_channel sentinel values */
 #define SHADOW_FORWARD_THRU (-2)  /* passthrough: preserve original MIDI channel */
-#define SHADOW_FORWARD_AUTO (-1)  /* auto: remap to slot's receive channel */
+#define SHADOW_FORWARD_AUTO (-1)  /* auto: ask the module, else the receive channel */
 
 typedef struct shadow_chain_slot_t {
     void *instance;
@@ -39,6 +39,13 @@ typedef struct shadow_chain_slot_t {
     int soloed;             /* 1 = soloed (Shift+Mute+Track or Move solo-cue sync) */
     int feedback_hold;      /* 1 = booted muted as a line-input feedback guard; JS clears once jack state is safe */
     int forward_channel;    /* -2 = passthrough, -1 = auto, 0-15 = forward MIDI to this channel */
+    /* What the loaded synth declared as capabilities.default_forward_channel,
+     * cached at load: -2 = THRU, 0-15 = channel, -1 = the module said nothing.
+     * AUTO consults this before falling back to the receive channel, so "Auto"
+     * keeps meaning Auto instead of being silently rewritten to a fixed channel
+     * the first time a load path happens to run. Cached, never queried from
+     * shadow_chain_remap_channel -- that runs per MIDI event. */
+    int default_forward_channel;
     int transpose;          /* semitone offset applied to incoming note-on/off/poly-AT, range -12..+12 */
     /* 1 = some component in this slot declared capabilities.wants_sysex, so
      * cable-2 SysEx fragments are delivered to it. Read from the chain host at
