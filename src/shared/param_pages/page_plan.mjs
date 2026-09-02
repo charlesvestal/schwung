@@ -373,7 +373,32 @@ export function levelShortNames(lvl) {
 }
 
 export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
-                            trailingMenus } = {}) {
+                            trailingMenus, paginate = true } = {}) {
+    /*
+     * `paginate: false` means "this level is ONE page, however long it is".
+     *
+     * Eight is the number of physical knobs, and chunking a level at eight is
+     * the GRID's constraint — it has eight cells and there is nowhere to put a
+     * ninth. A list has no such limit: it draws five rows of a page and scrolls
+     * the rest, and `knobRows()` reads the page's keys with no cap, so a page
+     * of any length lists correctly today.
+     *
+     * Global Settings is pinned to the list (`layout: LAYOUT_LIST`, see
+     * paramPagesLayout) and was still being planned as a grid, so a ninth
+     * param in a section silently became a second page named "<Section> - 2"
+     * holding one row — a jog step nobody chose, on a screen where the list
+     * was already scrolling. That is the grid's rule leaking into a screen the
+     * grid never draws.
+     *
+     * A property of the CONTRACT, exactly like the layout pin it accompanies,
+     * and NOT derived from the layout: the layout is also LAYOUT_LIST when the
+     * screen reader is on or Param View is set to List, and un-paginating every
+     * module in those cases would rearrange 95 modules' pages behind a
+     * preference. A module's pages are authored groupings; these are sections.
+     *
+     * Default true — every existing caller keeps the grid's chunking.
+     */
+    const perPage = paginate ? KNOBS_PER_PAGE : Infinity;
     const warnings = [];
     /* Whether a child level still needs a picker PAGE depends on the WHOLE
      * hierarchy, not on the level: the index param may be listed on a sibling
@@ -506,7 +531,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         const keys = (chainParams || []).map((p) => p && p.key).filter(Boolean);
         if (keys.length === 0) return { pages: [], fingerprint, warnings: ["no ui_hierarchy and no chain_params"], conditionKeys: new Set() };
         warnings.push("no ui_hierarchy — paginated from chain_params");
-        const pages = chunk(keys, KNOBS_PER_PAGE).map((ks, i) => {
+        const pages = chunk(keys, perPage).map((ks, i) => {
             const name = i === 0 ? "Params" : `Params - ${i + 1}`;
             return { kind: PAGE_KNOBS, name, level: null,
                      keys: alignKnobs(ks, name), authored: false };
@@ -817,15 +842,26 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * balancedChunk); the remainder is spread evenly so a level with nine
          * keys yields 8 + 1 rather than an orphan page holding one control —
          * and a level with seventeen yields 8 + 5 + 4 rather than 8 + 8 + 1. */
-        const parts = chunk(authoredKeys, KNOBS_PER_PAGE);
-        const spill = authoredKeys.length % KNOBS_PER_PAGE;
+        const parts = chunk(authoredKeys, perPage);
+        const spill = perPage === Infinity ? 0 : authoredKeys.length % perPage;
         if (spill > 0 && extraKeys.length > 0) {
             /* A partly-filled authored page absorbs overflow up to 8. */
-            const room = KNOBS_PER_PAGE - spill;
+            const room = perPage - spill;
             const take = extraKeys.splice(0, room);
             parts[parts.length - 1] = parts[parts.length - 1].concat(take);
         }
-        for (const p of balancedChunk(extraKeys, KNOBS_PER_PAGE)) parts.push(p);
+        /* Unpaginated, the extras join the authored page rather than starting
+         * one: the whole point is a single scrolling list per level, and
+         * balancedChunk with no bound would hand back one array anyway — but as
+         * a SECOND page, which is the thing being removed. */
+        if (perPage === Infinity) {
+            if (extraKeys.length) {
+                if (parts.length) parts[parts.length - 1] = parts[parts.length - 1].concat(extraKeys);
+                else parts.push(extraKeys.slice());
+            }
+        } else {
+            for (const p of balancedChunk(extraKeys, perPage)) parts.push(p);
+        }
 
         /*
          * A CHILD level's keys are TEMPLATES, not addresses.

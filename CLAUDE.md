@@ -600,8 +600,15 @@ component load gate, and the input-dispatch order. Read it before editing
 - **A component editor WAITS; it does not decide from one read.** Everything that
   knows how to wait sits behind the entry, and the fallback is irreversible.
 - Global Settings is seven sections = seven PAGES. **One section, one page** is
-  load-bearing: a ninth param paginates silently and the bank bar takes over a
-  split nobody chose.
+  load-bearing — but the rule is "never SPLIT", not "never exceed eight".
+  **Eight is the number of physical KNOBS**, and this screen is pinned to the
+  LIST (`layout: LAYOUT_LIST`), which draws five rows and scrolls the rest.
+  The planner was chunking it as a grid anyway, so a ninth param silently
+  became a `<Section> - 2` page holding one row; it is handed `paginate: false`
+  now and a section is one list however long. Audio holds nine. The flag is a
+  property of the CONTRACT, never inferred from the layout — the layout is
+  also `LAYOUT_LIST` with the screen reader on or Param View set to List, and
+  a module's pages are authored groupings that must keep their shape.
 - **The LFO target picker groups by level, and the grouping is LOSSLESS** — an
   orphan sweep into "Other", asserted over all 95 modules. It was one flat list
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back

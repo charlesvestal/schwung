@@ -10393,6 +10393,23 @@ function enterGlobalSettingsGrid(restorePageName) {
                        * pin — their Volume, Mute and Solo really are
                        * performance controls. */
                       layout: LAYOUT_LIST,
+                      /* AND THEREFORE NOT PAGINATED.
+                       *
+                       * A section is one scrolling list, however long. Eight is
+                       * the number of physical knobs -- a GRID page has eight
+                       * cells and nowhere to put a ninth -- and the planner was
+                       * chunking these levels at eight even though the grid
+                       * never draws them, so a ninth param in a section
+                       * silently became a second page named "<Section> - 2"
+                       * holding one row. A jog step nobody chose, on a screen
+                       * that was already scrolling five rows at a time.
+                       *
+                       * It rides here rather than being inferred from the
+                       * layout above, which is also LAYOUT_LIST when the screen
+                       * reader is on or Param View says List -- inferring it
+                       * would rearrange every module's pages behind a
+                       * preference. */
+                      paginate: false,
                       onExit: () => { leaveGlobalSettings(); } });
     needsRedraw = true;
 }

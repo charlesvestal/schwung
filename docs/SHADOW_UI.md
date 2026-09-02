@@ -53,10 +53,35 @@ there. Entry is `enterGlobalSettingsGrid()`, modelled on
 **Seven sections are seven PAGES**, jogged through on one axis with the section
 picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
 Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
-load-bearing: a ninth param in any section paginates silently and the bank bar
-takes over a split nobody chose. Audio sits at exactly eight and Display at
-seven. The contract test pins the per-section counts rather than trusting the
-shapes.
+load-bearing: a section that SPLIT would put a jog step in the middle of a
+scrolling list, and sections-as-levels would be gone without a symptom.
+
+**But there is no limit on how LONG a section may be, and believing otherwise
+cost a real change.** Eight is the number of physical KNOBS — a grid page has
+eight cells and nowhere to put a ninth. This screen is pinned to the list
+(`layout: LAYOUT_LIST`, see `paramPagesLayout`), which draws five rows of a page
+and scrolls the rest; `knobRows()` reads a page's keys with no cap, so a page of
+any length lists correctly. The planner was chunking these levels at eight
+anyway — the grid's rule leaking into a screen the grid never draws — so a ninth
+param silently became a second page named `<Section> - 2` holding one row. On
+the strength of that, Audition was moved out of Audio into Display to make room
+for Save Stems. It is back in Audio, and `enterGlobalSettingsGrid` passes
+**`paginate: false`** beside its layout pin. Audio holds nine.
+
+**`paginate` is a property of the CONTRACT and must not be inferred from the
+layout.** `paramPagesLayout()` returns `LAYOUT_LIST` whenever the screen reader
+is on or Param View says List, so deriving it there would rearrange all 95
+modules' pages behind a preference — and a module's pages are authored
+groupings, unlike a settings section. It rides in the chrome next to `layout`
+(`paramPagesPaginate`), reaches the controller through `load()`, and is carried
+on the controller state so the two REPLAN paths (mode change, `visible_if`
+change) plan it the same way the first plan did. Default `true`: every other
+caller keeps the grid's chunking.
+
+The contract test plans with `paginate: false`, the way the screen does, and
+pins the per-section counts (7/9/6/1/4/2) plus "Audio is longer than a grid page
+and is still one page" — which is the assertion that fails if the hand-off is
+ever dropped.
 
 Three consequences worth knowing:
 
@@ -903,20 +928,18 @@ setting without touching Skipback Len allocated nothing.
 There is no per-slot structure in the line input to split; a stems take there
 would be four silent files and a copy of the input.
 
-**The Audio page was full at eight, so Audition moved to Display.** A section is
-one page and the grid holds 8; a 9th param does not error, it plans an
-"Audio - 2" page holding one lonely knob and takes the contract from 7 pages to
-8. `browser_preview` is the row in Audio least about audio — it decides whether
-*browsing* something plays it — and it now sits beside Overlay, Show Typed and
-Param View. Both sections are at 8 now: the next global setting has to displace
-one, and the displacement has to be argued for in the declaration.
+**Nothing was displaced to make room for it.** The first pass moved Audition out
+of Audio believing the eight-cell grid page was a hard cap on a section; it is
+not — see the pagination note above. `save_stems` is simply the ninth row in
+Audio.
 
 Tests: `tests/host/test_save_stems_contract.sh` (the cross-file rules — the stem
 count against the name list and the slot count, the register appended last, the
 `WANTS_*` predicates run against all three modes, the capture order, the RT-arm
 gate, the skipback memory bound, and the setting's declaration and
 persistence), `test_sampler_stem_path.c` (filename derivation),
-`test_global_settings_contract.sh` (the 8/8 section split).
+`test_global_settings_contract.sh` (the section counts, and that Audio stays one
+page while holding more than a grid page could).
 
 ### Snapshot / recall: what it restores, and what it deliberately does not
 

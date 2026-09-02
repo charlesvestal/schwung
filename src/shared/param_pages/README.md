@@ -191,6 +191,15 @@ graphics resolved by `viz.mjs`.
 
 `LAYOUT_LIST` is that same page as five rows of label-and-value, drawn by the
 controller through the one `drawMenuList` every other list on the screen uses.
+It scrolls, so a page in this layout has no length limit — `knobRows()` reads a
+page's keys with no cap. **The eight is the number of physical KNOBS**, and
+`planPages` chunks levels at it by default because a grid page has eight cells
+and nowhere to put a ninth. A contract that is pinned to the list can pass
+`paginate: false` to `load()` so a level stays ONE page however long it is;
+Global Settings does. It is deliberately a property of the CONTRACT and not
+derived from the layout — this layout is also chosen when the screen reader is
+on or Param View says List, and a module's pages are authored groupings that
+must keep their shape.
 It is a LAYOUT, not a second engine — which params are on the page, their type
 and range, the value string, the step a detent takes, what is announced and the
 chrome around it are all the same code under both, and the only difference is
