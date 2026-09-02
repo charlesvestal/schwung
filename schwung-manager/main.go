@@ -72,13 +72,38 @@ type CatalogModule struct {
 }
 
 // CatalogHost describes the host entry in the catalog.
+//
+// Channels is the optional beta/stable extension for the host itself
+// (see module_channel.go). Old catalogs that only set the top-level
+// LatestVersion/DownloadURL still resolve as stable — the field is
+// strictly additive.
 type CatalogHost struct {
-	Name           string `json:"name"`
-	GithubRepo     string `json:"github_repo"`
-	AssetName      string `json:"asset_name"`
-	LatestVersion  string `json:"latest_version"`
-	DownloadURL    string `json:"download_url"`
-	MinHostVersion string `json:"min_host_version"`
+	Name           string      `json:"name"`
+	GithubRepo     string      `json:"github_repo"`
+	AssetName      string      `json:"asset_name"`
+	LatestVersion  string      `json:"latest_version"`
+	DownloadURL    string      `json:"download_url"`
+	MinHostVersion string      `json:"min_host_version"`
+	Channels       *ChannelSet `json:"channels,omitempty"`
+}
+
+// hostResolveForChannel picks the host version + download URL for a
+// given channel. Same rules as resolveReleaseForChannel: stable users
+// see channels.stable (fallback to top-level), beta users see
+// channels.beta only when it is strictly newer than stable. Returns
+// which channel actually served the request so the UI can badge the
+// upgrade button when the offered build is a beta.
+func hostResolveForChannel(h CatalogHost, want string) (version, downloadURL, served string) {
+	// Reuse the module resolver by projecting the CatalogHost onto a
+	// ReleaseJSON. This keeps the two channel rules literally the same
+	// code path, so host and modules cannot drift.
+	rel := ReleaseJSON{
+		Version:     h.LatestVersion,
+		DownloadURL: h.DownloadURL,
+		Channels:    h.Channels,
+	}
+	entry, servedCh := resolveReleaseForChannel(rel, want)
+	return entry.Version, entry.DownloadURL, servedCh
 }
 
 // CatalogTaxonomy is the vocabulary, embedded in the catalog so a single fetch
@@ -678,7 +703,7 @@ var funcMap = template.FuncMap{
 		}
 		beta := rm.Channels.Beta.Version
 		stable := channelStableVersion(rm)
-		return beta != "" && isNewerSemver(beta, stable)
+		return beta != "" && channelNewer(beta, stable)
 	},
 	// betaTeaser returns the beta version string when the user is on
 	// stable, the module publishes a beta, and that beta is newer than
@@ -695,7 +720,7 @@ var funcMap = template.FuncMap{
 		if beta == "" {
 			return ""
 		}
-		if !isNewerSemver(beta, channelStableVersion(rm)) {
+		if !channelNewer(beta, channelStableVersion(rm)) {
 			return ""
 		}
 		return beta
@@ -1070,12 +1095,25 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 	if hostVersion == "" {
 		hostVersion = "unknown"
 	}
-	var hostLatestVersion, hostRepo string
-	var hostUpdateAvailable bool
+	var hostLatestVersion, hostRepo, hostServedChannel, hostBetaTeaser string
+	var hostUpdateAvailable, hostOfferedIsBeta bool
 	if cat != nil {
-		hostLatestVersion = cat.Host.LatestVersion
 		hostRepo = cat.Host.GithubRepo
+		hostLatestVersion, _, hostServedChannel = hostResolveForChannel(cat.Host, currentChannel)
 		hostUpdateAvailable = hostLatestVersion != "" && hostLatestVersion != hostVersion
+		hostOfferedIsBeta = hostServedChannel == ChannelBeta
+		// Stable users get the same "beta X.Y.Z available" nudge that
+		// modules do, when the host publishes a beta ahead of stable.
+		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+			beta := cat.Host.Channels.Beta.Version
+			stable := cat.Host.LatestVersion
+			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
+				stable = cat.Host.Channels.Stable.Version
+			}
+			if beta != "" && channelNewer(beta, stable) {
+				hostBetaTeaser = beta
+			}
+		}
 	}
 
 	// A nil catalog (offline, or first boot before the first fetch) yields the
@@ -1100,6 +1138,8 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"HostLatestVersion":   hostLatestVersion,
 		"HostRepo":            hostRepo,
 		"HostUpdateAvailable": hostUpdateAvailable,
+		"HostOfferedIsBeta":   hostOfferedIsBeta,
+		"HostBetaTeaser":      hostBetaTeaser,
 		"Flash":               r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "modules.html", data)
@@ -2064,11 +2104,11 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 		am.OfferedVersion = channelVersion(rm, channel)
 		if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
 			b := rm.Channels.Beta.Version
-			am.OfferedIsBeta = b != "" && isNewerSemver(b, channelStableVersion(rm))
+			am.OfferedIsBeta = b != "" && channelNewer(b, channelStableVersion(rm))
 		}
 		if channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
 			b := rm.Channels.Beta.Version
-			if b != "" && isNewerSemver(b, channelStableVersion(rm)) {
+			if b != "" && channelNewer(b, channelStableVersion(rm)) {
 				am.BetaAvailable = b
 			}
 		}
@@ -2856,14 +2896,29 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		version = strings.TrimSpace(string(verBytes))
 	}
 
-	// Best-effort catalog fetch for update check.
-	var latestVersion, hostRepo string
-	var updateAvailable bool
+	// Best-effort catalog fetch for update check. Route through the
+	// channel resolver so beta users see the newest beta build (and
+	// their Upgrade button installs it).
+	var latestVersion, hostRepo, hostBetaTeaser string
+	var updateAvailable, offeredIsBeta bool
+	currentChannel := app.channel()
 	cat, err := app.catalogSvc.Fetch()
 	if err == nil && cat != nil {
-		latestVersion = cat.Host.LatestVersion
 		hostRepo = cat.Host.GithubRepo
+		var served string
+		latestVersion, _, served = hostResolveForChannel(cat.Host, currentChannel)
 		updateAvailable = latestVersion != "" && latestVersion != version
+		offeredIsBeta = served == ChannelBeta
+		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+			beta := cat.Host.Channels.Beta.Version
+			stable := cat.Host.LatestVersion
+			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
+				stable = cat.Host.Channels.Stable.Version
+			}
+			if beta != "" && channelNewer(beta, stable) {
+				hostBetaTeaser = beta
+			}
+		}
 	}
 
 	// Disk usage via stat (simplified).
@@ -2880,6 +2935,9 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		"LatestVersion":   latestVersion,
 		"HostRepo":        hostRepo,
 		"UpdateAvailable": updateAvailable,
+		"OfferedIsBeta":   offeredIsBeta,
+		"BetaTeaser":      hostBetaTeaser,
+		"Channel":         currentChannel,
 		"DiskTotal":       int64(diskTotal),
 		"DiskFree":        int64(diskFree),
 		"DiskUsed":        int64(diskTotal - diskFree),
@@ -2977,7 +3035,12 @@ func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/system?flash=Failed+to+check:+"+err.Error(), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/system?flash=Latest+version:+"+cat.Host.LatestVersion, http.StatusSeeOther)
+	version, _, served := hostResolveForChannel(cat.Host, app.channel())
+	msg := "Latest+version:+" + version
+	if served == ChannelBeta {
+		msg += "+(beta)"
+	}
+	http.Redirect(w, r, "/system?flash="+msg, http.StatusSeeOther)
 }
 
 func (app *App) setUpgradeStatus(status string) {
@@ -3007,11 +3070,17 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Compare versions.
+	// 2. Compare versions. Route through the channel resolver so a
+	// beta user's Upgrade button installs the beta build, not the
+	// stable one, and quietly falls back onto stable once stable
+	// catches up.
 	verBytes, _ := os.ReadFile(filepath.Join(app.basePath, "host", "version.txt"))
 	installedVersion := strings.TrimSpace(string(verBytes))
-	latestVersion := cat.Host.LatestVersion
-	downloadURL := cat.Host.DownloadURL
+	latestVersion, downloadURL, servedChannel := hostResolveForChannel(cat.Host, app.channel())
+	app.logger.Info("host upgrade resolved",
+		"requested_channel", app.channel(),
+		"served_channel", servedChannel,
+		"version", latestVersion)
 
 	if latestVersion != "" && latestVersion == installedVersion {
 		http.Redirect(w, r, "/system?flash=Already+up+to+date+("+installedVersion+")", http.StatusSeeOther)
