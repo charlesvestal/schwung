@@ -2408,6 +2408,7 @@ let moduleListsCorrupt = false;     /* true = never write */
 let moduleListsSlot = -1;           /* the component this session is filing */
 let moduleListsKey = "";
 let moduleListsModuleId = "";
+let moduleListsReturnModuleUi = false;   /* see componentGridReturnModuleUi */
 let moduleListsMemberIndex = 0;     /* cursor on the membership screen */
 let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
 let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
@@ -2569,6 +2570,15 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     const moduleId = loaded && loaded.module;
     const record = getUserPresetRecord(slotIndex, prefix);
     let result;
+    /* The view this action was asked FROM. Two grids can ask: the shadow UI's
+     * own param pages (VIEWS.PARAM_PAGES) and a module-owned chain UI
+     * (VIEWS.COMPONENT_EDIT). "Did the action open a screen?" is answered by
+     * comparing against THIS, not against PARAM_PAGES — testing against
+     * PARAM_PAGES was only right when the caller was PARAM_PAGES, and from a
+     * module grid it made every action, Save As included, look like a
+     * hand-off. That armed a return to a grid the module cannot host, which
+     * the device showed as an editor spinning on synth:ui_hierarchy reads. */
+    const viewBefore = view;
 
     switch (action) {
         case "up_load":
@@ -2628,6 +2638,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             exitParamPages();
             componentHelpReturnSlot = slotIndex;
             componentHelpReturnKey = componentKey;
+            componentHelpReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
             helpDetailScrollState = null;
             helpNavStack = [{ items: children, selectedIndex: 0,
                               title: getModuleDisplayName(moduleId) }];
@@ -2652,6 +2663,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             moduleListsSlot = slotIndex;
             moduleListsKey = componentKey;
             moduleListsModuleId = moduleId;
+            moduleListsReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
             moduleListsMemberIndex = 0;
             /* The same reset exitModuleLists() does, done again HERE because
              * this site is unconditional and that one is not. Back is the only
@@ -2709,16 +2721,18 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             result = false;
     }
 
-    /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
-     * four remaining cases above that hand off to a real screen (Load, Delete, Swap,
-     * Remove — the last via applyChainComponentPick, which always ends in
-     * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
-     * which never move `view` at all. Asking the screen rather than the key
-     * is what keeps a future action from being silently wrong here too. */
-    if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
+    /* view !== viewBefore is the ONE test that is true for exactly the cases
+     * above that hand off to a real screen (Load, Delete, Swap, Remove — the
+     * last via applyChainComponentPick, which always ends in
+     * setView(VIEWS.CHAIN_EDIT)) and false for Save / Save As / an unhandled
+     * key, which never move `view` at all — from EITHER grid. Asking the
+     * screen rather than the key is what keeps a future action from being
+     * silently wrong here too. */
+    if (gridActionOpenedSomething(view !== viewBefore)) {
         componentModalFromGrid = true;
         componentGridReturnSlot = slotIndex;
         componentGridReturnKey = componentKey;
+        componentGridReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
     }
     return result;
 }
@@ -2784,13 +2798,35 @@ function maybeReturnToComponentGrid() {
      */
     const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
     componentModalFromGrid = false;
+    const fromModuleUi = componentGridReturnModuleUi;
+    componentGridReturnModuleUi = false;
     const slotIndex = componentGridReturnSlot;
     const componentKey = componentGridReturnKey;
     componentGridReturnSlot = -1;
     componentGridReturnKey = "";
     if (!matchesReturnSlot) return false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    if (!stillLoaded || !stillLoaded.module) return false;
+    if (!stillLoaded || !stillLoaded.module) {
+        /* A module UI left loaded for a position that no longer holds a
+         * module would be drawn for nobody the next time COMPONENT_EDIT came
+         * round. Its own Back would have unloaded it; the hand-off went
+         * round Back, so unload it here. */
+        if (fromModuleUi) unloadModuleUi();
+        return false;
+    }
+    if (fromModuleUi) {
+        /* Back to the MODULE's grid, through the same door the host opens it
+         * with. The module publishes no ui_hierarchy (that is why it draws
+         * its own pages), so enterParamPages below would be a contract read
+         * with nobody to answer it. Reload rather than resume: the module's
+         * init() rebuilds its controller and re-asks for the trailing menus,
+         * so a preset saved or loaded on the way round is what it shows. */
+        componentGridReturnEnter = true;
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        needsRedraw = true;
+        return true;
+    }
     /* "My Presets", not the first page: every hand-off this reconciler serves
      * (a committed Load, a completed Delete, backing out of Swap) is either
      * about that page or leaves it just as good a landing spot as any other.
@@ -2839,8 +2875,21 @@ function maybeReturnToComponentHelp() {
     const componentKey = componentHelpReturnKey;
     componentHelpReturnSlot = -1;
     componentHelpReturnKey = "";
+    const fromModuleUi = componentHelpReturnModuleUi;
+    componentHelpReturnModuleUi = false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    if (!stillLoaded || !stillLoaded.module) return false;
+    if (!stillLoaded || !stillLoaded.module) {
+        if (fromModuleUi) unloadModuleUi();
+        return false;
+    }
+    if (fromModuleUi) {
+        /* See maybeReturnToComponentGrid: a module-owned grid is re-entered
+         * through the module, never through enterParamPages. */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        needsRedraw = true;
+        return true;
+    }
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
                     { enter: true });
@@ -3010,11 +3059,22 @@ function exitModuleLists() {
     moduleListsPendingName = null;
     if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    const fromModuleUi = moduleListsReturnModuleUi;
+    moduleListsReturnModuleUi = false;
     if (!stillLoaded || !stillLoaded.module) {
+        if (fromModuleUi) unloadModuleUi();
         /* Same guard maybeReturnToComponentGrid needs: a component editor
          * entered for an empty position is a contract read with nobody to
          * answer it, which the device draws as a permanent "Loading...". */
         setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+    if (fromModuleUi) {
+        /* See maybeReturnToComponentGrid: a module-owned grid is re-entered
+         * through the module, never through enterParamPages. */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
         needsRedraw = true;
         return;
     }
@@ -3285,11 +3345,25 @@ function moduleListsActionsBack() {
  */
 let componentGridReturnEnter = true;
 
+/*
+ * A module-owned chain UI has its own controller, so paramPagesRefreshTrailing
+ * (the host's) is a no-op for it and its "My Presets" row would go on reading
+ * "(none)" after a Save. Tell the module instead; it refreshes its own
+ * trailing pages. Optional — a chain UI that does not declare it is left alone.
+ */
+function notifyModuleUiPresetsChanged() {
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.onPresetsChanged === "function") {
+        loadedModuleUi.onPresetsChanged();
+    }
+}
+
 function recordUserPresetFromDevice(slot, prefix, name) {
     const live = getSlotStateWithRetry(slot, prefix + ":state");
     userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
     setUserPresetRecord(slot, prefix, makeRecord(name, live));
     paramPagesRefreshTrailing();
+    notifyModuleUiPresetsChanged();
     needsRedraw = true;
 }
 function onUserPresetSaved(slot, prefix, name, stateJson) {
@@ -3307,6 +3381,7 @@ function onUserPresetDeleted(slot, prefix, name) {
     const rec = getUserPresetRecord(slot, prefix);
     if (rec && rec.name === name) setUserPresetRecord(slot, prefix, null);
     paramPagesRefreshTrailing();
+    notifyModuleUiPresetsChanged();
     needsRedraw = true;
 }
 
@@ -4965,6 +5040,12 @@ let globalModalFromGrid = false;
 let componentModalFromGrid = false;
 let componentGridReturnSlot = -1;
 let componentGridReturnKey = "";
+/* Whether the grid that raised the hand-off was a MODULE-OWNED chain UI
+ * (VIEWS.COMPONENT_EDIT) rather than the shadow UI's own param pages. The
+ * return path has to go back to the same kind of grid: a module that draws
+ * its own pages publishes no ui_hierarchy, so re-entering it through
+ * enterParamPages is a contract read with nobody to answer it. */
+let componentGridReturnModuleUi = false;
 
 /* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
  * "Module Help". The help viewer has no view of its own -- it is drawn by
@@ -4975,6 +5056,7 @@ let componentGridReturnKey = "";
  * must never be spent by another. See maybeReturnToComponentHelp. */
 let componentHelpReturnSlot = -1;
 let componentHelpReturnKey = "";
+let componentHelpReturnModuleUi = false;   /* see componentGridReturnModuleUi */
 
 function saveParamViewConfig() {
     try {

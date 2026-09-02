@@ -358,6 +358,18 @@ if (todo && todo.action && typeof shadow_component_run_action === "function") {
 Guard on the functions existing: they are absent on an older host, and absent
 for a Master FX position, which has no component preset record.
 
+A row's action may leave your grid — Load, Delete, Swap and Remove hand off to
+host screens — and the host brings you back by reloading your `ui_chain.js`
+(your `init()` runs again). Save and Save As stay put, with the keyboard drawn
+over your grid; declare an optional hook so your "My Presets" row updates:
+
+```javascript
+globalThis.chain_ui = {
+    init, tick, onMidiMessageInternal, handleBack,
+    onPresetsChanged: () => { if (controller) controller.refreshTrailing(); },
+};
+```
+
 The pages arrive as `PAGE_MENU`, which the param_pages library draws itself —
 so a chain UI whose render guard only admits `PAGE_KNOBS` will paint its
 unsupported-page fallback over them. Admit `PAGE_MENU` too.

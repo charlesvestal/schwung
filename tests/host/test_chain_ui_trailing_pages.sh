@@ -138,4 +138,190 @@ grep -q "shadow_component_run_action"     "$API" || fail "$API does not document
 grep -q "PAGE_MENU"                       "$API" || fail "$API does not say the pages arrive as PAGE_MENU"
 pass "docs/API.md documents both calls, the guard, and the page kind"
 
+# ---------------------------------------------------------------------------
+# 4. BEHAVIOUR: the hand-off bookkeeping is right for BOTH grids.
+#
+#    This is the bug hardware found: runComponentActionFromGrid decided "did
+#    this action open a screen?" by testing view !== PARAM_PAGES, which is
+#    only true-for-the-right-reason when the caller WAS the host's param
+#    pages. From a module-owned grid (COMPONENT_EDIT) every action, Save As
+#    included, looked like a hand-off, armed a return to a grid the module
+#    cannot host, and the device spun on synth:ui_hierarchy reads.
+# ---------------------------------------------------------------------------
+
+node - "$UI" <<'NODE' || fail "hand-off bookkeeping is wrong for a module-owned grid"
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const lift = (name) => {
+    const i = src.indexOf(`function ${name}(`);
+    if (i < 0) throw new Error(`${name} not found`);
+    let d = 0, started = false;
+    for (let p = i; p < src.length; p++) {
+        if (src[p] === "{") { d++; started = true; }
+        else if (src[p] === "}") { d--; if (started && d === 0) return src.slice(i, p + 1); }
+    }
+    throw new Error(`${name}: unbalanced`);
+};
+const run = (startView, action) => {
+    const body = `
+        let view = ${startView};
+        const VIEWS = { PARAM_PAGES: 0, COMPONENT_EDIT: 5, CHAIN_EDIT: 3, GLOBAL_SETTINGS: 7, MODULE_LISTS: 9 };
+        function gridActionOpenedSomething(...c) { return c.some(Boolean); }
+        let componentModalFromGrid = false, componentGridReturnSlot = -1, componentGridReturnKey = "";
+        let componentGridReturnModuleUi = false, componentGridReturnEnter = true;
+        let componentHelpReturnSlot = -1, componentHelpReturnKey = "", componentHelpReturnModuleUi = false;
+        let moduleListsSlot = -1, moduleListsKey = "", moduleListsModuleId = "", moduleListsMemberIndex = 0;
+        let moduleListsReturnModuleUi = false, moduleListsEditIndex = 0, moduleListsActionIndex = 0;
+        let moduleListsTarget = "", moduleListsConfirmDelete = false, moduleListsPendingName = null;
+        let helpNavStack = [], helpDetailScrollState = null, needsRedraw = false;
+        let moduleListsCorrupt = false;
+        function debugLog() {}
+        const chainConfigs = { 1: { synth: { module: "9w9" } } };
+        function createEmptyChainConfig() { return {}; }
+        function getChainComponentModule(cfg, k) { return cfg && cfg[k]; }
+        function getComponentParamPrefix(k) { return k; }
+        function getUserPresetRecord() { return { name: "Kit A" }; }
+        function setUserPresetRecord() {}
+        function setView(v) { view = v; }
+        function announce() {}
+        function exitParamPages() {}
+        function paramPagesExitMenu() {}
+        function getSlotStateWithRetry() { return "{}"; }
+        function overwriteUserPreset() { return true; }
+        function onUserPresetSaved() {}
+        /* the ones that hand off move the view; the ones that stay put do not */
+        function enterPresetBrowser() { view = 6; }
+        function enterPresetSaveAs() { /* keyboard overlay: view untouched */ }
+        function enterPresetDeleteConfirm() { view = 8; }
+        function enterComponentSelect() { view = 4; }
+        function applyChainComponentPick() { view = VIEWS.CHAIN_EDIT; }
+        function slotChainComponentIndex() { return 0; }
+        function getModuleHelpChildren() { return [{ title: "t" }]; }
+        function getModuleDisplayName() { return "9W9"; }
+        function moduleListsLoad() {}
+        function moduleListsRowLabel() { return ""; }
+        ${lift("runComponentActionFromGrid")}
+        const ret = runComponentActionFromGrid(1, "synth", ${JSON.stringify(action)});
+        return { ret, armed: componentModalFromGrid, moduleUi: componentGridReturnModuleUi,
+                 helpModuleUi: componentHelpReturnModuleUi, listsModuleUi: moduleListsReturnModuleUi, view };
+    `;
+    return new Function(body)();
+};
+
+/* From the MODULE grid (COMPONENT_EDIT): */
+let r = run(5, "up_save_as");
+if (r.armed) throw new Error("Save As from a module grid must NOT arm a hand-off (it is a keyboard overlay)");
+r = run(5, "up_save");
+if (r.armed) throw new Error("Save from a module grid must NOT arm a hand-off");
+r = run(5, "up_load");
+if (!r.armed) throw new Error("Load from a module grid must arm the hand-off");
+if (r.moduleUi !== true) throw new Error("...and must record that it came from a MODULE grid");
+r = run(5, "module_help");
+if (r.helpModuleUi !== true) throw new Error("Module Help from a module grid must record the module origin");
+r = run(5, "module_lists");
+if (r.listsModuleUi !== true) throw new Error("Add to List from a module grid must record the module origin");
+
+/* From the HOST grid (PARAM_PAGES) nothing changes: */
+r = run(0, "up_save_as");
+if (r.armed) throw new Error("host grid: Save As must not arm (unchanged)");
+r = run(0, "up_load");
+if (!r.armed) throw new Error("host grid: Load must arm (unchanged)");
+if (r.moduleUi !== false) throw new Error("host grid: origin must be recorded as the host, not a module");
+NODE
+pass "Save As from a module grid stays put; Load/Help/Lists record the module origin; host grid unchanged"
+
+node - "$UI" <<'NODE' || fail "the return does not go back through the module"
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const lift = (name) => {
+    const i = src.indexOf(`function ${name}(`);
+    let d = 0, started = false;
+    for (let p = i; p < src.length; p++) {
+        if (src[p] === "{") { d++; started = true; }
+        else if (src[p] === "}") { d--; if (started && d === 0) return src.slice(i, p + 1); }
+    }
+    throw new Error(name);
+};
+const scenario = (name, setup) => {
+    const body = `
+        let calls = [];
+        let view = 3;
+        const VIEWS = { CHAIN_EDIT: 3, COMPONENT_EDIT: 5 };
+        let selectedSlot = 1, needsRedraw = false;
+        let componentModalFromGrid = true, componentGridReturnSlot = 1, componentGridReturnKey = "synth";
+        let componentGridReturnModuleUi = false, componentGridReturnEnter = false;
+        let componentHelpReturnSlot = 1, componentHelpReturnKey = "synth", componentHelpReturnModuleUi = false;
+        let helpNavStack = [], helpDetailScrollState = null;
+        let moduleListsSlot = 1, moduleListsKey = "synth", moduleListsModuleId = "9w9", moduleListsReturnModuleUi = false;
+        let moduleListsEditIndex = 0, moduleListsActionIndex = 0, moduleListsTarget = "", moduleListsConfirmDelete = false, moduleListsPendingName = null;
+        let chainConfigs = { 1: { synth: { module: "9w9" } } };
+        function isTextEntryActive() { return false; }
+        function getChainComponentModule(cfg, k) { return cfg && cfg[k]; }
+        function getComponentParamPrefix(k) { return k; }
+        function componentParamPagesIo() { return {}; }
+        function paramPagesChromeFor() { return {}; }
+        function setView(v) { view = v; }
+        function enterParamPages(slot, key, prefix, page) { calls.push("host:" + page); }
+        function unloadModuleUi() { calls.push("unload"); }
+        function enterComponentEditFallback(slot, key) { calls.push("module:" + key); }
+        ${setup}
+        ${lift(name)}
+        const fired = ${name}();
+        return { fired, calls, gridFlag: componentGridReturnModuleUi, helpFlag: componentHelpReturnModuleUi, listsFlag: moduleListsReturnModuleUi };
+    `;
+    return new Function(body)();
+};
+
+/* grid return */
+let r = scenario("maybeReturnToComponentGrid", "componentGridReturnModuleUi = true;");
+if (!r.calls.includes("module:synth")) throw new Error("module origin must return through the module: " + r.calls);
+if (r.calls.some(c => c.startsWith("host:"))) throw new Error("module origin must NOT re-enter through enterParamPages: " + r.calls);
+if (!r.calls.includes("unload")) throw new Error("the stale module UI must be unloaded before reloading");
+if (r.gridFlag !== false) throw new Error("the flag must be consumed");
+r = scenario("maybeReturnToComponentGrid", "");
+if (!r.calls.includes("host:My Presets")) throw new Error("host origin must still land on My Presets: " + r.calls);
+if (r.calls.some(c => c.startsWith("module:"))) throw new Error("host origin must not touch the module path");
+r = scenario("maybeReturnToComponentGrid", "componentGridReturnModuleUi = true; chainConfigs = { 1: {} };");
+if (r.fired) throw new Error("a removed module must not be re-entered");
+if (!r.calls.includes("unload")) throw new Error("...but its stale UI must be unloaded");
+
+/* help return */
+r = scenario("maybeReturnToComponentHelp", "componentHelpReturnModuleUi = true;");
+if (!r.calls.includes("module:synth") || r.calls.some(c => c.startsWith("host:")))
+    throw new Error("help: module origin must return through the module: " + r.calls);
+r = scenario("maybeReturnToComponentHelp", "");
+if (!r.calls.includes("host:Module")) throw new Error("help: host origin unchanged: " + r.calls);
+
+/* lists return */
+r = scenario("exitModuleLists", "moduleListsReturnModuleUi = true;");
+if (!r.calls.includes("module:synth") || r.calls.some(c => c.startsWith("host:")))
+    throw new Error("lists: module origin must return through the module: " + r.calls);
+r = scenario("exitModuleLists", "");
+if (!r.calls.includes("host:Module")) throw new Error("lists: host origin unchanged: " + r.calls);
+NODE
+pass "every hand-off returns through the module when it came from one, and through enterParamPages when it did not"
+
+node - "$UI" <<'NODE' || fail "the module is not told its presets changed"
+const fs = require("fs");
+const src = fs.readFileSync(process.argv[2], "utf8");
+const i = src.indexOf("function notifyModuleUiPresetsChanged(");
+if (i < 0) throw new Error("notifyModuleUiPresetsChanged missing");
+const fn = src.slice(i, src.indexOf("\n}\n", i) + 3);
+const run = (view, hook) => new Function(`
+    const VIEWS = { COMPONENT_EDIT: 5 };
+    let view = ${view};
+    let hits = 0;
+    const loadedModuleUi = ${hook ? "{ onPresetsChanged: () => { hits++; } }" : "{}"};
+    ${fn}
+    notifyModuleUiPresetsChanged();
+    return hits;
+`)();
+if (run(5, true) !== 1) throw new Error("must call the hook when the module UI is on screen");
+if (run(3, true) !== 0) throw new Error("must not call it from another view");
+if (run(5, false) !== 0) throw new Error("must be inert for a chain UI that declares no hook");
+if (!src.match(/function recordUserPresetFromDevice[^]*?notifyModuleUiPresetsChanged\(\);/))
+    throw new Error("recordUserPresetFromDevice must notify (covers Save and Load)");
+NODE
+pass "the module is told when a preset is saved or loaded, only while it is on screen"
+
 echo "OK: chain-UI trailing pages"
