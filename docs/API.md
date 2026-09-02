@@ -365,13 +365,12 @@ from inside My Presets leaves the module and skips the page bar:
 
 ```javascript
 function handleBack() {
-    if (controller.pickerOpen) { controller.closePicker(); return true; }
+    // the rungs page_input.mjs's own `case "back"` climbs, in its order
+    if (controller.dismissHint && controller.dismissHint()) return true;
     if (controller.dismissPeek && controller.dismissPeek()) return true;
-    if (controller.menuEntered && controller.menuEntered()) {
-        controller.exitMenu();                     // out of the menu, not the module
-        return true;
-    }
-    return false;                                  // the host exits the editor
+    if (controller.pickerOpen) { controller.closePicker(); return true; }
+    if (controller.exitMenu && controller.exitMenu()) return true;   // out of the menu, not the module
+    return false;                                                    // the host exits the editor
 }
 ```
 
