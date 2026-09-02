@@ -74,6 +74,13 @@ tally, each with its arming file. Read it before measuring anything on hardware:
   same amount. The old overrun counter fired on *every* frame: 43,986 in two
   minutes on an idle device.
 - The tally stays **silent for ~20 s after arming**, which looks like a broken build.
+- The **CPU usage page** (`/system/cpu`, schwung-manager, `/schwung-perf`) is the
+  one diagnostic that is **always on** — its timing was already being collected
+  unconditionally, so only its 1 Hz polling is armed, by a button, not a file.
+  It shows two numbers (frame budget vs process CPU) that must never be added —
+  modules are not processes, so a module's cost already sits inside
+  `MoveOriginal`'s `/proc` percentage. MIDI FX are not separable and land in
+  `proc_midi`.
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter

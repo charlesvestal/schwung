@@ -72,3 +72,99 @@ the tally stays silent for ~20 s after arming, which looks like a broken build.
 The IRQ delta is a **32-bit** subtraction on purpose — that counter is printed
 from an `int`, goes negative past 2^31 (~72 days) and wraps at 2^32, and only
 modular arithmetic survives both. Widening it is the regression the test fails on.
+
+## CPU usage page (`/system/cpu`, schwung-manager) — the one always-on diagnostic
+
+Every switch above is off by default and armed by touching a file. This one is
+not — **collection is unconditional**, and only the button on the page (`Measure
+CPU`) arms anything.
+
+**Why it can be unconditional: the timing was already being collected.**
+`SHADOW_TIMING_LOG` is `0` in `src/schwung_shim.c`, but it gates only the
+`fopen`/`fprintf` calls that used to write it to a log file. All 35
+`clock_gettime` sites and 25 `TIME_SECTION_START` macros run on every SPI frame
+regardless of that flag, today, whether or not anyone reads the result.
+Publishing them costs one `mmap` at attach and two stores per ~1000 frames,
+because `spi_snap` is now a **pointer** into `/schwung-perf` rather than a
+static later copied there — no new memcpy. Arming collection the way every
+other switch in this file arms would make the page blank until it warmed up,
+which reads as a broken build — the exact failure the SPI tally documents above
+("silent for ~20 s after arming"). What `Measure CPU` actually arms is the
+manager's 1 Hz `/proc` polling — the only part of this feature with a real
+cost — which runs `SCHED_OTHER` on cores 0–2 and never touches core 3.
+
+**Measured on the device 2026-09-02, not assumed**, because the answer
+determined whether the extra `clock_gettime` calls were free:
+
+```
+current_clocksource   : arch_sys_counter   (the only one available)
+vdso mapped            : yes
+kernel                 : 5.15.92-rt57-v8 aarch64 (PREEMPT_RT)
+
+time.monotonic()  (vDSO clock_gettime)   340 ns/call
+os.getppid()      (genuine syscall)     2133 ns/call
+```
+
+A real syscall costs **~1.8 µs** on this device; `clock_gettime` resolves in
+the vDSO and is nowhere near that. The shim's ~78 `clock_gettime` calls/frame
+are **≈2–3 µs of a 2902 µs frame — under 0.1%.** Worth stating the
+counterfactual: **had the clocksource gone the other way**, glibc's vDSO path
+falls through to a real syscall and 78 × 1.8 µs = **140 µs, 4.8% of every
+frame, permanently, on the RT thread** — a pre-existing defect more
+interesting than the feature itself, and invisible from the source; only
+measuring on the device would have caught it.
+
+**The page shows two numbers that must never be added together:**
+
+- **Frame budget (core 3)** — per-module µs as a percentage of the measured SPI
+  frame period (`frame_period_us`, not the 2902 µs nominal). This is what
+  decides dropouts.
+- **Process CPU (cores 0–3)** — ordinary `/proc` percentages for
+  `MoveOriginal`, `link-subscriber`, `shadow_ui`, `jackd`, `schwung-manager`.
+
+Adding them double-counts everything the shim does — `MoveOriginal`'s `/proc`
+percentage already *includes* every module's SPI-callback time. They sit under
+separate headings naming their cores for this reason, not decoration.
+
+**MIDI FX are not separable.** They have no per-frame render — they run
+event-driven inside the chain host's `on_midi` — so their cost lands inside the
+`proc_midi` host section, attributed to no module. The page labels that row
+rather than inventing a per-module figure for it.
+
+**The segment**: `/schwung-perf`, `schwung_perf_snapshot_t` in
+`src/host/perf_snapshot.h`, version 1, one page (880 bytes used of 4096 —
+headroom is free, see "An SHM buffer sized to `sizeof` reads as FULL" in
+`CLAUDE.md`). `magic` and `version` are the first two fields, so a short
+segment left by an older shim can be version-checked without touching its
+tail. A seqlock on `seq` (odd = writing) makes cross-process reads tear-free —
+**both failure shapes retry**: a torn read makes a fresh attempt, an in-flight
+write (odd `seq`) makes a fresh attempt, and after 3 attempts the reader
+reports the read as **failed**, never as zeros — "shim not running" and
+"everything idle" must never render the same picture. Shim and manager ship
+together (as `install.sh` already does); a version mismatch shows an explicit
+"deploy both" message instead of garbage.
+
+**A failed read must never become a picture — and four did, found only by
+loading the page in a browser, not by reading the code or the tests.**
+Discarded `ok` flags rendered: `/proc/loadavg` unreadable as "Load average:
+0.00 / 0.00 / 0.00"; `/proc/stat` unreadable as a table of headings with no
+rows; an unreadable `/proc` as five named processes reported "not running";
+an absent `MoveOriginal` as "None found" for realtime threads. All four wore
+the costume of a real measurement. `schwung-manager/perf_render_test.go` pins
+all four.
+
+**Three tests hold this together:**
+- `tests/host/test_perf_snapshot_size.c` — the container can only grow.
+- `tests/host/test_perf_shm_offsets.sh` — compiles a probe that prints
+  `offsetof` for every field and diffs it against the hand-mirrored Go offset
+  block in `perf_shm.go`. This is the one that matters: `shmparams.go` carries
+  the same kind of hand-mirrored layout, and when two `uint64`s were added to
+  `shadow_param_t` the Go side went unupdated — every key landed 16 bytes late,
+  the shim read an empty key, and every GET returned empty, with nothing
+  crashing and no test failing. Drift in a hand-mirrored layout is silent and
+  total.
+- `schwung-manager/perf_render_test.go` — pins the four rendered-failure cases
+  above.
+
+See `docs/superpowers/specs/2026-09-02-manager-cpu-view-design.md` for the full
+design.
