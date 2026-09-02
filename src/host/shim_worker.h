@@ -132,6 +132,10 @@ typedef struct {
 
 void shim_worker_set_hooks(const shim_worker_hooks_t *hooks);
 
+/* Attach /schwung-perf and hand the shim its publish target. Worker-only:
+ * shm_open and mmap are not realtime-safe. No-op once attached. */
+void perf_shm_attach_tick(void);
+
 /* Spawn the worker thread (SCHED_OTHER, cores 0-2). Idempotent. */
 void shim_worker_start(void);
 
