@@ -2156,11 +2156,23 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
-**A two-option enum is turned differently, too.** With two values there is
-nowhere to go but the other one, so a detent TOGGLES it whichever way you
-turned — and one flick of the encoder is one flip, not a dozen. Three or more
-options keep the four-detent gate and clamp at the ends. A trigger
-(`access: "write"`) is never toggled; it fires.
+**A two-option param is turned differently, too, and how it is DRAWN decides
+how it turns.**
+
+- A param drawn as a **switch** — `Off`/`On`, or an `int` 0..1 — is
+  **direction-absolute**: clockwise is on, anticlockwise is off. The switch has
+  a track with its knob at one end, so the picture already tells you which way
+  is which. Turning an already-on switch clockwise is a no-op, not a flip, and
+  there is no gesture latch because the write is idempotent.
+- A param drawn as the **enum square** — `Mix`/`Reverb`, `Saw`/`Square` — is a
+  boxed value: both options sit in the same place, so it shows a state and names
+  no direction. A detent **toggles** it whichever way you turned, and one flick
+  of the encoder is one flip, not a dozen.
+
+You do not choose between these; the widget rule does, and it follows your
+`options`. Three or more options keep the four-detent gate and clamp at the
+ends. A trigger (`access: "write"`) is never toggled and never draws as a
+switch; it fires.
 
 **Except at exactly two options, where there is no list to open.** On the knob
 grid the click FLIPS it — the picker would show the value already in the cell

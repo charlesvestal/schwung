@@ -172,33 +172,26 @@ Promise.all([
     fail("the jog did not move a focused two-option enum — focus without a working jog is " +
          "worse than the flip it replaced");
 
-  /* EITHER DIRECTION toggles: from the same starting value, a DOWN detent must
-   * reach the same place an UP detent did. The cell shows a state, not a
-   * direction, so a control where left does nothing is dead half the time.
-   * Driven from a fresh gesture at the same start value rather than by
-   * reversing, which the latch is entitled to swallow. */
-  clock += 2000;
-  ctl.onJog(-1);                                   /* back to the start */
-  clock += 2000;
-  if (ctl.state.values["flip2"] !== beforeFlip)
-    fail("a two-way did not come back on the opposite detent");
-  ctl.onJog(-1);                                   /* DOWN from the start */
-  if (ctl.state.values["flip2"] !== afterUp)
-    fail("a DOWN detent left a two-way at " + ctl.state.values["flip2"] + " but UP reached " +
-         afterUp + " — the direction still has to be known, which is the whole complaint");
+  /* flip2 is Off/On, which is what DRAWS AS A SWITCH, and a switch turns
+   * direction-absolute: up is on and down is off, from wherever it already was.
+   * The either-way toggle belongs to the BOXED two-way (Mix/Reverb) and is
+   * pinned in tests/host/test_two_way_knob_toggle.sh along with the rule that
+   * the two partitions must stay equal. What is checked HERE is only that a
+   * focused list row reaches the same engine the grid does. */
+  if (afterUp !== "On")
+    fail("an UP detent on a focused Off/On row gave " + afterUp + " — clockwise is ON");
+  ctl.onJog(-1);
+  if (ctl.state.values["flip2"] !== "Off")
+    fail("a DOWN detent on a focused Off/On row gave " + ctl.state.values["flip2"] +
+         " — anticlockwise is OFF");
 
-  /* ONE FLICK IS ONE FLIP. Wrapping alone would toggle on every detent, so a
-   * spin would land wherever the count happened to be even or odd about. */
-  const settled = ctl.state.values["flip2"];
-  for (let i = 0; i < 20; i++) { clock += 30; ctl.onJog(1); }
-  if (ctl.state.values["flip2"] !== settled)
-    fail("a 20-detent spin flipped a two-way again — this is a wrap, not a gesture latch");
-  /* ...and stillness ends the gesture, so the next reach works. */
+  /* And it is IDEMPOTENT: a whole spin one way says the same thing every
+   * detent, so an already-on switch stays on. */
   clock += 2000;
-  ctl.onJog(1);
-  if (ctl.state.values["flip2"] === settled)
-    fail("the two-way stayed latched after the knob went still — the stamp must be the last " +
-         "DETENT, so the clock runs on stillness rather than on elapsed time");
+  for (let i = 0; i < 20; i++) { clock += 30; ctl.onJog(1); }
+  if (ctl.state.values["flip2"] !== "On")
+    fail("a 20-detent clockwise spin left a switch at " + ctl.state.values["flip2"] +
+         " — a switch write is idempotent, so it must land on ON however many detents it took");
 
   /* ---- 5. A HELD KNOB MUST NOT CLAIM THIS FOOTER ------------------------ */
   ctl.exitMenu();                 /* back to the row cursor */

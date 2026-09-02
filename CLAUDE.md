@@ -475,9 +475,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   the peek was tracked on each detent, `applyInput` swallowed the Back that
   dismissed it, and it was painted nowhere. CW-78 and 6W6 both shipped that
   way.
-- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and a
-  detent TOGGLES, latched to one flick. `flipsOnClick` defines "is a two-way",
-  not "flip".
+- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and on
+  the KNOB they split BY WIDGET, not by semantics: a **switch** has a track, so
+  its form names a direction and it is direction-absolute (clockwise on,
+  idempotent, no latch); the **boxed** enum square shows a state and no
+  direction, so it TOGGLES either way, latched to one flick. The turn partition
+  must EQUAL the draw partition or a shape promises what the knob won't do.
+  `flipsOnClick` defines "is a two-way", not "flip".
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
