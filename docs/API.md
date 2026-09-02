@@ -349,9 +349,29 @@ const controller = createController({
         ? shadow_component_trailing_menus() : []),
 });
 
-// and on a menu row's action, from applyInput's result:
-if (todo && todo.action && typeof shadow_component_run_action === "function") {
-    if (shadow_component_run_action(todo.action)) return;   // a screen opened
+// A row activation comes back from applyInput as { action: "menu", entry }:
+// "menu" is the intent's kind, and the ENTRY carries the action key.
+if (todo && todo.action === "menu") {
+    const act = todo.entry && todo.entry.action;
+    if (act && typeof shadow_component_run_action === "function")
+        shadow_component_run_action(act);      // true = a screen opened over you
+    return;
+}
+```
+
+The host consumes the Back button and calls your `handleBack()` first, so
+climb the same ladder the stock grid does, one rung per press — otherwise Back
+from inside My Presets leaves the module and skips the page bar:
+
+```javascript
+function handleBack() {
+    if (controller.pickerOpen) { controller.closePicker(); return true; }
+    if (controller.dismissPeek && controller.dismissPeek()) return true;
+    if (controller.menuEntered && controller.menuEntered()) {
+        controller.exitMenu();                     // out of the menu, not the module
+        return true;
+    }
+    return false;                                  // the host exits the editor
 }
 ```
 
