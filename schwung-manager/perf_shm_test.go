@@ -52,14 +52,50 @@ func TestPerfOddSeqIsAFailureNotZeros(t *testing.T) {
 
 // seq changing between the two samples means the writer landed a snapshot
 // while we were copying it.
-func TestPerfTornReadIsReported(t *testing.T) {
+// A writer that keeps landing snapshots under us never settles. The hook must
+// ADVANCE seq on every call, not rewrite the same value: rewriting the same
+// value means attempt 2 reads that value as `before`, sees it unchanged after,
+// and legitimately succeeds — so a hook that does not advance is testing the
+// retry loop's success path while claiming to test its failure path.
+func TestPerfTornReadNeverSettles(t *testing.T) {
 	p := &PerfShm{data: buildSnapshot(perfMagic, perfVersion, 8)}
+	next := uint32(10)
 	p.testHookAfterCopy = func() {
-		binary.LittleEndian.PutUint32(p.data[perfOffSeq:], 10)
+		binary.LittleEndian.PutUint32(p.data[perfOffSeq:], next)
+		next += 2 // stay even, so it is "moved", never "in flight"
 	}
-	_, err := p.Read()
+	snap, err := p.Read()
 	if !errors.Is(err, ErrPerfTorn) {
-		t.Fatalf("a seq that moved during the read must report ErrPerfTorn, got %v", err)
+		t.Fatalf("a seq that never settles must report ErrPerfTorn, got %v", err)
+	}
+	if snap != nil {
+		t.Fatal("a failed read must return no snapshot at all")
+	}
+}
+
+// The other half of the same rule, and the reason both shapes retry: a SINGLE
+// collision is recoverable. The writer commits once per ~2.9 s, so a reader
+// that lands on it will almost certainly succeed one copy later. Failing here
+// would cost the caller a whole poll interval to learn nothing.
+func TestPerfTornReadRecoversOnRetry(t *testing.T) {
+	p := &PerfShm{data: buildSnapshot(perfMagic, perfVersion, 8)}
+	calls := 0
+	p.testHookAfterCopy = func() {
+		calls++
+		if calls == 1 {
+			// Collide exactly once, then hold still.
+			binary.LittleEndian.PutUint32(p.data[perfOffSeq:], 10)
+		}
+	}
+	snap, err := p.Read()
+	if err != nil {
+		t.Fatalf("one collision must be retried, not reported: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("wanted a snapshot from the retry")
+	}
+	if calls < 2 {
+		t.Fatalf("expected a second attempt, hook ran %d time(s)", calls)
 	}
 }
 

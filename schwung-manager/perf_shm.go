@@ -64,6 +64,12 @@ const (
 	perfVersion = 1
 	perfShmSize = 4096
 
+	// Seqlock read attempts before giving up and reporting the read as failed.
+	// Three is generous: the writer commits once per ~2.9 s and holds the lock
+	// for a handful of stores, so anything that fails three times running is
+	// wedged rather than unlucky.
+	perfReadAttempts = 3
+
 	// PERF_CHAIN_SLOTS / PERF_MASTER_FX_SLOTS from perf_snapshot.h.
 	perfChainSlots    = 4
 	perfMasterFXSlots = 8
@@ -238,19 +244,27 @@ func (p *PerfShm) Read() (*PerfSnapshot, error) {
 		return nil, &PerfVersionError{Got: v, Want: perfVersion}
 	}
 
-	// Three attempts at catching the writer between snapshots. It holds the
-	// lock for a handful of stores on a ~2.9 ms cadence, so an odd seq three
-	// times running means it is genuinely wedged, not that we were unlucky.
+	// Standard seqlock read: sample seq, copy, re-sample, and retry while
+	// either an odd value (write in flight) or a moved value (a snapshot landed
+	// underneath us) says the copy cannot be trusted.
 	//
-	// The two failure shapes are deliberately NOT treated the same. An odd seq
-	// is "not yet" and is worth another look immediately. A seq that MOVED
-	// across the copy is "a snapshot landed underneath us" — the data we hold
-	// is a mix of two frames and there is nothing to salvage from it, so it is
-	// reported rather than papered over by an inline retry. Either way the
-	// caller polls again; neither ever becomes a picture.
-	for attempt := 0; attempt < 3; attempt++ {
+	// BOTH shapes retry, because a retry makes a NEW copy — the mix-of-two-
+	// frames we hold is unsalvageable, but the next read almost certainly is
+	// not. The writer commits once per ~1000 SPI frames (~2.9 s) and holds the
+	// lock for a handful of stores, so a collision is a sub-microsecond window
+	// that essentially always clears on the next attempt. Reporting an error
+	// for a condition one extra 880-byte copy would have fixed is the wrong
+	// trade: it costs the caller a whole poll interval to learn nothing.
+	//
+	// Three attempts, then give up. An odd or moving seq three times running
+	// means the writer is genuinely wedged, not that we were unlucky — and at
+	// that point the honest answer is that the read FAILED. It never becomes a
+	// zero-valued snapshot; see the doc comment.
+	var lastSeq uint32
+	for attempt := 0; attempt < perfReadAttempts; attempt++ {
 		before := binary.LittleEndian.Uint32(p.data[perfOffSeq:])
 		if before%2 != 0 {
+			lastSeq = before
 			continue // write in flight
 		}
 
@@ -260,13 +274,14 @@ func (p *PerfShm) Read() (*PerfSnapshot, error) {
 			p.testHookAfterCopy()
 		}
 
-		if after := binary.LittleEndian.Uint32(p.data[perfOffSeq:]); after != before {
-			return nil, fmt.Errorf("%w (seq %d -> %d during copy)",
-				ErrPerfTorn, before, after)
+		after := binary.LittleEndian.Uint32(p.data[perfOffSeq:])
+		if after == before {
+			return snap, nil
 		}
-		return snap, nil
+		lastSeq = after
 	}
-	return nil, ErrPerfTorn
+	return nil, fmt.Errorf("%w (seq unsettled across %d attempts, last %d)",
+		ErrPerfTorn, perfReadAttempts, lastSeq)
 }
 
 // decode copies the payload out. Called only between two seq reads; its result
