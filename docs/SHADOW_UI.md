@@ -819,6 +819,105 @@ pulse error, a latency, or any mix; it took a second tempo to solve for both.
 and has no announcement to key off. Record + transport is not a sufficient
 signal. Not covered.
 
+### Save Stems: a stem is a SLOT, and that is forced by the FX chain
+
+**Global Settings → Audio → Save** (`save_stems` in `features.json`, mirrored
+into `shadow_control_t.save_stems`): **Master** (default) / **Stems** / **Both**.
+
+**One setting, three recorders.** The Quantized Sampler (Shift+Sample),
+Skipback (Shift+Capture) and Song Mode's Record button all record through the
+same `shadow_sampler.c`, so a per-surface switch would be three places to keep
+in step. Song Mode needed no new recording code at all — it already called
+`host_sampler_start(path)`; it gained only a label, because pressing Record and
+getting five files when you expected one is a surprise you can only discover
+after the take.
+
+**A stem is a SLOT, and the four slot stems ARE the four tracks.** Under
+Move→Schwung the shim builds each slot as `move_track[s] + synth[s]` and *then*
+runs the slot FX chain on the sum (`schwung_shim.c`, the `rebuild_from_la`
+branch). Move's track and Schwung's synth are inseparable after that point, and
+tapping them before it would hand back stems without their FX. Under
+Move→Schwung the four stems therefore sum to the master **exactly**: the
+reconstruction is composited from those four Link Audio channels and nothing
+else — the same fact that makes Move's metronome missing there.
+
+**The fifth stem is MOVE, and it exists for the case the other four cannot
+cover.** With Link Audio routing off there is no four-way split to be had: Move
+hands us one mixed mailbox, and the slots carry only Schwung's own synths.
+Without a Move stem the feature would record four synth-only files and drop the
+rest of the music on the floor — silently, since the files would exist. It is
+tapped from `native_bridge_move_component` un-scaled by the same smoothed `mv`
+`unity_view` uses, so it sits at unity with the slot stems. Under
+`rebuild_from_la` it is left INVALID **on purpose**: Move's tracks are already
+inside the four slot stems, and a sixth file repeating them would double every
+instrument in a stem sum.
+
+**Stems are pre-Master-FX and pre-master-volume.** MFX processes the mixed bus;
+there is no per-stem version of it to capture. With a Master FX chain loaded the
+stems will not add up to the master file, and that is arithmetic, not a bug.
+
+**A silent stem's file is DELETED at finalize, never opened lazily.** Every stem
+file is opened up front. Opening on first audio is the obvious alternative and
+is wrong: the file would then start at the first sound rather than at t=0, and
+the stems would no longer line up with each other or with the master. So an
+unloaded slot still leaves no file, and alignment is not traded for it.
+
+**The capture gate opens on the RT ARM, not in the worker.** `sampler_state` is
+`RECORDING` the moment `sampler_request_start*` returns, so the master ring
+starts filling immediately, while `sampler_worker_prepare` runs up to ~200 ms
+later. Opening the stem gate there put a few hundred milliseconds into the
+master that were missing from the stems — and because the stems are trimmed by
+the *master's* preroll count, they would have stayed offset by it for the whole
+take. Nothing in the arm needs the worker: the rings are allocated once in
+`sampler_init` and their positions are reset on the RT half, so they are ready
+before the file that will drain them exists. The mode is latched there too, so
+flipping the setting mid-take cannot produce half a take of each shape. The
+worker may only ever *close* the gate (no stem file opened).
+
+**Stems are captured BEFORE the master, and the order is load-bearing.** Both
+apply the start-of-recording fade-in ramp and the master half is the one that
+*consumes* the counter (`sampler_capture_stems` only snapshots it). Reversing
+the two lines in `schwung_shim.c` ramps the stems by a block already spent — a
+wrong fade on the first 3 ms of every take, audible as a click and attributable
+to nothing.
+
+**A divergence is reported, not repaired.** Six streams share one ring size and
+one drain pass, but each capture drops its block independently when its own ring
+is full, so sustained write backpressure could drop a block from one and not
+another — and a stem one block short is offset for the rest of the file.
+Finalize logs the mismatch rather than padding or truncating, because either
+repair guesses *where* the gap was.
+
+**Skipback stems are capped at `SKIPBACK_STEM_MAX_SECONDS` (60 s)** while the
+master runs to 5 minutes. Five rolling buffers at that maximum is ~265 MB, which
+is not a budget this device has to spend on a feature that is off by default;
+60 s × 5 is 53 MB, the same as one master buffer at its maximum, and it covers
+the 30 s default untouched. When the master is longer the stems are a **suffix**
+of it — both end at the save, so they line up with its tail. The buffers are
+allocated and freed by the worker as the setting changes, via
+`SHIM_EVT_SKIPBACK_RESIZE`; `skipback_resize`'s "length unchanged" early return
+had to move *inside* the `skipback_saving` gate for that, or flipping the
+setting without touching Skipback Len allocated nothing.
+
+**Move Input as the sampler source records the master whatever Save says.**
+There is no per-slot structure in the line input to split; a stems take there
+would be four silent files and a copy of the input.
+
+**The Audio page was full at eight, so Audition moved to Display.** A section is
+one page and the grid holds 8; a 9th param does not error, it plans an
+"Audio - 2" page holding one lonely knob and takes the contract from 7 pages to
+8. `browser_preview` is the row in Audio least about audio — it decides whether
+*browsing* something plays it — and it now sits beside Overlay, Show Typed and
+Param View. Both sections are at 8 now: the next global setting has to displace
+one, and the displacement has to be argued for in the declaration.
+
+Tests: `tests/host/test_save_stems_contract.sh` (the cross-file rules — the stem
+count against the name list and the slot count, the register appended last, the
+`WANTS_*` predicates run against all three modes, the capture order, the RT-arm
+gate, the skipback memory bound, and the setting's declaration and
+persistence), `test_sampler_stem_path.c` (filename derivation),
+`test_global_settings_contract.sh` (the 8/8 section split).
+
 ### Snapshot / recall: what it restores, and what it deliberately does not
 
 Shift+Copy snapshots all 4 slots plus all 8 Master FX positions; Shift+Delete

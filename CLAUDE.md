@@ -31,6 +31,27 @@ Index.
 
 **Deploy shortcut**: `./scripts/install.sh local --skip-modules --skip-confirmation` — **never scp individual files**. The install script handles setuid, symlinks, feature config, and service restart.
 
+### install.sh REWRITES features.json, and a key it does not list was reset
+
+Not merged — rewritten from a literal in the script, so **a key absent from that
+literal reverted to its default on every single deploy.** Seven did:
+`set_pages_enabled`, `midi_indicator_enabled`, `skipback_require_volume`,
+`skipback_seconds`, `recall_quantize`, `metronome_mode`, `metronome_level` —
+every one of them written to this file by `features_json_set()` in
+`shadow_ui.c`, none of them listed. The symptom is a settings page that has
+quietly gone back to its defaults after an update, which reads as *"the update
+reset my settings"* rather than as an installer bug, and so was never filed as
+one.
+
+Enumerating the missing keys fixes it once and re-breaks it the next time
+somebody adds a setting — which is exactly how it reached seven. **The rule is
+inverted instead**: the script owns the six keys the INSTALLER decides (a CLI
+flag can override them, or they migrate from a legacy name) and carries every
+other line across verbatim, so a new setting is preserved from the day it is
+first written. `tests/host/test_features_json_preserved.sh` lifts the merge out
+of `install.sh` and runs it, and derives its key list from `shadow_ui.c` rather
+than restating one.
+
 Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 
 ## Testing
@@ -500,6 +521,31 @@ Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
 was deleted in the 2026-06 cleanup; it was only reachable through the
 unreachable v1 plugin path.)
 
+**Save Stems — `docs/SHADOW_UI.md`.** Global Settings → Audio → **Save**
+(Master / Stems / Both), honoured by all three recorders — the sampler,
+Skipback and **Song Mode's Record button, which needed no new recording code
+because it already went through the same sampler**.
+
+- **A stem is a SLOT, and that is forced, not chosen.** Under Move→Schwung the
+  shim builds a slot as `move_track[s] + synth[s]` and *then* runs the slot FX
+  on the SUM, so Move's track and Schwung's synth are inseparable after that
+  point — the four slot stems ARE the four tracks, and they sum to the master
+  exactly. A fifth **Move** stem carries the mailbox mix for the case
+  Move→Schwung is OFF and there is no split to be had; under Move→Schwung it is
+  left INVALID on purpose, or a stem sum would double every instrument.
+- **Stems are PRE-Master-FX.** MFX runs on the summed bus, so with a chain
+  loaded the stems do not add up to the master file.
+- **The capture gate opens on the RT ARM, not in the worker** — `sampler_state`
+  is RECORDING the moment the arm returns and the worker runs ~200 ms later, so
+  opening it there put a few hundred ms in the master and not the stems, offset
+  for the whole take by the master's preroll trim. The mode is latched there
+  too. **And stems are captured BEFORE the master**, because both apply the
+  fade-in ramp and the master is what consumes the counter.
+- **A silent stem's file is DELETED at finalize, never opened lazily** — a lazy
+  open would start the file at the first sound rather than at t=0.
+- Skipback stems are capped at **60 s** against the master's 5 minutes (five
+  rings at the maximum is ~265 MB) and are a SUFFIX of it.
+
 ## Shadow Mode
 
 Shim intercepts hardware I/O to mix shadow audio with Move's output.
@@ -585,6 +631,9 @@ Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger*
 - **Shift+Vol+Step13** / **Shift+Vol+Jog Click** — Tools menu (overtake modules below the divider). Jog-click also exits an active overtake module.
 - **Shift+Sample** — Quantized Sampler
 - **Shift+Capture** — Skipback (last 30 s)
+
+Both write the mixed master by default, or per-track stems, or both — Global
+Settings → Audio → **Save** (see Recording / capture).
 
 **Anywhere** (independent of the trigger mode, and whether or not the shadow UI
 is on screen):

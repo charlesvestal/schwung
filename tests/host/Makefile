@@ -48,7 +48,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_recall_quantize \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
-	$(BUILD_DIR)/test_shadow_metronome
+	$(BUILD_DIR)/test_shadow_metronome \
+	$(BUILD_DIR)/test_sampler_stem_path
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -102,6 +103,9 @@ $(BUILD_DIR)/test_metronome_click: test_metronome_click.c ../../src/host/metrono
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_metronome_announce: test_metronome_announce.c ../../src/host/metronome_announce.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_shadow_metronome: test_shadow_metronome.c ../../src/host/shadow_metronome.c ../../src/host/metronome_click.h | $(BUILD_DIR)

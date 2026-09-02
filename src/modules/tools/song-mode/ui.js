@@ -127,6 +127,34 @@ let recordLedLit = false;
 let recordPendingPath = "";    /* non-empty = start recording after startup sequence */
 const RECORDINGS_DIR = "/data/UserData/UserLibrary/Recordings/Song Mode";
 const TAIL_OPTIONS = [0, 1, 2, 4, 8];
+/*
+ * Global Settings -> Audio -> Save, cached.
+ *
+ * Song Mode does not own this choice and must not offer a second copy of it:
+ * the Record button here, Shift+Sample and Shift+Capture all record through
+ * the same sampler, and the shim decides what lands on disk from
+ * shadow_control_t.save_stems. What this cache is for is the LABEL -- pressing
+ * Record and getting five files when you expected one (or one when you
+ * expected five) is the kind of surprise that is only discoverable after the
+ * take.
+ *
+ * Read from features.json rather than through a host binding because this
+ * module runs in the overtake JS host, which has no shadow_save_stems_get.
+ * Refreshed on init and whenever the cursor lands on the Record row -- an
+ * event, not a frame, so the file is not read on the draw path. */
+let saveStemsMode = 0;             /* 0 master, 1 stems, 2 both */
+const SAVE_STEMS_LABELS = ["Master", "Stems", "Master+Stems"];
+
+function refreshSaveStemsMode() {
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (!raw) return;
+        const m = /"save_stems"\s*:\s*"([^"]*)"/.exec(raw);
+        const i = m ? ["master", "stems", "both"].indexOf(m[1]) : -1;
+        saveStemsMode = i >= 0 ? i : 0;
+    } catch (e) { /* absent file = the default, which is Master */ }
+}
+
 let tailBars = 2;  /* recording tail after song ends (bars) */
 let recordingSavedUntil = 0;   /* show "Recording saved!" overlay until this timestamp */
 let recordingSavedAnnounced = false;
@@ -483,7 +511,13 @@ function drawListView() {
             continue;
         }
         if (idx === songEntries.length + 1) {
-            const recLabel = recording ? ">> Stop Recording" : ">> Record Song";
+            /* The row says WHAT it will record, not just that it will. With
+             * Save on Master the suffix is dropped: that is the default and
+             * naming it would be noise on every device that never changed it. */
+            const recLabel = recording
+                ? ">> Stop Recording"
+                : (saveStemsMode === 0 ? ">> Record Song"
+                                       : ">> Record: " + SAVE_STEMS_LABELS[saveStemsMode]);
             print(2, y, recLabel, color);
             continue;
         }
@@ -1056,6 +1090,7 @@ globalThis.init = function() {
     selectedEntry = 0;
     playbackState = "stopped";
     injectQueue = [];
+    refreshSaveStemsMode();
 
     /* Check if user is in Session view — warn briefly if not */
     const uiMode = (typeof shadow_get_move_ui_mode === "function") ? shadow_get_move_ui_mode() : 0;
@@ -1293,6 +1328,9 @@ globalThis.onMidiMessageInternal = function(data) {
         const delta = decodeDelta(d2);
         const maxIdx = songEntries.length + 2; /* extra slots for Play/Record/Tail */
         selectedEntry = Math.max(0, Math.min(maxIdx, selectedEntry + delta));
+        /* Re-read the setting when the cursor lands on Record, so the label is
+         * current without a read on the draw path. */
+        if (selectedEntry === songEntries.length + 1) refreshSaveStemsMode();
         /* Keep step page in sync with selection */
         if (selectedEntry < songEntries.length) {
             stepPage = Math.floor(selectedEntry / STEPS_PER_PAGE);
@@ -1329,7 +1367,10 @@ globalThis.onMidiMessageInternal = function(data) {
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;
-                announce("Recording from beginning");
+                refreshSaveStemsMode();
+                announce(saveStemsMode === 0
+                    ? "Recording from beginning"
+                    : "Recording from beginning, " + SAVE_STEMS_LABELS[saveStemsMode]);
                 console.log("song-mode: recording deferred -> " + recordPendingPath);
             }
         } else if (selectedEntry === songEntries.length + 2) {
@@ -1545,7 +1586,9 @@ globalThis.onMidiMessageInternal = function(data) {
                 recording = true;
                 recordStartTime = Date.now();
                 recordStopTime = 0;
-                announce("Recording from step " + (currentEntryIndex + 1));
+                refreshSaveStemsMode();
+                announce("Recording from step " + (currentEntryIndex + 1) +
+                    (saveStemsMode === 0 ? "" : ", " + SAVE_STEMS_LABELS[saveStemsMode]));
                 console.log("song-mode: recording deferred -> " + recordPendingPath);
             }
         }

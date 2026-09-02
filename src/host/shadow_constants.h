@@ -401,7 +401,35 @@ typedef struct shadow_control_t {
      * the SPI callback. 0 means "not yet known"; the consumer clamps to 4.
      */
     volatile uint8_t metronome_beats_per_bar;
+
+    /*
+     * Save Stems (Global Settings -> Audio). 0 = Master, 1 = Stems, 2 = Both.
+     *
+     * Governs the Quantized Sampler, Skipback and Song Mode's record button
+     * alike -- one setting, because all three record through the same sampler
+     * and a per-surface switch would be three places to get it wrong.
+     *
+     * APPENDED after the metronome trio for the same reason they were appended
+     * after stay_in_shadow: sizeof is a contract between two binaries and
+     * schwung-manager reads stay_in_shadow at a RAW offset (shmconfig.go).
+     * Appending is free; inserting is not.
+     *
+     * A FIELD rather than a features.json read, because load_feature_config()
+     * runs once at init and this has to be changeable without a reboot -- the
+     * same reason recall_quantize and metronome_mode are fields. The C setter
+     * writes features.json and JS pushes it back down at startup.
+     */
+    volatile uint8_t save_stems;
 } shadow_control_t;
+
+/* Values for shadow_control_t.save_stems. */
+#define SAVE_STEMS_MASTER 0
+#define SAVE_STEMS_STEMS  1
+#define SAVE_STEMS_BOTH   2
+/* Write the mixed master file? Both Master and Both do. */
+#define SAVE_STEMS_WANTS_MASTER(v) ((v) != SAVE_STEMS_STEMS)
+/* Write the per-stem files? Both Stems and Both do. */
+#define SAVE_STEMS_WANTS_STEMS(v)  ((v) != SAVE_STEMS_MASTER)
 
 /* Co-run control-surface groups. A co-running overtake tool declares which
  * groups it KEEPS (corun_keep_mask); every other group's input cedes to the

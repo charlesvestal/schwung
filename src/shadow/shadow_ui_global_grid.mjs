@@ -116,6 +116,7 @@ export const GLOBAL_ENUM_VALUES = {
     shadow_ui_trigger: [0, 1, 2],
     recall_quantize: [0, 1, 2, 3],
     metronome_mode: [0, 1, 2],
+    save_stems: [0, 1, 2],
 };
 
 /* ------------------------------------------------------------ accessor routing
@@ -159,6 +160,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
+ *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
  *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
@@ -207,6 +209,10 @@ export const GLOBAL_ROUTING = {
      * same way shadow_recall_quantize_set does, because the register it also
      * writes lives in SHM and does not survive a reboot. */
     metronome_mode:         { read: "metronome.get_mode",     write: "metronome.set_mode",     persist: null,   cache: null,                     modal: null },
+    /* persist: null — shadow_save_stems_set writes features.json itself, the
+     * same shape as recall_quantize and metronome_mode, because the register
+     * it also writes lives in SHM and does not survive a reboot. */
+    save_stems:             { read: "save_stems.get",         write: "save_stems.set",         persist: null,   cache: null,                     modal: null },
     metronome_level:        { read: "metronome.get_level",    write: "metronome.set_level",    persist: null,   cache: null,                     modal: null },
 
     screen_reader_enabled:  { read: "tts.get_enabled",        write: "tts.set_enabled",        persist: null,   cache: null,                     modal: null },
@@ -324,6 +330,37 @@ export const DISPLAY_PARAMS = [
     { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
     /*
+     * MOVED HERE FROM AUDIO to make room for Save Stems, which is squarely an
+     * audio setting and had nowhere else to go: a section is one page, the
+     * grid holds 8, and a 9th param in Audio does not error -- it silently
+     * plans an "Audio - 2" page holding one lonely knob and takes the whole
+     * contract from 7 pages to 8 (which tests/host/test_global_settings_
+     * contract.sh pins). Something had to move, and this is the row in Audio
+     * that is least about audio: it decides whether BROWSING something plays
+     * it, which is the same kind of interface-behaviour choice as Overlay,
+     * Show Typed and Param View sitting beside it here.
+     *
+     * Gates BOTH the file browser WAV preview and the User Presets scroll
+     * audition -- one "hear it before you pick it" switch, not one each.
+     *
+     * Named "Audition", not "Audition Files": main renamed this row while this
+     * branch was open, and both sides independently landed on the word
+     * "audition". Main spelled it "Audition Files" under its new policy that
+     * names are written out rather than abbreviated for a grid -- which this
+     * keeps. It is no longer only files, though, so the noun narrows it to
+     * something it no longer only means.
+     *
+     * The stored key stays browser_preview: renaming it would silently discard
+     * every existing choice, because the toggle is its only writer. Moving a
+     * row between SECTIONS costs nothing for the same reason -- the section is
+     * where it is drawn, not where it is stored.
+     *
+     * Default OFF (main had 1): auditioning a preset APPLIES state to the live
+     * slot, and the presets list stopped being hard to reach the moment it
+     * became a page at the end of every component.
+     */
+    bool("browser_preview", "Audition", 0),
+    /*
      * A Track tap while the shadow UI is up switches to that slot. Off, it
      * hands the screen back to Move instead.
      *
@@ -385,25 +422,6 @@ export const AUDIO_PARAMS = [
     { key: "resample_bridge", name: "Resample", type: "enum",
       options: ["Native", "Mix"], short_options: ["NAT", "MIX"], default: 0 },
     /*
-     * Gates BOTH the file browser WAV preview and the User Presets scroll
-     * audition -- one "hear it before you pick it" switch, not one each.
-     *
-     * Named "Audition", not "Audition Files": main renamed this row while this
-     * branch was open, and both sides independently landed on the word
-     * "audition". Main spelled it "Audition Files" under its new policy that
-     * names are written out rather than abbreviated for a grid -- which this
-     * keeps. It is no longer only files, though, so the noun narrows it to
-     * something it no longer only means.
-     *
-     * The stored key stays browser_preview: renaming it would silently discard
-     * every existing choice, because the toggle is its only writer.
-     *
-     * Default OFF (main had 1): auditioning a preset APPLIES state to the live
-     * slot, and the presets list stopped being hard to reach the moment it
-     * became a page at the end of every component.
-     */
-    bool("browser_preview", "Audition", 0),
-    /*
      * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
      *
      * It is On or Off -- whether Schwung restores the USB-C out source at boot.
@@ -455,6 +473,31 @@ export const AUDIO_PARAMS = [
       options: ["Off", "Follow", "On"], short_options: ["OFF", "FOL", "ON"], default: 1 },
     { key: "metronome_level", name: "Click Vol", type: "int",
       min: 0, max: 100, step: 5, default: 50, unit: "%" },
+    /*
+     * THREE OPTIONS, NOT A BOOL, because "Both" is a thing people ask for by
+     * name: the master to listen back to and the stems to take away.
+     *
+     * ONE SETTING FOR THREE SURFACES -- the Quantized Sampler (Shift+Sample),
+     * Skipback (Shift+Capture) and Song Mode's Record button. All three record
+     * through the same sampler, so a per-surface switch would be three places
+     * to keep in step and three places to get it wrong; and the question it
+     * answers ("what do I want out of this device") is not one that changes
+     * between them.
+     *
+     * A stem is a SLOT. Under Move->Schwung the four slot stems ARE the four
+     * tracks and sum to the master exactly; outside it a fifth Move stem
+     * carries the mix Move gives us undivided. Stems are pre-Master-FX -- the
+     * MFX chain runs on the summed bus and there is no per-stem version of it
+     * to capture. The full account is in shadow_sampler.h, beside the code
+     * that has to honour it.
+     *
+     * Default Master: this changes what pressing Record leaves on the disk,
+     * and the answer for anyone who has not asked for it must stay the one
+     * they already have.
+     */
+    { key: "save_stems", name: "Save", type: "enum",
+      options: ["Master", "Stems", "Both"],
+      short_options: ["MST", "STM", "BTH"], default: 0 },
 ];
 
 /* ------------------------------------------------------------ accessibility */

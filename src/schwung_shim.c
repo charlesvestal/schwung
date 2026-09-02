@@ -2191,8 +2191,72 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
     shadow_latency_delay_wp[slot] = wp + FRAMES_PER_BLOCK * 2;
 }
 
+/* ------------------------------------------------------------------ stems --
+ *
+ * One block of per-stem audio, rebuilt every frame for the Quantized Sampler
+ * and Skipback. Indices match sampler_stem_names[]: 0-3 are the chain slots,
+ * 4 is Move.
+ *
+ * A slot stem is that slot's output AFTER its FX chain and AT its slot volume
+ * — the same signal shadow_slot_capture[] publishes to Link Audio, tapped at
+ * the same three places the mix is built (the rebuild_from_la branch, and the
+ * deferred and inline halves of the non-rebuild branch). Under Move->Schwung
+ * that already contains Move's track N, because the shim summed it in BEFORE
+ * running the slot FX and there is no undoing that — see shadow_sampler.h.
+ *
+ * `valid` is per frame, not per slot lifetime: an unwritten stem captures
+ * SILENCE rather than repeating last frame's block. A stale block is the
+ * failure mode that would be hardest to see, since it sounds like audio.
+ */
+static int16_t shadow_stem_bus[SAMPLER_STEM_COUNT][FRAMES_PER_BLOCK * 2];
+static int shadow_stem_valid[SAMPLER_STEM_COUNT];
+/* Cleared unless the setting wants stems, so the whole tap costs nothing
+ * (not even the stores) when Save Stems is off — which is the default. */
+static int shadow_stems_wanted = 0;
+
+static inline void shadow_stem_frame_reset(void) {
+    if (!shadow_stems_wanted) return;
+    memset(shadow_stem_valid, 0, sizeof(shadow_stem_valid));
+}
+
+static inline void shadow_stem_store(int idx, const int16_t *src, float gain) {
+    if (!shadow_stems_wanted || idx < 0 || idx >= SAMPLER_STEM_COUNT || !src) return;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        float v = (float)src[i] * gain;
+        if (v > 32767.0f) v = 32767.0f;
+        if (v < -32768.0f) v = -32768.0f;
+        shadow_stem_bus[idx][i] = (int16_t)lroundf(v);
+    }
+    shadow_stem_valid[idx] = 1;
+}
+
+/* Hand the frame's stems to a capture consumer. An invalid stem is passed as
+ * NULL, which the sampler and skipback both record as silence — see the
+ * "NULL entry writes SILENCE" note in shadow_sampler.c. */
+static inline void shadow_stem_dispatch(void (*sink)(const int16_t *const *, int)) {
+    if (!shadow_stems_wanted) return;
+    const int16_t *ptrs[SAMPLER_STEM_COUNT];
+    for (int i = 0; i < SAMPLER_STEM_COUNT; i++)
+        ptrs[i] = shadow_stem_valid[i] ? shadow_stem_bus[i] : NULL;
+    sink(ptrs, SAMPLER_STEM_COUNT);
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    /* Mirror Save Stems down into the sampler BEFORE either early return
+     * below. Both of them are reachable with the setting freshly changed, and
+     * this call is what allocates and frees the skipback stem buffers (via a
+     * worker post) — losing it on an idle frame would leave the feature
+     * switched on with nowhere to record. It is a compare-and-store on the
+     * unchanged path. */
+    if (shadow_control) {
+        int mode = shadow_control->save_stems;
+        if (mode < SAVE_STEMS_MASTER || mode > SAVE_STEMS_BOTH) mode = SAVE_STEMS_MASTER;
+        shadow_stems_wanted = SAVE_STEMS_WANTS_STEMS(mode);
+        sampler_set_stem_mode(mode);
+    }
+
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
     /* Fast path: nothing active. Leave Move's mailbox untouched. Snapshot the
@@ -2218,6 +2282,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
         native_bridge_split_valid = 1;
         return;
     }
+
+    shadow_stem_frame_reset();
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
@@ -2525,6 +2591,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 /* Capture for Link Audio publisher */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    /* Same signal, same gain — the stem tap for this slot.
+                     * Under Move->Schwung fx_buf is Move's track N plus this
+                     * slot's synth, already through the slot FX chain. */
+                    shadow_stem_store(s, fx_buf, cap_vol);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -2554,7 +2624,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
             } else if (have_move_track) {
                 /* Inactive slot: pass Link Audio through at unity level.
-                 * Master volume is applied after capture at the end. */
+                 * Master volume is applied after capture at the end.
+                 *
+                 * STILL A STEM. A slot with no Schwung module loaded is a Move
+                 * track playing on its own, and dropping it here would make
+                 * "stems" mean "only the tracks I happened to put a synth on"
+                 * — silently, since the file would exist and be empty. */
+                shadow_stem_store(s, move_track, 1.0f);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)move_track[i];
                     if (mixed > 32767) mixed = 32767;
@@ -2588,6 +2664,12 @@ skip_la_rebuild:
 
                 int16_t *fx_buf = shadow_slot_fx_deferred[s];
 
+                /* Stem tap. Outside Move->Schwung this is the SLOT ONLY —
+                 * Move's own audio never enters a slot on this path, and is
+                 * captured whole as the Move stem instead. */
+                shadow_stem_store(s, fx_buf,
+                                  shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
+
                 /* Write to publisher shared memory for link_subscriber */
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
@@ -2617,6 +2699,9 @@ skip_la_rebuild:
                 memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
                 shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                         fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                shadow_stem_store(s, fx_buf,
+                                  shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
 
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
@@ -2801,6 +2886,17 @@ skip_la_rebuild:
             if (summed < -32768.0f) summed = -32768.0f;
             unity_view[i] = (int16_t)lroundf(summed);
         }
+        /* THE MOVE STEM, and it exists only on this path.
+         *
+         * Without Link Audio routing there is no per-track split to be had:
+         * Move hands us one mixed mailbox. Un-scaling it by the same smoothed
+         * mv the unity_view above uses puts it at unity with the slot stems,
+         * so the five files still sum to the master.
+         *
+         * Under rebuild_from_la this is left INVALID on purpose. Move's tracks
+         * are inside the four slot stems there, and a sixth file repeating
+         * them would double every instrument in a stem sum. */
+        shadow_stem_store(SAMPLER_STEM_MOVE, native_bridge_move_component, inv_mv);
     }
 
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
@@ -2967,11 +3063,17 @@ skip_la_rebuild:
     /* Capture audio for sampler at unity (Resample source only) — reads from
      * unity_view[] so it captures pre-master-volume audio. */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
+        /* Stems FIRST, master second: both apply the start-of-recording
+         * fade-in ramp and the master half is the one that consumes the
+         * counter. Reversing these two lines ramps the stems by a block that
+         * has already been spent. */
+        shadow_stem_dispatch(sampler_capture_stems);
         sampler_capture_audio_from_buffer(unity_view);
         sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init(skipback_seconds_setting);
         skipback_capture(unity_view);
+        shadow_stem_dispatch(skipback_capture_stems);
     }
 
 }

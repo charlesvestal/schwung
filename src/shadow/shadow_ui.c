@@ -286,6 +286,29 @@ static JSValue js_shadow_metronome_set(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/* shadow_save_stems_set(v) -> void   (0 = Master, 1 = Stems, 2 = Both)
+ *
+ * Writes shadow_control_t.save_stems, which the shim mirrors into the sampler
+ * every frame, and persists to features.json — SHM does not survive a reboot,
+ * exactly as for recall_quantize and metronome_mode.
+ */
+static JSValue js_shadow_save_stems_set(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    if (v < 0) v = 0;
+    if (v > 2) v = 2;
+    shadow_control->save_stems = (uint8_t)v;
+
+    static const char *NAMES[3] = { "master", "stems", "both" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[v]);
+    features_json_set("save_stems", quoted);
+    return JS_UNDEFINED;
+}
+
 /* shadow_metronome_beats_set(n) -> void
  *
  * Bar length for the downbeat accent, from the set's time signature. NOT
@@ -2950,6 +2973,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_set", JS_NewCFunction(ctx, js_shadow_metronome_set, "shadow_metronome_set", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_save_stems_set", JS_NewCFunction(ctx, js_shadow_save_stems_set, "shadow_save_stems_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_beats_set", JS_NewCFunction(ctx, js_shadow_metronome_beats_set, "shadow_metronome_beats_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
