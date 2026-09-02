@@ -117,25 +117,47 @@ list-editor probe was anchored on the first `type === "enum"` in
 `shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
 and stayed GREEN with the branch deleted.
 
-### Two values means the DETENT TOGGLES, once per flick
+### Two values: the BOXED one toggles, the SWITCH is clockwise-on
 
-There were three spellings of one control and two of them had a dead
-direction: an Off/On (or int 0..1) boolean was direction-ABSOLUTE — right meant
-On, left meant Off, so at Off a left turn did nothing forever — while a two-way
-CHOICE like Mix/Reverb fell to the enum branch and CLAMPED behind the
-four-detent gate, so at Mix a left turn did nothing forever and a right turn
-took four detents to do anything.
+**The split is the WIDGET, not the semantics**, and that is the whole of the
+rule. Both spellings are one control under the click and the dive; they part
+company in `knobStep`, and nowhere else. `isTwoWayMeta` still answers true for
+both — the switch branch simply sits ahead of it.
 
-Reported from the device: *"if there are only two, why not let it wrap
+A **boxed** two-way — Mix/Reverb, Saw/Square, drawn as the enum SQUARE —
+**TOGGLES on a detent whichever way it went.** The two options sit in the same
+box in the same place, so the cell shows a STATE and names no direction. It
+used to fall to the enum branch and CLAMP behind the four-detent gate, so at Mix
+a left turn did nothing forever and a right turn took four detents to do
+anything. Reported from the device: *"if there are only two, why not let it wrap
 otherwise you have to know which way is off and which way is on, in which case
-you need some knowledge you dont have."* There is no way to acquire it — the
-cell shows a STATE, not a direction. Same argument that makes a trigger fire in
-either direction.
+you need some knowledge you dont have."* There is no way to acquire it from a
+box. Same argument that makes a trigger fire in either direction.
 
-**WRAPPING ALONE WOULD NOT DO, and that is the part worth keeping.** With two
-values, "wrap" and "toggle on every detent" are the same thing, and one flick
-of an encoder is a dozen detents — so a flick would land on whichever value the
-detent count happened to be even or odd about. `isTwoWayMeta` in
+A **switch** — Off/On, or an int 0..1 — is **direction-absolute: clockwise on,
+anticlockwise off.** A switch has a TRACK, and its knob sits at one end of it:
+the form names the direction, and it is the same direction every physical switch
+has ever had. So the picture makes a promise here that the boxed value never
+makes, and the toggle broke it. Reported from the device: *"if it's on it should
+stay on when turning it on."* The write is IDEMPOTENT, so there is no latch: a
+dozen detents of one flick all say the same thing, and a flick that lands where
+it already was is the intended no-op rather than a parity accident. An author
+who declares the options backwards (`["On","Off"]`) still gets clockwise-on —
+`switchOnValue` resolves the direction against the WORDS, not the position, the
+same way the graphic does.
+
+**So the TURN partition must equal the DRAW partition.** `detectSwitch` emits
+`VIZ_SWITCH` for exactly `isBooleanMeta && !isTrigger`, and `knobStep`'s switch
+branch guards on exactly that pair. `test_two_way_knob_toggle.sh` §6 asserts
+them equal over the whole fleet fixture, in BOTH directions, because a drift
+either way means a control makes a promise with its shape that the knob does
+not keep — a track that points somewhere the knob will not go, or a box that
+turns as though it had one.
+
+**WRAPPING ALONE WOULD NOT DO for the boxed one, and that is the part worth
+keeping.** With two values, "wrap" and "toggle on every detent" are the same
+thing, and one flick of an encoder is a dozen detents — so a flick would land on
+whichever value the detent count happened to be even or odd about.
 `knob_engine.mjs` therefore pairs the toggle with a LATCH at
 `TWO_WAY_GESTURE_GAP_MS`, the same number and the same rule as
 `TRIGGER_KNOB_GESTURE_GAP_MS`: **one flick is one gesture.** And it is a latch

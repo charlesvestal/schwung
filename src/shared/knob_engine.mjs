@@ -127,10 +127,34 @@ function wideStepCount(state, direction, nowMs) {
 /**
  * A two-state boolean, i.e. exactly what viz.mjs `detectSwitch` draws as a
  * switch. Kept on the same BOOL_OPTION test so a control cannot be drawn as a
- * switch but turned like a list (or the reverse).
+ * switch but turned like a list (or the reverse) — and since the PICTURE is
+ * what tells you which way is on (see knobStep), the two must be the same set
+ * or the promise the graphic makes is one the knob does not keep.
  */
 function isSwitchMeta(meta) {
     return isBooleanMeta(meta);
+}
+
+/** The words BOOL_OPTION accepts that mean ON. */
+const BOOL_ON_WORD = /^(on|yes|1|true|enabled)$/i;
+
+/**
+ * Which of a switch's two values is ON.
+ *
+ * Almost always index 1, but an author is free to declare `["On", "Off"]` and
+ * a few do. A direction-absolute switch that assumed 1 would then turn OFF
+ * clockwise, which is the exact complaint this rule exists to fix — so the
+ * direction is resolved against the WORDS, not the position. An int 0..1 has
+ * no words and 1 is on by construction.
+ *
+ * This also keeps the knob agreeing with the picture: the switch graphic draws
+ * its knob at the ON end, resolved the same way.
+ */
+function switchOnValue(meta) {
+    const opts = Array.isArray(meta.options) ? meta.options.map(String) : null;
+    if (!opts || opts.length !== 2) return 1;
+    const i = opts.findIndex((o) => BOOL_ON_WORD.test(o.trim()));
+    return i >= 0 ? i : 1;
 }
 
 /**
@@ -152,9 +176,15 @@ export const TWO_WAY_GESTURE_GAP_MS = 270;
  *
  * Both spellings count — an Off/On (or int 0..1) boolean, which is drawn as a
  * switch, and a two-way CHOICE like Mix/Reverb or Saw/Square, which is drawn
- * as an enum square. They behave identically under the hand even though they
- * are drawn differently, because the question a detent asks is the same one:
- * there is nowhere to go but the other value.
+ * as an enum square. They are the same control under the click and the dive.
+ *
+ * They part company on the KNOB, and only there, on the strength of how they
+ * are DRAWN: a switch has a track and its knob sits at one end of it, so the
+ * form names the direction and the turn is direction-absolute (clockwise on).
+ * An enum square is a boxed value that shows a state and no direction, so it
+ * TOGGLES on a detent whichever way it went. knobStep takes the switch first
+ * for that reason; this predicate still answers true for both, because every
+ * other caller wants the shared answer.
  *
  * A TRIGGER is excluded. It is a two-option enum on the wire (["—","Rnd!"])
  * and toggling it would write "do nothing" on every other flick — which for
@@ -237,22 +267,25 @@ export function knobStep(state, meta, delta, nowMs, fine = false) {
     }
 
     /*
-     * TWO VALUES: A DETENT TOGGLES, WHICHEVER WAY IT WENT.
+     * A BOXED TWO-WAY TOGGLES, WHICHEVER WAY THE DETENT WENT.
      *
-     * It used to be direction-ABSOLUTE — right meant option 1, left meant
-     * option 0 — and a two-way choice like Mix/Reverb instead fell through to
-     * the enum branch below and CLAMPED behind a four-detent gate. Three
-     * spellings of one control, two of them with a dead direction:
+     * This is the enum-square spelling only — Mix/Reverb, Saw/Square. Anything
+     * drawn as a SWITCH was taken by the branch above and is
+     * direction-absolute. A boxed two-way used to fall through to the enum
+     * branch below and CLAMP behind a four-detent gate, so it had a dead
+     * direction:
      *
-     *   Off/On at Off, turned left     nothing, forever
      *   Mix/Reverb at Mix, turned left nothing, forever
      *
      * Reported from the device: "if there are only two, why not let it wrap
      * otherwise you have to know which way is off and which way is on, in
      * which case you need some knowledge you dont have." There is no way to
-     * acquire that knowledge from the screen — the cell shows a state, not a
-     * direction — so half of every reach for the knob reads as a dead control.
-     * That is the same argument that makes a trigger fire in either direction.
+     * acquire that knowledge from a boxed value — it shows a state, and the two
+     * options sit in the same place whichever one is current — so half of every
+     * reach for the knob reads as a dead control. That is the same argument
+     * that makes a trigger fire in either direction. And it is exactly why it
+     * stops at the switch: a track with a knob on it is a picture of a
+     * direction, so there the knowledge IS on the screen.
      *
      * WRAPPING ALONE WOULD NOT DO, and this is the part worth keeping. With
      * two values, "wrap" and "toggle on every detent" are the same thing, and
@@ -263,8 +296,42 @@ export function knobStep(state, meta, delta, nowMs, fine = false) {
      * the last flip.
      *
      * Hoisted above the enum branch for the reason it always was: an int 0..1
-     * never enters that branch and would accumulate on the numeric path.
+     * never enters that branch and would accumulate on the numeric path (the
+     * switch branch above it exists for the same reason).
      */
+    /*
+     * A SWITCH IS DIRECTION-ABSOLUTE: clockwise is ON, anticlockwise is OFF.
+     *
+     * THE SPLIT IS THE WIDGET, NOT THE SEMANTICS. The toggle rule below exists
+     * because "the cell shows a STATE, not a direction" — true of the boxed
+     * value an enum square draws, where Mix and Reverb sit in the same box in
+     * the same place and nothing on screen says which way the knob reaches
+     * which. It is NOT true of a switch: a switch has a TRACK, and its knob
+     * sits at one end of it. The form itself names the direction, and it is the
+     * same direction every physical switch has ever had. So the picture makes a
+     * promise here that the boxed value never makes, and the toggle broke it —
+     * clockwise on an already-on switch turned it OFF. Reported from the
+     * device: "if it's on it should stay on when turning it on."
+     *
+     * Which is why the test is isSwitchMeta and not "is this a boolean":
+     * detectSwitch draws VIZ_SWITCH for exactly isBooleanMeta && !isTrigger,
+     * and this branch guards on exactly that pair. Whatever WEARS the track
+     * gets the direction; everything else keeps the toggle. If the two ever
+     * drift apart, a control will make a promise with its shape that the knob
+     * does not keep.
+     *
+     * There is no latch because it does not need one: the write is IDEMPOTENT,
+     * so a dozen detents of one flick all say the same thing, and a flick that
+     * lands where it already was is the intended no-op rather than a parity
+     * accident. That is also why this returns without stamping lastTwoWayMs.
+     */
+    if (isSwitchMeta(meta) && !(meta.writeOnly || meta.access === "write")) {
+        const on = switchOnValue(meta);
+        state.detentAccum = 0;
+        state.value = delta > 0 ? on : (on === 1 ? 0 : 1);
+        return state.value;
+    }
+
     if (isTwoWayMeta(meta)) {
         const t = typeof nowMs === "number" ? nowMs : 0;
         const last = state.lastTwoWayMs;
