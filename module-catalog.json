@@ -1388,6 +1388,28 @@
       "default_branch": "main",
       "asset_name": "wayward-module.tar.gz",
       "min_host_version": "1.0.0"
+    },
+    {
+      "id": "maze_seq",
+      "name": "Maze",
+      "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
+      "author": "Sam Di Domizio",
+      "component_type": "tool",
+      "github_repo": "sd88me/schwung-maze-sequencer",
+      "default_branch": "main",
+      "asset_name": "maze_seq-module.tar.gz",
+      "min_host_version": "1.0.0"
+    },
+    {
+      "id": "maze_seq_lite",
+      "name": "Maze Lite",
+      "description": "Dual generative clock-synced sequencer (Moog Labyrinth style). Slot MIDI FX.",
+      "author": "Sam Di Domizio",
+      "component_type": "midi_fx",
+      "github_repo": "sd88me/schwung-maze-sequencer",
+      "default_branch": "main",
+      "asset_name": "maze_seq_lite-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }
