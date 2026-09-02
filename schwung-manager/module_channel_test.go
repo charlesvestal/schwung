@@ -245,6 +245,74 @@ func TestModulesTemplateRendersWithChannel(t *testing.T) {
 	}
 }
 
+// channelNewer must treat "0.13.0-beta.1" as older than "0.13.0" —
+// the tolerant isNewerSemver classifies the prerelease as newer
+// because it has more dotted parts, which would strand a beta user
+// on the prerelease after the matching stable cut. This test pins
+// the guard.
+func TestChannelNewerPrereleaseLosesToBase(t *testing.T) {
+	cases := []struct {
+		beta, stable string
+		want         bool
+	}{
+		{"0.13.0-beta.1", "0.13.0", false}, // matching stable released
+		{"0.13.0-beta.1", "0.12.9", true},  // beta ahead of last stable
+		{"0.13.0-beta.2", "0.13.0-beta.1", true},
+		{"1.0.0", "1.0.0-rc.5", true},
+		{"1.0.0-rc.5", "1.0.0-rc.5", false},
+		{"1.0.0-rc.5", "1.0.0", false},
+	}
+	for _, c := range cases {
+		got := channelNewer(c.beta, c.stable)
+		if got != c.want {
+			t.Errorf("channelNewer(%q, %q) = %v, want %v", c.beta, c.stable, got, c.want)
+		}
+	}
+}
+
+// The host resolver runs on the same code path as modules. These
+// tests pin that: a stable-only host is unchanged, and a host with a
+// beta ahead of stable serves beta only to beta users.
+func TestHostResolveForChannel(t *testing.T) {
+	// No channels block — behaves like a pre-channels catalog.
+	plain := CatalogHost{LatestVersion: "0.12.1", DownloadURL: "https://x/0.12.1.tar.gz"}
+	for _, ch := range []string{ChannelStable, ChannelBeta} {
+		v, u, served := hostResolveForChannel(plain, ch)
+		if v != "0.12.1" || u != "https://x/0.12.1.tar.gz" || served != ChannelStable {
+			t.Errorf("plain %q: got v=%q u=%q served=%q", ch, v, u, served)
+		}
+	}
+
+	// Beta ahead of stable — only beta users see it.
+	stable := ChannelEntry{Version: "0.12.1", DownloadURL: "https://x/0.12.1.tar.gz"}
+	beta := ChannelEntry{Version: "0.13.0-beta.1", DownloadURL: "https://x/0.13.0-beta.1.tar.gz"}
+	with := CatalogHost{
+		LatestVersion: "0.12.1",
+		DownloadURL:   "https://x/0.12.1.tar.gz",
+		Channels:      &ChannelSet{Stable: &stable, Beta: &beta},
+	}
+	v, _, served := hostResolveForChannel(with, ChannelStable)
+	if v != "0.12.1" || served != ChannelStable {
+		t.Errorf("with-beta stable: v=%q served=%q", v, served)
+	}
+	v, _, served = hostResolveForChannel(with, ChannelBeta)
+	if v != "0.13.0-beta.1" || served != ChannelBeta {
+		t.Errorf("with-beta beta: v=%q served=%q", v, served)
+	}
+
+	// Stable caught up — beta user quietly lands on stable.
+	stable2 := ChannelEntry{Version: "0.13.0", DownloadURL: "https://x/0.13.0.tar.gz"}
+	caughtUp := CatalogHost{
+		LatestVersion: "0.13.0",
+		DownloadURL:   "https://x/0.13.0.tar.gz",
+		Channels:      &ChannelSet{Stable: &stable2, Beta: &beta},
+	}
+	v, _, served = hostResolveForChannel(caughtUp, ChannelBeta)
+	if v != "0.13.0" || served != ChannelStable {
+		t.Errorf("caught-up beta: v=%q served=%q", v, served)
+	}
+}
+
 // A nil ChannelPref (e.g. tests, non-device builds) must still respond
 // Stable to every read and reject writes cleanly.
 func TestChannelPrefNilSafe(t *testing.T) {

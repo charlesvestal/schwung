@@ -31,16 +31,19 @@
             Installed:
             {{if .HostRepo}}<a href="{{releaseURL .HostRepo .HostVersion}}" target="_blank" rel="noopener noreferrer">v{{.HostVersion}}</a>{{else}}v{{.HostVersion}}{{end}}
             {{if .HostUpdateAvailable}}
-            <span class="host-summary-latest">&rarr; v{{.HostLatestVersion}} available</span>
+            <span class="host-summary-latest">&rarr; v{{.HostLatestVersion}} available{{if .HostOfferedIsBeta}} <span class="badge badge-beta" title="Pre-release build">beta</span>{{end}}</span>
+            {{end}}
+            {{if .HostBetaTeaser}}
+            <span class="beta-teaser" title="Enable Beta channel to install this pre-release">beta v{{.HostBetaTeaser}} available</span>
             {{end}}
         </p>
     </div>
     <div class="host-summary-actions">
         {{if .HostUpdateAvailable}}
         <form method="POST" action="/system/upgrade" class="inline-form"
-              data-confirm="Upgrade to {{.HostLatestVersion}}? This will restart the service." data-confirm-title="Upgrade Schwung" data-confirm-label="Upgrade">
+              data-confirm="Upgrade to {{if .HostOfferedIsBeta}}beta {{end}}{{.HostLatestVersion}}? This will restart the service." data-confirm-title="Upgrade Schwung" data-confirm-label="Upgrade">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <button type="submit" class="btn btn-primary">Upgrade to v{{.HostLatestVersion}}</button>
+            <button type="submit" class="btn btn-primary">Upgrade to v{{.HostLatestVersion}}{{if .HostOfferedIsBeta}} (beta){{end}}</button>
         </form>
         {{if .HostRepo}}<a class="release-notes-link" href="{{releaseURL .HostRepo .HostLatestVersion}}" target="_blank" rel="noopener noreferrer">release notes</a>{{end}}
         {{else}}

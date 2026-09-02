@@ -83,12 +83,45 @@ func resolveReleaseForChannel(rel ReleaseJSON, want string) (ChannelEntry, strin
 			// A beta only wins when it is strictly newer than stable.
 			// Equal or older betas fall through to stable, so the
 			// beta user quietly lands on stable once it catches up.
-			if isNewerSemver(beta.Version, stable.Version) {
+			if channelNewer(beta.Version, stable.Version) {
 				return beta, ChannelBeta
 			}
 		}
 	}
 	return stable, ChannelStable
+}
+
+// channelNewer reports whether `beta` should win over `stable` for a
+// beta user. Reuses isNewerSemver for the numeric compare but adds
+// one SemVer-2.0.0 rule the tolerant helper misses: a version WITH a
+// prerelease suffix (e.g. "0.13.0-beta.1") is LESS than the same
+// base version WITHOUT one ("0.13.0"). Without this, isNewerSemver
+// classifies "0.13.0-beta.1" as newer than "0.13.0" (it has more
+// dotted parts) — which would strand a beta user on the prerelease
+// after the matching stable cut, exactly the failure mode this
+// channel design is supposed to prevent.
+func channelNewer(beta, stable string) bool {
+	betaBase, betaPre := splitPrerelease(beta)
+	stableBase, stablePre := splitPrerelease(stable)
+	// Same base + exactly one side has a prerelease: the base version
+	// wins. This is the guard against isNewerSemver classifying
+	// "0.13.0-beta.1" as newer than "0.13.0". When BOTH sides have
+	// prereleases (comparing beta.2 vs beta.1) or NEITHER does, fall
+	// through to the ordinary compare.
+	if betaBase == stableBase && (betaPre == "") != (stablePre == "") {
+		return betaPre == "" // beta wins iff stable is the prerelease
+	}
+	return isNewerSemver(beta, stable)
+}
+
+// splitPrerelease splits a version on the first "-" so we can compare
+// "0.13.0" and "0.13.0-beta.1" as (base, prerelease).
+func splitPrerelease(v string) (string, string) {
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		return v[:i], v[i+1:]
+	}
+	return v, ""
 }
 
 // stableEntry returns the stable-channel slot for a release.json,
@@ -127,12 +160,14 @@ func betaEntry(rel ReleaseJSON) *ChannelEntry {
 // channelVersion returns the version string a given channel would
 // install for one module, using the static-site release-metadata
 // snapshot (not a live release.json fetch — this feeds page rendering).
-// Returns "" when metadata has nothing to say.
+// Returns "" when metadata has nothing to say. Uses the same
+// prerelease-aware compare as the resolver, so the UI and the
+// download can't disagree.
 func channelVersion(rm ReleaseMeta, channel string) string {
 	stable := channelStableVersion(rm)
 	if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
 		beta := rm.Channels.Beta.Version
-		if beta != "" && isNewerSemver(beta, stable) {
+		if beta != "" && channelNewer(beta, stable) {
 			return beta
 		}
 	}
