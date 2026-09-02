@@ -1,0 +1,38 @@
+{{template "base" .}}
+
+{{define "title"}}CPU - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>CPU</h1>
+</div>
+
+<section class="info-card">
+    <h2>About these numbers</h2>
+    <p>Two different quantities. They cannot be added together.</p>
+    <dl class="detail-list">
+        <dt>Frame budget &mdash; core 3</dt>
+        <dd>
+            Per-module time as a share of the {{.FramePeriodUs}}&nbsp;&micro;s SPI frame
+            period. This is the number that decides whether you get dropouts.
+            Modules are not processes &mdash; every synth and effect runs inside
+            MoveOriginal on the SPI callback &mdash; so this is the only per-module
+            attribution that exists.
+        </dd>
+        <dt>Process CPU &mdash; cores 0&ndash;3</dt>
+        <dd>
+            Ordinary per-process percentages from <code>/proc</code>. The Link Audio
+            subscriber is a real process and appears here.
+        </dd>
+    </dl>
+    <p class="muted">
+        Collection in the shim is always on and costs nothing measurable. This
+        button starts the <em>polling</em>, which is the only part with a real
+        cost &mdash; and it runs off the realtime path.
+    </p>
+</section>
+
+<div id="cpu-panel">
+    {{template "cpu_idle" .}}
+</div>
+{{end}}

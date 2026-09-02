@@ -1,0 +1,11 @@
+{{define "cpu_idle"}}
+<section class="info-card">
+    <button class="btn btn-primary"
+            hx-get="/system/cpu/values"
+            hx-target="#cpu-panel"
+            hx-swap="innerHTML">
+        Measure CPU
+    </button>
+    <p class="muted" role="status">Not sampling.</p>
+</section>
+{{end}}

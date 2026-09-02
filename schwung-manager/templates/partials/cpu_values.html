@@ -1,0 +1,201 @@
+{{define "cpu_values"}}
+{{/* The polling lives HERE, on the returned fragment, not on the page. That is
+     what makes closing the tab stop it: there is no server-side session, no
+     timer and no goroutine to leak on a device whose realtime budget we care
+     about. [Stop] swaps in a fragment that carries no trigger. */}}
+<div hx-get="/system/cpu/values"
+     hx-trigger="every 1s"
+     hx-target="#cpu-panel"
+     hx-swap="innerHTML">
+
+    <section class="info-card">
+        <button class="btn btn-secondary"
+                hx-get="/system/cpu/idle"
+                hx-target="#cpu-panel"
+                hx-swap="innerHTML">
+            Stop
+        </button>
+        <span class="muted" role="status">Sampling once a second.</span>
+    </section>
+
+    <section class="info-card">
+        <h2>Frame budget &mdash; core 3 (SPI callback)</h2>
+        {{if .PerfError}}
+            <p class="notice-warn" role="alert">{{.PerfError}}</p>
+        {{else if not .Budget}}
+            <p class="muted">No slots or effects loaded.</p>
+        {{else}}
+            <p class="muted">
+                Averaged over {{.Snapshot.SampleWindowFrames}} frames.
+                Max is a spike, not a load.
+            </p>
+            <div class="table-scroll">
+            <table class="data-table">
+                <caption class="sr-only">Per-module and host time as a share of the SPI frame period</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">What</th>
+                        <th scope="col">Module</th>
+                        <th scope="col">Avg</th>
+                        <th scope="col">% frame</th>
+                        <th scope="col">Max</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {{range .Budget}}
+                    <tr>
+                        <th scope="row">
+                            {{.Label}}
+                            {{if .Note}}<br><small class="muted">{{.Note}}</small>{{end}}
+                        </th>
+                        <td>{{if .Module}}{{.Module}}{{else}}<span class="muted">host</span>{{end}}</td>
+                        <td>{{.AvgUs}}&nbsp;&micro;s</td>
+                        <td>
+                            <div class="progress-bar" role="progressbar"
+                                 aria-valuenow="{{printf "%.0f" .Percent}}"
+                                 aria-valuemin="0" aria-valuemax="100"
+                                 aria-label="{{.Label}}: {{printf "%.1f" .Percent}} percent of the SPI frame">
+                                <div class="progress-fill{{if gt .Percent 40.0}} progress-danger{{else if gt .Percent 20.0}} progress-warning{{end}}"
+                                     style="width: {{printf "%.1f" .Percent}}%">{{printf "%.1f" .Percent}}%</div>
+                            </div>
+                        </td>
+                        <td>{{.MaxUs}}&nbsp;&micro;s</td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+            </div>
+        {{end}}
+    </section>
+
+    <section class="info-card">
+        <h2>Processes &mdash; cores 0&ndash;3</h2>
+        {{if not .ProcessOK}}
+            {{/* There is always at least one process — this one. An empty scan
+                 means /proc could not be read, and saying "not running" five
+                 times would report a failed read as five findings. */}}
+            <p class="notice-warn" role="alert">
+                Process list unavailable &mdash; <code>/proc</code> could not be read.
+            </p>
+        {{else if .Process.Priming}}
+            <p class="muted" role="status">
+                Priming &mdash; a single reading of <code>/proc</code> is a lifetime
+                average, so the first percentage arrives with the next sample.
+            </p>
+        {{else}}
+            <div class="table-scroll">
+            <table class="data-table">
+                <caption class="sr-only">Per-process CPU usage</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Process</th>
+                        <th scope="col">PID</th>
+                        <th scope="col">CPU</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {{range .Process.Rows}}
+                    <tr>
+                        <th scope="row">{{.Comm}}</th>
+                        <td>{{if .Absent}}<span class="muted">&mdash;</span>{{else}}{{.PID}}{{end}}</td>
+                        <td>
+                            {{if .Absent}}<span class="muted">not running</span>
+                            {{else}}{{printf "%.1f" .Percent}}%{{end}}
+                        </td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+            </div>
+        {{end}}
+    </section>
+
+    <section class="info-card">
+        <h2>Cores</h2>
+        {{/* A read that did not answer must not become a picture. Without these
+             guards a missing /proc/loadavg renders as "0.00 / 0.00 / 0.00" and a
+             missing /proc/stat as a table of headings with no rows - a failed
+             read wearing the costume of a real measurement. */}}
+        {{if .LoadOK}}
+            <p class="muted">
+                Load average: {{printf "%.2f" .Load1}} / {{printf "%.2f" .Load5}} / {{printf "%.2f" .Load15}}
+            </p>
+        {{else}}
+            <p class="muted">Load average unavailable &mdash; <code>/proc/loadavg</code> could not be read.</p>
+        {{end}}
+
+        {{if and .CoresOK .Cores}}
+            <div class="table-scroll">
+            <table class="data-table">
+                <caption class="sr-only">Per-core busy and total jiffies since boot</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Core</th>
+                        <th scope="col">Busy jiffies</th>
+                        <th scope="col">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {{range .Cores}}
+                    <tr>
+                        <th scope="row">
+                            {{.Name}}{{if eq .Name "cpu3"}} <span class="muted">(SPI)</span>{{end}}
+                        </th>
+                        <td>{{.Busy}}</td>
+                        <td>{{.Total}}</td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+            </div>
+        {{else}}
+            <p class="notice-warn" role="alert">
+                Per-core figures unavailable &mdash; <code>/proc/stat</code> could not be read.
+                This is a failed read, not an idle machine.
+            </p>
+        {{end}}
+    </section>
+
+    <section class="info-card">
+        <h2>Realtime threads inside MoveOriginal</h2>
+        <p class="muted">
+            A thread created from a module entry point inherits the SPI callback's
+            priority <em>and</em> its parent's name, so it reports as
+            <code>Audio Main/SPI</code> and is invisible in any ordinary thread
+            list. Nothing here matches on names.
+        </p>
+        {{if not .MoveFound}}
+            {{/* "None found" would state a finding from a scan that never ran. */}}
+            <p class="muted">MoveOriginal is not running &mdash; nothing to scan.</p>
+        {{else if not .RTThreads}}
+            <p class="muted">None found.</p>
+        {{else}}
+            <div class="table-scroll">
+            <table class="data-table">
+                <caption class="sr-only">Realtime-scheduled threads inside the MoveOriginal process</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">TID</th>
+                        <th scope="col">Name</th>
+                        <th scope="col">Policy</th>
+                        <th scope="col">Priority</th>
+                        <th scope="col">Core</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {{range .RTThreads}}
+                    <tr>
+                        <th scope="row">{{.PID}}</th>
+                        <td>{{.Comm}}</td>
+                        <td>{{if eq .Policy 1}}FIFO{{else if eq .Policy 2}}RR{{else}}OTHER{{end}}</td>
+                        <td>{{.RTPrio}}</td>
+                        <td>{{.CPU}}{{if eq .CPU $.SPICore}} <span class="muted">(SPI)</span>{{end}}</td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+            </div>
+        {{end}}
+    </section>
+</div>
+{{end}}
