@@ -6521,6 +6521,37 @@ function setupModuleParamShims(slot, componentKey) {
         }
     };
 
+    /*
+     * The two trailing pages, for a module that draws its own param pages.
+     *
+     * Every component the SHADOW UI paginates gets "My Presets" and "Module"
+     * appended, because enterParamPages hands componentParamPagesIo to the
+     * controller and the controller appends whatever io.trailingMenus returns.
+     * A module shipping ui_chain.js builds its own controller, so it got
+     * neither — a drum machine with a pad-select editor could not save a
+     * preset, while a synth using the stock editor could. The pages are not a
+     * property of who drew the grid.
+     *
+     * Both halves have to cross: the MENUS (what to draw) and the ACTIONS
+     * (what a row does). Reimplementing either module-side is not an option —
+     * the actions reach the user preset store, the preset browser, the
+     * component picker and the help screen, none of which a module can address
+     * — so they are bound here with the slot and component already applied,
+     * exactly as host_swap_module above is.
+     *
+     * `runAction` returns whether the action opened a screen, which is the
+     * caller's cue to stop drawing; ui_chain.js should return from its input
+     * handler when it sees true.
+     */
+    globalThis.shadow_component_trailing_menus = function() {
+        return componentTrailingMenus(slot, componentKey, prefix) || [];
+    };
+
+    globalThis.shadow_component_run_action = function(action) {
+        if (!action) return false;
+        return !!runComponentActionFromGrid(slot, componentKey, action);
+    };
+
     globalThis.host_open_file_in_tool = function(filePath, toolId) {
         if (!filePath || !toolId) return false;
         if (!toolModules || !toolModules.length) {
@@ -6554,6 +6585,8 @@ function clearModuleParamShims() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
     delete globalThis.host_suspend_overtake;
+    delete globalThis.shadow_component_trailing_menus;
+    delete globalThis.shadow_component_run_action;
     delete globalThis.host_swap_module;
     delete globalThis.host_open_file_in_tool;
 }

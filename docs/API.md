@@ -326,6 +326,42 @@ midpoint algorithm produces a closed ring that a difference-of-fills does not.
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
 `host_exit_module` is dynamically created for tool modules only — it is not available in the main host context.
 
+### Trailing pages for a module-owned param grid
+
+A module that ships `ui_chain.js` draws its own param pages, so it does not get
+the **My Presets** and **Module** pages the shadow UI appends to every component
+it paginates itself. These two bindings hand them across; both are installed
+with the slot and component already applied, like `host_swap_module`.
+
+```javascript
+shadow_component_trailing_menus()        // [{name, entries}] — feed to the
+                                         // controller as io.trailingMenus
+shadow_component_run_action(action)      // perform a row's action;
+                                         // returns true if it opened a screen
+```
+
+Wire them into the controller you create:
+
+```javascript
+const controller = createController({
+    getParam, setParam, announce,
+    trailingMenus: () => (typeof shadow_component_trailing_menus === "function"
+        ? shadow_component_trailing_menus() : []),
+});
+
+// and on a menu row's action, from applyInput's result:
+if (todo && todo.action && typeof shadow_component_run_action === "function") {
+    if (shadow_component_run_action(todo.action)) return;   // a screen opened
+}
+```
+
+Guard on the functions existing: they are absent on an older host, and absent
+for a Master FX position, which has no component preset record.
+
+The pages arrive as `PAGE_MENU`, which the param_pages library draws itself —
+so a chain UI whose render guard only admits `PAGE_KNOBS` will paint its
+unsupported-page fallback over them. Admit `PAGE_MENU` too.
+
 ### Jack state and module metadata
 
 `host_speaker_active()` — returns `true` when built-in speakers are active (no headphones plugged), `false` otherwise. Reflects XMOS CC 115 line-out detect, observed at SPI frame ~180ms after boot.
