@@ -939,16 +939,25 @@ const (
 	perfOffFramePostAvg  = 80
 	perfOffFramePostMax  = 88
 
-	// The 24 granular sections start here, each an (avg, max) uint64 pair.
-	perfOffSections    = 96
-	perfSectionCount   = 24
-	perfSectionStride  = 16
+	// The timed sections start here as ONE contiguous run of (avg, max) uint64
+	// pairs: 21 granular pre-ioctl sections followed by 3 post-ioctl chunks of
+	// exactly the same shape. They are walked as a single run of 24 because
+	// that is what the C struct lays out — treating the post chunks as a
+	// separate block and adding their size again is an easy 48-byte error, and
+	// silent: every per-slot number would come from the wrong field.
+	// Verified against the compiler: midi_mon_avg is at 96 and slot_render_avg
+	// at 480, and 96 + 24*16 = 480.
+	perfOffSections   = 96
+	perfSectionCount  = 24
+	perfSectionStride = 16
 
-	// Post-ioctl chunks: 3 more (avg, max) pairs.
-	perfOffPostChunks = perfOffSections + perfSectionCount*perfSectionStride
+	// Where the 3 post-ioctl chunks begin within that run. Declared only so
+	// the offsets test can check it; nothing indexes off it.
+	perfGranularSectionCount = 21
+	perfOffPostChunks        = perfOffSections + perfGranularSectionCount*perfSectionStride
 
 	// Per-slot arrays, each PERF_CHAIN_SLOTS uint64s.
-	perfOffSlotRenderAvg = perfOffPostChunks + 3*perfSectionStride
+	perfOffSlotRenderAvg = perfOffSections + perfSectionCount*perfSectionStride
 	perfOffSlotRenderMax = perfOffSlotRenderAvg + perfChainSlots*8
 	perfOffSlotSynthAvg  = perfOffSlotRenderMax + perfChainSlots*8
 	perfOffSlotSynthMax  = perfOffSlotSynthAvg + perfChainSlots*8

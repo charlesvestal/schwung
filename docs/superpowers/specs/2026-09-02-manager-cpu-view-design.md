@@ -41,13 +41,34 @@ answer determines what gets armed and what stays on.
 With four active slots that is roughly **78 `clock_gettime` calls per frame** —
 ~50 for the host sections, 4 for the frame boundaries, 6 per active slot.
 
-On ARM64, `CLOCK_MONOTONIC` resolves in the vDSO (a `CNTVCT_EL0` read, no
-syscall) at roughly 20–40 ns, so ≈2–3 µs of a 2902 µs frame — **under 0.1%**.
+**Measured on the device 2026-09-02**, rather than assumed:
 
-> **The vDSO assumption is the one number to measure rather than reason about.**
-> Task 0 measures it on the device before anything is built on top of it. If
-> `clock_gettime` turns out to be a real syscall here, the existing baseline is
-> ~50× worse than stated and *that* becomes the finding, not this feature.
+```
+current_clocksource   : arch_sys_counter      (and the ONLY one available)
+available_clocksource : arch_sys_counter
+vdso mapped           : yes
+kernel                : 5.15.92-rt57-v8 aarch64   (PREEMPT_RT)
+```
+
+`CLOCK_MONOTONIC` therefore resolves in the vDSO — a `CNTVCT_EL0` read, no
+syscall. Timed from Python, comparing two C builtins with identical call
+overhead so the difference is the syscall boundary itself:
+
+```
+time.monotonic()   (vDSO clock_gettime)    340 ns per call
+os.getppid()       (genuine syscall)      2133 ns per call
+```
+
+A real syscall on this device costs **~1.8 µs**. `clock_gettime` is nowhere
+near that, so the per-call cost is well under 100 ns and the shim's ~78 calls
+per frame are **≈2–3 µs of a 2902 µs frame — under 0.1%.** The claim stands.
+
+> **Why this was worth measuring rather than reasoning about.** Had the
+> clocksource been anything else, glibc's vDSO path falls through to a real
+> syscall — and 78 × 1.8 µs is **140 µs, 4.8% of every frame, permanently, on
+> the RT thread.** That would have been a pre-existing defect in the shim
+> considerably more interesting than this feature, and nothing about the source
+> would have revealed it.
 
 ### 2. What this feature adds to the RT path — effectively zero
 
