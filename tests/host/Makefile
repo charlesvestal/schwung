@@ -48,7 +48,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_recall_quantize \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
-	$(BUILD_DIR)/test_shadow_metronome
+	$(BUILD_DIR)/test_shadow_metronome \
+	$(BUILD_DIR)/test_perf_snapshot_size
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -57,6 +58,14 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 MASTER_FX_SLOTS := $(shell awk '/^\#define MASTER_FX_SLOTS /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
 ifeq ($(strip $(MASTER_FX_SLOTS)),)
 $(error could not read MASTER_FX_SLOTS from ../../src/host/shadow_chain_mgmt.h)
+endif
+
+# perf_snapshot.h restates the slot counts (tests/host/ does not build the chain
+# manager). Fail the build if they drift rather than let the CPU page report
+# half the Master FX chain.
+PERF_MFX_SLOTS := $(shell awk '/^\#define PERF_MASTER_FX_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
+ifneq ($(strip $(PERF_MFX_SLOTS)),$(strip $(MASTER_FX_SLOTS)))
+$(error PERF_MASTER_FX_SLOTS ($(PERF_MFX_SLOTS)) != MASTER_FX_SLOTS ($(MASTER_FX_SLOTS)) - update src/host/perf_snapshot.h)
 endif
 
 .DEFAULT_GOAL := all
