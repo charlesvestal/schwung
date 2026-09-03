@@ -207,6 +207,12 @@ type moduleIDCache struct {
 // param requests the SPI callback had to serve.
 const moduleIDRefresh = 2 * time.Second
 
+// moduleIDStaleLimit is how long a cached set may outlive a failing read before
+// the page stops presenting its names as current. Generous against the 2 s
+// refresh so an ordinary transient does not blank the page, short enough that a
+// real problem is not papered over for a whole session.
+const moduleIDStaleLimit = 60 * time.Second
+
 // paramReader is the slice of *ShmParams this file needs. An interface so the
 // freshness fallback is testable without a device.
 type paramReader interface {
@@ -278,11 +284,20 @@ func (app *App) moduleIDs(snap *PerfSnapshot) (
 	if app.moduleIDs_.set == nil || time.Since(app.moduleIDs_.readAt) >= moduleIDRefresh {
 		s, err := readSetState(app.basePath)
 		if err != nil {
-			// Leave the cache alone: a stale set beats no set, and the nil case
-			// below reports honestly when there has never been one.
+			// A stale set beats no set THROUGH A BLIP, but not indefinitely.
+			// Disk reads essentially never fail on a working device, so a
+			// failure that persists past moduleIDStaleLimit is not a blip - it
+			// means the set moved, was deleted, or the filesystem is unhappy,
+			// and by then every name on the page is a claim we can no longer
+			// support. Drop the cache and let the page say the names are
+			// unread, which is the truth.
 			if app.logger != nil {
 				app.logger.Warn("cpu page: could not read the active set state",
 					"err", err)
+			}
+			if app.moduleIDs_.set != nil &&
+				time.Since(app.moduleIDs_.readAt) > moduleIDStaleLimit {
+				app.moduleIDs_.set = nil
 			}
 		} else {
 			app.moduleIDs_.set = s

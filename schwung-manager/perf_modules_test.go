@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // realSlot0 is the shape a real slot_N.json actually has, trimmed of the module
@@ -248,5 +249,54 @@ func TestFreshnessNilSetIsUnansweredNotEmpty(t *testing.T) {
 		if mfx[i].Answered {
 			t.Errorf("master fx %d Answered = true, want false", i)
 		}
+	}
+}
+
+// A stale set may outlive a blip, but not a persistent failure. Past the limit
+// the page must stop presenting names it can no longer support and say they are
+// unread - the same rule as every other read on this page.
+func TestModulesStaleSetIsDroppedAfterTheLimit(t *testing.T) {
+	base := t.TempDir()
+	writeSet(t, base, "u", map[string]string{
+		"slot_0.json": `{"chain":{"synth":{"module":"jp8000"}}}`,
+	})
+	app := &App{basePath: base}
+
+	slots, _, _ := app.moduleIDs(&PerfSnapshot{})
+	if slots[0].Name != "jp8000" {
+		t.Fatalf("first read should populate, got %+v", slots[0])
+	}
+
+	// The set goes away, and the cache is already older than the limit.
+	if err := os.Remove(filepath.Join(base, "active_set.txt")); err != nil {
+		t.Fatal(err)
+	}
+	app.moduleIDs_.readAt = time.Now().Add(-2 * moduleIDStaleLimit)
+
+	slots, _, _ = app.moduleIDs(&PerfSnapshot{})
+	if slots[0].Answered {
+		t.Fatal("past the stale limit a name must report as unread, not keep " +
+			"presenting a cached value as current")
+	}
+}
+
+// ...but a blip within the limit must NOT blank the page.
+func TestModulesStaleSetSurvivesABlip(t *testing.T) {
+	base := t.TempDir()
+	writeSet(t, base, "u", map[string]string{
+		"slot_0.json": `{"chain":{"synth":{"module":"jp8000"}}}`,
+	})
+	app := &App{basePath: base}
+	app.moduleIDs(&PerfSnapshot{})
+
+	if err := os.Remove(filepath.Join(base, "active_set.txt")); err != nil {
+		t.Fatal(err)
+	}
+	// Force a re-read attempt, but stay well inside the stale limit.
+	app.moduleIDs_.readAt = time.Now().Add(-2 * moduleIDRefresh)
+
+	slots, _, _ := app.moduleIDs(&PerfSnapshot{})
+	if slots[0].Name != "jp8000" {
+		t.Fatalf("a transient failure must not blank the page, got %+v", slots[0])
 	}
 }
