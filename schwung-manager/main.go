@@ -754,6 +754,7 @@ func loadTemplates() (templateMap, error) {
 		"templates/files.html",
 		"templates/config.html",
 		"templates/system.html",
+		"templates/system_cpu.html",
 		"templates/install.html",
 		"templates/help.html",
 		"templates/remote_ui.html",
@@ -799,9 +800,14 @@ type App struct {
 	catalogSvc    *CatalogService
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
-	shm           *ShmConfig // shared memory for live config sync (nil if not on device)
-	shmParams     *ShmParams // shared memory for param get/set (nil if not on device)
-	upgradeStatus string     // current upgrade step (empty = not upgrading)
+	shm           *ShmConfig    // shared memory for live config sync (nil if not on device)
+	shmParams     *ShmParams    // shared memory for param get/set (nil if not on device); use params(), don't read directly
+	paramsMu      sync.Mutex    // guards the lazy attach of shmParams
+	perfShm       *PerfShm      // /schwung-perf frame budget (nil until the shim creates it)
+	perfMu        sync.Mutex    // guards the lazy attach of perfShm
+	moduleIDs_    moduleIDCache // slot / Master FX identities, refreshed slowly
+	cpuSampler    *cpuSampler   // previous /proc sample, for the CPU page delta
+	upgradeStatus string        // current upgrade step (empty = not upgrading)
 	downloadJobs  map[string]*downloadJob
 	downloadMu    sync.Mutex
 }
@@ -838,6 +844,29 @@ func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data
 	// ParseFS names templates by the base filename, not the full path.
 	if err := t.ExecuteTemplate(w, name, data); err != nil {
 		app.logger.Error("template render", "template", name, "err", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
+}
+
+// renderPartial writes ONE {{define}} block with no base layout, for htmx
+// fragment swaps.
+//
+// loadTemplates parses templates/partials/*.html into every page clone, so any
+// page template can execute any partial by name; `host` names the page the
+// fragment belongs to rather than selecting behaviour.
+func (app *App) renderPartial(w http.ResponseWriter, r *http.Request, host, name string, data map[string]any) {
+	t, ok := app.tmpl[host]
+	if !ok {
+		app.logger.Error("template not found", "template", host)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if cookie, err := r.Cookie("csrf_token"); err == nil {
+		data["CSRFToken"] = cookie.Value
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := t.ExecuteTemplate(w, name, data); err != nil {
+		app.logger.Error("partial render", "partial", name, "err", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }
@@ -3478,11 +3507,11 @@ func main() {
 		logger.Info("shared memory config: not available (not on device)")
 	}
 
-	shmParams := OpenShmParams()
-	if shmParams != nil {
-		logger.Info("shared memory params: connected")
+	perfShm := OpenPerfShm()
+	if perfShm != nil {
+		logger.Info("perf snapshot shm: connected")
 	} else {
-		logger.Info("shared memory params: not available (not on device)")
+		logger.Info("perf snapshot shm: not available (shim not running, or not on device)")
 	}
 
 	webSetRing := OpenShmWebParamSetRing()
@@ -3499,7 +3528,8 @@ func main() {
 		basePath:     basePath,
 		logger:       logger,
 		shm:          shm,
-		shmParams:    shmParams,
+		perfShm:      perfShm,
+		cpuSampler:   newCPUSampler(),
 		downloadJobs: make(map[string]*downloadJob),
 	}
 
@@ -3573,6 +3603,13 @@ func main() {
 	mux.HandleFunc("GET /system/upgrade-status", app.handleUpgradeStatus)
 	mux.HandleFunc("GET /system/logs", app.handleSystemLogs)
 
+	// CPU page. The page itself samples nothing; the [Measure CPU] button swaps
+	// in a fragment that carries its own hx-trigger, so polling lives entirely
+	// in the browser and stops when the tab closes.
+	mux.HandleFunc("GET /system/cpu", app.handleSystemCPU)
+	mux.HandleFunc("GET /system/cpu/values", app.handleSystemCPUValues)
+	mux.HandleFunc("GET /system/cpu/idle", app.handleSystemCPUIdle)
+
 	// Help.
 	mux.HandleFunc("GET /help", app.handleHelp)
 
@@ -3594,8 +3631,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Remote UI WebSocket (shmParams may be nil — lazy connect when Move starts).
-	remoteUI := NewRemoteUI(shmParams, webSetRing, app.basePath, logger)
+	// Remote UI WebSocket (app.params() may be nil — lazy connect when Move starts).
+	remoteUI := NewRemoteUI(app, webSetRing, app.basePath, logger)
 	remoteUI.Start(ctx)
 	mux.Handle("GET /ws/remote-ui", remoteUI)
 

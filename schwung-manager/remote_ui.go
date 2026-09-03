@@ -28,7 +28,8 @@ import (
 // ShmParams may be nil at startup (shared memory not yet created) and will
 // be lazily connected when the first request arrives.
 type RemoteUI struct {
-	shm        *ShmParams
+	app        *App                   // shares App's ONE lazily-attached param handle; see ensureShm
+	shm        *ShmParams             // cached mirror of app.params(), so downstream reads can use ru.shm directly
 	setRing    *ShmWebParamSetRing    // fast fire-and-forget param writes (~3ms)
 	notifyRing *ShmWebParamNotifyRing // push-based param change notifications from shim
 	basePath   string                 // e.g. /data/UserData/schwung — for locating module web_ui.html
@@ -188,10 +189,12 @@ var componentPrefixes = []string{"synth", "fx1", "fx2", "midi_fx1"}
 // masterFxSlots lists the 4 master FX slot identifiers.
 var masterFxSlots = []string{"fx1", "fx2", "fx3", "fx4"}
 
-// NewRemoteUI creates a RemoteUI. shm/setRing may be nil (lazy connect on first use).
-func NewRemoteUI(shm *ShmParams, setRing *ShmWebParamSetRing, basePath string, logger *slog.Logger) *RemoteUI {
+// NewRemoteUI creates a RemoteUI. setRing may be nil (lazy connect on first
+// use); the param handle always comes from app.params() (see ensureShm), never
+// from a mapping of its own.
+func NewRemoteUI(app *App, setRing *ShmWebParamSetRing, basePath string, logger *slog.Logger) *RemoteUI {
 	return &RemoteUI{
-		shm:      shm,
+		app:      app,
 		setRing:  setRing,
 		basePath: basePath,
 		logger:   logger,
@@ -286,19 +289,23 @@ func (ru *RemoteUI) ensureSetRing() *ShmWebParamSetRing {
 	return ru.setRing
 }
 
-// ensureShm attempts to open shared memory if not yet connected.
-// Returns the ShmParams (possibly nil if still unavailable). mu-guarded for
-// the same double-open reason as ensureSetRing.
+// ensureShm returns the shared param channel, caching it in ru.shm so the many
+// call sites below that read ru.shm directly (rather than calling this again)
+// see it too.
+//
+// It delegates to App - the manager keeps exactly ONE mapping of
+// /dev/shm/schwung-param. This used to open its own second mapping, which is
+// why the Remote UI could work fine while the CPU page reported no param
+// channel at all: the two were independent handles racing the same segment's
+// creation, and only one of them retried.
 func (ru *RemoteUI) ensureShm() *ShmParams {
 	ru.mu.Lock()
 	defer ru.mu.Unlock()
 	if ru.shm != nil {
 		return ru.shm
 	}
-	shm := OpenShmParams()
-	if shm != nil {
+	if shm := ru.app.params(); shm != nil {
 		ru.shm = shm
-		ru.logger.Info("shared memory params: connected (lazy)")
 	}
 	return ru.shm
 }

@@ -18,6 +18,7 @@ func TestLoadTemplates(t *testing.T) {
 	required := []string{
 		"config.html",
 		"module_detail.html",
+		"system_cpu.html",
 	}
 	for _, name := range required {
 		if _, ok := m[name]; !ok {
