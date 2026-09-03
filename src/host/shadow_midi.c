@@ -1321,7 +1321,9 @@ int shadow_focused_captures_note(uint8_t note)
         return shadow_master_fx_captures_note(note);
     }
     if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
-        return capture_has_note(&host_chain_slots[slot].capture, note);
+        /* Patch rules OR module rules — see shadow_slot_load_module_capture. */
+        return capture_has_note(&host_chain_slots[slot].capture, note)
+            || capture_has_note(&host_chain_slots[slot].module_capture, note);
     }
     return 0;
 }
@@ -1336,7 +1338,8 @@ int shadow_focused_captures_cc(uint8_t cc)
         return shadow_master_fx_captures_cc(cc);
     }
     if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES) {
-        return capture_has_cc(&host_chain_slots[slot].capture, cc);
+        return capture_has_cc(&host_chain_slots[slot].capture, cc)
+            || capture_has_cc(&host_chain_slots[slot].module_capture, cc);
     }
     return 0;
 }

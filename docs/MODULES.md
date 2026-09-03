@@ -2929,9 +2929,31 @@ All fields are optional and combine as a union.
 | `knobs_abs` | CCs | 102-109 | 8 knobs (absolute 0-127, scaled to assigned param range) |
 | `jog` | CC | 14 | Main encoder |
 
-**Module-level capture (for Master FX):**
+**Module-level capture:**
 
-Audio FX modules can define capture rules in their `module.json`:
+A module can declare capture rules for itself in `module.json`, under
+`capabilities`. This is the right place when the need belongs to the module
+rather than to a patch — a drum machine whose own sequencer reads the step
+buttons wants them whatever patch wraps it:
+
+```json
+{
+    "id": "9w9",
+    "capabilities": {
+        "component_type": "sound_generator",
+        "capture": { "groups": ["steps"] }
+    }
+}
+```
+
+A chain slot captures the **union** of its patch's rules and its synth
+module's. The module rules are re-derived on every load path — library load,
+autosave restore at boot, set switch, module swap — which matters because the
+patch rules are read from the patch *file* and only when a patch is loaded from
+the library by index. A slot restored from autosave has no patch file to read,
+so until module-level capture existed it came back with no rules at all.
+
+Audio FX modules use the same block for Master FX:
 
 ```json
 {

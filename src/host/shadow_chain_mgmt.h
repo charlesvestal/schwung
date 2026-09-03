@@ -342,6 +342,10 @@ int shadow_master_fx_captures_cc(uint8_t cc);
 
 /* --- Capture loading --- */
 void shadow_slot_load_capture(int slot, int patch_index);
+/* Re-derive the slot's MODULE-level capture rules from the loaded synth's
+ * module.json (capabilities.capture). Clears them when no synth is loaded.
+ * Safe to call after any load path; cached by module id. */
+void shadow_slot_load_module_capture(int slot);
 
 /* --- Boot --- */
 int shadow_inprocess_load_chain(void);

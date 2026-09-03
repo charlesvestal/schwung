@@ -54,6 +54,15 @@ typedef struct shadow_chain_slot_t {
     int wants_sysex;
     char patch_name[64];
     shadow_capture_rules_t capture;  /* MIDI controls this slot captures when focused */
+    /* Rules the loaded SYNTH MODULE declares for itself (module.json
+     * capabilities.capture), kept apart from the patch's so a module swap can
+     * re-derive one without losing the other. A slot captures the union.
+     * Re-derived on every load path — including the autosave restore, which
+     * never opened a patch file and so left a restored slot with no rules at
+     * all. Cached by module id so the file is read once per load, not per
+     * set_param. */
+    shadow_capture_rules_t module_capture;
+    char module_capture_id[64];
     slot_fade_t fade;                /* fade envelope for seamless transitions */
 } shadow_chain_slot_t;
 

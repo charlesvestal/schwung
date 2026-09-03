@@ -526,6 +526,8 @@ void shadow_chain_defaults(void) {
         shadow_chain_slots[i].default_forward_channel = -1;
         shadow_chain_slots[i].transpose = 0;
         capture_clear(&shadow_chain_slots[i].capture);
+        capture_clear(&shadow_chain_slots[i].module_capture);
+        shadow_chain_slots[i].module_capture_id[0] = '\0';
         shadow_chain_slots[i].fade.gain = 0.0f;
         shadow_chain_slots[i].fade.target = 0.0f;
         shadow_chain_slots[i].fade.step = SLOT_FADE_STEP;
@@ -1231,6 +1233,82 @@ static void capture_debug_log(const char *msg) {
     }
 }
 
+/* Module-level capture for the slot's SYNTH.
+ *
+ * Capture used to be a property of the PATCH alone: shadow_slot_load_capture
+ * opens the patch file and parses its "capture" block, and it runs only when a
+ * patch is loaded from the library by index. Every other way a slot comes to
+ * hold a module — the autosave restore at boot (load_file), a set switch, a
+ * module swap — never opened a patch file, so the slot had no rules. Reported
+ * from the device: 9W9's own step sequencer, and the parameter locks built on
+ * the same captured steps, were dead after every reboot; loading the patch
+ * again from the browser brought them back.
+ *
+ * A sequencer's need for the step buttons is a fact about the MODULE, not
+ * about whichever patch happens to wrap it, so the module gets to say so —
+ * capabilities.capture in module.json, the same block audio FX already use for
+ * Master FX. The slot captures the union of patch rules and module rules.
+ *
+ * Runs from the set_param intercept, i.e. inside the SPI callback, exactly as
+ * shadow_slot_load_capture's fopen already does. The id cache keeps it to one
+ * file read per module load rather than one per write. */
+#ifndef SHADOW_MODULES_ROOT
+#define SHADOW_MODULES_ROOT "/data/UserData/schwung/modules"
+#endif
+
+void shadow_slot_load_module_capture(int slot) {
+    if (slot < 0 || slot >= SHADOW_CHAIN_INSTANCES) return;
+    shadow_chain_slot_t *s = &shadow_chain_slots[slot];
+
+    char id[64] = "";
+    if (s->instance && shadow_plugin_v2 && shadow_plugin_v2->get_param) {
+        int len = shadow_plugin_v2->get_param(s->instance, "synth_module", id, sizeof(id));
+        if (len <= 0) id[0] = '\0';
+        else id[len < (int)sizeof(id) ? len : (int)sizeof(id) - 1] = '\0';
+    }
+
+    if (id[0] == '\0') {
+        capture_clear(&s->module_capture);
+        s->module_capture_id[0] = '\0';
+        return;
+    }
+    if (strcmp(id, s->module_capture_id) == 0) return;   /* same module: cached */
+
+    capture_clear(&s->module_capture);
+    strncpy(s->module_capture_id, id, sizeof(s->module_capture_id) - 1);
+    s->module_capture_id[sizeof(s->module_capture_id) - 1] = '\0';
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/sound_generators/%s/module.json", SHADOW_MODULES_ROOT, id);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        char dbg[600];
+        snprintf(dbg, sizeof(dbg), "module capture: slot %d synth '%s': no %s", slot, id, path);
+        capture_debug_log(dbg);
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0 || size > 65536) { fclose(f); return; }
+    char *json = malloc((size_t)size + 1);
+    if (!json) { fclose(f); return; }
+    size_t nread = fread(json, 1, (size_t)size, f);
+    json[nread] = '\0';
+    fclose(f);
+
+    /* Only the capabilities block: a stray "capture" elsewhere in module.json
+     * must not count, same bound the Master FX path applies. */
+    const char *caps = strstr(json, "\"capabilities\"");
+    if (caps) capture_parse_json(&s->module_capture, caps);
+    free(json);
+
+    char dbg[160];
+    snprintf(dbg, sizeof(dbg), "module capture: slot %d synth '%s': note 16 captured: %d",
+             slot, id, capture_has_note(&s->module_capture, 16));
+    capture_debug_log(dbg);
+}
+
 void shadow_slot_load_capture(int slot, int patch_index) {
     char dbg[512];
     snprintf(dbg, sizeof(dbg), "shadow_slot_load_capture: slot=%d patch_index=%d", slot, patch_index);
@@ -1502,6 +1580,9 @@ int shadow_inprocess_load_chain(void) {
                 }
                 shadow_apply_patch_channels(i);
                 shadow_slot_apply_boot_feedback_hold(i);
+                /* The restore never opened a patch file, so this is the ONLY
+                 * place a restored slot can learn its module's rules. */
+                shadow_slot_load_module_capture(i);
                 {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "Shadow inprocess: slot %d loaded from autosave", i);
@@ -1527,6 +1608,7 @@ int shadow_inprocess_load_chain(void) {
             shadow_plugin_v2->set_param(shadow_chain_slots[i].instance, "load_patch", idx_str);
             shadow_chain_slots[i].active = 1;
             shadow_slot_load_capture(i, idx);
+            shadow_slot_load_module_capture(i);
             if (shadow_plugin_v2->get_param) {
                 char fwd_buf[16];
                 int len = shadow_plugin_v2->get_param(shadow_chain_slots[i].instance,
@@ -1807,6 +1889,8 @@ void shadow_inprocess_handle_ui_request(void) {
         shadow_chain_slots[slot].active = 0;
         shadow_chain_slots[slot].patch_index = -1;
         capture_clear(&shadow_chain_slots[slot].capture);
+        capture_clear(&shadow_chain_slots[slot].module_capture);
+        shadow_chain_slots[slot].module_capture_id[0] = '\0';
         strncpy(shadow_chain_slots[slot].patch_name, "", sizeof(shadow_chain_slots[slot].patch_name) - 1);
         shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
         shadow_ui_state_t *ui_state = host.shadow_ui_state_ptr ? *host.shadow_ui_state_ptr : NULL;
@@ -1860,6 +1944,7 @@ void shadow_inprocess_handle_ui_request(void) {
     }
 
     shadow_slot_load_capture(slot, patch_index);
+    shadow_slot_load_module_capture(slot);
 
     shadow_apply_patch_channels(slot);
 
@@ -1890,6 +1975,8 @@ void shadow_process_fade_completions(void) {
             shadow_chain_slots[slot].active = 0;
             shadow_chain_slots[slot].patch_index = -1;
             capture_clear(&shadow_chain_slots[slot].capture);
+            capture_clear(&shadow_chain_slots[slot].module_capture);
+            shadow_chain_slots[slot].module_capture_id[0] = '\0';
             strncpy(shadow_chain_slots[slot].patch_name, "", sizeof(shadow_chain_slots[slot].patch_name) - 1);
             shadow_chain_slots[slot].patch_name[sizeof(shadow_chain_slots[slot].patch_name) - 1] = '\0';
             shadow_ui_state_t *ui_state = host.shadow_ui_state_ptr ? *host.shadow_ui_state_ptr : NULL;
@@ -1942,6 +2029,7 @@ void shadow_process_fade_completions(void) {
             }
 
             shadow_slot_load_capture(slot, patch_index);
+    shadow_slot_load_module_capture(slot);
 
             shadow_apply_patch_channels(slot);
 
@@ -3441,6 +3529,9 @@ void shadow_inprocess_handle_param_request(void) {
              * overwrites it, which is the correct lifetime. */
 
             if (strcmp(key_copy, "synth:module") == 0) {
+                /* A swap changes which module owns the rules; an empty value
+                 * unloads it, and the refresh clears them. */
+                shadow_slot_load_module_capture(slot);
                 if (value_copy[0] != '\0') {
                     shadow_chain_slots[slot].active = 1;
     shadow_chain_slots[slot].fade.target = 1.0f;
@@ -3473,6 +3564,7 @@ void shadow_inprocess_handle_param_request(void) {
                 shadow_chain_slots[slot].fade.target = 1.0f;
             }
             if (strcmp(key_copy, "load_file") == 0) {
+                shadow_slot_load_module_capture(slot);
                 /* JS uses load_file on SET_CHANGED to restore slots from
                  * per-set state. Unlike synth:module / fx*:module /
                  * load_patch, load_file does not pass through the
@@ -3504,12 +3596,15 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_chain_slots[slot].active = 0;
                     shadow_chain_slots[slot].patch_index = -1;
                     capture_clear(&shadow_chain_slots[slot].capture);
+                    capture_clear(&shadow_chain_slots[slot].module_capture);
+                    shadow_chain_slots[slot].module_capture_id[0] = '\0';
                     shadow_chain_slots[slot].patch_name[0] = '\0';
                 } else {
                     shadow_chain_slots[slot].active = 1;
     shadow_chain_slots[slot].fade.target = 1.0f;
                     shadow_chain_slots[slot].patch_index = idx;
                     shadow_slot_load_capture(slot, idx);
+                    shadow_slot_load_module_capture(slot);
 
                     if (shadow_plugin_v2->get_param) {
                         char fwd_buf[16];
