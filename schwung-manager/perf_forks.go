@@ -127,6 +127,24 @@ type ForkGroup struct {
 	Procs        []ForkedProc
 }
 
+// forkedProcsWithCPU pairs the forked processes with their measured CPU.
+//
+// `pct` MUST be the unfiltered measurement (ProcessView.AllPercent), never the
+// displayed rows. Rows has already dropped everything under the 0.5% display
+// floor, and most forked children do not carry a name that is always listed -
+// the one observed on the device reported as "Audio Main/SPI" - so reading
+// their percentage from Rows yields the zero value and renders 0% for a number
+// that was computed and thrown away.
+func forkedProcsWithCPU(kids []ProcStat, pct map[int]float64) []ForkedProc {
+	out := make([]ForkedProc, 0, len(kids))
+	for _, c := range kids {
+		out = append(out, ForkedProc{
+			PID: c.PID, Comm: c.Comm, Core: c.CPU, Percent: pct[c.PID],
+		})
+	}
+	return out
+}
+
 // attributeForks names the forked processes, by descending confidence:
 //
 //  1. DECLARED — exactly one loaded module sets capabilities.forks_processes.

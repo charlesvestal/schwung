@@ -161,3 +161,43 @@ func TestCPUFrameBudgetShowsASlotWhoseNameCouldNotBeRead(t *testing.T) {
 			rows[0].Percent)
 	}
 }
+
+// A forked child just under the display floor must still report its real
+// percentage. Rows is the human list and drops it; AllPercent is the
+// measurement and keeps it. Reading the fork panel from Rows rendered 0% for a
+// number we had already computed and thrown away - the same discarded-read lie
+// as everywhere else on this page, wearing a rounding error.
+func TestCPUAllPercentKeepsProcessesBelowTheDisplayFloor(t *testing.T) {
+	c := &cpuSampler{clkTck: 100}
+	base := time.Unix(1000, 0)
+
+	// pid 1200 is a forked child under the 0.5% floor. It is named
+	// "Audio Main/SPI" because that is what the device actually showed - a
+	// forked PROCESS wearing the SPI thread's name - and crucially that name is
+	// NOT in alwaysListedProcesses, so the floor really does drop it.
+	first := []ProcStat{
+		{PID: 1, Comm: "MoveOriginal", Utime: 0},
+		{PID: 1200, Comm: "Audio Main/SPI", Utime: 0},
+	}
+	c.buildProcessView(first, base)
+
+	view := c.buildProcessView([]ProcStat{
+		{PID: 1, Comm: "MoveOriginal", Utime: 100}, // 100%
+		{PID: 1200, Comm: "Audio Main/SPI", Utime: 0, Stime: 0},
+	}, base.Add(time.Second))
+
+	for _, r := range view.Rows {
+		if r.PID == 1200 {
+			t.Fatal("pid 1200 is under the floor and should not be in the " +
+				"human list")
+		}
+	}
+	if _, ok := view.AllPercent[1200]; !ok {
+		t.Fatal("AllPercent must carry every pid we measured, floor or not - " +
+			"the fork panel reads it, and a child missing from the map renders " +
+			"as 0% rather than as its real cost")
+	}
+	if got := view.AllPercent[1]; got < 99 || got > 101 {
+		t.Fatalf("AllPercent[1] = %.1f, want ~100", got)
+	}
+}

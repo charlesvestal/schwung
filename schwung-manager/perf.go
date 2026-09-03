@@ -67,6 +67,17 @@ type ProcessRow struct {
 type ProcessView struct {
 	Priming bool
 	Rows    []ProcessRow
+
+	// AllPercent is every pid's CPU over this interval, BEFORE the display
+	// floor. Rows is the human list and drops anything under
+	// processFloorPercent; this is the measurement.
+	//
+	// The fork panel needs the measurement. A module's forked child that sits
+	// just under the floor is absent from Rows, and reading its percentage from
+	// there yields the zero value - rendering 0% for a process whose real
+	// number we computed and threw away. That is the same lie as every other
+	// discarded read on this page, just wearing a rounding error.
+	AllPercent map[int]float64
 }
 
 // cpuSampler holds the previous /proc sample so the next one can be a delta.
@@ -189,6 +200,7 @@ func (c *cpuSampler) buildProcessView(procs []ProcStat, now time.Time) ProcessVi
 	}
 	seen := make(map[string]bool, len(alwaysListedProcesses))
 
+	allPct := make(map[int]float64, len(cur))
 	var rows []ProcessRow
 	for pid, total := range cur {
 		prev, ok := c.prevProcs[pid]
@@ -202,6 +214,7 @@ func (c *cpuSampler) buildProcessView(procs []ProcStat, now time.Time) ProcessVi
 		}
 		p := byPID[pid]
 		pct := cpuPercent(total-prev, c.clkTck, elapsed)
+		allPct[pid] = pct
 
 		if always[p.Comm] {
 			seen[p.Comm] = true
@@ -223,7 +236,7 @@ func (c *cpuSampler) buildProcessView(procs []ProcStat, now time.Time) ProcessVi
 
 	c.prevProcs = cur
 	c.prevAt = now
-	return ProcessView{Rows: rows}
+	return ProcessView{Rows: rows, AllPercent: allPct}
 }
 
 // FrameHeadroom is the one number that answers "how much room is left".
@@ -507,16 +520,7 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 		// always-listed ones, so a child below the floor is absent here and
 		// gets 0. Acceptable: it is genuinely near-zero, and the pid is still
 		// listed, so nothing disappears for want of a percentage.
-		pct := make(map[int]float64, len(view.Rows))
-		for _, r := range view.Rows {
-			pct[r.PID] = r.Percent
-		}
-		var kids []ForkedProc
-		for _, c := range findForkedChildren(procs, movePID) {
-			kids = append(kids, ForkedProc{
-				PID: c.PID, Comm: c.Comm, Core: c.CPU, Percent: pct[c.PID],
-			})
-		}
+		kids := forkedProcsWithCPU(findForkedChildren(procs, movePID), view.AllPercent)
 		forkGroups = attributeForks(kids, loadedModules(app.basePath, setState))
 	}
 

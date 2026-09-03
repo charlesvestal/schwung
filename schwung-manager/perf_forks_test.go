@@ -228,3 +228,29 @@ func TestAttributeTwoDeclarersDoNotDoubleCount(t *testing.T) {
 			total)
 	}
 }
+
+// The fork panel must take its numbers from the MEASUREMENT, not the displayed
+// rows. Rows drops everything under the 0.5% floor, and a forked child rarely
+// carries an always-listed name - the one seen on the device reported as
+// "Audio Main/SPI" - so sourcing from Rows renders 0% for a value that was
+// computed and discarded.
+func TestForkedProcsUseTheUnfilteredMeasurement(t *testing.T) {
+	kids := []ProcStat{
+		{PID: 1200, Comm: "Audio Main/SPI", CPU: 1},
+		{PID: 1201, Comm: "MoveOriginal", CPU: 2},
+	}
+	// What AllPercent holds: every measured pid, floor or not.
+	all := map[int]float64{1200: 0.2, 1201: 93.0}
+
+	got := forkedProcsWithCPU(kids, all)
+	if len(got) != 2 {
+		t.Fatalf("got %d procs, want 2", len(got))
+	}
+	if got[0].Percent != 0.2 {
+		t.Errorf("pid 1200 = %.2f%%, want 0.2%% - a child under the display "+
+			"floor must still report its real cost, not 0", got[0].Percent)
+	}
+	if got[1].Percent != 93.0 {
+		t.Errorf("pid 1201 = %.1f%%, want 93", got[1].Percent)
+	}
+}
