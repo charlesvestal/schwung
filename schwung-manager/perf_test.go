@@ -81,7 +81,7 @@ func TestCPUFrameBudgetOmitsEmptySlots(t *testing.T) {
 	snap := &PerfSnapshot{FramePeriodUs: 2902}
 	snap.SlotSynthAvg = [perfChainSlots]uint64{290, 0, 0, 0}
 
-	rows := buildFrameBudget(snap, map[int]string{0: "braids"}, nil)
+	rows := buildFrameBudget(snap, map[int]moduleID{0: {Name: "braids", Answered: true}}, nil)
 
 	if len(rows) != 1 {
 		t.Fatalf("an empty slot is not a slot at 0%% — it is not a row. got %d rows: %+v",
@@ -99,7 +99,7 @@ func TestCPUFrameBudgetFallsBackToNominalPeriod(t *testing.T) {
 	snap := &PerfSnapshot{FramePeriodUs: 0}
 	snap.SlotSynthAvg = [perfChainSlots]uint64{1451, 0, 0, 0}
 
-	rows := buildFrameBudget(snap, map[int]string{0: "braids"}, nil)
+	rows := buildFrameBudget(snap, map[int]moduleID{0: {Name: "braids", Answered: true}}, nil)
 
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
@@ -127,5 +127,33 @@ func TestCPUAbsentIsNotIdle(t *testing.T) {
 	}
 	if strings.Contains(low, "idle") && !strings.Contains(low, "not the same as an idle") {
 		t.Errorf("a missing shim must never read as an idle device, got %q", msg)
+	}
+}
+
+// "Empty" and "we could not read what is there" are different, and only the
+// first may hide a row. A slot that is burning CPU must never disappear from
+// the page because its NAME could not be read — that is the worst failure
+// available to a page whose whole job is finding what costs time.
+func TestCPUFrameBudgetShowsASlotWhoseNameCouldNotBeRead(t *testing.T) {
+	snap := &PerfSnapshot{
+		FramePeriodUs: 2902,
+		SlotSynthAvg:  [perfChainSlots]uint64{290, 290, 0, 0},
+	}
+	rows := buildFrameBudget(snap, map[int]moduleID{
+		0: {Name: "", Answered: false}, // the read failed
+		1: {Name: "", Answered: true},  // genuinely empty
+	}, nil)
+
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1 - the unread slot must show, the empty "+
+			"one must not", len(rows))
+	}
+	if rows[0].Module != "(name unread)" {
+		t.Fatalf("Module = %q, want it to say the name was unread rather than "+
+			"pass off a failed read as a module or hide the row", rows[0].Module)
+	}
+	if rows[0].Percent < 9.5 || rows[0].Percent > 10.5 {
+		t.Fatalf("the timing must still be reported: Percent = %.2f, want ~10",
+			rows[0].Percent)
 	}
 }

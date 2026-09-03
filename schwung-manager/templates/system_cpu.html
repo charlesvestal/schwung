@@ -48,16 +48,25 @@
 // fold. Pinning min-height to the measured height prevents the collapse rather
 // than trying to restore the scroll afterwards, which fights the browser and
 // flickers.
+// Do NOT filter on e.target. htmx dispatches the swap events on the element
+// that made the REQUEST, and that element lives inside #cpu-panel (it is the
+// fragment carrying hx-trigger), so `e.target === panel` is never true and the
+// handler silently never runs. That failure hides itself: at a shallow scroll
+// offset the document never shrinks past scrollTop, so the page looks fine and
+// only jumps once you have scrolled far enough down to read the lower panels.
+// This page has exactly one swapping region, so pinning unconditionally is both
+// simpler and impossible to miss.
 (function () {
     var panel = document.getElementById('cpu-panel');
     if (!panel) return;
-    document.body.addEventListener('htmx:beforeSwap', function (e) {
-        if (e.target === panel) panel.style.minHeight = panel.offsetHeight + 'px';
+    document.body.addEventListener('htmx:beforeSwap', function () {
+        panel.style.minHeight = panel.offsetHeight + 'px';
     });
-    document.body.addEventListener('htmx:afterSettle', function (e) {
+    document.body.addEventListener('htmx:afterSettle', function () {
         // Release it so the panel can still SHRINK when there is genuinely less
-        // to show (Stop, or a slot being unloaded).
-        if (e.target === panel) panel.style.minHeight = '';
+        // to show (Stop, or a slot being unloaded). By this point the new
+        // content is in place, so releasing cannot collapse anything.
+        panel.style.minHeight = '';
     });
 })();
 </script>

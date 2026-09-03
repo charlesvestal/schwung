@@ -176,10 +176,12 @@ func (c *cpuSampler) buildProcessView(procs []ProcStat, now time.Time) ProcessVi
 
 // buildFrameBudget attributes the snapshot's timings to labelled rows.
 //
-// An EMPTY slot is not a slot at 0% — it is not a row. Slot and Master FX rows
-// exist only where a module id was actually read back, so a position nobody
-// loaded anything into simply does not appear.
-func buildFrameBudget(snap *PerfSnapshot, slotModules, mfxModules map[int]string) []FrameBudgetRow {
+// An EMPTY slot is not a slot at 0% - it is not a row. But "empty" and "we
+// could not read what is there" are DIFFERENT, and only the first may hide a
+// row: a position whose identity read failed still gets a row whenever it shows
+// time, labelled so, because a slot burning CPU that vanishes from the page
+// because we could not read its NAME is the worst failure this page has.
+func buildFrameBudget(snap *PerfSnapshot, slotModules, mfxModules map[int]moduleID) []FrameBudgetRow {
 	if snap == nil {
 		return nil
 	}
@@ -202,9 +204,22 @@ func buildFrameBudget(snap *PerfSnapshot, slotModules, mfxModules map[int]string
 		})
 	}
 
+	// label decides how a position is named, and whether it may be hidden.
+	// Answered-and-empty is the only case that hides anything.
+	label := func(m moduleID) (name string, show bool) {
+		switch {
+		case m.Loaded():
+			return m.Name, true
+		case !m.Answered:
+			return "(name unread)", true
+		default:
+			return "", false
+		}
+	}
+
 	for i := 0; i < perfChainSlots; i++ {
-		mod := slotModules[i]
-		if mod == "" {
+		mod, show := label(slotModules[i])
+		if !show {
 			continue
 		}
 		n := strconv.Itoa(i + 1)
@@ -217,8 +232,8 @@ func buildFrameBudget(snap *PerfSnapshot, slotModules, mfxModules map[int]string
 	}
 
 	for i := 0; i < perfMasterFXSlots; i++ {
-		mod := mfxModules[i]
-		if mod == "" {
+		mod, show := label(mfxModules[i])
+		if !show {
 			continue
 		}
 		if snap.MfxAvg[i] > 0 || snap.MfxMax[i] > 0 {
@@ -284,40 +299,74 @@ func describePerfError(err error) string {
 	return "Frame-budget read failed: " + err.Error()
 }
 
-// slotModuleIDs reads which module each chain slot holds. A slot that does not
-// answer is left out of the map, so buildFrameBudget draws no row for it —
-// rather than an unlabelled one.
-func (app *App) slotModuleIDs() map[int]string {
-	out := make(map[int]string, perfChainSlots)
-	if app.shmParams == nil {
-		return out
-	}
-	for slot := 0; slot < perfChainSlots; slot++ {
-		val, _, err := app.shmParams.TryGetParam(uint8(slot), "synth_module")
-		if err != nil || val == "" {
-			continue
-		}
-		out[slot] = val
-	}
-	return out
+// moduleID is what a module-identity read produced, keeping the THREE answers
+// apart: a name, "this position is empty", and "the read did not complete".
+//
+// Collapsing the last two is a real hazard here. The param channel is a single
+// slot shared with the shadow UI, so a read can legitimately fail to be served
+// — and if a failed read is treated as "empty", a slot that is BURNING CPU
+// disappears from the page entirely, because the row is drawn only where a
+// module id was found. On a page whose whole job is finding what costs time,
+// silently hiding a busy slot is the worst failure available.
+type moduleID struct {
+	Name     string
+	Answered bool // the channel served us, whatever it said
 }
 
-// mfxModuleIDs reads the Master FX chain positionally. The chain is never
-// compacted, so position i is meaningful even when i-1 is empty.
-func (app *App) mfxModuleIDs() map[int]string {
-	out := make(map[int]string, perfMasterFXSlots)
-	if app.shmParams == nil {
-		return out
+// Loaded reports whether a module is actually there.
+func (m moduleID) Loaded() bool { return m.Answered && m.Name != "" }
+
+// moduleIDCache holds module identities between polls.
+//
+// These reads are not free: each one is a request the SHIM serves on the SPI
+// callback. Twelve of them per second (4 slots + 8 Master FX) measurably moved
+// the `Param requests` section — its max went from ~36 us to ~140 us once this
+// page started polling, which is the instrument perturbing the thing it is
+// measuring. Module identity changes only when someone loads or swaps one, so
+// it is re-read on a slow cadence and reused in between.
+type moduleIDCache struct {
+	mu     sync.Mutex
+	slots  map[int]moduleID
+	mfx    map[int]moduleID
+	readAt time.Time
+}
+
+// moduleIDRefresh is how often identities are re-read. Long against the 1 s
+// poll: a module swap shows up within this, and in exchange the page stops
+// adding twelve SPI-served requests every second.
+const moduleIDRefresh = 15 * time.Second
+
+// moduleIDs returns slot and Master FX identities, re-reading them only when
+// the cache has gone stale.
+func (app *App) moduleIDs() (slots, mfx map[int]moduleID) {
+	app.moduleIDs_.mu.Lock()
+	defer app.moduleIDs_.mu.Unlock()
+
+	fresh := app.moduleIDs_.slots != nil &&
+		time.Since(app.moduleIDs_.readAt) < moduleIDRefresh
+	if fresh {
+		return app.moduleIDs_.slots, app.moduleIDs_.mfx
 	}
-	for i := 0; i < perfMasterFXSlots; i++ {
-		key := "master_fx:" + strconv.Itoa(i) + ":module"
-		val, _, err := app.shmParams.TryGetParam(0, key)
-		if err != nil || val == "" {
-			continue
+
+	slots = make(map[int]moduleID, perfChainSlots)
+	mfx = make(map[int]moduleID, perfMasterFXSlots)
+
+	if app.shmParams != nil {
+		for slot := 0; slot < perfChainSlots; slot++ {
+			val, ok, err := app.shmParams.TryGetParam(uint8(slot), "synth_module")
+			slots[slot] = moduleID{Name: val, Answered: ok && err == nil}
 		}
-		out[i] = val
+		for i := 0; i < perfMasterFXSlots; i++ {
+			key := "master_fx:" + strconv.Itoa(i) + ":module"
+			val, ok, err := app.shmParams.TryGetParam(0, key)
+			mfx[i] = moduleID{Name: val, Answered: ok && err == nil}
+		}
 	}
-	return out
+
+	app.moduleIDs_.slots = slots
+	app.moduleIDs_.mfx = mfx
+	app.moduleIDs_.readAt = time.Now()
+	return slots, mfx
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -371,7 +420,8 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 
 	var budget []FrameBudgetRow
 	if perfErr == nil {
-		budget = buildFrameBudget(snap, app.slotModuleIDs(), app.mfxModuleIDs())
+		slotMods, mfxMods := app.moduleIDs()
+		budget = buildFrameBudget(snap, slotMods, mfxMods)
 	}
 
 	// An empty scan is a FAILED READ, not a machine with no processes: there is
