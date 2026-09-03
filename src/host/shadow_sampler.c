@@ -21,6 +21,12 @@
 #include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#include <sys/resource.h>
+#endif
 
 /* ============================================================================
  * Host callbacks (set during sampler_init)
@@ -259,10 +265,115 @@ int sampler_get_stem_mode(void) {
     return sampler_stem_mode;
 }
 
-/* Chown a path to ableton:users so Move's UI can see the files.
- * The shim runs as root (setuid), so files we create are owned by root.
- * Move's UI runs as ableton and won't find root-owned files. */
+/* ============================================================================
+ * Disk I/O politeness
+ *
+ * NONE OF THIS IS ABOUT THREADS. The writers already run off the audio path:
+ * they are created from the shim worker, which is SCHED_OTHER pinned to cores
+ * 0-2 (shim_worker.c), and POSIX inherits both, so a writer is born there too.
+ * The dropouts came from the SHAPE of the I/O, not from where it ran.
+ *
+ * A skipback save used to be one ~5 MB file. With stems it is SIX, ~32 MB at
+ * the default 30 s, written back to back as fast as fwrite is willing to go.
+ * That fills the page cache with dirty pages faster than this eMMC retires
+ * them, and when the kernel finally forces writeback the whole system stalls
+ * on it -- including the thread feeding the DAC, which never touched a file.
+ * Priority does not help, because the stall is in the block layer and the
+ * filesystem, not in the scheduler.
+ *
+ * Three things, cheapest first.
+ * ============================================================================ */
+
+/* Make this thread the last in the queue for both CPU and DISK.
+ *
+ * SCHED_OTHER and the core mask are already inherited from the worker; what is
+ * NOT inherited from anywhere is I/O priority, and that is the one that
+ * matters here. IOPRIO_CLASS_IDLE means the writer only gets the disk when
+ * nothing else wants it -- exactly right for a save that may take an extra
+ * second and for which nobody is waiting.
+ *
+ * Best-effort: every failure is ignored. A kernel without ioprio_set, or one
+ * that refuses the nice value, must still produce the file. */
+static void sampler_io_thread_be_polite(void) {
+#ifdef __linux__
+    /* IOPRIO_WHO_PROCESS = 1, IOPRIO_CLASS_IDLE = 3, class shift = 13. */
+    syscall(SYS_ioprio_set, 1 /* who: this thread */, 0 /* current */,
+            (3 << 13));
+    setpriority(PRIO_PROCESS, 0, 10);
+#endif
+}
+
+/* Bytes written between pauses, and the pause. 256 KB / 2 ms caps the dirty
+ * rate at ~128 MB/s, which is well above what this device can actually retire
+ * -- the pause is not a throttle, it is a yield point that stops one thread
+ * owning the block queue for the length of a 32 MB burst. */
+#define SAMPLER_IO_CHUNK_BYTES (256u * 1024u)
+#define SAMPLER_IO_PAUSE_US    2000
+
+/* fwrite `bytes` from `buf`, in chunks, starting writeback as we go and
+ * dropping the pages behind us.
+ *
+ * sync_file_range hands each chunk to the block layer as soon as it is
+ * written, so the dirty set never grows to the size of the file; fadvise
+ * DONTNEED then evicts what has been retired, so a 32 MB save does not push
+ * everything else out of a small page cache. Without these two the entire file
+ * lands at fclose, which is precisely the stall being fixed.
+ *
+ * Returns bytes written. Writer threads only -- this sleeps. */
+static size_t sampler_write_paced(FILE *f, const void *buf, size_t bytes) {
+    const unsigned char *p = (const unsigned char *)buf;
+    size_t done = 0;
+#ifdef __linux__
+    int fd = fileno(f);
+    off_t flushed_to = ftello(f);
+    if (flushed_to < 0) flushed_to = 0;
+#endif
+    while (done < bytes) {
+        size_t n = bytes - done;
+        if (n > SAMPLER_IO_CHUNK_BYTES) n = SAMPLER_IO_CHUNK_BYTES;
+        size_t got = fwrite(p + done, 1, n, f);
+        done += got;
+        if (got != n) break;      /* short write: caller sees the count */
+#ifdef __linux__
+        /* fflush first: sync_file_range works on the DESCRIPTOR, and what is
+         * still sitting in the FILE buffer is invisible to it. */
+        fflush(f);
+        off_t now = ftello(f);
+        if (now > flushed_to) {
+            sync_file_range(fd, flushed_to, now - flushed_to,
+                            SYNC_FILE_RANGE_WRITE);
+            posix_fadvise(fd, flushed_to, now - flushed_to, POSIX_FADV_DONTNEED);
+            flushed_to = now;
+        }
+#endif
+        if (done < bytes) usleep(SAMPLER_IO_PAUSE_US);
+    }
+    return done;
+}
+
+/* Give a path to ableton:users so Move's UI can see it. The shim runs as root
+ * (setuid), so what we create is owned by root and Move's UI, running as
+ * ableton, would not find it.
+ *
+ * A DIRECT chown(2), not a forked `chown` process. Forking from a shim
+ * LD_PRELOADed into MoveOriginal duplicates that whole address space, and this
+ * used to run ONCE per save; with stems it runs six times in a row at the end
+ * of the write burst. The uid/gid are taken from the containing directory,
+ * which the directory-creation path already chowned -- so no name lookup, no
+ * NSS, and no assumption about what "ableton" resolves to on this device.
+ *
+ * Falls back to the forked form when the parent cannot be stat'd, which is the
+ * only case the copied ownership is unavailable. */
 static void chown_to_ableton(const char *path) {
+    char dir[512];
+    snprintf(dir, sizeof(dir), "%s", path);
+    char *slash = strrchr(dir, '/');
+    struct stat st;
+    if (slash) {
+        *slash = '\0';
+        if (dir[0] && stat(dir, &st) == 0 && chown(path, st.st_uid, st.st_gid) == 0)
+            return;
+    }
     const char *argv[] = { "chown", "ableton:users", path, NULL };
     s_host.run_command(argv);
 }
@@ -328,7 +439,10 @@ static int sampler_wav_trim_front(FILE *f, uint32_t preroll_frames, uint32_t *fr
         size_t got = fread(chunk, 1, to_copy, f);
         if (got == 0) break;
         fseek(f, write_offset, SEEK_SET);
-        fwrite(chunk, 1, got, f);
+        /* Paced: the trim rewrites the WHOLE file, and finalize runs it once per
+         * stem. Six unpaced rewrites at stop is the same burst the skipback save
+         * was. */
+        sampler_write_paced(f, chunk, got);
         read_offset += (uint32_t)got;
         write_offset += (uint32_t)got;
         remaining -= (uint32_t)got;
@@ -386,6 +500,12 @@ static void sampler_stem_drain(sampler_stem_t *st) {
 
 static void *sampler_writer_thread_func(void *arg) {
     (void)arg;
+    /* The sampler's writer is naturally paced -- it wakes on a semaphore and
+     * writes ~250 ms of audio at a time -- so it does not need the chunking
+     * below. It still wants the idle I/O class: with stems it drains six rings
+     * per pass, and a take running while Move is playing is exactly when the
+     * disk must not be contended. */
+    sampler_io_thread_be_polite();
     size_t buffer_samples = SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS;
     size_t write_chunk = SAMPLER_SAMPLE_RATE * SAMPLER_NUM_CHANNELS / 4;  /* ~250ms */
     int stems = SAVE_STEMS_WANTS_STEMS(sampler_take_stem_mode) && sampler_stem_rings_ready();
@@ -1742,7 +1862,9 @@ static int skipback_write_wav(const char *path, const int16_t *buf,
         size_t chunk = remaining;
         if (pos + chunk > total_samples)
             chunk = total_samples - pos;
-        fwrite(buf + pos, sizeof(int16_t), chunk, f);
+        /* Paced: this loop is the 32 MB burst that stalled the DAC once stems
+         * made it six files instead of one. */
+        sampler_write_paced(f, buf + pos, chunk * sizeof(int16_t));
         pos = (pos + chunk) % total_samples;
         remaining -= chunk;
     }
@@ -1760,6 +1882,7 @@ static int skipback_write_wav(const char *path, const int16_t *buf,
 
 static void *skipback_writer_func(void *arg) {
     (void)arg;
+    sampler_io_thread_be_polite();
 
     /* Build date-based save directory */
     time_t now = time(NULL);
