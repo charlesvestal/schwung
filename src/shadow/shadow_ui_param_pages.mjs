@@ -292,7 +292,12 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
              */
             loadCard: (scriptPath, exportRef) => (
                 typeof ctx.loadCardScript === 'function'
-                    ? ctx.loadCardScript(currentSlot, component, scriptPath, exportRef)
+                    /* currentComponent, not the closed-over `component`: the
+                     * controller closes over these accessors, so a controller
+                     * built for one component would keep resolving against it
+                     * after a switch — the hazard the comment above already
+                     * states for the other accessors. */
+                    ? ctx.loadCardScript(currentSlot, currentComponent, scriptPath, exportRef)
                     : null),
         }, io || {}));
     }

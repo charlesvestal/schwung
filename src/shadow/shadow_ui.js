@@ -16736,12 +16736,27 @@ function resolveCanvasScriptPath(meta) {
  * it did not ship, which the caller reads as "no card" — a missing file is a
  * module bug, not a reason to fail a page.
  */
-function resolveCardScriptPath(scriptRef) {
+function resolveCardScriptPath(slot, component, scriptRef) {
     if (!scriptRef) return "";
     if (scriptRef.startsWith("/")) {
         return moduleFileExists(scriptRef) ? scriptRef : "";
     }
-    const moduleDir = getModuleBasePath(getHierarchyActiveModuleId());
+    /*
+     * ⚠ RESOLVED FROM THE SLOT AND COMPONENT THE GRID IS ON, never from
+     * getHierarchyActiveModuleId().
+     *
+     * That reads hierEditorSlot / hierEditorComponent — the LIST editor's
+     * state, which is stale or empty while the knob grid is up, the same
+     * hazard the binding documents for `visible`. Using it resolved to "" on a
+     * grid entered without the list editor, so the card silently never loaded:
+     * no error, a cached null, and a knob that simply had no picture. It
+     * worked in one consumer and not the other for exactly this reason, which
+     * is what a single-host test would have missed.
+     */
+    const prefix = getComponentParamPrefix(component);
+    if (!prefix || slot < 0) return "";
+    const moduleId = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleDir = getModuleBasePath(moduleId);
     if (!moduleDir) return "";
     const scriptPath = `${moduleDir}/${scriptRef}`;
     return moduleFileExists(scriptPath) ? scriptPath : "";
@@ -20364,7 +20379,7 @@ function drawHelpDetail() {
     _ctx.loadCardScript = (slot, component, scriptPath, exportRef) => {
         if (!scriptPath || !exportRef) return null;
         const loaded = loadCanvasOverlayScript(
-            resolveCardScriptPath(scriptPath), exportRef);
+            resolveCardScriptPath(slot, component, scriptPath), exportRef);
         const fn = loaded && loaded.overlay;
         return typeof fn === 'function' ? fn : null;
     };
