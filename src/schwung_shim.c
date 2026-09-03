@@ -6469,9 +6469,35 @@ pre_done:
                 long_press_elapsed(&track_press_time[i])) {
                 track_longpress_fired[i] = 1;
                 track_longpress_pending[i] = 0;
-                shadow_control->ui_slot = (uint8_t)i;
-                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
-                if (!shadow_display_mode) {
+                /*
+                 * A TRACK LONG-PRESS IS A TOGGLE BETWEEN THE TWO WORLDS.
+                 *
+                 * From Move it opens the shadow UI on that slot; from the
+                 * shadow UI it hands the screen back to Move on that track.
+                 * One gesture, and it is its own inverse, so you can long-press
+                 * between the two without learning a second key for the way
+                 * back.
+                 *
+                 * The dismiss direction is not a new mechanism: the Move-track
+                 * tap below is injected on BOTH paths and always was — it is
+                 * what makes Move's selected track follow the slot — so
+                 * dismissing here lands on exactly the track the editor was
+                 * about. The only difference between the two directions is
+                 * which way display_mode goes.
+                 *
+                 * A tap keeps meaning what it meant (Keep Schwung: switch
+                 * slot; off: dismiss), and Shift+Track still dismisses, so the
+                 * escape hatch is untouched in both modes.
+                 */
+                if (shadow_display_mode) {
+                    shadow_display_mode = 0;
+                    shadow_control->display_mode = 0;
+                    /* No JUMP_TO_SLOT: we are leaving. Reopening on this track
+                     * lands on the matching slot anyway, because the open
+                     * direction below sets it. */
+                } else {
+                    shadow_control->ui_slot = (uint8_t)i;
+                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                     shadow_display_mode = 1;
                     shadow_control->display_mode = 1;
                     launch_shadow_ui_reset_backoff();
@@ -6504,7 +6530,9 @@ pre_done:
                     shadow_midi_inject_push(shadow_midi_inject_shm, rel);
                     track_swallow_release[i] = 1;
                 }
-                shadow_log("Track long-press: opening slot settings (Move track follows)");
+                shadow_log(shadow_display_mode
+                           ? "Track long-press: opening slot settings (Move track follows)"
+                           : "Track long-press: dismissing shadow UI (Move track follows)");
             }
         }
         /* Menu button */
