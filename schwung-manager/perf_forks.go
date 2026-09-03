@@ -44,10 +44,8 @@ var shimHelpers = map[string]bool{
 // malformed /proc snapshot, not something Linux can actually produce) cannot
 // loop forever.
 func findForkedChildren(all []ProcStat, movePID int) []ProcStat {
-	byPID := make(map[int]ProcStat, len(all))
 	children := make(map[int][]ProcStat)
 	for _, p := range all {
-		byPID[p.PID] = p
 		if p.PPid == p.PID {
 			continue // self-parent: not a real edge, would loop the walk
 		}
