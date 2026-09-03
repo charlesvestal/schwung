@@ -81,6 +81,13 @@ tally, each with its arming file. Read it before measuring anything on hardware:
   modules are not processes, so a module's cost already sits inside
   `MoveOriginal`'s `/proc` percentage. MIDI FX are not separable and land in
   `proc_midi`.
+- A **fork-parallel module** (JP-8000) hides from the frame budget — its DSP
+  runs in child processes the CPU page can't find by name (`comm` is
+  inherited; one child reported as `Audio Main/SPI`, same as six of
+  MoveOriginal's own threads). Attribution walks the process **tree** minus
+  the four shim helpers; ownership is `capabilities.forks_processes`, else a
+  marked inference, else unattributed. Module identity is read from disk
+  (`active_set.txt` → `chain.synth.module`), not the param channel.
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter

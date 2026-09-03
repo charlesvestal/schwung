@@ -168,3 +168,59 @@ all four.
 
 See `docs/superpowers/specs/2026-09-02-manager-cpu-view-design.md` for the full
 design.
+
+### Cross-core attribution, and why names are useless
+
+**A fork-parallel module hides from the frame budget.** JP-8000 (JE-8086)
+calls `fork()` from `create_instance` — which IS the SPI callback — and the
+child forks again once per pipeline stage, pinning each to a core. The
+frame-budget table above only measures time spent *inside* the callback, so
+it showed JP-8000 at **~5%** while its real DSP was running on cores 0–2 the
+whole time. The frame budget was never wrong about what it measures; it was
+never going to see this.
+
+**The children cannot be identified by name.** A fork inherits its parent's
+`comm`, and JP-8000 never calls `prctl(PR_SET_NAME)`. Observed on the device,
+MoveOriginal's children were `display-server`, `schwung-manager`,
+`link-subscriber`, `shadow_ui`, and one reporting as **`Audio Main/SPI`** —
+the same name **six of MoveOriginal's own realtime threads use**. Filtering
+by name cannot separate a JP-8000 pipeline worker from Move's own audio
+thread; the two are indistinguishable in `/proc`.
+
+So attribution walks the process **tree** instead, recursively — the stage
+workers are grandchildren of MoveOriginal, and stopping at one level misses
+them — subtracts the four shim helpers named above, and treats whatever CPU
+remains as forked by a module. **Ownership is layered**: a module declaring
+`capabilities.forks_processes` (see `docs/MODULES.md`) wins; failing that,
+the page infers ownership when exactly one synth is loaded, always marked
+**inferred** on screen so a guess never reads as a fact; failing that, the
+remainder is shown as an unattributed group. A process is never hidden
+because the page cannot name it — an unattributed row with real CPU is the
+honest failure mode, not a silently absent one.
+
+### Identity comes from disk
+
+Naming positions was the obvious way to resolve `capabilities.forks_processes`
+against a loaded module — ask the shim over the param channel which module is
+in each slot. Measured cost: 12 requests per refresh, each served by the shim
+**on the SPI callback**, and the `Param requests` section's own max went from
+~36 µs to ~140 µs once the page started polling it that way. The page reads
+module identity from the on-disk set state instead — no param round-trip on
+the steady-state path.
+
+**The schema is not what you would guess.** Every line below was got wrong
+once before being checked against the actual files on the device:
+
+```
+active_set.txt     line 1 = set uuid    NOT the newest mtime. 27 sets existed;
+                                        mtime order and glob order each pointed
+                                        at a DIFFERENT wrong one.
+slot_N.json        chain.synth.module   NOT synth.module
+                   chain.audio_fx[].type   the key is "type", not "module"
+master_fx_N.json   module_id            a different key again
+```
+
+A param read still happens, but only on a **contradiction**: disk reports a
+position empty while the perf snapshot shows measured time for it — the
+hot-swap window where the on-disk mirror is momentarily stale relative to
+what is actually running. Every other refresh is disk-only.

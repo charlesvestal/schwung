@@ -87,6 +87,7 @@ for keys anywhere in `module.json`).
 | `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
+| `forks_processes` | Module creates child **processes** (not threads) to do its DSP, as JE-8086 does. See below. |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -94,6 +95,23 @@ for keys anywhere in `module.json`).
 > shim and shadow UI code paths that actually run on device — search
 > for the flag name in `src/schwung_shim.c`, `src/shadow/shadow_ui.{c,js}`,
 > and `src/modules/chain/dsp/chain_host.c` to find the consumer.
+
+### `forks_processes`
+
+Set `capabilities.forks_processes: true` when your module's DSP runs in
+child **processes** it forks (`fork()`), not threads. It is metadata
+only — nothing about how your module runs changes because of this flag.
+
+It exists for the CPU page (`/system/cpu` in schwung-manager, see
+`docs/DIAGNOSTICS.md`), which cannot work out ownership from the forked
+processes' names: a fork inherits its parent's `comm`, so your children
+report as `MoveOriginal` — or worse, as `Audio Main/SPI`, the same name
+six of Move's own realtime threads use. The flag tells the page these
+processes are yours to attribute.
+
+**Omitting it does not hide your module's cost.** The forked processes
+still show up on the page with their real CPU time, just as
+"Unattributed" instead of under your module's name.
 
 ### Tool Config
 
