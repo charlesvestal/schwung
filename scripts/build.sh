@@ -577,6 +577,28 @@ if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
     cp src/modules/audio_fx/gesture-test/module.json build/modules/audio_fx/gesture-test/
 fi
 
+# Build Widget Test audio FX — the reference module for a MODULE-SUPPLIED
+# WIDGET (canvas.js drawCell). Same gate and the same reason as gesture-test:
+# it is a hardware fixture, not a shipped module.
+#
+# A chain component with no dsp.so is worse than absent -- it still appears in
+# the audio-FX picker, and a slot referencing a module that cannot load is
+# restored on every boot. So this is a real, loadable, passthrough FX.
+if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
+    mkdir -p ./build/modules/audio_fx/widget-test/
+    # Named for the id, per the chain host path rule noted above.
+    echo "Building widget-test (test fixture)..."
+    "${CROSS_PREFIX}gcc" -g -O2 -shared -fPIC \
+        src/modules/audio_fx/widget-test/widget_test.c \
+        -o build/modules/audio_fx/widget-test/widget-test.so \
+        -Isrc \
+        -lm
+    cp src/modules/audio_fx/widget-test/module.json \
+       src/modules/audio_fx/widget-test/canvas.js \
+       src/modules/audio_fx/widget-test/help.json \
+       build/modules/audio_fx/widget-test/
+fi
+
 echo "Building MIDI FX plugins..."
 
 # Build Chord MIDI FX
@@ -856,10 +878,20 @@ rm -rf \
 # is copied by the generic module loop above rather than compiled, so a build
 # gate alone cannot keep it out -- it has to be scrubbed here. Both go together:
 # they are the two halves of one measurement (docs/SYSEX.md).
+#
+# widget-test and gesture-test are here for the same reason and a sharper one.
+# Their .so is gated, but the generic loop above copies every module.json it
+# finds -- so without this scrub a normal build shipped their module.json with
+# NO .so beside it. Both declare chainable audio_fx, so they appeared in the FX
+# picker, and a slot referencing a module that cannot load is restored on every
+# boot. gesture-test had been shipping that way; widget-test would have joined
+# it. A gated BUILD is not a gated MODULE.
 if [ -z "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
     rm -rf \
         ./build/modules/tools/sysex-test \
         ./build/modules/midi_fx/sysex_probe \
+        ./build/modules/audio_fx/widget-test \
+        ./build/modules/audio_fx/gesture-test \
         2>/dev/null || true
 fi
 

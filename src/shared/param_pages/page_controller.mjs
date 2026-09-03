@@ -39,6 +39,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
+import { widgetsGeneration } from "./widget_registry.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 import { drawEnumList } from "./enum_list.mjs";
@@ -3766,7 +3767,13 @@ export function createController(io = {}) {
          * device as the waveform updating only after jogging away and back.
          */
         const childAt = p.childLevel ? childIndexFor(p.level) : -1;
-        const cacheKey = `${s.fingerprint}#${s.pageIndex}#${childAt}`;
+        /* AND THE WIDGET GENERATION. A module-supplied widget registers when
+         * its canvas.js loads, which is AFTER the first resolve of the page it
+         * belongs to -- so without this the page keeps being handed the
+         * pre-registration groups and the widget never appears. Same shape as
+         * the child-level alias bug above: a cache key that omits something the
+         * result depends on. */
+        const cacheKey = `${s.fingerprint}#${s.pageIndex}#${childAt}#${widgetsGeneration()}`;
         if (vizCache && vizCache.key === cacheKey) return vizCache.groups;
         const { groups } = resolveViz({ keys: p.keys, metaIndex: s.metaIndex, overrides: vizOverrides });
         vizCache = { key: cacheKey, groups };
