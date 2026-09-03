@@ -37,7 +37,8 @@ node -e '
 import("./src/shared/component_load_gate.mjs").then((M) => {
   const { decideComponentEntry, holdProbeIntervalTicks,
           ENTRY_ENTER, ENTRY_HOLD, ENTRY_FALLBACK,
-          HOLD_FAST_INTERVAL_TICKS, HOLD_FAST_LIMIT, HOLD_SLOW_INTERVAL_TICKS } = M;
+          HOLD_FAST_INTERVAL_TICKS, HOLD_FAST_LIMIT, HOLD_SLOW_INTERVAL_TICKS,
+          HOLD_UNSERVED_READ_LIMIT } = M;
 
   let failed = 0;
   const check = (name, got, want) => {
@@ -64,6 +65,26 @@ import("./src/shared/component_load_gate.mjs").then((M) => {
   // ---- the bug: a failed read must HOLD, not fall back -------------------
   check("null hierarchy holds",
         decideComponentEntry(reader(null, null, null).io, parse).action, ENTRY_HOLD);
+
+  // ---- ...but not forever: a NAMED, NOT-LOADING module whose read still ----
+  // ---- fails after HOLD_UNSERVED_READ_LIMIT probes does not serve the key ----
+  // (9W9 answered ui_hierarchy with an error, not ""; a swap into it sat on
+  //  Loading... until the user backed out.)
+  check("unserved read: still holds on the first probes",
+        decideComponentEntry(reader(null, "9w9", "0").io, parse, HOLD_UNSERVED_READ_LIMIT - 1).action, ENTRY_HOLD);
+  {
+    const d = decideComponentEntry(reader(null, "9w9", "0").io, parse, HOLD_UNSERVED_READ_LIMIT);
+    check("unserved read: falls back once the limit is reached", d.action, ENTRY_FALLBACK);
+    check("unserved read: says why", d.reason, "hierarchy-not-served");
+  }
+  check("unserved read: a module still LOADING keeps holding past the limit",
+        decideComponentEntry(reader(null, "osirus", "1").io, parse, HOLD_UNSERVED_READ_LIMIT + 5).action, ENTRY_HOLD);
+  check("unserved read: an UNNAMED position keeps holding past the limit",
+        decideComponentEntry(reader(null, "", "0").io, parse, HOLD_UNSERVED_READ_LIMIT + 5).action, ENTRY_HOLD);
+  check("unserved read: a failed module read keeps holding past the limit",
+        decideComponentEntry(reader(null, null, "0").io, parse, HOLD_UNSERVED_READ_LIMIT + 5).action, ENTRY_HOLD);
+  check("the limit is a few fast probes, not the whole fast phase",
+        HOLD_UNSERVED_READ_LIMIT < HOLD_FAST_LIMIT, true);
 
   // "" from ui_hierarchy with a module that has not been published yet is the
   // other shape of the same window — the chain host only names the module
