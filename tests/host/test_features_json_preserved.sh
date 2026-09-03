@@ -21,8 +21,15 @@ say_fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 # Lifted rather than restated: a copy of the logic here could drift from the
 # shipped one and go on passing. The slice is delimited by the two markers the
 # script itself carries.
-start=$(grep -n '^managed_keys=' scripts/install.sh | head -1 | cut -d: -f1)
-end=$(grep -n '^# Build features.json content' scripts/install.sh | head -1 | cut -d: -f1)
+# awk, not `grep -n | head -1`: head exits after the first line, grep takes
+# SIGPIPE, and `set -o pipefail` turns that into a failed assignment. It is
+# timing-dependent — the same shape passed on macOS for days and then failed in
+# CI on Linux (see test_sampler_io_politeness.sh, which is where it bit).
+first_line_matching() {
+    awk -v pat="$1" '!n && index($0, pat) == 1 { n = NR } END { if (n) print n }' "$2"
+}
+start=$(first_line_matching 'managed_keys=' scripts/install.sh)
+end=$(first_line_matching '# Build features.json content' scripts/install.sh)
 if [ -z "$start" ] || [ -z "$end" ] || [ "$start" -ge "$end" ]; then
     echo "FAIL: could not slice the carry-over block out of scripts/install.sh"
     exit 1

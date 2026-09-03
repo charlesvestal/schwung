@@ -23,8 +23,39 @@ say_fail() { echo "FAIL: $*"; fails=$((fails + 1)); }
 [ -f "$F" ] || { echo "FAIL: $F missing"; exit 1; }
 
 # Strip comments: they discuss fwrite and fork by name, and this is about
-# executable text.
-src=$(sed 's://.*::' "$F" | perl -0pe 's{/\*.*?\*/}{}gs')
+# executable text. `//` only ever starts a comment in this file — there are no
+# URLs in the code, and paths are inside string literals that carry no `//`.
+strip_comments() {
+    sed 's://.*::' "$1" | perl -0pe 's{/\*.*?\*/}{}gs'
+}
+src=$(strip_comments "$F")
+
+# The body of a C function, from its opening line to the closing brace in
+# column 1.
+#
+# NO `exit` IN THE AWK. An awk that exits early closes the pipe under it, the
+# feeding printf takes SIGPIPE, and `set -o pipefail` turns that into a failed
+# assignment — which is exactly how this file first failed in CI while passing
+# on macOS, where the whole string fit in the pipe buffer before awk left. The
+# `d` flag stops the printing without stopping the reading.
+body_of() {
+    printf '%s\n' "$src" | awk -v pat="$1" '
+        index($0, pat) == 1 { f = 1 }
+        f && !d            { print }
+        f && /^}/          { d = 1 }
+    '
+}
+
+# 1-based index of the first line matching a fixed string, or "" — again with
+# no early exit, for the same reason.
+first_line_with() {
+    printf '%s\n' "$2" | awk -v pat="$1" '
+        !n && index($0, pat) { n = NR }
+        END { if (n) print n }
+    '
+}
+
+contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- 1. both writer threads lower their I/O priority --------------------
 #
@@ -33,23 +64,20 @@ src=$(sed 's://.*::' "$F" | perl -0pe 's{/\*.*?\*/}{}gs')
 # a recording are different bursts and only one of them was ever the reported
 # symptom.
 for fn in skipback_writer_func sampler_writer_thread_func; do
-    body=$(printf '%s\n' "$src" | awk "/^static void \\*$fn\\(/{f=1} f{print} f&&/^}/{exit}")
+    body=$(body_of "static void *$fn(")
     if [ -z "$body" ]; then
         say_fail "$fn is gone from $F"
         continue
     fi
-    case "$body" in
-        *sampler_io_thread_be_polite*) ;;
-        *) say_fail "$fn does not call sampler_io_thread_be_polite() — it will compete with everything else for the disk" ;;
-    esac
+    contains sampler_io_thread_be_polite "$body" || \
+        say_fail "$fn does not call sampler_io_thread_be_polite() — it will compete with everything else for the disk"
 done
 
-# And the helper must actually do something on Linux, not be a stub.
-polite=$(printf '%s\n' "$src" | awk '/^static void sampler_io_thread_be_polite\(/{f=1} f{print} f&&/^}/{exit}')
-case "$polite" in
-    *ioprio_set*) ;;
-    *) say_fail "sampler_io_thread_be_polite does not set an I/O priority class — CPU nice alone does not affect the block queue" ;;
-esac
+# And the helper must actually do something, not be a stub.
+polite=$(body_of "static void sampler_io_thread_be_polite(")
+[ -n "$polite" ] || say_fail "sampler_io_thread_be_polite is gone"
+contains ioprio_set "$polite" || \
+    say_fail "sampler_io_thread_be_polite does not set an I/O priority class — CPU nice alone does not affect the block queue"
 
 # ---- 2. the two BURST loops are paced -----------------------------------
 #
@@ -58,21 +86,16 @@ esac
 # and runs once per stem at stop. The streaming writer is deliberately NOT in
 # this list — it wakes on a semaphore and writes ~250 ms at a time, which is
 # already paced by the audio clock.
-for marker in "skipback ring dump" "preroll trim"; do :; done
-
 check_paced() {
-    local label="$1" body="$2"
-    case "$body" in
-        *sampler_write_paced*) ;;
-        *) say_fail "$label writes with bare fwrite — an unpaced multi-MB burst is what stalls the DAC" ;;
-    esac
+    contains sampler_write_paced "$2" || \
+        say_fail "$1 writes with bare fwrite — an unpaced multi-MB burst is what stalls the DAC"
 }
 
-trim=$(printf '%s\n' "$src" | awk '/^static int sampler_wav_trim_front\(/{f=1} f{print} f&&/^}/{exit}')
+trim=$(body_of "static int sampler_wav_trim_front(")
 [ -n "$trim" ] || say_fail "sampler_wav_trim_front is gone"
 check_paced "the preroll trim" "$trim"
 
-dump=$(printf '%s\n' "$src" | awk '/^static int skipback_write_wav\(/{f=1} f{print} f&&/^}/{exit}')
+dump=$(body_of "static int skipback_write_wav(")
 [ -n "$dump" ] || say_fail "skipback_write_wav is gone"
 check_paced "the skipback ring dump" "$dump"
 
@@ -81,19 +104,20 @@ check_paced "the skipback ring dump" "$dump"
 # The pause alone is not the fix. Without sync_file_range the whole file is
 # still dirty at fclose and lands in one stall; without fadvise a 32 MB save
 # evicts everything else from a small page cache.
-pacer=$(printf '%s\n' "$src" | awk '/^static size_t sampler_write_paced\(/{f=1} f{print} f&&/^}/{exit}')
+pacer=$(body_of "static size_t sampler_write_paced(")
 [ -n "$pacer" ] || say_fail "sampler_write_paced is gone"
 for want in sync_file_range posix_fadvise fflush usleep; do
-    case "$pacer" in
-        *"$want"*) ;;
-        *) say_fail "sampler_write_paced does not call $want" ;;
-    esac
+    contains "$want" "$pacer" || say_fail "sampler_write_paced does not call $want"
 done
+
 # fflush must precede sync_file_range: the syscall works on the DESCRIPTOR and
-# cannot see what is still in the FILE buffer.
-if [ "$(printf '%s\n' "$pacer" | grep -n fflush | head -1 | cut -d: -f1)" -gt \
-     "$(printf '%s\n' "$pacer" | grep -n sync_file_range | head -1 | cut -d: -f1)" ]; then
-    say_fail "sampler_write_paced calls sync_file_range before fflush — it would sync bytes the FILE buffer has not written yet"
+# cannot see what is still sitting in the FILE buffer.
+if [ -n "$pacer" ]; then
+    l_flush=$(first_line_with "fflush" "$pacer")
+    l_sync=$(first_line_with "sync_file_range" "$pacer")
+    if [ -n "$l_flush" ] && [ -n "$l_sync" ] && [ "$l_flush" -gt "$l_sync" ]; then
+        say_fail "sampler_write_paced calls sync_file_range before fflush — it would sync bytes the FILE buffer has not written yet"
+    fi
 fi
 
 # ---- 4. chown does not fork in the common path -------------------------
@@ -102,17 +126,16 @@ fi
 # address space. It ran once per save; with stems it runs six times, at the end
 # of the write burst. The direct chown(2) needs no name lookup because it
 # copies the owner of the containing directory.
-ch=$(printf '%s\n' "$src" | awk '/^static void chown_to_ableton\(/{f=1} f{print} f&&/^}/{exit}')
+ch=$(body_of "static void chown_to_ableton(")
 [ -n "$ch" ] || say_fail "chown_to_ableton is gone"
-case "$ch" in
-    *"chown(path"*) ;;
-    *) say_fail "chown_to_ableton does not call chown(2) directly — it forks once per file, six times per stems save" ;;
-esac
+contains "chown(path" "$ch" || \
+    say_fail "chown_to_ableton does not call chown(2) directly — it forks once per file, six times per stems save"
+
 # The fork must remain only as a FALLBACK, after the direct attempt.
 if [ -n "$ch" ]; then
-    dpos=$(printf '%s\n' "$ch" | grep -n "chown(path" | head -1 | cut -d: -f1)
-    fpos=$(printf '%s\n' "$ch" | grep -n "run_command" | head -1 | cut -d: -f1)
-    if [ -n "$fpos" ] && [ -n "$dpos" ] && [ "$fpos" -lt "$dpos" ]; then
+    l_direct=$(first_line_with "chown(path" "$ch")
+    l_fork=$(first_line_with "run_command" "$ch")
+    if [ -n "$l_fork" ] && [ -n "$l_direct" ] && [ "$l_fork" -lt "$l_direct" ]; then
         say_fail "chown_to_ableton forks before trying chown(2)"
     fi
 fi
