@@ -87,6 +87,7 @@ for keys anywhere in `module.json`).
 | `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
+| `forks_processes` | Module creates child **processes** (not threads) to do its DSP, as JE-8086 does. See below. |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -94,6 +95,23 @@ for keys anywhere in `module.json`).
 > shim and shadow UI code paths that actually run on device — search
 > for the flag name in `src/schwung_shim.c`, `src/shadow/shadow_ui.{c,js}`,
 > and `src/modules/chain/dsp/chain_host.c` to find the consumer.
+
+### `forks_processes`
+
+Set `capabilities.forks_processes: true` when your module's DSP runs in
+child **processes** it forks (`fork()`), not threads. It is metadata
+only — nothing about how your module runs changes because of this flag.
+
+It exists for the CPU page (`/system/cpu` in schwung-manager, see
+`docs/DIAGNOSTICS.md`), which cannot work out ownership from the forked
+processes' names: a fork inherits its parent's `comm`, so your children
+report as `MoveOriginal` — or worse, as `Audio Main/SPI`, the same name
+six of Move's own realtime threads use. The flag tells the page these
+processes are yours to attribute.
+
+**Omitting it does not hide your module's cost.** The forked processes
+still show up on the page with their real CPU time, just as
+"Unattributed" instead of under your module's name.
 
 ### Tool Config
 
@@ -2156,11 +2174,23 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
-**A two-option enum is turned differently, too.** With two values there is
-nowhere to go but the other one, so a detent TOGGLES it whichever way you
-turned — and one flick of the encoder is one flip, not a dozen. Three or more
-options keep the four-detent gate and clamp at the ends. A trigger
-(`access: "write"`) is never toggled; it fires.
+**A two-option param is turned differently, too, and how it is DRAWN decides
+how it turns.**
+
+- A param drawn as a **switch** — `Off`/`On`, or an `int` 0..1 — is
+  **direction-absolute**: clockwise is on, anticlockwise is off. The switch has
+  a track with its knob at one end, so the picture already tells you which way
+  is which. Turning an already-on switch clockwise is a no-op, not a flip, and
+  there is no gesture latch because the write is idempotent.
+- A param drawn as the **enum square** — `Mix`/`Reverb`, `Saw`/`Square` — is a
+  boxed value: both options sit in the same place, so it shows a state and names
+  no direction. A detent **toggles** it whichever way you turned, and one flick
+  of the encoder is one flip, not a dozen.
+
+You do not choose between these; the widget rule does, and it follows your
+`options`. Three or more options keep the four-detent gate and clamp at the
+ends. A trigger (`access: "write"`) is never toggled and never draws as a
+switch; it fires.
 
 **Except at exactly two options, where there is no list to open.** On the knob
 grid the click FLIPS it — the picker would show the value already in the cell

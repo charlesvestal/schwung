@@ -21,6 +21,8 @@
 #include "usbc_out_gate.h"
 #include "shadow_resample.h"   /* usbc_out_persist_enabled */
 #include "ui_midi_out_carry.h" /* UI_MIDI_CARRY_PACKETS */
+#include "perf_snapshot.h"
+#include "shadow_shm_util.h"
 
 volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
@@ -213,6 +215,47 @@ void shim_rt_audit_note_module(const char *id)
         rt_audit_module[n] = '\0';
     }
     __sync_fetch_and_add(&rt_audit_module_seq, 1);
+}
+
+/* ---- /schwung-perf publish -------------------------------------------- */
+
+/* The CPU page's frame-budget panel reads this. Retried until it succeeds
+ * rather than attempted once: /dev/shm may not be writable at the instant the
+ * shim initialises, and a single silent failure would leave the page reporting
+ * "shim not running" forever with nothing to say why.
+ *
+ * ALWAYS ON — no arming flag. The timing it publishes is already collected
+ * unconditionally, so this costs one mmap and two stores per ~1000 frames.
+ * Arming it would make the page blank by default, which reads as a broken
+ * build (see docs/DIAGNOSTICS.md on the SPI tally's 20 s silence). */
+extern void shim_perf_publish_to(volatile schwung_perf_snapshot_t *dst);
+
+void perf_shm_attach_tick(void)
+{
+    static schwung_perf_snapshot_t *shm = NULL;
+    static int moaned = 0;
+    if (shm) return;
+
+    shm = (schwung_perf_snapshot_t *)shadow_shm_map(
+        SHM_SCHWUNG_PERF, SCHWUNG_PERF_SHM_SIZE, 1, 1);
+    if (!shm) {
+        if (!moaned) {
+            moaned = 1;
+            unified_log("shim", LOG_LEVEL_WARN,
+                        "perf: could not create " SHM_SCHWUNG_PERF
+                        " - the manager's CPU page will report no shim");
+        }
+        return;
+    }
+
+    /* Fault every page in before the SPI callback ever writes here. A first
+     * touch from the callback is a page fault on the realtime thread. */
+    memset(shm, 0, SCHWUNG_PERF_SHM_SIZE);
+
+    shim_perf_publish_to((volatile schwung_perf_snapshot_t *)shm);
+    unified_log("shim", LOG_LEVEL_INFO,
+                "perf: publishing to " SHM_SCHWUNG_PERF " (v%u, %zu bytes)",
+                SCHWUNG_PERF_VERSION, sizeof(schwung_perf_snapshot_t));
 }
 
 static void rt_audit_tick(void)
@@ -723,6 +766,7 @@ static void *worker_main(void *arg) {
         }
 
         if (tick % 5 == 0) poll_flags();          /* ~1 Hz */
+        if (tick % 5 == 0) perf_shm_attach_tick();/* ~1 Hz until attached */
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */

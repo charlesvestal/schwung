@@ -46,10 +46,12 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_host_api_reserved_tail \
 	$(BUILD_DIR)/test_ui_flags_layout \
 	$(BUILD_DIR)/test_recall_quantize \
+	$(BUILD_DIR)/test_forward_channel \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
 	$(BUILD_DIR)/test_shadow_metronome \
-	$(BUILD_DIR)/test_sampler_stem_path
+	$(BUILD_DIR)/test_sampler_stem_path \
+	$(BUILD_DIR)/test_perf_snapshot_size
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -58,6 +60,14 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 MASTER_FX_SLOTS := $(shell awk '/^\#define MASTER_FX_SLOTS /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
 ifeq ($(strip $(MASTER_FX_SLOTS)),)
 $(error could not read MASTER_FX_SLOTS from ../../src/host/shadow_chain_mgmt.h)
+endif
+
+# perf_snapshot.h restates the slot counts (tests/host/ does not build the chain
+# manager). Fail the build if they drift rather than let the CPU page report
+# half the Master FX chain.
+PERF_MFX_SLOTS := $(shell awk '/^\#define PERF_MASTER_FX_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
+ifneq ($(strip $(PERF_MFX_SLOTS)),$(strip $(MASTER_FX_SLOTS)))
+$(error PERF_MASTER_FX_SLOTS ($(PERF_MFX_SLOTS)) != MASTER_FX_SLOTS ($(MASTER_FX_SLOTS)) - update src/host/perf_snapshot.h)
 endif
 
 .DEFAULT_GOAL := all
@@ -99,6 +109,9 @@ $(BUILD_DIR)/test_master_fx_snapshot: test_master_fx_snapshot.c ../../src/host/m
 # metronome_click.h calls sinf/expf. The generic pattern rule above does not
 # link libm, and on glibc the failure is a link error rather than anything
 # subtle.
+$(BUILD_DIR)/test_forward_channel: test_forward_channel.c ../../src/host/forward_channel.h ../../src/host/shadow_chain_types.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
 $(BUILD_DIR)/test_metronome_click: test_metronome_click.c ../../src/host/metronome_click.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 

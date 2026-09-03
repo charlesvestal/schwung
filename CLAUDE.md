@@ -95,6 +95,20 @@ tally, each with its arming file. Read it before measuring anything on hardware:
   same amount. The old overrun counter fired on *every* frame: 43,986 in two
   minutes on an idle device.
 - The tally stays **silent for ~20 s after arming**, which looks like a broken build.
+- The **CPU usage page** (`/system/cpu`, schwung-manager, `/schwung-perf`) is the
+  one diagnostic that is **always on** — its timing was already being collected
+  unconditionally, so only its 1 Hz polling is armed, by a button, not a file.
+  It shows two numbers (frame budget vs process CPU) that must never be added —
+  modules are not processes, so a module's cost already sits inside
+  `MoveOriginal`'s `/proc` percentage. MIDI FX are not separable and land in
+  `proc_midi`.
+- A **fork-parallel module** (JP-8000) hides from the frame budget — its DSP
+  runs in child processes the CPU page can't find by name (`comm` is
+  inherited; one child reported as `Audio Main/SPI`, same as six of
+  MoveOriginal's own threads). Attribution walks the process **tree** minus
+  the four shim helpers; ownership is `capabilities.forks_processes`, else a
+  marked inference, else unattributed. Module identity is read from disk
+  (`active_set.txt` → `chain.synth.module`), not the param channel.
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter
@@ -496,9 +510,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   the peek was tracked on each detent, `applyInput` swallowed the Back that
   dismissed it, and it was painted nowhere. CW-78 and 6W6 both shipped that
   way.
-- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and a
-  detent TOGGLES, latched to one flick. `flipsOnClick` defines "is a two-way",
-  not "flip".
+- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and on
+  the KNOB they split BY WIDGET, not by semantics: a **switch** has a track, so
+  its form names a direction and it is direction-absolute (clockwise on,
+  idempotent, no latch); the **boxed** enum square shows a state and no
+  direction, so it TOGGLES either way, latched to one flick. The turn partition
+  must EQUAL the draw partition or a shape promises what the knob won't do.
+  `flipsOnClick` defines "is a two-way", not "flip".
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
 - **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
@@ -648,7 +666,12 @@ is on screen):
 - **Shift+Delete** — put the snapshot back
 
 **Long-press** (modes Both / Long Press):
-- Hold Track 1–4 (500ms) → slot editor
+- **Hold Track 1–4 (500ms) → TOGGLE between the two worlds.** From Move it opens
+  that slot's editor; from the shadow UI it dismisses and leaves you on that
+  Move track. Its own inverse, so you long-press back and forth. The Move-track
+  tap is injected on BOTH directions — it is what made Move's selected track
+  follow the slot, and it is why the dismiss lands somewhere useful rather than
+  on whatever track Move was on.
 - Hold Menu (500ms) → Master FX
 - Shift + hold Step 2 (500ms) → Global Settings
 - Shift + Step 13 (immediate) → Tools menu

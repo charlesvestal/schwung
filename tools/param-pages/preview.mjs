@@ -52,7 +52,16 @@ import { makeRecord, presetRowValue } from "../../src/shared/param_pages/current
 import { fakeValue } from "./fake_values.mjs";
 
 const ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
-const FIXTURE = path.join(ROOT, "tests", "fixtures", "module-contracts.json");
+/* --fixture points at another capture. A module that is not in the fleet
+ * fixture -- one being developed, or captured from a device -- has no other
+ * way to be previewed, and hand-splicing it into the checked-in fixture is
+ * how a capture stops being a capture. */
+const FIXTURE = (() => {
+    const i = process.argv.indexOf("--fixture");
+    if (i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith("--"))
+        return path.resolve(process.argv[i + 1]);
+    return path.join(ROOT, "tests", "fixtures", "module-contracts.json");
+})();
 
 const argv = process.argv.slice(2);
 const flag = (name, dflt = null) => {
@@ -74,7 +83,7 @@ if (flag("list")) {
 
 const id = positional[0];
 if (!id) {
-    console.error("usage: preview.mjs <module-id> [--page N | --all] [--layout dial|bar|movy|list] [--trailing] [--reveal] [--touch N] [--png DIR] [--scale N]");
+    console.error("usage: preview.mjs <module-id> [--page N | --all] [--fixture FILE] [--mode NAME] [--layout dial|bar|movy|list] [--trailing] [--reveal] [--touch N] [--png DIR] [--scale N]");
     process.exit(2);
 }
 const mod = fx.modules.find((m) => m.id === id);
@@ -113,8 +122,12 @@ const TRAILING_MENUS_FIXTURE = () => ([
 ]);
 const trailingFlag = !!flag("trailing");
 
+/* A module with modes shows a DIFFERENT set of pages per mode, and without
+ * this only the first one was reachable here -- so JE-8086's performance and
+ * system pages could not be previewed at all. */
 const { pages, warnings } = planPages({
     hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params,
+    mode: typeof flag("mode") === "string" ? flag("mode") : undefined,
     trailingMenus: trailingFlag ? TRAILING_MENUS_FIXTURE() : undefined,
 });
 const metaIndex = buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: mod.chain_params });
