@@ -140,6 +140,44 @@ Three things about the behaviour are easy to get wrong, and each fails silently:
   (solo) and a volume touch during the press are excluded for the same reason
   the dismiss excludes them.
 
+### A Track LONG-PRESS is a toggle, and it is its own inverse
+
+From Move, holding a Track for 500 ms opens that slot's editor. From the shadow
+UI, holding it **dismisses and leaves you on that Move track** — so the same
+gesture takes you back and forth and there is no second key to learn for the
+return trip. Requested from the device: *"long pressing a track should dismiss
+shadow ui and take you to that move track. This way you can long press between
+both."*
+
+**The dismiss direction is not a new mechanism**, and that is the whole reason
+it is one branch. The fire block already injected a synthetic Track TAP on every
+long-press — a release to close the real 500 ms hold, then a crisp press/release
+pair Move reads as a tap, with the user's eventual real release swallowed — to
+make Move's selected track follow the slot (the field report behind it: *"it
+does change to slot 2 on schwung, but still shows me the [old] pads"*). That
+injection stays OUTSIDE the branch and runs both ways, which is exactly what
+makes the dismiss land on the track the editor was about instead of wherever
+Move happened to be.
+
+Two things to keep straight:
+
+- **Only the OPEN direction sets `SHADOW_UI_FLAG_JUMP_TO_SLOT`.** Raising it on
+  the way out is a flag set while leaving. It is not needed for the round trip
+  either: long-pressing that track again re-opens through the open arm, which
+  sets it.
+- **Overtake needs no guard here and must not grow one.** The overtake early-out
+  above the Track CC block `continue`s before any long-press timer starts, so
+  the fire block cannot run at all. A second check there would be dead code that
+  reads as load-bearing.
+
+With Keep Schwung on, the PRESS also switches to that slot before the hold
+completes — so a long-press shows you the slot for half a second and then hands
+the screen back. That is confirmation of the target, not a race: both writes
+agree about which track you are going to.
+
+`tests/host/test_track_longpress_toggle.sh` pins the branch, the shared
+injection and the surviving escape hatches.
+
 The byte rides in `shadow_control_t.stay_in_shadow`, appended at the end of the
 struct and read live so the toggle takes effect on the next tap. Appending is
 free only because `CONTROL_BUFFER_SIZE` is 256 for a struct that uses ~86 —

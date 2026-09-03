@@ -596,7 +596,12 @@ is on screen):
 - **Shift+Delete** — put the snapshot back
 
 **Long-press** (modes Both / Long Press):
-- Hold Track 1–4 (500ms) → slot editor
+- **Hold Track 1–4 (500ms) → TOGGLE between the two worlds.** From Move it opens
+  that slot's editor; from the shadow UI it dismisses and leaves you on that
+  Move track. Its own inverse, so you long-press back and forth. The Move-track
+  tap is injected on BOTH directions — it is what made Move's selected track
+  follow the slot, and it is why the dismiss lands somewhere useful rather than
+  on whatever track Move was on.
 - Hold Menu (500ms) → Master FX
 - Shift + hold Step 2 (500ms) → Global Settings
 - Shift + Step 13 (immediate) → Tools menu
