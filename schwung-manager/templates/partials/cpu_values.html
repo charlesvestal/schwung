@@ -154,6 +154,77 @@
     </section>
 
     <section class="info-card">
+        <h2>Forked by modules &mdash; cores 0&ndash;3</h2>
+        <p class="muted">
+            {{/* This panel exists because the frame-budget table above cannot
+                 see this work at all: JP-8000 forks from create_instance, which
+                 IS the SPI callback, and read ~5% there while its children ran
+                 flat out on other cores. */}}
+            These are processes a module forked out of the SPI callback. Their
+            cost does <strong>not</strong> appear in the frame budget above
+            &mdash; that table measures time spent inside the callback, and this
+            is the work that left it.
+        </p>
+        {{if not .ForkGroups}}
+            <p class="muted">No forked processes.</p>
+        {{else}}
+            {{range .ForkGroups}}
+            <h3>
+                {{if .Module}}{{.Module}}{{else}}Unattributed{{end}}
+                &mdash; {{printf "%.1f" .TotalPercent}}% of one core
+            </h3>
+            {{if .Inferred}}
+                <p><span class="muted">
+                    Owner inferred &mdash; no loaded module declares
+                    <code>forks_processes</code>, and this was the only
+                    candidate. Treat the name as a guess; the cost is measured.
+                </span></p>
+            {{end}}
+            {{if not .Module}}
+                <p class="muted">
+                    More than one module could be responsible, so no owner is
+                    named. The cost is real either way.
+                </p>
+            {{end}}
+            <div class="table-scroll">
+            <table class="data-table">
+                <caption class="sr-only">Forked processes and their CPU usage</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">PID</th>
+                        <th scope="col">Name</th>
+                        <th scope="col">Core</th>
+                        <th scope="col">% of one core</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {{range .Procs}}
+                    <tr>
+                        <th scope="row">{{.PID}}</th>
+                        <td>
+                            {{.Comm}}<br>
+                            <small class="muted">name inherited from the parent &mdash; not meaningful</small>
+                        </td>
+                        <td>{{.Core}}</td>
+                        <td>
+                            <div class="progress-bar" role="progressbar"
+                                 aria-valuenow="{{printf "%.0f" .Percent}}"
+                                 aria-valuemin="0" aria-valuemax="400"
+                                 aria-label="PID {{.PID}}: {{printf "%.1f" .Percent}} percent of one core">
+                                <div class="progress-fill{{if gt .Percent 85.0}} progress-danger{{else if gt .Percent 60.0}} progress-warning{{end}}"
+                                     style="width: {{if gt .Percent 100.0}}100.0{{else}}{{printf "%.1f" .Percent}}{{end}}%">{{printf "%.1f" .Percent}}%</div>
+                            </div>
+                        </td>
+                    </tr>
+                {{end}}
+                </tbody>
+            </table>
+            </div>
+            {{end}}
+        {{end}}
+    </section>
+
+    <section class="info-card">
         <h2>Cores</h2>
         {{/* A read that did not answer must not become a picture. Without these
              guards a missing /proc/loadavg renders as "0.00 / 0.00 / 0.00" and a

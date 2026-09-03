@@ -524,6 +524,25 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 		forkGroups = attributeForks(kids, loadedModules(app.basePath, setState))
 	}
 
+	// Point a forker's frame-budget row at its children, so the small number
+	// and the real one are visibly connected rather than sitting in two tables
+	// that look unrelated. budget is nil whenever the snapshot read failed, so
+	// this loop simply does not run then.
+	for gi := range forkGroups {
+		if forkGroups[gi].Module == "" {
+			continue
+		}
+		for bi := range budget {
+			if budget[bi].Module != forkGroups[gi].Module {
+				continue
+			}
+			budget[bi].Note = "This module also runs " +
+				strconv.Itoa(len(forkGroups[gi].Procs)) +
+				" forked process(es) on other cores \u2014 see \u201cForked by modules\u201d " +
+				"below. This row is only its cost inside the SPI callback."
+		}
+	}
+
 	// The ok flags are NOT discarded. /proc/stat and /proc/loadavg can fail —
 	// they do not exist off Linux at all — and a discarded flag renders as
 	// "Load average: 0.00 / 0.00 / 0.00" plus a table of headings with no
