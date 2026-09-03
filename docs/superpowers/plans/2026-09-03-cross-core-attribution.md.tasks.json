@@ -1,0 +1,66 @@
+{
+  "planPath": "docs/superpowers/plans/2026-09-03-cross-core-attribution.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: Disk-backed module identity",
+      "status": "pending",
+      "description": "**Goal:** `perf_modules.go` reads which module sits in each slot and Master FX position from the on-disk set state, with no param round-trips.\n\n**Files:**\n- Create: `schwung-manager/perf_modules.go`\n- Create: `schwung-manager/perf_modules_test.go`\n- Modify: `schwung-manager/perf.go` (delete `moduleID`, `moduleIDCache`, `moduleIDRefresh`, `(app *App) moduleIDs` \u2014 they move)\n\n**Acceptance Criteria:**\n- [ ] The set uuid comes from the **first line** of `active_set.txt`, not from directory mtime or glob order.\n- [ ] Slot module reads `chain.synth.module`; audio FX read `chain.audio_fx[].type`; MIDI FX read `chain.midi_fx[].type`.\n- [ ] Master FX reads `module_id` from `master_fx_N.json`.\n- [ ] `{}` and a null `synth` both read as **empty**, distinct from a read failure.\n- [ ] A missing `active_set.txt`, or one naming a directory that does not exist, reports failure \u2014 not \"everything empty\".\n- [ ] `moduleCapabilities` reads `capabilities.forks_processes` from an installed module's `module.json`, defaulting false when absent and reporting failure when the file cannot be read.\n\n**Verify:** `cd schwung-manager && go test ./... -run TestModules -v` \u2192 all PASS\n\n```json:metadata\n{\"files\": [\"schwung-manager/perf_modules.go\", \"schwung-manager/perf_modules_test.go\", \"schwung-manager/perf.go\"], \"verifyCommand\": \"cd schwung-manager && go test ./... -run TestModules -v\", \"acceptanceCriteria\": [\"set uuid comes from line 1 of active_set.txt, not mtime or glob order\", \"slot module reads chain.synth.module and FX read .type\", \"master FX reads module_id\", \"{} and null synth read as empty with Read=true\", \"missing or dangling active_set.txt reports failure\", \"moduleForksProcesses reads capabilities.forks_processes and reports ok=false when unreadable\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: One param handle, lazily attached",
+      "status": "pending",
+      "description": "**Goal:** `App.params()` exists, every consumer uses it, and `RemoteUI` shares that handle instead of opening a second mapping.\n\n**Files:**\n- Modify: `schwung-manager/main.go` (accessor + field)\n- Modify: `schwung-manager/remote_ui.go:288-303` (`ensureShm` delegates)\n- Create: `schwung-manager/params_test.go`\n\n**Acceptance Criteria:**\n- [ ] `App.params()` returns nil while `/dev/shm/schwung-param` is absent and a working handle once it appears, without a restart.\n- [ ] `RemoteUI.ensureShm()` returns the same `*ShmParams` pointer as `App.params()`.\n- [ ] No code path other than `App.params()` calls `OpenShmParams()`.\n- [ ] The startup log no longer claims \"not available\" permanently \u2014 a later attach is reported.\n\n**Verify:** `cd schwung-manager && go test ./... -run TestParams -v && grep -c 'OpenShmParams()' *.go` \u2192 tests PASS, count is 2 (the definition and the single accessor)\n\n```json:metadata\n{\"files\": [\"schwung-manager/main.go\", \"schwung-manager/perf.go\", \"schwung-manager/remote_ui.go\", \"schwung-manager/shmparams.go\", \"schwung-manager/params_test.go\"], \"verifyCommand\": \"cd schwung-manager && go test ./... -run TestParams -v && grep -c 'OpenShmParams()' *.go\", \"acceptanceCriteria\": [\"App.params() returns nil while absent and a handle once present, no restart\", \"RemoteUI.ensureShm returns the same pointer as App.params()\", \"OpenShmParams() is called from exactly one place\", \"a later attach is logged\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: Wire disk identity in, with the freshness guard",
+      "status": "pending",
+      "description": "**Goal:** The page names positions from disk, falling back to a single param read only when disk and telemetry disagree.\n\n**Files:**\n- Modify: `schwung-manager/perf_modules.go` (add the resolver)\n- Modify: `schwung-manager/perf.go` (call site)\n- Modify: `schwung-manager/perf_modules_test.go` (add the guard tests)\n\n**Acceptance Criteria:**\n- [ ] With disk populated, a poll performs **zero** param reads.\n- [ ] When disk reports a position empty but the snapshot shows nonzero timing for it, exactly one param read is issued for that position.\n- [ ] When disk itself failed, every position is `Answered: false` \u2014 never silently empty.\n- [ ] `go build ./...` succeeds again.\n\n**Verify:** `cd schwung-manager && go test ./... -run 'TestModules|TestFreshness' -v` \u2192 all PASS\n\n```json:metadata\n{\"files\": [\"schwung-manager/perf_modules.go\", \"schwung-manager/perf_modules_test.go\", \"schwung-manager/perf.go\", \"schwung-manager/perf_test.go\"], \"verifyCommand\": \"cd schwung-manager && go build ./... && go test ./... -run 'TestModules|TestFreshness' -v\", \"acceptanceCriteria\": [\"a poll with populated disk issues zero param reads\", \"disk-empty plus nonzero timing issues exactly one read for that position\", \"a failed disk read leaves every position Answered=false\", \"go build succeeds\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        2
+      ]
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: Find the forked children",
+      "status": "pending",
+      "description": "**Goal:** `perf_forks.go` walks MoveOriginal's descendants recursively and returns the module-forked ones, excluding the helpers the shim spawns.\n\n**Files:**\n- Create: `schwung-manager/perf_forks.go`\n- Create: `schwung-manager/perf_forks_test.go`\n- Modify: `schwung-manager/perf_proc.go` (add `PPid` to `ProcStat`)\n\n**Acceptance Criteria:**\n- [ ] `ProcStat` carries `PPid` (proc(5) field 4).\n- [ ] The walk is **recursive** \u2014 a grandchild of MoveOriginal is found.\n- [ ] `display-server`, `schwung-manager`, `link-subscriber` and `shadow_ui` are excluded, **and so are their descendants**.\n- [ ] MoveOriginal itself is excluded.\n- [ ] A child named `MoveOriginal` or `Audio Main/SPI` IS included \u2014 attribution never uses names.\n- [ ] A cycle or self-parent in the input cannot loop forever.\n\n**Verify:** `cd schwung-manager && go test ./... -run TestForks -v` \u2192 all PASS\n\n```json:metadata\n{\"files\": [\"schwung-manager/perf_forks.go\", \"schwung-manager/perf_forks_test.go\", \"schwung-manager/perf_proc.go\", \"schwung-manager/perf_proc_test.go\"], \"verifyCommand\": \"cd schwung-manager && go test ./... -run TestForks -v\", \"acceptanceCriteria\": [\"ProcStat carries PPid from proc(5) field 4\", \"the walk finds grandchildren\", \"the four helpers and their descendants are excluded\", \"MoveOriginal itself is excluded\", \"a child named MoveOriginal or Audio Main/SPI is still included\", \"a cyclic tree terminates\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        3
+      ]
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: Attribute the children to a module",
+      "status": "pending",
+      "description": "**Goal:** Forked processes are grouped and named \u2014 declared, else inferred and marked, else unattributed.\n\n**Files:**\n- Modify: `schwung-manager/perf_forks.go` (attribution)\n- Modify: `schwung-manager/perf_forks_test.go`\n- Modify: `schwung-manager/perf.go` (build the panel data)\n\n**Acceptance Criteria:**\n- [ ] A module declaring `capabilities.forks_processes` claims the children; `Inferred` is false.\n- [ ] With nothing declared and exactly one synth loaded, the children are attributed to it with `Inferred: true`.\n- [ ] With nothing declared and two synths loaded, the group is unattributed (`Module == \"\"`) \u2014 no guess.\n- [ ] With nothing declared and no synth loaded, the group is unattributed.\n- [ ] The group always carries total CPU% and per-PID rows, whatever the naming outcome.\n- [ ] Two declaring modules produce one group each, and children are not double-counted.\n\n**Verify:** `cd schwung-manager && go test ./... -run TestAttribute -v` \u2192 all PASS\n\n```json:metadata\n{\"files\": [\"schwung-manager/perf_forks.go\", \"schwung-manager/perf_forks_test.go\", \"schwung-manager/perf.go\", \"schwung-manager/perf_modules.go\"], \"verifyCommand\": \"cd schwung-manager && go test ./... -run TestAttribute -v\", \"acceptanceCriteria\": [\"a declaring module claims the children with Inferred false\", \"one candidate and nothing declared infers and marks it\", \"two candidates yields an unattributed group\", \"no modules yields an unattributed group\", \"every group carries total CPU and per-PID rows\", \"two declarers do not double-count children\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        4
+      ]
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: Show it",
+      "status": "pending",
+      "description": "**Goal:** The page has a forked-process panel, inferred attributions are visibly marked, and a forker's frame-budget row points at its children.\n\n**Files:**\n- Modify: `schwung-manager/templates/partials/cpu_values.html`\n- Modify: `schwung-manager/perf.go` (cross-reference note on the budget row)\n- Modify: `schwung-manager/perf_render_test.go`\n\n**Acceptance Criteria:**\n- [ ] A declared group renders the module name with **no** \"inferred\" wording.\n- [ ] An inferred group renders a visible \"inferred\" marker.\n- [ ] An unattributed group renders its CPU and says the owner is unknown.\n- [ ] With no forked processes, the panel says so rather than rendering an empty table.\n- [ ] A module with a fork group gets a note on its frame-budget row pointing down to it.\n- [ ] Every bar keeps `role=\"progressbar\"` with an `aria-label`, and the table reads without bars.\n\n**Verify:** `cd schwung-manager && go test ./... -run TestCPUValues -v && go build ./...` \u2192 PASS\n\n```json:metadata\n{\"files\": [\"schwung-manager/templates/partials/cpu_values.html\", \"schwung-manager/perf.go\", \"schwung-manager/perf_render_test.go\"], \"verifyCommand\": \"cd schwung-manager && go test ./... -run TestCPUValues -v && go build ./...\", \"acceptanceCriteria\": [\"a declared group renders without inferred wording\", \"an inferred group renders a visible marker\", \"an unattributed group renders its CPU and per-PID rows\", \"no forked processes says so rather than an empty table\", \"a forker's budget row points at its children\", \"bars keep role=progressbar and aria-label\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        5
+      ]
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: Declare it in JP-8000, and document",
+      "status": "pending",
+      "description": "**Goal:** JP-8000 declares `capabilities.forks_processes`, and the docs record what this page can and cannot attribute.\n\n**Files:**\n- Modify: `../schwung-jp8000/src/module.json` \u2014 **a DIFFERENT REPO**\n- Modify: `docs/DIAGNOSTICS.md`\n- Modify: `docs/MODULES.md` (document the capability)\n- Modify: `CLAUDE.md` (one bullet)\n\n**Acceptance Criteria:**\n- [ ] `schwung-jp8000/src/module.json` has `capabilities.forks_processes: true`, committed **on its own branch in that repo** with its own PR.\n- [ ] `docs/MODULES.md` documents `capabilities.forks_processes`: what it means, that it is metadata only, and that omitting it means the module's forked cost shows as unattributed rather than vanishing.\n- [ ] `docs/DIAGNOSTICS.md` gains a subsection on cross-core attribution, including that names are useless and why.\n- [ ] `CLAUDE.md` gains **one** bullet under the DIAGNOSTICS hook \u2014 no prose inlined.\n\n**Verify:** `grep -c forks_processes docs/MODULES.md docs/DIAGNOSTICS.md ../schwung-jp8000/src/module.json` \u2192 all non-zero\n\n```json:metadata\n{\"files\": [\"../schwung-jp8000/src/module.json\", \"docs/DIAGNOSTICS.md\", \"docs/MODULES.md\", \"CLAUDE.md\"], \"verifyCommand\": \"grep -c forks_processes docs/MODULES.md docs/DIAGNOSTICS.md CLAUDE.md\", \"acceptanceCriteria\": [\"jp8000 module.json declares forks_processes on its own branch in its own repo\", \"MODULES.md documents the capability and that omitting it does not hide cost\", \"DIAGNOSTICS.md covers tree-not-names and the disk schema\", \"CLAUDE.md gains exactly one bullet with no prose inlined\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        6
+      ]
+    }
+  ],
+  "lastUpdated": "2026-09-03T10:12:15.030100"
+}
