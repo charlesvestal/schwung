@@ -32,6 +32,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
+import { readFileSync } from "node:fs";
 import { createController } from "./src/shared/param_pages/page_controller.mjs";
 import { paramCardRect, paramCardContentRect, drawParamCard,
          DEFAULT_CARD_W, DEFAULT_CARD_H, BORDER_W, GAP_W }
@@ -333,6 +334,50 @@ const ink = (fb) => fb.pixels.reduce((n, v) => n + (v ? 1 : 0), 0);
   };
   ok(render({}) === render({ loadCard: () => () => {} }),
      "the PAGE renders identically whether or not a loader is present");
+}
+
+/* ==================================================================== 12 ==
+ * THE HOST TAKES A CARD EXPORT AS A FUNCTION, NOT AS AN OVERLAY FACTORY.
+ *
+ * A source pin, because the failure it guards is host-side and silent. The card
+ * loader first reused loadCanvasOverlayScript, which resolves a canvas OVERLAY
+ * OBJECT — and resolveOverlayObject treats a function candidate as a FACTORY:
+ * it CALLS it and keeps whatever object comes back. So the drawer was invoked
+ * with no arguments, threw on the rect it was never given, and was discarded as
+ * "overlay factory returned invalid value". The loader answered null, the
+ * controller cached that null exactly as designed, and the knob had no picture
+ * — no error anywhere, and only on the consumer that used this loader.
+ */
+{
+  const host = readFileSync("src/shadow/shadow_ui.js", "utf8");
+
+  ok(/function loadCardDrawer\(/.test(host),
+     "the host has a loader dedicated to card drawers");
+
+  const at = host.indexOf("function loadCardDrawer(");
+  const body = host.slice(at, host.indexOf("\nfunction ", at + 10));
+
+  ok(/typeof fn === "function"/.test(body),
+     "it accepts the export as a FUNCTION");
+  ok(!/loadCanvasOverlayScript|resolveOverlayFromGlobals|resolveOverlayObject/.test(body),
+     "and does NOT route a card through the canvas-overlay resolver, which "
+     + "would CALL it as a factory");
+
+  /* The call site must use it. A loader nothing calls is the same bug back. */
+  const ctxAt = host.indexOf("_ctx.loadCardScript");
+  const ctxBody = host.slice(ctxAt, ctxAt + 600);
+  ok(/loadCardDrawer\(/.test(ctxBody),
+     "and the ctx hook goes through it");
+  ok(!/loadCanvasOverlayScript\(/.test(ctxBody),
+     "not through the canvas one");
+
+  /* The premise, so this section cannot quietly stop meaning anything: the
+     overlay resolver really does call a function candidate. */
+  const roAt = host.indexOf("function resolveOverlayObject(");
+  const roBody = host.slice(roAt, host.indexOf("\nfunction ", roAt + 10));
+  ok(/typeof candidate === "function"/.test(roBody) && /candidate\(\)/.test(roBody),
+     "PREMISE: resolveOverlayObject still calls a function candidate as a factory "
+     + "— if this ever stops being true, the section above is obsolete, not wrong");
 }
 
 console.log(fail === 0 ? "ALL PARAM CARD CHECKS PASSED" : (fail + " FAILED"));

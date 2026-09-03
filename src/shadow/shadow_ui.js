@@ -16736,6 +16736,55 @@ function resolveCanvasScriptPath(meta) {
  * it did not ship, which the caller reads as "no card" — a missing file is a
  * module bug, not a reason to fail a page.
  */
+/*
+ * Evaluate a card script and return its named export.
+ *
+ * ⚠ NOT loadCanvasOverlayScript, and the difference is not cosmetic. That
+ * resolves a canvas OVERLAY OBJECT, and resolveOverlayObject treats a function
+ * as a FACTORY — it CALLS the candidate and keeps the object it returns. A card
+ * export is a plain drawer, so routing it through there invoked it with no
+ * arguments, it threw on the rect it was not given, and the loader reported
+ * "overlay factory returned invalid value" and answered null. The controller
+ * cached that null exactly as designed and the knob had no picture, with no
+ * error anywhere. It only showed up on one of the two consumers, because the
+ * other supplies its own loader.
+ *
+ * A card is a FUNCTION. Take it as one.
+ *
+ * The saved/restored names are the module globals a UI script may assign, plus
+ * the card's own export — which is arbitrary, so it has to be saved by name.
+ * shadow_load_ui_module evaluates into the shared globalThis, and clobbering
+ * init/tick there is how the host stops ticking.
+ */
+function loadCardDrawer(scriptPath, exportRef) {
+    if (!scriptPath || !exportRef) return null;
+    if (typeof shadow_load_ui_module !== "function") return null;
+
+    const NAMES = ["init", "tick", "onMidiMessageInternal", "onMidiMessageExternal",
+                   exportRef];
+    const had = {}, saved = {};
+    for (const n of NAMES) {
+        had[n] = Object.prototype.hasOwnProperty.call(globalThis, n);
+        saved[n] = globalThis[n];
+    }
+
+    let out = null;
+    try {
+        if (shadow_load_ui_module(scriptPath)) {
+            const fn = globalThis[exportRef];
+            if (typeof fn === "function") out = fn;
+        }
+    } catch (e) {
+        out = null;
+    } finally {
+        for (const n of NAMES) {
+            if (had[n]) globalThis[n] = saved[n];
+            else { try { delete globalThis[n]; } catch (e) {} }
+        }
+    }
+    return out;
+}
+
 function resolveCardScriptPath(slot, component, scriptRef) {
     if (!scriptRef) return "";
     if (scriptRef.startsWith("/")) {
@@ -20378,10 +20427,8 @@ function drawHelpDetail() {
      */
     _ctx.loadCardScript = (slot, component, scriptPath, exportRef) => {
         if (!scriptPath || !exportRef) return null;
-        const loaded = loadCanvasOverlayScript(
+        return loadCardDrawer(
             resolveCardScriptPath(slot, component, scriptPath), exportRef);
-        const fn = loaded && loaded.overlay;
-        return typeof fn === 'function' ? fn : null;
     };
     _ctx.isMuteHeld = () => hostMuteHeld;
 
