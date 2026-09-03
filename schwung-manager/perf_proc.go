@@ -34,6 +34,7 @@ const (
 
 // Field numbers in proc(5), 1-based, counting the bracketed comm as field 2.
 const (
+	fieldPPid      = 4
 	fieldUtime     = 14
 	fieldStime     = 15
 	fieldProcessor = 39
@@ -44,6 +45,7 @@ const (
 // ProcStat is one parsed /proc/<pid>/stat (or .../task/<tid>/stat) line.
 type ProcStat struct {
 	PID    int
+	PPid   int // parent pid — walking it is how a module fork is found (see perf_forks.go)
 	Comm   string
 	Utime  uint64 // clock ticks — USER_HZ is applied at the call site
 	Stime  uint64
@@ -87,6 +89,8 @@ func parseProcStatLine(line string) (ProcStat, bool) {
 	for _, tok := range strings.Fields(line[closeIdx+1:]) {
 		field++
 		switch field {
+		case fieldPPid:
+			out.PPid, _ = strconv.Atoi(tok)
 		case fieldUtime:
 			out.Utime, _ = strconv.ParseUint(tok, 10, 64)
 		case fieldStime:

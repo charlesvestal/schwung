@@ -7,9 +7,10 @@ import (
 	"time"
 )
 
-// makeStatLine builds a synthetic /proc/<pid>/stat line: "pid (comm) S " then
-// fields 3..41, with the interesting ones at their proc(5) positions.
-func makeStatLine(pid int, comm string, utime, stime uint64, cpu, prio, policy int) string {
+// makeStatLine builds a synthetic /proc/<pid>/stat line: "pid (comm) S ppid "
+// then the rest of fields 4..41, with the interesting ones at their proc(5)
+// positions.
+func makeStatLine(pid int, comm string, ppid int, utime, stime uint64, cpu, prio, policy int) string {
 	// fields[i] is proc field i+3 — field 3 is the state letter.
 	fields := make([]string, fieldPolicy-2)
 	for i := range fields {
@@ -18,6 +19,7 @@ func makeStatLine(pid int, comm string, utime, stime uint64, cpu, prio, policy i
 	set := func(field int, v string) { fields[field-3] = v }
 
 	set(3, "S")
+	set(fieldPPid, strconv.Itoa(ppid))
 	set(fieldUtime, strconv.FormatUint(utime, 10))
 	set(fieldStime, strconv.FormatUint(stime, 10))
 	set(fieldProcessor, strconv.Itoa(cpu))
@@ -29,7 +31,7 @@ func makeStatLine(pid int, comm string, utime, stime uint64, cpu, prio, policy i
 
 func TestParseProcStatCommWithSpace(t *testing.T) {
 	// Move names six of its threads exactly this.
-	line := makeStatLine(1234, "Audio Main/SPI", 500, 100, 3, 70, schedFIFO)
+	line := makeStatLine(1234, "Audio Main/SPI", 917, 500, 100, 3, 70, schedFIFO)
 
 	got, ok := parseProcStatLine(line)
 	if !ok {
@@ -37,6 +39,9 @@ func TestParseProcStatCommWithSpace(t *testing.T) {
 	}
 	if got.Comm != "Audio Main/SPI" {
 		t.Errorf("Comm = %q, want %q", got.Comm, "Audio Main/SPI")
+	}
+	if got.PPid != 917 {
+		t.Errorf("PPid = %d, want 917", got.PPid)
 	}
 	if got.Policy != schedFIFO || got.RTPrio != 70 {
 		t.Errorf("policy/prio = %d/%d, want %d/70 — whitespace-tokenising comm "+
@@ -57,7 +62,7 @@ func TestParseProcStatCommWithSpace(t *testing.T) {
 
 func TestParseProcStatCommWithParen(t *testing.T) {
 	// Both a space and parentheses: comm must be delimited on the LAST ')'.
-	line := makeStatLine(77, "worker (2)", 1, 2, 0, 0, schedOther)
+	line := makeStatLine(77, "worker (2)", 1, 1, 2, 0, 0, schedOther)
 
 	got, ok := parseProcStatLine(line)
 	if !ok {
