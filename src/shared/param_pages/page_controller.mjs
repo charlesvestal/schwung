@@ -658,6 +658,16 @@ export function createController(io = {}) {
          * cleared on every enter, and nothing reads it unless the page it
          * belongs to is entered. */
         knobEditing: false,
+        /*
+         * Does this contract's levels get chunked into 8-key grid pages?
+         *
+         * A property of the CONTRACT, set by load(), not of the layout: the
+         * layout is LAYOUT_LIST whenever the screen reader is on or Param View
+         * says List, and un-paginating there would rearrange every module's
+         * pages behind a preference. Global Settings sets it false because its
+         * sections are one scrolling list each. Default true.
+         */
+        paginate: true,
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
         /* ms at which a TURN claimed the header with nothing held, or 0.
@@ -791,8 +801,14 @@ export function createController(io = {}) {
      * Safe to call repeatedly — it rebuilds only when the declared contract
      * actually changed, and keeps the user's place when it does.
      */
-    function load({ slot = 0, component = "synth", prefix, mode, visible } = {}) {
+    function load({ slot = 0, component = "synth", prefix, mode, visible,
+                    paginate = true } = {}) {
         const nextPrefix = prefix || component;
+        /* Carried on the state so the two REPLAN paths (mode change, visible_if
+         * change) reach the planner with the same answer as the initial plan.
+         * They read s.lastLoadOpts for mode and visible; this is the third
+         * thing they must not forget, so it sits beside them. */
+        s.paginate = paginate !== false;
         /* Whether we are re-reading the SAME component decides what an
          * unresolved read may keep — see below. */
         const sameComponent = (s.slot === slot && s.component === component && s.prefix === nextPrefix);
@@ -927,7 +943,8 @@ export function createController(io = {}) {
             ? (sameComponent ? s.chainParams : null)
             : parse(rawChain);
         if (chainFailed && sameComponent) armContractSettle();
-        const planned = planPages({ hierarchy, chainParams, mode: activeMode, visible, trailingMenus: trailingMenus() });
+        const planned = planPages({ hierarchy, chainParams, mode: activeMode, visible,
+                                    trailingMenus: trailingMenus(), paginate: s.paginate });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
         s.chainParams = chainParams;
@@ -2928,6 +2945,7 @@ export function createController(io = {}) {
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
             trailingMenus: trailingMenus(),
+            paginate: s.paginate,
         });
         if (!planned.pages.length) return;   /* never plan from nothing */
         s.pages = planned.pages;
@@ -2978,6 +2996,7 @@ export function createController(io = {}) {
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
             trailingMenus: trailingMenus(),
+            paginate: s.paginate,
         });
         if (planned.pages.length !== oldPages.length ||
             planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {

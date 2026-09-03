@@ -30,7 +30,13 @@ import { ctx } from './shadow_ui_ctx.mjs';
 import { createController, CONTRACT_SETTLE_MS, LAYOUT_LIST } from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 /* Re-exported so a contract can PIN its layout in the chrome it already hands
  * over (see paramPagesLayout). Global Settings does; slot and Master FX
- * settings deliberately do not. */
+ * settings deliberately do not.
+ *
+ * A pinned contract usually wants `paginate: false` in the same chrome -- see
+ * paramPagesPaginate. The two are separate on purpose: the layout is also
+ * LAYOUT_LIST for ordinary modules whenever the screen reader is on or Param
+ * View says List, and those pages are authored groupings that must keep their
+ * shape. */
 export { LAYOUT_LIST };
 /* Re-exported so the LIST editor waits out the same module-side debounce the
  * grid does, from the same number. Two hand-written 500s would drift. */
@@ -178,6 +184,26 @@ export function paramPagesEnabled() {
  * the names of screens. Slot Settings and Master FX Settings deliberately do
  * NOT pin: their Volume, Mute and Solo genuinely are performance controls.
  */
+/**
+ * Does this contract's levels get chunked into 8-key grid pages?
+ *
+ * Rides in the chrome beside `layout`, for the same reason and with the same
+ * shape: it is a property of the CONTRACT, and this file must not learn the
+ * names of screens. Eight is the number of physical KNOBS -- a grid page has
+ * eight cells and nowhere to put a ninth -- and a list has no such limit, so a
+ * contract pinned to the list has no reason to inherit the grid's chunking.
+ *
+ * It is deliberately NOT derived from paramPagesLayout(): that returns
+ * LAYOUT_LIST whenever the screen reader is on or Param View says List, and
+ * un-paginating there would rearrange all 95 modules' pages behind a
+ * preference. A module's pages are authored groupings; a settings section is
+ * one list.
+ */
+export function paramPagesPaginate() {
+    if (currentChrome && currentChrome.paginate === false) return false;
+    return true;
+}
+
 export function paramPagesLayout() {
     if (currentChrome && currentChrome.layout) return currentChrome.layout;
     if (typeof tts_get_enabled === 'function' && tts_get_enabled()) return LAYOUT_LIST;
@@ -273,6 +299,7 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
     controller.load({
         slot, component, prefix: prefix || component,
         visible: (io && io.visible) ? io.visible : ctx.evaluateVisibilityCondition,
+        paginate: paramPagesPaginate(),
     });
     /* "Knobs" IS schwung-movy's own knob-page layout now, not Schwung's
      * earlier dial/bar grid — see render_page_movy.mjs. "List" is the same

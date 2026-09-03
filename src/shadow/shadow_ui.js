@@ -8797,6 +8797,45 @@ function loadRecallQuantize() {
 }
 
 /*
+ * Save Stems: 0 = Master, 1 = Stems, 2 = Both. Global Settings -> Audio.
+ *
+ * Same shape as recallQuantizeValue above and for the same reason: the shim
+ * needs it (it mirrors the register into the sampler every frame, and it is
+ * what allocates the Skipback stem buffers), this side needs it to report the
+ * setting back to the grid, and SHM does not survive a reboot so features.json
+ * is the copy that does.
+ *
+ * ONE setting for the Quantized Sampler, Skipback and Song Mode's Record
+ * button alike -- all three record through the same sampler.
+ */
+let saveStemsValue = 0;
+const SAVE_STEMS_NAMES = ["master", "stems", "both"];
+
+function setSaveStems(v) {
+    saveStemsValue = (v >= 0 && v <= 2) ? v : 0;
+    if (typeof shadow_save_stems_set === "function") {
+        shadow_save_stems_set(saveStemsValue);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadSaveStems() {
+    let v = 0;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const m = /"save_stems"\s*:\s*"([^"]*)"/.exec(raw);
+            if (m) {
+                const i = SAVE_STEMS_NAMES.indexOf(m[1]);
+                if (i >= 0) v = i;
+            }
+        }
+    } catch (e) { debugLog("save_stems read failed: " + e); }
+    setSaveStems(v);
+}
+
+/*
  * Metronome. Mirrors recallQuantizeValue above: the setting persists in
  * features.json, the register in SHM does not, so JS reads the file at startup
  * and pushes the value down.
@@ -10354,6 +10393,23 @@ function enterGlobalSettingsGrid(restorePageName) {
                        * pin — their Volume, Mute and Solo really are
                        * performance controls. */
                       layout: LAYOUT_LIST,
+                      /* AND THEREFORE NOT PAGINATED.
+                       *
+                       * A section is one scrolling list, however long. Eight is
+                       * the number of physical knobs -- a GRID page has eight
+                       * cells and nowhere to put a ninth -- and the planner was
+                       * chunking these levels at eight even though the grid
+                       * never draws them, so a ninth param in a section
+                       * silently became a second page named "<Section> - 2"
+                       * holding one row. A jog step nobody chose, on a screen
+                       * that was already scrolling five rows at a time.
+                       *
+                       * It rides here rather than being inferred from the
+                       * layout above, which is also LAYOUT_LIST when the screen
+                       * reader is on or Param View says List -- inferring it
+                       * would rearrange every module's pages behind a
+                       * preference. */
+                      paginate: false,
                       onExit: () => { leaveGlobalSettings(); } });
     needsRedraw = true;
 }
@@ -12255,6 +12311,8 @@ function globalGridIoFor() {
                 return String(metronomeMode);
             case "metronome_level":
                 return String(metronomeLevel);
+            case "save_stems":
+                return String(saveStemsValue);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
@@ -12382,6 +12440,9 @@ function globalGridIoFor() {
                 return;
             case "metronome_level":
                 setMetronome(metronomeMode, Math.round(parseFloat(value)));
+                return;
+            case "save_stems":
+                setSaveStems(parseInt(value, 10) || 0);
                 return;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
@@ -20981,6 +21042,7 @@ globalThis.init = function() {
      * this whole feature is written to avoid. */
     try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
     try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
 
     /* Analytics: emit app_launched + census + diff against previous snapshot.

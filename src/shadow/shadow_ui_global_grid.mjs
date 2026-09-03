@@ -116,6 +116,7 @@ export const GLOBAL_ENUM_VALUES = {
     shadow_ui_trigger: [0, 1, 2],
     recall_quantize: [0, 1, 2, 3],
     metronome_mode: [0, 1, 2],
+    save_stems: [0, 1, 2],
 };
 
 /* ------------------------------------------------------------ accessor routing
@@ -159,6 +160,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
+ *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
  *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
@@ -207,6 +209,10 @@ export const GLOBAL_ROUTING = {
      * same way shadow_recall_quantize_set does, because the register it also
      * writes lives in SHM and does not survive a reboot. */
     metronome_mode:         { read: "metronome.get_mode",     write: "metronome.set_mode",     persist: null,   cache: null,                     modal: null },
+    /* persist: null — shadow_save_stems_set writes features.json itself, the
+     * same shape as recall_quantize and metronome_mode, because the register
+     * it also writes lives in SHM and does not survive a reboot. */
+    save_stems:             { read: "save_stems.get",         write: "save_stems.set",         persist: null,   cache: null,                     modal: null },
     metronome_level:        { read: "metronome.get_level",    write: "metronome.set_level",    persist: null,   cache: null,                     modal: null },
 
     screen_reader_enabled:  { read: "tts.get_enabled",        write: "tts.set_enabled",        persist: null,   cache: null,                     modal: null },
@@ -455,6 +461,39 @@ export const AUDIO_PARAMS = [
       options: ["Off", "Follow", "On"], short_options: ["OFF", "FOL", "ON"], default: 1 },
     { key: "metronome_level", name: "Click Vol", type: "int",
       min: 0, max: 100, step: 5, default: 50, unit: "%" },
+    /*
+     * THREE OPTIONS, NOT A BOOL, because "Both" is a thing people ask for by
+     * name: the master to listen back to and the stems to take away.
+     *
+     * ONE SETTING FOR THREE SURFACES -- the Quantized Sampler (Shift+Sample),
+     * Skipback (Shift+Capture) and Song Mode's Record button. All three record
+     * through the same sampler, so a per-surface switch would be three places
+     * to keep in step and three places to get it wrong; and the question it
+     * answers ("what do I want out of this device") is not one that changes
+     * between them.
+     *
+     * A stem is a SLOT. Under Move->Schwung the four slot stems ARE the four
+     * tracks and sum to the master exactly; outside it a fifth Move stem
+     * carries the mix Move gives us undivided. Stems are pre-Master-FX -- the
+     * MFX chain runs on the summed bus and there is no per-stem version of it
+     * to capture. The full account is in shadow_sampler.h, beside the code
+     * that has to honour it.
+     *
+     * Default Master: this changes what pressing Record leaves on the disk,
+     * and the answer for anyone who has not asked for it must stay the one
+     * they already have.
+     *
+     * It is the NINTH param in Audio, and that is fine: a section is one
+     * scrolling list, not a grid page. Eight is the number of physical knobs
+     * and this screen never draws a grid -- see the `paginate: false` beside
+     * `layout: LAYOUT_LIST` in enterGlobalSettingsGrid.
+     *
+     * Nothing was displaced to fit it. An earlier pass moved Audition out to
+     * Display believing the 8 was a hard cap; it is back where it belongs.
+     */
+    { key: "save_stems", name: "Save", type: "enum",
+      options: ["Master", "Stems", "Both"],
+      short_options: ["MST", "STM", "BTH"], default: 0 },
 ];
 
 /* ------------------------------------------------------------ accessibility */
@@ -531,10 +570,13 @@ export const SHORTCUTS_PARAMS = [
      * leaving both in Audio. Skipback IS a shortcut -- Shift+Capture -- so the
      * combo belonged here anyway.
      *
-     * The knob grid holds 8 per page and a section is not capped at one page,
-     * but a 9th param in Audio does not error: it plans a second page named
-     * "Audio - 2" holding one lonely knob. Moving two out keeps Audio at
-     * exactly 8 and the whole contract at 7 pages.
+     * The "and it keeps Audio at exactly 8" half of this reasoning WAS WRONG
+     * and is gone. Eight is the number of physical KNOBS -- a grid page has
+     * eight cells and nowhere to put a ninth -- and Global Settings is pinned
+     * to the LIST, which scrolls. The planner was chunking these levels at
+     * eight anyway; it is handed `paginate: false` now, so a section is one
+     * list however long it is. The move above stands on its own merits: the
+     * combo IS a shortcut.
      */
     { key: "skipback_shortcut", name: "Skipback", type: "enum",
       options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
