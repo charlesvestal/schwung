@@ -284,7 +284,8 @@ func buildHeadroom(snap *PerfSnapshot) FrameHeadroom {
 // row: a position whose identity read failed still gets a row whenever it shows
 // time, labelled so, because a slot burning CPU that vanishes from the page
 // because we could not read its NAME is the worst failure this page has.
-func buildFrameBudget(snap *PerfSnapshot, slotModules, mfxModules map[int]moduleID) []FrameBudgetRow {
+func buildFrameBudget(snap *PerfSnapshot, slotModules [perfChainSlots]moduleID,
+	mfxModules [perfMasterFXSlots]moduleID) []FrameBudgetRow {
 	if snap == nil {
 		return nil
 	}
@@ -482,10 +483,14 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var budget []FrameBudgetRow
+	var slotMods [perfChainSlots]moduleID
+	var mfxMods [perfMasterFXSlots]moduleID
+	var setState *SetState
 	if perfErr == nil {
-		slotMods, mfxMods := app.moduleIDs()
+		slotMods, mfxMods, setState = app.moduleIDs(snap)
 		budget = buildFrameBudget(snap, slotMods, mfxMods)
 	}
+	_ = setState // a later task names which modules are loaded from this
 
 	// An empty scan is a FAILED READ, not a machine with no processes: there is
 	// always at least this one. Distinguishing them matters because the

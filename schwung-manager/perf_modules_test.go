@@ -165,3 +165,88 @@ func TestModuleCapabilitiesReadsForksProcesses(t *testing.T) {
 		t.Error("an unknown module must return ok=false, not a confident false")
 	}
 }
+
+// fakeParamReader counts reads, which is the whole point: the guard's value is
+// the reads it does NOT do.
+type fakeParamReader struct {
+	reads int
+	vals  map[string]string
+}
+
+func (f *fakeParamReader) TryGetParam(slot uint8, key string) (string, bool, error) {
+	f.reads++
+	return f.vals[key], true, nil
+}
+
+func TestFreshnessNoParamReadsWhenDiskIsPopulated(t *testing.T) {
+	set := &SetState{}
+	set.Slots[0] = SlotState{Synth: "jp8000", Read: true}
+	snap := &PerfSnapshot{SlotSynthAvg: [perfChainSlots]uint64{290}}
+	p := &fakeParamReader{}
+
+	slots, _ := resolveModuleIDs(set, snap, p)
+
+	if p.reads != 0 {
+		t.Errorf("%d param reads, want 0. The whole point of reading identity "+
+			"from disk is to stop paying for requests the SHIM serves on the "+
+			"SPI callback for something already on disk.", p.reads)
+	}
+	if !slots[0].Loaded() || slots[0].Name != "jp8000" {
+		t.Errorf("slot 0 = %+v, want a loaded jp8000 from disk", slots[0])
+	}
+}
+
+func TestFreshnessFallsBackWhenDiskAndTelemetryDisagree(t *testing.T) {
+	set := &SetState{}
+	set.Slots[0] = SlotState{Read: true} // disk says empty
+	snap := &PerfSnapshot{SlotSynthAvg: [perfChainSlots]uint64{290}}
+	p := &fakeParamReader{vals: map[string]string{"synth_module": "justloaded"}}
+
+	slots, _ := resolveModuleIDs(set, snap, p)
+
+	if p.reads != 1 {
+		t.Errorf("%d param reads, want exactly 1: disk calling a position empty "+
+			"while the snapshot shows time for it is a contradiction, and the "+
+			"hot-swap window is the one case worth a read", p.reads)
+	}
+	if slots[0].Name != "justloaded" {
+		t.Errorf("slot 0 = %+v, want the param answer to win over stale disk", slots[0])
+	}
+}
+
+func TestFreshnessNoFallbackForAGenuinelyEmptySlot(t *testing.T) {
+	set := &SetState{}
+	set.Slots[0] = SlotState{Read: true}
+	snap := &PerfSnapshot{} // no timing anywhere
+	p := &fakeParamReader{}
+
+	slots, _ := resolveModuleIDs(set, snap, p)
+
+	if p.reads != 0 {
+		t.Errorf("%d param reads, want 0: a position empty on disk AND idle in "+
+			"telemetry is simply empty. Reading here puts the whole per-second "+
+			"load back.", p.reads)
+	}
+	if slots[0].Loaded() {
+		t.Errorf("slot 0 = %+v, want not loaded", slots[0])
+	}
+	if !slots[0].Answered {
+		t.Error("Answered must be TRUE — we did read this position, from disk, " +
+			"and it is empty. That is a finding, not a failed read.")
+	}
+}
+
+func TestFreshnessNilSetIsUnansweredNotEmpty(t *testing.T) {
+	slots, mfx := resolveModuleIDs(nil, &PerfSnapshot{}, nil)
+	for i := range slots {
+		if slots[i].Answered {
+			t.Errorf("slot %d Answered = true; a failed disk read must never "+
+				"render as an empty rig", i)
+		}
+	}
+	for i := range mfx {
+		if mfx[i].Answered {
+			t.Errorf("master fx %d Answered = true, want false", i)
+		}
+	}
+}

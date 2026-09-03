@@ -81,7 +81,9 @@ func TestCPUFrameBudgetOmitsEmptySlots(t *testing.T) {
 	snap := &PerfSnapshot{FramePeriodUs: 2902}
 	snap.SlotSynthAvg = [perfChainSlots]uint64{290, 0, 0, 0}
 
-	rows := buildFrameBudget(snap, map[int]moduleID{0: {Name: "braids", Answered: true}}, nil)
+	var mods [perfChainSlots]moduleID
+	mods[0] = moduleID{Name: "braids", Answered: true}
+	rows := buildFrameBudget(snap, mods, [perfMasterFXSlots]moduleID{})
 
 	if len(rows) != 1 {
 		t.Fatalf("an empty slot is not a slot at 0%% — it is not a row. got %d rows: %+v",
@@ -99,7 +101,9 @@ func TestCPUFrameBudgetFallsBackToNominalPeriod(t *testing.T) {
 	snap := &PerfSnapshot{FramePeriodUs: 0}
 	snap.SlotSynthAvg = [perfChainSlots]uint64{1451, 0, 0, 0}
 
-	rows := buildFrameBudget(snap, map[int]moduleID{0: {Name: "braids", Answered: true}}, nil)
+	var mods [perfChainSlots]moduleID
+	mods[0] = moduleID{Name: "braids", Answered: true}
+	rows := buildFrameBudget(snap, mods, [perfMasterFXSlots]moduleID{})
 
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
@@ -139,10 +143,10 @@ func TestCPUFrameBudgetShowsASlotWhoseNameCouldNotBeRead(t *testing.T) {
 		FramePeriodUs: 2902,
 		SlotSynthAvg:  [perfChainSlots]uint64{290, 290, 0, 0},
 	}
-	rows := buildFrameBudget(snap, map[int]moduleID{
-		0: {Name: "", Answered: false}, // the read failed
-		1: {Name: "", Answered: true},  // genuinely empty
-	}, nil)
+	var mods [perfChainSlots]moduleID
+	mods[0] = moduleID{Name: "", Answered: false} // the read failed
+	mods[1] = moduleID{Name: "", Answered: true}  // genuinely empty
+	rows := buildFrameBudget(snap, mods, [perfMasterFXSlots]moduleID{})
 
 	if len(rows) != 1 {
 		t.Fatalf("got %d rows, want 1 - the unread slot must show, the empty "+

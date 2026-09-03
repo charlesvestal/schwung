@@ -206,3 +206,99 @@ type moduleIDCache struct {
 // are ordinary file reads on tmpfs-backed storage — the old 15 s was sized for
 // param requests the SPI callback had to serve.
 const moduleIDRefresh = 2 * time.Second
+
+// paramReader is the slice of *ShmParams this file needs. An interface so the
+// freshness fallback is testable without a device.
+type paramReader interface {
+	TryGetParam(slot uint8, key string) (string, bool, error)
+}
+
+// snapSlotBusy reports whether the snapshot shows any time for chain slot i.
+func snapSlotBusy(snap *PerfSnapshot, i int) bool {
+	if snap == nil || i < 0 || i >= perfChainSlots {
+		return false
+	}
+	return snap.SlotSynthAvg[i] > 0 || snap.SlotSynthMax[i] > 0 ||
+		snap.SlotFxAvg[i] > 0 || snap.SlotFxMax[i] > 0
+}
+
+// snapMfxBusy reports whether the snapshot shows any time for Master FX i.
+func snapMfxBusy(snap *PerfSnapshot, i int) bool {
+	if snap == nil || i < 0 || i >= perfMasterFXSlots {
+		return false
+	}
+	return snap.MfxAvg[i] > 0 || snap.MfxMax[i] > 0
+}
+
+// resolveModuleIDs names every position from the set state, spending a param
+// read only where disk and telemetry CONTRADICT each other.
+//
+// Disk lags a hot swap until autosave writes, so a position disk calls empty
+// *while the snapshot shows time for it* cannot both be true — that window is
+// worth one read. A position empty on disk and idle in telemetry is simply
+// empty, and reading there would put the whole twelve-per-second load back on
+// the SPI callback for no information.
+func resolveModuleIDs(set *SetState, snap *PerfSnapshot, p paramReader) (
+	slots [perfChainSlots]moduleID, mfx [perfMasterFXSlots]moduleID) {
+
+	if set == nil {
+		// The disk read itself failed. Every position is UNANSWERED — never
+		// silently empty, or a slot burning CPU vanishes from the page.
+		return slots, mfx
+	}
+
+	for i := 0; i < perfChainSlots; i++ {
+		s := set.Slots[i]
+		slots[i] = moduleID{Name: s.Synth, Answered: s.Read}
+		if s.Read && s.Synth == "" && p != nil && snapSlotBusy(snap, i) {
+			if val, ok, err := p.TryGetParam(uint8(i), "synth_module"); ok && err == nil {
+				slots[i] = moduleID{Name: val, Answered: true}
+			}
+		}
+	}
+
+	for i := 0; i < perfMasterFXSlots; i++ {
+		mfx[i] = moduleID{Name: set.MasterFX[i], Answered: true}
+		if set.MasterFX[i] == "" && p != nil && snapMfxBusy(snap, i) {
+			key := "master_fx:" + strconv.Itoa(i) + ":module"
+			if val, ok, err := p.TryGetParam(0, key); ok && err == nil {
+				mfx[i] = moduleID{Name: val, Answered: true}
+			}
+		}
+	}
+	return slots, mfx
+}
+
+// moduleIDs returns slot and Master FX identities, plus the set they came from,
+// re-reading the set state only when the cache has gone stale.
+func (app *App) moduleIDs(snap *PerfSnapshot) (
+	slots [perfChainSlots]moduleID, mfx [perfMasterFXSlots]moduleID, set *SetState) {
+
+	app.moduleIDs_.mu.Lock()
+	if app.moduleIDs_.set == nil || time.Since(app.moduleIDs_.readAt) >= moduleIDRefresh {
+		s, err := readSetState(app.basePath)
+		if err != nil {
+			// Leave the cache alone: a stale set beats no set, and the nil case
+			// below reports honestly when there has never been one.
+			if app.logger != nil {
+				app.logger.Warn("cpu page: could not read the active set state",
+					"err", err)
+			}
+		} else {
+			app.moduleIDs_.set = s
+			app.moduleIDs_.readAt = time.Now()
+		}
+	}
+	set = app.moduleIDs_.set
+	app.moduleIDs_.mu.Unlock()
+
+	// A nil *ShmParams stored in an interface is non-nil-but-useless, so only
+	// assign when there is really a channel.
+	var p paramReader
+	if sp := app.params(); sp != nil {
+		p = sp
+	}
+
+	slots, mfx = resolveModuleIDs(set, snap, p)
+	return slots, mfx, set
+}
