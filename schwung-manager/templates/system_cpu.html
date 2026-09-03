@@ -21,8 +21,10 @@
         </dd>
         <dt>Process CPU &mdash; cores 0&ndash;3</dt>
         <dd>
-            Ordinary per-process percentages from <code>/proc</code>. The Link Audio
-            subscriber is a real process and appears here.
+            Ordinary per-process percentages from <code>/proc</code>, measured
+            as a share of <strong>one core</strong> &mdash; 100% is one core
+            saturated, not the whole device. The Link Audio subscriber is a real
+            process and appears here.
         </dd>
     </dl>
     <p class="muted">
@@ -35,4 +37,28 @@
 <div id="cpu-panel">
     {{template "cpu_idle" .}}
 </div>
+
+<script>
+// Hold the panel's height across a swap, or the page scrolls itself.
+//
+// htmx removes the old children before inserting the new ones. For that instant
+// the panel has zero height, the document shrinks below the current scroll
+// offset, and the browser clamps scrollTop — so once a second, every second,
+// the page jumps back towards the top and you cannot read anything below the
+// fold. Pinning min-height to the measured height prevents the collapse rather
+// than trying to restore the scroll afterwards, which fights the browser and
+// flickers.
+(function () {
+    var panel = document.getElementById('cpu-panel');
+    if (!panel) return;
+    document.body.addEventListener('htmx:beforeSwap', function (e) {
+        if (e.target === panel) panel.style.minHeight = panel.offsetHeight + 'px';
+    });
+    document.body.addEventListener('htmx:afterSettle', function (e) {
+        // Release it so the panel can still SHRINK when there is genuinely less
+        // to show (Stop, or a slot being unloaded).
+        if (e.target === panel) panel.style.minHeight = '';
+    });
+})();
+</script>
 {{end}}

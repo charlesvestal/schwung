@@ -37,7 +37,7 @@
                         <th scope="col">What</th>
                         <th scope="col">Module</th>
                         <th scope="col">Avg</th>
-                        <th scope="col">% frame</th>
+                        <th scope="col">% of frame</th>
                         <th scope="col">Max</th>
                     </tr>
                 </thead>
@@ -70,6 +70,13 @@
 
     <section class="info-card">
         <h2>Processes &mdash; cores 0&ndash;3</h2>
+        <p class="muted">
+            Percentages are of <strong>one core</strong>, the usual
+            <code>/proc</code> convention &mdash; so 100% is one core saturated,
+            not the device, and the column can legitimately reach 400% across
+            four cores. Not comparable with the frame-budget figures above,
+            which are a share of one SPI frame on core 3.
+        </p>
         {{if not .ProcessOK}}
             {{/* There is always at least one process — this one. An empty scan
                  means /proc could not be read, and saying "not running" five
@@ -90,7 +97,7 @@
                     <tr>
                         <th scope="col">Process</th>
                         <th scope="col">PID</th>
-                        <th scope="col">CPU</th>
+                        <th scope="col">% of one core</th>
                     </tr>
                 </thead>
                 <tbody>

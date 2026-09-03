@@ -802,7 +802,8 @@ type App struct {
 	logger        *slog.Logger
 	shm           *ShmConfig  // shared memory for live config sync (nil if not on device)
 	shmParams     *ShmParams  // shared memory for param get/set (nil if not on device)
-	perfShm       *PerfShm    // /schwung-perf frame budget (nil if not on device)
+	perfShm       *PerfShm    // /schwung-perf frame budget (nil until the shim creates it)
+	perfMu        sync.Mutex  // guards the lazy attach of perfShm
 	cpuSampler    *cpuSampler // previous /proc sample, for the CPU page delta
 	upgradeStatus string      // current upgrade step (empty = not upgrading)
 	downloadJobs  map[string]*downloadJob

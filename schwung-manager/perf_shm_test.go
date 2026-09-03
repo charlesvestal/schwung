@@ -3,7 +3,10 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 // buildSnapshot lays out a synthetic /schwung-perf payload. Offsets mirror
@@ -171,5 +174,78 @@ func TestPerfOffsetsMatchTheHeader(t *testing.T) {
 		t.Fatalf("perfSectionNames has %d entries, want %d - a name without a "+
 			"matching C field relabels every section after it",
 			len(perfSectionNames), perfSectionCount)
+	}
+}
+
+// The manager and the shim start independently, and on this device the manager
+// WINS: measured after a reboot, it came up 304 ms before the shim created
+// /schwung-perf. A single attach at construction therefore returned nil for the
+// life of the process, and the page reported "the shim is not running" about a
+// shim that was running fine — a confidently WRONG finding, which is worse than
+// the zeros this page was built to avoid.
+func TestPerfSegmentAttachesLateWhenTheShimStartsSecond(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "schwung-perf")
+
+	orig := perfShmPath
+	perfShmPath = path
+	t.Cleanup(func() { perfShmPath = orig })
+
+	app := &App{}
+
+	// The shim has not created it yet.
+	if got := app.perfSegment(); got != nil {
+		t.Fatal("wanted nil while the segment does not exist")
+	}
+
+	// The shim comes up.
+	if err := os.WriteFile(path, buildSnapshot(perfMagic, perfVersion, 8), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	shm := app.perfSegment()
+	if shm == nil {
+		t.Fatal("the consumer must retry - a segment that appears after startup " +
+			"is the normal case on a cold boot, not an edge case")
+	}
+	if _, err := shm.Read(); err != nil {
+		t.Fatalf("a late attach must yield a usable segment: %v", err)
+	}
+
+	// And it must not re-open once attached.
+	if app.perfSegment() != shm {
+		t.Fatal("perfSegment should cache the mapping after a successful attach")
+	}
+}
+
+// Leaving the page without pressing Stop leaves the baseline behind, because
+// only the Stop route calls reset. Coming back much later must PRIME rather
+// than diff against a stale sample, which would render a very long average as
+// though it were a one-second one.
+func TestCPUStaleBaselinePrimesRatherThanLying(t *testing.T) {
+	c := &cpuSampler{clkTck: 100}
+	base := time.Unix(1000, 0)
+
+	c.buildProcessView([]ProcStat{{PID: 1, Comm: "MoveOriginal", Utime: 500}}, base)
+
+	// An hour later, with an hour of accumulated CPU.
+	view := c.buildProcessView(
+		[]ProcStat{{PID: 1, Comm: "MoveOriginal", Utime: 500 + 360000}},
+		base.Add(time.Hour))
+
+	if !view.Priming {
+		t.Fatal("a baseline an hour old must prime again - diffing against it " +
+			"renders a one-hour average as a one-second reading")
+	}
+
+	// The very next poll, one second on, is a real delta again.
+	view = c.buildProcessView(
+		[]ProcStat{{PID: 1, Comm: "MoveOriginal", Utime: 500 + 360000 + 50}},
+		base.Add(time.Hour).Add(time.Second))
+	if view.Priming {
+		t.Fatal("the sample after re-priming must produce a delta")
+	}
+	if len(view.Rows) == 0 || view.Rows[0].Percent < 49 || view.Rows[0].Percent > 51 {
+		t.Fatalf("wanted ~50%% after re-priming, got %+v", view.Rows)
 	}
 }

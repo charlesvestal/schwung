@@ -110,8 +110,20 @@ func (c *cpuSampler) buildProcessView(procs []ProcStat, now time.Time) ProcessVi
 		byPID[p.PID] = p
 	}
 
-	// First sample: we hold a lifetime average and nothing else. Say so.
-	if c.prevProcs == nil || c.prevAt.IsZero() {
+	// Prime when there is no usable predecessor: we hold a lifetime average and
+	// nothing else, so say so rather than render it.
+	//
+	// A predecessor older than this is not a baseline, it is a different
+	// session. Leaving the page without pressing Stop keeps the old sample
+	// around (only the Stop route calls reset), so returning an hour later
+	// would diff against an hour-old reading and render a one-HOUR average as
+	// though it were a one-second one - plausible-looking and wrong, which is
+	// the same lie the priming state exists to prevent. Prime again instead.
+	// Generous against the 1 s poll, so an ordinary slow response or a briefly
+	// backgrounded tab still yields a real delta.
+	const maxBaselineAge = 10 * time.Second
+
+	if c.prevProcs == nil || c.prevAt.IsZero() || now.Sub(c.prevAt) > maxBaselineAge {
 		c.prevProcs = cur
 		c.prevAt = now
 		return ProcessView{Priming: true}
@@ -310,6 +322,29 @@ func (app *App) mfxModuleIDs() map[int]string {
 
 // --- handlers ---------------------------------------------------------------
 
+// perfSegment returns the mapped snapshot segment, attaching lazily.
+//
+// The manager and the shim start independently and the manager can WIN.
+// Measured on the device after a reboot: the manager came up at 07:17:57.799
+// and the shim created /schwung-perf at 07:17:58.103 - 304 ms later. A single
+// OpenPerfShm() at construction therefore returned nil for the life of the
+// process, and the page reported "the shim is not running" about a shim that
+// was running fine.
+//
+// That is a WRONG finding, not a missing one, which makes it worse than the
+// zeros this page exists to avoid: it does not fail to answer, it answers
+// incorrectly and with confidence. The producer already retries until the
+// segment exists (perf_shm_attach_tick in src/host/shim_worker.c); the consumer
+// has to do the same. Once attached this is a nil check.
+func (app *App) perfSegment() *PerfShm {
+	app.perfMu.Lock()
+	defer app.perfMu.Unlock()
+	if app.perfShm == nil {
+		app.perfShm = OpenPerfShm()
+	}
+	return app.perfShm
+}
+
 // handleSystemCPU renders the page shell only. It samples NOTHING: the first
 // sample must be taken by the values endpoint so that the second one has a
 // measured interval behind it rather than "however long the user looked at the
@@ -328,10 +363,10 @@ func (app *App) handleSystemCPU(w http.ResponseWriter, r *http.Request) {
 func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 	var snap *PerfSnapshot
 	var perfErr error
-	if app.perfShm == nil {
+	if shm := app.perfSegment(); shm == nil {
 		perfErr = ErrPerfAbsent
 	} else {
-		snap, perfErr = app.perfShm.Read()
+		snap, perfErr = shm.Read()
 	}
 
 	var budget []FrameBudgetRow

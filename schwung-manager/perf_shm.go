@@ -56,9 +56,11 @@ func (e *PerfVersionError) Error() string {
 		"- deploy the shim and the manager together", e.Got, e.Want)
 }
 
-const (
-	perfShmPath = "/dev/shm/schwung-perf"
+// perfShmPath is a var rather than a const purely so a test can point it at a
+// temp file and exercise the lazy attach in (*App).perfSegment.
+var perfShmPath = "/dev/shm/schwung-perf"
 
+const (
 	// SCHWUNG_PERF_MAGIC / _VERSION / _SHM_SIZE from perf_snapshot.h.
 	perfMagic   = 0x50455246 // "PERF"
 	perfVersion = 1
