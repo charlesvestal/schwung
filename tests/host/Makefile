@@ -52,7 +52,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_perf_snapshot_size \
-	$(BUILD_DIR)/test_relative_cc
+	$(BUILD_DIR)/test_relative_cc \
+	$(BUILD_DIR)/test_link_audio_backlog_trim
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -98,6 +99,11 @@ $(BUILD_DIR)/test_rt_thread_audit: test_rt_thread_audit.c ../../src/host/rt_thre
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Header-only unit: link_audio_in_trim_pos lives in link_audio.h, so the
+# DEPFLAGS header tracking above is what keeps this honest when it changes.
+$(BUILD_DIR)/test_link_audio_backlog_trim: test_link_audio_backlog_trim.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_capture.c | $(BUILD_DIR)
