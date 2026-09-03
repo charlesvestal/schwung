@@ -3,20 +3,47 @@
      what makes closing the tab stop it: there is no server-side session, no
      timer and no goroutine to leak on a device whose realtime budget we care
      about. [Stop] swaps in a fragment that carries no trigger. */}}
-<div hx-get="/system/cpu/values"
-     hx-trigger="every 1s"
-     hx-target="#cpu-panel"
-     hx-swap="innerHTML">
+<div>
 
     <section class="info-card">
-        <button class="btn btn-secondary"
-                hx-get="/system/cpu/idle"
-                hx-target="#cpu-panel"
-                hx-swap="innerHTML">
-            Stop
-        </button>
+        <button class="btn btn-secondary" type="button" onclick="cpuStop()">Stop</button>
         <span class="muted" role="status">Sampling once a second.</span>
     </section>
+
+    {{if and (not .PerfError) .Headroom.Valid}}
+    <section class="info-card">
+        <h2>Headroom &mdash; core 3</h2>
+        <p class="headroom-figure">
+            <strong>{{printf "%.1f" .Headroom.UsedPct}}%</strong> used,
+            <strong>{{printf "%.0f" .Headroom.FreePct}}%</strong> free
+        </p>
+        <div class="progress-bar" role="progressbar"
+             aria-valuenow="{{printf "%.0f" .Headroom.UsedPct}}"
+             aria-valuemin="0" aria-valuemax="100"
+             aria-label="SPI frame budget: {{printf "%.1f" .Headroom.UsedPct}} percent used">
+            <div class="progress-fill{{if gt .Headroom.UsedPct 75.0}} progress-danger{{else if gt .Headroom.UsedPct 50.0}} progress-warning{{end}}"
+                 style="width: {{printf "%.1f" .Headroom.UsedPct}}%">
+                {{printf "%.1f" .Headroom.UsedPct}}%
+            </div>
+        </div>
+        <p class="muted">
+            Schwung spends {{.Headroom.WorkAvgUs}}&nbsp;&micro;s of the
+            {{.Headroom.PeriodUs}}&nbsp;&micro;s frame, worst case
+            {{.Headroom.WorkMaxUs}}&nbsp;&micro;s ({{printf "%.1f" .Headroom.UsedMaxPct}}%).
+            The remaining {{.Headroom.IoctlAvgUs}}&nbsp;&micro;s is the SPI
+            transfer itself.
+        </p>
+        <p class="muted">
+            {{/* This is the trap the whole page is calibrated around, so it is
+                 said on screen rather than only in the source. */}}
+            This is Schwung's work <em>outside</em> the transfer, not total frame
+            time. Total frame time sits at the period whatever happens &mdash;
+            the loop is paced by the blocking ioctl, so our work grows and the
+            driver's wait shrinks by exactly the same amount. It would read
+            ~100% on a completely idle device.
+        </p>
+    </section>
+    {{end}}
 
     <section class="info-card">
         <h2>Frame budget &mdash; core 3 (SPI callback)</h2>
@@ -28,6 +55,15 @@
             <p class="muted">
                 Averaged over {{.Snapshot.SampleWindowFrames}} frames.
                 Max is a spike, not a load.
+            </p>
+            <p class="muted">
+                {{/* JP-8000 is the case: it dispatches to forked children, so
+                     its row here is only the collect step. */}}
+                <strong>A fork-parallel module understates itself here.</strong>
+                This column measures time spent <em>inside the SPI callback</em>.
+                A module that forks child processes to do its DSP shows only its
+                dispatch-and-collect cost in this table &mdash; the real work is
+                on other cores, in the process list below.
             </p>
             <div class="table-scroll">
             <table class="data-table">
@@ -131,30 +167,48 @@
             <p class="muted">Load average unavailable &mdash; <code>/proc/loadavg</code> could not be read.</p>
         {{end}}
 
-        {{if and .CoresOK .Cores}}
+        {{if .CorePriming}}
+            <p class="muted" role="status">
+                Priming &mdash; per-core load is a delta between two readings,
+                so the first percentage arrives with the next sample.
+            </p>
+        {{else if and .CoresOK .Cores}}
             <div class="table-scroll">
             <table class="data-table">
-                <caption class="sr-only">Per-core busy and total jiffies since boot</caption>
+                <caption class="sr-only">Per-core busy time over the sample interval</caption>
                 <thead>
                     <tr>
                         <th scope="col">Core</th>
-                        <th scope="col">Busy jiffies</th>
-                        <th scope="col">Total</th>
+                        <th scope="col">Busy</th>
                     </tr>
                 </thead>
                 <tbody>
                 {{range .Cores}}
                     <tr>
                         <th scope="row">
-                            {{.Name}}{{if eq .Name "cpu3"}} <span class="muted">(SPI)</span>{{end}}
+                            {{.Name}}{{if .IsSPI}} <span class="muted">&mdash; SPI callback</span>{{end}}
                         </th>
-                        <td>{{.Busy}}</td>
-                        <td>{{.Total}}</td>
+                        <td>
+                            <div class="progress-bar" role="progressbar"
+                                 aria-valuenow="{{printf "%.0f" .Percent}}"
+                                 aria-valuemin="0" aria-valuemax="100"
+                                 aria-label="{{.Name}}: {{printf "%.0f" .Percent}} percent busy">
+                                <div class="progress-fill{{if gt .Percent 85.0}} progress-danger{{else if gt .Percent 60.0}} progress-warning{{end}}"
+                                     style="width: {{printf "%.1f" .Percent}}%">{{printf "%.0f" .Percent}}%</div>
+                            </div>
+                        </td>
                     </tr>
                 {{end}}
                 </tbody>
             </table>
             </div>
+            <p class="muted">
+                Busy over the sample interval, not since boot. Core 3 runs the
+                SPI callback, but the others are not free of consequence:
+                module-spawned realtime threads, the Link Audio subscriber and
+                MoveOriginal's own workers all compete there, and starving them
+                surfaces as audio problems just the same.
+            </p>
         {{else}}
             <p class="notice-warn" role="alert">
                 Per-core figures unavailable &mdash; <code>/proc/stat</code> could not be read.

@@ -34,39 +34,57 @@
     </p>
 </section>
 
-<div id="cpu-panel">
+{{/* The panel OWNS the polling, and is never itself replaced - only its
+     children are. An earlier version put hx-trigger on the returned fragment,
+     i.e. inside the element it replaces, so htmx destroyed its own requester
+     once a second; the swap then reset the scroll position and the page jumped
+     to the top while you were reading it. */}}
+<div id="cpu-panel"
+     hx-get="/system/cpu/values"
+     hx-target="this"
+     hx-swap="innerHTML">
     {{template "cpu_idle" .}}
 </div>
 
 <script>
-// Hold the panel's height across a swap, or the page scrolls itself.
-//
-// htmx removes the old children before inserting the new ones. For that instant
-// the panel has zero height, the document shrinks below the current scroll
-// offset, and the browser clamps scrollTop — so once a second, every second,
-// the page jumps back towards the top and you cannot read anything below the
-// fold. Pinning min-height to the measured height prevents the collapse rather
-// than trying to restore the scroll afterwards, which fights the browser and
-// flickers.
-// Do NOT filter on e.target. htmx dispatches the swap events on the element
-// that made the REQUEST, and that element lives inside #cpu-panel (it is the
-// fragment carrying hx-trigger), so `e.target === panel` is never true and the
-// handler silently never runs. That failure hides itself: at a shallow scroll
-// offset the document never shrinks past scrollTop, so the page looks fine and
-// only jumps once you have scrolled far enough down to read the lower panels.
-// This page has exactly one swapping region, so pinning unconditionally is both
-// simpler and impossible to miss.
 (function () {
     var panel = document.getElementById('cpu-panel');
     if (!panel) return;
-    document.body.addEventListener('htmx:beforeSwap', function () {
+
+    // Start / stop are attribute changes on the STABLE panel, so nothing that
+    // issues a request is ever swapped away.
+    window.cpuStart = function () {
+        panel.setAttribute('hx-trigger', 'every 1s');
+        htmx.process(panel);
+        htmx.ajax('GET', '/system/cpu/values', {target: panel, swap: 'innerHTML'});
+    };
+    window.cpuStop = function () {
+        panel.removeAttribute('hx-trigger');
+        htmx.process(panel);
+        // /system/cpu/idle also resets the delta baseline, so resuming primes
+        // again rather than diffing against a sample from before the pause.
+        htmx.ajax('GET', '/system/cpu/idle', {target: panel, swap: 'innerHTML'});
+    };
+
+    // Belt and braces: hold the height across the swap and put the scroll back.
+    // The restructure above removes the cause; this covers a row count that
+    // genuinely changes the height mid-read.
+    var y = null;
+    document.addEventListener('htmx:beforeSwap', function () {
+        y = window.scrollY;
         panel.style.minHeight = panel.offsetHeight + 'px';
     });
-    document.body.addEventListener('htmx:afterSettle', function () {
-        // Release it so the panel can still SHRINK when there is genuinely less
-        // to show (Stop, or a slot being unloaded). By this point the new
-        // content is in place, so releasing cannot collapse anything.
-        panel.style.minHeight = '';
+    function restore() {
+        if (y !== null && Math.abs(window.scrollY - y) > 1) window.scrollTo(0, y);
+    }
+    document.addEventListener('htmx:afterSwap', restore);
+    document.addEventListener('htmx:afterSettle', function () {
+        restore();
+        requestAnimationFrame(function () {
+            panel.style.minHeight = '';
+            restore();
+            y = null;
+        });
     });
 })();
 </script>
