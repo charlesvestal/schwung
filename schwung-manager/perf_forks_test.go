@@ -111,3 +111,120 @@ func TestForksFindMoveOriginalPrefersTheTopLevel(t *testing.T) {
 			"is the lowest pid", got)
 	}
 }
+
+// kidsFor builds a run of forked children at the given CPU percentages. They
+// all wear "MoveOriginal" because that is what a fork inherits — the naming
+// this file does can never come from the process itself.
+func kidsFor(cpu ...float64) []ForkedProc {
+	out := make([]ForkedProc, 0, len(cpu))
+	for i, c := range cpu {
+		out = append(out, ForkedProc{PID: 1200 + i, Comm: "MoveOriginal",
+			Core: i, Percent: c})
+	}
+	return out
+}
+
+func TestAttributeDeclaredWins(t *testing.T) {
+	got := attributeForks(kidsFor(90, 80, 70), []LoadedModule{
+		{ID: "jp8000", Forks: true},
+		{ID: "9w9"},
+	})
+	if len(got) != 1 {
+		t.Fatalf("attributeForks returned %d groups, want 1 — one module declares "+
+			"that it forks, so there is nothing to be ambiguous about", len(got))
+	}
+	g := got[0]
+	if g.Module != "jp8000" {
+		t.Errorf("Module = %q, want \"jp8000\" — a declared capability is the "+
+			"authoritative answer and must beat any inference", g.Module)
+	}
+	if g.Inferred {
+		t.Error("Inferred is true for a DECLARED module — the page would tell the " +
+			"user to doubt the one attribution we are actually sure of")
+	}
+	if g.TotalPercent < 239 || g.TotalPercent > 241 {
+		t.Errorf("TotalPercent = %v, want ~240 — the whole point of this page is "+
+			"the real cost of work that left the SPI callback", g.TotalPercent)
+	}
+	if len(g.Procs) != 3 {
+		t.Errorf("len(Procs) = %d, want 3 — the per-pid rows are how a user sees "+
+			"the work is spread across cores", len(g.Procs))
+	}
+}
+
+func TestAttributeInferredIsMarked(t *testing.T) {
+	got := attributeForks(kidsFor(50), []LoadedModule{{ID: "jp8000"}})
+	if len(got) != 1 {
+		t.Fatalf("attributeForks returned %d groups, want 1", len(got))
+	}
+	if got[0].Module != "jp8000" {
+		t.Errorf("Module = %q, want \"jp8000\" — with exactly one synth loaded "+
+			"and nothing declared, that synth is the only candidate", got[0].Module)
+	}
+	if !got[0].Inferred {
+		t.Error("Inferred is false on a GUESS — nothing declared forks_processes, " +
+			"so this name is inference; an unlabelled guess on a CPU page sends " +
+			"the user optimising a module that may not be costing anything")
+	}
+}
+
+func TestAttributeAmbiguousIsUnattributed(t *testing.T) {
+	got := attributeForks(kidsFor(50), []LoadedModule{{ID: "jp8000"}, {ID: "9w9"}})
+	if len(got) != 1 {
+		t.Fatalf("attributeForks returned %d groups, want 1 — the cost is real "+
+			"and must be shown even when we cannot say whose it is", len(got))
+	}
+	if got[0].Module != "" {
+		t.Errorf("Module = %q, want \"\" — two loaded synths and no declaration is "+
+			"not a guess worth making; naming one of them at random is worse than "+
+			"naming none", got[0].Module)
+	}
+	if got[0].TotalPercent < 49 || got[0].TotalPercent > 51 {
+		t.Errorf("TotalPercent = %v, want ~50 — nothing is hidden for want of a "+
+			"name", got[0].TotalPercent)
+	}
+}
+
+func TestAttributeNoModulesIsUnattributed(t *testing.T) {
+	got := attributeForks(kidsFor(10, 20), nil)
+	if len(got) != 1 {
+		t.Fatalf("attributeForks returned %d groups, want 1 — forked processes "+
+			"exist whether or not we could read the rig", len(got))
+	}
+	if got[0].Module != "" {
+		t.Errorf("Module = %q, want \"\" — with no candidates at all there is "+
+			"nobody to attribute to", got[0].Module)
+	}
+	if len(got[0].Procs) != 2 {
+		t.Errorf("len(Procs) = %d, want 2 — the pids are the finding", len(got[0].Procs))
+	}
+}
+
+func TestAttributeNoChildrenIsNoGroups(t *testing.T) {
+	got := attributeForks(nil, []LoadedModule{{ID: "jp8000", Forks: true}})
+	if len(got) != 0 {
+		t.Errorf("attributeForks returned %d groups for zero children, want 0 — an "+
+			"empty group renders as a panel claiming a module forks and costs "+
+			"nothing, which is a measurement we never made", len(got))
+	}
+}
+
+func TestAttributeTwoDeclarersDoNotDoubleCount(t *testing.T) {
+	got := attributeForks(kidsFor(30, 40), []LoadedModule{
+		{ID: "jp8000", Forks: true},
+		{ID: "stems", Forks: true},
+	})
+	if len(got) != 2 {
+		t.Fatalf("attributeForks returned %d groups, want 2 — one per declarer",
+			len(got))
+	}
+	total := 0
+	for _, g := range got {
+		total += len(g.Procs)
+	}
+	if total != 2 {
+		t.Errorf("groups hold %d procs in total, want 2 — a pid counted twice "+
+			"doubles the reported CPU of a device that is not doing that work",
+			total)
+	}
+}

@@ -317,3 +317,32 @@ func (app *App) moduleIDs(snap *PerfSnapshot) (
 	slots, mfx = resolveModuleIDs(set, snap, p)
 	return slots, mfx, set
 }
+
+// loadedModules lists what is in the rig and whether each declares that it
+// forks. Used only to attribute forked processes.
+//
+// ONLY SYNTHS are candidates, deliberately. An audio FX or MIDI FX that forks
+// would have to declare the capability to be named — inference across every FX
+// position in the rig would find several candidates almost every time and so
+// decline almost every time, which is a code path that never produces an
+// answer. Restricting inference to synths is what makes the single-candidate
+// case common enough to be worth having.
+func loadedModules(basePath string, set *SetState) []LoadedModule {
+	if set == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []LoadedModule
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		forks, _ := moduleForksProcesses(basePath, id)
+		out = append(out, LoadedModule{ID: id, Forks: forks})
+	}
+	for _, s := range set.Slots {
+		add(s.Synth)
+	}
+	return out
+}

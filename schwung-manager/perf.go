@@ -490,7 +490,6 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 		slotMods, mfxMods, setState = app.moduleIDs(snap)
 		budget = buildFrameBudget(snap, slotMods, mfxMods)
 	}
-	_ = setState // a later task names which modules are loaded from this
 
 	// An empty scan is a FAILED READ, not a machine with no processes: there is
 	// always at least this one. Distinguishing them matters because the
@@ -499,6 +498,27 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 	procs := scanProcesses()
 	procsOK := len(procs) > 0
 	view := app.cpuSampler.buildProcessView(procs, time.Now())
+
+	// Forked children: a module's real cost when it does its DSP outside the
+	// SPI callback. See perf_forks.go.
+	var forkGroups []ForkGroup
+	if movePID := findMoveOriginal(procs); movePID != 0 {
+		// view.Rows carries only processes above the 0.5% floor plus the
+		// always-listed ones, so a child below the floor is absent here and
+		// gets 0. Acceptable: it is genuinely near-zero, and the pid is still
+		// listed, so nothing disappears for want of a percentage.
+		pct := make(map[int]float64, len(view.Rows))
+		for _, r := range view.Rows {
+			pct[r.PID] = r.Percent
+		}
+		var kids []ForkedProc
+		for _, c := range findForkedChildren(procs, movePID) {
+			kids = append(kids, ForkedProc{
+				PID: c.PID, Comm: c.Comm, Core: c.CPU, Percent: pct[c.PID],
+			})
+		}
+		forkGroups = attributeForks(kids, loadedModules(app.basePath, setState))
+	}
 
 	// The ok flags are NOT discarded. /proc/stat and /proc/loadavg can fail —
 	// they do not exist off Linux at all — and a discarded flag renders as
@@ -537,6 +557,7 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 		"PerfError":   describePerfError(perfErr),
 		"Snapshot":    snap,
 		"Process":     view,
+		"ForkGroups":  forkGroups,
 		"ProcessOK":   procsOK,
 		"Cores":       coreRows,
 		"CoresOK":     coresOK,

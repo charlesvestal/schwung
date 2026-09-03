@@ -100,3 +100,94 @@ func findMoveOriginal(all []ProcStat) int {
 	}
 	return best
 }
+
+// ForkedProc is one process a module forked, with the CPU it actually burned.
+type ForkedProc struct {
+	PID     int
+	Comm    string
+	Core    int
+	Percent float64 // of one core, over the measured interval
+}
+
+// LoadedModule is a candidate owner: a module in the rig, and whether it says
+// it forks.
+type LoadedModule struct {
+	ID    string
+	Forks bool
+}
+
+// ForkGroup is a set of forked processes and who we believe owns them.
+//
+// Module == "" means unattributed: we found the cost and will not guess at the
+// owner. Inferred means we DID guess, and the page must say so.
+type ForkGroup struct {
+	Module       string
+	Inferred     bool
+	TotalPercent float64
+	Procs        []ForkedProc
+}
+
+// attributeForks names the forked processes, by descending confidence:
+//
+//  1. DECLARED — exactly one loaded module sets capabilities.forks_processes.
+//     Authoritative, Inferred false.
+//  2. DECLARED, several — we know the names but NOT which pid belongs to
+//     which, so the pids are split across them and every group is marked
+//     Inferred: the SPLIT is the guess, even though the names are not.
+//  3. INFERRED — nothing declares and exactly one synth is loaded. Named, and
+//     always marked, because an unlabelled guess on a CPU page is worse than
+//     no answer: it sends someone optimising a module that may be idle.
+//  4. UNATTRIBUTED — several candidates, or none. One group, real total, no
+//     owner.
+//
+// The ordering exists to serve one rule: NOTHING IS EVER HIDDEN FOR WANT OF A
+// NAME. A forked process always appears with its real cost, whatever we can or
+// cannot call it — dropping the cost because attribution failed would recreate
+// the exact blindness this file was written to fix.
+func attributeForks(kids []ForkedProc, loaded []LoadedModule) []ForkGroup {
+	if len(kids) == 0 {
+		// No group at all, rather than an empty one: a panel saying a module
+		// forks and costs nothing is a measurement we never made.
+		return nil
+	}
+
+	var declarers []string
+	for _, m := range loaded {
+		if m.Forks && m.ID != "" {
+			declarers = append(declarers, m.ID)
+		}
+	}
+
+	switch {
+	case len(declarers) == 1:
+		return []ForkGroup{newForkGroup(declarers[0], false, kids)}
+
+	case len(declarers) > 1:
+		// Round-robin so every declarer gets a group and no pid lands in two.
+		buckets := make([][]ForkedProc, len(declarers))
+		for i, k := range kids {
+			buckets[i%len(declarers)] = append(buckets[i%len(declarers)], k)
+		}
+		out := make([]ForkGroup, 0, len(declarers))
+		for i, id := range declarers {
+			out = append(out, newForkGroup(id, true, buckets[i]))
+		}
+		return out
+
+	case len(loaded) == 1 && loaded[0].ID != "":
+		return []ForkGroup{newForkGroup(loaded[0].ID, true, kids)}
+
+	default:
+		return []ForkGroup{newForkGroup("", false, kids)}
+	}
+}
+
+// newForkGroup sums the procs into a group. Inferred is never set on an
+// unattributed group: there is no guess to flag when no name was offered.
+func newForkGroup(module string, inferred bool, procs []ForkedProc) ForkGroup {
+	g := ForkGroup{Module: module, Inferred: inferred && module != "", Procs: procs}
+	for _, p := range procs {
+		g.TotalPercent += p.Percent
+	}
+	return g
+}
