@@ -75,7 +75,21 @@ type cpuSampler struct {
 	clkTck int64
 
 	prevProcs map[int]uint64 // pid -> utime+stime in clock ticks
+	prevCores map[string]CoreStat
 	prevAt    time.Time
+}
+
+// CoreRow is one core's load over the MEASURED interval.
+//
+// Cumulative jiffies since boot - which is what /proc/stat actually holds - say
+// nothing about current contention, and that is the whole reason to look at the
+// other cores at all: core 3 runs the SPI callback, but module-spawned FIFO
+// threads, link-subscriber, jackd and MoveOriginal's own workers all compete on
+// 0-2, and starving those shows up as audio problems just the same.
+type CoreRow struct {
+	Name    string
+	Percent float64
+	IsSPI   bool
 }
 
 // newCPUSampler returns a sampler with USER_HZ = 100.
@@ -94,7 +108,45 @@ func (c *cpuSampler) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.prevProcs = nil
+	c.prevCores = nil
 	c.prevAt = time.Time{}
+}
+
+// buildCoreView turns two /proc/stat samples into per-core load.
+//
+// Returns priming on the first sample for the same reason the process view
+// does: one reading of a monotonic counter is the machine's whole uptime, not
+// its current load.
+func (c *cpuSampler) buildCoreView(cores []CoreStat, spiCore int) (rows []CoreRow, priming bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cur := make(map[string]CoreStat, len(cores))
+	for _, s := range cores {
+		cur[s.Name] = s
+	}
+
+	prev := c.prevCores
+	c.prevCores = cur
+	if prev == nil {
+		return nil, true
+	}
+
+	spiName := "cpu" + strconv.Itoa(spiCore)
+	for _, s := range cores {
+		p, ok := prev[s.Name]
+		if !ok || s.Total <= p.Total {
+			continue
+		}
+		busy := float64(s.Busy - p.Busy)
+		total := float64(s.Total - p.Total)
+		rows = append(rows, CoreRow{
+			Name:    s.Name,
+			Percent: busy / total * 100,
+			IsSPI:   s.Name == spiName,
+		})
+	}
+	return rows, false
 }
 
 // buildProcessView turns one /proc scan into a view, using the stored previous
@@ -172,6 +224,57 @@ func (c *cpuSampler) buildProcessView(procs []ProcStat, now time.Time) ProcessVi
 	c.prevProcs = cur
 	c.prevAt = now
 	return ProcessView{Rows: rows}
+}
+
+// FrameHeadroom is the one number that answers "how much room is left".
+//
+// It is deliberately NOT frame_total. That figure sits at the frame period no
+// matter what we do, because the loop is paced by the BLOCKING ioctl: our work
+// grows and the driver's wait shrinks by exactly the same amount, so total_us
+// reads ~100% on a completely idle device and tells you nothing. What costs
+// headroom is the work Schwung does OUTSIDE the transfer - the pre-transfer and
+// post-transfer callbacks - so that is what this measures.
+type FrameHeadroom struct {
+	Valid      bool
+	PeriodUs   uint64
+	WorkAvgUs  uint64 // pre + post, averaged
+	WorkMaxUs  uint64 // worst single frame in the window
+	UsedPct    float64
+	UsedMaxPct float64
+	FreePct    float64
+	IoctlAvgUs uint64 // the transfer itself, for context
+}
+
+// buildHeadroom summarises how much of the SPI frame Schwung actually spends.
+func buildHeadroom(snap *PerfSnapshot) FrameHeadroom {
+	if snap == nil {
+		return FrameHeadroom{}
+	}
+	period := float64(snap.FramePeriodUs)
+	if period <= 0 {
+		period = nominalFramePeriodUs
+	}
+	work := snap.FramePreAvg + snap.FramePostAvg
+	// The maxima are of different frames, so their sum is a worst case that may
+	// never have happened in one frame. That is the right direction for a
+	// headroom figure - it is labelled as a worst case, not as an observation.
+	workMax := snap.FramePreMax + snap.FramePostMax
+
+	used := float64(work) / period * 100
+	free := 100 - used
+	if free < 0 {
+		free = 0
+	}
+	return FrameHeadroom{
+		Valid:      true,
+		PeriodUs:   uint64(period),
+		WorkAvgUs:  work,
+		WorkMaxUs:  workMax,
+		UsedPct:    used,
+		UsedMaxPct: float64(workMax) / period * 100,
+		FreePct:    free,
+		IoctlAvgUs: snap.FrameIoctlAvg,
+	}
 }
 
 // buildFrameBudget attributes the snapshot's timings to labelled rows.
@@ -351,15 +454,42 @@ func (app *App) moduleIDs() (slots, mfx map[int]moduleID) {
 	slots = make(map[int]moduleID, perfChainSlots)
 	mfx = make(map[int]moduleID, perfMasterFXSlots)
 
-	if app.shmParams != nil {
+	params := app.params()
+	if params == nil {
+		// No channel at all: every position is unread, and say so once.
+		if app.logger != nil {
+			app.logger.Warn("cpu page: no param channel, module names unavailable")
+		}
+	} else {
+		var firstErr error
+		busy := 0
 		for slot := 0; slot < perfChainSlots; slot++ {
-			val, ok, err := app.shmParams.TryGetParam(uint8(slot), "synth_module")
+			val, ok, err := params.TryGetParam(uint8(slot), "synth_module")
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if !ok {
+				busy++
+			}
 			slots[slot] = moduleID{Name: val, Answered: ok && err == nil}
 		}
 		for i := 0; i < perfMasterFXSlots; i++ {
 			key := "master_fx:" + strconv.Itoa(i) + ":module"
-			val, ok, err := app.shmParams.TryGetParam(0, key)
+			val, ok, err := params.TryGetParam(0, key)
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+			if !ok {
+				busy++
+			}
 			mfx[i] = moduleID{Name: val, Answered: ok && err == nil}
+		}
+		// The param channel is one slot shared with the shadow UI, so a read can
+		// legitimately go unserved. Log WHY once per refresh rather than leaving
+		// "(name unread)" on screen with no way to find out what failed.
+		if (firstErr != nil || busy > 0) && app.logger != nil {
+			app.logger.Warn("cpu page: module identity reads incomplete",
+				"busy", busy, "err", firstErr)
 		}
 	}
 
@@ -370,6 +500,15 @@ func (app *App) moduleIDs() (slots, mfx map[int]moduleID) {
 }
 
 // --- handlers ---------------------------------------------------------------
+
+// c_buildCoreView is a thin wrapper so the handler reads in one line.
+func c_buildCoreView(app *App, cores []CoreStat) ([]CoreRow, bool) {
+	return app.cpuSampler.buildCoreView(cores, spiCoreIndex)
+}
+
+// spiCoreIndex is the core the SPI callback is pinned to. Named because it is
+// referenced from two places and is a hardware fact, not a preference.
+const spiCoreIndex = 3
 
 // perfSegment returns the mapped snapshot segment, attaching lazily.
 //
@@ -392,6 +531,27 @@ func (app *App) perfSegment() *PerfShm {
 		app.perfShm = OpenPerfShm()
 	}
 	return app.perfShm
+}
+
+// params returns the shared param channel, attaching lazily.
+//
+// Same race, same shape, same lesson as perfSegment(): the manager and the shim
+// start independently and the manager can win. Measured on the device, it came
+// up 2 s before /dev/shm/schwung-param was usable, logged "not available", and
+// then held nil for the life of the process while RemoteUI quietly opened its
+// OWN second mapping and worked. Every consumer that read App.shmParams
+// directly degraded silently; the CPU page was simply the one that noticed.
+//
+// One handle, attached on demand, shared by everyone.
+func (app *App) params() *ShmParams {
+	app.paramsMu.Lock()
+	defer app.paramsMu.Unlock()
+	if app.shmParams == nil {
+		if app.shmParams = OpenShmParams(); app.shmParams != nil && app.logger != nil {
+			app.logger.Info("shared memory params: connected")
+		}
+	}
+	return app.shmParams
 }
 
 // handleSystemCPU renders the page shell only. It samples NOTHING: the first
@@ -439,6 +599,7 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 	// the one thing this page must never do, and it is the same rule the
 	// seqlock and the priming state follow.
 	cores, coresOK := readCPUStat()
+	coreRows, corePriming := c_buildCoreView(app, cores)
 	load1, load5, load15, loadOK := readLoadAvg()
 
 	// Realtime threads live inside MoveOriginal — that is where a module's
@@ -463,18 +624,20 @@ func (app *App) handleSystemCPUValues(w http.ResponseWriter, r *http.Request) {
 	})
 
 	app.renderPartial(w, r, "system_cpu.html", "cpu_values", map[string]any{
-		"Budget":    budget,
-		"PerfError": describePerfError(perfErr),
-		"Snapshot":  snap,
-		"Process":   view,
-		"ProcessOK": procsOK,
-		"Cores":     cores,
-		"CoresOK":   coresOK,
-		"Load1":     load1,
-		"Load5":     load5,
-		"Load15":    load15,
-		"LoadOK":    loadOK,
-		"RTThreads": rtThreads,
+		"Budget":      budget,
+		"Headroom":    buildHeadroom(snap),
+		"PerfError":   describePerfError(perfErr),
+		"Snapshot":    snap,
+		"Process":     view,
+		"ProcessOK":   procsOK,
+		"Cores":       coreRows,
+		"CoresOK":     coresOK,
+		"CorePriming": corePriming,
+		"Load1":       load1,
+		"Load5":       load5,
+		"Load15":      load15,
+		"LoadOK":      loadOK,
+		"RTThreads":   rtThreads,
 		// Without this, an absent MoveOriginal renders as "None found" — a
 		// finding we never made, from a scan that never ran.
 		"MoveFound": moveFound,

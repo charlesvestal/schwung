@@ -801,7 +801,8 @@ type App struct {
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
 	shm           *ShmConfig    // shared memory for live config sync (nil if not on device)
-	shmParams     *ShmParams    // shared memory for param get/set (nil if not on device)
+	shmParams     *ShmParams    // shared memory for param get/set (nil if not on device); use params(), don't read directly
+	paramsMu      sync.Mutex    // guards the lazy attach of shmParams
 	perfShm       *PerfShm      // /schwung-perf frame budget (nil until the shim creates it)
 	perfMu        sync.Mutex    // guards the lazy attach of perfShm
 	moduleIDs_    moduleIDCache // slot / Master FX identities, refreshed slowly
@@ -3506,13 +3507,6 @@ func main() {
 		logger.Info("shared memory config: not available (not on device)")
 	}
 
-	shmParams := OpenShmParams()
-	if shmParams != nil {
-		logger.Info("shared memory params: connected")
-	} else {
-		logger.Info("shared memory params: not available (not on device)")
-	}
-
 	perfShm := OpenPerfShm()
 	if perfShm != nil {
 		logger.Info("perf snapshot shm: connected")
@@ -3534,7 +3528,6 @@ func main() {
 		basePath:     basePath,
 		logger:       logger,
 		shm:          shm,
-		shmParams:    shmParams,
 		perfShm:      perfShm,
 		cpuSampler:   newCPUSampler(),
 		downloadJobs: make(map[string]*downloadJob),
@@ -3638,8 +3631,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Remote UI WebSocket (shmParams may be nil — lazy connect when Move starts).
-	remoteUI := NewRemoteUI(shmParams, webSetRing, app.basePath, logger)
+	// Remote UI WebSocket (app.params() may be nil — lazy connect when Move starts).
+	remoteUI := NewRemoteUI(app, webSetRing, app.basePath, logger)
 	remoteUI.Start(ctx)
 	mux.Handle("GET /ws/remote-ui", remoteUI)
 

@@ -97,7 +97,8 @@ const (
 	paramStealAfter = 250 * time.Millisecond
 )
 
-const shmParamPath = "/dev/shm/schwung-param"
+// A var, not a const, so a test can point it at a temp file.
+var shmParamPath = "/dev/shm/schwung-param"
 
 // OpenShmParams opens and mmaps the param shared memory segment.
 // Returns nil if the segment doesn't exist (not running on device).
