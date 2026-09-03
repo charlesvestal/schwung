@@ -283,6 +283,17 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
              * keys and cost three IPC round trips per tick to do so. */
             isModulated: (key) => (typeof ctx.isParamModulated === 'function'
                 ? !!ctx.isParamModulated(currentSlot, key) : false),
+            /*
+             * A parameter may declare a card its MODULE draws while the knob is
+             * turned. Resolving and evaluating that script needs the module's
+             * directory and the host loader, neither of which the library has —
+             * so it comes from the consumer, exactly as isModulated does, and a
+             * consumer that offers none simply has no cards.
+             */
+            loadCard: (scriptPath, exportRef) => (
+                typeof ctx.loadCardScript === 'function'
+                    ? ctx.loadCardScript(currentSlot, component, scriptPath, exportRef)
+                    : null),
         }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,
