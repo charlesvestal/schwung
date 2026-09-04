@@ -29,12 +29,12 @@ node -e '
 const m = JSON.parse(require("fs").readFileSync("examples/voice-poc/module.json", "utf8"));
 const h = m.capabilities.ui_hierarchy;
 import("./src/shared/param_pages/voices.mjs").then(V => {
-  console.log("layout:", V.layoutOf(h));
+  console.log("pad_layout:", V.padLayoutOf(h));
   for (const v of V.voicesOf(h)) console.log(" ", v.index, v.level, v.name, "note=" + v.note);
 });'
 ```
 
-Expected: `layout: drums`, then seven voices — kick/snare/hat at 36/38/42, then
+Expected: `pad_layout: drums`, then seven voices — kick/snare/hat at 36/38/42, then
 the four pads at 60–63 carrying their declared names — and **no Reverb**. If
 Reverb appears, the page-versus-voice rule is broken.
 
