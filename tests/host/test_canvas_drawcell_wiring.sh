@@ -113,7 +113,7 @@ ok(/if\s*\(\s*widgetModuleLoaded\s*\)\s*return;/.test(tcwBody),
    "the retry stops once the id resolves");
 ok(/WIDGET_RETRY_TICKS/.test(tcwBody),
    "the retry is THROTTLED -- the id costs an IPC read, ~2.8ms against a 1.68ms render");
-ok(/tickComponentWidgets\(\)/.test(src.slice(src.indexOf("VIEWS.PARAM_PAGES) {"), src.indexOf("VIEWS.PARAM_PAGES) {") + 120)),
+ok(/if \(view === VIEWS\.PARAM_PAGES\) tickComponentWidgets\(\);/.test(src),
    "the retry is driven from the knob-grid tick");
 
 /* Leaving a component must end its widgets lifetime. */

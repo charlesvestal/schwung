@@ -21387,7 +21387,12 @@ globalThis.tick = function() {
     /* Per-second param read/write report; one boolean test when disarmed. */
     if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
-    if (view === VIEWS.PARAM_PAGES) { tickComponentWidgets(); tickParamPages(); }
+    /* Its own statement, not folded into the line below: that line is pinned
+     * verbatim by tests/host/test_param_pages_wiring.sh as the proof that the
+     * view is ticked at all, and loosening a real invariant to make room for a
+     * new call is the wrong trade. */
+    if (view === VIEWS.PARAM_PAGES) tickComponentWidgets();
+    if (view === VIEWS.PARAM_PAGES) tickParamPages();
     /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
      * from the tick, never from a draw function, and cheap to poll when
      * nothing is pending (one boolean test). */
