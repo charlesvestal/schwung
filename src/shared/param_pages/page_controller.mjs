@@ -572,10 +572,6 @@ export function createController(io = {}) {
          * component load still lands on the focused voice.
          */
         voiceLatch: null,
-        /* The resolved voice INDEX the follow last acted on -- what the header
-         * minimap lights. Separate from voiceLatch, which holds the change
-         * token: one says whether to act, the other says on what. */
-        focusedVoice: null,
         voiceCacheFor: undefined,
         voiceCache: null,
         /* A page name to land on once the pages exist; see restorePage(). */
@@ -857,7 +853,7 @@ export function createController(io = {}) {
          * it says is focused is right; it is only the REPEATS that must do
          * nothing. Deliberately not cleared on a same-component re-plan: the
          * user is still standing where they navigated to. */
-        if (!sameComponent) { s.voiceLatch = null; s.focusedVoice = null; }
+        if (!sameComponent) s.voiceLatch = null;
         s.slot = slot;
         s.component = component;
         s.prefix = nextPrefix;
@@ -1739,23 +1735,39 @@ export function createController(io = {}) {
      * `-1` means "draw the empty box": we are on a rack but cannot place this
      * voice.
      *
-     * Costs no read: `s.focusedVoice` is what the follow already resolved.
+     * IT FOLLOWS THE PAGE YOU ARE ON, not the voice the module last focused.
      *
-     * NOT `s.voiceLatch`. That holds the change TOKEN — a string like
-     * "3:kick" once the counted form landed — and this used to index the voice
-     * array with it, which is undefined for every module that sends a count.
-     * The follow kept working, because it only ever COMPARES the token, so the
-     * break was invisible except as a minimap that drew its box and never lit
-     * a cell. Two facts, two fields: the token says whether to act, the index
-     * says on what.
+     * Those coincide whenever the follow moved you — it moves you TO that
+     * voice's page — but they part the moment you jog by hand, and then the
+     * map is answering a question you did not ask: it showed the pad the
+     * module thinks is focused while you were looking at a different drum.
+     * Reported from the device. The map means "the pad this page edits", and
+     * the page is the only thing that knows.
+     *
+     * That also makes the focused-voice bookkeeping redundant, so it is gone.
+     * The token still drives the follow; nothing tracks a resolved index any
+     * more, which removes the coupling that broke this once already (the latch
+     * became a string and the icon was still indexing an array with it).
+     *
+     * A child level answers for its CURRENT instance, so a rack page lights
+     * the pad you have selected within it. A page that is not a voice —
+     * Reverb, My Presets, Module — lights nothing, because it edits no pad.
+     *
+     * Costs no read: the page and the child index are both already in hand.
      */
     function padIconNote() {
         if (!s.hierarchy || padLayoutOf(s.hierarchy) !== "drums") return null;
         const voices = voiceList();
         if (!voices.length) return null;
-        const vi = s.focusedVoice;
-        if (vi === null || vi === undefined || !voices[vi]) return -1;
-        return voices[vi].note;
+        const p = page();
+        const lvl = p && p.level;
+        if (!lvl) return -1;
+        const ci = childIndexFor(lvl);
+        for (const v of voices) {
+            if (v.level !== lvl) continue;
+            if (v.childIndex === null || v.childIndex === ci) return v.note;
+        }
+        return -1;                    /* this page edits no pad */
     }
 
     function syncVoiceFromModule() {
@@ -1851,7 +1863,6 @@ export function createController(io = {}) {
          * to below is still an answer we have dealt with, and re-deciding it
          * every stop is the same waste. */
         s.voiceLatch = token;
-        s.focusedVoice = vi;
 
         const v = voices[vi];
         if (!v || !v.level) return;

@@ -913,14 +913,26 @@ export function drawHeader(ctx, left, right, inverted = false, padIcon = null) {
     }
     const l = fit5(left, W - 4 - iconW - (rw ? rw + HEADER_GAP : 0));
     fontPrint4x5(ctx, 2, 1, l, color);
-    /* PAD_ICON_W is the icon plus its gap; the box itself is 6 wide, so the
-     * right edge lands on the same 2px margin the text keeps. */
-    if (iconW) drawPadGridIcon(ctx, W - 2 - (PAD_ICON_W - 1), 0, padIcon, color);
+    /* The box sits PAD_ICON_MARGIN in from the edge; the rest of PAD_ICON_W is
+     * the gap the page name is held off by. */
+    if (iconW) drawPadGridIcon(ctx, W - PAD_ICON_MARGIN - 6, 0, padIcon, color);
     if (r) fontPrint4x5(ctx, W - rw - 2 - iconW, 1, r, color);
 }
 
-/* Width the pad icon claims, including the 1px gap before whatever follows. */
-export const PAD_ICON_W = 7;
+/*
+ * Width the pad icon claims: the 6px box, a right margin off the screen edge,
+ * and a gap before the page name to its left.
+ *
+ * movy budgets 7 — the box plus one pixel — which puts the page name hard
+ * against the box and the box within a pixel of the panel edge. At 1 bit and
+ * no anti-aliasing a single dark column is not read as a gap, it is read as
+ * part of whichever shape is bigger, so the icon looked welded to the text.
+ * Reported from the device as wanting margin. HEADER_GAP is the separation the
+ * two text sides already use, so reusing it keeps one spacing in the band
+ * rather than inventing a second.
+ */
+export const PAD_ICON_MARGIN = 2;                       /* box → screen edge */
+export const PAD_ICON_W = 6 + PAD_ICON_MARGIN + HEADER_GAP;
 
 /**
  * The pad minimap — Move's 4x4 drum rack, with the focused voice lit.

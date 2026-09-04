@@ -210,8 +210,26 @@ Promise.all([
      * assertion did not. */
     if (c.padIcon !== 38)
       fail("the minimap is handed " + JSON.stringify(c.padIcon)
-         + ", want note 38 (snare). The latch holds a TOKEN; indexing the "
-         + "voice array with it lights no cell at all");
+         + ", want note 38 (snare)");
+
+    /* IT FOLLOWS THE PAGE, NOT THE MODULE FOCUS. The two coincide whenever
+     * the follow moved you, and part the moment you jog by hand -- and then a
+     * focus-derived map answers a question you did not ask, showing the pad
+     * the module thinks is focused while you look at a different drum. */
+    c.goToPage(pageFor(c, "hat"));
+    spin(c, 40);
+    if (c.padIcon !== 42)
+      fail("jogged to the hat page and the minimap is handed "
+         + JSON.stringify(c.padIcon) + ", want 42 -- it is following the "
+         + "module focus rather than the page");
+
+    /* ...and a page that edits no pad lights nothing rather than the last
+     * voice: reverb sounds nothing, so it has no cell on the rack. */
+    c.goToPage(pageFor(c, "reverb"));
+    spin(c, 40);
+    if (c.padIcon !== -1)
+      fail("the reverb page is handed " + JSON.stringify(c.padIcon)
+         + ", want -1 (box, no cell) -- a page that edits no pad has none");
   }
 
   /* --- a name that is not a voice moves nothing ------------------------

@@ -467,7 +467,15 @@ Reported from the device as wanting it "in a stable place". The name is already
 elastic — fitted, abbreviated, truncated — and the icon is six pixels that mean
 nothing if they move, so the name is the right one to yield.
 
-**It is a PHYSICAL map.** The lit cell is the focused voice's `note` minus the
+**It follows the PAGE, not the module's focus.** The two coincide whenever the
+follow moved you — it moves you *to* that voice's page — and they part the
+moment you jog by hand, at which point a focus-derived map answers a question
+you did not ask: it shows the pad the module thinks is focused while you are
+looking at a different drum. A child level answers for its current instance, so
+a rack page lights the pad selected within it, and a page that edits no pad
+(Reverb, My Presets, Module) lights nothing.
+
+**It is a PHYSICAL map.** The lit cell is that page's voice `note` minus the
 rack base (36), so it shows where the pad sits under your hand — not where the
 voice sits in a list. A map agreeing with the page order would be a second bank
 bar, and there is one of those a row below. Move's rack counts up from 36 at the
