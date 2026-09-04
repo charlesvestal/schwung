@@ -13815,6 +13815,10 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
 
+    /* The contract is now known, which is the moment a module's in-grid widgets
+     * can be registered -- not when someone opens a canvas param. */
+    ensureComponentWidgets(getHierarchyActiveModuleId(), hierEditorChainParams);
+
     /* Set up param shims for this component */
     setupModuleParamShims(slotIndex, componentKey);
 
@@ -16313,11 +16317,13 @@ function resetCanvasState() {
     canvasParamMeta = null;
     canvasRuntime = null;
     canvasTickCounter = 0;
-    /* The widget registry is process-global and shadow_ui is long-lived, so a
-     * widget left registered would still be live after its module was swapped
-     * out -- and a later module declaring the same custom: name would silently
-     * inherit the wrong art. */
-    clearWidgets();
+    /* NO clearWidgets() HERE.
+     *
+     * This is the CANVAS VIEW's teardown, and it runs on every open and every
+     * close of a fullscreen canvas. Clearing the widget registry from it made
+     * an in-grid widget flicker out the moment the user backed out of the
+     * canvas they had just opened. Widget lifetime belongs to the COMPONENT,
+     * not to the canvas view -- see ensureComponentWidgets. */
 }
 
 function moduleFileExists(path) {
@@ -16339,6 +16345,66 @@ function getHierarchyActiveModuleId() {
     const prefix = getComponentParamPrefix(hierEditorComponent);
     if (!prefix) return "";
     return getSlotParam(hierEditorSlot, `${prefix}_module`) || "";
+}
+
+/* Module id whose in-grid widgets are currently registered. "" = none. */
+let widgetModuleLoaded = "";
+
+/*
+ * REGISTER A MODULE'S IN-GRID WIDGETS WHEN ITS CONTRACT IS KNOWN.
+ *
+ * This existed at the overlay load inside openCanvasPreview, which was wrong in
+ * three ways at once and all of them invisible to a source-level test:
+ *
+ *   - openCanvasPreview only runs when the user CLICKS a type:"canvas" param,
+ *     so an in-grid widget did not appear on first paint -- it appeared only
+ *     after the fullscreen canvas had been opened once;
+ *   - openCanvasPreview and the canvas teardown both call resetCanvasState,
+ *     which cleared the registry, so the widget vanished again on the way out;
+ *   - a module wanting ONLY an in-grid widget, with no canvas param at all,
+ *     never registered anything.
+ *
+ * A widget's lifetime is its COMPONENT's. Called wherever a component's
+ * chain_params become known; a no-op when the module has not changed, so it is
+ * safe on a path that runs often.
+ */
+function ensureComponentWidgets(moduleId, chainParams) {
+    const id = moduleId || "";
+    if (id === widgetModuleLoaded) return;
+
+    /* The registry is process-global and shadow_ui is long-lived: a widget left
+     * registered would outlive its module, and a later module declaring the
+     * same custom: name would silently inherit the wrong art. */
+    clearWidgets();
+    widgetModuleLoaded = id;
+    if (!id || !Array.isArray(chainParams)) return;
+
+    const wantsWidget = chainParams.some((p) => {
+        const k = p && p.viz && p.viz.kind;
+        return typeof k === "string" && k.startsWith("custom:");
+    });
+    /* Nothing is loaded for a module that declares no custom kind -- the script
+     * is only read when the contract says it is needed. */
+    if (!wantsWidget) return;
+
+    const dir = getModuleBasePath(id);
+    if (!dir) return;
+
+    const loaded = loadCanvasOverlayScript(`${dir}/canvas.js`, "");
+    const ov = loaded && loaded.overlay;
+    if (ov && typeof ov.drawCell === "function" && typeof ov.widgetKind === "string") {
+        registerWidget(ov.widgetKind, {
+            draw: ov.drawCell.bind(ov),
+            nominal: ov.widgetNominal || null,
+        });
+    } else {
+        /* Declared a custom kind and we could not load a widget for it. Not
+         * fatal: the kind stays unregistered, so resolveViz leaves those keys to
+         * the detector and the built-in draws. But say so, because otherwise the
+         * author sees a reasonable picture and no reason it is not theirs. */
+        debugLog(`widgets: ${id} declares a custom viz kind but no usable drawCell` +
+                 (loaded && loaded.error ? ` (${loaded.error})` : ""));
+    }
 }
 
 function getModuleBasePath(moduleId) {
@@ -16677,22 +16743,9 @@ function openCanvasPreview(paramKey, meta) {
         const loaded = loadCanvasOverlayScript(canvasRuntime.scriptPath, canvasRuntime.overlayRef);
         canvasRuntime.overlay = loaded.overlay;
         canvasRuntime.error = loaded.error || "";
-        /* A CANVAS OVERLAY MAY ALSO SUPPLY AN IN-GRID WIDGET.
-         *
-         * Same file, same author mental model, two scales: drawCell paints one
-         * knob box inside the grid, draw paints the fullscreen view you dive
-         * into from that same cell. Registering here rather than at the call
-         * site means it cannot run for a runtime whose script failed to load --
-         * `loaded.overlay` is null in that case and the guard below refuses it,
-         * so the kind stays unregistered and resolveViz falls through to the
-         * detector. */
-        const ov = canvasRuntime.overlay;
-        if (ov && typeof ov.drawCell === "function" && typeof ov.widgetKind === "string") {
-            registerWidget(ov.widgetKind, {
-                draw: ov.drawCell.bind(ov),
-                nominal: ov.widgetNominal || null,
-            });
-        }
+        /* Widgets are NOT registered here. This runs only when the user opens a
+         * fullscreen canvas, which is far too late and far too narrow for an
+         * in-grid widget -- see ensureComponentWidgets. */
     } else {
         canvasRuntime.error = "No canvas script found";
     }

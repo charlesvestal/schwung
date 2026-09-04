@@ -35,6 +35,12 @@ const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fa
 
 const src = readFileSync("./src/shadow/shadow_ui.js", "utf8");
 
+/* Assertions about what code DOES must not be satisfied -- or defeated -- by
+ * what a comment SAYS. The comment in resetCanvasState explaining why it must
+ * not call clearWidgets() contains the literal "clearWidgets(", and tripped the
+ * check that it does not call it. Strip comments before asserting on a body. */
+const code = (s) => s.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+
 /* The import must be the absolute device path, like every other
  * shared/param_pages import in this file. */
 ok(/from\s+.\/data\/UserData\/schwung\/shared\/param_pages\/widget_registry\.mjs./.test(src),
@@ -51,22 +57,47 @@ ok(/typeof\s+\w+\.drawCell\s*===\s*"function"/.test(src),
 ok(/typeof\s+\w+\.widgetKind\s*===\s*"string"/.test(src),
    "an overlay with no widgetKind string is ignored");
 
-/* The clear happens in the canvas teardown, not somewhere unrelated. */
+/* WIDGET LIFETIME IS THE COMPONENTS, NOT THE CANVAS VIEWS.
+ *
+ * This is the defect the POC found. Registration used to live at the overlay
+ * load inside openCanvasPreview, which only runs when the user CLICKS a
+ * type:"canvas" param -- so an in-grid widget did not appear until the
+ * fullscreen view had been opened once, vanished on the way out (open AND close
+ * both call resetCanvasState, which cleared the registry), and never appeared at
+ * all for a module with no canvas param.
+ *
+ * Ordering is exactly what a source-level test cannot see, so what is pinned
+ * here is the STRUCTURE that made the ordering wrong: which function owns the
+ * lifetime, and which one must not touch it. */
 const tdStart = src.indexOf("function resetCanvasState");
 ok(tdStart > 0, "resetCanvasState exists");
-const tdBody = src.slice(tdStart, src.indexOf("\nfunction ", tdStart + 1));
-ok(/clearWidgets\s*\(\s*\)/.test(tdBody),
-   "resetCanvasState clears the widget registry");
+const tdBody = code(src.slice(tdStart, src.indexOf("\nfunction ", tdStart + 1)));
+ok(!/clearWidgets\s*\(/.test(tdBody),
+   "resetCanvasState does NOT clear the registry (it runs on every canvas open AND close)");
+
+const ecwStart = src.indexOf("function ensureComponentWidgets");
+ok(ecwStart > 0, "ensureComponentWidgets exists");
+const ecwBody = code(src.slice(ecwStart, src.indexOf("\nfunction ", ecwStart + 1)));
+ok(/clearWidgets\s*\(\s*\)/.test(ecwBody),
+   "ensureComponentWidgets owns the clear");
+ok(/registerWidget\s*\(/.test(ecwBody),
+   "ensureComponentWidgets owns the registration");
+ok(/widgetModuleLoaded/.test(ecwBody),
+   "it is a no-op when the module has not changed, so it is safe on a hot path");
+
+/* And the canvas-open path must not register. */
+const ocpStart = src.indexOf("function openCanvasPreview");
+const ocpBody = code(src.slice(ocpStart, src.indexOf("\nfunction ", ocpStart + 1)));
+ok(!/registerWidget\s*\(/.test(ocpBody),
+   "openCanvasPreview does NOT register widgets");
+
+/* Registration is driven from where the CONTRACT becomes known. */
+ok(/ensureComponentWidgets\s*\(\s*getHierarchyActiveModuleId\(\)\s*,\s*hierEditorChainParams\s*\)/.test(src),
+   "it is called where a components chain_params are fetched");
 
 /* The logger is installed, so a disabled widget is attributable. */
 ok(/setWidgetLogger\s*\(/.test(src), "shadow_ui installs the widget logger");
 
-/* Registration sits with the overlay load, so it cannot run for a runtime that
- * failed to produce an overlay. */
-const loadIdx = src.indexOf("canvasRuntime.overlay = loaded.overlay;");
-ok(loadIdx > 0, "the overlay assignment is where expected");
-ok(/registerWidget\s*\(/.test(src.slice(loadIdx, loadIdx + 900)),
-   "registration happens right after the overlay is assigned");
 
 process.exit(fail ? 1 : 0);
 '

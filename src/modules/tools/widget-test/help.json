@@ -1,0 +1,18 @@
+{
+  "title": "Widget Test",
+  "summary": "Reference module showing a custom in-grid widget and its fullscreen canvas view, both from one canvas.js.",
+  "sections": [
+    {
+      "heading": "What it shows",
+      "body": "The Level knob draws as a segmented meter supplied by the module itself rather than a built-in dial. Clicking Detail opens the module's own fullscreen view. Both come from the same canvas.js."
+    },
+    {
+      "heading": "For module authors",
+      "body": "Declare viz: { kind: \"custom:<name>\" } on a chain_params entry, then export widgetKind and drawCell from canvas.js. Coordinates are frame-local: (0,0) is the knob box, and ctx.width/ctx.height are its size. Values are handed to drawCell; it cannot read params. Schwung keeps drawing the label."
+    },
+    {
+      "heading": "If it does not appear",
+      "body": "An unknown or broken widget falls back to the built-in graphic rather than leaving a hole, so the page always looks correct. Check debug.log: a widget that threw is disabled for the session and names itself there."
+    }
+  ]
+}
