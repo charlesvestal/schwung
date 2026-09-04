@@ -31,6 +31,8 @@ import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire }
     from "./child_key.mjs";
+import { focusParamOf, voicesOf, voiceIndexFromLevel, voiceIndexFromNote,
+         voiceIndexFromWire } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
 } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -1611,6 +1613,88 @@ export function createController(io = {}) {
         dropChildLevelCache(name);
     }
 
+    /**
+     * Adopt the voice the MODULE says is focused — the SIBLING shape, and the
+     * note fallback for a module that declares neither focus param.
+     *
+     * EXACTLY ONE INPUT IS LIVE PER MODULE, and the priority is the whole
+     * point. The template shape is already served by syncChildIndexFromModule
+     * above and is deliberately untouched here: `child_index_param` IS that
+     * shape's focus input, so a module declaring it must never also be asked
+     * for `last_note`. That is enforced by NOT ISSUING THE READ rather than by
+     * ignoring the answer — two sources that are both consulted disagree the
+     * moment the module moves its focus without a note (a preset load,
+     * mrdrums' auto-select), and the disagreement LATCHES, because each source
+     * keeps re-asserting itself on the next rotation.
+     *
+     * `layoutOf` is deliberately not imported. The grid follows whatever
+     * voices are declared and does not branch on layout; having the name in
+     * scope invites an `if (layout !== "drums") return`, which would silently
+     * stop following for every module that declares voices before it has
+     * settled its layout.
+     *
+     * Nothing here writes an LED or a MIDI byte. Move's firmware owns the pads;
+     * this path is a read plus a navigation.
+     *
+     * Rides the same stop as syncChildIndexFromModule — so it costs the
+     * rotation no stop of its own — and is likewise NOT gated on a settle
+     * window. A settle means a KNOB is being turned, and turning a knob does
+     * not change which pad you are editing; playing one does. Gating it would
+     * mean the grid refused to follow the pad you just hit for as long as your
+     * hand rested on a knob, which is precisely when it matters.
+     */
+    function syncVoiceFromModule() {
+        const hier = s.hierarchy;
+        if (!hier) return;
+        /* The hierarchy is already in hand — re-reading `ui_hierarchy` here
+         * would cost a stop AND could answer a different tri-state than the
+         * page set was planned from. */
+        const voices = voicesOf(hier);
+        if (!voices.length) return;             /* opted out: costs nothing */
+
+        /* The template shape owns its focus. Nothing to do, and above all
+         * nothing to READ — see the priority note above. */
+        const levels = hier.levels || {};
+        for (const name in levels) {
+            if (childIndexParam(levels[name])) return;
+        }
+
+        const focusParam = focusParamOf(hier);
+        let vi = null;
+        if (focusParam) {
+            const raw = getParam(`${s.prefix}:${focusParam}`);
+            /* A level NAME first — that is what the declaration documents —
+             * and a numeric voice index second, because a module may answer
+             * either and both are unambiguous. Both refuse a failed read. */
+            vi = voiceIndexFromLevel(voices,
+                (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
+            if (vi === null) vi = voiceIndexFromWire(voices, raw);
+        } else {
+            const raw = getParam(`${s.prefix}:last_note`);
+            const t = (raw === null || raw === undefined) ? "" : String(raw).trim();
+            const n = t.length ? Number(t) : NaN;
+            vi = Number.isFinite(n) ? voiceIndexFromNote(voices, Math.round(n)) : null;
+        }
+        /*
+         * TRI-STATE. null is "no information", never voice 0. Adopting the
+         * first voice because a read timed out would move the user off the
+         * pad they were editing, re-keying every page on screen and dropping
+         * its cached values — the same cost the child-index path refuses.
+         */
+        if (vi === null) return;
+
+        const v = voices[vi];
+        if (!v || v.childIndex !== null) return;  /* template shape, above */
+        const cur = page();
+        if (!v.level || (cur && cur.level === v.level)) return;  /* already there */
+        const target = s.pages.findIndex(
+            (q) => q && q.level === v.level && q.kind === PAGE_KNOBS);
+        if (target < 0) return;                 /* a voice with no grid page */
+        /* `remember: false`: the module named a voice, so land on that voice's
+         * page rather than on whatever page of that section was last visited. */
+        goToPage(target, { remember: false });
+    }
+
     function neighbourPrefetch(cur) {
         if (s.tickCount < (s.prefetchHoldUntil || 0)) return null;
         for (const k in s.settleUntil) {
@@ -1775,6 +1859,10 @@ export function createController(io = {}) {
              * and dropping its cached values -- because a read timed out.
              */
             syncChildIndexFromModule(p);
+            /* ...and, on the SAME stop, the sibling/note shapes. One of the
+             * two runs for any given module and never both — see the priority
+             * note on syncVoiceFromModule. */
+            syncVoiceFromModule();
             return null;
         }
         if (at > p.keys.length) {
