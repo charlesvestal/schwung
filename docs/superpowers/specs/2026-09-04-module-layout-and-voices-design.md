@@ -248,6 +248,20 @@ Contract, host side, docs and tests land here. Fleet PRs follow module by module
 mrdrums (template shape) and 9W9 (sibling shape) first as the two proofs. Movy
 drops a bundled config as each module declares.
 
+**The sibling-shape modules publish no hierarchy at all**, which is a bigger lift
+than it looked. Measured against `tests/fixtures/module-contracts.json`: 13 of the
+100 captured modules answer `ui_hierarchy: null`, and they include **9w9, 6w6,
+8w8 and po32-drum** — precisely movy's `OVERRIDES_MODULE_FILE` list plus its
+libpo32 config. So for those, declaring a layout means publishing a `ui_hierarchy`
+for the first time, not adding a field to one. That is why the POC module in the
+plan is the proof rather than a fleet module: there is no sibling-shape module in
+the fleet whose hierarchy we could extend today.
+
+It also explains the override list's existence from the other end. Those modules
+describe themselves only to movy, in `movy_config.json`, because Schwung offered
+them nothing to describe themselves *with* — and a private format with one
+consumer is what drifts until a 4-module exception list is needed to correct it.
+
 ## Risks
 
 - **`ui_hierarchy` size.** `chain_params` over 64KB will not load; `child_names`
