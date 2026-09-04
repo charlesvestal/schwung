@@ -145,18 +145,30 @@ write.
 |---|---|
 | `child_index_param` (template shape) | forwarded to the module, translated out of its own numbering |
 | `focus_param` (new, top-level in `ui_hierarchy`, value is a level name) | forwarded to the module, translated to an index |
-| neither, but voices declared | host fallback: the chain host's last-played voice |
+| neither, but voices declared | host fallback: `synth:last_note`, resolved against the voice list |
 
 The fallback never runs for a module that owns its focus, so two sources that
 disagree and then latch cannot be constructed. A module that moves its own focus
 internally (a preset load, mrdrums' auto-select) stays authoritative.
 
-**The fallback** lives in `chain_host.c`. The note → voice table is built once at
-component load, beside the existing `parse_ui_hierarchy_cache`; the runtime cost
-on a note-on is a scan of at most 32 entries and an int store — no allocation, no
-logging, nothing that does not belong on the SPI callback. It sees every note
-routed to the slot, including notes a sequencer injects, so a sequencer's own pad
-press updates it too.
+**The fallback reports a NOTE, not a voice.** `chain_host.c` serves
+`synth:last_note` — the raw MIDI note number last played into the slot — and the
+note → voice lookup happens wherever the voice list already lives (`voices.mjs`
+for the grid; a sequencer's own parse for itself). `focused_voice` is still the
+single key a consumer asks for; it is resolved in `voices.mjs` rather than in C.
+
+This is deliberate and was changed from an earlier draft. Resolving the index in
+C would mean the canonical voice order — nav-link order, then unlinked levels,
+then child instances — implemented twice, once in `chain_json.c`'s flat key-scan
+helpers, which cannot walk `levels` in order, and once in `voices.mjs`. That is
+the shape that produced the metronome and `recall_quantize` off-by-one, and it
+fails silently as "the grid follows the wrong pad". One fact, one implementation.
+
+What is left in C is an int store on the note-on, at the `synth->on_midi` call
+site in `chain_midi.c` where the note the synth receives is already in hand — no
+allocation, no parsing, no logging, nothing that does not belong on the SPI
+callback. It sees notes a sequencer injects too, so a sequencer's own pad press
+updates it.
 
 Two guarantees carried over verbatim from `child_index_param`:
 
@@ -188,10 +200,11 @@ that safe.
 
 | File | Change |
 |---|---|
-| `src/shared/param_pages/voices.mjs` *(new)* | Pure: hierarchy object → `{layout, voices[]}`. Both shapes collapse here and nowhere else. Node-testable, sibling to `child_key.mjs`. |
+| `src/shared/param_pages/voices.mjs` *(new)* | Pure: hierarchy object → `{layout, voices[]}`, plus note → voice and the tri-state focus resolution. Both shapes collapse here and nowhere else. Node-testable, sibling to `child_key.mjs`. |
 | `src/shared/param_pages/page_controller.mjs` | Read/follow `focused_voice` on the existing `child_index_param` rotation stop. |
 | `src/shared/param_pages/page_plan.mjs` / instance picker | Voice names in the instance list. |
-| `src/modules/chain/dsp/chain_host.c` | Serve `focused_voice` (forward or fallback); note → voice table at load; note-on watcher. |
+| `src/modules/chain/dsp/chain_midi.c` | Record the last note played into the slot at the `synth->on_midi` call site. |
+| `src/modules/chain/dsp/chain_host.c` | Serve `synth:last_note`. |
 | `docs/MODULES.md` | The contract module authors implement. |
 | `docs/CHAIN.md` | What the chain host serves and how the fallback is scoped. |
 | `docs/PARAM_PAGES.md` | Grid behaviour, and the no-LED rule. |
@@ -216,9 +229,9 @@ modules carry notes on melodic pages.
 
 **Unit tests:** both shapes' voice ordering; sparse `child_notes`; absent
 `layout` reported as unspecified and never as `chromatic`; the focus tri-state
-(`null` / `""` / out-of-range never move focus); a C unit for the note table and
-for "a declared focus param means the fallback never runs". Each mutated to prove
-it can fail before it is trusted green.
+(`null` / `""` / out-of-range never move focus); note → voice for contiguous and
+sparse maps; and "a declared focus param means `last_note` is never consulted".
+Each mutated to prove it can fail before it is trusted green.
 
 ## Migration
 
