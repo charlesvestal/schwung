@@ -1334,6 +1334,6 @@ lines were all present and correct; only their *call ordering* was wrong.
 `tests/host/test_canvas_drawcell_wiring.sh` pins what a source test *can* see —
 which function owns the lifetime and which must not touch it — and the behaviour
 is covered by `tests/host/test_widget_module_poc.sh`, which starts from the
-shipped `src/modules/tools/widget-test/{module.json,canvas.js}` rather than
+shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
 calling `registerWidget()` directly. Every other widget test registers directly,
 and that is exactly why none of them saw this.

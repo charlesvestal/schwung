@@ -8,7 +8,7 @@ cd "$(dirname "$0")/../.."
 # Every other widget test registers its widget by calling registerWidget()
 # directly, which proves the registry works and proves NOTHING about whether a
 # module can actually reach it. This one starts from the shipped files --
-# src/modules/tools/widget-test/{module.json,canvas.js} -- and drives them
+# src/modules/audio_fx/widget-test/{module.json,canvas.js} -- and drives them
 # through the real resolveViz, the real drawVizGroup and the real frame ctx.
 #
 # Writing it is what found the defect it now guards: widgets were being
@@ -42,7 +42,7 @@ import { registerWidget, clearWidgets, isWidgetAvailable }
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
 
-const DIR = "./src/modules/tools/widget-test";
+const DIR = "./src/modules/audio_fx/widget-test";
 const mod = JSON.parse(readFileSync(`${DIR}/module.json`, "utf8"));
 const caps = mod.capabilities || {};
 const CP = caps.chain_params || [];
@@ -126,6 +126,21 @@ ok(escaped === 0, "the reference widget stays in frame at every size and value")
 const bad = draw("not-a-number", FRAME);
 ok(bad.every(([x, y, w, h]) => x >= 8 && y >= 9 && x + w <= 25 && y + h <= 24),
    "a non-numeric value is contained rather than drawn as NaN");
+
+/* ---- the DSP and module.json must not drift ----
+ *
+ * The chain host reads chain_params from the DSPs get_param, NOT from
+ * module.json -- so module.jsons copy is documentation, and documentation that
+ * disagrees with the code is worse than none. Pin the parts that matter. */
+const csrc = readFileSync(`${DIR}/widget_test.c`, "utf8");
+ok(csrc.includes(`\\"kind\\":\\"${KIND}\\"`) || csrc.includes(KIND),
+   "the DSP declares the same custom kind as module.json");
+for (const k of CP.map((p) => p.key)) {
+  ok(csrc.includes(`\\"key\\":\\"${k}\\"`),
+     `the DSP declares the "${k}" param that module.json documents`);
+}
+ok(/move_audio_fx_init_v2/.test(csrc), "the DSP exports the v2 audio FX entry point");
+ok(/process_block/.test(csrc), "and a process_block, so it is a loadable chain component");
 
 /* ---- and the fallback story, from the shipped declaration ---- */
 clearWidgets();

@@ -577,6 +577,28 @@ if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
     cp src/modules/audio_fx/gesture-test/module.json build/modules/audio_fx/gesture-test/
 fi
 
+# Build Widget Test audio FX — the reference module for a MODULE-SUPPLIED
+# WIDGET (canvas.js drawCell). Same gate and the same reason as gesture-test:
+# it is a hardware fixture, not a shipped module.
+#
+# A chain component with no dsp.so is worse than absent -- it still appears in
+# the audio-FX picker, and a slot referencing a module that cannot load is
+# restored on every boot. So this is a real, loadable, passthrough FX.
+if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
+    mkdir -p ./build/modules/audio_fx/widget-test/
+    # Named for the id, per the chain host path rule noted above.
+    echo "Building widget-test (test fixture)..."
+    "${CROSS_PREFIX}gcc" -g -O2 -shared -fPIC \
+        src/modules/audio_fx/widget-test/widget_test.c \
+        -o build/modules/audio_fx/widget-test/widget-test.so \
+        -Isrc \
+        -lm
+    cp src/modules/audio_fx/widget-test/module.json \
+       src/modules/audio_fx/widget-test/canvas.js \
+       src/modules/audio_fx/widget-test/help.json \
+       build/modules/audio_fx/widget-test/
+fi
+
 echo "Building MIDI FX plugins..."
 
 # Build Chord MIDI FX

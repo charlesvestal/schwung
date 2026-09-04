@@ -17,7 +17,9 @@
         "max": 1,
         "step": 0.01,
         "default": 0.5,
-        "viz": { "kind": "custom:wtmeter" }
+        "viz": {
+          "kind": "custom:wtmeter"
+        }
       },
       {
         "key": "detail",
@@ -32,12 +34,21 @@
     "levels": {
       "root": {
         "label": "Widget Test",
-        "knobs": ["level"],
+        "knobs": [
+          "level"
+        ],
         "params": [
-          { "key": "level" },
-          { "key": "detail" }
+          {
+            "key": "level"
+          },
+          {
+            "key": "detail"
+          }
         ]
       }
     }
-  }
+  },
+  "dsp": "widget-test.so",
+  "api_version": 2,
+  "abbrev": "WT"
 }
