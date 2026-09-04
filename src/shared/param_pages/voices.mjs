@@ -126,6 +126,26 @@ export function voicesOf(hierarchy) {
     const seen = new Set();
 
     const root = levels.root;
+
+    /* ROOT ITSELF CAN BE THE RACK, and skipping it made this whole feature a
+     * no-op for the one module it was written for.
+     *
+     * Every fixture in the tests declares `root: { params: [{level: "pads"}] }`
+     * and puts the rack in a sibling level -- so the walk started at root's nav
+     * links, and root was only ever a signpost. mrdrums does not do that. Its
+     * root IS the 16-pad child level (`child_count: 16`, `child_key_template`
+     * "p{index}_{key}", `child_index_param` "ui_current_pad"), and it is the
+     * flagship template-shape drum module in the fleet.
+     *
+     * Measured against tests/fixtures/module-contracts.json: `voicesOf` on the
+     * real mrdrums hierarchy returned ZERO voices, and still returned zero
+     * after adding the layout and note declarations a fleet PR would add. Every
+     * unit test passed throughout, because every fixture agreed with the code
+     * rather than with the fleet.
+     *
+     * Root goes FIRST because it is where the user lands. */
+    if (root) voicesForLevel("root", root, out);
+
     for (const p of (root && root.params) || []) {
         const name = p && typeof p === "object" && p.level;
         if (!name || seen.has(name)) continue;

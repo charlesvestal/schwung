@@ -229,6 +229,43 @@ Promise.all([
   if (V.voiceIndexFromChild(mv, "pads", 0) !== 1)
     fail("child lookup answered the instance rather than the voice index");
 
+  /* ---- a REAL module, not a fixture I wrote ---------------------------- */
+
+  /* Every fixture above declares `root: { params: [{level: "pads"}] }` and puts
+   * the rack in a sibling level. mrdrums does not: its ROOT IS the 16-pad child
+   * level. The walk used to start at root nav links and skip root itself, so
+   * the real mrdrums hierarchy produced ZERO voices -- before and after adding
+   * the declarations a fleet PR would add -- while every test here passed,
+   * because every fixture agreed with the code instead of with the fleet.
+   *
+   * So this case is taken from the captured contract rather than written here.
+   * A fixture cannot catch a mistake it shares. */
+  {
+    const capfs = require("node:fs");
+    const cap = JSON.parse(capfs.readFileSync("./tests/fixtures/module-contracts.json", "utf8"));
+    const md = cap.modules.find((m) => m.id === "mrdrums");
+    if (!md || !md.ui_hierarchy || !md.ui_hierarchy.levels.root)
+      fail("the captured mrdrums contract is missing -- this check would pass against nothing");
+
+    /* Undeclared, it must stay silent: this is the inertness rule per-module. */
+    if (V.voicesOf(md.ui_hierarchy).length !== 0)
+      fail("undeclared mrdrums reported voices");
+    if (V.layoutOf(md.ui_hierarchy) !== null)
+      fail("undeclared mrdrums reported a layout");
+
+    /* Declared exactly as a fleet PR would: a layout and a note base. */
+    const h2 = JSON.parse(JSON.stringify(md.ui_hierarchy));
+    h2.layout = "drums";
+    h2.levels.root.child_note_base = 36;
+    const mv2 = V.voicesOf(h2);
+    if (mv2.length !== 16)
+      fail("real mrdrums declared a rack and produced " + mv2.length + " voices, not 16");
+    if (mv2[0].note !== 36 || mv2[15].note !== 51)
+      fail("real mrdrums note map is wrong");
+    if (mv2[0].level !== "root" || mv2[15].childIndex !== 15)
+      fail("real mrdrums voices are not addressed through root");
+  }
+
   /* ---- purity --------------------------------------------------------- */
 
   /* READ THE FILE, not three stringified exports.
