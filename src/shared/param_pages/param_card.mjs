@@ -21,7 +21,8 @@
  * visible around it, so it blanks its OWN rect with fillRect and never asks for
  * the frame. That makes it drawable by an embedded consumer that owns no frame
  * at all, and keeps the library's "no file here clears the screen" contract
- * without an exception.
+ * without an exception. Such a consumer passes its own rect (see
+ * paramCardRect); needing no clear is not the same as knowing where to draw.
  *
  * ⭑ A DRAWER CANNOT EXPRESS A SCREEN COORDINATE, exactly as a cell widget
  * cannot. The drawer is handed a frameCtx scoped to the inside of the card, so
@@ -84,21 +85,38 @@ function clampSide(v, dflt, max) {
 }
 
 /**
- * Where a card of this declared size sits: centred, clamped to the panel.
+ * Where a card of this declared size sits: centred, clamped to its frame.
  *
  * Centred rather than anchored to the touched cell. The cell is 30px wide and a
  * card is not, so anchoring would put most cards off the edge and the rest in a
  * different place per knob — a picture that moves while you read it.
  *
- * @param {object} meta  the param's metadata; card_w / card_h are optional
+ * ⚠ CENTRED IN THE CALLER'S FRAME, NOT THE SCREEN.
+ *
+ * This took SCREEN_WIDTH/SCREEN_HEIGHT unconditionally, which is right for the
+ * full-screen host and wrong for the one case this file claims to support: a
+ * tool that embeds the grid in its own chrome (render() takes a `rect` for
+ * exactly that). A card centred on the panel while the page it belongs to sits
+ * in a corner is not floating over that page, it is painting over the host's
+ * screen — and "drawable by an embedded consumer" was the claim being made two
+ * paragraphs up. A frame is now passed in, defaulting to the whole panel so the
+ * full-screen caller is unchanged.
+ *
+ * @param {object} meta   the param's metadata; card_w / card_h are optional
+ * @param {object} [frame] {x,y,w,h} to centre within; defaults to the panel
  * @returns {{x:number,y:number,w:number,h:number}} the OUTER rect
  */
-export function paramCardRect(meta) {
-    const w = clampSide(meta && meta.card_w, DEFAULT_CARD_W, SCREEN_WIDTH - GUTTER * 2);
-    const h = clampSide(meta && meta.card_h, DEFAULT_CARD_H, SCREEN_HEIGHT - GUTTER * 2);
+export function paramCardRect(meta, frame) {
+    const fx = frame && Number.isFinite(frame.x) ? frame.x : 0;
+    const fy = frame && Number.isFinite(frame.y) ? frame.y : 0;
+    const fw = frame && frame.w > 0 ? frame.w : SCREEN_WIDTH;
+    const fh = frame && frame.h > 0 ? frame.h : SCREEN_HEIGHT;
+
+    const w = clampSide(meta && meta.card_w, DEFAULT_CARD_W, Math.max(MIN_SIDE, fw - GUTTER * 2));
+    const h = clampSide(meta && meta.card_h, DEFAULT_CARD_H, Math.max(MIN_SIDE, fh - GUTTER * 2));
     return {
-        x: Math.floor((SCREEN_WIDTH - w) / 2),
-        y: Math.floor((SCREEN_HEIGHT - h) / 2),
+        x: fx + Math.floor((fw - w) / 2),
+        y: fy + Math.floor((fh - h) / 2),
         w,
         h,
     };
@@ -136,7 +154,7 @@ export function paramCardContentRect(outer) {
 export function drawParamCard(ctx, o) {
     if (!ctx || !o || typeof o.draw !== "function") return false;
 
-    const r = paramCardRect(o.meta);
+    const r = paramCardRect(o.meta, o.frame);
 
     /* Lift it off the page: clear the gutter, then the border, then the inside.
      * Clipped at the panel edge by the caller`s own fillRect, which is why the
@@ -177,6 +195,16 @@ export function drawParamCard(ctx, o) {
             raw: o.raw === undefined ? null : o.raw,
         });
     } catch (e) {
+        /*
+         * RE-CLEAR WHAT IT MANAGED TO PAINT.
+         *
+         * The comment above promised "a plain empty card rather than a hole",
+         * and without this it was not one: a drawer that paints and THEN throws
+         * leaves its half-finished output sitting inside the frame, which is a
+         * picture built from an answer that did not arrive. Measured at 400 lit
+         * pixels for a drawer that filled a rect before throwing.
+         */
+        ctx.fillRect(content.x, content.y, content.w, content.h, 0);
         if (typeof o.onError === "function") o.onError(e);
         return true;
     }
