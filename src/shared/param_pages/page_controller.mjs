@@ -43,6 +43,7 @@ import { widgetsGeneration } from "./widget_registry.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 import { drawEnumList } from "./enum_list.mjs";
+import { drawParamCard } from "./param_card.mjs";
 
 export { LAYOUT_MOVY };
 
@@ -519,6 +520,24 @@ export function createController(io = {}) {
      * invitation to handle one of them wrong.
      */
     const formatValue = io.formatValue || null;
+    /*
+     * Optional: load a module-supplied card drawer.
+     *
+     *   loadCard(scriptPath, overlayRef) -> function | null
+     *
+     * Same shape and same reason as isModulated and formatValue above — the
+     * library cannot read a file and must not try, so the host injects the
+     * loader and a caller that has none simply gets no cards. That is the whole
+     * default-off story: a module may declare card_script for years and nothing
+     * changes until a host offers to load it.
+     *
+     * ⚠ THE LOAD IS NOT ON THE DRAW PATH. It is called from onKnobTouch, on the
+     * first touch of a declaring parameter, and the answer is cached for the
+     * session — including a null, which is never retried. Nothing module-side
+     * is resident while the grid is up and the host loader has no cache of its
+     * own, so a load from the draw would evaluate a script every frame.
+     */
+    const loadCard = io.loadCard || null;
     const now = io.now || (() => Date.now());
     /* Graphics default on; a caller can pass `enableViz: false` to keep the
      * plain grid (a tool that wants every cell individually addressable), and
@@ -680,6 +699,10 @@ export function createController(io = {}) {
          * Holds no value of its own — `index` is the knob engine's, which is
          * why the whole overlay costs no IPC read. */
         peek: null,
+        /* Module-supplied card drawers, keyed by the declared script spec.
+         * A cached `null` means "asked and got nothing", and is never retried —
+         * a missing file must not be re-evaluated on every touch. See loadCard. */
+        cardFns: {},
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
         /*
@@ -2767,6 +2790,10 @@ export function createController(io = {}) {
             s.touched = slot;
             s.turnClaimMs = 0;
         }
+        /* A knob can be turned without the capacitive touch ever registering,
+         * so the turn warms too -- otherwise the one gesture that reaches this
+         * screen without a finger is the one that never gets a card. */
+        warmCard(slot);
 
         /* ONE knob model, whatever the layout. There used to be two, and this
          * branch picked between them by layout -- a knob that behaves
@@ -3081,6 +3108,8 @@ export function createController(io = {}) {
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
         s.turnClaimMs = 0;
+        /* The load lives on the gesture, never on the draw. See warmCard. */
+        warmCard(slot);
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;
@@ -3692,6 +3721,55 @@ export function createController(io = {}) {
     }
 
     /*
+     * A parameter's declared card drawer, or null.
+     *
+     * `card_script` is spelled like `canvas_script` — "file.js#exportName" —
+     * because a module author already knows that spelling and a second grammar
+     * for the same idea is a second thing to get wrong.
+     */
+    function cardSpec(meta) {
+        if (!meta) return null;
+        const spec = typeof meta.card_script === "string" ? meta.card_script.trim() : "";
+        if (!spec) return null;
+        const hash = spec.indexOf("#");
+        return hash < 0
+            ? { spec, path: spec, ref: "" }
+            : { spec, path: spec.slice(0, hash), ref: spec.slice(hash + 1) };
+    }
+
+    /*
+     * Load a declaring parameter's drawer, ONCE, off the draw path.
+     *
+     * Called from touch and from a turn -- the two events that can raise a card
+     * -- and never from renderOverlays. Nothing module-side is resident while
+     * the grid is up and the host loader has no cache of its own, so a load on
+     * the draw path would evaluate the script on every frame of a knob turn.
+     *
+     * A null answer is CACHED. A missing file, a bad export or a host with no
+     * loader must cost one attempt for the session, not one per touch.
+     */
+    function warmCard(slot) {
+        if (!loadCard) return;
+        const spec = cardSpec(metaAt(slot));
+        if (!spec || Object.prototype.hasOwnProperty.call(s.cardFns, spec.spec)) return;
+        let fn = null;
+        try {
+            fn = loadCard(spec.path, spec.ref);
+        } catch (e) {
+            fn = null;
+        }
+        s.cardFns[spec.spec] = typeof fn === "function" ? fn : null;
+    }
+
+    /** The loaded drawer for a param, or null. Never loads -- see warmCard. */
+    function cardFnFor(meta) {
+        const spec = cardSpec(meta);
+        if (!spec) return null;
+        const fn = s.cardFns[spec.spec];
+        return typeof fn === "function" ? fn : null;
+    }
+
+    /*
      * WHAT render() DOES NOT DRAW, AND WHY IT CANNOT.
      *
      * render() paints a page into a rect the CALLER owns. Nothing in
@@ -3726,7 +3804,7 @@ export function createController(io = {}) {
      */
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
-        if (!peek) return false;
+        if (!peek) return drawDeclaredCard(ctx);
         /*
          * No clear, no overlay. Drawing the list into a frame we may not blank
          * would leave it interleaved with the grid underneath -- two screens at
@@ -3748,6 +3826,57 @@ export function createController(io = {}) {
             footer: [["TURN", "SET"]],
         });
         return true;
+    }
+
+    /*
+     * THE CARD A MODULE DRAWS WHILE ITS KNOB IS TURNED.
+     *
+     * Same overlay slot as the peek and the opposite kind of screen: it FLOATS,
+     * so the page stays readable around it. That is why it is not gated on
+     * `clearScreen` the way the peek is -- it blanks only its own rect (see
+     * param_card.mjs) and therefore draws correctly for an embedded consumer
+     * that owns no frame at all.
+     *
+     * The peek wins when both could show. A card is an aid to reading one
+     * value; the peek is the list of values you are moving between, and the
+     * detent that raised it has already written.
+     *
+     * NO TIMER OF ITS OWN. `s.touched` is already "the knob being held, or the
+     * one just turned": held sets turnClaimMs to 0 so it never expires, a
+     * release clears it at once, and a turn no finger registered on expires
+     * through TURN_CLAIM_MS. That is the law every other follow-the-knob
+     * surface here obeys, and a second one would drift from it.
+     */
+    function drawDeclaredCard(ctx) {
+        if (!ctx) return false;
+        const slot = s.touched;
+        if (slot === undefined || slot === null || slot < 0) return false;
+        const meta = metaAt(slot);
+        const draw = cardFnFor(meta);
+        if (!draw) return false;
+        const key = keyAt(slot);
+        if (!key) return false;
+        return drawParamCard(ctx, {
+            meta,
+            draw,
+            name: meta && (meta.name || meta.label) ? (meta.name || meta.label) : key,
+            /* The SAME reading the header would show, through the one
+             * formatter -- a card that spelled a value differently from the
+             * strip above it would be a second formatter by another name. */
+            value: knobRowValue(key),
+            raw: s.values[key] === undefined ? null : s.values[key],
+            /*
+             * ONE STRIKE. A drawer that threw is retired for the session rather
+             * than re-entered up to sixty times a second, and the parameter
+             * falls back to the ordinary page -- which is what a host too old
+             * to know the field shows anyway, so the degraded state is one we
+             * already ship.
+             */
+            onError: () => {
+                const spec = cardSpec(meta);
+                if (spec) s.cardFns[spec.spec] = null;
+            },
+        });
     }
 
     let vizCache = null;

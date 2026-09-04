@@ -16727,6 +16727,90 @@ function resolveCanvasScriptPath(meta) {
     };
 }
 
+/*
+ * A CARD script's path, resolved against the loaded module.
+ *
+ * The same join resolveCanvasScriptPath makes, without the canvas's spelling
+ * variants: a card names one file and one export, and the fragment has already
+ * been split off by the controller. Returns "" when the module declares a file
+ * it did not ship, which the caller reads as "no card" — a missing file is a
+ * module bug, not a reason to fail a page.
+ */
+/*
+ * Evaluate a card script and return its named export.
+ *
+ * ⚠ NOT loadCanvasOverlayScript, and the difference is not cosmetic. That
+ * resolves a canvas OVERLAY OBJECT, and resolveOverlayObject treats a function
+ * as a FACTORY — it CALLS the candidate and keeps the object it returns. A card
+ * export is a plain drawer, so routing it through there invoked it with no
+ * arguments, it threw on the rect it was not given, and the loader reported
+ * "overlay factory returned invalid value" and answered null. The controller
+ * cached that null exactly as designed and the knob had no picture, with no
+ * error anywhere. It only showed up on one of the two consumers, because the
+ * other supplies its own loader.
+ *
+ * A card is a FUNCTION. Take it as one.
+ *
+ * The saved/restored names are the module globals a UI script may assign, plus
+ * the card's own export — which is arbitrary, so it has to be saved by name.
+ * shadow_load_ui_module evaluates into the shared globalThis, and clobbering
+ * init/tick there is how the host stops ticking.
+ */
+function loadCardDrawer(scriptPath, exportRef) {
+    if (!scriptPath || !exportRef) return null;
+    if (typeof shadow_load_ui_module !== "function") return null;
+
+    const NAMES = ["init", "tick", "onMidiMessageInternal", "onMidiMessageExternal",
+                   exportRef];
+    const had = {}, saved = {};
+    for (const n of NAMES) {
+        had[n] = Object.prototype.hasOwnProperty.call(globalThis, n);
+        saved[n] = globalThis[n];
+    }
+
+    let out = null;
+    try {
+        if (shadow_load_ui_module(scriptPath)) {
+            const fn = globalThis[exportRef];
+            if (typeof fn === "function") out = fn;
+        }
+    } catch (e) {
+        out = null;
+    } finally {
+        for (const n of NAMES) {
+            if (had[n]) globalThis[n] = saved[n];
+            else { try { delete globalThis[n]; } catch (e) {} }
+        }
+    }
+    return out;
+}
+
+function resolveCardScriptPath(slot, component, scriptRef) {
+    if (!scriptRef) return "";
+    if (scriptRef.startsWith("/")) {
+        return moduleFileExists(scriptRef) ? scriptRef : "";
+    }
+    /*
+     * ⚠ RESOLVED FROM THE SLOT AND COMPONENT THE GRID IS ON, never from
+     * getHierarchyActiveModuleId().
+     *
+     * That reads hierEditorSlot / hierEditorComponent — the LIST editor's
+     * state, which is stale or empty while the knob grid is up, the same
+     * hazard the binding documents for `visible`. Using it resolved to "" on a
+     * grid entered without the list editor, so the card silently never loaded:
+     * no error, a cached null, and a knob that simply had no picture. It
+     * worked in one consumer and not the other for exactly this reason, which
+     * is what a single-host test would have missed.
+     */
+    const prefix = getComponentParamPrefix(component);
+    if (!prefix || slot < 0) return "";
+    const moduleId = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleDir = getModuleBasePath(moduleId);
+    if (!moduleDir) return "";
+    const scriptPath = `${moduleDir}/${scriptRef}`;
+    return moduleFileExists(scriptPath) ? scriptPath : "";
+}
+
 function loadCanvasOverlayScript(scriptPath, overlayRef) {
     if (!scriptPath || typeof shadow_load_ui_module !== "function") {
         return { overlay: null, error: "canvas script unavailable" };
@@ -20327,6 +20411,25 @@ function drawHelpDetail() {
         return (c && c.key) ? c.key : null;
     };
     _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
+    /*
+     * Load a module-supplied CARD DRAWER, for a parameter that declared one.
+     *
+     * The library cannot read a file and must not try, so this is injected the
+     * same way isParamModulated is. It resolves the script against the module
+     * that is actually loaded — the same base path the fullscreen canvas uses —
+     * and returns the named export, or null.
+     *
+     * ⚠ CALLED FROM THE GESTURE, NEVER FROM THE DRAW. page_controller warms it
+     * on touch and on turn and caches the answer, including a null. No module
+     * script is resident while the grid is up and shadow_load_ui_module has no
+     * cache of its own, so a load from the draw path would evaluate the script
+     * on every frame of a knob turn.
+     */
+    _ctx.loadCardScript = (slot, component, scriptPath, exportRef) => {
+        if (!scriptPath || !exportRef) return null;
+        return loadCardDrawer(
+            resolveCardScriptPath(slot, component, scriptPath), exportRef);
+    };
     _ctx.isMuteHeld = () => hostMuteHeld;
 
     /* Overtake session state (for tools menu "Resume" indicator) */

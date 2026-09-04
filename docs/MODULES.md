@@ -1831,6 +1831,66 @@ the gate is off. A `module.json` shipped without its `.so` still appears in the
 FX picker, and a chain slot pointing at a module that cannot load is restored on
 every boot. `tests/host/test_test_fixtures_not_shipped.sh` pins both halves.
 
+#### The parameter card (`card_script`)
+
+A `drawCell` widget replaces one cell's graphic. A **card** is the other surface:
+a picture that floats over the whole page while a knob is held or has just been
+turned, and is gone the moment you let go. Use it when a value needs more room
+than a 17×15 box — a crossfade sitting between two named anchors, a feedback
+amount that computes to a repeat count, a mode whose meaning is a diagram.
+
+Declare it on the parameter, in the same `chain_params` entry the rest of the
+knob comes from:
+
+```json
+{ "key": "blend", "name": "Blend", "type": "float", "min": 0, "max": 1,
+  "card_script": "cards.js#blend_card", "card_w": 96, "card_h": 44 }
+```
+
+- `card_script` (required to get a card): `file.js#exportName`, spelled exactly
+  like `canvas_script`. The file is resolved from the module root, and the
+  export is looked up on `globalThis`.
+- `card_w` / `card_h` (optional): the size you want, in pixels. Defaults are
+  96×34; anything nonsense (zero, negative, NaN, a string) falls back to the
+  default, and anything larger than the panel is clamped to it.
+
+Then export the drawer:
+
+```javascript
+globalThis.blend_card = function (ctx, o) {
+    ctx.print(1, 0, o.name, 1);
+    ctx.print(o.w - 1 - ctx.textWidth(o.value), 0, o.value, 1);
+    const v = Number(o.raw);
+    if (isFinite(v)) ctx.fillRect(0, 12, Math.round(o.w * v), 6, 1);
+};
+```
+
+**The card is not the screen, exactly as a widget's cell is not.** `(0,0)` is the
+inside of the card — the host has already cleared it and drawn its border — and
+`ctx.width` / `ctx.height` (also `o.w` / `o.h`) are that inside, not the display.
+There is no accessor that reaches absolute space and nothing you draw outside
+the card can land, which matters twice here: the size is per parameter, so
+coordinates authored against one card are wrong on the next, and a card that
+could paint past its own border would eat the page it exists to float over.
+**Size everything against `o.w` / `o.h`; never write a fixed screen offset.**
+
+**You get the value; you cannot read it.** `o.name` is the parameter's name,
+`o.value` is the same formatted reading the header would show, and `o.raw` is
+the wire value — **and `o.raw` may be `null`**, meaning the module did not answer
+that read. Draw a word and stop when it does; a read that did not answer must
+never become a picture. There is no `getParam` on this path (~2.8 ms, against a
+1.68 ms whole-page render).
+
+**One strike.** A drawer that throws is retired for the session, the card is
+left as an empty frame rather than a hole, and the parameter goes back to
+drawing like any other — which is also what a host too old to know `card_script`
+shows, so the degraded state is one you already ship.
+
+**Keep the card file small and separate from `canvas.js`.** The host evaluates
+the script on the first touch of a declaring knob. If your bank editor lives in
+the same file, that whole file is evaluated on a gesture to reach one drawing
+function.
+
 #### Dynamic Target Pickers
 
 Use `module_picker` and `parameter_picker` for chain-aware target routing without custom UI code.
