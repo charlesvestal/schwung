@@ -13997,6 +13997,12 @@ let _voiceFollowTickCounter = 0;
 const VOICE_FOLLOW_CHECK_INTERVAL = 8;   /* ~7x/sec at 60fps */
 
 function syncHierEditorVoice() {
+    /* NEVER while the knob grid is up. The grid runs its own follow inside
+     * page_controller, and two followers on one screen is the two-live-sources
+     * defect wearing a different hat -- they would fight over the same focus
+     * on alternate polls. The grid and the list can share a view id, so
+     * paramPagesActive() is the honest test, not the view. */
+    if (paramPagesActive()) return;
     if (view !== VIEWS.HIERARCHY_EDITOR) return;
     if (!hierEditorHierarchy || hierEditorSlot < 0) return;
     /* Editing a value, or picking from a list, is not a moment to be moved. */
