@@ -11,7 +11,7 @@
  * LAYOUT IS DECLARED, NEVER INFERRED. The obvious shortcut — "it has notes on
  * its pages, so it is drums" — is wrong: a sampler with key zones, a
  * multitimbral synth and a chord module all legitimately carry notes on
- * per-zone pages, and inference would seat them as racks. So `layout` is its
+ * per-zone pages, and inference would seat them as racks. So `pad_layout` is its
  * own statement, and ABSENT IS A THIRD STATE meaning the module has not said.
  * All 100 captured fleet modules are in that state; answering "chromatic" for
  * them would put words in their mouth and make "declared melodic"
@@ -42,8 +42,8 @@ const LAYOUTS = ["drums", "chromatic"];
  * Null for absent, for a non-string, and for a string we do not recognise —
  * an unknown value is an unanswered question, not a licence to pick a default.
  */
-export function layoutOf(hierarchy) {
-    const v = hierarchy && hierarchy.layout;
+export function padLayoutOf(hierarchy) {
+    const v = hierarchy && hierarchy.pad_layout;
     return (typeof v === "string" && LAYOUTS.indexOf(v) >= 0) ? v : null;
 }
 

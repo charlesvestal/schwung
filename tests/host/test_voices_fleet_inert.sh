@@ -43,11 +43,11 @@ import("./src/shared/param_pages/voices.mjs").then(async (V) => {
     }
     /* A null hierarchy is NOT skipped. 13 of these modules genuinely declare
      * none (the fixture records null for exactly that), and they are the ones
-     * most at risk from a defaulting layoutOf: with nothing to read, a
+     * most at risk from a defaulting padLayoutOf: with nothing to read, a
      * coercing implementation answers "chromatic" for all of them. So they are
      * checked like any other, and they are why the count here is 100. */
     checked++;
-    const layout = V.layoutOf(h);
+    const layout = V.padLayoutOf(h);
     if (layout !== null) declared.push(m.id + "=" + layout);
     const vs = V.voicesOf(h);
     if (vs.length) voiced.push(m.id + "(" + vs.length + ")");

@@ -33,29 +33,29 @@ Promise.all([
 
   /* ---- layout is declared, never inferred ---------------------------- */
 
-  if (V.layoutOf({ layout: "drums", levels: {} }) !== "drums")
+  if (V.padLayoutOf({ pad_layout: "drums", levels: {} }) !== "drums")
     fail("declared drums not reported");
-  if (V.layoutOf({ layout: "chromatic", levels: {} }) !== "chromatic")
+  if (V.padLayoutOf({ pad_layout: "chromatic", levels: {} }) !== "chromatic")
     fail("declared chromatic not reported");
   /* Absent is a THIRD state. Answering "chromatic" here puts words in the
    * mouth of all 100 fleet modules, and makes "declared melodic"
    * indistinguishable from "never asked". */
-  if (V.layoutOf({ levels: {} }) !== null)
+  if (V.padLayoutOf({ levels: {} }) !== null)
     fail("absent layout did not report null");
-  if (V.layoutOf(null) !== null)
+  if (V.padLayoutOf(null) !== null)
     fail("null hierarchy did not report null");
   /* An unrecognised value is unspecified, not a default. */
-  if (V.layoutOf({ layout: "isomorphic", levels: {} }) !== null)
+  if (V.padLayoutOf({ pad_layout: "isomorphic", levels: {} }) !== null)
     fail("unrecognised layout was coerced instead of reported unspecified");
   /* Notes present, layout absent -> still unspecified. This is the melodic
    * per-zone module, and inferring drums here is the bug this asserts. */
-  if (V.layoutOf({ levels: { zone_a: { note: 60 }, zone_b: { note: 62 } } }) !== null)
+  if (V.padLayoutOf({ levels: { zone_a: { note: 60 }, zone_b: { note: 62 } } }) !== null)
     fail("layout was inferred from the presence of notes");
 
   /* ---- the sibling shape (9W9) --------------------------------------- */
 
   const SIBLING = {
-    layout: "drums",
+    pad_layout: "drums",
     levels: {
       root: { params: [
         { level: "bass_drum", label: "Bass Drum" },
@@ -92,7 +92,7 @@ Promise.all([
   /* ---- the template shape (mrdrums) ---------------------------------- */
 
   const TEMPLATE = {
-    layout: "drums",
+    pad_layout: "drums",
     levels: {
       root: { params: [{ level: "pads", label: "Pads" }] },
       pads: {
@@ -186,7 +186,7 @@ Promise.all([
    * at two sets of indices. The voice index is the identity here, so a doubled
    * list means two consumers disagree about which pad is which. */
   {
-    const SELF = { layout: "drums", levels: {
+    const SELF = { pad_layout: "drums", levels: {
       root: { name: "Home", note: 36, params: [{ level: "root", label: "Home" }] },
     } };
     const s = V.voicesOf(SELF);
@@ -194,7 +194,7 @@ Promise.all([
       fail("a root self-link duplicated the root voices: got " + s.length + ", want 1");
 
     /* And the same for a rack at root, which is the real mrdrums shape. */
-    const SELFRACK = { layout: "drums", levels: {
+    const SELFRACK = { pad_layout: "drums", levels: {
       root: {
         child_count: 4, child_label: "Pad", child_key_template: "p{index}_{key}",
         child_note_base: 36, params: [{ level: "root", label: "Home" }],
@@ -214,7 +214,7 @@ Promise.all([
    * list said "bd", for the same thing. Same class as the childVoiceName
    * duplication already collapsed on this branch. */
   {
-    const H = { layout: "drums", levels: {
+    const H = { pad_layout: "drums", levels: {
       root: { params: [
         { level: "bd", label: "Bass Drum" },
         { level: "sd", label: "Nav Snare" },
@@ -258,7 +258,7 @@ Promise.all([
    * a module wanting its own order LINKS the levels from root, where an array
    * keeps declared order verbatim. */
   {
-    const NUM = { layout: "drums", levels: {
+    const NUM = { pad_layout: "drums", levels: {
       root: {},
       "10": { note: 46 }, "2": { note: 38 }, "1": { note: 36 }, zz: { note: 60 },
     } };
@@ -307,7 +307,7 @@ Promise.all([
    * BEFORE the rack is what separates them, and it is also the real shape:
    * 9W9 has eleven sibling voices, and a module may well have both. */
   const MIXED = {
-    layout: "drums",
+    pad_layout: "drums",
     levels: {
       root: { params: [{ level: "kick" }, { level: "pads" }] },
       kick: { name: "Kick", note: 36, knobs: ["tune"] },
@@ -345,7 +345,7 @@ Promise.all([
   {
     const pl = PLAN.planPages({
       hierarchy: {
-        layout: "drums",
+        pad_layout: "drums",
         levels: {
           root: { params: [{ level: "pads", label: "Pads" }] },
           pads: {
@@ -409,7 +409,7 @@ Promise.all([
     /* Undeclared, it must stay silent: this is the inertness rule per-module. */
     if (V.voicesOf(md.ui_hierarchy).length !== 0)
       fail("undeclared mrdrums reported voices");
-    if (V.layoutOf(md.ui_hierarchy) !== null)
+    if (V.padLayoutOf(md.ui_hierarchy) !== null)
       fail("undeclared mrdrums reported a layout");
 
     /* Declared exactly as a fleet PR would: a layout and a note base. */
@@ -429,7 +429,7 @@ Promise.all([
 
   /* READ THE FILE, not three stringified exports.
    *
-   * This block used to stringify voicesOf/layoutOf/voiceIndexFromNote and
+   * This block used to stringify voicesOf/padLayoutOf/voiceIndexFromNote and
    * grep for getParam|setParam|host_. Two holes, both proven by injection:
    * the private helpers were not covered at all, and this codebase binding is
    * `shadow_get_param`, which none of those three patterns match. A real param

@@ -1674,9 +1674,9 @@ export function createController(io = {}) {
      * mrdrums' auto-select), and the disagreement LATCHES, because each source
      * keeps re-asserting itself on the next rotation.
      *
-     * `layoutOf` is deliberately not imported. The grid follows whatever
-     * voices are declared and does not branch on layout; having the name in
-     * scope invites an `if (layout !== "drums") return`, which would silently
+     * `padLayoutOf` is deliberately not imported. The grid follows whatever
+     * voices are declared and does not branch on pad_layout; having the name in
+     * scope invites an `if (pad_layout !== "drums") return`, which would silently
      * stop following for every module that declares voices before it has
      * settled its layout.
      *

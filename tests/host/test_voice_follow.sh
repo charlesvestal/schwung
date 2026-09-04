@@ -53,7 +53,7 @@ Promise.all([
    * deliberately: two levels sharing one key collapse into a single planned
    * page, and then there would be no second page to move TO. */
   const SIBLING = {
-    layout: "drums",
+    pad_layout: "drums",
     focus_param: "cur_voice",
     levels: {
       root:   { params: [{ level: "kick",  label: "Kick" },
@@ -293,7 +293,7 @@ Promise.all([
    * still leaves two live sources one edit away. */
   const mkPads = (extra) => {
     const h = {
-      layout: "drums",
+      pad_layout: "drums",
       levels: {
         root: { params: [{ level: "pads", label: "Pads" }] },
         pads: {
