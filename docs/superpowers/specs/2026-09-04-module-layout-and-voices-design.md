@@ -248,19 +248,27 @@ Contract, host side, docs and tests land here. Fleet PRs follow module by module
 mrdrums (template shape) and 9W9 (sibling shape) first as the two proofs. Movy
 drops a bundled config as each module declares.
 
-**The sibling-shape modules publish no hierarchy at all**, which is a bigger lift
-than it looked. Measured against `tests/fixtures/module-contracts.json`: 13 of the
-100 captured modules answer `ui_hierarchy: null`, and they include **9w9, 6w6,
-8w8 and po32-drum** — precisely movy's `OVERRIDES_MODULE_FILE` list plus its
-libpo32 config. So for those, declaring a layout means publishing a `ui_hierarchy`
-for the first time, not adding a field to one. That is why the POC module in the
-plan is the proof rather than a fleet module: there is no sibling-shape module in
-the fleet whose hierarchy we could extend today.
+**Most modules already publish a hierarchy, and the fixture is not the way to
+find out.** An earlier revision of this section claimed the opposite — that 9w9,
+6w6, 8w8 and po32-drum "publish no hierarchy at all" — on the strength of 13
+`ui_hierarchy: null` entries in `tests/fixtures/module-contracts.json`. That was
+wrong, and wrong in this design's own signature way: **a capture that timed out
+is written down as `null`, which is indistinguishable from a genuine absence**
+unless you go and look. `CLAUDE.md` says the fixture records `null` for the
+*four* modules that genuinely declare none, and it is right.
 
-It also explains the override list's existence from the other end. Those modules
-describe themselves only to movy, in `movy_config.json`, because Schwung offered
-them nothing to describe themselves *with* — and a private format with one
-consumer is what drifts until a 4-module exception list is needed to correct it.
+Asked of the binaries instead — `strings dsp.so | grep '"levels"'` over the
+installed fleet — **39 of 51 sound generators serve a `ui_hierarchy`**, 9w9,
+6w6 and 8w8 among them. 9w9's is exactly the sibling shape this design was built
+around: `bd` "Bass Drum", `sd` "Snare" and the rest, each with its own eight
+knobs and named params, alongside Reverb / Delay / Main. Declaring a layout
+there is adding `pad_layout` and one `note` per voice level — not publishing a
+contract from scratch.
+
+The moral is the one the whole design turns on, arriving one level up than
+expected: **a failed read must not be recorded as an answer.** The capture tool
+does exactly that, so every count taken from the fixture's nulls is a floor and
+never a fact.
 
 ## Risks
 
