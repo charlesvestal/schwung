@@ -1975,6 +1975,116 @@ Behavior notes:
 - Set `show_value: false` for button-style canvas entries that should not show a value.
 - The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
 
+#### Custom widgets (`drawCell`)
+
+A canvas overlay can also draw **inside a knob cell**, not only fullscreen. Same
+file, same hooks object, two scales: `drawCell` paints one knob box in the grid,
+and `draw` paints the fullscreen view you dive into from that same cell.
+
+Declare the kind in `chain_params`, on the existing `viz` field — `viz` is an
+object, so the namespace goes on its `kind`:
+
+```json
+{ "key": "drive", "name": "Drive", "type": "float",
+  "viz": { "kind": "custom:mymeter" } }
+```
+
+Grouped widgets work exactly as built-in ones do; the kind may sit on any member:
+
+```json
+{ "key": "x", "name": "X", "type": "float", "viz": { "group": "pad", "role": "x", "kind": "custom:xy" } },
+{ "key": "y", "name": "Y", "type": "float", "viz": { "group": "pad", "role": "y" } }
+```
+
+Then export three things from your `canvas.js` overlay:
+
+```javascript
+globalThis.canvas_overlay = {
+    widgetKind: "custom:mymeter",
+    widgetNominal: { w: 17, h: 15 },   // optional; only sprites need it
+
+    drawCell(ctx, { values, group, metaIndex, anim, nowMs, baseValues }) {
+        const v = Number(values[group.keys[0]]) || 0;
+        ctx.fillRect(0, 0, Math.round(ctx.width * v), ctx.height, 1);
+    },
+
+    draw(ctx) { /* the fullscreen view, as before */ },
+};
+```
+
+**The frame is not the screen.** `(0,0)` is your knob box's top-left and
+`ctx.width` / `ctx.height` are the box's, not the display's. There is no accessor
+that reaches absolute coordinates, and anything you draw outside the frame is
+clipped away. Size everything against `ctx.width`/`ctx.height`: the same widget
+is handed at least sixteen different frame sizes across the two renderers,
+because the grid's row height is dynamic and a group near the right edge is
+clamped.
+
+**You get values; you cannot read them.** `drawCell`'s ctx has no `getParam` —
+values arrive in the `values` argument. A param read is ~2.8 ms against a
+1.68 ms whole-page render, so one read costs more than redrawing the entire
+screen. (The same restriction applies to a fullscreen `draw` and to `tick`.)
+
+**The label is not yours.** Schwung keeps drawing every cell's label, so a page
+mixing custom and built-in cells stays consistent.
+
+**One strike.** If `drawCell` throws, that widget is disabled for the session,
+the throw is logged, and the built-in widget draws in its place — the page stays
+correct rather than showing a hole.
+
+**An unknown kind degrades, it does not fail.** A host that has never heard of
+your `custom:` name simply doesn't claim those keys, so the built-in draws. That
+is what makes a module shipping custom widgets safe on an older Schwung.
+
+##### Generating a widget from sprite art (no JavaScript)
+
+If your widget is a lookup — a value picks one of N pictures — you don't have to
+write the drawing code. Describe the frames and run the generator:
+
+```json
+{
+  "kind": "custom:mymeter",
+  "nominal": { "w": 17, "h": 15 },
+  "frames": [
+    { "atMost": 0.5, "rows": ["#####............", "..."] },
+    { "atMost": 1.0, "rows": ["#################", "..."] }
+  ]
+}
+```
+
+```bash
+node tools/param-pages/widget_gen.mjs widgets.json > widgets.mjs
+```
+
+`rows` is `#` for a set pixel and anything else for clear. **Every frame must
+match `nominal` exactly** — 1-bit art is never rescaled (it dithers into mush),
+so a mismatched frame cannot be corrected at runtime and the generator refuses
+it on your machine instead. Output is run-length encoded because a page holds
+eight knob boxes: per-pixel blitting would cost ~1 ms of the 1.68 ms page render.
+
+##### The reference module
+
+`src/modules/audio_fx/widget-test/` is a working example: one `canvas.js`
+supplying both a `drawCell` segmented meter and the fullscreen `draw`, plus a
+passthrough DSP so it is a real, loadable chain FX.
+
+**It does not ship.** Like `gesture-test` and `sysex-test` it is a hardware
+fixture, built and packaged only on request:
+
+```bash
+SCHWUNG_BUILD_TEST_MODULES=1 ./scripts/build.sh
+./scripts/install.sh local --skip-modules --skip-confirmation
+```
+
+Then add **Widget Test** as an audio FX and look at the Level knob.
+
+Note that the gate covers both halves. Compiling the `.so` conditionally is not
+enough on its own — `build.sh`'s generic copy step collects every `module.json`
+under `src/modules/`, so a fixture also has to be scrubbed from `build/` when
+the gate is off. A `module.json` shipped without its `.so` still appears in the
+FX picker, and a chain slot pointing at a module that cannot load is restored on
+every boot. `tests/host/test_test_fixtures_not_shipped.sh` pins both halves.
+
 #### Dynamic Target Pickers
 
 Use `module_picker` and `parameter_picker` for chain-aware target routing without custom UI code.

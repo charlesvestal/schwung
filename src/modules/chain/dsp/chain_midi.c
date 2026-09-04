@@ -7,6 +7,7 @@
 #include "chain_internal.h"
 #include "chain_pre_inject.h"
 #include "chain_midi_chain.h"
+#include "relative_cc.h"
 
 /* Clock availability state for sync-aware MIDI FX (arp, etc.). */
 static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
@@ -824,27 +825,25 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     float base_step = (pinfo->step > 0) ? pinfo->step
                         : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
 
-                    /* Relative, two's complement 7-bit: 1..63 is +1..+63
-                     * detents, 127..65 is -1..-63. Move's own knobs only ever
-                     * send +/-1, so decoding only those was sufficient for Move
-                     * and silently wrong for everything else: an accelerated
-                     * encoder (OXI E16, and most endless controllers) reports
-                     * how many detents passed since the last message, so every
-                     * fast turn fell into the else and was dropped. The control
-                     * worked when crept and died when played. 0 is not a
-                     * movement, and 64 is the unusable midpoint. */
-                    if (msg[2] == 0 || msg[2] == 64) return;
-                    int ticks = (msg[2] < 64) ? (int)msg[2] : (int)msg[2] - 128;
+                    /* Two's complement 7-bit, decoded in relative_cc.h so
+                     * tests/host can run it — chain_midi.c itself cannot be
+                     * compiled natively, so a source-level pin here could not
+                     * tell 4 base steps from 8. 0 and the unused midpoint 64
+                     * both come back as no movement. */
+                    int ticks = relative_cc_ticks((int)msg[2]);
+                    if (ticks == 0) return;
                     int mag = (ticks < 0) ? -ticks : ticks;
 
-                    /* An encoder reporting more than one detent has already
-                     * done the accelerating; applying the time-based multiplier
-                     * on top would compound them. Enums never accelerate (see
-                     * the cap above), so they advance one option per message. */
-                    if (pinfo->type == KNOB_TYPE_ENUM) mag = 1;
-                    else if (mag > 1) accel = KNOB_ACCEL_MIN_MULT;
+                    /* The LARGER of the detent count and the time-based
+                     * multiplier, never the product: a plain encoder always
+                     * says one detent so `accel` is its only speed signal,
+                     * while an accelerated encoder batches detents so `mag`
+                     * already IS the acceleration. Enums fall out of this
+                     * without a special case, because `accel` was pinned to
+                     * KNOB_ACCEL_ENUM_MULT above. See relative_cc.h. */
+                    int mult = relative_cc_multiplier(mag, accel);
 
-                    float delta = base_step * (float)accel * (float)mag;
+                    float delta = base_step * (float)mult;
                     if (ticks < 0) delta = -delta;
 
                     float new_val = inst->knob_mappings[i].current_value + delta;

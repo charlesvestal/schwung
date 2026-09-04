@@ -536,6 +536,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.
+- **A module-supplied widget draws into a FRAME and cannot name a screen pixel** —
+  the rect varies sixteen ways (`cellW` is caller-dependent, `rowH` is dynamic and
+  picks the render mode, a right-edge span is clamped). An unknown `custom:` kind
+  falls through by **not claiming its keys**, one branch covering a typo, a failed
+  load, an older host and a one-strike disable. Guarding in the shared walk
+  instead of the singles branch silently yields a THREE-cell envelope with a key
+  orphaned.
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
