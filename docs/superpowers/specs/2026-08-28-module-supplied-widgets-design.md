@@ -23,7 +23,7 @@ not one gap.
 
 ### `canvas` is a complete runtime, and it is the good one
 
-`shadow_ui.js:15186` (`createCanvasRuntimeContext`) and its surroundings implement:
+`shadow_ui.js:16517` (`createCanvasRuntimeContext`) and its surroundings implement:
 
 - script path resolved from `module.json` via `canvas_script`, supporting
   `file.js#overlay_name` specs, with `canvas_overlay` / `canvas_target` /
@@ -31,8 +31,8 @@ not one gap.
 - overlay object resolution against `globalThis.canvas_overlay` or
   `globalThis.canvas_overlays`;
 - lifecycle hooks `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`,
-  invoked as `fn(canvasRuntime.ctx, payload)` at `:15236`;
-- a per-hook `try/catch` recording `canvasRuntime.error` at `:15242`;
+  invoked as `fn(canvasRuntime.ctx, payload)` at `:16566`;
+- a per-hook `try/catch` recording `canvasRuntime.error` at `:16573`;
 - a drawing context exposing `width`, `height`, `state`, `clear`, `setPixel`,
   `drawRect`, `fillRect`, `drawLine`, `print`, `now`, `random`, `getValue`,
   `setValue`, `getParam`, `setParam`, `sourcePath`.
@@ -47,7 +47,7 @@ C-only author's build step just ships one more file.
 its own art *in a cell*. Between "pick one of eight built-in `viz` kinds" and "take
 over the entire screen" there is nothing.
 
-`viz.mjs:19` documents this slot as knowingly empty:
+`viz.mjs:13` documents this slot as knowingly empty:
 
 > `module chain_params viz → module layout file → host override → detector → none`
 > …"module layout file" is the still-open, undesigned mechanism… zero fleet modules
@@ -106,7 +106,7 @@ second, worse answer to a solved problem. **"Whole page" is spelled
 ### Claim sizes
 
 **Group and row only.** A custom widget lives under exactly the rules built-in viz
-groups already follow: contiguous, within a single row (`viz.mjs:66` — a graphic
+groups already follow: contiguous, within a single row (`viz.mjs:76` — a graphic
 cannot span the header gap), and reflowed by `alignGroupsToRows`, which already
 moves 24 fleet pages to keep that true. No new layout rules to design or test.
 
@@ -125,9 +125,9 @@ is unstable in three independent ways:
   selects the entire render mode from that height: `dial` at full height, then a
   shrinking radius, then `bar-value`, `bar-label`, `bar-only`.
 - `render_page_movy.mjs` — `CELL_W = 32` fixed, height `LBL0_Y - ROW0_Y` = **15**,
-  with the comment at `:2123` warning that 15 is only correct because both of that
+  with the comment at `:2428` warning that 15 is only correct because both of that
   grid's gaps happen to be 15px.
-- `render_page.mjs:670` — `w: cellW * Math.min(g.slotSpan, COLS - col)`. A two-slot
+- `render_page.mjs:671` — `w: cellW * Math.min(g.slotSpan, COLS - col)`. A two-slot
   group near the right edge is silently **clamped** to less width than it declared.
 
 So the same widget can be handed 32×15, a taller dial-mode row, a squashed bar-only
@@ -195,7 +195,7 @@ parser, no runtime validator, no second file format to version.
 A QuickJS binding costs roughly 490 ns — measured previously when the draw path was
 profiled, and the reason `PARAM_PAGES.md` says not to optimise draw calls.
 
-A knob box is `KW = 17` wide (`render_page_movy.mjs:606`) by roughly 15 tall, so a
+A knob box is `KW = 17` wide (`render_page_movy.mjs:677`) by roughly 15 tall, so a
 sprite filling one is ~255 pixels. Blitted per pixel that is 255 calls ≈ **125 µs**,
 against a 1.68 ms page render — and a page can hold **eight** of them, which is
 1 ms, over half the render, before anything else is drawn. Run-length encoding the
@@ -244,14 +244,17 @@ avoids for the new path. Fixing only the new path would leave the old one
 idiomatic-but-wrong.
 
 **`ctx.getParam()` is a synchronous param read available on the draw path**
-(`shadow_ui.js:15219`). An overlay calling it inside `draw` pays a ~2.8 ms IPC
+(`shadow_ui.js:16550`). An overlay calling it inside `draw` pays a ~2.8 ms IPC
 round-trip *per frame* — an IPC read costs more than redrawing the entire screen
 (1.68 ms). Removing it from the rect-scoped ctx is part of the design above; the
 fullscreen path needs the hazard documented and a values-in path offered.
 
-**The `try/catch` at `:15242` records the error but never disables.** A throwing
-overlay therefore throws every frame, forever, flooding the log and burning the
-frame budget. One-strike disable applies to both paths.
+**The `try/catch` at `:16573` records the error, logs, and then returns `true`.**
+So a throwing overlay throws every frame, forever, flooding the log and burning
+the frame budget — *and tells its caller it succeeded*. That second half is the
+same defect class as `move_midi_internal_send` returning true on a discarded
+write (`CLAUDE.md`, Overtake Modules): the failure is reported as success at the
+boundary, so no caller can react to it. One-strike disable applies to both paths.
 
 These may reasonably ship ahead of the widget seam as their own change.
 
@@ -265,11 +268,11 @@ Named against real functions, not invented ones.
   Custom kinds resolve here, returning groups whose `kind` carries a custom
   identifier. Precedence is the existing chain, with custom widgets filling the
   documented-but-empty "module layout file" slot.
-- **`viz_draw.mjs` — `drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues)` (`:1687`).**
+- **`viz_draw.mjs` — `drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues)` (`:1717`).**
   Dispatch is `const fn = DRAW[group.kind]`. Extending that registry is the whole
   draw-path change; everything downstream — cell coverage, one-mark-per-graphic,
   `alignGroupsToRows`, `vizDiveTarget` — then works unmodified.
-- **Call sites** are `render_page.mjs:668` and `render_page_movy.mjs:2131`. Both
+- **Call sites** are `render_page.mjs:668` and `render_page_movy.mjs:2436`. Both
   already pass a rect; neither needs to change.
 - **`validate_contract.mjs`** gains validation for the custom-kind declaration.
 - **`tools/param-pages/widget_sheet.mjs`** — the widget reference in
@@ -328,7 +331,7 @@ Named against real functions, not invented ones.
 
 ### 10.1 Naming — reuse `viz`, namespaced `custom:<name>`
 
-`viz` is an **object**, not a string — `viz.mjs:180` returns early on anything that
+`viz` is an **object**, not a string — `viz.mjs:213` returns early on anything that
 is not one, and the declared form is `{ group, role, kind, span }`:
 
 ```json
@@ -354,7 +357,7 @@ separate field would let a param declare both a built-in `viz` and a custom widg
 and leave the precedence between them undefined at the declaration site, which is
 the sort of thing that gets resolved differently by two call sites a year apart.
 
-It also lands in the right precedence slot. `viz.mjs:19`'s chain is *declared viz →
+It also lands in the right precedence slot. `viz.mjs:13`'s chain is *declared viz →
 module layout file → host override → detector → none*, and `custom:` is the author
 saying what this is, which is the **declared** slot. The "module layout file" slot
 stays empty; this design does not build one.
@@ -373,7 +376,7 @@ added.
 
 ### 10.2 `ui_chain.js` modules — no, and the reason is structural
 
-Not a policy choice. `enterComponentEdit` (`shadow_ui.js:11994`) tries the
+Not a policy choice. `enterComponentEdit` (`shadow_ui.js:13322`) tries the
 **hierarchy editor first**, and only falls through to `loadModuleUi` →
 `VIEWS.COMPONENT_EDIT` when the component publishes **no `ui_hierarchy`**.
 

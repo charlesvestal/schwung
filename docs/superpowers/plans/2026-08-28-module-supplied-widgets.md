@@ -50,9 +50,9 @@ Task 1 is independent of the feature and shippable alone — it fixes two live d
 
 | File | Change |
 |---|---|
-| `src/shadow/shadow_ui.js:15186` | `createCanvasRuntimeContext` — remove `getParam`/`getValue` from the cell path; add one-strike to `invokeCanvasHook`. |
-| `src/shared/param_pages/viz.mjs:170` | `collectDeclared` — a `custom:` kind claims its keys only when registered. |
-| `src/shared/param_pages/viz_draw.mjs:1687` | `drawVizGroup` — dispatch `custom:` kinds through the registry. |
+| `src/shadow/shadow_ui.js:16517` | `createCanvasRuntimeContext` — remove `getParam`/`getValue` from the cell path; add one-strike to `invokeCanvasOverlayHook`. |
+| `src/shared/param_pages/viz.mjs:203` | `collectDeclared` — a `custom:` kind claims its keys only when registered. |
+| `src/shared/param_pages/viz_draw.mjs:1717` | `drawVizGroup` — dispatch `custom:` kinds through the registry. |
 | `src/shared/param_pages/validate_contract.mjs` | Validate `custom:` declarations. |
 | `docs/MODULES.md`, `docs/PARAM_PAGES.md`, `CLAUDE.md` | Author docs + one index bullet. |
 
@@ -65,12 +65,13 @@ Task 1 is independent of the feature and shippable alone — it fixes two live d
 **Why first:** Both are pre-existing defects in shipped code and neither depends on this feature. Per spec §6 they may ship ahead of everything else.
 
 **Files:**
-- Modify: `src/shadow/shadow_ui.js` — `createCanvasRuntimeContext` (`:15186`), `invokeCanvasHook` (`:15236`)
+- Modify: `src/shadow/shadow_ui.js` — `createCanvasRuntimeContext` (`:16517`), `invokeCanvasOverlayHook` (`:16566`)
 - Test: `tests/host/test_canvas_overlay_containment.sh`
 
 **Acceptance Criteria:**
-- [ ] `invokeCanvasHook` disables the overlay after its first throw; the hook is not invoked again for that runtime.
+- [ ] `invokeCanvasOverlayHook` disables the overlay after its first throw; the hook is not invoked again for that runtime.
 - [ ] The disable is recorded on `canvasRuntime` and surfaced in the existing error path (`canvasRuntime.error`), not silently swallowed.
+- [ ] **A hook that threw returns `false`, not `true`** — the current code reports success after catching.
 - [ ] `ctx.getParam` / `ctx.setParam` / `ctx.getValue` / `ctx.setValue` remain available to `onOpen` / `onMidi` / `onClose` / `onExit`, and are **absent** during `draw` and `tick`.
 - [ ] A doc comment at the ctx names the ~2.8 ms cost and why the draw path is excluded.
 
@@ -140,14 +141,34 @@ Expected: FAIL lines for all four assertions, exit 1.
 
 - [ ] **Step 3: Add one-strike disable to the hook invoker**
 
-In `src/shadow/shadow_ui.js`, replace the body of the hook invoker at `:15236`:
+In `src/shadow/shadow_ui.js`, replace the body of the hook invoker at `:16566`. The current body is:
 
 ```javascript
-function invokeCanvasHook(hookName, payload) {
+function invokeCanvasOverlayHook(hookName, payload) {
     if (!canvasRuntime || !canvasRuntime.overlay) return false;
-    /* ONE STRIKE. The old code caught, recorded canvasRuntime.error and
-     * returned -- so a throwing overlay threw on every frame, forever, at
-     * 60Hz. The error was visible and the flood was not. */
+    const fn = canvasRuntime.overlay[hookName];
+    if (typeof fn !== "function") return false;
+    try {
+        fn(canvasRuntime.ctx, payload || {});
+    } catch (e) {
+        canvasRuntime.error = `${hookName} error: ${e}`;
+        debugLog(`canvas ${hookName} hook error: ${e}`);
+    }
+    return true;
+}
+```
+
+**Note the `return true` after the catch** — a hook that threw reports success to its caller. That is a third defect, of the same class as `move_midi_internal_send` returning true on a discarded write (`CLAUDE.md`, Overtake Modules). The replacement below fixes it in passing; do not "restore" that `return true` while merging.
+
+Replace with:
+
+```javascript
+function invokeCanvasOverlayHook(hookName, payload) {
+    if (!canvasRuntime || !canvasRuntime.overlay) return false;
+    /* ONE STRIKE. The old code caught, recorded canvasRuntime.error, logged,
+     * and then RETURNED TRUE -- so a throwing overlay threw on every frame,
+     * forever, at 60Hz, while telling its caller it had worked. The error was
+     * visible in the log and the flood was not. */
     if (canvasRuntime.hookDisabled) return false;
     const fn = canvasRuntime.overlay[hookName];
     if (typeof fn !== "function") return false;
@@ -204,7 +225,7 @@ Expected: no output.
 git add src/shadow/shadow_ui.js tests/host/test_canvas_overlay_containment.sh
 git commit -m "fix: a canvas overlay throws once, and draw() cannot read a param
 
-The try/catch at shadow_ui.js:15242 recorded canvasRuntime.error and returned,
+The try/catch at shadow_ui.js:16573 recorded canvasRuntime.error and returned,
 so a throwing overlay threw every frame at 60Hz forever -- the error was
 visible and the flood was not. One strike now disables the runtime.
 
@@ -360,9 +381,9 @@ Expected: FAIL — `Cannot find module .../frame_ctx.mjs`, exit 1.
  *   render_page.mjs:116   rowH is DYNAMIC, and computeGeom picks the whole
  *                         render mode from it (dial -> shrinking radius ->
  *                         bar-value -> bar-label -> bar-only)
- *   render_page_movy.mjs  a fixed 32x15, whose own comment at :2123 warns 15
+ *   render_page_movy.mjs  a fixed 32x15, whose own comment at :2428 warns 15
  *                         is only right because both grid gaps happen to be 15
- *   render_page.mjs:670   Math.min(g.slotSpan, COLS - col) silently CLAMPS a
+ *   render_page.mjs:671   Math.min(g.slotSpan, COLS - col) silently CLAMPS a
  *                         two-slot group near the right edge
  *
  * The same widget can be handed any of those, so pixel coordinates authored
@@ -719,7 +740,7 @@ custom: is a reserved prefix so built-ins can never collide with it."
 
 **Files:**
 - Modify: `src/shared/param_pages/widget_registry.mjs` (add `drawCustom`)
-- Modify: `src/shared/param_pages/viz_draw.mjs` — `drawVizGroup` (`:1687`)
+- Modify: `src/shared/param_pages/viz_draw.mjs` — `drawVizGroup` (`:1717`)
 - Test: `tests/host/test_widget_one_strike.sh`
 
 **Acceptance Criteria:**
@@ -890,7 +911,7 @@ In `src/shared/param_pages/viz_draw.mjs`, add to the imports:
 import { isCustomKind, drawCustom } from "./widget_registry.mjs";
 ```
 
-Replace `drawVizGroup` (`:1687`):
+Replace `drawVizGroup` (`:1717`):
 
 ```javascript
 export function drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) {
@@ -941,7 +962,7 @@ module."
 **Goal:** A real module shipping `canvas.js` with a `drawCell` export has its widget registered when the component editor loads it, and unregistered when the component unloads.
 
 **Files:**
-- Modify: `src/shadow/shadow_ui.js` — overlay load (`loadCanvasOverlay` region, `:15100`–`:15300`), component teardown (`:14974`)
+- Modify: `src/shadow/shadow_ui.js` — overlay load (`loadCanvasOverlay` region, `:16590`–`:16660`), component teardown (`:16308`)
 - Test: `tests/host/test_canvas_drawcell_wiring.sh`
 
 **Acceptance Criteria:**
@@ -1026,7 +1047,7 @@ setWidgetLogger(debugLog);
 
 - [ ] **Step 4: Register on overlay load**
 
-In `loadCanvasOverlay`, after `canvasRuntime.overlay = loaded.overlay;` (`:15292`), add:
+In `loadCanvasOverlay`, after `canvasRuntime.overlay = loaded.overlay;` (`:16623`), add:
 
 ```javascript
     /* A canvas overlay may ALSO supply an in-grid widget. Same file, same
@@ -1044,7 +1065,7 @@ In `loadCanvasOverlay`, after `canvasRuntime.overlay = loaded.overlay;` (`:15292
 
 - [ ] **Step 5: Clear on teardown**
 
-In the teardown block at `:14974`, after `canvasTickCounter = 0;`, add:
+In the teardown block at `:16308`, after `canvasTickCounter = 0;`, add:
 
 ```javascript
     /* The registry is process-global and shadow_ui is long-lived, so a widget
@@ -1095,7 +1116,7 @@ module reusing the name would silently inherit the wrong art."
 - [ ] In every cell of the matrix, `clipped() === 0` for a well-written widget.
 - [ ] In every cell, a greedy widget produces zero out-of-frame parent calls.
 - [ ] The matrix is derived from `computeGeom`'s real thresholds, not from hardcoded numbers that could drift from it.
-- [ ] **Label ownership needs no assertion here and the reason is recorded:** `render_page_movy.mjs:2133` passes `h: lblY - rowY`, which *excludes* the label band, so a custom widget is handed the same label-free rect every built-in viz group already gets. Schwung keeping the label is a property of the caller, not a rule the widget must obey — do not add a test that pretends otherwise.
+- [ ] **Label ownership needs no assertion here and the reason is recorded:** `render_page_movy.mjs:2438` passes `h: lblY - rowY`, which *excludes* the label band, so a custom widget is handed the same label-free rect every built-in viz group already gets. Schwung keeping the label is a property of the caller, not a rule the widget must obey — do not add a test that pretends otherwise.
 
 **Verify:** `bash tests/host/test_widget_frame_matrix.sh` → all `PASS`, no `FAIL`
 
@@ -1923,7 +1944,7 @@ CLAUDE.md gets one bullet, not the explanation."
 Carried from spec §9, so a later reader does not mistake these for oversights:
 
 - **Page-claim.** Reversed once `type: "canvas"` was found — "whole page" is already spelled `type: "canvas"`, with a footer and a return path.
-- **`ui_chain.js` modules.** Structurally excluded: `enterComponentEdit` (`shadow_ui.js:11994`) tries the hierarchy editor first and only falls through to `loadModuleUi` when a component publishes no `ui_hierarchy` — so a module with a hierarchy never reaches its `ui_chain.js`, and one without has no knob grid and therefore no cells.
+- **`ui_chain.js` modules.** Structurally excluded: `enterComponentEdit` (`shadow_ui.js:13322`) tries the hierarchy editor first and only falls through to `loadModuleUi` when a component publishes no `ui_hierarchy` — so a module with a hierarchy never reaches its `ui_chain.js`, and one without has no knob grid and therefore no cells.
 - **Master FX.** Scope is the four chain slots' real components, excluded in one helper so a new call site cannot silently opt it in.
 - **Consolidating the four module-visual mechanisms.** A larger project; this design does not foreclose it.
 - **Sub-project 2** (documenting and hardening the takeover paths), which should be re-scoped by what this leaves uncovered.
