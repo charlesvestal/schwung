@@ -88,6 +88,7 @@ for keys anywhere in `module.json`).
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
 | `forks_processes` | Module creates child **processes** (not threads) to do its DSP, as JE-8086 does. See below. |
+| `standalone` | A **tool** that is a whole program: selecting it runs `<module dir>/standalone` through `launch-standalone.sh`, which restarts Move when the program exits. See below. |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -95,6 +96,31 @@ for keys anywhere in `module.json`).
 > shim and shadow UI code paths that actually run on device — search
 > for the flag name in `src/schwung_shim.c`, `src/shadow/shadow_ui.{c,js}`,
 > and `src/modules/chain/dsp/chain_host.c` to find the consumer.
+
+### `standalone` tools, and a privileged helper of their own
+
+A tool with `"standalone": true` carries an executable named `standalone` in its
+module directory; the Tools menu runs it via `launch-standalone.sh` and Move is
+restarted when it exits. Everything such a tool installs lives under its own
+`modules/tools/<id>/` — ableton-owned, like every module.
+
+Some standalone tools need one privileged step of their own — a shim of their own
+that must reach `/usr/lib` setuid for glibc's AT_SECURE `LD_PRELOAD` check, or a
+service to pause. They cannot reuse `schwung-heal`: its paths are compile-time
+constants on purpose. Instead a tool stages **its own** helper and lets
+`schwung-heal` install it:
+
+- stage the helper at `modules/tools/<id>/bin/heal.new` (a regular file, not a
+  symlink; `<id>` limited to `[A-Za-z0-9_.-]`);
+- run `/data/UserData/schwung/bin/schwung-heal` (it is setuid; the tool may run
+  it as `ableton`);
+- heal installs the stage beside itself as `bin/heal`, root-owned `04755`, and
+  removes the stage — exactly the way it installs its own `schwung-heal.new`.
+
+The trust model is unchanged: `ableton` can already stage `schwung-heal.new`
+itself, so a staged helper adds convenience, not capability, and a device with
+nothing staged never enters the path. Heal's own duties (the shim and entrypoint
+mirror) run on the same invocation, idempotently.
 
 ### `forks_processes`
 
