@@ -29,8 +29,10 @@
 
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
-import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire }
-    from "./child_key.mjs";
+import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
+         childName } from "./child_key.mjs";
+import { focusParamOf, voicesOf, voiceIndexFromLevel,
+         voiceIndexFromWire, padLayoutOf, focusToken } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
 } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -43,6 +45,7 @@ import { widgetsGeneration } from "./widget_registry.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
 import { drawEnumList } from "./enum_list.mjs";
+import { drawParamCard } from "./param_card.mjs";
 
 export { LAYOUT_MOVY };
 
@@ -519,6 +522,24 @@ export function createController(io = {}) {
      * invitation to handle one of them wrong.
      */
     const formatValue = io.formatValue || null;
+    /*
+     * Optional: load a module-supplied card drawer.
+     *
+     *   loadCard(scriptPath, overlayRef) -> function | null
+     *
+     * Same shape and same reason as isModulated and formatValue above — the
+     * library cannot read a file and must not try, so the host injects the
+     * loader and a caller that has none simply gets no cards. That is the whole
+     * default-off story: a module may declare card_script for years and nothing
+     * changes until a host offers to load it.
+     *
+     * ⚠ THE LOAD IS NOT ON THE DRAW PATH. It is called from onKnobTouch, on the
+     * first touch of a declaring parameter, and the answer is cached for the
+     * session — including a null, which is never retried. Nothing module-side
+     * is resident while the grid is up and the host loader has no cache of its
+     * own, so a load from the draw would evaluate a script every frame.
+     */
+    const loadCard = io.loadCard || null;
     const now = io.now || (() => Date.now());
     /* Graphics default on; a caller can pass `enableViz: false` to keep the
      * plain grid (a tool that wants every cell individually addressable), and
@@ -561,6 +582,17 @@ export function createController(io = {}) {
         modCache: Object.create(null),
         /* Selected child per child-level, by level key. See childResolve(). */
         childIndex: Object.create(null),
+        /*
+         * The voice index syncVoiceFromModule last ACTED on, and the memoised
+         * voice list. The latch is what makes the follow an EDGE: all three
+         * focus inputs report a steady state, so without it a constant answer
+         * re-navigates on every rotation stop and the user cannot leave the
+         * page. Null means "nothing adopted yet", so the first answer after a
+         * component load still lands on the focused voice.
+         */
+        voiceLatch: null,
+        voiceCacheFor: undefined,
+        voiceCache: null,
         /* A page name to land on once the pages exist; see restorePage(). */
         restoreName: null,
         /* key -> live modulated ("effective") value, for the dot on the arc.
@@ -680,6 +712,10 @@ export function createController(io = {}) {
          * Holds no value of its own — `index` is the knob engine's, which is
          * why the whole overlay costs no IPC read. */
         peek: null,
+        /* Module-supplied card drawers, keyed by the declared script spec.
+         * A cached `null` means "asked and got nothing", and is never retried —
+         * a missing file must not be re-evaluated on every touch. See loadCard. */
+        cardFns: {},
         /* Name of the menu page currently ENTERED, or null. */
         menuEntered: null,
         /*
@@ -781,12 +817,26 @@ export function createController(io = {}) {
         const pg = p || page();
         if (!pg) return null;
         if (!pg.childLevel || pg.kind !== PAGE_KNOBS) return pg.name;
-        const label = pg.childLevel.child_label || "Item";
-        const at = childIndexFor(pg.level) + 1;
+        const i = childIndexFor(pg.level);
+        /*
+         * A DECLARED name wins outright. `child_names: ["Kick", ...]` already
+         * reaches the instance picker through childLabel, so a module that
+         * named its pads got "Rim" in the list and "Pad 3" in the header of
+         * the page that list opened — the same instance under two names, one
+         * of them the one it asked not to be called.
+         *
+         * Only the NAME is shared, not the fallback NUMBER: childName is split
+         * out of childLabel precisely because the picker counts from 1 while
+         * childLabel counts from `child_index_base`, and minijv declares no
+         * base, so unifying the numbering would renumber its picker.
+         */
+        const at = i + 1;
+        const base = childName(pg.childLevel, i)
+            || `${pg.childLevel.child_label || "Item"} ${at}`;
         const siblings = s.pages.filter(
             (q) => q.level === pg.level && q.kind === PAGE_KNOBS);
         const ord = siblings.indexOf(pg);
-        return ord > 0 ? `${label} ${at} - ${ord + 1}` : `${label} ${at}`;
+        return ord > 0 ? `${base} - ${ord + 1}` : base;
     }
     const keyAt = (slot) => {
         const p = page();
@@ -820,6 +870,13 @@ export function createController(io = {}) {
         /* Likewise "we gave up on this one" — a new component gets a clean
          * slate, and the retry budget below is already per-component. */
         if (!sameComponent) s.contractGaveUp = false;
+        /* A different component is a different set of voices, so the index we
+         * last adopted names nothing here. Re-seeding to null is what lets the
+         * first answer from the NEW component navigate — arriving on the voice
+         * it says is focused is right; it is only the REPEATS that must do
+         * nothing. Deliberately not cleared on a same-component re-plan: the
+         * user is still standing where they navigated to. */
+        if (!sameComponent) s.voiceLatch = null;
         s.slot = slot;
         s.component = component;
         s.prefix = nextPrefix;
@@ -1612,6 +1669,257 @@ export function createController(io = {}) {
         dropChildLevelCache(name);
     }
 
+    /*
+     * `voicesOf(s.hierarchy)`, memoised against the hierarchy OBJECT.
+     *
+     * Identity is the right key: s.hierarchy is replaced wholesale by load()
+     * and never mutated in place, so a new object IS a new contract, and a
+     * fingerprint comparison would be more code for the same answer.
+     */
+    function voiceList() {
+        if (s.voiceCacheFor !== s.hierarchy) {
+            s.voiceCacheFor = s.hierarchy;
+            s.voiceCache = s.hierarchy ? voicesOf(s.hierarchy) : [];
+        }
+        return s.voiceCache;
+    }
+
+    /**
+     * Adopt the voice the MODULE says is focused — the SIBLING shape, and the
+     * note fallback for a module that declares neither focus param.
+     *
+     * EXACTLY ONE INPUT IS LIVE PER MODULE, and the priority is the whole
+     * point. The template shape is already served by syncChildIndexFromModule
+     * above and is deliberately untouched here: `child_index_param` IS that
+     * shape's focus input, so a module declaring it must never also be asked
+     * for `last_note`. That is enforced by NOT ISSUING THE READ rather than by
+     * ignoring the answer — two sources that are both consulted disagree the
+     * moment the module moves its focus without a note (a preset load,
+     * mrdrums' auto-select), and the disagreement LATCHES, because each source
+     * keeps re-asserting itself on the next rotation.
+     *
+     * THE FOLLOW DOES NOT BRANCH ON `pad_layout`, and that is deliberate: it
+     * follows whatever voices are declared, so a module that declares voices
+     * before settling its layout still works. `padLayoutOf` IS imported now,
+     * but only for the header minimap in padIconIndex — drawing a rack icon is
+     * a claim about the surface and belongs to the layout; following a voice
+     * is not. Do not add an `if (pad_layout !== "drums") return` here.
+     *
+     * Nothing here writes an LED or a MIDI byte. Move's firmware owns the pads;
+     * this path is a read plus a navigation.
+     *
+     * Rides the same stop as syncChildIndexFromModule — so it costs the
+     * rotation no stop of its own — and is likewise NOT gated on a settle
+     * window. A settle means a KNOB is being turned, and turning a knob does
+     * not change which pad you are editing; playing one does. Gating it would
+     * mean the grid refused to follow the pad you just hit for as long as your
+     * hand rested on a knob, which is precisely when it matters.
+     *
+     * IT IS AN EDGE, NOT A PIN — `s.voiceLatch`. The design says "HITTING a
+     * pad navigates the grid to that voice's page", which is an EVENT, and
+     * every one of the three inputs answers a STEADY STATE: `last_note` keeps
+     * reporting the kick long after you stopped playing it. Acting on the
+     * value rather than on its change re-navigated on every rotation stop, so
+     * a jog detent was undone two ticks later and the user could not leave the
+     * kick page at all — which on a 9W9 shape means Reverb, Delay and Main are
+     * unreachable, and those are exactly the pages that shape has. It also
+     * cost a warmCurrentPage() burst of IPC reads and made the screen reader
+     * speak BOTH pages on every detent.
+     *
+     * Compare syncChildIndexFromModule directly above: it changes an INDEX in
+     * place and never navigates, which is why running it on every stop is
+     * harmless and why it needs no latch.
+     *
+     * The latch seeds to null and no resolved index is null, so the FIRST
+     * answer after a component load still navigates — arriving on the focused
+     * voice is right. A null (unresolved) read returns BEFORE the latch is
+     * touched: clearing it would re-arm the yank on the next good read, so one
+     * timeout would resurrect the whole defect.
+     */
+    /**
+     * The header's pad minimap: which cell of Move's 4x4 drum rack is lit, or
+     * null to draw nothing.
+     *
+     * PHYSICAL, not the list position — the note minus the rack base, so the
+     * lit cell is where the pad sits under your hand. A map agreeing with the
+     * page order instead would be a second bank bar, and there is already one
+     * of those a row below.
+     *
+     * Gated on `pad_layout: "drums"` and NOT merely on "declares voices",
+     * because this is the one thing in Schwung's own UI the layout declaration
+     * drives: a chromatic module with per-zone notes is not a rack and must not
+     * grow a rack icon. It is also why the field is declared rather than
+     * inferred — see voices.mjs.
+     *
+     * Answers a NOTE, not a cell. Where note N sits on Move's rack is the
+     * RENDERER's fact — it owns the rack's base and its bottom-left origin —
+     * and computing a cell here would be a second copy of that geometry in a
+     * file whose constants are pinned precisely to stop rects being redefined.
+     * `-1` means "draw the empty box": we are on a rack but cannot place this
+     * voice.
+     *
+     * IT FOLLOWS THE PAGE YOU ARE ON, not the voice the module last focused.
+     *
+     * Those coincide whenever the follow moved you — it moves you TO that
+     * voice's page — but they part the moment you jog by hand, and then the
+     * map is answering a question you did not ask: it showed the pad the
+     * module thinks is focused while you were looking at a different drum.
+     * Reported from the device. The map means "the pad this page edits", and
+     * the page is the only thing that knows.
+     *
+     * That also makes the focused-voice bookkeeping redundant, so it is gone.
+     * The token still drives the follow; nothing tracks a resolved index any
+     * more, which removes the coupling that broke this once already (the latch
+     * became a string and the icon was still indexing an array with it).
+     *
+     * A child level answers for its CURRENT instance, so a rack page lights
+     * the pad you have selected within it. A page that is not a voice —
+     * Reverb, My Presets, Module — lights nothing, because it edits no pad.
+     *
+     * Costs no read: the page and the child index are both already in hand.
+     */
+    function padIconNote() {
+        if (!s.hierarchy || padLayoutOf(s.hierarchy) !== "drums") return null;
+        const voices = voiceList();
+        if (!voices.length) return null;
+        const p = page();
+        const lvl = p && p.level;
+        if (!lvl) return -1;
+        const ci = childIndexFor(lvl);
+        for (const v of voices) {
+            if (v.level !== lvl) continue;
+            if (v.childIndex === null || v.childIndex === ci) return v.note;
+        }
+        return -1;                    /* this page edits no pad */
+    }
+
+    function syncVoiceFromModule() {
+        const hier = s.hierarchy;
+        if (!hier) return;
+        /* The hierarchy is already in hand — re-reading `ui_hierarchy` here
+         * would cost a stop AND could answer a different tri-state than the
+         * page set was planned from. Memoised against the hierarchy OBJECT,
+         * which is stable for the plan's lifetime: this runs on every rotation
+         * stop, and mrdrums' 16 voices were 16 objects allocated and thrown
+         * away each time, most stops discarding them at the very next line. */
+        const voices = voiceList();
+        if (!voices.length) return;             /* opted out: costs nothing */
+
+        /*
+         * The template shape owns its focus. Nothing to do, and above all
+         * nothing to READ — see the priority note above.
+         *
+         * Scoped to the levels that actually CONTRIBUTE VOICES. Scanning every
+         * level in the file made one unrelated child level — an 8-instance LFO
+         * bank that happens to declare `child_index_param` — silently disable
+         * the follow for the whole module, sibling drum voices and all. The
+         * priority rule is about the level that owns the VOICES; a focus param
+         * on some other level is not a competing source for this one.
+         */
+        const levels = hier.levels || {};
+        for (const v of voices) {
+            if (childIndexParam(levels[v.level])) return;
+        }
+
+        /*
+         * THE MODULE OWNS THE FOCUS, AND NOTHING INFERS IT FROM WHAT IS PLAYED.
+         *
+         * There used to be a third input here: `synth:last_note`, the note the
+         * chain host last saw reach the synth. It is deleted, and the reason is
+         * decisive — A SEQUENCER PLAYS NOTES. With a pattern running, every hit
+         * is a note, so the grid would change page on every drum in the bar and
+         * the editor would be unusable exactly when you are listening to what
+         * you edited. "The pad you HIT" is a human gesture; "the note that
+         * SOUNDED" is not the same fact and cannot stand in for it.
+         *
+         * Nor can the two be told apart where it mattered. A pad press and a
+         * clip playing both arrive at the synth through Move's MIDI_OUT echo,
+         * tagged the same. Cable 0 does carry real presses — the shim routes
+         * them to the focused slot as MOVE_MIDI_SOURCE_INTERNAL — but only for
+         * a module that declares CAPTURE RULES, and a module able to do that is
+         * equally able to publish a focus param. The fallback bought nothing
+         * its own precondition did not already provide.
+         *
+         * 9W9 is the proof by construction: its `seq_voice` is written only by
+         * `set_param` from the UI and never inferred from MIDI, in a drum
+         * module with eleven voices and a note map of its own.
+         *
+         * `synth:last_note` still exists and is still served — it is a useful
+         * thing for a sequencer to ask — but NOTHING NAVIGATES ON IT.
+         */
+        const focusParam = focusParamOf(hier);
+        if (!focusParam) return;
+        const raw = getParam(`${s.prefix}:${focusParam}`);
+        /* "<count>:<level>" or a bare value — see focusToken. The COUNT is what
+         * makes re-hitting the pad you are already latched on work. */
+        const { token, value } = focusToken(raw);
+        /* A level NAME first — that is what the declaration documents — and a
+         * numeric voice index second, because a module may answer either and
+         * both are unambiguous. Both refuse a failed read. */
+        let vi = voiceIndexFromLevel(voices, value);
+        if (vi === null) vi = voiceIndexFromWire(voices, value);
+        /*
+         * TRI-STATE. null is "no information", never voice 0. Adopting the
+         * first voice because a read timed out would move the user off the
+         * pad they were editing, re-keying every page on screen and dropping
+         * its cached values — the same cost the child-index path refuses.
+         *
+         * Before the latch, so a failed read leaves the latch alone.
+         */
+        if (vi === null) return;
+
+        /*
+         * THE EDGE. A repeat of the answer we last acted on does nothing at
+         * all — no navigation, no warm, no announce.
+         *
+         * Latched on the TOKEN, not on the resolved voice. Where a module
+         * answers "<count>:<level>" the token carries the hit count, so
+         * hitting the SAME pad again is a new event and navigates; latching on
+         * the voice index made that a no-op, and the user who hit the kick,
+         * browsed to Reverb and hit the kick again stayed on Reverb. 9W9 has
+         * published a counter for exactly this reason since before the
+         * contract existed. A module answering a bare value latches on the
+         * value, which is the old behaviour exactly.
+         */
+        if (token === s.voiceLatch) return;
+        /* Latched on the ANSWER, not on the outcome: a voice we cannot route
+         * to below is still an answer we have dealt with, and re-deciding it
+         * every stop is the same waste. */
+        s.voiceLatch = token;
+
+        const v = voices[vi];
+        if (!v || !v.level) return;
+
+        if (v.childIndex !== null) {
+            /*
+             * A rack contributed by a CHILD level whose level names no
+             * `child_index_param` — examples/voice-poc's own `pads` level is
+             * exactly this shape (`child_note_base: 60`, no focus param), and
+             * the old bail discarded it, so the shipped example advertised a
+             * shape the feature structurally could not reach.
+             *
+             * Nothing else owns the focus here, so adopt it locally the way a
+             * pick from the instance list does — the index re-keys the level's
+             * pages, and the cached values belonged to the previous instance.
+             * A level that DOES declare child_index_param never gets here (we
+             * returned above); syncChildIndexFromModule stays its single owner.
+             */
+            if (childIndexFor(v.level) !== v.childIndex) {
+                s.childIndex[v.level] = v.childIndex;
+                dropChildLevelCache(v.level);
+            }
+        }
+
+        const cur = page();
+        if (cur && cur.level === v.level) return;   /* already there */
+        const target = s.pages.findIndex(
+            (q) => q && q.level === v.level && q.kind === PAGE_KNOBS);
+        if (target < 0) return;                 /* a voice with no grid page */
+        /* `remember: false`: the module named a voice, so land on that voice's
+         * page rather than on whatever page of that section was last visited. */
+        goToPage(target, { remember: false });
+    }
+
     function neighbourPrefetch(cur) {
         if (s.tickCount < (s.prefetchHoldUntil || 0)) return null;
         for (const k in s.settleUntil) {
@@ -1776,6 +2084,10 @@ export function createController(io = {}) {
              * and dropping its cached values -- because a read timed out.
              */
             syncChildIndexFromModule(p);
+            /* ...and, on the SAME stop, the sibling/note shapes. One of the
+             * two runs for any given module and never both — see the priority
+             * note on syncVoiceFromModule. */
+            syncVoiceFromModule();
             return null;
         }
         if (at > p.keys.length) {
@@ -2767,6 +3079,10 @@ export function createController(io = {}) {
             s.touched = slot;
             s.turnClaimMs = 0;
         }
+        /* A knob can be turned without the capacitive touch ever registering,
+         * so the turn warms too -- otherwise the one gesture that reaches this
+         * screen without a finger is the one that never gets a card. */
+        warmCard(slot);
 
         /* ONE knob model, whatever the layout. There used to be two, and this
          * branch picked between them by layout -- a knob that behaves
@@ -3081,6 +3397,8 @@ export function createController(io = {}) {
         if (s.touchOrder.indexOf(slot) < 0) s.touchOrder.push(slot);
         s.touched = slot;
         s.turnClaimMs = 0;
+        /* The load lives on the gesture, never on the draw. See warmCard. */
+        warmCard(slot);
         const key = keyAt(slot);
         const meta = metaAt(slot);
         const dec = s.decorations ? s.decorations[slot] : null;
@@ -3453,6 +3771,12 @@ export function createController(io = {}) {
     }
 
     function render(ctx, { title, rect, footer, bands } = {}) {
+        /* The frame this page was drawn into, remembered for renderOverlays.
+         * A floating card is centred in it -- on the panel for the full-screen
+         * host, and inside the embedded region for a tool that supplies a rect.
+         * Kept here rather than passed to renderOverlays so an existing caller
+         * needs no change. */
+        s.frameRect = rect || null;
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
@@ -3507,6 +3831,7 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
+                padIcon: padIconNote(),
                 /* Graphics stand down while p-locks are live, the same rule the
                  * dial/bar branch has always applied: one picture replacing
                  * four cells cannot show which of the four is locked. Without
@@ -3692,6 +4017,55 @@ export function createController(io = {}) {
     }
 
     /*
+     * A parameter's declared card drawer, or null.
+     *
+     * `card_script` is spelled like `canvas_script` — "file.js#exportName" —
+     * because a module author already knows that spelling and a second grammar
+     * for the same idea is a second thing to get wrong.
+     */
+    function cardSpec(meta) {
+        if (!meta) return null;
+        const spec = typeof meta.card_script === "string" ? meta.card_script.trim() : "";
+        if (!spec) return null;
+        const hash = spec.indexOf("#");
+        return hash < 0
+            ? { spec, path: spec, ref: "" }
+            : { spec, path: spec.slice(0, hash), ref: spec.slice(hash + 1) };
+    }
+
+    /*
+     * Load a declaring parameter's drawer, ONCE, off the draw path.
+     *
+     * Called from touch and from a turn -- the two events that can raise a card
+     * -- and never from renderOverlays. Nothing module-side is resident while
+     * the grid is up and the host loader has no cache of its own, so a load on
+     * the draw path would evaluate the script on every frame of a knob turn.
+     *
+     * A null answer is CACHED. A missing file, a bad export or a host with no
+     * loader must cost one attempt for the session, not one per touch.
+     */
+    function warmCard(slot) {
+        if (!loadCard) return;
+        const spec = cardSpec(metaAt(slot));
+        if (!spec || Object.prototype.hasOwnProperty.call(s.cardFns, spec.spec)) return;
+        let fn = null;
+        try {
+            fn = loadCard(spec.path, spec.ref);
+        } catch (e) {
+            fn = null;
+        }
+        s.cardFns[spec.spec] = typeof fn === "function" ? fn : null;
+    }
+
+    /** The loaded drawer for a param, or null. Never loads -- see warmCard. */
+    function cardFnFor(meta) {
+        const spec = cardSpec(meta);
+        if (!spec) return null;
+        const fn = s.cardFns[spec.spec];
+        return typeof fn === "function" ? fn : null;
+    }
+
+    /*
      * WHAT render() DOES NOT DRAW, AND WHY IT CANNOT.
      *
      * render() paints a page into a rect the CALLER owns. Nothing in
@@ -3726,7 +4100,7 @@ export function createController(io = {}) {
      */
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
-        if (!peek) return false;
+        if (!peek) return drawDeclaredCard(ctx);
         /*
          * No clear, no overlay. Drawing the list into a frame we may not blank
          * would leave it interleaved with the grid underneath -- two screens at
@@ -3748,6 +4122,60 @@ export function createController(io = {}) {
             footer: [["TURN", "SET"]],
         });
         return true;
+    }
+
+    /*
+     * THE CARD A MODULE DRAWS WHILE ITS KNOB IS TURNED.
+     *
+     * Same overlay slot as the peek and the opposite kind of screen: it FLOATS,
+     * so the page stays readable around it. That is why it is not gated on
+     * `clearScreen` the way the peek is -- it blanks only its own rect (see
+     * param_card.mjs) and therefore draws correctly for an embedded consumer
+     * that owns no frame at all.
+     *
+     * The peek wins when both could show. A card is an aid to reading one
+     * value; the peek is the list of values you are moving between, and the
+     * detent that raised it has already written.
+     *
+     * NO TIMER OF ITS OWN. `s.touched` is already "the knob being held, or the
+     * one just turned": held sets turnClaimMs to 0 so it never expires, a
+     * release clears it at once, and a turn no finger registered on expires
+     * through TURN_CLAIM_MS. That is the law every other follow-the-knob
+     * surface here obeys, and a second one would drift from it.
+     */
+    function drawDeclaredCard(ctx) {
+        if (!ctx) return false;
+        const slot = s.touched;
+        if (slot === undefined || slot === null || slot < 0) return false;
+        const meta = metaAt(slot);
+        const draw = cardFnFor(meta);
+        if (!draw) return false;
+        const key = keyAt(slot);
+        if (!key) return false;
+        return drawParamCard(ctx, {
+            meta,
+            draw,
+            /* Where the page actually is. Null for the full-screen host, which
+             * param_card reads as the whole panel. */
+            frame: s.frameRect || null,
+            name: meta && (meta.name || meta.label) ? (meta.name || meta.label) : key,
+            /* The SAME reading the header would show, through the one
+             * formatter -- a card that spelled a value differently from the
+             * strip above it would be a second formatter by another name. */
+            value: knobRowValue(key),
+            raw: s.values[key] === undefined ? null : s.values[key],
+            /*
+             * ONE STRIKE. A drawer that threw is retired for the session rather
+             * than re-entered up to sixty times a second, and the parameter
+             * falls back to the ordinary page -- which is what a host too old
+             * to know the field shows anyway, so the degraded state is one we
+             * already ship.
+             */
+            onError: () => {
+                const spec = cardSpec(meta);
+                if (spec) s.cardFns[spec.spec] = null;
+            },
+        });
     }
 
     let vizCache = null;
@@ -4043,6 +4471,10 @@ export function createController(io = {}) {
         setLayout, setReveal, setDecorations, render, renderOverlays,
         announceContents,
         get state() { return s; },
+        /* What the header minimap will light, so a test can assert on the
+         * ICON rather than on a field near it: asserting on state.focusedVoice
+         * passed while the icon was indexing the voice array with a token. */
+        get padIcon() { return padIconNote(); },
         get page() { return page(); },
         get pages() { return s.pages; },
         get pageIndex() { return s.pageIndex; },

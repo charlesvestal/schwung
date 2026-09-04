@@ -1,0 +1,84 @@
+{
+  "title": "Voice POC",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "A test module. It",
+        "makes no sound.",
+        "",
+        "It exists to declare",
+        "a performance",
+        "surface, so the",
+        "pad_layout and",
+        "voices contract has",
+        "a real consumer to",
+        "check against.",
+        "",
+        "Load it in a slot",
+        "and open its knob",
+        "grid."
+      ]
+    },
+    {
+      "title": "What it declares",
+      "lines": [
+        "pad_layout: drums.",
+        "",
+        "Three sibling",
+        "voices, each with",
+        "its own page:",
+        "Kick 36, Snare 38,",
+        "Hat 42.",
+        "",
+        "One page that is",
+        "NOT a voice:",
+        "Reverb. It has no",
+        "note, so it sounds",
+        "nothing.",
+        "",
+        "A rack of four:",
+        "Tom Lo, Tom Hi,",
+        "Rim, Clap, from",
+        "note 60."
+      ]
+    },
+    {
+      "title": "Focus",
+      "lines": [
+        "It owns its focus",
+        "through focus_param",
+        "cur_voice, whose",
+        "value is a LEVEL",
+        "NAME.",
+        "",
+        "Playing 36, 38 or",
+        "42 moves it, and",
+        "the grid follows.",
+        "",
+        "Because it declares",
+        "a focus param, the",
+        "last_note fallback",
+        "is never read for",
+        "it - exactly one",
+        "input is live."
+      ]
+    },
+    {
+      "title": "Pads",
+      "lines": [
+        "It never lights a",
+        "pad.",
+        "",
+        "Move owns the pad",
+        "LEDs while the",
+        "shadow UI is up.",
+        "The follow path",
+        "reads a param and",
+        "navigates, and",
+        "emits no MIDI at",
+        "all."
+      ]
+    }
+  ]
+}
