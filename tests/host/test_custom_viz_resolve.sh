@@ -32,7 +32,7 @@ fi
 node --input-type=module -e '
 import { resolveViz, VIZ_ENVELOPE } from "./src/shared/param_pages/viz.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
-import { isCustomKind, registerWidget, clearWidgets, isWidgetAvailable }
+import { isCustomKind, registerWidget, clearWidgets, isWidgetAvailable, widgetsGeneration }
   from "./src/shared/param_pages/widget_registry.mjs";
 
 let fail = 0;
@@ -133,6 +133,25 @@ registerWidget("custom:here", { draw: () => {} });
 ok(isWidgetAvailable("custom:here"), "a registered kind is available");
 clearWidgets();
 ok(!isWidgetAvailable("custom:here"), "clearWidgets makes it unavailable again");
+
+/* ---- REGISTRATION MUST BUST A CONSUMER CACHE ----
+ *
+ * page_controller caches resolveViz on `${fingerprint}#${pageIndex}#${childAt}`,
+ * none of which change when a widget registers. A module registers when its
+ * canvas.js loads, which is AFTER the first resolve of the page it belongs to,
+ * so without a generation in that key the pre-registration groups are handed
+ * back forever and the widget never appears however correctly it registered.
+ * Reported from the device as exactly that. */
+clearWidgets();
+const g0 = widgetsGeneration();
+registerWidget("custom:gen", { draw: () => {} });
+const g1 = widgetsGeneration();
+ok(g1 !== g0, "registering a widget changes the generation");
+clearWidgets();
+ok(widgetsGeneration() !== g1, "clearing changes it too");
+const g2 = widgetsGeneration();
+registerWidget("not-custom", { draw: () => {} });
+ok(widgetsGeneration() === g2, "a REFUSED registration does not change it");
 
 process.exit(fail ? 1 : 0);
 '

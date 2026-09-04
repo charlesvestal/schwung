@@ -29,6 +29,19 @@ import { frameCtx } from "./frame_ctx.mjs";
 
 const CUSTOM_PREFIX = "custom:";
 
+/*
+ * Bumped whenever the set of drawable widgets changes.
+ *
+ * Consumers CACHE viz resolution -- page_controller keys its vizCache on
+ * fingerprint, page and child index, none of which change when a widget
+ * registers. Without a generation in that key, a page resolved before the
+ * module's canvas.js loaded keeps being handed back, and the widget never
+ * appears no matter how correctly it registered. That is the same shape as the
+ * stale-alias bug already recorded beside that cache.
+ */
+let generation = 0;
+export function widgetsGeneration() { return generation; }
+
 /** kind -> { draw, nominal } */
 const widgets = new Map();
 /** kinds disabled this session after a throw. Cleared only by clearWidgets. */
@@ -46,6 +59,7 @@ export function isCustomKind(kind) {
 export function registerWidget(kind, impl) {
     if (!isCustomKind(kind) || !impl || typeof impl.draw !== "function") return false;
     widgets.set(kind, impl);
+    generation++;
     return true;
 }
 
@@ -66,6 +80,7 @@ export function getWidget(kind) {
  * custom: name would silently inherit the wrong art.
  */
 export function clearWidgets() {
+    if (widgets.size || disabled.size) generation++;
     widgets.clear();
     disabled.clear();
 }
@@ -99,6 +114,7 @@ export function drawCustom(ctx, rect, group, values, metaIndex, anim, nowMs, bas
         impl.draw(fctx, { group, values, metaIndex, anim, nowMs, baseValues });
     } catch (e) {
         disabled.add(group.kind);
+        generation++;   /* a one-strike disable changes what is drawable too */
         if (logFn) logFn(`widget ${group.kind} disabled after throw: ${e}`);
         return false;
     }
