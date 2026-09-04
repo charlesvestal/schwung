@@ -71,6 +71,16 @@ export function drawEnumList(ctx, o) {
     /* The same list every other picker on this device uses. A second list
      * widget is how Master FX and the chain editor drifted apart. */
     drawMenuList({
+        /* FORWARD THE CTX. Without it drawMenuList falls back to DEVICE_CTX and
+         * draws the list body through the `fill_rect` / `print` globals, while
+         * the header and footer either side of it go to the injected ctx — two
+         * surfaces for one screen. In the shadow UI both are the device, so it
+         * looked right and stayed wrong; an embedding host that injects a ctx
+         * (movy) gets a header and footer with no list between them, or a
+         * ReferenceError where the globals do not exist at all. The other
+         * drawMenuList call in this engine, page_controller's menu page, has
+         * always passed it. */
+        ctx,
         items: o.options,
         selectedIndex: o.index,
         listArea: { topY: ENUM_LIST_TOP_Y, bottomY: ENUM_LIST_BOTTOM_Y },
