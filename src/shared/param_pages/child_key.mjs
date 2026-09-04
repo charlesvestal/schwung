@@ -41,8 +41,19 @@ export function childCount(level) {
     return hasChildren(level) ? Math.max(0, level.child_count | 0) : 0;
 }
 
-/** Human label for instance `i` — "Pad 3", "Tone 1". */
+/**
+ * Human label for instance `i` — "Pad 3", "Tone 1", or a declared name.
+ *
+ * `child_names` lets a drum module say "Kick" where the generated label can
+ * only say "Pad 1". It falls back PER ITEM rather than wholesale: a module
+ * that names its first four pads and leaves the rest keeps "Pad 5" for the
+ * others, so a partial declaration is an improvement rather than a trade.
+ */
 export function childLabel(level, i) {
+    const names = level && level.child_names;
+    if (Array.isArray(names) && typeof names[i] === "string" && names[i].length) {
+        return names[i];
+    }
     const base = (level && level.child_label) || "Item";
     return `${base} ${i + indexBase(level)}`;
 }

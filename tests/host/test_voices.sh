@@ -23,7 +23,10 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node -e '
-import("./src/shared/param_pages/voices.mjs").then((V) => {
+Promise.all([
+  import("./src/shared/param_pages/voices.mjs"),
+  import("./src/shared/param_pages/child_key.mjs"),
+]).then(([V, CK]) => {
   let bad = 0;
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
@@ -167,6 +170,30 @@ import("./src/shared/param_pages/voices.mjs").then((V) => {
   }
   if (V.voiceIndexFromWire(tv, "2") !== 2)
     fail("a valid wire index did not resolve");
+
+  /* ---- picker labels ------------------------------------------------- */
+
+  {
+    const L = TEMPLATE.levels.pads;
+    if (CK.childLabel(L, 0) !== "Kick")
+      fail("childLabel ignored a declared child_names entry");
+    if (CK.childLabel(L, 3) !== "Clap")
+      fail("childLabel ignored the last child_names entry");
+
+    /* Partial arrays fall back PER ITEM. A module that names its first four
+     * pads and leaves the rest must not lose "Pad 5" for the others. */
+    const partial = { ...L, child_names: ["Kick", "Snare"] };
+    if (CK.childLabel(partial, 0) !== "Kick")
+      fail("a partial child_names lost its declared entry");
+    if (CK.childLabel(partial, 2) !== "Pad 3")
+      fail("a partial child_names did not fall back per item");
+
+    /* No names at all: unchanged behaviour, which every fleet module relies on. */
+    const unnamed = { ...L };
+    delete unnamed.child_names;
+    if (CK.childLabel(unnamed, 2) !== "Pad 3")
+      fail("an unnamed child level lost its generated label");
+  }
 
   /* ---- purity --------------------------------------------------------- */
 
