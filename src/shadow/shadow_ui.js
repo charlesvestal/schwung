@@ -16385,7 +16385,29 @@ let widgetRetryTick = 0;
 function tickComponentWidgets() {
     if (widgetModuleLoaded) return;                 /* resolved: nothing to ask */
     if (++widgetRetryTick % WIDGET_RETRY_TICKS) return;
-    ensureComponentWidgets(getHierarchyActiveModuleId(), hierEditorChainParams);
+
+    /*
+     * ASK THE VIEW THAT IS ON SCREEN, NOT THE ONE THAT EXITED.
+     *
+     * This used to read hierEditorChainParams and getHierarchyActiveModuleId,
+     * and logged `id="" params=0` forever. Not an unsettled read -- entering
+     * PARAM_PAGES tears the hierarchy editor down, so hierEditorSlot is -1 and
+     * getHierarchyActiveModuleId returns "" on its FIRST LINE without ever
+     * performing an IPC read, while hierEditorChainParams has been reset to [].
+     * The retry was interrogating a view that no longer existed.
+     *
+     * The knob grid carries its own identity. Diving into the fullscreen canvas
+     * and back rebuilds the hierarchy editor, which is the only reason the
+     * widget ever appeared at all.
+     */
+    const slot = paramPagesSlot();
+    const comp = paramPagesComponent();
+    if (slot < 0 || !comp) return;
+
+    const prefix = getComponentParamPrefix(comp);
+    if (!prefix) return;
+    const id = getSlotParam(slot, `${prefix}_module`) || "";
+    ensureComponentWidgets(id, getComponentChainParams(slot, comp));
 }
 
 function ensureComponentWidgets(moduleId, chainParams) {

@@ -124,6 +124,20 @@ ok(/if\s*\(\s*widgetModuleLoaded\s*\)\s*return;/.test(tcwBody),
    "the retry stops once the id resolves");
 ok(/WIDGET_RETRY_TICKS/.test(tcwBody),
    "the retry is THROTTLED -- the id costs an IPC read, ~2.8ms against a 1.68ms render");
+
+/* THE RETRY MUST ASK THE VIEW THAT IS ON SCREEN.
+ *
+ * It read hierEditorChainParams and getHierarchyActiveModuleId while running
+ * from the PARAM_PAGES tick, and logged id="" params=0 forever: entering
+ * PARAM_PAGES tears the hierarchy editor down, so hierEditorSlot is -1 and
+ * getHierarchyActiveModuleId returns "" on its first line without ever
+ * performing a read, while hierEditorChainParams has been reset to []. Four
+ * theories died on the assumption that an empty answer meant an unsettled
+ * READ; it meant the wrong SOURCE. */
+ok(/paramPagesSlot\(\)/.test(tcwBody) && /paramPagesComponent\(\)/.test(tcwBody),
+   "the knob-grid retry takes its identity from the knob grid");
+ok(!/hierEditor/.test(tcwBody),
+   "the knob-grid retry does NOT read hierarchy-editor state, which PARAM_PAGES has torn down");
 ok(/if \(view === VIEWS\.PARAM_PAGES\) tickComponentWidgets\(\);/.test(src),
    "the retry is driven from the knob-grid tick");
 
