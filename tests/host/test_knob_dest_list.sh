@@ -38,7 +38,7 @@ if (cHit && jsHit) {
        each would close over its own copy and none would see the others. ---- */
 const NAMES = ["knobDestRows", "knobDestRowLabel", "knobDestRowValue",
                "knobDestWriteWindow", "knobDestListTurn", "knobDestListClick",
-               "knobRowLabel", "knobDestIsRanged", "knobWindowLabel",
+               "knobRowLabel", "knobDestIsRanged",
                "getKnobAssignmentLabel"];
 let body = "";
 for (const n of NAMES) {

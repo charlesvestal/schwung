@@ -611,6 +611,8 @@ CHAIN_INTERNAL chain_param_info_t *find_param_info(chain_param_info_t *params, i
 CHAIN_INTERNAL int format_param_value(chain_param_info_t *param, float value, char *buf, int buf_len);
 CHAIN_INTERNAL int is_smoothable_float(const char *val, float *out_value);
 /* One knob-turn law, shared by the three paths that turn a chain knob. */
+CHAIN_INTERNAL int knob_read_live_value(chain_instance_t *inst, const char *target,
+                                        const char *param, char *buf, int buf_len);
 CHAIN_INTERNAL int knob_mapping_index(chain_instance_t *inst, const knob_mapping_t *km);
 CHAIN_INTERNAL void knob_mapping_drop(chain_instance_t *inst, knob_mapping_t *km);
 CHAIN_INTERNAL knob_mapping_t *knob_mapping_for_cc(chain_instance_t *inst, int cc, int create);

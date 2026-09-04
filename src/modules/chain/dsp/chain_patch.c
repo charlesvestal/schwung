@@ -672,6 +672,11 @@ static const char *json_span_end(const char *start) {
 static void json_row_string(const char *obj_start, const char *obj_end,
                             const char *field, char *out, size_t out_len) {
     out[0] = '\0';
+    /* `field` carries its own colon ("\"param\":"), so a row whose VALUE is the
+     * word this looks for cannot be mistaken for the key. Without it,
+     * {"param":"lo","value":0.5} answers the search for "lo" at its own value
+     * and reads 0.5 as that field -- a module free to name a parameter `lo`,
+     * `hi`, `dest` or `pos` could silently rewrite the row around it. */
     const char *pos = strstr(obj_start, field);
     if (!pos || pos >= obj_end) return;
     const char *colon = strchr(pos, ':');
@@ -690,6 +695,7 @@ static void json_row_string(const char *obj_start, const char *obj_end,
  * so a caller's default survives a field the writer did not emit. */
 static void json_row_float(const char *obj_start, const char *obj_end,
                            const char *field, float *out) {
+    /* `field` carries its own colon -- see json_row_string. */
     const char *pos = strstr(obj_start, field);
     if (!pos || pos >= obj_end) return;
     const char *colon = strchr(pos, ':');
@@ -1269,21 +1275,21 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                 float row_lo = 0.0f, row_hi = 1.0f, row_pos = -1.0f;
                 float row_value = -999999.0f;   /* Sentinel: no saved value */
 
-                const char *cc_pos = strstr(obj_start, "\"cc\"");
+                const char *cc_pos = strstr(obj_start, "\"cc\":");
                 if (cc_pos && cc_pos < obj_end) {
                     const char *colon = strchr(cc_pos, ':');
                     if (colon) row_cc = atoi(colon + 1);
                 }
 
-                json_row_string(obj_start, obj_end, "\"target\"", row_target, sizeof(row_target));
-                json_row_string(obj_start, obj_end, "\"param\"", row_param, sizeof(row_param));
+                json_row_string(obj_start, obj_end, "\"target\":", row_target, sizeof(row_target));
+                json_row_string(obj_start, obj_end, "\"param\":", row_param, sizeof(row_param));
 
-                json_row_float(obj_start, obj_end, "\"value\"", &row_value);
-                json_row_float(obj_start, obj_end, "\"lo\"", &row_lo);
-                json_row_float(obj_start, obj_end, "\"hi\"", &row_hi);
-                json_row_float(obj_start, obj_end, "\"pos\"", &row_pos);
+                json_row_float(obj_start, obj_end, "\"value\":", &row_value);
+                json_row_float(obj_start, obj_end, "\"lo\":", &row_lo);
+                json_row_float(obj_start, obj_end, "\"hi\":", &row_hi);
+                json_row_float(obj_start, obj_end, "\"pos\":", &row_pos);
 
-                const char *dest_pos = strstr(obj_start, "\"dest\"");
+                const char *dest_pos = strstr(obj_start, "\"dest\":");
                 if (dest_pos && dest_pos < obj_end) {
                     const char *colon = strchr(dest_pos, ':');
                     if (colon) row_dest = atoi(colon + 1);

@@ -1226,6 +1226,15 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                                 km->last_cc_out = -1;
                                 knob_emit_cc_out(inst, knob_mapping_index(inst, km));
                                 inst->dirty = 1;
+                            } else if (km && km->dest_count == 0) {
+                                /* The mapping had to exist before the point
+                                 * could be attempted, and the point was
+                                 * refused -- a destination index past the end.
+                                 * Leaving it would be a mapping with no
+                                 * destinations, which every readback answers
+                                 * for by reading dests[0]: ": " where the knob
+                                 * should read unassigned. */
+                                knob_mapping_drop(inst, km);
                             }
                         }
                     }
@@ -1665,27 +1674,43 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     value = dsp_value_to_float(val_buf, pinfo, value);
                 }
 
+                /*
+                 * Four writes, and the room is checked after each.
+                 *
+                 * `buf_len - off` is an int: once off passes buf_len it goes
+                 * NEGATIVE and converts to an enormous size_t, so a single
+                 * check after the last write would be checking a bound that
+                 * had already been blown past. Unreachable at today's sizes
+                 * (64 KB against ~4 KB of rows) and cheap to make impossible.
+                 *
+                 * Truncation answers an empty array rather than half an
+                 * object: JSON.parse in the shadow UI throws a half-written
+                 * one into a silent catch, and the knobs would vanish from the
+                 * saved patch with no error anywhere. Visibly nothing beats
+                 * invisibly broken.
+                 */
+                #define KNOB_ROW_ROOM() do { if (off >= buf_len - 2) \
+                    return snprintf(buf, buf_len, "[]"); } while (0)
+
                 off += snprintf(buf + off, buf_len - off,
                     "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f",
                     rows ? "," : "", km->cc, target, param, value);
+                KNOB_ROW_ROOM();
 
                 if (km->dests[di].lo != 0.0f || km->dests[di].hi != 1.0f) {
                     off += snprintf(buf + off, buf_len - off,
                         ",\"lo\":%.4f,\"hi\":%.4f", km->dests[di].lo, km->dests[di].hi);
+                    KNOB_ROW_ROOM();
                 }
                 if (multi) {
                     off += snprintf(buf + off, buf_len - off,
                         ",\"dest\":%d,\"pos\":%.4f", di, km->position);
+                    KNOB_ROW_ROOM();
                 }
                 off += snprintf(buf + off, buf_len - off, "}");
                 rows++;
-
-                /* Truncation would emit half an object, and JSON.parse in the
-                 * shadow UI throws that into a silent catch -- the knob array
-                 * would vanish from the saved patch with no error anywhere.
-                 * Answer an empty array instead: visibly nothing, not
-                 * invisibly broken. */
-                if (off >= buf_len - 2) return snprintf(buf, buf_len, "[]");
+                KNOB_ROW_ROOM();
+                #undef KNOB_ROW_ROOM
             }
         }
         off += snprintf(buf + off, buf_len - off, "]");

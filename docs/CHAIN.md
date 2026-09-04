@@ -98,7 +98,7 @@ Set-param keys, all per slot. `N` is the knob 1-8 and `M` the destination 1-4:
 | --- | --- | --- |
 | `knob_N_set` | `"target:param"` | Collapse this knob to **one whole-range** destination. Unchanged meaning. |
 | `knob_N_clear` | `"1"` | Remove the mapping. |
-| `knob_N_adjust` | `"+N"` / `"-N"` | Turn by an accumulated detent count. |
+| `knob_N_adjust` | `"+N"` / `"-N"` | Turn by one detent in that direction. ⚠ The value is an accumulated COUNT, and only its sign is used — honouring the count would change the feel of every existing chain knob. |
 | `knob_N_dest_M_set` | `"target:param"` | Point destination M, **keeping its window**. `M` one past the end appends. |
 | `knob_N_dest_M_range` | `"lo:hi"` | Its window, as fractions. **Applies immediately.** |
 | `knob_N_dest_M_clear` | `"1"` | Remove destination M. Removing the last clears the knob. |

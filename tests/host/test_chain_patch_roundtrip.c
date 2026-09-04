@@ -697,6 +697,47 @@ static void test_knob_destinations(chain_instance_t *inst, patch_info_t *patch) 
 }
 
 /*
+ * A parameter NAMED like one of the row's own fields must not rewrite the row
+ * around it.
+ *
+ * Each field is found by searching the object for its name, so a row whose
+ * param VALUE is the word being searched for answers the search first and the
+ * colon that follows belongs to the next field. A module is free to expose a
+ * parameter called `lo`, `hi`, `pos` or `dest`; before the field names carried
+ * their own colons, `{"param":"hi","value":0.5}` came back with a window of
+ * 0..0.5, and `{"param":"dest","value":3}` built a mapping claiming four
+ * destinations whose first three were empty -- which then persisted through a
+ * save, because the row it re-emitted was the one it had invented.
+ */
+static void test_knob_param_named_like_a_field(chain_instance_t *inst, patch_info_t *patch) {
+    static const char json[] =
+        "{\n  \"name\": \"shadow\",\n"
+        "  \"knob_mappings\": ["
+        "{\"cc\": 71, \"target\": \"synth\", \"param\": \"hi\", \"value\": 0.500}, "
+        "{\"cc\": 72, \"target\": \"synth\", \"param\": \"lo\", \"value\": 0.500}, "
+        "{\"cc\": 73, \"target\": \"synth\", \"param\": \"pos\", \"value\": 0.500}, "
+        "{\"cc\": 74, \"target\": \"synth\", \"param\": \"dest\", \"value\": 3.000}"
+        "]\n}\n";
+
+    write_patch(json);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "field-named patch parsed");
+    CHECK(patch->knob_mapping_count == 4, "four ordinary knobs, one per cc (got %d)",
+          patch->knob_mapping_count);
+
+    for (int i = 0; i < patch->knob_mapping_count; i++) {
+        knob_mapping_t *m = &patch->knob_mappings[i];
+        CHECK(m->dest_count == 1,
+              "cc %d has ONE destination, not a list invented from its param name (got %d)",
+              m->cc, m->dest_count);
+        CHECK(m->dests[0].lo == 0.0f && m->dests[0].hi == 1.0f,
+              "cc %d is whole-range; its param name did not become a window (%.3f..%.3f)",
+              m->cc, (double)m->dests[0].lo, (double)m->dests[0].hi);
+        CHECK(m->position == 0.0f, "cc %d has no position from a param named pos", m->cc);
+    }
+}
+
+/*
  * An older patch -- every knob a bare cc/target/param/value with none of the
  * fields above -- must load as exactly what it was: one whole-range
  * destination. This is the migration, and it is the absence of code.
@@ -939,6 +980,7 @@ int main(int argc, char **argv) {
 
     test_full_capacity(inst, patch);
     test_knob_destinations(inst, patch);
+    test_knob_param_named_like_a_field(inst, patch);
     test_knob_legacy_rows_are_whole_range(inst, patch);
     test_legacy_two_fx(inst, patch);
     test_hostile_json(inst, patch);

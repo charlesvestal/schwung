@@ -1836,7 +1836,7 @@ let knobEditorCcOut = 0;         // Cached knob_cc_out for the slot being edited
 /* A knob may drive up to this many parameters. MUST equal MAX_KNOB_DESTS in
  * src/modules/chain/dsp/chain_internal.h -- a JS copy that drifted high would
  * offer a destination the DSP silently refuses, which reads as a dead row.
- * test_chain_knob_dest_cap_js.sh pins the two together. */
+ * test_knob_dest_list.sh pins the two together. */
 const MAX_KNOB_DESTS = 4;
 
 let knobEditorDests = [];        // Per knob: array of {target, param, lo, hi}
@@ -13284,14 +13284,6 @@ function knobDestIsRanged(d) {
     return !!d && (d.lo !== 0 || d.hi !== 1);
 }
 
-/* A window as the user set it. An inverted one is shown the way it behaves --
- * high to low -- rather than tidied into ascending order, because "100-0%" is
- * the whole point of setting it that way. */
-function knobWindowLabel(d) {
-    if (!d) return "";
-    return `${Math.round(d.lo * 100)}-${Math.round(d.hi * 100)}%`;
-}
-
 /*
  * The knob list's value column. Three shapes, in the 12 characters that column
  * has:
@@ -19513,6 +19505,12 @@ function handleBack() {
                     needsRedraw = true;
                     announce("Knob Target");
                 }
+            } else if ((knobEditorDests[knobEditorIndex] || []).length > 0) {
+                /* Back to the destination list this was entered from -- landing
+                 * on the knob list instead loses the row the user was on. */
+                setView(VIEWS.KNOB_DEST_LIST);
+                announce(`Knob ${knobEditorIndex + 1} destinations`);
+                needsRedraw = true;
             } else {
                 /* Return to knob editor */
                 setView(VIEWS.KNOB_EDITOR);
@@ -20247,10 +20245,11 @@ function knobDestListClick() {
 
     switch (row.kind) {
         case "dest":
-            /* Re-point THIS destination. Seeding the picker from the
-             * destination being edited rather than from the first one matters:
-             * opening destination 3's picker on destination 1's component
-             * reads as a wrong answer, never as an error. */
+            /* Re-point THIS destination. What the picker carries is which
+             * destination its RESULT applies to -- get that wrong and
+             * choosing a parameter for destination 3 silently rewrites
+             * destination 1, which reads as a wrong answer and never as an
+             * error. (The picker's own cursor starts at the top either way.) */
             knobEditorDestIndex = row.di;
             enterKnobParamPicker();
             break;
