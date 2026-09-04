@@ -127,8 +127,14 @@ order is rack order; seating is the consumer's business.
 
 ### 3. Focus: one key, exactly one live source
 
-`focused_voice`, on the component prefix (`synth:focused_voice`), readable and
-writable. It answers the **0-based index into the canonical voice list** — the
+**`focused_voice` is a resolution rule, not a param key.** Nothing serves
+`synth:focused_voice`; it is what `voices.mjs` computes from three raw inputs
+(below), and what a sequencer computes the same way from the same inputs. An
+earlier draft had the chain host serving it as a key, which stopped being
+possible when the fallback moved to a note — a host that does not build the
+voice list cannot answer in voice indices.
+
+Resolved, it is the **0-based index into the canonical voice list** — the
 list the consumer already has from the same `ui_hierarchy` read, so index → name
 / note / level is a local lookup rather than another round trip. Canonical order:
 instance order for a child level; for sibling levels, nav-link order from `root`,
@@ -137,15 +143,18 @@ declaration order — a voice reachable only from a sub-level must still have a
 stable index, and silently dropping it would make the list disagree with itself
 between two consumers.
 
-Writing it moves focus, which is how `child_index_param` already behaves and is
-what makes the picker and the module incapable of disagreeing — they are the same
-write.
+Where the module owns the focus, **writing the module's own param moves it** —
+which is how `child_index_param` already behaves, and is what makes the picker
+and the module incapable of disagreeing: they are the same write.
 
-| Module declares | Source of `focused_voice` |
-|---|---|
-| `child_index_param` (template shape) | forwarded to the module, translated out of its own numbering |
-| `focus_param` (new, top-level in `ui_hierarchy`, value is a level name) | forwarded to the module, translated to an index |
-| neither, but voices declared | host fallback: `synth:last_note`, resolved against the voice list |
+The three inputs, in priority order. The first one the module declares wins, and
+the rest are not consulted:
+
+| Module declares | Input read | Resolved by |
+|---|---|---|
+| `child_index_param` (template shape) | `<prefix>:<child_index_param>` — the module's own instance numbering | `childIndexFromWire`, then instance → voice index |
+| `focus_param` (new, top-level in `ui_hierarchy`) | `<prefix>:<focus_param>` — a **level name** | level name → voice index |
+| neither, but voices declared | `<prefix>:last_note` | note → voice index |
 
 The fallback never runs for a module that owns its focus, so two sources that
 disagree and then latch cannot be constructed. A module that moves its own focus
