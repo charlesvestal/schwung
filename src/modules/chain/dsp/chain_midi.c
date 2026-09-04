@@ -804,14 +804,29 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     /* Relative encoder: apply acceleration to base step */
                     float base_step = (pinfo->step > 0) ? pinfo->step
                         : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
-                    float delta = 0.0f;
-                    if (msg[2] == 1) {
-                        delta = base_step * accel;
-                    } else if (msg[2] == 127) {
-                        delta = -base_step * accel;
-                    } else {
-                        return;  /* Ignore other values */
-                    }
+
+                    /* Relative, two's complement 7-bit: 1..63 is +1..+63
+                     * detents, 127..65 is -1..-63. Move's own knobs only ever
+                     * send +/-1, so decoding only those was sufficient for Move
+                     * and silently wrong for everything else: an accelerated
+                     * encoder (OXI E16, and most endless controllers) reports
+                     * how many detents passed since the last message, so every
+                     * fast turn fell into the else and was dropped. The control
+                     * worked when crept and died when played. 0 is not a
+                     * movement, and 64 is the unusable midpoint. */
+                    if (msg[2] == 0 || msg[2] == 64) return;
+                    int ticks = (msg[2] < 64) ? (int)msg[2] : (int)msg[2] - 128;
+                    int mag = (ticks < 0) ? -ticks : ticks;
+
+                    /* An encoder reporting more than one detent has already
+                     * done the accelerating; applying the time-based multiplier
+                     * on top would compound them. Enums never accelerate (see
+                     * the cap above), so they advance one option per message. */
+                    if (pinfo->type == KNOB_TYPE_ENUM) mag = 1;
+                    else if (mag > 1) accel = KNOB_ACCEL_MIN_MULT;
+
+                    float delta = base_step * (float)accel * (float)mag;
+                    if (ticks < 0) delta = -delta;
 
                     float new_val = inst->knob_mappings[i].current_value + delta;
                     if (new_val < pinfo->min_val) new_val = pinfo->min_val;
