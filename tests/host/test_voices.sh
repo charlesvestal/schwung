@@ -26,7 +26,8 @@ node -e '
 Promise.all([
   import("./src/shared/param_pages/voices.mjs"),
   import("./src/shared/param_pages/child_key.mjs"),
-]).then(([V, CK]) => {
+  import("./src/shared/param_pages/page_plan.mjs"),
+]).then(([V, CK, PLAN]) => {
   let bad = 0;
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
@@ -228,6 +229,66 @@ Promise.all([
     fail("the last child voice has the wrong list position");
   if (V.voiceIndexFromChild(mv, "pads", 0) !== 1)
     fail("child lookup answered the instance rather than the voice index");
+
+  /* ---- the picker labels, THROUGH THE PLANNER -------------------------- */
+
+  /* The assertions above call childLabel directly, and that is exactly how
+   * this shipped broken: childLabel honoured child_names while the grid page
+   * that lists the pads built its own labels inline in page_plan.mjs and never
+   * called it. So a module that named its pads saw "Kick" in every list except
+   * the one the user actually picks from. A test that constructs its subject by
+   * hand cannot see that; this one comes through planPages.
+   *
+   * Only the NAME is shared. The trailing number stays 1-based here while
+   * childLabel counts from child_index_base -- minijv part_selector declares no
+   * base, so unifying that too would renumber its picker from Part 1-8 to
+   * Part 0-7. That is a real, older disagreement and it is deliberately left
+   * alone; the second case below pins it so it cannot drift by accident. */
+  {
+    const pl = PLAN.planPages({
+      hierarchy: {
+        layout: "drums",
+        levels: {
+          root: { params: [{ level: "pads", label: "Pads" }] },
+          pads: {
+            name: "Pads", child_count: 4, child_label: "Pad",
+            child_key_template: "p{index}_{key}", child_index_base: 1,
+            child_names: ["Kick", "Snare", "Rim", "Clap"],
+            knobs: ["vol"], params: [{ key: "vol" }],
+          },
+        },
+      },
+      chainParams: [{ key: "p01_vol", type: "float", min: 0, max: 1 }],
+    });
+    const pages = Array.isArray(pl) ? pl : (pl && pl.pages) || [];
+    const picker = pages.find((p) => Array.isArray(p.derivedLabels));
+    if (!picker)
+      fail("the planner produced no instance picker -- this check would pass against nothing");
+    else if (picker.derivedLabels.join(",") !== "Kick,Snare,Rim,Clap")
+      fail("the picker ignored child_names: " + JSON.stringify(picker.derivedLabels));
+
+    /* Undeclared: unchanged, 1-based, which every fleet module relies on. */
+    const pl2 = PLAN.planPages({
+      hierarchy: {
+        levels: {
+          root: { params: [{ level: "pads" }] },
+          pads: {
+            name: "Pads", child_count: 4, child_label: "Pad",
+            child_key_template: "p{index}_{key}",
+            knobs: ["vol"], params: [{ key: "vol" }],
+          },
+        },
+      },
+      chainParams: [{ key: "p1_vol", type: "float", min: 0, max: 1 }],
+    });
+    const pages2 = Array.isArray(pl2) ? pl2 : (pl2 && pl2.pages) || [];
+    const picker2 = pages2.find((p) => Array.isArray(p.derivedLabels));
+    if (!picker2)
+      fail("the planner produced no picker for the undeclared level");
+    else if (picker2.derivedLabels.join(",") !== "Pad 1,Pad 2,Pad 3,Pad 4")
+      fail("an undeclared level lost its 1-based picker labels: "
+           + JSON.stringify(picker2.derivedLabels));
+  }
 
   /* ---- a REAL module, not a fixture I wrote ---------------------------- */
 

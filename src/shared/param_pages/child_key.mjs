@@ -50,12 +50,27 @@ export function childCount(level) {
  * others, so a partial declaration is an improvement rather than a trade.
  */
 export function childLabel(level, i) {
+    return childName(level, i) || `${(level && level.child_label) || "Item"} ${i + indexBase(level)}`;
+}
+
+/**
+ * The name instance `i` DECLARES, or null if it declares none.
+ *
+ * Split out because two callers need "what is this instance called" and they
+ * disagree about the fallback NUMBER, which is a separate and older question:
+ * `childLabel` counts from `child_index_base`, while the grid's Selected-Pad
+ * page has always counted from 1 regardless. minijv's `part_selector` declares
+ * no base, so unifying the numbering would silently renumber its picker from
+ * "Part 1-8" to "Part 0-7" — a visible change nobody asked for.
+ *
+ * So the NAME is shared and the numbering fallbacks stay as they are. Sharing
+ * only the half that is genuinely one fact is what stops a module's declared
+ * "Kick" appearing in one list and "Pad 1" in another.
+ */
+export function childName(level, i) {
     const names = level && level.child_names;
-    if (Array.isArray(names) && typeof names[i] === "string" && names[i].length) {
-        return names[i];
-    }
-    const base = (level && level.child_label) || "Item";
-    return `${base} ${i + indexBase(level)}`;
+    return (Array.isArray(names) && typeof names[i] === "string" && names[i].length)
+        ? names[i] : null;
 }
 
 function indexBase(level) {

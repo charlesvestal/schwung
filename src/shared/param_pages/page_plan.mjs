@@ -19,7 +19,7 @@
  * (c) 2026 megadake, MIT — https://github.com/DimaDake/schwung-movy
  */
 
-import { hasChildren, childCount, childIndexParam } from "./child_key.mjs";
+import { hasChildren, childCount, childIndexParam, childName } from "./child_key.mjs";
 
 /**
  * Every param key the hierarchy lists ANYWHERE — so the planner can ask
@@ -773,9 +773,21 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 /* The SAME derived-list field the mode selector uses. One
                  * mechanism: the planner decides what the labels say, and
                  * itemsState never learns there are two kinds of source. */
+                /* A DECLARED name wins over the generated one. Without this the
+                 * page built its labels inline and never consulted the
+                 * declaration, so a module that named its pads still saw
+                 * "Pad 1 ... Pad 16" HERE while every other list showed "Kick".
+                 * The unit test passed throughout because it called childLabel
+                 * directly and never came through the planner.
+                 *
+                 * Only the NAME is shared: the trailing number stays 1-based
+                 * here, because childLabel counts from child_index_base and
+                 * minijv declares none -- so borrowing that too would renumber
+                 * its picker from Part 1-8 to Part 0-7. See childName. */
                 derivedLabels: Array.from(
                     { length: childCount(lvl) },
-                    (_, i) => `${lvl.child_label || "Item"} ${i + 1}`),
+                    (_, i) => childName(lvl, i)
+                        || `${lvl.child_label || "Item"} ${i + 1}`),
                 childOf: levelKey,
                 childLevel: lvl,
             });
