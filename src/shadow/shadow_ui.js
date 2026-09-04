@@ -13386,9 +13386,28 @@ function getKnobPickerLevelItems(hierarchy, levelName) {
 function findFirstParamLevel(hierarchy) {
     if (!hierarchy || !hierarchy.levels) return "root";
 
-    /* Check if root has children, follow to first real params level */
-    let level = hierarchy.levels.root;
+    /*
+     * Where the walk STARTS.
+     *
+     * "root" is only a convention, not a guarantee. A mode-based module names
+     * its top levels after its modes (`modes: ["patch","performance","system"]`
+     * with no `root` at all), and asking for a level that does not exist
+     * returns nothing -- so the knob picker showed an EMPTY parameter list for
+     * every such module, while the all-levels scan sitting right next to it
+     * would have found them. Prefer root, then the first declared mode, then
+     * simply the first level there is.
+     */
     let levelName = "root";
+    if (!hierarchy.levels.root) {
+        if (Array.isArray(hierarchy.modes) && hierarchy.modes.length &&
+            hierarchy.levels[hierarchy.modes[0]]) {
+            levelName = hierarchy.modes[0];
+        } else {
+            const first = Object.keys(hierarchy.levels)[0];
+            if (first) levelName = first;
+        }
+    }
+    let level = hierarchy.levels[levelName];
 
     /* Skip preset browser levels (those with list_param) */
     while (level && level.list_param && level.children) {
@@ -18942,6 +18961,17 @@ function handleSelect() {
                                 /* Find first level with actual params (skip preset browser) */
                                 knobParamPickerLevel = findFirstParamLevel(knobParamPickerHierarchy);
                                 knobParamPickerParams = getKnobPickerLevelItems(knobParamPickerHierarchy, knobParamPickerLevel);
+                                if (knobParamPickerParams.length === 0) {
+                                    /* A hierarchy that parses but yields no
+                                     * parameters at the level we entered leaves
+                                     * the user staring at an empty list. The
+                                     * all-levels scan is right here and finds
+                                     * them wherever they live, so use it rather
+                                     * than showing nothing. */
+                                    knobParamPickerHierarchy = null;
+                                    knobParamPickerLevel = null;
+                                    knobParamPickerParams = getKnobParamsForTarget(knobEditorSlot, selected.id);
+                                }
                             } catch (e) {
                                 /* Parse error - fall back to flat mode */
                                 knobParamPickerHierarchy = null;
