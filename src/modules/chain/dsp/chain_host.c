@@ -732,6 +732,7 @@ void parse_debug_log(const char *msg) {
 static void lfo_tick(chain_instance_t *inst, int frames);
 static void lock_tick(chain_instance_t *inst);
 static void lock_clear_all(chain_instance_t *inst);
+static void lock_record_write(chain_instance_t *inst, const char *target, const char *param, const char *val);
 
 static void v2_set_param(void *instance, const char *key, const char *val) {
     chain_instance_t *inst = (chain_instance_t *)instance;
@@ -1022,6 +1023,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
+            lock_record_write(inst, "synth", subkey, val);
             if (chain_mod_is_target_active(inst, "synth", subkey)) {
                 chain_mod_update_base_from_set_param(inst, "synth", subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, "synth", subkey);
@@ -1063,6 +1065,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
              * exists is an ordinary event, not a bug to be recovered from. */
             char fx_id[16];
             chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+            lock_record_write(inst, fx_id, subkey, val);
             if (chain_mod_is_target_active(inst, fx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
@@ -1107,6 +1110,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             /* Dropped if the slot holds nothing — see the audio FX branch. */
             char mfx_id[16];
             chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+            lock_record_write(inst, mfx_id, subkey, val);
             if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
@@ -1142,6 +1146,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     chain_mod_clear_source(inst, source_id);
                 }
             }
+        } else if (strcmp(subkey, "rec") == 0) {
+            st->rec = val ? (atoi(val) ? 1 : 0) : 0;
         } else if (strcmp(subkey, "pattern_len") == 0) {
             st->pattern_len = lock_clamp_pattern_len(val ? atoi(val) : LOCK_DEFAULT_STEPS);
             st->cur_step = LOCK_STEP_NONE;
@@ -1617,6 +1623,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
         if (strcmp(subkey, "enabled") == 0)
             return snprintf(buf, buf_len, "%d", st->enabled);
+        if (strcmp(subkey, "rec") == 0)
+            return snprintf(buf, buf_len, "%d", st->rec);
         if (strcmp(subkey, "pattern_len") == 0)
             return snprintf(buf, buf_len, "%d", st->pattern_len);
         if (strcmp(subkey, "rate_div") == 0)
@@ -2129,6 +2137,40 @@ static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
  * cleared for the same reason they are: locks name a target ("synth", "fx1")
  * and unloading everything they could point at would otherwise leave them
  * aimed at a component that no longer exists. */
+/* Live recording: a component write lands on the playing step as well.
+ *
+ * Called from the synth/fx/midi_fx branches of v2_set_param BEFORE the
+ * modulation-bus early return, because that return is exactly the case that
+ * matters: a lock already playing on this step drives the parameter, and the
+ * user's move must REPLACE that lock, not vanish under it. The value is
+ * published straight away through the same absolute source lock_tick uses, so
+ * the step sounds the new value for the rest of its length rather than at the
+ * next step change. */
+static void lock_record_write(chain_instance_t *inst, const char *target, const char *param, const char *val) {
+    if (!inst || !target || !param || !val) return;
+    lock_state_t *st = &inst->locks;
+    if (!st->rec || !st->enabled || st->cur_step < 0) return;
+
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) return;
+    const float value = dsp_value_to_float(val, pinfo, pinfo->default_val);
+
+    lock_lane_t *lane = lock_alloc_lane(st, target, param);
+    if (!lane) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "lock rec dropped - all %d lanes in use (%s:%s)",
+                 LOCK_MAX_LANES, target, param);
+        v2_chain_log(inst, msg);
+        return;
+    }
+    lock_lane_set(lane, st->cur_step, value);
+
+    char source_id[8];
+    lock_source_id((int)(lane - st->lanes), source_id, sizeof(source_id));
+    chain_mod_emit_absolute(inst, source_id, target, param, value, 1);
+    inst->dirty = 1;
+}
+
 static void lock_clear_all(chain_instance_t *inst) {
     if (!inst) return;
 
@@ -2165,9 +2207,11 @@ static void lock_tick(chain_instance_t *inst) {
 
     lock_state_t *st = &inst->locks;
 
-    /* No lanes means no locks and no work — before touching the transport, so
-     * an ordinary slot pays one compare for a feature it does not use. */
-    if (st->lane_count <= 0) return;
+    /* No lanes and not recording means no locks and no work — before touching
+     * the transport, so an ordinary slot pays two compares for a feature it
+     * does not use. Recording needs the playhead even with no lanes yet: the
+     * first recorded write creates the first lane. */
+    if (st->lane_count <= 0 && !st->rec) return;
 
     double beat_position = -1.0;
     if (inst->host && inst->host->get_beat_position) {
@@ -2179,6 +2223,11 @@ static void lock_tick(chain_instance_t *inst) {
     const int step = st->enabled
         ? lock_step_at(beat_position, st->rate_div, st->pattern_len)
         : LOCK_STEP_NONE;
+
+    /* Recording ends with the transport. A toggle left on across a stop would
+     * turn the next knob you touched into a lock on whatever step the next
+     * Play started on, which is not a thing anyone meant to do. */
+    if (beat_position < 0.0 && st->rec) st->rec = 0;
 
     if (step == st->cur_step) return;
     st->cur_step = step;

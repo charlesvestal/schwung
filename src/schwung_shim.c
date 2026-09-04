@@ -8603,6 +8603,27 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                 /* Check capture rules for CCs (beyond the hardcoded blocks) */
                 /* Skip knobs - they're handled by shadow UI, not routed to DSP */
+                /* RECORD (CC 118) also arms parameter-lock recording on the
+                 * focused slot. "Press record, move the pot": Move arms its own
+                 * clip recording on the same press — this is the Schwung half.
+                 * Toggled here, in-process, rather than in the UI, so it works
+                 * while a module draws its own grid. The chain drops the flag
+                 * when the transport stops, so the two cannot drift for long.
+                 * The press still reaches Move: nothing here swallows it. */
+                if (d1 == 118 && d2 > 0 && shadow_control && shadow_plugin_v2 &&
+                    shadow_plugin_v2->set_param && shadow_plugin_v2->get_param) {
+                    int slot = shadow_control->ui_slot;
+                    if (slot >= 0 && slot < SHADOW_CHAIN_INSTANCES &&
+                        shadow_chain_slots[slot].active && shadow_chain_slots[slot].instance) {
+                        char cur[8] = "0";
+                        int n = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                            "lock:rec", cur, sizeof(cur));
+                        int on = (n > 0 && atoi(cur)) ? 0 : 1;
+                        shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                                    "lock:rec", on ? "1" : "0");
+                    }
+                }
+
                 int is_knob_cc = (d1 >= 71 && d1 <= 78);
                 {
                     /* !is_knob_cc first: knob CCs stream continuously and are

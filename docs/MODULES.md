@@ -3023,6 +3023,31 @@ clip was 32 steps or a triplet feel, with nothing on screen to explain it.
 
 Locks persist in the patch, beside `lfos`, and are restored with it.
 
+**Settings.** Slot settings → **Locks** page: `Locks` on/off, `Rec`, `Steps`
+(pattern length, 1–64) and `Rate` (step division). **Actions → Clear Locks**
+drops every lock and keeps Steps/Rate.
+
+**Live recording.** Press Move's **Record** button while a Schwung slot is
+focused — Move arms its own clip recording on the same press; this is the
+Schwung half — or turn `Rec` on. While the transport runs, every knob move is
+also stamped as a lock on the step playing at that moment, Elektron-style: the
+steps you pass keep the values you passed them with, the base keeps moving so
+you hear the turn, and steps you never reached play the value you ended on.
+Recording ends with the transport. Any write records — a module-owned grid,
+the native grid, the web panel, an assigned CC — because the stamping happens
+in the chain, not in a UI.
+
+**What a lock is attached to — and what it is not.** Locks belong to the
+*slot's sound*: they are saved with the patch and the set, not with a Move
+clip, because Schwung cannot see Move's clips. So:
+
+- Switching clips on the track: the locks stay with the sound.
+- Copying or duplicating a Move clip: the locks are not in it; they do not copy.
+- Changing the clip length: locks repeat every `Steps` steps. Set Steps to 32
+  for a 32-step clip, or a lock on step 9 plays on 9 and 25.
+- Locks beyond the current `Steps` are kept, not deleted, so shortening and
+  lengthening again loses nothing.
+
 **Limits.** Up to 16 *lanes* — distinct `(target, param)` pairs holding locks —
 and 64 steps. Lanes are capped because each one that fires on the current step
 consumes one of the chain's 32 modulation entries, which the LFOs also draw

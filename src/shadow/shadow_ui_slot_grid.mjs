@@ -242,6 +242,41 @@ export function lfoParams(lfoIndex, keyPrefix = "") {
  * one a per-slot LFO reaches for more often. Retrigger stays editable in the
  * list view.
  */
+/*
+ * Parameter locks — the slot's timing and switches, on one page.
+ *
+ * The DSP derives the playing step from a pattern length and a step rate
+ * (host/lock_common.h); nothing reports Move's clip length, so they are
+ * settings the user can SEE. A 32-step clip with locks placed against 16 would
+ * repeat them twice per bar with no clue why — here it says 16, and you change
+ * it. Rec is Elektron's live record: while on and the transport runs, every
+ * knob move is also stamped as a lock on the step playing at that moment. It
+ * is transient — the DSP drops it when the transport stops — which is why it
+ * has no `default` and is never saved.
+ */
+export function lockParams(keyPrefix = "") {
+    const k = (name) => `${keyPrefix}lock:${name}`;
+    return [
+        { key: k("enabled"), name: "Locks", type: "enum",
+          options: ["Off", "On"], short_options: ["OFF", "ON"] },
+        { key: k("rec"), name: "Rec", type: "enum",
+          options: ["Off", "On"], short_options: ["OFF", "REC"] },
+        { key: k("pattern_len"), name: "Steps", type: "int", min: 1, max: 64, step: 1, default: 16 },
+        { key: k("rate_div"), name: "Rate", type: "enum",
+          options: LFO_DIVISIONS, short_options: LFO_DIVISIONS_SHORT },
+    ];
+}
+export function lockKnobKeys(keyPrefix = "") {
+    return lockParams(keyPrefix).map((p) => p.key);
+}
+export function lockLevel(keyPrefix = "") {
+    return {
+        label: "Locks",
+        knobs: lockKnobKeys(keyPrefix),
+        params: lockParams(keyPrefix).map((p) => ({ key: p.key })),
+    };
+}
+
 export function lfoKnobKeys(lfoIndex, keyPrefix = "") {
     return lfoParams(lfoIndex, keyPrefix).map((p) => p.key);
 }
@@ -286,6 +321,8 @@ export const SLOT_GRID_ACTIONS = [
      * where Save offers a generated name. Only DELETE is meaningless. Same
      * filter getChainSettingsItems applies to the list. */
     { label: "Save As", action: "save_as", always: true },
+    /* Drops every lock in the slot; Steps/Rate stay, they describe the clip. */
+    { label: "Clear Locks", action: "lock_clear", always: true },
     { label: "Delete", action: "delete", always: false },
 ];
 
@@ -312,17 +349,19 @@ export function slotGridHierarchy(hasPreset) {
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
                 .concat([{ level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
+                         { level: "locks", label: "Locks" },
                          { level: "actions", label: "Actions" }]),
         },
     };
     Object.assign(levels, lfoLevels([1, 2]));
+    levels.locks = lockLevel();
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
     return { modes: null, levels };
 }
 
-/** Every declared param across the slot page and both LFO pages. */
+/** Every declared param across the slot page, both LFO pages and the Locks page. */
 export function allSlotGridParams() {
-    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2));
+    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2)).concat(lockParams());
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
@@ -333,6 +372,8 @@ export function realKeyFor(gridKey) {
      * the same one makeSlotLfoCtx uses, so they pass straight through. Adding
      * "slot:" would address a param that does not exist and read empty. */
     if (/^lfo[12]:/.test(gridKey)) return gridKey;
+    /* lock:* are chain keys, served by the slot's chain instance like lfoN:*. */
+    if (/^lock:/.test(gridKey)) return gridKey;
     return "slot:" + gridKey;
 }
 

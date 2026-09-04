@@ -68,11 +68,13 @@ function makeSlot(over) {
   const grids = pages.filter((p) => p.kind === "knobs");
   const menus = pages.filter((p) => p.kind === "menu");
   /*
-   * Main, LFO 1, LFO 2, Actions. Each LFO is exactly ONE page: nine params
-   * would chunk to 8 + 1 and put an orphan page holding a single control
-   * between LFO 1 and LFO 2.
+   * Main, LFO 1, LFO 2, Locks, Actions. Each LFO is exactly ONE page: nine
+   * params would chunk to 8 + 1 and put an orphan page holding a single
+   * control between LFO 1 and LFO 2. Locks is one page of its four settings
+   * (on/off, rec, steps, rate) — fewer than eight, and deliberately not padded
+   * with readouts to fill the grid.
    */
-  if (grids.length !== 3) fail("expected 3 grid pages (Main + two LFOs), got " + grids.length);
+  if (grids.length !== 4) fail("expected 4 grid pages (Main + two LFOs + Locks), got " + grids.length);
   if (menus.length !== 1) fail("expected one actions menu page, got " + menus.length);
   if (pages[pages.length - 1].kind !== "menu") {
     fail("Actions must come LAST — a level emits its menu before any level it " +
@@ -80,14 +82,22 @@ function makeSlot(over) {
          pages.map((p) => p.name).join(" / "));
   }
   const names = pages.map((p) => p.name);
-  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  const order = ["Main", "LFO 1", "LFO 2", "Locks", "Actions"];
   if (names.join("|") !== order.join("|")) {
     fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   }
   for (const g of grids) {
-    if ((g.keys || []).length !== 8) {
-      fail("page " + JSON.stringify(g.name) + " should hold 8 knobs, got " + (g.keys || []).length);
+    const want = g.name === "Locks" ? 4 : 8;
+    if ((g.keys || []).length !== want) {
+      fail("page " + JSON.stringify(g.name) + " should hold " + want + " knobs, got " + (g.keys || []).length);
     }
+  }
+  /* The Locks page holds exactly its declared params, in declared order —
+   * the same rule the master values page is held to. */
+  const locksPage = grids.find((g) => g.name === "Locks");
+  const wantLocks = ["lock:enabled", "lock:rec", "lock:pattern_len", "lock:rate_div"];
+  if (!locksPage || (locksPage.keys || []).join("|") !== wantLocks.join("|")) {
+    fail("Locks page keys should be " + wantLocks.join(" / ") + ", got " + ((locksPage && locksPage.keys) || []).join(" / "));
   }
 
   const keys = grids[0].keys || [];

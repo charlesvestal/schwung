@@ -71,6 +71,16 @@ typedef struct {
 
     int cur_step;               /* step currently published, or LOCK_STEP_NONE */
     int enabled;                /* master on/off; off clears every lock source */
+
+    /* LIVE RECORDING. While set and the transport runs, every write to a
+     * component parameter is also stamped as a lock on the step playing at
+     * that moment — Elektron's live-record: press record, move the knob, and
+     * the steps you pass keep the values you passed them with. The base still
+     * moves (you hear the turn), so steps you never reached play the value you
+     * ended on, exactly as they do there. Transient: never saved, and cleared
+     * by the engine when the transport stops, so a stray toggle cannot lie in
+     * wait for the next knob you touch. */
+    int rec;
 } lock_state_t;
 
 /* ============================================================================
@@ -84,6 +94,7 @@ static inline void lock_state_init(lock_state_t *st) {
     st->rate_div = LOCK_DEFAULT_RATE_DIV;
     st->cur_step = LOCK_STEP_NONE;
     st->enabled = 1;
+    st->rec = 0;
 }
 
 static inline int lock_clamp_pattern_len(int len) {

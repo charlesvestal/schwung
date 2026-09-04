@@ -94,4 +94,58 @@ if ! rg -q 'strcmp\(subkey, "step"\) == 0' "$host"; then
   exit 1
 fi
 
-echo "PASS: chain parameter locks are absolute, non-destructive and explicitly timed"
+# --- live recording ---------------------------------------------------------
+# While lock:rec is on and the transport runs, a component write is ALSO a lock
+# on the playing step. The hook must sit BEFORE the modulation-bus early
+# return: a lock already playing on that step drives the parameter and returns
+# early, and the user's move must replace it, not vanish under it.
+for t in '"synth"' 'fx_id' 'mfx_id'; do
+  if ! rg -n "lock_record_write\(inst, $t, subkey, val\);" -A1 "$host" | rg -q 'chain_mod_is_target_active'; then
+    echo "FAIL: live-record hook missing or after the mod-bus early return for target $t" >&2
+    exit 1
+  fi
+done
+if ! rg -n 'static void lock_record_write' -A6 "$host" | rg -q 'if \(!st->rec \|\| !st->enabled \|\| st->cur_step < 0\) return;'; then
+  echo "FAIL: live recording is not gated on rec + enabled + a playing step" >&2
+  exit 1
+fi
+# Recording ends with the transport, or a stray toggle records the next knob.
+if ! rg -q 'if \(beat_position < 0.0 && st->rec\) st->rec = 0;' "$host"; then
+  echo "FAIL: lock:rec does not clear when the transport stops" >&2
+  exit 1
+fi
+# lock_tick must still run while recording with no lanes yet (the first
+# recorded write creates the first lane).
+if ! rg -q 'if \(st->lane_count <= 0 && !st->rec\) return;' "$host"; then
+  echo "FAIL: lock_tick skips the playhead while recording with no lanes" >&2
+  exit 1
+fi
+# rec is transient: never serialised.
+if rg -q '"rec"' "$common"; then
+  echo "FAIL: lock:rec must not be persisted" >&2
+  exit 1
+fi
+# Move's Record button arms it, in the shim, so a module-owned grid gets it too.
+if ! rg -n 'd1 == 118 && d2 > 0' -A12 src/schwung_shim.c | rg -q '"lock:rec"'; then
+  echo "FAIL: Record (CC 118) does not toggle lock:rec on the focused slot" >&2
+  exit 1
+fi
+
+# --- the settings page ------------------------------------------------------
+grid="src/shadow/shadow_ui_slot_grid.mjs"
+for k in '"enabled"' '"rec"' '"pattern_len"' '"rate_div"'; do
+  if ! rg -n 'export function lockParams' -A14 "$grid" | rg -q "k\($k\)"; then
+    echo "FAIL: Locks page is missing lock:$k" >&2
+    exit 1
+  fi
+done
+if ! rg -q 'if \(/\^lock:/\.test\(gridKey\)\) return gridKey;' "$grid"; then
+  echo "FAIL: lock:* keys are not routed to the chain as-is" >&2
+  exit 1
+fi
+if ! rg -q 'action: "lock_clear"' "$grid" || ! rg -n 'key === "lock_clear"' -A4 src/shadow/shadow_ui.js | rg -q '"lock:clear_all"'; then
+  echo "FAIL: Clear Locks action is not wired" >&2
+  exit 1
+fi
+
+echo "PASS: chain parameter locks are absolute, non-destructive, explicitly timed, recordable, and settable"

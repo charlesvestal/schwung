@@ -12007,6 +12007,13 @@ function runChainSettingAction(slot, key) {
         return;
     }
 
+    if (key === "lock_clear") {
+        /* Drops every lock in the slot; keeps its Steps/Rate settings, which
+         * describe the clip rather than the locks (chain_host.c lock:clear_all). */
+        setSlotParam(slot, "lock:clear_all", "1");
+        announce("Locks cleared");
+        return;
+    }
     if (key === "lfo1" || key === "lfo2") {
         const lfoIdx = (key === "lfo1") ? 0 : 1;
         lfoCtx = makeSlotLfoCtx(slot, lfoIdx);
