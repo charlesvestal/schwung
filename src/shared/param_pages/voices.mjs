@@ -28,6 +28,11 @@
  */
 
 import { hasChildren, childCount, childLabel } from "./child_key.mjs";
+/* One implementation of "what is this level called". See the note on
+ * navLabelsOf in page_plan.mjs. The import direction is safe: page_plan.mjs
+ * imports child_key/viz/param_meta and never voices.mjs, so there is no cycle,
+ * and page_controller.mjs (which imports both) loads page_plan first anyway. */
+import { navLabelsOf, declaredLevelName } from "./page_plan.mjs";
 
 const LAYOUTS = ["drums", "chromatic"];
 
@@ -85,7 +90,7 @@ function childVoiceRole(level, i) {
 /* Every voice one level contributes, in instance order. A level is either a
  * single voice (it declares `note`) or a rack of them (it declares a note
  * map), never both. */
-function voicesForLevel(name, level, out) {
+function voicesForLevel(name, level, out, navLabel) {
     if (!level) return;
     if (hasChildren(level)) {
         const n = childCount(level);
@@ -104,7 +109,14 @@ function voicesForLevel(name, level, out) {
     if (note === null) return;   /* a page, not a voice — 9W9's Reverb/Delay */
     out.push({
         index: out.length, level: name, childIndex: null,
-        name: (typeof level.name === "string" && level.name) ? level.name : name,
+        /* Resolved by page_plan.mjs's declaredLevelName, NOT by a second
+         * spelling here. This line used to read `level.name || name`, which
+         * dropped the nav-link label and the level's own `label` — so
+         * `root: {params: [{level: "bd", label: "Bass Drum"}]}, bd: {note: 36}`
+         * had the page header say "Bass Drum" and the voice list say "bd".
+         * The fallback is the raw key, not the page title's prettify(): a voice
+         * name is an identity a sequencer matches on, not chrome. */
+        name: declaredLevelName(name, level, navLabel) || name,
         note,
         role: (typeof level.role === "string" && level.role) ? level.role : null,
     });
@@ -113,17 +125,29 @@ function voicesForLevel(name, level, out) {
 /**
  * The canonical, ordered voice list.
  *
- * Order: `root`'s nav links first, in declared order — that is the order the
- * user sees and the order a rack should be seated in — then any voice level
- * `root` does not link, in `levels` declaration order. The second half is not
- * cosmetic: a voice reachable only from a sub-level still needs a stable
+ * Order: `root` itself, then `root`'s nav links in declared order — that is the
+ * order the user sees and the order a rack should be seated in — then any voice
+ * level `root` does not link, in `Object.keys(levels)` order. The last part is
+ * not cosmetic: a voice reachable only from a sub-level still needs a stable
  * index, and dropping it would make two consumers disagree about the same
  * list while both looked correct.
+ *
+ * `Object.keys` IS THE ORDER, and it is not quite declaration order: JavaScript
+ * enumerates INTEGER-LIKE keys first, ascending, before the rest in insertion
+ * order. So `{root, "10": …, "2": …, "1": …}` walks 1, 2, 10 — the module's
+ * declared order silently rewritten, in the one file that exists to own that
+ * order. No fleet module names a level "1".."16" today, so this is the promise
+ * rather than a bug to route around: a module wanting a specific order for
+ * numeric-looking levels must LINK them from root, where declared order is
+ * honoured verbatim because nav entries are an array. Pinned by
+ * tests/host/test_voices.sh so the comment cannot drift back to claiming
+ * "declaration order".
  */
 export function voicesOf(hierarchy) {
     const levels = (hierarchy && hierarchy.levels) || {};
     const out = [];
     const seen = new Set();
+    const navLabel = navLabelsOf(levels);
 
     const root = levels.root;
 
@@ -144,17 +168,24 @@ export function voicesOf(hierarchy) {
      * rather than with the fleet.
      *
      * Root goes FIRST because it is where the user lands. */
-    if (root) voicesForLevel("root", root, out);
+    if (root) voicesForLevel("root", root, out, navLabel);
+    /* MARK ROOT SEEN AS PART OF EXPANDING IT. A "Home" nav entry pointing back
+     * at root is an ordinary thing for a rack to declare, and without this it
+     * expanded root a SECOND time: sixteen pads became thirty-two, same levels,
+     * same notes, at two sets of indices. The voice index is the identity this
+     * whole file exists to own, so a doubled list is two consumers disagreeing
+     * about which pad is which — not a cosmetic duplicate. */
+    seen.add("root");
 
     for (const p of (root && root.params) || []) {
         const name = p && typeof p === "object" && p.level;
         if (!name || seen.has(name)) continue;
         seen.add(name);
-        voicesForLevel(name, levels[name], out);
+        voicesForLevel(name, levels[name], out, navLabel);
     }
     for (const name of Object.keys(levels)) {
-        if (name === "root" || seen.has(name)) continue;
-        voicesForLevel(name, levels[name], out);
+        if (seen.has(name)) continue;
+        voicesForLevel(name, levels[name], out, navLabel);
     }
     return out;
 }
@@ -176,7 +207,22 @@ export function voiceIndexFromLevel(voices, levelName) {
     return null;
 }
 
-/** The voice a child level's zero-based instance addresses, or null. */
+/**
+ * The voice a child level's zero-based instance addresses, or null.
+ *
+ * NO CALLER IN THIS REPO, DELIBERATELY. It is the consumer-side half of the
+ * contract — an external sequencer (movy is the live case) reads
+ * `<prefix>:<child_index_param>`, turns it into an instance with
+ * `childIndexFromWire`, and lands here. The grid does not: for the template
+ * shape the focus priority rule stops at `child_index_param`, which it already
+ * follows through page_controller's rotation stop, so the grid never has an
+ * instance in hand that it did not put there itself.
+ *
+ * Kept rather than dropped because the ORDERING it reads is the fact this file
+ * owns, and an external consumer re-deriving "instance i of level L is voice n"
+ * is exactly the second implementation the design forbids. Exercised by
+ * tests/host/test_voices.sh.
+ */
 export function voiceIndexFromChild(voices, levelName, childIndex) {
     if (!Array.isArray(voices) || !levelName) return null;
     for (const v of voices) {

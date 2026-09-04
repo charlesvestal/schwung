@@ -177,6 +177,104 @@ Promise.all([
   if (V.voiceIndexFromWire(tv, "2") !== 2)
     fail("a valid wire index did not resolve");
 
+  /* ---- a root SELF-LINK must not expand root twice --------------------- */
+
+  /* root is expanded first, because mrdrums declares its rack AT root. A "Home"
+   * nav entry pointing back at root is an ordinary thing for such a module to
+   * declare -- and root was not marked seen before the nav-link loop, so it was
+   * expanded a SECOND time: the whole rack duplicated, same levels, same notes,
+   * at two sets of indices. The voice index is the identity here, so a doubled
+   * list means two consumers disagree about which pad is which. */
+  {
+    const SELF = { layout: "drums", levels: {
+      root: { name: "Home", note: 36, params: [{ level: "root", label: "Home" }] },
+    } };
+    const s = V.voicesOf(SELF);
+    if (s.length !== 1)
+      fail("a root self-link duplicated the root voices: got " + s.length + ", want 1");
+
+    /* And the same for a rack at root, which is the real mrdrums shape. */
+    const SELFRACK = { layout: "drums", levels: {
+      root: {
+        child_count: 4, child_label: "Pad", child_key_template: "p{index}_{key}",
+        child_note_base: 36, params: [{ level: "root", label: "Home" }],
+      },
+    } };
+    const sr = V.voicesOf(SELFRACK);
+    if (sr.length !== 4)
+      fail("a root self-link duplicated the root rack: got " + sr.length + ", want 4");
+  }
+
+  /* ---- ONE name resolver, not two -------------------------------------- */
+
+  /* A level names itself three ways and page_plan.mjs already owns the priority:
+   * lvl.name, then the label on the NAV ENTRY that points at it, then lvl.label.
+   * voices.mjs re-spelled two of the three as `level.name || levelKey`, and the
+   * two measurably disagreed -- the page header said "Bass Drum" and the voice
+   * list said "bd", for the same thing. Same class as the childVoiceName
+   * duplication already collapsed on this branch. */
+  {
+    const H = { layout: "drums", levels: {
+      root: { params: [
+        { level: "bd", label: "Bass Drum" },
+        { level: "sd", label: "Nav Snare" },
+      ] },
+      bd: { note: 36, params: [{ key: "tune" }] },
+      /* lvl.name outranks the nav label, and the nav label outranks lvl.label. */
+      sd: { note: 38, name: "Own Snare", label: "Bottom Label", params: [{ key: "tune" }] },
+      /* Linked from nowhere and named only by its own `label`: the third source. */
+      ht: { note: 50, label: "High Tom", params: [{ key: "tune" }] },
+    } };
+    const v = V.voicesOf(H);
+    const names = v.map((x) => x.name).join(",");
+    if (names !== "Bass Drum,Own Snare,High Tom")
+      fail("voice names did not come through the shared resolver: " + names);
+
+    /* And the planner must agree, because agreeing is the whole point. */
+    const pp = PLAN.planPages({
+      hierarchy: H,
+      chainParams: [{ key: "tune", type: "float", min: 0, max: 1 }],
+    });
+    const pnames = (Array.isArray(pp) ? pp : (pp && pp.pages) || []).map((p) => p.name);
+    if (!pnames.includes("Bass Drum"))
+      fail("the planner and the voice list disagree about the nav-labelled level: "
+           + JSON.stringify(pnames));
+
+    /* Undeclared by all three: the raw key, NOT the page title prettify(). A
+     * voice name is an identity a sequencer matches on, not chrome. */
+    const bare = V.voicesOf({ levels: { root: { params: [{ level: "osc1" }] },
+                                        osc1: { note: 60 } } });
+    if (bare[0].name !== "osc1")
+      fail("an undeclared voice name was not the raw level key: " + bare[0].name);
+  }
+
+  /* ---- the tail of the walk is Object.keys order, integer keys FIRST ---- */
+
+  /* The docblock used to promise "levels declaration order". JavaScript does not
+   * give that: integer-like keys enumerate first, ascending, before the rest in
+   * insertion order. A module naming its parts "1".."16" would get an order it
+   * did not write, in the one file that exists to own the order. Pinned to what
+   * the code actually does so the comment cannot drift back to the false claim;
+   * a module wanting its own order LINKS the levels from root, where an array
+   * keeps declared order verbatim. */
+  {
+    const NUM = { layout: "drums", levels: {
+      root: {},
+      "10": { note: 46 }, "2": { note: 38 }, "1": { note: 36 }, zz: { note: 60 },
+    } };
+    const order = V.voicesOf(NUM).map((v) => v.level).join(",");
+    if (order !== "1,2,10,zz")
+      fail("numeric level names did not walk in Object.keys order: " + order);
+
+    /* Linked from root, declared order is honoured verbatim -- the escape hatch
+     * the comment points at, so it has to actually work. */
+    const LINKED = JSON.parse(JSON.stringify(NUM));
+    LINKED.levels.root = { params: [{ level: "10" }, { level: "2" }, { level: "1" }] };
+    const lorder = V.voicesOf(LINKED).map((v) => v.level).join(",");
+    if (lorder !== "10,2,1,zz")
+      fail("root nav links did not keep declared order: " + lorder);
+  }
+
   /* ---- picker labels ------------------------------------------------- */
 
   {
@@ -220,7 +318,7 @@ Promise.all([
       },
     },
   };
-  const mv = MIXED.levels ? V.voicesOf(MIXED) : [];
+  const mv = V.voicesOf(MIXED);
   if (mv.length !== 4)
     fail("mixed shape: expected 4 voices, got " + mv.length);
   if (mv[1].index !== 1 || mv[1].childIndex !== 0)
