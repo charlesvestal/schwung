@@ -1551,8 +1551,19 @@ voices declared is legal (a rack whose pages are not published yet), and
 It lives in `ui_hierarchy` rather than in `module.json` capabilities so that a
 module whose answer depends on what is loaded — an sfz player, a slicer: drums
 or melodic according to the kit — can serve it from `get_param` and change it.
-A module with a fixed answer puts it in `module.json`'s static hierarchy, which
-the chain host already caches and serves.
+**Where you put it depends on your `component_type`, and for a sound generator
+there is only one choice.** The chain host calls `parse_ui_hierarchy_cache` for
+audio FX and MIDI FX only (`chain_host.c:337`, `:705`, `chain_midi.c:317`), so
+those two may declare a fixed hierarchy in `module.json` and never implement
+`get_param("ui_hierarchy")`. **A sound generator's `module.json` hierarchy is
+never read** — `synth:ui_hierarchy` goes straight to the plugin
+(`chain_host.c:1755`), with no fallback. If you are writing a synth, serve it
+from `get_param` or it does not exist.
+
+This is easy to get wrong because the declaration looks identical either way,
+and a synth that declares one in `module.json` gets no error — it is simply
+ignored, and the grid plans from `chain_params` as though you had declared
+nothing.
 
 #### Voices: a level that declares `note` is a voice; one that does not is a page
 
