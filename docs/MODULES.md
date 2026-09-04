@@ -3050,10 +3050,17 @@ clip, because Schwung cannot see Move's clips. So:
 
 - Switching clips on the track: the locks stay with the sound.
 - Copying or duplicating a Move clip: the locks are not in it; they do not copy.
-- Changing the clip length: locks repeat every `Steps` steps. Set Steps to 32
-  for a 32-step clip, or a lock on step 9 plays on 9 and 25.
+- Changing the clip length: locks repeat every `Steps` steps. Double a clip to
+  32 with Steps left at 16 and a lock on step 9 plays on 9 **and** 25; set
+  Steps to 32 and it plays once.
 - Locks beyond the current `Steps` are kept, not deleted, so shortening and
-  lengthening again loses nothing.
+  lengthening again loses nothing — raise Steps and they reappear.
+- **The grid is anchored to transport start, not to the clip.** It repeats
+  every `Steps` × `Rate`, so it stays aligned with a Move clip only when the
+  clip's length is a whole multiple of that. A 12-step clip against Steps=16
+  makes each lock land on a different clip step every pass. Matching Steps to
+  the clip is what keeps them together, and it is the reason Steps is a visible
+  setting rather than an assumption.
 
 **Limits.** Up to 16 *lanes* — distinct `(target, param)` pairs holding locks —
 and 64 steps. Lanes are capped because each one that fires on the current step

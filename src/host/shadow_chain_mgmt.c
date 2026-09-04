@@ -2606,7 +2606,20 @@ static int mfx_param_strip_suffix(const char *param_key,
  * because nothing reports Move's clip length. See host/lock_common.h.
  * ============================================================================ */
 
-lock_state_t shadow_master_fx_locks;
+/* STATICALLY initialised, not from a defaults() pass.
+ *
+ * An earlier cut initialised this inside shadow_chain_defaults() and it read
+ * back pattern_len 0 on the device: that function is a CHAIN-slot pass, and
+ * nothing guarantees it runs before the first master param read. A designated
+ * initialiser is correct from program start, and cannot be undone by a set
+ * change — which a defaults pass would also have done to the user's Steps and
+ * Rate, settings that describe their clip. */
+lock_state_t shadow_master_fx_locks = {
+    .pattern_len = LOCK_DEFAULT_STEPS,
+    .rate_div    = LOCK_DEFAULT_RATE_DIV,
+    .cur_step    = LOCK_STEP_NONE,
+    .enabled     = 1,
+};
 static char mfx_lock_base[LOCK_MAX_LANES][64];
 static int  mfx_lock_base_valid[LOCK_MAX_LANES];
 

@@ -154,4 +154,40 @@ if ! rg -q 'action: "lock_clear"' "$grid" || ! rg -n 'key === "lock_clear"' -A4 
   exit 1
 fi
 
-echo "PASS: chain parameter locks are absolute, non-destructive, explicitly timed, recordable, and settable"
+# --- master bus ---------------------------------------------------------------
+mgmt="src/host/shadow_chain_mgmt.c"
+# Master lock state must be correct from program start: it was initialised in a
+# CHAIN-slot defaults pass and read back pattern_len 0 on the device, because
+# nothing guarantees that pass runs before the first master param read.
+if ! rg -n 'lock_state_t shadow_master_fx_locks = \{' -A5 "$mgmt" | rg -q '\.pattern_len = LOCK_DEFAULT_STEPS'; then
+  echo "FAIL: master lock state is not statically initialised" >&2
+  exit 1
+fi
+if rg -q 'if \(i == 0\) lock_state_init\(&shadow_master_fx_locks\);' "$mgmt"; then
+  echo "FAIL: master locks re-initialised from the chain defaults pass — a set change would reset the user's Steps/Rate" >&2
+  exit 1
+fi
+# Master has no modulation bus, so a lock displaces the value directly and the
+# displaced BASE must be restored when the step passes — as a string, so an
+# enum or int round-trips exactly.
+if ! rg -n 'static void mfx_lock_restore' -A8 "$mgmt" | rg -q 'set_param\(mfx->instance, lane->param, mfx_lock_base\[lane_index\]\)'; then
+  echo "FAIL: master locks do not restore the displaced base" >&2
+  exit 1
+fi
+if ! rg -n 'void shadow_master_fx_lock_tick' -A20 "$mgmt" | rg -q 'if \(step == LOCK_STEP_NONE && st->cur_step != LOCK_STEP_NONE\) st->rec = 0;'; then
+  echo "FAIL: master rec must clear on the stop EDGE, like the chain's" >&2
+  exit 1
+fi
+# Recording on the master bus hooks the same write path the LFO base update does.
+if ! rg -n 'mfx_lfo_update_base_from_set_param\(mfx_slot, param_key, value\);' -A1 "$mgmt" | rg -q 'shadow_master_fx_lock_record'; then
+  echo "FAIL: master writes are not recorded onto the playing step" >&2
+  exit 1
+fi
+# A master preset load must ALWAYS write lock_config, even when empty, or the
+# previous preset's locks keep driving the new sound.
+if ! rg -n '"master_fx:lock_config"' -A2 src/shadow/shadow_ui.js | rg -q 'preset.locks \? JSON.stringify\(preset.locks\) : ""'; then
+  echo "FAIL: loading a master preset does not clear the previous locks" >&2
+  exit 1
+fi
+
+echo "PASS: chain parameter locks are absolute, non-destructive, explicitly timed, recordable, settable, and present on the master bus"
