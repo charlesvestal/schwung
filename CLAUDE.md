@@ -489,6 +489,13 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **`synth:last_note` is recorded at BOTH synth-feed paths**, via
+  `chain_record_synth_note`. `v2_tick_midi_fx` is the one that looks optional
+  and is not: an ARPEGGIATOR emits from `tick()`, not `process_midi()`, so
+  instrumenting only `v2_on_midi` means it never updates with an arp in the
+  slot. It reports a NOTE, not a voice index — the canonical voice order lives
+  in `voices.mjs` and a C copy of it would fail silently as "the grid follows
+  the wrong pad".
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -532,6 +539,23 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
+- **A module DECLARES whether it is a rack or a keyboard; it is never
+  inferred.** `layout` at the top of `ui_hierarchy` is `drums` | `chromatic`,
+  and **absent is a third state** — all 100 captured fleet modules are in it.
+  The tempting shortcut, "it has notes on its pages so it is drums", is wrong:
+  key zones, multitimbral parts and chord modules all carry notes on melodic
+  pages. Voices are described separately, and the two axes never imply each
+  other. **ROOT ITSELF CAN BE THE RACK** — mrdrums declares its 16 pads *on*
+  `root`, not in a sibling level, and skipping root made an earlier build a
+  complete no-op for the flagship drum module while every fixture passed.
+- **The focus has ONE live input, chosen by what the module declares** —
+  `child_index_param`, else `focus_param`, else `synth:last_note`. The first
+  declared wins and the others are NOT READ. A module that owns its focus is
+  never asked for the note, so two sources cannot disagree the moment it moves
+  its focus without one — and then latch.
+- **The voice-follow path writes no pad LEDs.** Move owns the pads while the
+  shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
+  LED write in `syncVoiceFromModule` or `voices.mjs`.
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback

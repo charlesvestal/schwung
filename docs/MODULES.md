@@ -1512,6 +1512,191 @@ Without this, adding a child level to a module that already follows the played
 pad would *cost* that behaviour — the grid would sit on the instance the picker
 last chose. With it, the declaration is purely additive.
 
+### Declaring your performance surface
+
+A sequencer driving your module — movy is the live case — has to lay out Move's
+pads before it can draw anything, and until now it could not ask you: a drum
+module wants a rack where one pad is one voice and hitting a pad is how you pick
+what to edit, a synth wants a chromatic keyboard, and nothing in `module.json`
+or `ui_hierarchy` said which. So it kept a private table instead — a
+`movy_config.json` per module, 14 bundled configs and a four-module override
+list — in which `padScoping.concreteKeyTemplate` is a verbatim re-spelling of
+`child_key_template`. Two optional declarations at the top of `ui_hierarchy`
+replace that table for every consumer at once.
+
+#### `layout` — say it, because nobody can work it out
+
+```json
+{ "layout": "drums", "levels": { } }
+```
+
+`"drums"` or `"chromatic"`. **Absent is a distinct third state meaning you have
+not said** — which is where all 100 captured fleet modules sit today. Absent is
+not a synonym for chromatic: a consumer picks its own default and is never told
+you are melodic when you have not said, so a sequencer can keep a bundled
+fallback for an undeclared module without that fallback ever overriding a real
+declaration. An unrecognised string is also unspecified, not a licence to
+guess. Same tri-state discipline the param channel already enforces between
+`null` and `""`.
+
+**The layout is never inferred from the presence of notes, and you must not
+rely on it being.** Declaring notes is not declaring a layout. A sampler with
+key zones, a multitimbral synth and a chord module all legitimately carry notes
+on melodic per-zone pages, and a consumer that read "has notes" as "is a drum
+rack" would seat every one of them as one. Notes describe *voices*; `layout`
+describes the *surface*; the two axes never imply each other. `"drums"` with no
+voices declared is legal (a rack whose pages are not published yet), and
+`"chromatic"` with a note on every zone page is legal and correct.
+
+It lives in `ui_hierarchy` rather than in `module.json` capabilities so that a
+module whose answer depends on what is loaded — an sfz player, a slicer: drums
+or melodic according to the kit — can serve it from `get_param` and change it.
+A module with a fixed answer puts it in `module.json`'s static hierarchy, which
+the chain host already caches and serves.
+
+#### Voices: a level that declares `note` is a voice; one that does not is a page
+
+**The sibling shape** — one level per voice, each differently shaped, the way
+9W9 / 6W6 / 8W8 / CW78 are built. `reverb` declares no note, so it is a page,
+not a voice: it is navigable and it sounds nothing. That distinction is the
+whole point. Those four modules are on movy's override list precisely because
+their private configs put a pad on every bank *including* the ones with no
+voice behind them, and "every bank is a voice" collapses the module to a single
+page.
+
+```json
+{
+  "layout": "drums",
+  "focus_param": "ui_voice",
+  "levels": {
+    "root": { "params": [
+      { "level": "bass_drum", "label": "Bass Drum" },
+      { "level": "snare",     "label": "Snare" },
+      { "level": "reverb",    "label": "Reverb" }
+    ] },
+    "bass_drum": { "name": "Bass Drum", "note": 36, "role": "kick",  "knobs": ["tune", "decay"] },
+    "snare":     { "name": "Snare",     "note": 38, "role": "snare", "knobs": ["tune", "snap"] },
+    "reverb":    { "name": "Reverb", "knobs": ["size", "mix"] }
+  }
+}
+```
+
+Two voices — `bass_drum` (index 0) then `snare` (index 1), in `root`'s nav-link
+order, which is the order the user sees and the order a rack is seated in. A
+voice level `root` does not link is **appended** after the linked ones in
+`levels` declaration order rather than dropped: a voice reachable only from a
+sub-level still needs a stable index, and dropping it would make two consumers
+disagree about the same list while both looked correct.
+
+**The template shape** — interchangeable instances behind one key template, the
+way mrdrums and po32-drum are built. The note map hangs off the same child
+level you already declare:
+
+```json
+{
+  "layout": "drums",
+  "levels": {
+    "root": { "params": [{ "level": "pads", "label": "Pads" }] },
+    "pads": {
+      "child_count": 4,
+      "child_label": "Pad",
+      "child_key_template": "p{index}_{key}",
+      "child_index_base": 1,
+      "child_index_digits": 2,
+      "child_index_param": "ui_current_pad",
+      "child_notes": [36, 38, 42, 46],
+      "child_names": ["Kick", "Snare", "Closed Hat"],
+      "child_roles": ["kick", "snare", "hat", "hat"],
+      "knobs": ["vol", "pan", "tune", "decay"]
+    }
+  }
+}
+```
+
+Four voices: `Kick`/36, `Snare`/38, `Closed Hat`/42, and `Pad 4`/46 — the
+fourth name falls back **per item** to the generated `child_label` + index, so
+naming your first three pads is an improvement rather than a trade. The
+generated number honours `child_index_base` (hence "Pad 4" for the fourth
+instance under `child_index_base: 1`) while `child_names` and `child_notes` are
+indexed from **0**, in declaration order, always.
+
+**Your rack may be `root` itself.** Nothing requires a child level to sit
+behind a nav link from `root` — mrdrums declares its 16 pads *on* `root`, and
+that is the fleet's flagship template-shape drum module:
+
+```json
+{
+  "layout": "drums",
+  "levels": {
+    "root": {
+      "name": "Pads",
+      "child_count": 16,
+      "child_label": "Pad",
+      "child_key_template": "p{index}_{key}",
+      "child_index_base": 1,
+      "child_index_digits": 2,
+      "child_index_param": "ui_current_pad",
+      "child_note_base": 36,
+      "knobs": ["vol", "pan", "tune", "decay"]
+    }
+  }
+}
+```
+
+Sixteen voices, `Pad 1`/36 … `Pad 16`/51. `child_note_base` is the contiguous
+form: instance *i* in declaration order plays `base + i`. Use `child_notes`
+when the map is sparse; it wins over `child_note_base` wherever both are
+declared.
+
+#### The fields
+
+| Field | Where | Purpose |
+|---|---|---|
+| `layout` | hierarchy top level | `drums` \| `chromatic`; absent = unspecified, and unspecified is not chromatic |
+| `note` | a level | the MIDI note this level's voice plays; a level with none is a page |
+| `role` | a level | free-form hint (`kick`, `hat`); **no host behaviour depends on it** |
+| `child_note_base` | a child level | instance *i* plays `base + i` |
+| `child_notes` | a child level | sparse per-instance notes; wins over `child_note_base` |
+| `child_names` | a child level | per-instance names; falls back **per item** to `child_label` + index |
+| `child_roles` | a child level | per-instance roles, same free-form rule as `role` |
+| `focus_param` | hierarchy top level | a param whose value is the focused **level name** (sibling shape) |
+
+`role` is a **free string** and deliberately not an enumeration. It is a hint a
+consumer may use to colour or seat a rack it has never seen, and one that does
+not recognise a value ignores it. Constraining it would mean maintaining a
+percussion vocabulary inside the host for a field the host never reads.
+
+**Size.** `chain_params` over 64KB will not load, and `ui_hierarchy` shares
+that budget. Sixteen `child_names` is nothing; 200 of them plus 200
+`child_roles` is worth counting before you ship.
+
+#### Which voice is focused — one live input, and you choose it
+
+A consumer showing a per-voice page needs to know which voice is focused, and
+to keep in step when *you* move that focus (a preset load, an auto-select).
+Three inputs can answer that, and **exactly one is live for any given module**,
+picked by what you declare:
+
+| You declare | Input read | Resolved by |
+|---|---|---|
+| `child_index_param` (template shape) | `<prefix>:<child_index_param>` — your own instance numbering | instance → voice index |
+| `focus_param` (sibling shape) | `<prefix>:<focus_param>` — a **level name** | level name → voice index |
+| neither, but voices declared | `<prefix>:last_note` (served by the chain host) | note → voice index |
+
+**The first input you declare wins and the others are not read at all** — so a
+module that owns its focus can never be second-guessed by a note. Two live
+sources would disagree the moment you moved your focus without a note behind it
+and the disagreement would latch, which is precisely the failure the
+single-source rule on `child_index_param` already exists to prevent: where you
+own the focus, the picker and your module are incapable of disagreeing because
+picking from the list *is* the write to your param.
+
+The two guarantees carried over from `child_index_param` hold for all three
+inputs. **A read that does not answer never moves the focus** — empty,
+non-numeric, an unknown level name or an out-of-range index is ignored rather
+than treated as voice 0. And **it costs no extra IPC**: the read rides a
+rotation stop the grid already takes.
+
 ### Example: Chord MIDI FX Hierarchy
 
 ```json

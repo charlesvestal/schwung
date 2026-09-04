@@ -409,6 +409,56 @@ level. The one sanctioned divergence is the root's name — the walker calls its
 root "Main", and the picker overrides that with the mode's own name when
 `modes` gives it more than one root.
 
+### The grid FOLLOWS the focused voice, and writes no LEDs doing it
+
+A module can declare what its performance surface is — `layout`, and a `note`
+per voice — and which voice it considers focused. The declaration contract is
+in `docs/MODULES.md`; `src/shared/param_pages/voices.mjs` is the only place the
+two fleet shapes (sibling levels, template children) collapse into one ordered
+voice list, and the only place the focus is resolved. It is pure: it never
+reads a param.
+
+`syncVoiceFromModule` in `page_controller.mjs` rides **the rotation stop
+`child_index_param` already takes** — the one that also carries the preset name
+— so following a voice costs the rotation nothing extra, and a module that
+declares no voices costs it nothing at all (`voicesOf` returns empty and the
+function returns before any read). At ~2.8 ms an IPC read is more expensive
+than redrawing the whole screen, so a stop of its own was never on the table.
+
+**Exactly one input is live per module**, in this priority: `child_index_param`
+if any level declares it (the existing child-index path already owns that
+module, and `last_note` is then **not read at all**), else `focus_param` from
+the hierarchy top level, else `<prefix>:last_note` from the chain host. The
+first declared wins because two live sources would disagree the moment a module
+moved its focus without a note — a preset load, mrdrums' auto-select — and the
+disagreement would latch. The `focus_param` read accepts a level **name** first,
+which is what the declaration documents, and a numeric voice index second,
+since a module may answer either and both are unambiguous.
+
+The tri-state is the usual one and it is load-bearing here: `null` moves
+nothing. Adopting voice 0 because a read timed out would move the user off the
+pad they were editing, re-keying every page on screen and dropping its cached
+values. A voice whose level has no knob page, and a voice you are already on,
+are both no-ops too; the jump uses `remember: false`, because the module named
+a *voice*, so the grid lands on that voice's page rather than on whichever page
+of that section was last visited.
+
+**Nothing in this path writes a pad LED.** Move owns the pads while the shadow
+UI is up, and the follow path is a read plus a navigation — never a MIDI-out.
+"While I am here I will light the rack" is exactly the change someone makes
+later in good faith, so it is pinned rather than commented:
+`tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or LED write in
+`syncVoiceFromModule` or in `voices.mjs`.
+
+Names: `childLabel` (`child_key.mjs`) prefers a declared `child_names` entry
+over the generated "Pad 3", falling back per item, and `voices.mjs` routes its
+own naming through it — so the voice list and the name resolution cannot
+disagree about what pad 3 is called. **The grid's instance-picker page does not
+route through it yet**: `page_plan.mjs` builds that page's `derivedLabels` from
+`child_label` alone, so a module that names its pads still sees "Pad 1 … Pad
+16" on the *Selected Pad* page. That is the residual half of voice names in the
+picker, and it is one call site.
+
 ### The knob grid is the DEFAULT param view, and it reflows to stay drawable
 
 `paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
