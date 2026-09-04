@@ -57,6 +57,12 @@ static void la_avail_stats_reset(void) {
 #define NUDGE_PERIOD            16
 #define NUDGE_BURST_THRESHOLD   512
 #define NUDGE_BURST_FRAMES      8
+/* Consecutive reads with avail above LINK_AUDIO_IN_TRIM_CEILING, per slot.
+ * Single-threaded: every read happens on the SPI path. */
+static uint32_t trim_high_run[LINK_AUDIO_IN_SLOT_COUNT];
+volatile uint32_t la_trim_count[LINK_AUDIO_IN_SLOT_COUNT];
+volatile uint32_t la_trim_dropped[LINK_AUDIO_IN_SLOT_COUNT];
+
 static uint32_t nudge_drop_counter[LINK_AUDIO_IN_SLOT_COUNT];
 static uint32_t nudge_dup_counter[LINK_AUDIO_IN_SLOT_COUNT];
 
@@ -165,6 +171,29 @@ int link_audio_read_channel_shm(link_audio_in_shm_t *shm, int slot_idx,
                            (new_rp - rp), __ATOMIC_RELAXED);
         __atomic_fetch_add(&slot->catchup_count, 1, __ATOMIC_RELAXED);
         rp = new_rp;
+        trim_high_run[slot_idx] = 0;
+    } else {
+        /* SUSTAINED BACKLOG TRIM -- see link_audio.h.
+         *
+         * Catch-up above handles a producer running away. This handles the
+         * quieter failure: a backlog that is nowhere near the ring but has
+         * simply been sitting there since a disturbance, because nothing in a
+         * rate-locked loop ever removes it. Measured at 85 ms after a module
+         * load, stable to the millisecond over six 5 s windows.
+         *
+         * Skipped while Latency Comp is active: the nudge below is already a
+         * controller with its own set-point, and two of them fight. */
+        if (!latency_comp_active) {
+            uint32_t new_rp;
+            if (link_audio_in_trim_pos(wp, rp, &trim_high_run[slot_idx], &new_rp)) {
+                __atomic_fetch_add(&la_trim_dropped[slot_idx],
+                                   (new_rp - rp), __ATOMIC_RELAXED);
+                __atomic_fetch_add(&la_trim_count[slot_idx], 1, __ATOMIC_RELAXED);
+                rp = new_rp;
+            }
+        } else {
+            trim_high_run[slot_idx] = 0;
+        }
     }
 
     /* Adaptive nudge toward LATENCY_COMP_TARGET_SAMPLES. Drops or duplicates
