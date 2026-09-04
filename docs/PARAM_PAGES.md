@@ -1310,3 +1310,30 @@ before anything else draws. Run-length rows are ~45 calls ≈ 22 µs, so a page 
 carries the nominal frame it was drawn for, anchors 1:1 with integer scale only
 on an exact multiple, and is refused when it does not fit, at which point the
 built-in draws a correct picture instead of a smeared one.
+
+#### A widget's lifetime is its COMPONENT's, and the obvious hook is the wrong one
+
+Registration originally sat at the canvas overlay load, which reads as the
+natural place: it is where a module's `canvas.js` is parsed and where its
+`drawCell` first exists. It is wrong, and three ways at once.
+
+`openCanvasPreview` is the only caller of that load, and it fires when the user
+**clicks a `type: "canvas"` param**. So an in-grid widget did not appear on first
+paint — only after the fullscreen canvas had been opened once. Both opening and
+closing that canvas call `resetCanvasState`, so a `clearWidgets()` there made the
+widget vanish again on the way out. And a module wanting *only* an in-grid
+widget, with no canvas param at all, never registered anything.
+
+`ensureComponentWidgets` runs where a component's `chain_params` become known,
+reads `canvas.js` only when the contract actually declares a `custom:` kind, and
+no-ops when the module has not changed. `resetCanvasState` must not touch the
+registry.
+
+**No source-level test can catch this**, which is the transferable part. The
+lines were all present and correct; only their *call ordering* was wrong.
+`tests/host/test_canvas_drawcell_wiring.sh` pins what a source test *can* see —
+which function owns the lifetime and which must not touch it — and the behaviour
+is covered by `tests/host/test_widget_module_poc.sh`, which starts from the
+shipped `src/modules/tools/widget-test/{module.json,canvas.js}` rather than
+calling `registerWidget()` directly. Every other widget test registers directly,
+and that is exactly why none of them saw this.
