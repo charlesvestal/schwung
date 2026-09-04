@@ -53,9 +53,9 @@ void chain_mod_apply_effective_value(chain_instance_t *i, mod_target_state_t *e,
 }
 
 /* --------------------------------------------------- fake synth (3 params) */
-#define NPARAM 3
-static const char *pkeys[NPARAM] = { "cutoff", "voices", "wave" };
-static char pvals[NPARAM][32] = { "0", "0", "0" };
+#define NPARAM 4
+static const char *pkeys[NPARAM] = { "cutoff", "voices", "wave", "bipolar" };
+static char pvals[NPARAM][32] = { "0", "0", "0", "0" };
 
 static int pindex(const char *key) {
     for (int i = 0; i < NPARAM; i++) if (strcmp(key, pkeys[i]) == 0) return i;
@@ -234,7 +234,36 @@ int main(void) {
     }
     check(inverse_ok, "fraction -> value -> fraction round-trips on a float parameter");
 
-    /* ---- 10. a turn with no movement writes nothing ---- */
+    /* ---- 10. a SIGNED parameter still reaches its bottom ----
+     *
+     * The clamp a window adds must be a no-op on a whole-range destination,
+     * and it very nearly was not: taking the window's bounds through the
+     * quantiser rounded them, and `(int)` truncates TOWARD ZERO, so the bottom
+     * of a -64..63 parameter came back as -63. A knob that had always reached
+     * -64 would have stopped one step short -- on pan, on transpose, on any
+     * bipolar depth -- with nothing to show for it but a value that would not
+     * go all the way down. */
+    add_param(3, "bipolar", KNOB_TYPE_INT, -64.0f, 63.0f, 0.0f);
+    snprintf(pvals[3], sizeof(pvals[3]), "-60");
+    {
+        chain_param_info_t *bp = &inst->synth_params[3];
+        knob_mapping_t *b = &inst->knob_mappings[0];
+        memset(b, 0, sizeof(*b));
+        b->cc = 71;
+        knob_dest_assign(&b->dests[0], "synth", "bipolar");
+        b->dests[0].current_value = -60.0f;
+        b->dest_count = 1;
+        inst->knob_mapping_count = 1;
+        inst->knob_last_time_ms[0] = 0;
+
+        for (int i = 0; i < 20; i++) { inst->knob_last_time_ms[0] = 1; knob_turn(inst, 0, -1, KNOB_STEP_FLOAT); }
+        check(b->dests[0].current_value == -64.0f,
+              "a whole-range destination on a signed parameter still reaches its bottom");
+        check(knob_dest_clamp(&b->dests[0], -64.0f, bp) == -64.0f,
+              "...because a whole-range window clamps to the parameter's own range exactly");
+    }
+
+    /* ---- 11. a turn with no movement writes nothing ---- */
     snprintf(pvals[0], sizeof(pvals[0]), "0.400");
     knob(1, "cutoff", NULL, NULL);
     knob_turn(inst, 0, 0, KNOB_STEP_FLOAT);

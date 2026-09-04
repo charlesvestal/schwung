@@ -1019,17 +1019,34 @@ int chain_knob_accel_cap(int accel, int type) {
  */
 
 /* Fraction (0..1 of the parameter's range) -> a value in the parameter's own
- * units, quantised the way that parameter is quantised. */
-float knob_frac_to_value(float frac, const chain_param_info_t *pinfo) {
-    if (!pinfo) return frac;
+ * units, WITHOUT quantisation. The bounds of a window come from here, so that
+ * a whole-range window is exactly [min_val, max_val] and clamping to it cannot
+ * move a value the caller has already quantised. */
+static float knob_frac_to_raw(float frac, const chain_param_info_t *pinfo) {
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
+    return pinfo->min_val + frac * (pinfo->max_val - pinfo->min_val);
+}
 
-    float v = pinfo->min_val + frac * (pinfo->max_val - pinfo->min_val);
+/* ...and the same, quantised the way the parameter is quantised. */
+float knob_frac_to_value(float frac, const chain_param_info_t *pinfo) {
+    if (!pinfo) return frac;
+
+    float v = knob_frac_to_raw(frac, pinfo);
     if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM) {
-        /* +0.5 before truncation: an enum sub-range must be able to REACH its
-         * top option, and plain truncation leaves the last one unreachable
-         * except at exactly 1.0. */
+        /*
+         * The half is what lets an enum sub-range REACH its top option; plain
+         * truncation leaves the last one unreachable except at exactly 1.0.
+         *
+         * ⚠ `(int)` truncates TOWARD ZERO, so on a parameter with a negative
+         * minimum this rounds the wrong way -- -64 + 0.5 = -63.5 becomes -63,
+         * and the bottom of a -64..63 parameter is a step out of reach. That
+         * is not new: it is exactly what the absolute-CC path (CC 102-109) has
+         * always done, and it is left alone deliberately. Correcting it here
+         * would shift every inbound CC value by one step on every signed
+         * parameter -- a behaviour change to existing rigs, which does not
+         * belong in a commit about destinations. Worth fixing on its own.
+         */
         v = (float)((int)(v + 0.5f));
     }
     if (v < pinfo->min_val) v = pinfo->min_val;
@@ -1066,10 +1083,26 @@ float knob_dest_value_at(const knob_dest_t *d, float position,
 float knob_dest_clamp(const knob_dest_t *d, float value,
                       const chain_param_info_t *pinfo) {
     if (!d || !pinfo) return value;
-    float a = knob_frac_to_value(d->lo, pinfo);
-    float b = knob_frac_to_value(d->hi, pinfo);
+
+    /* Bounds from the UNQUANTISED map, so a whole-range window is exactly the
+     * parameter's own [min, max] and this is a no-op on it -- which is what
+     * keeps an ordinary knob's behaviour bit-identical to what shipped. Taking
+     * them through the quantiser instead rounded the bounds themselves, and on
+     * a parameter with a negative minimum that made its bottom value
+     * unreachable through a knob that had always reached it. */
+    float a = knob_frac_to_raw(d->lo, pinfo);
+    float b = knob_frac_to_raw(d->hi, pinfo);
     float lo = (a < b) ? a : b;
     float hi = (a < b) ? b : a;
+
+    /* A stepped parameter's window is the whole steps INSIDE it: a window
+     * ending at 4.3 offers 4, not a value the parameter cannot hold. */
+    if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM) {
+        lo = ceilf(lo);
+        hi = floorf(hi);
+        if (hi < lo) hi = lo;
+    }
+
     if (value < lo) return lo;
     if (value > hi) return hi;
     return value;
