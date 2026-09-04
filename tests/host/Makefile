@@ -51,7 +51,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_metronome_announce \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_sampler_stem_path \
-	$(BUILD_DIR)/test_perf_snapshot_size
+	$(BUILD_DIR)/test_perf_snapshot_size \
+	$(BUILD_DIR)/test_relative_cc
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -123,6 +124,12 @@ $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sam
 
 $(BUILD_DIR)/test_shadow_metronome: test_shadow_metronome.c ../../src/host/shadow_metronome.c ../../src/host/metronome_click.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS) -lm
+
+# relative_cc.h lives with the chain DSP rather than in src/host, so this one
+# rule adds that include path. The header is standalone by construction (no
+# chain_internal.h, which would drag in the whole plugin surface).
+$(BUILD_DIR)/test_relative_cc: test_relative_cc.c ../../src/modules/chain/dsp/relative_cc.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I../../src/modules/chain/dsp $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)
