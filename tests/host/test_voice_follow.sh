@@ -190,6 +190,30 @@ Promise.all([
       fail("a bare focus answer dragged the user off reverb");
   }
 
+  /* --- the header minimap lights the FOCUSED voice ----------------------
+   *
+   * Reported from the device: the box drew and no cell ever lit. The follow
+   * had just moved to latching on the change TOKEN ("3:kick"), and the icon
+   * was still indexing the voice array with the latch -- undefined for every
+   * module that sends a count. Nothing else noticed, because the follow only
+   * ever COMPARES the token; the icon was the one reader that needed the
+   * resolved index. Two facts, two fields.
+   *
+   * Asserted through the render options the controller hands the renderer,
+   * which is where the icon actually gets its answer. */
+  {
+    const c = mk(SIBLING, { cur_voice: "2:snare" });
+    spin(c, 200);
+    /* Asserted on what the ICON is handed, not on a field beside it. A first
+     * version of this checked state.focusedVoice and PASSED under the very bug
+     * it was written for, because the icon reads through padIconNote and the
+     * assertion did not. */
+    if (c.padIcon !== 38)
+      fail("the minimap is handed " + JSON.stringify(c.padIcon)
+         + ", want note 38 (snare). The latch holds a TOKEN; indexing the "
+         + "voice array with it lights no cell at all");
+  }
+
   /* --- a name that is not a voice moves nothing ------------------------
    *
    * Sampled BEFORE the first tick. It used to sample after 40 ticks -- i.e.

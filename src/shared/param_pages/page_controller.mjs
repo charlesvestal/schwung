@@ -572,6 +572,10 @@ export function createController(io = {}) {
          * component load still lands on the focused voice.
          */
         voiceLatch: null,
+        /* The resolved voice INDEX the follow last acted on -- what the header
+         * minimap lights. Separate from voiceLatch, which holds the change
+         * token: one says whether to act, the other says on what. */
+        focusedVoice: null,
         voiceCacheFor: undefined,
         voiceCache: null,
         /* A page name to land on once the pages exist; see restorePage(). */
@@ -853,7 +857,7 @@ export function createController(io = {}) {
          * it says is focused is right; it is only the REPEATS that must do
          * nothing. Deliberately not cleared on a same-component re-plan: the
          * user is still standing where they navigated to. */
-        if (!sameComponent) s.voiceLatch = null;
+        if (!sameComponent) { s.voiceLatch = null; s.focusedVoice = null; }
         s.slot = slot;
         s.component = component;
         s.prefix = nextPrefix;
@@ -1735,15 +1739,22 @@ export function createController(io = {}) {
      * `-1` means "draw the empty box": we are on a rack but cannot place this
      * voice.
      *
-     * Costs no read: `s.voiceLatch` is what the follow already resolved.
+     * Costs no read: `s.focusedVoice` is what the follow already resolved.
+     *
+     * NOT `s.voiceLatch`. That holds the change TOKEN — a string like
+     * "3:kick" once the counted form landed — and this used to index the voice
+     * array with it, which is undefined for every module that sends a count.
+     * The follow kept working, because it only ever COMPARES the token, so the
+     * break was invisible except as a minimap that drew its box and never lit
+     * a cell. Two facts, two fields: the token says whether to act, the index
+     * says on what.
      */
     function padIconNote() {
         if (!s.hierarchy || padLayoutOf(s.hierarchy) !== "drums") return null;
         const voices = voiceList();
         if (!voices.length) return null;
-        const vi = (s.voiceLatch === null || s.voiceLatch === undefined)
-            ? null : s.voiceLatch;
-        if (vi === null || !voices[vi]) return -1;  /* the box, with no cell lit */
+        const vi = s.focusedVoice;
+        if (vi === null || vi === undefined || !voices[vi]) return -1;
         return voices[vi].note;
     }
 
@@ -1840,6 +1851,7 @@ export function createController(io = {}) {
          * to below is still an answer we have dealt with, and re-deciding it
          * every stop is the same waste. */
         s.voiceLatch = token;
+        s.focusedVoice = vi;
 
         const v = voices[vi];
         if (!v || !v.level) return;
@@ -4310,6 +4322,10 @@ export function createController(io = {}) {
         setLayout, setReveal, setDecorations, render, renderOverlays,
         announceContents,
         get state() { return s; },
+        /* What the header minimap will light, so a test can assert on the
+         * ICON rather than on a field near it: asserting on state.focusedVoice
+         * passed while the icon was indexing the voice array with a token. */
+        get padIcon() { return padIconNote(); },
         get page() { return page(); },
         get pages() { return s.pages; },
         get pageIndex() { return s.pageIndex; },
