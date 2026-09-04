@@ -623,6 +623,101 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
  * Each row below omits exactly one field, so an inherited value is the only
  * way it could come back non-empty.
  */
+/*
+ * A knob with several destinations is stored as several FLAT ROWS sharing one
+ * cc, merged back into one mapping here.
+ *
+ * Flat rather than nested because this parser -- and every build already in
+ * the field -- walks the array by scanning for braces. Nesting a destination
+ * list inside a mapping object would end each object at the first inner brace,
+ * and an older host would read the leftovers as further mappings pointed at
+ * whatever those inner fields happened to name.
+ */
+static void test_knob_destinations(chain_instance_t *inst, patch_info_t *patch) {
+    if (MAX_AUDIO_FX < 2 || MAX_KNOB_DESTS < 3) return;
+
+    static const char json[] =
+        "{\n  \"name\": \"dests\",\n"
+        "  \"audio_fx\": [{\"type\": \"afx1\"}, {\"type\": \"afx2\"}],\n"
+        "  \"knob_mappings\": ["
+        /* one knob, three destinations, all on cc 71 */
+        "{\"cc\": 71, \"target\": \"synth\", \"param\": \"cutoff\", \"value\": 0.4,"
+        " \"dest\": 0, \"pos\": 0.75}, "
+        "{\"cc\": 71, \"target\": \"fx1\", \"param\": \"mix\", \"value\": 0.2,"
+        " \"lo\": 0.2000, \"hi\": 0.8000, \"dest\": 1, \"pos\": 0.75}, "
+        "{\"cc\": 71, \"target\": \"fx2\", \"param\": \"drive\", \"value\": 0.1,"
+        " \"lo\": 1.0000, \"hi\": 0.0000, \"dest\": 2, \"pos\": 0.75}, "
+        /* a second knob, ONE destination with a window and no dest index */
+        "{\"cc\": 72, \"target\": \"fx1\", \"param\": \"gain\", \"value\": 0.5,"
+        " \"lo\": 0.1000, \"hi\": 0.6000}, "
+        /* a row naming a destination past the cap is DROPPED, not folded onto
+         * another one -- silently landing on destination 0 would rewrite a
+         * different parameter's assignment */
+        "{\"cc\": 73, \"target\": \"synth\", \"param\": \"res\", \"dest\": 99}"
+        "]\n}\n";
+
+    write_patch(json);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "destination patch parsed");
+
+    CHECK(patch->knob_mapping_count == 3,
+          "three rows on one cc merged into ONE mapping (got %d mappings)",
+          patch->knob_mapping_count);
+
+    knob_mapping_t *k71 = NULL, *k72 = NULL, *k73 = NULL;
+    for (int i = 0; i < patch->knob_mapping_count; i++) {
+        if (patch->knob_mappings[i].cc == 71) k71 = &patch->knob_mappings[i];
+        if (patch->knob_mappings[i].cc == 72) k72 = &patch->knob_mappings[i];
+        if (patch->knob_mappings[i].cc == 73) k73 = &patch->knob_mappings[i];
+    }
+
+    CHECK(k71 && k71->dest_count == 3, "cc 71 has three destinations");
+    if (k71) {
+        CHECK(strcmp(k71->dests[0].param, "cutoff") == 0, "destination 0 is cutoff");
+        CHECK(strcmp(k71->dests[1].param, "mix") == 0, "destination 1 is mix");
+        CHECK(strcmp(k71->dests[2].param, "drive") == 0, "destination 2 is drive");
+        CHECK(k71->dests[0].lo == 0.0f && k71->dests[0].hi == 1.0f,
+              "a destination with no window is whole-range, not zero-width");
+        CHECK(k71->dests[1].lo > 0.19f && k71->dests[1].hi < 0.81f,
+              "a window round-trips");
+        CHECK(k71->dests[2].lo > k71->dests[2].hi,
+              "an INVERTED window survives as inverted, not reordered");
+        CHECK(k71->position > 0.74f && k71->position < 0.76f,
+              "the knob's position round-trips");
+    }
+
+    CHECK(k72 && k72->dest_count == 1, "cc 72 has one destination");
+    if (k72) {
+        CHECK(k72->dests[0].lo > 0.09f && k72->dests[0].hi < 0.61f,
+              "a SINGLE destination can carry a window too");
+    }
+
+    CHECK(k73 && k73->dest_count == 0,
+          "a row past the destination cap is dropped, not folded onto destination 0");
+}
+
+/*
+ * An older patch -- every knob a bare cc/target/param/value with none of the
+ * fields above -- must load as exactly what it was: one whole-range
+ * destination. This is the migration, and it is the absence of code.
+ */
+static void test_knob_legacy_rows_are_whole_range(chain_instance_t *inst, patch_info_t *patch) {
+    static const char json[] =
+        "{\n  \"name\": \"legacy\",\n"
+        "  \"knob_mappings\": ["
+        "{\"cc\": 71, \"target\": \"synth\", \"param\": \"cutoff\", \"value\": 0.4}"
+        "]\n}\n";
+
+    write_patch(json);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "legacy patch parsed");
+    CHECK(patch->knob_mapping_count == 1, "one mapping");
+    CHECK(patch->knob_mappings[0].dest_count == 1, "one destination");
+    CHECK(patch->knob_mappings[0].dests[0].lo == 0.0f &&
+          patch->knob_mappings[0].dests[0].hi == 1.0f,
+          "whole-range, so it behaves exactly as it did before destinations existed");
+}
+
 static void test_knob_rejected_row_does_not_bleed(chain_instance_t *inst, patch_info_t *patch) {
     if (MAX_AUDIO_FX < 2) return;
 
@@ -843,6 +938,8 @@ int main(int argc, char **argv) {
     }
 
     test_full_capacity(inst, patch);
+    test_knob_destinations(inst, patch);
+    test_knob_legacy_rows_are_whole_range(inst, patch);
     test_legacy_two_fx(inst, patch);
     test_hostile_json(inst, patch);
     test_midi_fx_state_forms(inst, patch);

@@ -1539,48 +1539,87 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
     /* Knob mapping info */
     if (strcmp(key, "knob_mappings") == 0) {
-        /* Return full knob mappings array as JSON for patch saving.
-         * Read ACTUAL current values from DSP plugins, not the knob
-         * tracking value which may be stale if params were changed
-         * via module UI or state restore. */
+        /*
+         * The patch's knob array, as FLAT ROWS.
+         *
+         * A knob with several destinations writes one ordinary object per
+         * destination, all sharing its `cc`, distinguished by `dest`. Nothing
+         * is nested, which matters: the parser below walks objects with a plain
+         * scan for the next brace, and so does every build already in the
+         * field. An older host reading this file sees several mappings on one
+         * CC and uses the first, which is destination 0 -- it degrades to the
+         * knob it would have had rather than to nonsense.
+         *
+         * `lo`/`hi` are written only when the destination is not whole-range,
+         * and `dest`/`pos` only when there is more than one destination, so a
+         * patch full of ordinary knobs re-saves BYTE-IDENTICAL to what shipped
+         * before any of this. test_chain_patch_roundtrip asserts exactly that.
+         *
+         * Values are read back from the plugins rather than trusted from the
+         * tracking copy, which may be stale if a parameter was changed through
+         * the module's own UI or a state restore.
+         */
         int off = 0;
+        int rows = 0;
         off += snprintf(buf + off, buf_len - off, "[");
         for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-            const char *target = inst->knob_mappings[i].dests[0].target;
-            const char *param = inst->knob_mappings[i].dests[0].param;
-            float value = inst->knob_mappings[i].dests[0].current_value;
+            const knob_mapping_t *km = &inst->knob_mappings[i];
+            int multi = knob_is_multi(km);
 
-            /* Try to read actual value from DSP plugin */
-            char val_buf[64];
-            int got = -1;
-            /* Indexed, not enumerated: this ladder stopped at fx2/midi_fx1, so
-             * a knob on fx3+ saved the STALE tracking value into the patch
-             * instead of the plugin's live one. The per-position plugin/
-             * instance checks stay — fx_count is a high-water mark and an
-             * interior position can be empty. */
-            if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
-                got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
-            } else {
-                int fxi = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
-                int mfi = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
-                if (fxi >= 0 && fxi < inst->fx_count &&
-                    inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
-                    got = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], param, val_buf, sizeof(val_buf));
-                } else if (mfi >= 0 && mfi < inst->midi_fx_count &&
-                           inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
-                    got = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], param, val_buf, sizeof(val_buf));
+            for (int di = 0; di < km->dest_count && di < MAX_KNOB_DESTS; di++) {
+                const char *target = km->dests[di].target;
+                const char *param = km->dests[di].param;
+                if (!param[0]) continue;
+                float value = km->dests[di].current_value;
+
+                /* Try to read actual value from DSP plugin.
+                 * Indexed, not enumerated: this ladder stopped at fx2/midi_fx1, so
+                 * a knob on fx3+ saved the STALE tracking value into the patch
+                 * instead of the plugin's live one. The per-position plugin/
+                 * instance checks stay -- fx_count is a high-water mark and an
+                 * interior position can be empty. */
+                char val_buf[64];
+                int got = -1;
+                if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
+                    got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+                } else {
+                    int fxi = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+                    int mfi = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+                    if (fxi >= 0 && fxi < inst->fx_count &&
+                        inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
+                        got = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], param, val_buf, sizeof(val_buf));
+                    } else if (mfi >= 0 && mfi < inst->midi_fx_count &&
+                               inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+                        got = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], param, val_buf, sizeof(val_buf));
+                    }
                 }
-            }
-            if (got > 0) {
-                chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
-                value = dsp_value_to_float(val_buf, pinfo, value);
-            }
+                if (got > 0) {
+                    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+                    value = dsp_value_to_float(val_buf, pinfo, value);
+                }
 
-            off += snprintf(buf + off, buf_len - off,
-                "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f}",
-                (i > 0) ? "," : "",
-                inst->knob_mappings[i].cc, target, param, value);
-            if (off >= buf_len - 1) break;
+                off += snprintf(buf + off, buf_len - off,
+                    "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f",
+                    rows ? "," : "", km->cc, target, param, value);
+
+                if (km->dests[di].lo != 0.0f || km->dests[di].hi != 1.0f) {
+                    off += snprintf(buf + off, buf_len - off,
+                        ",\"lo\":%.4f,\"hi\":%.4f", km->dests[di].lo, km->dests[di].hi);
+                }
+                if (multi) {
+                    off += snprintf(buf + off, buf_len - off,
+                        ",\"dest\":%d,\"pos\":%.4f", di, km->position);
+                }
+                off += snprintf(buf + off, buf_len - off, "}");
+                rows++;
+
+                /* Truncation would emit half an object, and JSON.parse in the
+                 * shadow UI throws that into a silent catch -- the knob array
+                 * would vanish from the saved patch with no error anywhere.
+                 * Answer an empty array instead: visibly nothing, not
+                 * invisibly broken. */
+                if (off >= buf_len - 2) return snprintf(buf, buf_len, "[]");
+            }
         }
         off += snprintf(buf + off, buf_len - off, "]");
         return off;
