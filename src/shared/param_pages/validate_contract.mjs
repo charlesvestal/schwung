@@ -45,9 +45,13 @@ function keyOf(entry) {
  * @param {string} o.id            module id, for the report
  * @param {object} o.hierarchy     parsed ui_hierarchy (may be null)
  * @param {Array}  o.chainParams   parsed chain_params (may be null)
+ * @param {object} [o.capabilities] parsed module.json capabilities. OPTIONAL,
+ *        and checks that need it stay silent when it is absent — no existing
+ *        caller passes it, and a contract validated without it must not grow a
+ *        warning it has no way to answer.
  * @returns {{id:string, findings:Array<{level:string, rule:string, message:string}>}}
  */
-export function validateContract({ id, hierarchy, chainParams } = {}) {
+export function validateContract({ id, hierarchy, chainParams, capabilities } = {}) {
     const findings = [];
     const add = (level, rule, message) => findings.push({ level, rule, message });
 
@@ -80,6 +84,37 @@ export function validateContract({ id, hierarchy, chainParams } = {}) {
         if (!lvl || typeof lvl !== "object") continue;
         for (const f of ["list_param", "select_param", "count_param"]) {
             if (lvl[f]) runtimeRanged.add(lvl[f]);
+        }
+    }
+
+    /*
+     * A CUSTOM KIND WITH NO SCRIPT IS THE ONE MISTAKE WORTH REPORTING.
+     *
+     * An unknown custom kind is LEGAL. It is exactly what an older host sees
+     * when it reads a newer module, and it degrades on its own: an unregistered
+     * kind claims nothing, so the detector picks the keys up and the built-in
+     * draws. Flagging that would make every forward-compatible module look
+     * broken.
+     *
+     * But a module that declares custom: and ships no canvas_script has simply
+     * forgotten the file, and NOTHING ELSE in the system will ever say so --
+     * the widget silently never appears, and what the user sees instead is a
+     * perfectly reasonable built-in picture.
+     *
+     * Silent when `capabilities` was not supplied: the caller cannot answer the
+     * question, so asking it would only produce noise.
+     */
+    if (capabilities) {
+        const customKinds = new Set();
+        for (const p of cp) {
+            const k = p && p.viz && p.viz.kind;
+            if (typeof k === "string" && k.startsWith("custom:")) customKinds.add(k);
+        }
+        if (customKinds.size > 0 && !capabilities.canvas_script) {
+            add("warn", "custom-widget-no-script",
+                `declares custom viz kind(s) ${[...customKinds].join(", ")} but the module ` +
+                "ships no canvas_script — the widget will never load and the built-in " +
+                "will draw in its place");
         }
     }
 

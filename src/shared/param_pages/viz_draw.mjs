@@ -35,6 +35,7 @@ import {
 import { enumIndexOf } from "./param_meta.mjs";
 import { wavPeaks, resamplePeaks } from "./wav_peaks.mjs";
 import { observeLanded, easeOut, lerp } from "./anim_state.mjs";
+import { isCustomKind, drawCustom } from "./widget_registry.mjs";
 
 /* ------------------------------------------------------------- animation --
  *
@@ -1715,6 +1716,21 @@ const DRAW = {
  * ignore `anim`/`nowMs` when they do not animate.
  */
 export function drawVizGroup(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues) {
+    /*
+     * A custom widget is tried first, and may decline -- an unregistered kind,
+     * or one disabled by a previous throw.
+     *
+     * DECLINING DRAWS NOTHING FOR THIS FRAME, and that is correct rather than a
+     * gap. The recovery is not here: it is in resolveViz, where a kind that has
+     * become unavailable stops claiming its keys, so the very next resolve hands
+     * them to the detector and the built-in draws over them. The alternative --
+     * reaching into the DRAW table for a guessed fallback right here -- would
+     * mean this function inventing a widget the resolver never chose.
+     */
+    if (isCustomKind(group.kind)) {
+        drawCustom(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues);
+        return;
+    }
     const fn = DRAW[group.kind];
     if (fn) fn(ctx, rect, group, values, metaIndex, anim, nowMs, baseValues);
 }

@@ -225,6 +225,99 @@ typedef struct {
 #error "catch-up threshold must sit inside the ring, or it can never fire"
 #endif
 
+/*
+ * THE BACKLOG HAS NO SET-POINT, SO IT KEEPS WHATEVER IT IS GIVEN.
+ *
+ * Producer and consumer both run at one block per SPI frame, so nothing in the
+ * loop closes the distance between them: `avail` is wherever the last
+ * disturbance left it, for the rest of the session. Both a healthy ~11 ms and a
+ * miserable ~85 ms are stable equilibria.
+ *
+ * How it gets given 85 ms, measured on a Move loading jp8000 with Move->Schwung
+ * on: Move stalls, the reader STARVES -- and a starved read consumes nothing,
+ * so read_pos does not advance -- then Move's catch-up burst lands all at once.
+ * A rate-locked reader can never drain that burst, so it does not decay back to
+ * the old level, it BECOMES the new level:
+ *
+ *   before  mean 10.97 ms (max 12.38)      6 windows, stable
+ *   after   mean 85.05 ms (min 83.65)      6 windows, stable
+ *
+ * min, mean and max agreeing to a millisecond over 5 s is a fixed offset. The
+ * user hears it as "significant delay after loading a module", and the only
+ * cure was toggling Move->Schwung, whose rebuild-entry snap resets read_pos.
+ *
+ * So: trim it. Only when it has been high for a WHILE -- a single elevated read
+ * is Move's ordinary jitter, and trimming on that is how the old 35 ms catch-up
+ * came to throw away the very burst that covers the next stall.
+ *
+ * THE TRADE-OFF IS REAL, AND BOTH ENDS OF IT ARE AUDIBLE.
+ *
+ * `avail` is how late MOVE'S OWN TRACKS arrive at the mixer. Schwung's synths
+ * are rendered fresh each SPI frame and are not delayed by it, so the backlog
+ * is heard as Move's clips and drums lagging behind what you play. Deep is the
+ * complaint. Shallow is a dropout, because the ring has to cover the producer's
+ * own gaps. There is no setting that is good at both; there is only the
+ * smallest depth that does not starve.
+ *
+ * TARGET IS DERIVED FROM MEASURED PRODUCER JITTER, and the first attempt at it
+ * was wrong in a way worth recording. It was set to ~12 ms because that is the
+ * level the machine happened to be running at when it looked healthy. Measured
+ * on the device afterwards:
+ *
+ *   producer max_gap     5.1 - 15.9 ms   (link_subscriber, breaks=0)
+ *   avail after trimming  mean 17.3 ms, dipping to 7.03 ms
+ *   result                la_starve_fallback=400, then 288 -- ~1.2 s of
+ *                         missing Move audio, heard as a dropout
+ *
+ * A 15.9 ms gap landing on a 7 ms buffer starves, and `avail` swings about
+ * 10 ms below its own mean, so the mean has to sit that much above the worst
+ * gap. 16 + 10, rounded up for margin, is where TARGET comes from.
+ *
+ * Note that LATENCY_COMP_TARGET_SAMPLES -- the single constant behind the whole
+ * alignment scheme (nudge set-point, Schwung-side delay, metronome offset) --
+ * is 1400 samples, 15.9 ms, exactly the worst gap measured here. Zero margin.
+ * That is worth knowing before trusting Latency Comp to hold a depth.
+ *
+ * If dropouts appear, raise TARGET; la_starve_fallback is the number that says
+ * so. If Move's tracks lag audibly, lower it, and expect starvation below ~30 ms.
+ */
+#define LINK_AUDIO_IN_TRIM_CEILING   (LINK_AUDIO_IN_BLOCK_SAMPLES * 20)  /* ~58 ms */
+#define LINK_AUDIO_IN_TRIM_TARGET    (LINK_AUDIO_IN_BLOCK_SAMPLES * 10)  /* ~29 ms */
+/* One second of reads at 128 frames / 44.1 kHz. Long enough that Move's
+ * stall-and-burst has come and gone; short enough that a parked backlog is
+ * corrected before it is worth complaining about. */
+#define LINK_AUDIO_IN_TRIM_SUSTAIN   345
+
+#if LINK_AUDIO_IN_TRIM_TARGET >= LINK_AUDIO_IN_TRIM_CEILING
+#error "trim target must sit below the ceiling, or trimming does nothing"
+#endif
+#if LINK_AUDIO_IN_TRIM_CEILING >= LINK_AUDIO_IN_CATCHUP_SAMPLES
+#error "trim ceiling must sit below catch-up, which handles the runaway case"
+#endif
+
+/*
+ * The trim decision, as a pure function so the two silent mistakes can be
+ * pinned: REWINDING (if avail is below the target, moving read_pos to
+ * write_pos - target moves it backwards and replays delivered audio) and
+ * WRAPPING (both positions free-run through 2^32, so avail is only correct as
+ * an unsigned difference).
+ *
+ * `run` is the caller's per-slot count of consecutive reads above the ceiling;
+ * it is updated here so the reset-on-dip cannot be forgotten at a call site.
+ */
+static inline int link_audio_in_trim_pos(uint32_t write_pos, uint32_t read_pos,
+                                         uint32_t *run, uint32_t *out_read_pos) {
+    const uint32_t avail = write_pos - read_pos;   /* wraps correctly */
+    if (avail <= (uint32_t)LINK_AUDIO_IN_TRIM_CEILING) { *run = 0; return 0; }
+    if (++(*run) < (uint32_t)LINK_AUDIO_IN_TRIM_SUSTAIN) return 0;
+    *run = 0;
+    /* Cannot fire below the target -- the ceiling is above it -- but a caller
+     * that changed the constants could, and that would rewind the reader. */
+    if (avail <= (uint32_t)LINK_AUDIO_IN_TRIM_TARGET) return 0;
+    if (out_read_pos) *out_read_pos = write_pos - (uint32_t)LINK_AUDIO_IN_TRIM_TARGET;
+    return 1;
+}
+
 /* Slots 0-3: per-track audio from Move. Slot 4 (Main) is reserved but
  * unsubscribed by link_subscriber to keep Move's Audio Worker threads free
  * from a publish we don't consume. The shim rebuilds Move's output from the

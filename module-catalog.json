@@ -1410,6 +1410,18 @@
       "default_branch": "main",
       "asset_name": "maze_seq_lite-module.tar.gz",
       "min_host_version": "1.0.0"
+    },
+    {
+      "id": "jp8000",
+      "name": "JE-8086",
+      "description": "Roland JP-8000 SuperSaw emulator (Gearmulator JE-8086) with patch and performance banks",
+      "author": "dsp56300/gearmulator (port: charlesvestal)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-je8086",
+      "default_branch": "main",
+      "asset_name": "jp8000-module.tar.gz",
+      "min_host_version": "1.1.1",
+      "requires": "JP-8000 v1.5 firmware ROMs: all 8 .mid files in the module's roms/ folder"
     }
   ]
 }
