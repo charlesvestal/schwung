@@ -818,29 +818,20 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
             int target_cc = KNOB_CC_START + (cc - KNOB_ABS_CC_START);
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == target_cc) {
-                    const char *target = inst->knob_mappings[i].dests[0].target;
-                    const char *param = inst->knob_mappings[i].dests[0].param;
-                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
-                    if (!pinfo) return;
+                    /* 0-127 is a POSITION across the knob's own travel -- the
+                     * same thing knob_emit_cc_out sends, read backwards, so a
+                     * controller that echoes what it was told lands where it
+                     * started. With one whole-range destination this is the
+                     * value scaling that has always shipped. */
+                    knob_set_position(inst, i, (float)msg[2] / 127.0f);
 
-                    float abs_val = pinfo->min_val + ((float)msg[2] / 127.0f) * (pinfo->max_val - pinfo->min_val);
-                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                    if (is_int) abs_val = (float)((int)(abs_val + 0.5f));
-                    if (abs_val < pinfo->min_val) abs_val = pinfo->min_val;
-                    if (abs_val > pinfo->max_val) abs_val = pinfo->max_val;
-                    inst->knob_mappings[i].dests[0].current_value = abs_val;
-
-                    char val_str[16];
-                    if (is_int) snprintf(val_str, sizeof(val_str), "%d", (int)abs_val);
-                    else        snprintf(val_str, sizeof(val_str), "%.3f", abs_val);
-
-                    knob_forward_value(inst, target, param, val_str);
                     /* Deliberately no knob_emit_cc_out() here. The sender set
                      * this value, so echoing it back is at best redundant and
                      * at worst a loop: a controller configured to echo its own
-                     * output (common — it is how a motorised unit hears itself)
-                     * would fight the user's fingers mid-turn. Record what the
-                     * sender already knows so later change detection is honest. */
+                     * output (common -- it is how a motorised unit hears
+                     * itself) would fight the user's fingers mid-turn. Record
+                     * what the sender already knows so later change detection
+                     * is honest. */
                     inst->knob_mappings[i].last_cc_out = msg[2];
                     return;
                 }

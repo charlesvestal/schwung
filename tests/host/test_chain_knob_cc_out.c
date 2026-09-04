@@ -127,6 +127,11 @@ static void map_knob(chain_instance_t *inst, int idx, int cc, const char *param,
     snprintf(inst->knob_mappings[idx].dests[0].target, sizeof(inst->knob_mappings[idx].dests[0].target), "synth");
     snprintf(inst->knob_mappings[idx].dests[0].param, sizeof(inst->knob_mappings[idx].dests[0].param), "%s", param);
     inst->knob_mappings[idx].dests[0].current_value = value;
+    /* Whole range. A knob's position is measured against its destination's
+     * WINDOW, and the memset above leaves lo=hi=0, which is no window at all. */
+    inst->knob_mappings[idx].dests[0].lo = 0.0f;
+    inst->knob_mappings[idx].dests[0].hi = 1.0f;
+    inst->knob_mappings[idx].dest_count = 1;
     inst->knob_mappings[idx].last_cc_out = -1;
     if (idx >= inst->knob_mapping_count) inst->knob_mapping_count = idx + 1;
 }
@@ -264,6 +269,53 @@ int main(void) {
     check(cap_count == 1, "the retry goes out once the ring drains");
     check(cap[0][3] == 32, "and it carries the value that was dropped");
     check(inst->knob_mappings[0].last_cc_out == 32, "now it is recorded");
+
+    /* ---- what a knob's POSITION means, out and back in ----------------
+     *
+     * One sentence for both kinds of knob: where the knob sits across its own
+     * travel. The cases above are the whole-range single destination, which is
+     * why they read as the parameter's value and did not change.
+     */
+
+    /* A RANGED single destination is measured against its WINDOW. Without
+     * that, an external fader's travel maps outside the window at both ends
+     * and clamps, so a third of its throw would do nothing. */
+    map_knob(inst, 0, 71, "cutoff", 0.25f);
+    inst->knob_mappings[0].dests[0].lo = 0.0f;
+    inst->knob_mappings[0].dests[0].hi = 0.5f;   /* window is 0.0 .. 0.5 */
+    inst->knob_mappings[0].last_cc_out = -1;
+    cap_reset();
+    knob_emit_cc_out(inst, 0);
+    check(cap_count == 1 && cap[0][3] == 64,
+          "a ranged destination halfway through its WINDOW emits 64, not 32");
+
+    inst->knob_mappings[0].dests[0].current_value = 0.5f;
+    knob_emit_cc_out(inst, 0);
+    check(cap_count == 2 && cap[1][3] == 127,
+          "and the top of the window is 127, so the whole fader is usable");
+
+    /* SEVERAL destinations have no single parameter value to send, so the
+     * knob's own position is what goes out. */
+    map_knob(inst, 0, 71, "cutoff", 0.0f);
+    knob_dest_assign(&inst->knob_mappings[0].dests[1], "synth", "cutoff2");
+    inst->knob_mappings[0].dest_count = 2;
+    inst->knob_mappings[0].position = 0.5f;
+    inst->knob_mappings[0].last_cc_out = -1;
+    cap_reset();
+    knob_emit_cc_out(inst, 0);
+    check(cap_count == 1 && cap[0][3] == 64,
+          "a multi-destination knob emits its own position");
+
+    inst->knob_mappings[0].position = 1.0f;
+    knob_emit_cc_out(inst, 0);
+    check(cap_count == 2 && cap[1][3] == 127, "...across its full travel");
+
+    /* Inbound is the same rule read backwards: a controller that echoes what
+     * it was told lands where it started. */
+    knob_set_position(inst, 0, 64.0f / 127.0f);
+    check(inst->knob_mappings[0].position > 0.49f &&
+          inst->knob_mappings[0].position < 0.51f,
+          "an inbound CC puts the knob back at the position it reported");
 
     free(inst);
     if (failures) {

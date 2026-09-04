@@ -87,6 +87,9 @@ CHAIN_INTERNAL int chain_knob_accel_cap(int accel, int type) { (void)type; retur
 CHAIN_INTERNAL void knob_turn(chain_instance_t *inst, int idx, int ticks, float fb) {
     (void)inst; (void)idx; (void)ticks; (void)fb;
 }
+CHAIN_INTERNAL void knob_set_position(chain_instance_t *inst, int idx, float position) {
+    (void)inst; (void)idx; (void)position;
+}
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target,
                                        const char *param, const char *val_str) {
     (void)inst; (void)target; (void)param; (void)val_str;

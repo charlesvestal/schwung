@@ -95,7 +95,7 @@ fi
 # formats and forwards its own value. Both must end at the helper.
 command grep -q 'knob_turn(inst, i, ticks,' src/modules/chain/dsp/chain_midi.c \
   || fail "the relative CC path does not delegate to knob_turn"
-command grep -q 'knob_forward_value(inst, target, param, val_str)' src/modules/chain/dsp/chain_midi.c \
-  || fail "the absolute CC path no longer forwards through knob_forward_value"
+command grep -q 'knob_set_position(inst, i,' src/modules/chain/dsp/chain_midi.c \
+  || fail "the absolute CC path does not delegate to knob_set_position"
 
 echo "PASS: a knob turn edits the base, and every knob path goes through it"

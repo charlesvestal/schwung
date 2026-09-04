@@ -1261,6 +1261,75 @@ void knob_turn(chain_instance_t *inst, int idx, int ticks, float float_fallback_
 
 /* Inverse of the inbound scaling in chain_midi.c. Returns -1 when the range is
  * degenerate or dynamic (max_val < 0), where there is no meaningful 0-127. */
+/*
+ * WHERE THE KNOB SITS ACROSS ITS OWN TRAVEL, as 0-127. One sentence, and
+ * therefore one rule, for both kinds of knob:
+ *
+ *   several destinations -> the knob's own position, which is the only thing
+ *                           they have in common;
+ *   one destination      -> that parameter's value as a fraction of its own
+ *                           WINDOW (not of the parameter's full range).
+ *
+ * With one destination at the whole-range default the second reduces to
+ * (val - min) / (max - min), i.e. exactly knob_value_to_cc -- so nothing
+ * changes for any knob that exists today, and test_chain_knob_cc_out's
+ * inverse-scaling assertion passes untouched.
+ *
+ * Measuring a RANGED single destination against its window rather than the
+ * full range is what keeps in and out symmetric. The alternative gives an
+ * external fader dead zones at both ends, where its travel maps outside the
+ * window and clamps, so a third of the throw does nothing.
+ */
+int knob_position_cc(chain_instance_t *inst, const knob_mapping_t *km) {
+    if (!inst || !km || km->dest_count < 1) return -1;
+
+    if (knob_is_multi(km)) {
+        int cc_val = (int)(km->position * 127.0f + 0.5f);
+        if (cc_val < 0) cc_val = 0;
+        if (cc_val > 127) cc_val = 127;
+        return cc_val;
+    }
+
+    const knob_dest_t *d = &km->dests[0];
+    chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+    if (!pinfo) return -1;
+
+    float lo = d->lo, hi = d->hi;
+    float span = hi - lo;
+    if (span == 0.0f) return -1;              /* a zero-width window has no position */
+
+    float frac = (knob_value_to_frac(d->current_value, pinfo) - lo) / span;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    return (int)(frac * 127.0f + 0.5f);
+}
+
+/*
+ * The inbound half: put the knob AT a position, 0..1, and let every
+ * destination follow. The same rule read backwards, so a controller that sends
+ * back what it was told lands where it started.
+ */
+void knob_set_position(chain_instance_t *inst, int idx, float position) {
+    if (!inst || idx < 0 || idx >= MAX_KNOB_MAPPINGS) return;
+    knob_mapping_t *km = &inst->knob_mappings[idx];
+    if (km->dest_count < 1) return;
+
+    if (position < 0.0f) position = 0.0f;
+    if (position > 1.0f) position = 1.0f;
+
+    if (knob_is_multi(km)) km->position = position;
+
+    for (int i = 0; i < km->dest_count && i < MAX_KNOB_DESTS; i++) {
+        knob_dest_t *d = &km->dests[i];
+        if (!d->param[0]) continue;
+        chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+        if (!pinfo) continue;
+        float nv = knob_dest_value_at(d, position, pinfo);
+        d->current_value = nv;
+        knob_format_and_forward(inst, d, pinfo, nv);
+    }
+}
+
 static int knob_value_to_cc(float val, const chain_param_info_t *pinfo) {
     if (!pinfo) return -1;
     float span = pinfo->max_val - pinfo->min_val;
@@ -1287,8 +1356,7 @@ void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     int recv_ch = inst->host->slot_recv_channel((void *)inst);
     if (recv_ch < 0 || recv_ch > 15) return;
 
-    chain_param_info_t *pinfo = knob_find_param(inst, km->dests[0].target, km->dests[0].param);
-    int cc_val = knob_value_to_cc(km->dests[0].current_value, pinfo);
+    int cc_val = knob_position_cc(inst, km);
     if (cc_val < 0) return;
     if (cc_val == km->last_cc_out) return;          /* change detection at CC resolution */
 
