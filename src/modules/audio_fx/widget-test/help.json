@@ -1,18 +1,22 @@
 {
   "title": "Widget Test",
-  "summary": "Reference module showing a custom in-grid widget and its fullscreen canvas view, both from one canvas.js.",
+  "summary": "Reference module for the three module-supplied draw surfaces: an in-grid widget, a card that floats while the knob turns, and a fullscreen canvas view.",
   "sections": [
     {
       "heading": "What it shows",
-      "body": "The Level knob draws as a segmented meter supplied by the module itself rather than a built-in dial. Clicking Detail opens the module's own fullscreen view. Both come from the same canvas.js."
+      "body": "The Level knob draws as a segmented meter supplied by the module rather than a built-in dial. Turn it and a card floats over the page with the reading and a bar. Click Detail for the module's own fullscreen view. All three come from files beside the module."
     },
     {
       "heading": "For module authors",
-      "body": "Declare viz: { kind: \"custom:<name>\" } on a chain_params entry, then export widgetKind and drawCell from canvas.js. Coordinates are frame-local: (0,0) is the knob box, and ctx.width/ctx.height are its size. Values are handed to drawCell; it cannot read params. Schwung keeps drawing the label."
+      "body": "In grid: viz: { kind: \"custom:<name>\" } plus widgetKind and drawCell in canvas.js. On a turn: card_script: \"cards.js#export\" plus card_w and card_h. Fullscreen: type \"canvas\". Coordinates are frame-local everywhere: (0,0) is your own box and ctx.width/ctx.height are its size."
     },
     {
-      "heading": "If it does not appear",
-      "body": "An unknown or broken widget falls back to the built-in graphic rather than leaving a hole, so the page always looks correct. Check debug.log: a widget that threw is disabled for the session and names itself there."
+      "heading": "No reads on any of them",
+      "body": "Values are handed in; there is no getParam. A card's raw value may be null, meaning the read did not answer, and the contract is to draw nothing interpretive rather than to draw zero. Watch the card at null: it shows -- and no bar."
+    },
+    {
+      "heading": "If something does not appear",
+      "body": "An unknown or broken drawer falls back to the built-in rather than leaving a hole, so the page always looks correct. Check debug.log: a drawer that threw is retired for the session and names itself there."
     }
   ]
 }

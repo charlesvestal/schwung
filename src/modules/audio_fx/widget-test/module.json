@@ -2,7 +2,7 @@
   "id": "widget-test",
   "name": "Widget Test",
   "version": "0.1.0",
-  "description": "Reference module for a custom in-grid widget (drawCell) plus its fullscreen canvas view.",
+  "description": "Reference module for the three module-supplied draw surfaces: an in-grid widget (drawCell), a card that floats while the knob turns (card_script), and a fullscreen canvas view.",
   "author": "Schwung",
   "component_type": "audio_fx",
   "capabilities": {
@@ -19,7 +19,10 @@
         "default": 0.5,
         "viz": {
           "kind": "custom:wtmeter"
-        }
+        },
+        "card_script": "cards.js#blend_card",
+        "card_w": 96,
+        "card_h": 34
       },
       {
         "key": "detail",

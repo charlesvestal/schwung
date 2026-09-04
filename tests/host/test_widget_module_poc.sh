@@ -38,6 +38,7 @@ import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
 import { validateContract } from "./src/shared/param_pages/validate_contract.mjs";
 import { registerWidget, clearWidgets, isWidgetAvailable }
   from "./src/shared/param_pages/widget_registry.mjs";
+import { drawParamCard, paramCardRect } from "./src/shared/param_pages/param_card.mjs";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
@@ -53,6 +54,7 @@ const declared = CP.filter((p) => p.viz && typeof p.viz.kind === "string" &&
                                   p.viz.kind.startsWith("custom:"));
 ok(declared.length === 1, "exactly one param declares a custom viz kind");
 const KIND = declared[0].viz.kind;
+const declaredCard = CP.find((p) => typeof p.card_script === "string") || null;
 
 /* The validator is happy with it -- no errors, and no missing-script warning. */
 const findings = validateContract({ id: mod.id, hierarchy: mod.ui_hierarchy,
@@ -141,6 +143,78 @@ for (const k of CP.map((p) => p.key)) {
 }
 ok(/move_audio_fx_init_v2/.test(csrc), "the DSP exports the v2 audio FX entry point");
 ok(/process_block/.test(csrc), "and a process_block, so it is a loadable chain component");
+
+/* ---- THE CARD: the modules real cards.js, through the real drawParamCard ----
+ *
+ * test_param_card.sh injects its own loadCard stub and a fixture drawer, so no
+ * real file is ever loaded on any path there. This starts from the shipped
+ * cards.js. The equivalent gap on drawCell is what let a call-ordering defect
+ * survive nine green tasks, so the card gets a real consumer from the start. */
+const cardSpec = declaredCard && declaredCard.card_script;
+ok(typeof cardSpec === "string" && cardSpec.indexOf("#") > 0,
+   "the level param declares a card_script with an export fragment");
+const [cardFile, cardExport] = String(cardSpec).split("#");
+
+const cardSrc = readFileSync(`${DIR}/${cardFile}`, "utf8");
+const cg = {};
+new Function("globalThis", cardSrc)(cg);
+const drawer = cg[cardExport];
+ok(typeof drawer === "function",
+   `cards.js exports ${cardExport} as a FUNCTION (a card is not an overlay factory)`);
+
+const cardPx = (raw, frame) => {
+  const px = new Set();
+  const cctx = {
+    fillRect(x, y, w, h, c) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+        const k = (x + i) + "," + (y + j);
+        if (c) px.add(k); else px.delete(k);
+      }
+    },
+    print() {}, textWidth: (t) => String(t).length * 4,
+  };
+  let threw = 0;
+  drawParamCard(cctx, {
+    meta: declaredCard, draw: drawer, frame,
+    name: "Level", value: raw === null ? "" : String(raw), raw,
+    onError: () => { threw++; },
+  });
+  return { px, threw };
+};
+
+const c50 = cardPx("0.5", null);
+ok(c50.threw === 0, "the shipped card drawer does not throw");
+ok(c50.px.size > 0, "and it lights pixels");
+ok(cardPx("1", null).px.size > cardPx("0", null).px.size,
+   "a full value lights more of the card than an empty one");
+
+/* THE NULL CONTRACT, on the real drawer. */
+const cNull = cardPx(null, null);
+ok(cNull.threw === 0, "a null raw does not throw");
+ok(cNull.px.size < c50.px.size,
+   "a null raw draws LESS than a real value -- no bar invented from no answer");
+
+/* Contained in the card, and in an EMBEDDED frame. */
+const outer = paramCardRect(declaredCard);
+ok([...c50.px].every((k) => {
+     const a = k.split(","), x = Number(a[0]), y = Number(a[1]);
+     return x >= outer.x && x < outer.x + outer.w &&
+            y >= outer.y + 0 && y < outer.y + outer.h;
+   }), "everything the card draws stays inside the card");
+
+const EMB = { x: 0, y: 20, w: 64, h: 44 };
+const embOuter = paramCardRect(declaredCard, EMB);
+ok([...cardPx("0.5", EMB).px].every((k) => {
+     const a = k.split(","), x = Number(a[0]), y = Number(a[1]);
+     return x >= EMB.x && x < EMB.x + EMB.w && y >= EMB.y && y < EMB.y + EMB.h;
+   }), "and inside an EMBEDDED page frame, not across the panel");
+
+/* The DSP must declare the card too -- the chain host reads the DSP, not
+ * module.json, so a card declared only in module.json would never appear. */
+ok(csrc.includes("card_script"),
+   "the DSP declares card_script, which is what the chain host actually serves");
+ok(csrc.includes(cardFile),
+   `the DSP names ${cardFile}, matching module.json`);
 
 /* ---- and the fallback story, from the shipped declaration ---- */
 clearWidgets();

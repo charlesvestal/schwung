@@ -596,6 +596,7 @@ if [ -n "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
         -lm
     cp src/modules/audio_fx/widget-test/module.json \
        src/modules/audio_fx/widget-test/canvas.js \
+       src/modules/audio_fx/widget-test/cards.js \
        src/modules/audio_fx/widget-test/help.json \
        build/modules/audio_fx/widget-test/
 fi
