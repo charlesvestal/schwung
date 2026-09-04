@@ -3,22 +3,32 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# A control with exactly TWO values TOGGLES on a detent, whichever way it went,
-# once per flick.
+# A BOXED two-way toggles on a detent whichever way it went, once per flick.
+# A SWITCH does not: clockwise is on, anticlockwise is off.
 #
-# There were three spellings of one control and two of them had a dead
-# direction:
+# THE SPLIT IS THE WIDGET, NOT THE SEMANTICS, and that is the whole of it:
 #
-#   Off/On (or int 0..1)  direction-ABSOLUTE: right meant On, left meant Off,
-#                         so at Off a left turn did nothing, forever
-#   Mix/Reverb            fell to the enum branch and CLAMPED behind a
-#                         four-detent gate, so at Mix a left turn did nothing,
-#                         forever, and a right turn took four detents
+#   Mix/Reverb   drawn as an enum SQUARE — a boxed value. Mix and Reverb sit in
+#                the same box in the same place, so the cell shows a STATE and
+#                names no direction. A direction-absolute knob there is dead
+#                half the time and there is nothing on screen to learn it from.
+#                Reported from the device: "if there are only two, why not let
+#                it wrap otherwise you have to know which way is off and which
+#                way is on, in which case you need some knowledge you dont
+#                have."
 #
-# Reported from the device: "if there are only two, why not let it wrap
-# otherwise you have to know which way is off and which way is on, in which
-# case you need some knowledge you dont have." There is no way to acquire it —
-# the cell shows a STATE, not a direction.
+#   Off/On       drawn as a SWITCH — a track with a knob at one end of it. The
+#                form itself names the direction, the same one every physical
+#                switch has. Toggling it breaks that promise: a clockwise turn
+#                on an already-on switch turned it OFF. Also reported from the
+#                device: "if it's on it should stay on when turning it on."
+#
+# So the turn partition must equal the DRAW partition — detectSwitch emits
+# VIZ_SWITCH for exactly isBooleanMeta && !isTrigger, and knobStep's switch
+# branch guards on exactly that pair. Section 6 pins them equal, because a
+# drift means a control makes a promise with its shape that the knob does not
+# keep. The split is in knobStep alone: both are still clicked and dived the
+# same, and isTwoWayMeta still answers true for both.
 #
 # WRAPPING ALONE IS NOT THE ANSWER, which is what most of this file is about.
 # With two values, "wrap" and "toggle on every detent" are identical, and one
@@ -39,12 +49,14 @@ fi
 node -e '
 Promise.all([
   import("./src/shared/knob_engine.mjs"),
-]).then(([K]) => {
+  import("./src/shared/param_pages/viz.mjs"),
+]).then(([K, V]) => {
   let failures = 0;
   const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
   const OFF_ON  = { type: "enum", options: ["Off", "On"] };
   const CHOICE  = { type: "enum", options: ["Mix", "Reverb"] };
+  const ON_OFF  = { type: "enum", options: ["On", "Off"] };   /* declared backwards */
   const INTBOOL = { type: "int", min: 0, max: 1 };
   const THREE   = { type: "enum", options: ["A", "B", "C"] };
   const TRIGGER = { type: "enum", options: ["—", "Rnd!"], access: "write" };
@@ -56,22 +68,50 @@ Promise.all([
     return st.value;
   };
 
-  /* ---- 1. either direction reaches the other value --------------------- */
-  for (const [name, meta] of [["Off/On", OFF_ON], ["Mix/Reverb", CHOICE], ["int 0..1", INTBOOL]]) {
+  /* ---- 1a. a CHOICE: either direction reaches the other value ---------- */
+  for (const [name, meta] of [["Mix/Reverb", CHOICE]]) {
     for (const from of [0, 1]) {
       const want = from === 0 ? 1 : 0;
       for (const dir of [1, -1]) {
         const got = tap(meta, from, dir, 1000);
         if (got !== want)
           fail(name + " at " + from + " turned " + (dir > 0 ? "up" : "down") + " gave " + got +
-               ", expected " + want + " — a two-way with a dead direction is dead half the " +
-               "time, and the cell shows a state, not a direction");
+               ", expected " + want + " — a two-way choice with a dead direction is dead half " +
+               "the time, and the cell shows a state, not a direction");
       }
     }
   }
 
-  /* ---- 2. ONE FLICK IS ONE FLIP ---------------------------------------- */
-  for (const [name, meta] of [["Off/On", OFF_ON], ["Mix/Reverb", CHOICE], ["int 0..1", INTBOOL]]) {
+  /* ---- 1b. a BOOLEAN: clockwise is ON, and STAYS on -------------------- */
+  for (const [name, meta] of [["Off/On", OFF_ON], ["int 0..1", INTBOOL], ["On/Off", ON_OFF]]) {
+    const on = name === "On/Off" ? 0 : 1;   /* the ON value, by its WORD */
+    const off = 1 - on;
+    for (const from of [0, 1]) {
+      const up = tap(meta, from, 1, 1000);
+      if (up !== on)
+        fail(name + " at " + from + " turned clockwise gave " + up + ", expected " + on +
+             " — clockwise means ON, and on an already-on switch that is a no-op, not a flip");
+      const down = tap(meta, from, -1, 1000);
+      if (down !== off)
+        fail(name + " at " + from + " turned anticlockwise gave " + down + ", expected " + off +
+             " — anticlockwise means OFF");
+    }
+  }
+
+  /* ...and it is IDEMPOTENT across a whole flick, with no latch to rely on:
+   * a dozen clockwise detents all say the same thing. */
+  {
+    const st = K.knobInit(1);
+    for (let t = 1000; t <= 3000; t += 30) K.knobStep(st, OFF_ON, 1, t);
+    if (st.value !== 1)
+      fail("a 2-second clockwise spin on an ON switch left it at " + st.value +
+           " — a switch write is idempotent and must not depend on a gesture latch");
+    for (let t = 4000; t <= 6000; t += 30) K.knobStep(st, OFF_ON, -1, t);
+    if (st.value !== 0) fail("a 2-second anticlockwise spin did not leave the switch OFF");
+  }
+
+  /* ---- 2. ONE FLICK IS ONE FLIP (a choice only — a switch has no flip) -- */
+  for (const [name, meta] of [["Mix/Reverb", CHOICE]]) {
     const st = K.knobInit(0);
     let t = 1000;
     K.knobStep(st, meta, 1, t);
@@ -89,16 +129,16 @@ Promise.all([
   {
     const st = K.knobInit(0);
     let t = 1000;
-    K.knobStep(st, OFF_ON, 1, t);                       /* flip */
-    for (t = 1030; t <= 3000; t += 30) K.knobStep(st, OFF_ON, 1, t);
+    K.knobStep(st, CHOICE, 1, t);                       /* flip */
+    for (t = 1030; t <= 3000; t += 30) K.knobStep(st, CHOICE, 1, t);
     /* Still latched at t=3000 even though 2s have passed since the FLIP —
      * because the knob never stopped. Now let it stop. */
-    K.knobStep(st, OFF_ON, 1, 5000);
+    K.knobStep(st, CHOICE, 1, 5000);
     if (st.value !== 0)
       fail("the knob went still for 2s and the next detent did not flip it — the stamp must be " +
            "the last DETENT, written before the early return");
     /* And a detent clearly INSIDE the window is still swallowed. */
-    K.knobStep(st, OFF_ON, 1, 5100);
+    K.knobStep(st, CHOICE, 1, 5100);
     if (st.value !== 0) fail("a detent 100ms after a flip was not swallowed");
   }
 
@@ -138,8 +178,43 @@ Promise.all([
            "learn two different flick lengths for two controls that look alike");
   }
 
+  /* ---- 6. the TURN partition equals the DRAW partition ------------------ */
+  {
+    /* This is the load-bearing claim. A control that wears a track must be the
+     * control the knob treats as having a direction, and nothing else may be.
+     * Asserted over the whole fleet rather than a handful of literals. */
+    const fs = require("fs");
+    const fx = JSON.parse(fs.readFileSync("tests/fixtures/module-contracts.json", "utf8"));
+    /* Turning a meta twice from the SAME start, one detent each way, at times
+     * far enough apart that no latch is in play. Direction-absolute lands on
+     * two different values; a toggle lands on the same one both times. */
+    const isDirectional = (meta) => {
+      const up = tap(meta, 0, 1, 1000);
+      const dn = tap(meta, 0, -1, 1000);
+      return up !== dn;
+    };
+    let checked = 0, drawn = 0;
+    for (const m of fx.modules) {
+      for (const p of (m.chain_params || [])) {
+        const meta = { ...p, kind: p.kind || p.type };
+        const draws = V.isBooleanMeta(meta) && !(meta.writeOnly || meta.access === "write");
+        if (!draws && !(Array.isArray(meta.options) && meta.options.length === 2)) continue;
+        checked++;
+        if (draws) drawn++;
+        const turns = isDirectional(meta);
+        if (draws !== turns)
+          fail(m.id + "." + p.key + (draws
+            ? " is DRAWN as a switch but TOGGLES — the track points a direction the knob ignores"
+            : " is drawn as a boxed value but turns direction-absolute — nothing on screen says which way"));
+      }
+    }
+    if (drawn < 40)
+      fail("only " + drawn + " switch-drawn params found across " + checked +
+           " two-value params — the fixture is not exercising this");
+  }
+
   if (failures) process.exit(1);
-  console.log("PASS: a two-value control toggles either way, once per flick, and neither a " +
-              "longer enum nor a trigger is touched");
+  console.log("PASS: what is DRAWN as a switch is clockwise-on, a boxed two-way toggles either " +
+              "way once per flick, and neither a longer enum nor a trigger is touched");
 }).catch((e) => { console.error("FAIL: " + (e && e.stack || e)); process.exit(1); });
 '

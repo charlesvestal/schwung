@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 
 file="src/shadow/shadow_ui.c"
 
-# Six JS-binding setters read-modify-write features.json through fixed
+# Seven JS-binding setters read-modify-write features.json through fixed
 # 512/1024-byte buffers. Once the config grows past the buffer, ANY toggle
 # (display mirror, MIDI indicator, skipback...) rewrites features.json from
 # the truncated copy — destroying every key past the cut. All setters must
@@ -23,7 +23,8 @@ if ! grep -Eq 'ftell|fstat' <<<"$helper"; then
 fi
 
 for fn in js_display_mirror_set js_set_pages_set js_midi_indicator_set \
-          js_shadow_ui_trigger_set js_skipback_shortcut_set js_skipback_seconds_set; do
+          js_shadow_ui_trigger_set js_skipback_shortcut_set js_skipback_seconds_set \
+          js_stay_in_shadow_set; do
   body=$(awk "/^static JSValue ${fn}\(/,/^}/" "$file")
   if [ -z "$body" ]; then
     echo "FAIL: ${fn} missing" >&2

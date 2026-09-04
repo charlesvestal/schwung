@@ -14,9 +14,12 @@ cd "$(dirname "$0")/../.."
 #
 # The rest pins the properties that fail SILENTLY:
 #
-#   - a section that grew a ninth param does not error, it paginates, and the
-#     "one section, one page" property that makes sections-as-levels work is
-#     gone without a symptom. Audio sits at exactly 8.
+#   - a section that SPLIT across two pages would not error; it would put a jog
+#     step in the middle of a scrolling list, and the "one section, one page"
+#     property that makes sections-as-levels work would be gone without a
+#     symptom. There is no limit on how LONG a section may be -- eight is the
+#     number of physical knobs, this screen is pinned to the list, and the
+#     planner is handed `paginate: false` to say so. Audio holds nine.
 #   - an enum with no `options` is not divable and shows a bare index.
 #   - an option longer than three characters does not overflow the enum square,
 #     it wraps across two lines of the 5x3 font and reads as gibberish
@@ -86,7 +89,32 @@ const WANT = ["display", "audio", "accessibility", "set_pages", "shortcuts", "se
 }
 
 /* ---- 3. page kinds: six grids and one menu ------------------------------ */
-const plan = planPages({ hierarchy, chainParams });
+/* paginate: false, exactly as enterGlobalSettingsGrid passes it. Planning
+ * these with the 8-key chunking of the GRID would measure a screen that does
+ * not exist: Global Settings is pinned to the LIST (layout: LAYOUT_LIST),
+ * and a list scrolls.
+ *
+ * No apostrophes below this line: the whole script is a single-quoted -e
+ * argument, and one would end it. */
+const plan = planPages({ hierarchy, chainParams, paginate: false });
+{
+  /*
+   * ...and the SCREEN must actually ask for that, or everything below measures
+   * a configuration the device does not use. Without this, dropping the flag
+   * from enterGlobalSettingsGrid leaves this whole file green while Audio shows
+   * up on the device split into "Audio" and "Audio - 2".
+   *
+   * The plumbing between the two is pinned by test_page_plan_paginate.sh; this
+   * is only the premise of this file being true.
+   */
+  const uiSrc = FS.readFileSync(R + "/src/shadow/shadow_ui.js", "utf8");
+  const entry = uiSrc.match(/function enterGlobalSettingsGrid\([\s\S]*?\n\}/);
+  if (!entry) fail("enterGlobalSettingsGrid is gone from shadow_ui.js");
+  else if (!/paginate:\s*false/.test(entry[0])) {
+    fail("enterGlobalSettingsGrid does not pass paginate: false, so the plan below is " +
+         "not the one the screen builds — a section over eight params would split");
+  }
+}
 {
   const byLevel = {};
   for (const p of plan.pages) byLevel[p.level || p.name] = p.kind;
@@ -119,14 +147,34 @@ const plan = planPages({ hierarchy, chainParams });
   /* The counts from GLOBAL_SETTINGS_SECTIONS, transcribed. Asserted per level
    * rather than only in aggregate: a param that moved from one section to
    * another keeps the total at 24 and both totals-based checks green. */
-  const WANT_COUNT = { display: 6, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 1, services: 2 };
+  /*
+   * THERE IS NO EIGHT HERE. Audio holds nine.
+   *
+   * Eight is the number of physical KNOBS: a grid page has eight cells and
+   * nowhere to put a ninth. Global Settings is pinned to the LIST, which draws
+   * five rows of a page and scrolls the rest, and knobRows() reads the keys of
+   * a page with no cap — so the length of a section is a free choice. It is
+   * planned with `paginate: false` above, the way the screen plans it.
+   *
+   * This file used to assert the opposite twice over ("Audio is at
+   * KNOBS_PER_PAGE exactly — one more and it paginates"), which was true of the
+   * PLANNER and false of the screen, and it cost a real change: Audition was
+   * moved out of Audio into Display to make room for Save Stems, for a
+   * constraint that does not apply to a scrolling list. Audition is back in
+   * Audio.
+   *
+   * What still matters is ONE PAGE PER SECTION — a section that split would put
+   * a jog step in the middle of a list — and that is what the seven-page
+   * assertion above and these per-section counts catch together.
+   */
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, services: 2 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
-    if (keys.length > KNOBS_PER_PAGE) {
-      fail(p.name + " holds " + keys.length + " params — a section must fit ONE page, " +
-           "or it paginates silently and sections-as-levels stops holding");
-    }
+    /* No upper bound on how long a section may be: see the note above. A section
+     * SPLITTING is what would break sections-as-levels, and that is caught by
+     * the seven-page assertion and by the per-section counts below — both of
+     * which move if a section ever gains a second page. */
     const want = WANT_COUNT[p.level];
     if (want === undefined) { fail("unexpected grid page level: " + p.level); continue; }
     if (keys.length !== want) {
@@ -134,10 +182,29 @@ const plan = planPages({ hierarchy, chainParams });
            keys.length + ": " + keys.join(", "));
     }
   }
-  /* Audio is at the limit exactly. Stated on its own so the reason survives. */
+  /*
+   * Audio is LONGER than a grid page and is still ONE page. Stated on its own,
+   * because it is the property the `paginate: false` hand-off exists to give
+   * and the one that silently regressed if that hand-off were dropped: with
+   * chunking back on, this level becomes "Audio" + "Audio - 2" and every other
+   * assertion here still passes.
+   */
   const audio = plan.pages.find((p) => p.level === "audio");
-  if (!audio || (audio.keys || []).filter(Boolean).length !== KNOBS_PER_PAGE) {
-    fail("Audio has exactly " + KNOBS_PER_PAGE + " params — one more and it paginates");
+  if (!audio) {
+    fail("no Audio page");
+  } else {
+    const n = (audio.keys || []).filter(Boolean).length;
+    if (n <= KNOBS_PER_PAGE) {
+      fail("Audio holds " + n + " params, which no longer exceeds the " +
+           KNOBS_PER_PAGE + " of a grid page — this assertion can no longer detect " +
+           "the chunking " +
+           "coming back; pick another over-length section or drop it");
+    }
+    if (plan.pages.filter((p) => p.level === "audio").length !== 1) {
+      fail("Audio was split across " + plan.pages.filter((p) => p.level === "audio").length +
+           " pages — a section is one scrolling list, and a split puts a jog step " +
+           "in the middle of it");
+    }
   }
 
   /* Every knob param must resolve to declared metadata, or the grid invents a
@@ -282,6 +349,7 @@ const plan = planPages({ hierarchy, chainParams });
     display_mirror: "Mirror Display", overlay_knobs: "Overlay",
     pad_typing: "Pad Typing", text_preview: "Show Typed",
     midi_indicator_enabled: "Show MIDI", param_view: "Param View",
+    stay_in_shadow: "Keep Schwung",
     link_audio_routing: "Move->Schwung", link_audio_publish: "Schwung->Link",
     latency_comp_enabled: "Latency Comp", resample_bridge: "Resample",
     skipback_shortcut: "Skipback", skipback_seconds: "Skipback Len",
@@ -294,6 +362,13 @@ const plan = planPages({ hierarchy, chainParams });
     screen_reader_speed: "Speed", screen_reader_pitch: "Pitch",
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
     set_pages_enabled: "Set Pages", shadow_ui_trigger: "Open With",
+    recall_quantize: "Recall Q",
+    /* Names written out in full, like every row above: the cell renderer
+       abbreviates (labelForCell / WORD_ABBREV), the declaration does not. */
+    metronome_mode: "Metronome", metronome_level: "Click Vol",
+    /* One word, because it names the whole question the three options answer
+       ("Master / Stems / Both") and the options are right beside it. */
+    save_stems: "Save",
     filebrowser_enabled: "File Browser",
     analytics_enabled: "Analytics",
   };
@@ -540,8 +615,8 @@ const plan = planPages({ hierarchy, chainParams });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (6/8/6/1/1/2 params + Updates as a " +
-            "menu), every section one page with Audio at the limit, every enum listable with a " +
+console.log("PASS: global settings contract — seven levels (7/9/6/1/4/2 params + Updates as a " +
+            "menu), every section ONE page with no length limit (Audio holds nine), every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
             "saveMasterFxChainConfig keys persisting and four others provably not, and " +

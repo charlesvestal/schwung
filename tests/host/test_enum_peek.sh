@@ -31,10 +31,11 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 node --input-type=module -e '
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createController, ENUM_PEEK_MS }
   from "./src/shared/param_pages/page_controller.mjs";
 import { applyInput } from "./src/shared/param_pages/page_input.mjs";
+import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
 
 let fail = 0;
 const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fail++; };
@@ -239,35 +240,158 @@ const spin = (ctl, slot, n) => {
 }
 
 /* ===================================================================== 7 ==
- * THE WIRING, at the source. The pixels of this screen are already pinned by
- * test_enum_picker_chrome.sh, because the peek and the picker share
- * enum_list.mjs -- what is NOT covered there is that the grid reaches it with
- * the right arguments and, crucially, WITHOUT changing view.
+ * THE WIRING, at the source -- AND WHO OWNS THE DRAW.
+ *
+ * The pixels of this screen are pinned by test_enum_picker_chrome.sh, because
+ * the peek and the picker share enum_list.mjs. What is not covered there is
+ * that the peek is REACHED at all.
+ *
+ * It used to be drawn inside shadow_ui_param_pages.mjs, which is one consumer
+ * of page_controller and not the only one: a module supplying its own
+ * ui_chain.js binds the same controller and owns its own frame. Those modules
+ * called render() and stopped -- which is what the whole library suggests is
+ * the entire draw -- so the controller tracked a peek on every enum detent
+ * that was painted nowhere, and applyInput routed Back to dismissPeek() to
+ * take down a panel that did not exist. CW-78 and 6W6 both shipped that way.
+ *
+ * So the draw lives in the controller as renderOverlays() and the host
+ * delegates. The clear stays with the CALLER: nothing in
+ * src/shared/param_pages/ may clear the screen, or render()`s rect/bands
+ * contract -- a consumer hosting a page inside its own chrome -- is broken.
  */
 {
   const src = readFileSync("src/shadow/shadow_ui_param_pages.mjs", "utf8");
   const at = src.indexOf("export function drawParamPages(");
   const body = src.slice(at, src.indexOf("\nexport ", at + 10));
 
-  ok(/controller\.enumPeek\(\)/.test(body),
-     "drawParamPages asks the controller for the peek");
-  ok(/drawEnumList\(/.test(body),
-     "it draws through the SHARED enum screen, not a second list");
-  ok(/headerRight:\s*"TURNING"/.test(body),
-     "the header says TURNING, not SELECT -- nothing is being selected here");
+  ok(/controller\.renderOverlays\(/.test(body),
+     "drawParamPages delegates the overlay draw to the controller");
+  ok(/clearScreen:\s*clear_screen/.test(body),
+     "and hands it the clear -- clearing the frame is the callers job, which "
+     + "is why the library never does it");
+  ok(!/drawEnumList\(/.test(body),
+     "the host does NOT draw its own list -- a second copy is how the peek "
+     + "became invisible to every other consumer");
   ok(!/setView\(/.test(body),
      "the peek must not change view: the detent already wrote, so a Back that "
      + "cancelled it would be a lie");
 
+  /* The library half. */
+  const lib = readFileSync("src/shared/param_pages/page_controller.mjs", "utf8");
+  ok(/function renderOverlays\(/.test(lib),
+     "page_controller exports the overlay draw so every consumer can reach it");
+  /* THE CONTRACT THAT PUT THE PEEK OUTSIDE render() IN THE FIRST PLACE, and
+     the reason renderOverlays takes the clear as an argument rather than
+     calling one. Not one file in the shared library may clear the frame: a
+     consumer hosting a page inside its own chrome (see render()`s rect/bands)
+     gets the body alone, and a library that blanked the screen would paint
+     over the chrome it was handed. */
+  const libDir = "src/shared/param_pages";
+  const clearers = readdirSync(libDir)
+    .filter((f) => f.endsWith(".mjs"))
+    .filter((f) => /clear_screen|\bclearScreen\s*\(\s*\)/.test(
+      readFileSync(libDir + "/" + f, "utf8")
+        /* Comments discuss the rule; only CODE can break it. */
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/[^\n]*/g, "")
+        /* The clear the CALLER passed in is the sanctioned form. */
+        .replace(/typeof clearScreen[^\n]*\n/g, "")
+        .replace(/clearScreen\(\);/g, "CALLER_CLEAR")));
+  ok(clearers.length === 0,
+     "no file in " + libDir + " clears the frame itself, got " + JSON.stringify(clearers));
+
+  const ov = lib.slice(lib.indexOf("function renderOverlays("));
+  const ovBody = ov.slice(0, ov.indexOf("\n    }\n"));
+  ok(/drawEnumList\(/.test(ovBody),
+     "it draws through the SHARED enum screen, not a second list");
+  ok(/headerRight:\s*"TURNING"/.test(ovBody),
+     "the header says TURNING, not SELECT -- nothing is being selected here");
+
   /* Cursor and live value are the same thing on this screen. A markIndex that
      drifted from index would draw the `*` on a row that is not the value. */
-  const mk = body.match(/markIndex:\s*([^,\n]+)/);
-  const ix = body.match(/\n\s*index:\s*([^,\n]+)/);
-  ok(!!mk && !!ix && mk[1].trim() === ix[1].trim(),
+  const mkx = ovBody.match(/markIndex:\s*([^,\n]+)/);
+  const ix = ovBody.match(/\n\s*index:\s*([^,\n]+)/);
+  ok(!!mkx && !!ix && mkx[1].trim() === ix[1].trim(),
      "markIndex tracks index -- on a peek the cursor IS the live value (got "
-     + (mk && mk[1].trim()) + " vs " + (ix && ix[1].trim()) + ")");
+     + (mkx && mkx[1].trim()) + " vs " + (ix && ix[1].trim()) + ")");
 }
 
+/* ==================================================================== 7b ==
+ * AND IT ACTUALLY DRAWS. Grepping the call site proves a line exists; only
+ * calling it proves that a consumer owning its frame gets pixels. This is the
+ * assertion CW-78 would have failed.
+ *
+ * Into a real 128x64 framebuffer, because the two halves of this screen draw
+ * differently and only pixels see both: the rows go through menu_layout, which
+ * reaches for print / fill_rect / set_pixel BY NAME exactly as it does on the
+ * device, while the header is a PIXEL FONT (fontPrint4x5) that never calls
+ * print at all -- so a recording print() would report a headerless screen as
+ * complete.
+ */
+{
+  const GLOBAL_NAMES = ["print", "fill_rect", "set_pixel", "text_width",
+    "host_send_screenreader"];
+
+  function paint(ctl, opts) {
+    const fb = createFramebuffer();
+    const g = {
+      print: fb.print,
+      fill_rect: fb.fillRect,
+      set_pixel: fb.setPixel,
+      text_width: fb.textWidth,
+      host_send_screenreader: () => {},
+    };
+    for (const k of GLOBAL_NAMES) globalThis[k] = g[k];
+    let did;
+    try {
+      did = ctl.renderOverlays(drawContext(fb), opts);
+    } finally {
+      for (const k of GLOBAL_NAMES) delete globalThis[k];
+    }
+    return { did, fb };
+  }
+  const inkIn = (fb, y0, y1) => {
+    let n = 0;
+    for (let y = y0; y <= y1; y++)
+      for (let x = 0; x < fb.width; x++) if (fb.pixels[y * fb.width + x]) n++;
+    return n;
+  };
+
+  {
+    const { ctl, slotOf } = mk();
+    spin(ctl, slotOf("shape"), 6);
+    const cleared = { n: 0 };
+    const { did, fb } = paint(ctl, { clearScreen: () => { cleared.n++; } });
+    ok(did === true, "renderOverlays reports that it drew");
+    ok(cleared.n === 1, "it cleared the frame exactly once, got " + cleared.n);
+    /* The header band (see HEADER_H) carries the param name and TURNING. */
+    ok(inkIn(fb, 0, 7) > 0, "the header band has ink -- title and TURNING");
+    /* The list body. ENUM_LIST_TOP_Y is 9; the footer rule is near the bottom. */
+    ok(inkIn(fb, 9, 50) > 0, "the option list has ink under it");
+    ok(fb.clipped() === 0,
+       "and nothing was drawn off the 128x64 panel, got " + fb.clipped());
+  }
+  {
+    /* No peek, no overlay, no clear -- a caller that flushes on the return
+       value must not blank a complete page every frame. */
+    const { ctl } = mk();
+    const cleared = { n: 0 };
+    const { did, fb } = paint(ctl, { clearScreen: () => { cleared.n++; } });
+    ok(did === false && cleared.n === 0 && inkIn(fb, 0, 63) === 0,
+       "with no peek it draws nothing and clears nothing");
+  }
+  {
+    /* An EMBEDDED consumer -- movy hosting a page inside its own chrome --
+       passes no clear, because a full-screen overlay is meaningless there.
+       Drawing the list into a frame we may not blank would interleave it with
+       the grid underneath: two screens at once. */
+    const { ctl, slotOf } = mk();
+    spin(ctl, slotOf("shape"), 6);
+    const { did, fb } = paint(ctl, {});
+    ok(did === false && inkIn(fb, 0, 63) === 0,
+       "without a clearScreen it declines to draw rather than interleaving");
+  }
+}
 
 /* ===================================================================== N ==
  * AN ENUM INSIDE A WIDE GRAPHIC DOES NOT PEEK.

@@ -1,0 +1,66 @@
+{
+  "title": "RNBO Runner",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Runs the official",
+        "RNBO graph runner",
+        "with its own full",
+        "UI.",
+        "",
+        "An overtake module:",
+        "it takes over the",
+        "whole surface -",
+        "pads, knobs, screen",
+        "- rather than",
+        "sitting in a chain",
+        "slot.",
+        "",
+        "Open it from the",
+        "Tools menu, below",
+        "the Overtake",
+        "divider."
+      ]
+    },
+    {
+      "title": "Getting out",
+      "lines": [
+        "Shift + Vol + Jog",
+        "Click exits back to",
+        "Move.",
+        "",
+        "That is the same",
+        "gesture for every",
+        "overtake module, and",
+        "it is worth",
+        "remembering before",
+        "you go in.",
+        "",
+        "The screen says",
+        "Exiting while the",
+        "LEDs are cleared."
+      ]
+    },
+    {
+      "title": "Loading",
+      "lines": [
+        "Expect a pause on",
+        "entry: the LEDs are",
+        "cleared, then the",
+        "module initialises.",
+        "",
+        "RNBO is heavy, so it",
+        "is pinned away from",
+        "the audio core to",
+        "keep the SPI",
+        "callback clear.",
+        "",
+        "If audio glitches",
+        "while it runs, that",
+        "is the thing to",
+        "look at first."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+{
+  "title": "Chord",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Turns one held note",
+        "into a chord, then",
+        "passes it down the",
+        "chain.",
+        "",
+        "A chain MIDI FX: put",
+        "it before a synth",
+        "and every pad you",
+        "press plays the",
+        "whole chord.",
+        "",
+        "The note you play is",
+        "the root. Type picks",
+        "what is stacked on",
+        "top of it."
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Knob 1: Type",
+        " which chord",
+        "Knob 2: Inversion",
+        " which note is",
+        " lowest",
+        "Knob 3: Voicing",
+        " how spread out",
+        "Knob 4: Strum",
+        " 0 = all at once",
+        "",
+        "Strum Dir is on the",
+        "page, not a knob:",
+        "up or down."
+      ]
+    },
+    {
+      "title": "Type",
+      "lines": [
+        "None passes the note",
+        "through untouched -",
+        "use it to A/B the",
+        "effect without",
+        "removing the module.",
+        "",
+        "Triads: major, minor,",
+        "dim, aug.",
+        "",
+        "Suspended: sus2,",
+        "sus4 - neither major",
+        "nor minor.",
+        "",
+        "Sevenths: maj7, min7,",
+        "dom7, dim7.",
+        "",
+        "Thinner ones: power",
+        "and 5th are root",
+        "plus fifth, octave",
+        "is the root doubled.",
+        "add9 is a major",
+        "triad plus a ninth."
+      ]
+    },
+    {
+      "title": "Inversion",
+      "lines": [
+        "Which note of the",
+        "chord sits at the",
+        "bottom.",
+        "",
+        "Root leaves it as",
+        "played. 1st, 2nd and",
+        "3rd lift the lower",
+        "notes up an octave",
+        "in turn.",
+        "",
+        "The chord keeps its",
+        "identity - only its",
+        "shape moves. Useful",
+        "for keeping a part",
+        "in one register as",
+        "the root moves.",
+        "",
+        "3rd only differs on",
+        "four-note chords."
+      ]
+    },
+    {
+      "title": "Voicing",
+      "lines": [
+        "How far apart the",
+        "notes sit.",
+        "",
+        "Close packs them",
+        "into the smallest",
+        "span - tight and",
+        "dense.",
+        "",
+        "Open spreads them",
+        "wider.",
+        "",
+        "Drop2 lowers the",
+        "second note from",
+        "the top by an",
+        "octave; drop3 the",
+        "third. Both open a",
+        "gap in the middle",
+        "and are the usual",
+        "way to make a chord",
+        "sound less blocky."
+      ]
+    },
+    {
+      "title": "Strum",
+      "lines": [
+        "Spreads the notes in",
+        "time instead of",
+        "firing them",
+        "together.",
+        "",
+        "0 is a block chord.",
+        "Higher values widen",
+        "the gap between",
+        "each note, up to",
+        "100.",
+        "",
+        "Strum Dir sets which",
+        "end starts: up from",
+        "the lowest note,",
+        "down from the",
+        "highest.",
+        "",
+        "Small amounts read",
+        "as a looser player",
+        "rather than an",
+        "obvious effect."
+      ]
+    },
+    {
+      "title": "Tips",
+      "lines": [
+        "Chords stack: put",
+        "Chord before Arp and",
+        "the arpeggiator runs",
+        "over every note of",
+        "the chord.",
+        "",
+        "Held notes update",
+        "live - change Type",
+        "while a pad is down",
+        "and the chord",
+        "follows.",
+        "",
+        "For MPE controllers,",
+        "chording fights",
+        "per-note bend: one",
+        "pad becomes several",
+        "notes on one",
+        "channel."
+      ]
+    }
+  ]
+}

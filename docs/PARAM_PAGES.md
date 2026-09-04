@@ -117,25 +117,47 @@ list-editor probe was anchored on the first `type === "enum"` in
 `shadow_ui.js` first, which landed on `isTriggerEnumMeta` 1500 lines earlier
 and stayed GREEN with the branch deleted.
 
-### Two values means the DETENT TOGGLES, once per flick
+### Two values: the BOXED one toggles, the SWITCH is clockwise-on
 
-There were three spellings of one control and two of them had a dead
-direction: an Off/On (or int 0..1) boolean was direction-ABSOLUTE — right meant
-On, left meant Off, so at Off a left turn did nothing forever — while a two-way
-CHOICE like Mix/Reverb fell to the enum branch and CLAMPED behind the
-four-detent gate, so at Mix a left turn did nothing forever and a right turn
-took four detents to do anything.
+**The split is the WIDGET, not the semantics**, and that is the whole of the
+rule. Both spellings are one control under the click and the dive; they part
+company in `knobStep`, and nowhere else. `isTwoWayMeta` still answers true for
+both — the switch branch simply sits ahead of it.
 
-Reported from the device: *"if there are only two, why not let it wrap
+A **boxed** two-way — Mix/Reverb, Saw/Square, drawn as the enum SQUARE —
+**TOGGLES on a detent whichever way it went.** The two options sit in the same
+box in the same place, so the cell shows a STATE and names no direction. It
+used to fall to the enum branch and CLAMP behind the four-detent gate, so at Mix
+a left turn did nothing forever and a right turn took four detents to do
+anything. Reported from the device: *"if there are only two, why not let it wrap
 otherwise you have to know which way is off and which way is on, in which case
-you need some knowledge you dont have."* There is no way to acquire it — the
-cell shows a STATE, not a direction. Same argument that makes a trigger fire in
-either direction.
+you need some knowledge you dont have."* There is no way to acquire it from a
+box. Same argument that makes a trigger fire in either direction.
 
-**WRAPPING ALONE WOULD NOT DO, and that is the part worth keeping.** With two
-values, "wrap" and "toggle on every detent" are the same thing, and one flick
-of an encoder is a dozen detents — so a flick would land on whichever value the
-detent count happened to be even or odd about. `isTwoWayMeta` in
+A **switch** — Off/On, or an int 0..1 — is **direction-absolute: clockwise on,
+anticlockwise off.** A switch has a TRACK, and its knob sits at one end of it:
+the form names the direction, and it is the same direction every physical switch
+has ever had. So the picture makes a promise here that the boxed value never
+makes, and the toggle broke it. Reported from the device: *"if it's on it should
+stay on when turning it on."* The write is IDEMPOTENT, so there is no latch: a
+dozen detents of one flick all say the same thing, and a flick that lands where
+it already was is the intended no-op rather than a parity accident. An author
+who declares the options backwards (`["On","Off"]`) still gets clockwise-on —
+`switchOnValue` resolves the direction against the WORDS, not the position, the
+same way the graphic does.
+
+**So the TURN partition must equal the DRAW partition.** `detectSwitch` emits
+`VIZ_SWITCH` for exactly `isBooleanMeta && !isTrigger`, and `knobStep`'s switch
+branch guards on exactly that pair. `test_two_way_knob_toggle.sh` §6 asserts
+them equal over the whole fleet fixture, in BOTH directions, because a drift
+either way means a control makes a promise with its shape that the knob does
+not keep — a track that points somewhere the knob will not go, or a box that
+turns as though it had one.
+
+**WRAPPING ALONE WOULD NOT DO for the boxed one, and that is the part worth
+keeping.** With two values, "wrap" and "toggle on every detent" are the same
+thing, and one flick of an encoder is a dozen detents — so a flick would land on
+whichever value the detent count happened to be even or odd about.
 `knob_engine.mjs` therefore pairs the toggle with a LATCH at
 `TWO_WAY_GESTURE_GAP_MS`, the same number and the same rule as
 `TRIGGER_KNOB_GESTURE_GAP_MS`: **one flick is one gesture.** And it is a latch
@@ -248,6 +270,102 @@ commits through `controller.commitEnum` — that is what makes the picker work o
 Slot Settings and Master FX Settings, which are synthesised contracts with no
 `ui_hierarchy` to enter, and it keeps the slot io's own mappings (Fwd's offset,
 MPE's compound write) applied rather than bypassed.
+
+### A READOUT wears a DOTTED FRAME, and it is a STROKE, not a widget
+
+`access: "read"` is telemetry — a reading the module reports, not a control.
+The input layer has honoured it for a long time: `isReadoutParam` in
+`shadow_ui.js` shows the value when you turn the knob and writes nothing, a
+click opens no picker, and `param_meta.mjs` sets `meta.readOnly` from `access`
+with `isDivable` / `isTurnable` both excluding it.
+
+**The DRAW layer did not.** `render_page_movy.mjs` never consulted
+`meta.readOnly`, so a readout was pixel-identical to the same parameter you can
+change — a dial or a number you could reasonably expect to turn. Reported from
+the device as a control that "does not seem to do anything", which was an
+accurate reading of the picture.
+
+**The rule is "a readout is dotted"; WHERE THE STROKE LIVES is the widget's
+business.** A dial and a big number have no frame of their own, so
+`drawReadoutFrame` adds one on the cell rect — `cellLeft + 1`, `cellW - 2`,
+`BOX_H`, the SAME rect the divable brackets use, so the two marks are one frame
+drawn two ways rather than two frames at two insets. The enum square already
+has a frame, so `drawEnumSquare` **dots the one it has**. `drawReadoutMark`,
+called from `drawKnobRow` for any uncovered read-only cell, is the one place
+that decides which — and it is exported, so the widget sheet draws the mark
+through the same rule instead of restating it.
+
+**ONE DOTTED RECTANGLE PER CELL, NEVER TWO.** Two would be two ideas, not one,
+and on a full-width square they would be a pixel apart.
+
+- **It changes only the STROKE.** The value never moves — an added frame is
+  strictly additive, a dotted stroke strictly subtractive (the dotted pixels are
+  a SUBSET of the solid ones they replace). The cell keeps its shape and its
+  contents; only the line around them says "not editable".
+- **Dotted on the CHECKER lattice in ABSOLUTE screen coordinates**, not stepped
+  by 2 from the frame's own origin — the same rule as every dithered fill in
+  this subsystem. Two neighbouring frames then share one phase (4K EQ has five
+  readouts in a row when its peaks are paginated), and the corners fall out for
+  free: a rect-relative step lands a dot on three corners and a gap on the
+  fourth, depending on the parity of `w` and `h`.
+- **The inset is what keeps neighbours apart.** At `cellLeft + 1` two adjacent
+  readouts keep a 2px gap; on the cell rect itself they would butt into one
+  continuous rule.
+- **The square dots its own stroke because an outer frame DID NOT WORK there,
+  and the measurement is the argument.** `drawEnumSquare`'s frame occupies the
+  same rows as the cell rect, so the wider the value the more of an outer frame
+  the box absorbs. Differing pixels against an identical editable twin:
+
+  | value | box | outer frame | dotted stroke |
+  |---|---|---|---|
+  | `G MAJ` | 28px | **17** | **39** |
+  | `SAW` | 23px | 23 | 36 |
+  | `ON` | 17px | 27 | 26 |
+
+  17 pixels spread down two 15-row columns is not legible — rendered side by
+  side the two cells were indistinguishable — and it is weakest **exactly where
+  the feature is for**: two of the three affected fleet modules are enums, and
+  `keydetect`'s values are musical keys (`C MAJ`, `A MIN`), always full width.
+  Dotting the stroke inverts the gradient, because a wider box has more
+  perimeter to dot. `test_readout_frame.sh` pins that direction — a full-width
+  readout must differ MORE than a narrow one — so a revert to the outer frame
+  fails rather than merely looking worse.
+- **An OPAQUE cell is excluded, and for a sharper reason than the brackets'
+  exclusion.** `drawOpaqueBox` draws its own notched frame on the IDENTICAL
+  rect, so the dots do not double a border — they land invisibly on top of one,
+  and the only place they show is the five-row CUT in its right edge where the
+  chevron sits. Rendered, a read-only filepath was an ordinary opaque box with
+  two stray pixels in its door: worse than no mark, since it degrades the one
+  widget that says which direction its door goes — and dotting *that* frame
+  would blunt the same thing. No fleet module declares one.
+- **A readout gains no affordance.** `alsoOpens` requires `divable`, which
+  excludes `readOnly`, so a readout can never also wear the corner brackets,
+  and the footer never promises `CLK OPEN` for one.
+- **A readout inside a viz graphic is NOT framed.** Uncovered cells only, for
+  the same reason the door mark is: a cell inside a picture is not standing on
+  its own. No fleet module puts a read-only param in a group; if one appears,
+  mark the SPAN once in the viz loop, never the members.
+
+Rejected, so nobody re-litigates them: an **inverted slab** (inversion already
+means *a finger is on this knob* in the label band and *this is the selection*
+in a list — a third meaning makes all three ambiguous); **corner brackets only**
+(already spoken for, and they make the opposite claim); and a **real meter** for
+4K EQ's four peak floats, deliberately deferred — a stereo peak meter is its own
+design job, and one dotted treatment covers every readout in the fleet rather
+than one module's four.
+
+Pinned by `tests/host/test_readout_frame.sh`, which drives `drawKnobRow` (not
+`drawKnobWidget` plus its own frame call — that probe would pass with the branch
+deleted) and asserts, per widget kind, that the readout differs from its
+editable twin; that an added frame is a strict SUPERSET and a dotted stroke a
+strict SUBSET, so nothing moved; that no pixel lands past `BOX_H` or on the cell
+edge; that a full-width square wears one rectangle and not two; that the mark
+STRENGTHENS with the box; and that the dot phase follows the screen rather than
+the rect. Three mutations are caught with three different messages — removing
+the `drawKnobRow` branch, reverting the square's stroke to solid, and dropping
+the enum exclusion so both rectangles draw.
+`tests/fixtures/movy-geom-baseline.txt` moved exactly two pages — `keydetect:0`
+and `gesture-test:0`, the only fixture pages that plan a read-only param.
 
 ### A filepath param opens a browser, and the knob scrolls THAT too
 
@@ -370,6 +488,34 @@ its own. It is a layer like the picker and the entered menu, and Back takes one
 at a time. `dismissPeek` goes through `enumPeek()` so an EXPIRED peek is not a
 layer: swallowing one press is a layer, swallowing two is a trap, and this
 screen has no other way out.
+
+**`render()` is not the whole draw — the peek is `renderOverlays()`.** Nothing
+in `src/shared/param_pages/` clears the screen; grep it. That is the contract
+`render(ctx, {rect, bands})` depends on — a consumer hosting a page inside its
+own chrome must get the body alone — and it is why a FULL-SCREEN overlay cannot
+live inside `render()`. So the peek is a second call the frame owner makes:
+
+```javascript
+clear_screen();
+controller.render(ctx, { title });
+controller.renderOverlays(ctx, { clearScreen: clear_screen });
+```
+
+Pass no `clearScreen` and it declines to draw rather than interleaving its list
+with the grid underneath, which is what an embedded consumer wants.
+
+**A module binding the controller from its own `ui_chain.js` owes that second
+call**, and until 2026-09 nothing said so: the draw lived in
+`shadow_ui_param_pages.mjs`, so for every other consumer the controller tracked
+a peek on each enum detent that was painted nowhere, while `applyInput`
+dutifully routed Back to `dismissPeek()` to take down a panel nobody could see.
+Silent, no error, not visible from the API. CW-78 and 6W6 both shipped that way
+— correct integrations in every other respect, which is the point: the
+obligation had to become a FUNCTION rather than a paragraph.
+`tests/host/test_enum_peek.sh` now draws through a real framebuffer, because
+the rows go through `menu_layout` (global `print`) while the header is a pixel
+font that never calls `print` at all — a recording `print()` reports a
+headerless screen as complete.
 
 **A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
 The peek exists because a 30px cell cannot show a list; once the picture has
@@ -812,10 +958,22 @@ through `paramEditorOpenedFromGrid` and has its own `lfoTargetFromGrid` /
 
 ### Every scrolling list draws a SCROLLBAR, and no list draws arrows
 
-One dotted column at `SCREEN_WIDTH - 2`, solid thumb, in `drawMenuList` — so
-every list in the tree has it: main menu, settings, slots, patches, tools,
-store, chain views, the enum picker, the hierarchy editor and the file browser.
-A list that fits its window draws nothing.
+One dotted column at `SCREEN_WIDTH - 2`, solid thumb, drawn by the exported
+`drawScrollbar` in `menu_layout.mjs` — so every list in the tree has it: main
+menu, settings, slots, patches, tools, store, chain views, the enum picker, the
+hierarchy editor and the file browser. A list that fits its window draws nothing.
+
+**`drawScrollbar` is exported because a LIST is not the only thing that
+scrolls.** It lived inline in `drawMenuList`, and `scrollable_text.mjs` — the
+help *detail*, one click in from the help *list* — went on drawing the arrows
+this replaced. Same session, same jog, two idioms; reported from hardware as
+*"we're using the wrong scrollbars"* on the new Module Help door. It takes the
+window as `{topY, bottomY, rowHeight, rowInk, windowRows, total, startIdx}`
+rather than a list, so text (10px pitch, 7px ink) and rows (9px pitch, derived
+ink) get the identical bar. **Any new scrolling surface calls it; nothing draws
+its own.** `drawArrowUp`/`drawArrowDown` remain exported for external modules,
+and `tests/host/test_help_viewer_chrome.sh` fails if any shipped `src/shared` or
+`src/shadow` draw path calls them again.
 
 It **replaced** the up/down arrows rather than joining them. The arrows reported
 "there is more, that way"; the thumb reports that plus HOW MUCH and WHERE, which
@@ -851,6 +1009,9 @@ Three geometry rules, each of which was wrong first:
 `tests/host/test_list_scrollbar.sh` asserts the GEOMETRY (position advances,
 both ends reached, a shorter list gives a TALLER thumb) rather than ink, and
 pins the phantom-thumb case on pixels because the draw calls cannot see it.
+`tests/host/test_help_viewer_chrome.sh` re-asserts the three rules through
+`drawScrollbar` directly and through `drawScrollableText`, on a framebuffer —
+including that nothing is lit in the old arrow column (122..125).
 
 ### Widget animation, and the wiring that carries it
 

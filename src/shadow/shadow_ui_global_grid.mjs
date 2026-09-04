@@ -114,6 +114,9 @@ export const GLOBAL_ENUM_VALUES = {
     skipback_seconds: [30, 60, 120, 180, 240, 300],
     screen_reader_engine: ["espeak", "flite"],
     shadow_ui_trigger: [0, 1, 2],
+    recall_quantize: [0, 1, 2, 3],
+    metronome_mode: [0, 1, 2],
+    save_stems: [0, 1, 2],
 };
 
 /* ------------------------------------------------------------ accessor routing
@@ -139,6 +142,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   text_preview           | textPreviewGlobal       | setTextPreviewGlobal     | own     | textPreviewGlobal      | -
  *   midi_indicator_enabled | midiIndicatorEnabled    | midi_indicator_set       | -       | midiIndicatorEnabled   | -
  *   param_view             | paramViewGlobal         | paramViewGlobal =        | own     | paramViewGlobal        | -
+ *   stay_in_shadow         | stay_in_shadow_get      | stay_in_shadow_set       | -       | -                      | -
  *   link_audio_routing     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioRouting | warnIfLinkDisabled
  *   link_audio_publish     | master_fx: param        | master_fx: param         | SAVE    | cachedLinkAudioPublish | warnIfLinkDisabled
  *   latency_comp_enabled   | master_fx: param        | master_fx: param         | SAVE    | cachedLatencyCompEnabled | -
@@ -155,6 +159,8 @@ export const GLOBAL_ENUM_VALUES = {
  *   screen_reader_debounce | tts_get_debounce        | tts_set_debounce         | -       | -                      | -
  *   set_pages_enabled      | set_pages_get           | set_pages_set            | -       | -                      | -
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
+ *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
+ *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
  *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
@@ -189,6 +195,7 @@ export const GLOBAL_ROUTING = {
     text_preview:           { read: "js.textPreviewGlobal",   write: "js.setTextPreviewGlobal",persist: "own",  cache: "textPreviewGlobal",      modal: null },
     midi_indicator_enabled: { read: "js.midiIndicatorEnabled",write: "midi_indicator.set",     persist: null,   cache: "midiIndicatorEnabled",   modal: null },
     param_view:             { read: "js.paramViewGlobal",     write: "js.paramViewGlobal",     persist: "own",  cache: "paramViewGlobal",        modal: null },
+    stay_in_shadow:         { read: "stay_in_shadow.get",     write: "stay_in_shadow.set",     persist: null,   cache: null,                     modal: null },
 
     link_audio_routing:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioRouting",   modal: "link" },
     link_audio_publish:     { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedLinkAudioPublish",   modal: "link" },
@@ -198,6 +205,15 @@ export const GLOBAL_ROUTING = {
     skipback_seconds:       { read: "skipback_seconds.get",   write: "skipback_seconds.set",   persist: null,   cache: null,                     modal: null },
     browser_preview:        { read: "js.previewEnabled",      write: "js.previewEnabled",      persist: "own",  cache: "previewEnabled",         modal: null },
     usbc_out_persist:       { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedUsbcOutPersist",   modal: null },
+    /* persist: null — shadow_metronome_set writes features.json itself, the
+     * same way shadow_recall_quantize_set does, because the register it also
+     * writes lives in SHM and does not survive a reboot. */
+    metronome_mode:         { read: "metronome.get_mode",     write: "metronome.set_mode",     persist: null,   cache: null,                     modal: null },
+    /* persist: null — shadow_save_stems_set writes features.json itself, the
+     * same shape as recall_quantize and metronome_mode, because the register
+     * it also writes lives in SHM and does not survive a reboot. */
+    save_stems:             { read: "save_stems.get",         write: "save_stems.set",         persist: null,   cache: null,                     modal: null },
+    metronome_level:        { read: "metronome.get_level",    write: "metronome.set_level",    persist: null,   cache: null,                     modal: null },
 
     screen_reader_enabled:  { read: "tts.get_enabled",        write: "tts.set_enabled",        persist: null,   cache: null,                     modal: null },
     screen_reader_engine:   { read: "tts.get_engine",         write: "tts.set_engine",         persist: null,   cache: null,                     modal: null },
@@ -208,6 +224,10 @@ export const GLOBAL_ROUTING = {
 
     set_pages_enabled:      { read: "set_pages.get",          write: "set_pages.set",          persist: null,   cache: null,                     modal: null },
     shadow_ui_trigger:      { read: "shadow_ui_trigger.get",  write: "shadow_ui_trigger.set",  persist: null,   cache: null,                     modal: null },
+    /* persist: null — shadow_recall_quantize_set writes features.json itself,
+     * the same way shadow_ui_trigger_set does, because the register it also
+     * writes lives in SHM and does not survive a reboot. */
+    recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
     filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
@@ -309,6 +329,54 @@ export const DISPLAY_PARAMS = [
      * paramViewGlobal = 1), so the default index here is Knobs. */
     { key: "param_view", name: "Param View", type: "enum",
       options: ["List", "Knobs"], short_options: ["LST", "KNB"], default: 1 },
+    /*
+     * A Track tap while the shadow UI is up switches to that slot. Off, it
+     * hands the screen back to Move instead.
+     *
+     * DEFAULT ON, and that is a reversal of the behaviour Schwung shipped with
+     * for a year. A track button SELECTS A TRACK everywhere else on this
+     * hardware; the dismiss was never a decision, it was the only way out
+     * before Shift+Track existed. The exits all survive the flip — tap
+     * Note/Session, Shift+Track, or Back — so this changes a reflex, not the
+     * reachability of Move.
+     *
+     * An existing install keeps whatever it has: install.sh preserves the key
+     * and only falls back to the default when it is absent.
+     *
+     * IT IS A BOOL, AND THAT IS A WIDGET DECISION, NOT A WORDING ONE.
+     *
+     * It shipped for one round as an enum of ["Exit", "Stay"] — two options,
+     * same click behaviour (`flipsOnClick` focuses it in a list and flips it on
+     * a grid), and structurally identical meta. It still drew differently:
+     * `detectSwitch` in viz.mjs picks the switch pill via `isBooleanMeta`,
+     * whose option test is `BOOL_OPTION` — off/on/no/yes/0/1/false/true — so
+     * "Exit"/"Stay" fell through to the ENUM SQUARE, the widget that means
+     * "there is a list behind this", and peeked its options on the knob.
+     * Reported from the device as "why is the setting a menu, unlike display
+     * mirroring?".
+     *
+     * That rule is right and stays: a switch draws its state as a POSITION and
+     * cannot show the word "Stay", which is why `docs/PARAM_PAGES.md` records
+     * "suppressed on the WIDGET, never on the option count" over 134 fleet
+     * cells (Saw/Square, Legato/Trig, Bipolar/Unipolar). Those are genuine
+     * two-way CHOICES. This one is a boolean, so it is spelled as one.
+     *
+     * The name is "Keep Schwung" because the honest "Stay in Schwung" is 87px
+     * in a row with 85px of room — the width pin in
+     * tests/host/test_global_settings_contract.sh catches it. Naming it for
+     * the gesture ("Track Tap") was the previous escape from that 2px and is
+     * what forced the enum; the switch matters more than the phrasing.
+     *
+     * The setting is enforced in the SHIM (schwung_shim.c, the cable-0 Track CC
+     * block), not in JS — the dismiss it suppresses is a shim-side state change
+     * (shadow_display_mode), and the slot switch it substitutes is the same
+     * JUMP_TO_SLOT hand-off Shift+Vol+Track already raises. This row is the
+     * toggle and nothing else. features.json spells it `stay_in_shadow`.
+     *
+     * Shift+Track still dismisses either way. A setting that closes the only
+     * remaining way out of a screen is not a setting.
+     */
+    bool("stay_in_shadow", "Keep Schwung", 1),
 ];
 
 /* -------------------------------------------------------------------- audio */
@@ -322,13 +390,6 @@ export const AUDIO_PARAMS = [
     /* Stored 0 or 2 — see GLOBAL_ENUM_VALUES. */
     { key: "resample_bridge", name: "Resample", type: "enum",
       options: ["Native", "Mix"], short_options: ["NAT", "MIX"], default: 0 },
-    { key: "skipback_shortcut", name: "Skipback", type: "enum",
-      options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
-    /* Every option already fits the square, so there is no short form to
-     * declare. short_options exists for the ones that do not fit; declaring it
-     * where it is not needed is a second list to keep in step for nothing. */
-    { key: "skipback_seconds", name: "Skipback Len", type: "enum",
-      options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
     /*
      * Gates BOTH the file browser WAV preview and the User Presets scroll
      * audition -- one "hear it before you pick it" switch, not one each.
@@ -374,6 +435,65 @@ export const AUDIO_PARAMS = [
      */
     { key: "usbc_out_persist", name: "USB-C", type: "enum",
       options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    /*
+     * THREE OPTIONS, NOT A BOOL, and the third one is load-bearing.
+     *
+     * Under Move->Schwung the shim zeroes the mailbox and rebuilds it from the
+     * four per-track Link Audio slots. Move mixes its metronome at MASTER, so
+     * it is absent from that reconstruction by construction, not by a bug --
+     * nothing recovers it but playing our own.
+     *
+     * "Follow" tracks Move's own metronome, learned from its "Metronome On" /
+     * "Metronome Off" announcement. "On" ignores that and clicks whenever the
+     * transport runs: the hedge for a firmware whose announcement text is
+     * shaped differently, so the feature stays usable while detection is fixed
+     * rather than silently doing nothing.
+     *
+     * In EVERY mode the click sounds only under Move->Schwung. Outside it
+     * Move's own metronome is audible, so that rule prevents doubling by
+     * construction rather than by a second condition someone can forget.
+     */
+    /* Default FOLLOW, not Off. Under Move->Schwung the click is simply missing,
+     * and a default of Off means the fix ships switched off for everyone who
+     * hits the problem. Follow is inert until Move's own metronome is on, so
+     * it costs nothing for anyone who never uses one. */
+    { key: "metronome_mode", name: "Metronome", type: "enum",
+      options: ["Off", "Follow", "On"], short_options: ["OFF", "FOL", "ON"], default: 1 },
+    { key: "metronome_level", name: "Click Vol", type: "int",
+      min: 0, max: 100, step: 5, default: 50, unit: "%" },
+    /*
+     * THREE OPTIONS, NOT A BOOL, because "Both" is a thing people ask for by
+     * name: the master to listen back to and the stems to take away.
+     *
+     * ONE SETTING FOR THREE SURFACES -- the Quantized Sampler (Shift+Sample),
+     * Skipback (Shift+Capture) and Song Mode's Record button. All three record
+     * through the same sampler, so a per-surface switch would be three places
+     * to keep in step and three places to get it wrong; and the question it
+     * answers ("what do I want out of this device") is not one that changes
+     * between them.
+     *
+     * A stem is a SLOT. Under Move->Schwung the four slot stems ARE the four
+     * tracks and sum to the master exactly; outside it a fifth Move stem
+     * carries the mix Move gives us undivided. Stems are pre-Master-FX -- the
+     * MFX chain runs on the summed bus and there is no per-stem version of it
+     * to capture. The full account is in shadow_sampler.h, beside the code
+     * that has to honour it.
+     *
+     * Default Master: this changes what pressing Record leaves on the disk,
+     * and the answer for anyone who has not asked for it must stay the one
+     * they already have.
+     *
+     * It is the NINTH param in Audio, and that is fine: a section is one
+     * scrolling list, not a grid page. Eight is the number of physical knobs
+     * and this screen never draws a grid -- see the `paginate: false` beside
+     * `layout: LAYOUT_LIST` in enterGlobalSettingsGrid.
+     *
+     * Nothing was displaced to fit it. An earlier pass moved Audition out to
+     * Display believing the 8 was a hard cap; it is back where it belongs.
+     */
+    { key: "save_stems", name: "Save", type: "enum",
+      options: ["Master", "Stems", "Both"],
+      short_options: ["MST", "STM", "BTH"], default: 0 },
 ];
 
 /* ------------------------------------------------------------ accessibility */
@@ -418,6 +538,53 @@ export const SHORTCUTS_PARAMS = [
     { key: "shadow_ui_trigger", name: "Open With", type: "enum",
       options: ["Hold", "Sh+Vol", "Both"],
       short_options: ["LNG", "S+V", "BTH"], default: 2 },
+    /*
+     * When Shift+Delete puts the snapshot back.
+     *
+     * Off fires on the button, which is what it has always done. The rest wait
+     * for the next boundary so a recall lands in time with what is playing —
+     * the whole point being that you can set it up mid-phrase and let it drop.
+     *
+     * A SETTING and not a second gesture. The obvious alternative was
+     * Shift+Vol+Delete for "queued", which is free — but this is the mode you
+     * want held for a whole set, not chosen per press, and a three-key combo
+     * mid-performance is the wrong shape for it. Shift+Delete keeps one
+     * meaning.
+     *
+     * Read by schwung_shim.c out of features.json, because the queue has to be
+     * timed against MIDI clock the shim already counts, and neither SHM struct
+     * has a spare byte to push a setting down through.
+     *
+     * Ignored while the transport is stopped: a queue with no clock never
+     * fires, and honouring the setting there would turn the button off with no
+     * way to tell.
+     */
+    { key: "recall_quantize", name: "Recall Q", type: "enum",
+      options: ["Off", "Beat", "Bar", "2 Bars"],
+      short_options: ["OFF", "BET", "BAR", "2BR"], default: 0 },
+    /*
+     * Both Skipback rows moved here from Audio to make room for the metronome.
+     *
+     * They move as a PAIR: one names the button combo and the other its
+     * length, and splitting them across two sections would be worse than
+     * leaving both in Audio. Skipback IS a shortcut -- Shift+Capture -- so the
+     * combo belonged here anyway.
+     *
+     * The "and it keeps Audio at exactly 8" half of this reasoning WAS WRONG
+     * and is gone. Eight is the number of physical KNOBS -- a grid page has
+     * eight cells and nowhere to put a ninth -- and Global Settings is pinned
+     * to the LIST, which scrolls. The planner was chunking these levels at
+     * eight anyway; it is handed `paginate: false` now, so a section is one
+     * list however long it is. The move above stands on its own merits: the
+     * combo IS a shortcut.
+     */
+    { key: "skipback_shortcut", name: "Skipback", type: "enum",
+      options: ["Cap", "Vol+Cap"], short_options: ["S+C", "SVC"], default: 0 },
+    /* Every option already fits the square, so there is no short form to
+     * declare. short_options exists for the ones that do not fit; declaring it
+     * where it is not needed is a second list to keep in step for nothing. */
+    { key: "skipback_seconds", name: "Skipback Len", type: "enum",
+      options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
 ];
 
 export const SERVICES_PARAMS = [

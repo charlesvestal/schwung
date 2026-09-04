@@ -19,16 +19,28 @@ fail() { echo "FAIL: $*" >&2; fails=$((fails + 1)); }
 
 [ -f "$SHIM" ] || { echo "FAIL: cannot find $SHIM" >&2; exit 1; }
 
-calls=$(grep -c 'shadow_midi_in_compact(' "$SHIM")
+# Comment lines are excluded. A doc comment that NAMES this function --
+# midi_in_swallow's does, because the pairing it performs is only safe while
+# compaction runs last -- was being counted as a second call site, which both
+# failed the count and made `compact_line` point at prose. A test that a
+# correct comment can break gets edited into uselessness the first time that
+# happens.
+strip_comments() { grep -vE '^\s*(/\*|\*|//)' "$1"; }
+
+calls=$(strip_comments "$SHIM" | grep -c 'shadow_midi_in_compact(')
 [ "$calls" -eq 1 ] || fail "expected exactly 1 call to shadow_midi_in_compact, found $calls"
 
-compact_line=$(grep -n 'shadow_midi_in_compact(' "$SHIM" | head -1 | cut -d: -f1)
+compact_line=$(grep -nE '^[^*/]*shadow_midi_in_compact\(' "$SHIM" | head -1 | cut -d: -f1)
 [ -n "$compact_line" ] || fail "shim never calls shadow_midi_in_compact — a filtered slot again hides the events behind it"
 
 # Every write that zeroes a shadow MIDI_IN slot must happen BEFORE the
 # compaction, or its gap survives into Move's reader.
 if [ -n "${compact_line:-}" ]; then
-    last_zero=$(grep -n -E '^\s*(sh|sh_midi|src)\[j\] = 0;' "$SHIM" | tail -1 | cut -d: -f1)
+    # Both the raw form and the helper that replaced most of it. The helper's
+    # own body zeroes slots and is DEFINED above shim_post_transfer, so it is
+    # not a call site and must not be measured as one -- only its callers are.
+    last_zero=$(grep -n -E '^\s*(sh|sh_midi|src)\[j\] = 0;|^\s*midi_in_swallow\(' "$SHIM" \
+        | grep -v 'shadow_midi_in\[j\]' | tail -1 | cut -d: -f1)
     [ -n "$last_zero" ] || fail "no slot-zeroing sites found — has the filter moved?"
     if [ -n "$last_zero" ] && [ "$last_zero" -gt "$compact_line" ]; then
         fail "a MIDI_IN slot is zeroed at line $last_zero, AFTER the compaction at $compact_line — that gap reaches Move"

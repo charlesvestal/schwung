@@ -185,36 +185,97 @@ export function drawChainEditorBands(ctx, o) {
  *             `entries` are the picker`s own rows ({id, name}), already
  *             including the Move rows — not the raw module scan.
  */
-export function drawChainPicker(ctx, o) {
-    drawHeader(ctx, o.headerLeft, "SELECT", false);
+/*
+ * The verb CLK earns on the row under the cursor.
+ *
+ * Read off the ROW rather than fixed on the screen, because the picker now
+ * carries a row that does not load: the list-filter row cycles the filter in
+ * place. A fixed "LOAD" there describes a different button than the one the
+ * user is about to press.
+ */
+function pickerClickVerb(o) {
+    const row = (o.entries || [])[o.index];
+    return (row && row.clickVerb) || "LOAD";
+}
 
-    const entries = o.entries || [];
-    if (entries.length === 0) {
+export function drawChainPicker(ctx, o) {
+    /* Delegates to drawListScreen rather than restating the rect, the
+     * MENU_LIST_Y + 8 empty offset, the fitText and the row loop. This file
+     * exists to keep those singular (see the header note), and a picker that
+     * is "drawListScreen plus a currentId mapping and a fixed footer" written
+     * out longhand is the third copy it exists to prevent. What is genuinely
+     * the picker`s own is exactly what is passed in: the SELECT header, the
+     * loaded-module mark, its empty message, and the two footers. */
+    drawListScreen(ctx, {
+        headerLeft: o.headerLeft,
+        headerRight: "SELECT",
+        entries: (o.entries || []).map((item) => ({
+            name: item.name || item.id || "Unknown",
+            /* An entry carrying its OWN value wins — that is the list-filter
+             * row, whose value is the current list. Everything else gets the
+             * loaded mark, drawn where a menu page puts its value.
+             *
+             * Both rules live HERE and not in either caller: a mark that only
+             * one of the two pickers drew is the same bug one layer down, and
+             * that is exactly how the two pickers came to look like different
+             * products in the first place. */
+            value: (item.value !== undefined && item.value !== null && item.value !== "")
+                ? String(item.value)
+                : ((o.currentId && item.id === o.currentId) ? "*" : ""),
+        })),
+        index: o.index,
         /* Fitted with the SAME fitText the list rows use, because the two
          * pickers name different things ("No modules available" against "No FX
          * modules available") and the longer one runs off the 128px screen at
          * this x. The device clips silently, so a message that overflowed would
          * simply lose its last word with nothing to say it had. */
+        emptyMessage: o.emptyMessage || "No modules available",
+        /* CLK does not always LOAD. The list-filter row cycles the filter and
+         * loads nothing, so a fixed "LOAD" is a footer describing a different
+         * button than the one under the cursor. A row that behaves unusually
+         * names its own verb; everything else is a module and loads. */
+        footer: [["JOG", "SEL"],
+                 ["CLK", pickerClickVerb(o)],
+                 ["BACK", "EXIT"]],
+        /* An empty picker keeps its OWN, shorter footer: a screen with nothing
+         * on it and no way out named is the one place a hint matters most, and
+         * JOG/CLK name gestures that would do nothing. BACK is EXIT here by
+         * FOOTER_CANON — it leaves the picker entirely and lands back on the
+         * editor. */
+        emptyFooter: [["BACK", "EXIT"]],
+    });
+}
+
+/*
+ * A plain header/list/footer screen in the picker's rectangle.
+ *
+ * The module-lists screens are the picker's neighbours — one click from it in
+ * both directions — so they draw through the same rect and the same row
+ * renderer for the reason stated at the top of this file. A hand-rolled list
+ * in shadow_ui.js would be the third copy of a rectangle this file exists to
+ * keep singular.
+ *
+ * Entries are `{ name, value }`, exactly as drawChainPicker passes; `value`
+ * carries the loaded mark, the checkbox, the member count, or nothing.
+ *
+ * `emptyFooter` is separate from `footer` because a screen with no rows must
+ * not name the gestures its rows would have answered — the picker`s empty
+ * state has offered BACK alone since before this function existed, and
+ * folding the two would have changed that silently.
+ */
+export function drawListScreen(ctx, o) {
+    drawHeader(ctx, o.headerLeft, o.headerRight || "", false);
+    const entries = o.entries || [];
+    if (entries.length === 0) {
         ctx.print(MENU_LIST_X, MENU_LIST_Y + 8,
-                  fitText(ctx, o.emptyMessage || "No modules available", MENU_LIST_W), 1);
-        /* Still a footer: a screen with nothing on it and no way out named is
-         * the one place a hint matters most. BACK is EXIT here by FOOTER_CANON
-         * — it leaves the picker entirely and lands back on the editor. */
-        drawFooter(ctx, [["BACK", "EXIT"]]);
+                  fitText(ctx, o.emptyMessage || "Empty", MENU_LIST_W), 1);
+        drawFooter(ctx, o.emptyFooter || o.footer || [["BACK", "EXIT"]]);
         return;
     }
-
     drawPageChromeList(ctx,
         { x: MENU_LIST_X, y: MENU_LIST_Y,
           w: MENU_LIST_W, h: MOVY_RULE_Y - MENU_LIST_Y },
-        entries.map((item) => ({
-            name: item.name || item.id || "Unknown",
-            /* The one already loaded, marked where a menu page puts its value.
-             * The rule lives HERE and not in either caller: a mark that only
-             * one of the two pickers drew is the same bug one layer down. */
-            value: (o.currentId && item.id === o.currentId) ? "*" : "",
-        })),
+        entries.map((e) => ({ name: e.name, value: e.value || "" })),
         o.index);
-
-    drawFooter(ctx, [["JOG", "SEL"], ["CLK", "LOAD"], ["BACK", "EXIT"]]);
+    drawFooter(ctx, o.footer || [["BACK", "EXIT"]]);
 }
