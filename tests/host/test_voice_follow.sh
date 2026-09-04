@@ -147,6 +147,49 @@ Promise.all([
     }
   }
 
+  /* --- RE-HITTING the pad you are already latched on ---------------------
+   *
+   * The hole a bare value cannot close, and the reason a module may answer
+   * "<count>:<level>". Hit the kick, browse away to Reverb, hit the kick
+   * AGAIN: the answer is unchanged, so a follow latched on the resolved voice
+   * does nothing and leaves you on Reverb -- but you just hit the pad, on
+   * purpose, and expect to be on it.
+   *
+   * 9W9 has published a hit counter from ui_focus_level all along for exactly
+   * this, with the reason in its own comment. The count is the only thing that
+   * records the EVENT, because the value did not change. */
+  {
+    const answers = { cur_voice: "1:kick" };
+    const c = mk(SIBLING, answers);
+    spin(c, 200);
+    if (level(c) !== "kick") fail("the counted form did not follow at all");
+    else {
+      c.goToPage(pageFor(c, "reverb"));
+      spin(c, 200);
+      if (level(c) !== "reverb")
+        fail("the counted form is a pin: it dragged the user off reverb");
+      else {
+        answers.cur_voice = "2:kick";     /* same pad, hit again */
+        spin(c, 200);
+        if (level(c) !== "kick")
+          fail("re-hitting the same pad left the user on " + level(c)
+             + " -- a new hit is a new EVENT even when the voice is unchanged");
+      }
+    }
+  }
+
+  /* ...and a bare value still latches on the value, which is the old
+   * behaviour: nothing about a module that answers a plain name changes. */
+  {
+    const answers = { cur_voice: "kick" };
+    const c = mk(SIBLING, answers);
+    spin(c, 200);
+    c.goToPage(pageFor(c, "reverb"));
+    spin(c, 200);
+    if (level(c) !== "reverb")
+      fail("a bare focus answer dragged the user off reverb");
+  }
+
   /* --- a name that is not a voice moves nothing ------------------------
    *
    * Sampled BEFORE the first tick. It used to sample after 40 ticks -- i.e.

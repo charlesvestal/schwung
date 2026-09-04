@@ -198,6 +198,40 @@ export function voiceIndexFromNote(voices, note) {
     return null;
 }
 
+/**
+ * Split a focus answer into its CHANGE TOKEN and its value.
+ *
+ * A focus param may answer either
+ *
+ *     "snare"            the level, and nothing else
+ *     "17:snare"         a monotonic hit COUNT, then the level
+ *
+ * and the second form is the better one. Prior art: 9W9 has published
+ * `"<count>:<level>"` from `ui_focus_level` all along, with the reason in its
+ * own comment — "the counter is what the UI watches: it only navigates when a
+ * NEW hit arrives, so manually browsing to another page is never yanked away
+ * underneath you."
+ *
+ * That solves something a bare value cannot. Latching on the resolved voice
+ * means a REPEAT of the same answer does nothing — correct while the value is
+ * merely being re-reported, and wrong the moment the user hits that same pad
+ * again on purpose. Hit the kick, browse to Reverb, hit the kick again: with a
+ * bare name the grid stays on Reverb, because the answer never changed. With a
+ * count it goes back, because the EVENT is what changed and the count is the
+ * only thing that records it.
+ *
+ * Both forms are accepted, so a module may answer either and neither has to
+ * know about the other.
+ */
+export function focusToken(raw) {
+    if (raw === null || raw === undefined) return { token: null, value: null };
+    const s = String(raw).trim();
+    if (!s.length) return { token: null, value: null };
+    const i = s.indexOf(":");
+    if (i < 0) return { token: s, value: s };      /* bare: the value IS the token */
+    return { token: s, value: s.slice(i + 1).trim() };
+}
+
 /** The voice a level name addresses, or null when that level is a page. */
 export function voiceIndexFromLevel(voices, levelName) {
     if (!Array.isArray(voices) || !levelName) return null;

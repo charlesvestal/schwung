@@ -86,7 +86,8 @@ import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
  * can see which voice they are on, and a blind user is told -- so "the pad you
  * hit is the page you get" replaces a jog through eight entries counting
  * announcements. Reported from the device as the pads doing nothing. */
-import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromWire }
+import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromWire,
+         focusToken }
     from '/data/UserData/schwung/shared/param_pages/voices.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
@@ -14027,13 +14028,15 @@ function syncHierEditorVoice() {
     const focusParam = focusParamOf(hierEditorHierarchy);
     if (!focusParam) return;
     const raw = getSlotParam(hierEditorSlot, `${prefix}:${focusParam}`);
-    let vi = voiceIndexFromLevel(voices,
-        (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
-    if (vi === null) vi = voiceIndexFromWire(voices, raw);
+    /* "<count>:<level>" or a bare value — the count is what makes re-hitting
+     * the pad you are already on work. See focusToken. */
+    const ft = focusToken(raw);
+    let vi = voiceIndexFromLevel(voices, ft.value);
+    if (vi === null) vi = voiceIndexFromWire(voices, ft.value);
 
     if (vi === null) return;                    /* tri-state: no information */
-    if (vi === hierEditorVoiceLatch) return;    /* the edge */
-    hierEditorVoiceLatch = vi;
+    if (ft.token === hierEditorVoiceLatch) return;   /* the edge, on the TOKEN */
+    hierEditorVoiceLatch = ft.token;
 
     const v = voices[vi];
     if (!v || !v.level || !levels[v.level]) return;

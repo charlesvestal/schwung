@@ -32,7 +32,7 @@ import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
          childName } from "./child_key.mjs";
 import { focusParamOf, voicesOf, voiceIndexFromLevel,
-         voiceIndexFromWire, padLayoutOf } from "./voices.mjs";
+         voiceIndexFromWire, padLayoutOf, focusToken } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
 } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -1803,12 +1803,14 @@ export function createController(io = {}) {
         const focusParam = focusParamOf(hier);
         if (!focusParam) return;
         const raw = getParam(`${s.prefix}:${focusParam}`);
+        /* "<count>:<level>" or a bare value — see focusToken. The COUNT is what
+         * makes re-hitting the pad you are already latched on work. */
+        const { token, value } = focusToken(raw);
         /* A level NAME first — that is what the declaration documents — and a
          * numeric voice index second, because a module may answer either and
          * both are unambiguous. Both refuse a failed read. */
-        let vi = voiceIndexFromLevel(voices,
-            (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
-        if (vi === null) vi = voiceIndexFromWire(voices, raw);
+        let vi = voiceIndexFromLevel(voices, value);
+        if (vi === null) vi = voiceIndexFromWire(voices, value);
         /*
          * TRI-STATE. null is "no information", never voice 0. Adopting the
          * first voice because a read timed out would move the user off the
@@ -1819,13 +1821,24 @@ export function createController(io = {}) {
          */
         if (vi === null) return;
 
-        /* THE EDGE. A repeat of the answer we last acted on does nothing at
-         * all — no navigation, no warm, no announce. */
-        if (vi === s.voiceLatch) return;
+        /*
+         * THE EDGE. A repeat of the answer we last acted on does nothing at
+         * all — no navigation, no warm, no announce.
+         *
+         * Latched on the TOKEN, not on the resolved voice. Where a module
+         * answers "<count>:<level>" the token carries the hit count, so
+         * hitting the SAME pad again is a new event and navigates; latching on
+         * the voice index made that a no-op, and the user who hit the kick,
+         * browsed to Reverb and hit the kick again stayed on Reverb. 9W9 has
+         * published a counter for exactly this reason since before the
+         * contract existed. A module answering a bare value latches on the
+         * value, which is the old behaviour exactly.
+         */
+        if (token === s.voiceLatch) return;
         /* Latched on the ANSWER, not on the outcome: a voice we cannot route
          * to below is still an answer we have dealt with, and re-deciding it
          * every stop is the same waste. */
-        s.voiceLatch = vi;
+        s.voiceLatch = token;
 
         const v = voices[vi];
         if (!v || !v.level) return;
