@@ -16391,6 +16391,20 @@ function tickComponentWidgets() {
 function ensureComponentWidgets(moduleId, chainParams) {
     const id = moduleId || "";
 
+    /* DIAGNOSTIC. Four wrong theories in a row about why this returns early --
+     * unresolved id, unsettled chain_params, wrong view, viz stripped in
+     * transit -- each of which cost a build and a deploy. Print what the
+     * function ACTUALLY sees, at the top, before any guard can hide it.
+     * Bounded: the retry that drives this runs at most ~4x/sec and stops the
+     * moment the id resolves. */
+    if (!widgetModuleLoaded) {
+        const n = Array.isArray(chainParams) ? chainParams.length : -1;
+        const kinds = Array.isArray(chainParams)
+            ? chainParams.map((p) => (p && p.viz && p.viz.kind) || "-").join(",")
+            : "(not-an-array)";
+        debugLog(`widgets: id="${id}" params=${n} vizKinds=[${kinds}]`);
+    }
+
     /*
      * AN UNRESOLVED MODULE ID IS NOT "NO MODULE", AND MUST NOT LATCH.
      *

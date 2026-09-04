@@ -56,6 +56,12 @@ static void v2_process_block(void *inst, int16_t *io_lr, int frames) {
 static void v2_set_param(void *inst, const char *key, const char *val) {
     inst_t *s = (inst_t *)inst;
     if (!s || !key || !val) return;
+    if (strcmp(key, "state") == 0) {
+        /* Restore is deliberately forgiving: find the number and take it. */
+        const char *p = strstr(val, "\"level\"");
+        if (p) { const char *c = strchr(p, ':'); if (c) v2_set_param(inst, "level", c + 1); }
+        return;
+    }
     if (strcmp(key, "level") == 0) {
         float v = (float)atof(val);
         if (v < 0.0f) v = 0.0f;
@@ -70,6 +76,13 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
 
     if (strcmp(key, "level") == 0)
         return snprintf(buf, len, "%.4f", s->level);
+
+    /* Per-component preset/autosave snapshot. Without it the shadow UI logs
+     * "fx1:state read FAILED after retries" every ~7 seconds and declines to
+     * write the slot file at all -- a chain component is expected to answer
+     * this even when it has almost nothing to say. */
+    if (strcmp(key, "state") == 0)
+        return snprintf(buf, len, "{\"level\":%.4f}", s->level);
 
     /* The custom kind is declared HERE, on the viz field, exactly as a
      * built-in kind would be. An older host that has never heard of
