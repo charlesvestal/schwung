@@ -929,9 +929,37 @@ chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, 
     return NULL;
 }
 
-/* Forward a formatted value string to the plugin identified by target. */
+/*
+ * Forward a formatted value string to the plugin identified by target.
+ *
+ * A knob turn is an EDIT of the parameter's RESTING value, exactly as an edit
+ * from the parameter's own page is -- so it has to reach the modulation bus by
+ * the same route. It did not, and the consequence was a knob that looked dead.
+ *
+ * A modulated parameter is not owned by whoever wrote it last. The bus holds a
+ * base and rewrites `base + modulation` to the plugin on every tick
+ * (chain_mod_apply_effective_value). The prefixed `synth:` / `fxN:` /
+ * `midi_fxN:` set_param routes therefore update the base FIRST, so the wobble
+ * follows the new setting. This function did not: it wrote straight through to
+ * the plugin and told the bus nothing, so the next tick recomputed from the
+ * stale base and erased the turn -- within milliseconds, every time. Assign a
+ * knob to a parameter an LFO is driving and the knob reads as dead, or moves
+ * and snaps back.
+ *
+ * REALTIME: the added call is the same one the prefixed routes already make
+ * from this same thread, and chain_mod_apply_effective_value allocates nothing.
+ */
 void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str) {
-    if (!inst || !target) return;
+    if (!inst || !target || !param) return;
+
+    if (chain_mod_is_target_active(inst, target, param)) {
+        chain_mod_update_base_from_set_param(inst, target, param, val_str);
+        mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+        if (entry) {
+            chain_mod_apply_effective_value(inst, entry, 0);
+            return;
+        }
+    }
 
     if (strcmp(target, "synth") == 0) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param)

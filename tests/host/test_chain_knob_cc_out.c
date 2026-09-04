@@ -41,6 +41,28 @@ int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *tar
     (void)inst; (void)target;
     return 0;
 }
+
+/*
+ * knob_forward_value now routes a modulated parameter through the modulation
+ * bus (a knob turn edits the RESTING value, like any other edit). No case in
+ * this fixture involves a modulated parameter, so "no target is active" is its
+ * honest answer and the behaviour under test is unchanged.
+ */
+int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param) {
+    (void)inst; (void)target; (void)param; return 0;
+}
+void chain_mod_update_base_from_set_param(chain_instance_t *inst, const char *target,
+                                          const char *param, const char *val) {
+    (void)inst; (void)target; (void)param; (void)val;
+}
+mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target,
+                                                const char *param) {
+    (void)inst; (void)target; (void)param; return NULL;
+}
+void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry,
+                                     int force_write) {
+    (void)inst; (void)entry; (void)force_write;
+}
 int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     (void)inst; (void)module_name;
     return 0;
