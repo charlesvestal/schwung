@@ -70,13 +70,21 @@ fi
 # Comments are stripped BEFORE the extraction, so a brace inside a comment
 # cannot end the body early -- and so the body being searched carries none of
 # the prose that describes this very rule.
+# STOP PRINTING, DO NOT `exit`.
+#
+# `exit` closes the pipe while strip_comments is still writing, so its `sed`
+# takes SIGPIPE -- and under `set -o pipefail` that is the pipeline's status.
+# BSD sed dies quietly so this passed on a Mac for as long as anyone looked;
+# GNU sed reports "couldn't write N items to stdout: Broken pipe" and the test
+# fails on CI with exit 4, naming a test that is not the one that changed.
+# Draining the rest of the input costs microseconds and cannot SIGPIPE anyone.
 BODY=$(strip_comments "$PC" | awk '
     /function syncVoiceFromModule\(/ { on = 1 }
-    on {
+    on && !done {
         print
         d += gsub(/\{/, "{")
         d -= gsub(/\}/, "}")
-        if (d <= 0) exit
+        if (d <= 0) done = 1
     }')
 
 [ -n "$BODY" ] || fail "syncVoiceFromModule not found in page_controller.mjs -- the extraction matched nothing, so this test was asserting on an empty string"

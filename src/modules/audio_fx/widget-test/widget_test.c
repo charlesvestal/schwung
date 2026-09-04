@@ -93,6 +93,11 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
         "["
           "{\"key\":\"level\",\"name\":\"Level\",\"short_name\":\"Lvl\","
            "\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5,"
+           /* THE SAME PARAM CARRIES BOTH SURFACES: the in-grid cell widget and
+            * the card that floats while it is turned. They answer different
+            * questions and do not compete -- the cell is always there, the card
+            * only during the gesture. */
+           "\"card_script\":\"cards.js#blend_card\",\"card_w\":96,\"card_h\":34,"
            "\"viz\":{\"kind\":\"custom:wtmeter\"}},"
           "{\"key\":\"detail\",\"name\":\"Detail\",\"short_name\":\"Dtl\","
            "\"type\":\"canvas\",\"canvas_script\":\"canvas.js\",\"show_value\":false}"

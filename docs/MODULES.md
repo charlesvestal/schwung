@@ -2064,9 +2064,15 @@ eight knob boxes: per-pixel blitting would cost ~1 ms of the 1.68 ms page render
 
 ##### The reference module
 
-`src/modules/audio_fx/widget-test/` is a working example: one `canvas.js`
-supplying both a `drawCell` segmented meter and the fullscreen `draw`, plus a
-passthrough DSP so it is a real, loadable chain FX.
+`src/modules/audio_fx/widget-test/` is a working example of **all three**
+module-supplied surfaces on one parameter: `canvas.js` supplies the `drawCell`
+segmented meter and the fullscreen `draw`, `cards.js` supplies the card that
+floats while the knob turns, and a passthrough DSP makes it a real, loadable
+chain FX.
+
+Its card is also the reference for the null contract: `raw` may be null, and the
+drawer prints `--` with **no bar** rather than a bar at zero, because a bar at
+zero is indistinguishable from a genuine zero.
 
 **It does not ship.** Like `gesture-test` and `sysex-test` it is a hardware
 fixture, built and packaged only on request:
