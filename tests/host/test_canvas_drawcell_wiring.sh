@@ -91,6 +91,34 @@ const ocpBody = code(src.slice(ocpStart, src.indexOf("\nfunction ", ocpStart + 1
 ok(!/registerWidget\s*\(/.test(ocpBody),
    "openCanvasPreview does NOT register widgets");
 
+/* AN UNRESOLVED MODULE ID MUST NOT LATCH.
+ *
+ * getHierarchyActiveModuleId ends in getSlotParam(...) || "" -- an IPC read that
+ * has not settled on first entry. Recording "" as the loaded module id meant the
+ * retry never happened and the widget appeared only after the user dived into
+ * the fullscreen canvas and came back (which re-entered the editor and read
+ * again). Same tri-state rule as everywhere else: a read that did not answer
+ * must not become a cached verdict. */
+ok(/if\s*\(\s*!id\s*\)\s*return;/.test(ecwBody),
+   "an empty module id returns WITHOUT latching, so the question stays open");
+const latchIdx = ecwBody.indexOf("widgetModuleLoaded =");
+const guardIdx = ecwBody.indexOf("if (!id) return;");
+ok(guardIdx >= 0 && guardIdx < latchIdx,
+   "the empty-id guard comes BEFORE the latch assignment");
+
+ok(/function tickComponentWidgets/.test(src), "there is a retry for the unresolved case");
+const tcwStart = src.indexOf("function tickComponentWidgets");
+const tcwBody = code(src.slice(tcwStart, src.indexOf("\nfunction ", tcwStart + 1)));
+ok(/if\s*\(\s*widgetModuleLoaded\s*\)\s*return;/.test(tcwBody),
+   "the retry stops once the id resolves");
+ok(/WIDGET_RETRY_TICKS/.test(tcwBody),
+   "the retry is THROTTLED -- the id costs an IPC read, ~2.8ms against a 1.68ms render");
+ok(/tickComponentWidgets\(\)/.test(src.slice(src.indexOf("VIEWS.PARAM_PAGES) {"), src.indexOf("VIEWS.PARAM_PAGES) {") + 120)),
+   "the retry is driven from the knob-grid tick");
+
+/* Leaving a component must end its widgets lifetime. */
+ok(/widgetModuleLoaded = "";/.test(src), "the latch is cleared when the editor exits");
+
 /* Registration is driven from where the CONTRACT becomes known. */
 ok(/ensureComponentWidgets\s*\(\s*getHierarchyActiveModuleId\(\)\s*,\s*hierEditorChainParams\s*\)/.test(src),
    "it is called where a components chain_params are fetched");

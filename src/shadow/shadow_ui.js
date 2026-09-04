@@ -14105,6 +14105,10 @@ function exitHierarchyEditor() {
     hierEditorComponent = "";
     hierEditorHierarchy = null;
     hierEditorChainParams = [];
+    /* Leaving the component ends its widgets lifetime. Clearing the latch here
+     * (rather than in the canvas teardown, which runs on every canvas open and
+     * close) is what makes the next component ask the question afresh. */
+    widgetModuleLoaded = "";
     hierEditorAllParams = [];
     hierEditorAllKnobs = [];
     hierEditorChildIndex = -1;
@@ -16368,8 +16372,42 @@ let widgetModuleLoaded = "";
  * chain_params become known; a no-op when the module has not changed, so it is
  * safe on a path that runs often.
  */
+/* Retry while the module id has not resolved yet.
+ *
+ * THROTTLED, because the id comes from getSlotParam -- a ~2.8ms IPC round trip,
+ * against a 1.68ms whole-page render. Asking every frame would cost more than
+ * redrawing the screen, for a question that is only open for the first few
+ * frames after entering a component. ~4x/sec matches what the contract retry
+ * already does, and it stops entirely the moment the id resolves. */
+const WIDGET_RETRY_TICKS = 15;
+let widgetRetryTick = 0;
+
+function tickComponentWidgets() {
+    if (widgetModuleLoaded) return;                 /* resolved: nothing to ask */
+    if (++widgetRetryTick % WIDGET_RETRY_TICKS) return;
+    ensureComponentWidgets(getHierarchyActiveModuleId(), hierEditorChainParams);
+}
+
 function ensureComponentWidgets(moduleId, chainParams) {
     const id = moduleId || "";
+
+    /*
+     * AN UNRESOLVED MODULE ID IS NOT "NO MODULE", AND MUST NOT LATCH.
+     *
+     * getHierarchyActiveModuleId ends in getSlotParam(...) || "" -- an IPC
+     * read, and on first entry it has not settled, so it answers "". Recording
+     * that as the loaded module id was the bug: the retry never happened,
+     * nothing registered, and the widget appeared only after the user dived
+     * into the fullscreen canvas and came back, because THAT re-entered the
+     * editor and read again once the value was there.
+     *
+     * Exactly the tri-state rule in CLAUDE.md: a read that did not answer must
+     * never become a plan, a default or a cached verdict. Returning without
+     * touching widgetModuleLoaded leaves the question open, and the next call
+     * -- loadHierarchyLevel runs on entry and on every level change -- asks it
+     * again.
+     */
+    if (!id) return;
     if (id === widgetModuleLoaded) return;
 
     /* The registry is process-global and shadow_ui is long-lived: a widget left
@@ -16377,7 +16415,7 @@ function ensureComponentWidgets(moduleId, chainParams) {
      * same custom: name would silently inherit the wrong art. */
     clearWidgets();
     widgetModuleLoaded = id;
-    if (!id || !Array.isArray(chainParams)) return;
+    if (!Array.isArray(chainParams)) return;
 
     const wantsWidget = chainParams.some((p) => {
         const k = p && p.viz && p.viz.kind;
@@ -21349,7 +21387,7 @@ globalThis.tick = function() {
     /* Per-second param read/write report; one boolean test when disarmed. */
     if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
-    if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    if (view === VIEWS.PARAM_PAGES) { tickComponentWidgets(); tickParamPages(); }
     /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
      * from the tick, never from a draw function, and cheap to poll when
      * nothing is pending (one boolean test). */
