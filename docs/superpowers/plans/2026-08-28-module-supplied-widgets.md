@@ -683,23 +683,42 @@ In `src/shared/param_pages/viz.mjs`, add to the imports at the top:
 import { isCustomKind, isWidgetAvailable } from "./widget_registry.mjs";
 ```
 
-Then in `collectDeclared`, immediately after `if (!v || typeof v !== "object") return;` (`:180`), insert:
+**Two guards, and their PLACEMENT is load-bearing.** An earlier draft of this plan put the first one in the shared walk, right after `if (!v || typeof v !== "object") return;` (`:213`). That is wrong, it is silent, and the obvious test goes green over it — see the mutation below.
+
+The singles guard goes **inside the `else if (v.kind)` branch**, not before it:
 
 ```javascript
-        /* A CUSTOM KIND CLAIMS NOTHING UNLESS IT CAN BE DRAWN.
-         *
-         * Returning here leaves the key in the detector pool, so an unknown or
-         * disabled widget degrades to the built-in one rather than to a hole.
-         * See widget_registry.mjs -- this one branch is the fall-through story
-         * for a typo, a failed load, an older host, and a one-strike disable. */
-        if (isCustomKind(v.kind) && !isWidgetAvailable(v.kind)) return;
+        } else if (v.kind) {
+            /*
+             * A CUSTOM KIND CLAIMS NOTHING UNLESS IT CAN BE DRAWN.
+             *
+             * Returning here leaves the key in the detector pool, so an unknown
+             * or disabled widget degrades to the built-in one rather than to a
+             * hole -- the fall-through for a typo, a failed load, an older host
+             * and a one-strike disable, all on one path.
+             *
+             * IT BELONGS HERE AND NOT IN THE SHARED WALK ABOVE. A group's kind
+             * may be declared on ANY member, so guarding before the v.group
+             * branch would drop only that member: the remaining roles would
+             * still form a group, inferKindFromRoles would name it, and an
+             * `attack` declaring an unavailable custom kind would silently
+             * become a THREE-cell envelope with its own key orphaned beside it.
+             */
+            if (isCustomKind(v.kind) && !isWidgetAvailable(v.kind)) return;
+            singles.push({ kind: v.kind, key, slot });
+        }
 ```
 
-The grouped case needs the same guard, because a group's `kind` may be declared on any member. After the `if (v.group) {` block resolves its kind — in the `for (const g of groups.values())` loop, immediately after `const kind = g.kind || inferKindFromRoles(...)` (`:213`) — insert:
+The group guard goes in the `for (const g of groups.values())` loop, immediately after `const kind = g.kind || inferKindFromRoles(...)`, so the **whole group** is abandoned at once and all its keys reach the detector together:
 
 ```javascript
+        /* Not recorded in `invalid`: an unavailable custom kind is LEGAL -- it
+         * is exactly what an older host sees reading a newer module -- and
+         * flagging it would make every forward-compatible module look broken. */
         if (isCustomKind(kind) && !isWidgetAvailable(kind)) continue;
 ```
+
+**Mutation to run once both guards are in**, because the naive placement is the trap this task exists to avoid: move the singles guard up into the shared walk and re-run. Both `the recovered group spans all FOUR cells` and `contains the key that carried the custom kind` must FAIL. If they pass, the test is not pinning the span, and that needs fixing before the guard does.
 
 - [ ] **Step 5: Run to verify it passes**
 
