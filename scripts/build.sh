@@ -169,6 +169,7 @@ mkdir -p ./build/modules/midi_fx/arp/
 mkdir -p ./build/modules/midi_fx/velocity_scale/
 mkdir -p ./build/modules/midi_fx/sysex_probe/
 mkdir -p ./build/modules/sound_generators/linein/
+mkdir -p ./build/modules/sound_generators/voice-poc/
 mkdir -p ./build/modules/tools/wav-player/
 mkdir -p ./build/lib/jack
 
@@ -676,6 +677,25 @@ if needs_rebuild build/modules/sound_generators/linein/dsp.so \
         -lm
 else
     echo "Skipping line-in generator (up to date)"
+fi
+
+# Build Voice POC sound generator.
+#
+# The first consumer of the pad_layout / voices contract, and the only in-tree
+# module that declares one. It exists because a sound generator's ui_hierarchy
+# is served from get_param and NEVER from module.json (parse_ui_hierarchy_cache
+# runs for FX only), so a contract POC has to be a real plugin -- and because a
+# contract nobody has implemented is a contract nobody has tested.
+if needs_rebuild build/modules/sound_generators/voice-poc/dsp.so \
+    src/modules/sound_generators/voice-poc/voice-poc.c src/host/plugin_api_v1.h; then
+    echo "Building voice-poc generator..."
+    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
+        src/modules/sound_generators/voice-poc/voice-poc.c \
+        -o build/modules/sound_generators/voice-poc/dsp.so \
+        -Isrc \
+        -lm
+else
+    echo "Skipping voice-poc generator (up to date)"
 fi
 
 # Build WAV Player tool DSP

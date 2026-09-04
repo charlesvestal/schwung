@@ -409,6 +409,113 @@ level. The one sanctioned divergence is the root's name — the walker calls its
 root "Main", and the picker overrides that with the mode's own name when
 `modes` gives it more than one root.
 
+### The grid FOLLOWS the focused voice, and writes no LEDs doing it
+
+A module can declare what its performance surface is — `pad_layout`, and a `note`
+per voice — and which voice it considers focused. The declaration contract is
+in `docs/MODULES.md`; `src/shared/param_pages/voices.mjs` is the only place the
+two fleet shapes (sibling levels, template children) collapse into one ordered
+voice list, and the only place the focus is resolved. It is pure: it never
+reads a param.
+
+`syncVoiceFromModule` in `page_controller.mjs` rides **the rotation stop
+`child_index_param` already takes** — the one that also carries the preset name
+— so following a voice costs the rotation nothing extra, and a module that
+declares no voices costs it nothing at all (`voicesOf` returns empty and the
+function returns before any read). At ~2.8 ms an IPC read is more expensive
+than redrawing the whole screen, so a stop of its own was never on the table.
+
+**THE MODULE OWNS THE FOCUS. Nothing is inferred from what is played.**
+`child_index_param` if any voice's level declares it (the existing child-index
+path already owns that module), else `focus_param` from the hierarchy top
+level, else **nothing is read and the grid does not follow**. The first
+declared wins because two live sources would disagree the moment a module moved
+its focus without a note — a preset load, mrdrums' auto-select — and the
+disagreement would latch.
+
+A `<prefix>:last_note` fallback used to sit at the end of that list. It is
+deleted: **a sequencer plays notes**, so a running pattern changed the page on
+every hit in the bar, and a pad press could not be told from a clip because
+both arrive through the same MIDI_OUT echo. `synth:last_note` is still served
+as a diagnostic and `test_voice_follow.sh` asserts it is never *read* — a read
+is what a later refactor quietly starts navigating on again.
+
+The `focus_param` read accepts a level **name** first, which is what the
+declaration documents, and a numeric voice index second. Either may be prefixed
+`"<count>:"`, and the latch is on that whole token rather than on the resolved
+voice — which is what makes **re-hitting the pad you are already on** navigate
+again. Without the count, hit kick → jog to Reverb → hit kick leaves you on
+Reverb, because the answer never changed. 9W9 shipped a counter for this before
+the contract existed; see `focusToken` in `voices.mjs`.
+
+### The header pad minimap
+
+A component declaring `pad_layout: "drums"` gets a 6px box in the header with
+one cell lit: `drawPadGridIcon` in `render_page_movy.mjs`, ported from
+schwung-movy's `renderer/header.ts`. It claims 7px (icon plus gap) from the
+header's measured split, and at 6×6 for a 16-pad rack it is exactly `HEADER_H`,
+so it fits the band without moving anything — the header's own note records
+that a third of the bar sits empty at the fleet median.
+
+**It is PINNED to the right edge**, and the page name gives ground instead.
+movy draws it immediately before the right-hand text, so its x is
+`W - 2 - rightW - PAD_ICON_W` and it moves whenever that text changes width —
+and that text is the page name, which changes on every page. An indicator you
+consult at a glance has to be findable without reading the thing beside it; one
+that slides a dozen pixels as you jog is something you hunt for each time.
+Reported from the device as wanting it "in a stable place". The name is already
+elastic — fitted, abbreviated, truncated — and the icon is six pixels that mean
+nothing if they move, so the name is the right one to yield.
+
+**It follows the PAGE, not the module's focus.** The two coincide whenever the
+follow moved you — it moves you *to* that voice's page — and they part the
+moment you jog by hand, at which point a focus-derived map answers a question
+you did not ask: it shows the pad the module thinks is focused while you are
+looking at a different drum. A child level answers for its current instance, so
+a rack page lights the pad selected within it, and a page that edits no pad
+(Reverb, My Presets, Module) lights nothing.
+
+**It is a PHYSICAL map.** The lit cell is that page's voice `note` minus the
+rack base (36), so it shows where the pad sits under your hand — not where the
+voice sits in a list. A map agreeing with the page order would be a second bank
+bar, and there is one of those a row below. Move's rack counts up from 36 at the
+BOTTOM-LEFT, which is why the row is subtracted; upside down is invisible in a
+unit test and obvious the moment a hand is on the hardware, so the geometry was
+rendered and looked at rather than reasoned about.
+
+A voice whose note is off the rack draws the **empty box**, never the nearest
+cell: a minimap pointing at the wrong pad is worse than no minimap.
+
+Gated on `pad_layout`, not on "declares voices" — this is the one thing in
+Schwung's own UI that the layout declaration drives, and a chromatic module with
+per-zone notes must not grow a rack icon. The FOLLOW deliberately does not
+branch on it: a module that declares voices before settling its layout still
+follows.
+
+The tri-state is the usual one and it is load-bearing here: `null` moves
+nothing. Adopting voice 0 because a read timed out would move the user off the
+pad they were editing, re-keying every page on screen and dropping its cached
+values. A voice whose level has no knob page, and a voice you are already on,
+are both no-ops too; the jump uses `remember: false`, because the module named
+a *voice*, so the grid lands on that voice's page rather than on whichever page
+of that section was last visited.
+
+**Nothing in this path writes a pad LED.** Move owns the pads while the shadow
+UI is up, and the follow path is a read plus a navigation — never a MIDI-out.
+"While I am here I will light the rack" is exactly the change someone makes
+later in good faith, so it is pinned rather than commented:
+`tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or LED write in
+`syncVoiceFromModule` or in `voices.mjs`.
+
+Names: `childLabel` (`child_key.mjs`) prefers a declared `child_names` entry
+over the generated "Pad 3", falling back per item, and `voices.mjs` routes its
+own naming through it — so the voice list and the name resolution cannot
+disagree about what pad 3 is called. **The grid's instance-picker page does not
+route through it yet**: `page_plan.mjs` builds that page's `derivedLabels` from
+`child_label` alone, so a module that names its pads still sees "Pad 1 … Pad
+16" on the *Selected Pad* page. That is the residual half of voice names in the
+picker, and it is one call site.
+
 ### The knob grid is the DEFAULT param view, and it reflows to stay drawable
 
 `paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
