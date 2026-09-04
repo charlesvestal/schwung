@@ -148,20 +148,77 @@ const ink = (fb) => fb.pixels.reduce((n, v) => n + (v ? 1 : 0), 0);
  */
 {
   const fb = createFramebuffer();
-  let got = null;
+  let got = null, gotCtx = null;
   const drew = drawParamCard(drawContext(fb), {
     meta: { card_w: 96, card_h: 44 }, name: "Blend", value: "0.50", raw: "0.5",
-    draw: (ctx, o) => { got = o; },
+    draw: (ctx, o) => { gotCtx = ctx; got = o; },
   });
   ok(drew === true, "drawParamCard reports that it drew");
   ok(!!got, "the module drawer was called");
   const r = paramCardRect({ card_w: 96, card_h: 44 });
-  ok(got && got.x === r.x + INSET && got.w === r.w - INSET * 2,
-     "it is handed the CONTENT rect, not the outer one");
+  ok(got && got.w === r.w - INSET * 2 && got.h === r.h - INSET * 2,
+     "it is handed the size of the space INSIDE the border and its gap");
+  ok(got && got.x === undefined && got.y === undefined,
+     "and NO x/y -- there is no absolute position for a drawer to be given");
+  ok(gotCtx && gotCtx.width === got.w && gotCtx.height === got.h,
+     "the context it draws through is the cards own, not the panels");
   ok(got && got.name === "Blend" && got.value === "0.50" && got.raw === "0.5",
      "and the name, the formatted reading and the raw wire value");
   ok(ink(fb) > 0, "the frame is drawn even though the drawer painted nothing");
   ok(fb.clipped() === 0, "and nothing landed off the panel, got " + fb.clipped());
+}
+
+/* ==================================================================== 2b ==
+ * A DRAWER CANNOT EXPRESS A COORDINATE OUTSIDE ITS CARD.
+ *
+ * The same rule #405 made for a cell widget, for the same reason and through
+ * the same file: the cards rect is per PARAMETER and clamped to the panel, so
+ * absolute coordinates authored against one card are wrong on the next. Here
+ * it matters twice over -- a floating card that could paint outside its border
+ * would eat the page it exists to float over.
+ *
+ * (0,0) IS THE INSIDE OF THE CARD. This test pins that by drawing a rect that
+ * starts before the origin and runs far past the far corner: what lands must
+ * be exactly the content rect, no more, and the frame must SAY it clipped
+ * rather than absorbing it silently.
+ */
+{
+  const fb = createFramebuffer();
+  const outer = paramCardRect({ card_w: 96, card_h: 44 });
+  const inside = { x: outer.x + INSET, y: outer.y + INSET,
+                   w: outer.w - INSET * 2, h: outer.h - INSET * 2 };
+  let clipped = -1;
+  drawParamCard(drawContext(fb), {
+    meta: { card_w: 96, card_h: 44 }, name: "B", value: "1", raw: "1",
+    draw: (ctx) => {
+      ctx.fillRect(-5, -5, 200, 200, 1);
+      ctx.print(-9, -9, "SPILL", 1);
+      clipped = ctx.clipped();
+    },
+  });
+  ok(clipped > 0, "the frame COUNTS the overflow rather than hiding it, got " + clipped);
+
+  /* Every lit pixel outside the cards inside is a leak -- except the border
+   * itself, which is ours and was drawn before the drawer ran. */
+  let outsideContent = 0, outsideCard = 0;
+  for (let y = 0; y < fb.height; y++) {
+    for (let x = 0; x < fb.width; x++) {
+      if (!fb.pixels[y * fb.width + x]) continue;
+      const inContent = x >= inside.x && x < inside.x + inside.w
+                     && y >= inside.y && y < inside.y + inside.h;
+      const inCard = x >= outer.x && x < outer.x + outer.w
+                  && y >= outer.y && y < outer.y + outer.h;
+      if (!inContent) outsideContent++;
+      if (!inCard) outsideCard++;
+    }
+  }
+  ok(outsideCard === 0,
+     "nothing the drawer asked for landed outside the CARD, got " + outsideCard);
+  /* What is left outside the content rect can only be our own border. */
+  const borderInk = 2 * (outer.w * BORDER_W) + 2 * ((outer.h - BORDER_W * 2) * BORDER_W);
+  ok(outsideContent === borderInk,
+     "and outside the content rect there is only OUR border, got "
+     + outsideContent + " want " + borderInk);
 }
 
 /* ===================================================================== 3 ==

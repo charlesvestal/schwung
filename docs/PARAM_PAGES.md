@@ -1337,3 +1337,63 @@ is covered by `tests/host/test_widget_module_poc.sh`, which starts from the
 shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
 calling `registerWidget()` directly. Every other widget test registers directly,
 and that is exactly why none of them saw this.
+
+### A module's OTHER draw surface is a CARD, and it floats
+
+`drawCell` gives a module one cell. `card_script` gives it the page: a bordered
+picture, centred, raised while a knob is held or has just been turned, and gone
+on release. `param_card.mjs` owns the frame and the module owns the inside.
+
+**Why a second surface rather than a bigger cell.** A cell is 17×15 and the
+grid's business is eight values at once. A card answers a different question —
+*what does THIS value mean* — for the one knob under a finger. The two do not
+compete: a page may have both, and the card only exists during the gesture.
+
+**It FLOATS, and that is why it needs no `clearScreen`.** The enum peek beside it
+is full-screen on purpose and therefore cannot draw without the frame owner's
+clear. A card blanks its own rect with `fillRect`, keeps the page visible around
+it, and so stays drawable by an embedded consumer that owns no frame at all —
+which keeps the library's "no file here clears the screen" contract without an
+exception. The peek wins when both could show: a card is an aid to reading one
+value; the peek is the list of values you are moving between.
+
+**Same coordinate contract as a cell widget, through the same file.** The drawer
+is handed a `frameCtx` scoped to the inside of the card, so `(0,0)` is its own
+top-left and there is no way to name a screen pixel. The instability argument
+that made `frame_ctx.mjs` necessary for widgets applies here for a different
+reason: a card's size is declared **per parameter** (`card_w` / `card_h`, clamped
+to the panel), so absolute coordinates authored against one card are wrong on
+the next — and a floating card that could paint outside its border would eat the
+page it exists to float over. Two module draw hooks, one rule.
+`tests/host/test_param_card.sh` pins it by drawing `(-5, -5, 200, 200)` and
+asserting nothing outside the card is lit and the frame *counted* the overflow.
+
+**Centred, not anchored to the touched cell.** A cell is 30px wide and a card is
+not, so anchoring would put most cards off the edge and the rest in a different
+place per knob — a picture that moves while you read it.
+
+**No timer of its own.** `s.touched` is already "the knob being held, or the one
+just turned": a hold sets `turnClaimMs` to 0 so it never expires, a release
+clears it at once, and a turn no finger registered on expires through
+`TURN_CLAIM_MS`. Every other follow-the-knob surface here obeys that law and a
+second one would drift from it.
+
+**The load is off the draw path, and a null answer is cached.** Nothing
+module-side is resident while the grid is up and the host loader has no cache, so
+loading from `renderOverlays` would evaluate a module script on every frame of a
+turn. `warmCard` runs from touch and from a turn, once per spec per session,
+caching the failures too — a missing file or a bad export costs one attempt, not
+one per touch.
+
+**Default-off, and old-host-safe by construction.** A host with no `loadCard` in
+its io draws no card for a declaring parameter, and a parameter that declares
+nothing is untouched. So a module may ship `card_script` for years and change
+nothing anywhere it is not supported.
+
+⚠ **`frameCtx` exposes `fillRect` / `print` / `textWidth` only.** The context the
+host hands the grid also carries `line`, `setPixel`, `fillCircle`, `drawCircle`
+and `drawArc` (`shadow_ui.js`'s `movy` object), and the widget design spec names
+`setPixel` and `drawLine` as part of a frame context — so a drawer that wants
+them today must fall back to `fillRect` (a Bresenham built on it still clips
+correctly). Passing the optional primitives through, clipped, is a separate and
+generic change to `frame_ctx.mjs`; it is not part of the card.

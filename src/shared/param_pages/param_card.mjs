@@ -23,6 +23,16 @@
  * at all, and keeps the library's "no file here clears the screen" contract
  * without an exception.
  *
+ * ⭑ A DRAWER CANNOT EXPRESS A SCREEN COORDINATE, exactly as a cell widget
+ * cannot. The drawer is handed a frameCtx scoped to the inside of the card, so
+ * (0,0) is its own top-left, ctx.width/height are the card's, and there is no
+ * accessor that reaches absolute space. The reasoning is frame_ctx.mjs's and
+ * applies here for the same reason it applies there: the rect is not stable.
+ * A card's size is per PARAMETER and the panel clamps it, so coordinates
+ * authored against one card are wrong on the next one -- and a floating card
+ * that could paint outside its own border would eat the page it is meant to
+ * float over. Two module draw hooks, one coordinate contract.
+ *
  * THE SPLIT: THE MODULE DECLARES THE SIZE, THIS FILE OWNS THE FRAME.
  * The card is positioned, clamped, cleared and bordered here; the drawer is
  * handed the content rect and paints inside it. A module that positioned itself
@@ -36,6 +46,7 @@
  */
 
 import { SCREEN_WIDTH, SCREEN_HEIGHT } from "../list_geometry.mjs";
+import { frameCtx } from "./frame_ctx.mjs";
 
 /** Border thickness. 2px reads as a frame where 1px reads as a hairline. */
 export const BORDER_W = 2;
@@ -119,6 +130,7 @@ export function paramCardContentRect(outer) {
  *
  * @param {object} ctx    fillRect / print / textWidth, as render() takes
  * @param {object} o      { meta, draw, name, value, raw, onError }
+ *                        draw is called as draw(frameCtx, { w, h, name, value, raw })
  * @returns {boolean}     true when a card was drawn
  */
 export function drawParamCard(ctx, o) {
@@ -138,9 +150,16 @@ export function drawParamCard(ctx, o) {
                  r.w - BORDER_W * 2, r.h - BORDER_W * 2, 0);
 
     const content = paramCardContentRect(r);
+    /*
+     * THE DRAWER GETS THE INSIDE OF THE CARD AND NOTHING ELSE. No x/y is passed
+     * because there is nothing for one to mean: the context's origin already IS
+     * the content rect's top-left, and a drawer that received both would be
+     * invited to add them.
+     */
+    const inner = frameCtx(ctx, content);
     try {
-        o.draw(ctx, {
-            x: content.x, y: content.y, w: content.w, h: content.h,
+        o.draw(inner, {
+            w: content.w, h: content.h,
             name: o.name === undefined ? "" : o.name,
             /* The FORMATTED reading, the same string the header would show. */
             value: o.value === undefined ? "" : o.value,
