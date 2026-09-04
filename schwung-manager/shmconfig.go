@@ -30,7 +30,7 @@ const (
 	offUISlot         = 6  // uint8
 	offUIFlags        = 7  // uint8
 	offUIPatchIndex   = 8  // uint16
-	offReserved16     = 10 // uint16
+	offUIFlagsExt     = 10 // uint16 — UI flags 0x0100+
 	offUIRequestID    = 12 // uint32
 	offShimCounter    = 16 // uint32
 	offSelectedSlot   = 20 // uint8
@@ -56,7 +56,14 @@ const (
 	offSkipbackReqVol  = 52 // uint8
 	offOpenToolCmd     = 56 // uint8 — 0=none, 1=open tool
 	offSkipbackSeconds = 60 // uint16 — 30/60/120/180/240/300
-	shmControlSize     = 64
+	offStayInShadow    = 85 // uint8 — "Keep Schwung": a Track tap switches slot
+	// The mapping is capped here, not sized to the struct: CONTROL_BUFFER_SIZE
+	// is 256 for a struct that uses ~86, and mapping the declared cap means a
+	// field appended later needs only its offset added above. The ACTUAL length
+	// mapped is min(this, the segment on disk) — see OpenShmConfig. A segment
+	// left by an older shim is SHORTER, and touching the tail of a mapping past
+	// EOF is SIGBUS, not a zero.
+	shmControlSize = 256
 )
 
 const shmPath = "/dev/shm/schwung-control"
@@ -70,7 +77,25 @@ func OpenShmConfig() *ShmConfig {
 	}
 	defer f.Close()
 
-	data, err := syscall.Mmap(int(f.Fd()), 0, shmControlSize,
+	// Map what is THERE, never what we hope is there. The segment outlives the
+	// processes and an older shim's is shorter; mmap would happily hand back a
+	// mapping whose tail is past EOF, and reading it is SIGBUS — a crash, not a
+	// zero. Every accessor is bounds-checked against this length as well, so a
+	// field added past the end of a stale segment reads 0 and writes nowhere
+	// instead of taking the process down.
+	st, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	length := int(st.Size())
+	if length > shmControlSize {
+		length = shmControlSize
+	}
+	if length < offSetPages+1 {
+		return nil
+	}
+
+	data, err := syscall.Mmap(int(f.Fd()), 0, length,
 		syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		return nil
@@ -79,33 +104,52 @@ func OpenShmConfig() *ShmConfig {
 	return &ShmConfig{data: data}
 }
 
+// fits reports whether n bytes at off are inside the segment we actually
+// mapped. A stale short segment is the case this exists for; see OpenShmConfig.
+func (s *ShmConfig) fits(off, n int) bool { return off >= 0 && off+n <= len(s.data) }
+
 func (s *ShmConfig) getU8(off int) uint8 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fits(off, 1) {
+		return 0
+	}
 	return s.data[off]
 }
 
 func (s *ShmConfig) setU8(off int, v uint8) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fits(off, 1) {
+		return
+	}
 	s.data[off] = v
 }
 
 func (s *ShmConfig) getU16(off int) uint16 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fits(off, 2) {
+		return 0
+	}
 	return binary.LittleEndian.Uint16(s.data[off:])
 }
 
 func (s *ShmConfig) setU16(off int, v uint16) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fits(off, 2) {
+		return
+	}
 	binary.LittleEndian.PutUint16(s.data[off:], v)
 }
 
 func (s *ShmConfig) getF32(off int) float32 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fits(off, 4) {
+		return 0
+	}
 	bits := binary.LittleEndian.Uint32(s.data[off:])
 	return math.Float32frombits(bits)
 }
@@ -113,6 +157,9 @@ func (s *ShmConfig) getF32(off int) float32 {
 func (s *ShmConfig) setF32(off int, v float32) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fits(off, 4) {
+		return
+	}
 	binary.LittleEndian.PutUint32(s.data[off:], math.Float32bits(v))
 }
 
@@ -150,6 +197,9 @@ func (s *ShmConfig) SetSkipbackRequireVolume(v bool)  { s.setU8(offSkipbackReqVo
 
 func (s *ShmConfig) SkipbackSeconds() uint16          { return s.getU16(offSkipbackSeconds) }
 func (s *ShmConfig) SetSkipbackSeconds(v uint16)      { s.setU16(offSkipbackSeconds, v) }
+
+func (s *ShmConfig) StayInShadow() bool     { return s.getU8(offStayInShadow) != 0 }
+func (s *ShmConfig) SetStayInShadow(v bool) { s.setU8(offStayInShadow, boolU8(v)) }
 
 func (s *ShmConfig) SetOpenToolCmd(v uint8) { s.setU8(offOpenToolCmd, v) }
 

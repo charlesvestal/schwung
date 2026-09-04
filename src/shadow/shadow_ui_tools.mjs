@@ -35,9 +35,16 @@ function formatTime(seconds) {
 }
 
 function getToolProcessingRatio() {
-    const { toolSelectedEngine } = ctx;
+    /* Mirrors shadow_ui.js's copy — the two drive the same estimate on two
+     * different screens (confirm vs. processing), so they must agree.
+     * tests/host/test_tool_processing_ratio.sh fails on drift. */
+    const { toolSelectedEngine, toolActiveTool } = ctx;
     if (toolSelectedEngine && toolSelectedEngine.processing_ratio) {
         return toolSelectedEngine.processing_ratio;
+    }
+    if (toolActiveTool && toolActiveTool.tool_config &&
+        toolActiveTool.tool_config.processing_ratio) {
+        return toolActiveTool.tool_config.processing_ratio;
     }
     return 0.5;
 }

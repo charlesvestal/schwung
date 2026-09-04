@@ -1,0 +1,130 @@
+{
+  "title": "Signal Chain",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "The chain is what",
+        "turns a slot into an",
+        "instrument.",
+        "",
+        "Notes go in at the",
+        "left and audio comes",
+        "out at the right:",
+        "",
+        " MIDI FX",
+        " Sound Generator",
+        " Audio FX",
+        "",
+        "There are four",
+        "slots, and they run",
+        "side by side."
+      ]
+    },
+    {
+      "title": "Positions",
+      "lines": [
+        "MIDI FX come first",
+        "and change the notes",
+        "- Chord, Arp.",
+        "",
+        "The sound generator",
+        "is the voice. One",
+        "per slot.",
+        "",
+        "Audio FX come after",
+        "and change the",
+        "sound - reverb,",
+        "delay, saturation.",
+        "",
+        "Order matters: an",
+        "Arp after a Chord",
+        "arpeggiates the",
+        "chord, the other way",
+        "round does not."
+      ]
+    },
+    {
+      "title": "Editing",
+      "lines": [
+        "Jog moves along the",
+        "chain. Click opens",
+        "the box under the",
+        "cursor.",
+        "",
+        "A + box is an empty",
+        "position - click it",
+        "to add something",
+        "there.",
+        "",
+        "Shift + Jog Click",
+        "swaps the module in",
+        "a filled position.",
+        "",
+        "Picking None clears",
+        "a position and",
+        "closes the gap."
+      ]
+    },
+    {
+      "title": "Knobs",
+      "lines": [
+        "Click into a module",
+        "and its parameters",
+        "are laid out eight",
+        "to a page.",
+        "",
+        "Jog pages through",
+        "them. The knob",
+        "rings show which",
+        "knob is which cell.",
+        "",
+        "Past the last page",
+        "are two more: My",
+        "Presets, and Module."
+      ]
+    },
+    {
+      "title": "Bypass and mute",
+      "lines": [
+        "Mute + Jog Click",
+        "bypasses the focused",
+        "module. A B appears",
+        "over its box.",
+        "",
+        "Audio passes",
+        "through, MIDI FX",
+        "become passthrough,",
+        "and tails ring out",
+        "rather than being",
+        "cut.",
+        "",
+        "Mute + Track 1-4",
+        "mutes a whole slot.",
+        "",
+        "Shift + Mute +",
+        "Track 1-4 solos it."
+      ]
+    },
+    {
+      "title": "Channels",
+      "lines": [
+        "Each slot listens on",
+        "a receive channel -",
+        "1 to 4, or All.",
+        "",
+        "Forward channel is",
+        "what it sends on.",
+        "Auto remaps to the",
+        "receive channel.",
+        "",
+        "For an MPE",
+        "controller set",
+        "Receive to All and",
+        "Forward to THRU, or",
+        "per-note bend and",
+        "pressure are lost."
+      ]
+    }
+  ]
+}

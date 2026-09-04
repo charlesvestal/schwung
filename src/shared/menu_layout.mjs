@@ -85,6 +85,19 @@ let lastAnnouncedLabel = "";
  * at module load, so a probe that swaps the globals
  * (tools/param-pages/list_probe.mjs, tests/host/test_enum_picker_chrome.sh)
  * still sees every draw. */
+/* RELATIVE, deliberately. Everything else in this directory is imported by
+ * device-absolute path, which works on the Move and nowhere else — and this
+ * file is loaded DIRECTLY by ~35 host tests that do no path rewriting,
+ * because until now it imported nothing. A relative specifier resolves in
+ * both places; the param_pages modules already do it this way. */
+/* RELATIVE, deliberately, where the rest of this tree imports by
+ * device-absolute path ('/data/UserData/schwung/shared/...'). That form works
+ * on the Move and nowhere else, and this file is loaded DIRECTLY by ~35 host
+ * tests that do no path rewriting — they never needed to, because until now
+ * menu_layout imported nothing. A relative specifier resolves in both places;
+ * the param_pages modules already do it this way. */
+import { drawOverlayCard } from './overlay_card.mjs';
+
 const DEVICE_CTX = {
     fillRect: (x, y, w, h, color) => fill_rect(x, y, w, h, color),
     print: (x, y, text, color) => print(x, y, text, color),
@@ -686,62 +699,100 @@ export function drawMenuList({
         }
     }
 
+    /* The bar itself is drawScrollbar, below — shared with every other
+     * scrolling surface. */
+    drawScrollbar({
+        ctx,
+        topY: resolvedTopY,
+        bottomY: resolvedBottomY,
+        rowHeight: itemHeight,
+        /* DERIVED from the highlight rather than restated: the highlight covers
+         * the glyphs plus `highlightOffset` above and below, so the glyphs
+         * themselves are `highlightHeight - 2 * offset`. A caller that changes
+         * either moves the track with them. */
+        rowInk: Math.max(1, itemHighlightHeight - 2 * highlightOffset),
+        windowRows: effectiveMaxVisible,
+        total: totalItems,
+        startIdx,
+        visible: endIdx - startIdx,
+    });
+}
+
+/*
+ * THE ONE SCROLLBAR. A SCROLLBAR, NOT ARROWS — it says everything they said and
+ * two things more, in a narrower column.
+ *
+ * The arrows report only "there is more, that way". The bar reports that, plus
+ * HOW MUCH more and WHERE you are in it, which is the question a 47-model list
+ * actually raises. Keeping both would be drawing the same fact twice.
+ *
+ * It is also cheaper in the only currency this screen has. The arrows are 5px
+ * wide at indicatorX and force a 10px per-row clearance on the two rows they
+ * touch, so a value on those rows is truncated to make room for a glyph beside
+ * it. The bar owns ONE column at the far edge and overlaps no row, so that
+ * reservation goes away entirely.
+ *
+ * THE THUMB HAS A 2px FLOOR. At 47 items in 5 rows its true height is 1.4px and
+ * a 1px thumb is indistinguishable from a tick of the track: it would report
+ * position and lose extent, which is half of what a bar is for.
+ *
+ * EXPORTED, because a list is not the only thing that scrolls. This lived
+ * inline in drawMenuList and `scrollable_text.mjs` went on drawing the arrows
+ * it replaced — so the help viewer's topic LIST wore a bar and the help TEXT
+ * one row further in wore arrows, in the same session, on the same jog. One
+ * screen cannot be told it is two different products. Any new scrolling
+ * surface calls this; nothing draws its own.
+ *
+ * @param {number} topY        first row's y (the track starts here)
+ * @param {number} bottomY     hard floor — the track never runs past it
+ * @param {number} rowHeight   pitch between rows
+ * @param {number} rowInk      ink height of ONE row (glyphs, not the pitch)
+ * @param {number} windowRows  how many rows the window holds
+ * @param {number} total       total rows
+ * @param {number} startIdx    index of the first visible row
+ * @param {number} [visible]   how many are drawn right now (defaults to the window)
+ */
+export function drawScrollbar({
+    ctx = DEVICE_CTX,
+    topY,
+    bottomY,
+    rowHeight,
+    rowInk,
+    windowRows,
+    total,
+    startIdx,
+    visible = windowRows,
+}) {
+    /* Nothing to scroll: no bar, and the row budget it would have cost is
+     * given back. */
+    if (!(startIdx > 0 || startIdx + visible < total)) return;
+
+    const trackX = SCREEN_WIDTH - 2;
     /*
-     * A SCROLLBAR, NOT ARROWS — it says everything they said and two things
-     * more, in a narrower column.
+     * THE TRACK COVERS THE ROWS, NOT THE RECT.
      *
-     * The arrows report only "there is more, that way". The bar reports that,
-     * plus HOW MUCH more and WHERE you are in it, which is the question a
-     * 47-model list actually raises. Keeping both would be drawing the same
-     * fact twice.
+     * Run to bottomY and it overhangs: the rect is 10..54 but the last row's
+     * glyphs end at 52, so the final dot sat two rows below anything it was
+     * measuring, flush at the top and adrift at the bottom. Reported from a
+     * whole-screen render — and only visible there, which is why the earlier
+     * crop missed it.
      *
-     * It is also cheaper in the only currency this screen has. The arrows are
-     * 5px wide at indicatorX and force a 10px per-row clearance on the two rows
-     * they touch, so a value on those rows is truncated to make room for a
-     * glyph beside it. The bar owns ONE column at the far edge and overlaps no
-     * row, so that reservation goes away entirely — see valueRightEdgeArrow,
-     * which is now only ever the clear edge.
-     *
-     * THE THUMB HAS A 2px FLOOR. At 47 items in 5 rows its true height is 1.4px
-     * and a 1px thumb is indistinguishable from a tick of the track: it would
-     * report position and lose extent, which is half of what a bar is for.
+     * Measured on the WINDOW, not on the rows currently visible. At the end of
+     * a list keepOffLastRow draws one row fewer, and a track that shortened as
+     * you reached the bottom would read as the list itself shrinking.
      */
-    if (startIdx > 0 || endIdx < totalItems) {
-        const trackX = SCREEN_WIDTH - 2;
-        /*
-         * THE TRACK COVERS THE ROWS, NOT THE RECT.
-         *
-         * Run to resolvedBottomY and it overhangs: the rect is 10..54 but the
-         * last row's glyphs end at 52, so the final dot sat two rows below
-         * anything it was measuring, flush at the top and adrift at the bottom.
-         * Reported from a whole-screen render — and only visible there, which
-         * is why the earlier crop missed it.
-         *
-         * The row ink height is DERIVED from the highlight rather than restated:
-         * the highlight covers the glyphs plus `highlightOffset` above and
-         * below, so the glyphs themselves are `highlightHeight - 2 * offset`.
-         * A caller that changes either moves the track with them.
-         *
-         * Measured on the WINDOW, not on the items currently visible. At the
-         * end of a list keepOffLastRow draws one row fewer, and a track that
-         * shortened as you reached the bottom would read as the list itself
-         * shrinking.
-         */
-        const rowInk = Math.max(1, itemHighlightHeight - 2 * highlightOffset);
-        const trackBottom = Math.min(resolvedBottomY,
-            resolvedTopY + (effectiveMaxVisible - 1) * itemHeight + rowInk);
-        const trackH = trackBottom - resolvedTopY;
-        /* Dotted, so the track reads as the extent of the list and the thumb as
-         * a solid object on it. A solid track would make a second rule down the
-         * edge of every scrolling screen. */
-        for (let y = resolvedTopY; y < trackBottom; y += 2) px(ctx, trackX, y, 1);
-        const visible = endIdx - startIdx;
-        const thumbH = Math.max(2, Math.round((visible / totalItems) * trackH));
-        const maxStart = totalItems - visible;
-        const ty = resolvedTopY + (maxStart > 0
-            ? Math.round((startIdx / maxStart) * (trackH - thumbH)) : 0);
-        ctx.fillRect(trackX, ty, 1, thumbH, 1);
-    }
+    const trackBottom = Math.min(bottomY, topY + (windowRows - 1) * rowHeight + rowInk);
+    const trackH = trackBottom - topY;
+    if (trackH <= 0) return;
+    /* Dotted, so the track reads as the extent of the list and the thumb as a
+     * solid object on it. A solid track would make a second rule down the edge
+     * of every scrolling screen. */
+    for (let y = topY; y < trackBottom; y += 2) px(ctx, trackX, y, 1);
+    const thumbH = Math.max(2, Math.round((visible / total) * trackH));
+    const maxStart = total - visible;
+    const ty = topY + (maxStart > 0
+        ? Math.round((startIdx / maxStart) * (trackH - thumbH)) : 0);
+    ctx.fillRect(trackX, ty, 1, thumbH, 1);
 }
 
 export const menuLayoutDefaults = {
@@ -757,8 +808,6 @@ export const menuLayoutDefaults = {
 /* A centered overlay for showing parameter name and value feedback */
 
 const OVERLAY_DURATION_TICKS = 240;  /* ~4 seconds at 60fps, dismissed on UI interaction */
-const OVERLAY_WIDTH = 120;
-const OVERLAY_HEIGHT = 28;
 
 let overlayActive = false;
 let overlayName = "";
@@ -845,27 +894,22 @@ export function tickOverlay() {
 export function drawOverlay() {
     if (!overlayActive || !overlayName) return;
 
-    const boxX = (SCREEN_WIDTH - OVERLAY_WIDTH) / 2;
-    const boxY = (SCREEN_HEIGHT - OVERLAY_HEIGHT) / 2;
-
-    /* Background and border */
-    fill_rect(boxX, boxY, OVERLAY_WIDTH, OVERLAY_HEIGHT, 0);  /* Clear background */
-    fill_rect(boxX, boxY, OVERLAY_WIDTH, 1, 1);     /* Top border */
-    fill_rect(boxX, boxY + OVERLAY_HEIGHT - 1, OVERLAY_WIDTH, 1, 1);  /* Bottom border */
-    fill_rect(boxX, boxY, 1, OVERLAY_HEIGHT, 1);     /* Left border */
-    fill_rect(boxX + OVERLAY_WIDTH - 1, boxY, 1, OVERLAY_HEIGHT, 1);  /* Right border */
-
-    /* Parameter name and value */
-    const displayName = overlayName.length > 18 ? overlayName.substring(0, 18) : overlayName;
-    print(boxX + 4, boxY + 2, displayName, 1);
-    print(boxX + 4, boxY + 14, `Value: ${overlayValue}`, 1);
+    /*
+     * The name and its value in one band, on the shared card.
+     *
+     * This was the "name, then `Value: 0.62` on a second line, in a 1px box"
+     * that knob_card.mjs was written to replace in the chain editor — it was
+     * still what every OTHER screen answered a change with. The name was also
+     * hard-truncated at 18 characters, a count against a proportional font;
+     * drawCardBand fits it in pixels and gives the value the room instead,
+     * because a truncated value is a wrong reading where a truncated name is
+     * still recognisable.
+     */
+    drawOverlayCard(null, { title: overlayName, titleRight: String(overlayValue) });
 }
 
 /* === Status Overlay === */
 /* A centered overlay for status/loading messages */
-
-const STATUS_OVERLAY_WIDTH = 120;
-const STATUS_OVERLAY_HEIGHT = 40;
 
 /* Helper to draw rectangle outline using fill_rect */
 export function drawRect(x, y, w, h, color) {
@@ -882,21 +926,10 @@ export function drawRect(x, y, w, h, color) {
  * @param {string} message - Message text (e.g., "Mini-JV v0.2.0")
  */
 export function drawStatusOverlay(title, message) {
-    const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
-    const boxY = (SCREEN_HEIGHT - STATUS_OVERLAY_HEIGHT) / 2;
-
-    /* Background and double border */
-    fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 0);
-    drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, STATUS_OVERLAY_HEIGHT, 1);
-    drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, STATUS_OVERLAY_HEIGHT - 2, 1);
-
-    /* Center title */
-    const titleW = deviceMeasure(title);
-    print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 10, title, 1);
-
-    /* Center message */
-    const msgW = deviceMeasure(message);
-    print(Math.floor((SCREEN_WIDTH - msgW) / 2), boxY + 24, message, 1);
+    /* Was a DOUBLE 1px border — two hairlines a pixel apart, which at this
+     * size reads as a smudge rather than as emphasis. One 2px border does what
+     * the second hairline was reaching for. */
+    drawOverlayCard(null, { title, lines: [message] });
 }
 
 /**
@@ -906,38 +939,21 @@ export function drawStatusOverlay(title, message) {
  * @param {boolean} showOk - Whether to show [OK] button (default: true)
  */
 export function drawMessageOverlay(title, messageLines, showOk = true) {
-    const lineCount = Math.min(messageLines ? messageLines.length : 0, 4);
-    const boxHeight = showOk ? (36 + lineCount * 10) : (24 + lineCount * 10);
-    const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
-    const boxY = (SCREEN_HEIGHT - boxHeight) / 2;
-
-    /* Background and double border */
-    fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 0);
-    drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 1);
-    drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, boxHeight - 2, 1);
-
-    /* Center title */
-    const titleW = deviceMeasure(title);
-    print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 6, title, 1);
-
-    /* Message lines */
-    if (messageLines) {
-        for (let i = 0; i < lineCount; i++) {
-            const line = messageLines[i];
-            const lineW = deviceMeasure(line);
-            print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 10, line, 1);
-        }
-    }
-
-    /* OK button - highlighted to show it's the action */
-    if (showOk) {
-        const okText = '[OK]';
-        const okW = deviceMeasure(okText);
-        const okX = Math.floor((SCREEN_WIDTH - okW) / 2);
-        const okY = boxY + boxHeight - 14;
-        fill_rect(okX - 4, okY - 2, okW + 8, 12, 1);
-        print(okX, okY, okText, 0);
-    }
+    /*
+     * [OK] is drawn as the FOOTER row rather than as an inverted button.
+     *
+     * The button was a white fill inside the card, and a white fill inside a
+     * white border is the exact collision overlay_card.mjs exists to keep
+     * apart — with the old 1px frame it sat far enough in to get away with it;
+     * with a 2px border and a short message it would not. The card already
+     * marks itself as the thing in front, so the button was carrying emphasis
+     * the frame now carries.
+     */
+    drawOverlayCard(null, {
+        title,
+        lines: messageLines || [],
+        footer: showOk ? "[OK]" : "",
+    });
 }
 
 /**
@@ -948,31 +964,14 @@ export function drawMessageOverlay(title, messageLines, showOk = true) {
  *   wrap to ≤ 20 chars per line; lines beyond the first 5 are dropped.
  */
 export function drawConfirmOverlay(title, messageLines, footer) {
-    /* 8px body line spacing (vs 10 in drawMessageOverlay) lets a 5-line
-     * confirm message fit the 64 px display without clipping the title. */
-    const lineCount = Math.min(messageLines ? messageLines.length : 0, 5);
-    const boxHeight = 36 + lineCount * 8;
-    const boxX = (SCREEN_WIDTH - STATUS_OVERLAY_WIDTH) / 2;
-    const boxY = (SCREEN_HEIGHT - boxHeight) / 2;
-
-    fill_rect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 0);
-    drawRect(boxX, boxY, STATUS_OVERLAY_WIDTH, boxHeight, 1);
-    drawRect(boxX + 1, boxY + 1, STATUS_OVERLAY_WIDTH - 2, boxHeight - 2, 1);
-
-    const titleW = deviceMeasure(title);
-    print(Math.floor((SCREEN_WIDTH - titleW) / 2), boxY + 6, title, 1);
-
-    if (messageLines) {
-        for (let i = 0; i < lineCount; i++) {
-            const line = messageLines[i];
-            const lineW = deviceMeasure(line);
-            print(Math.floor((SCREEN_WIDTH - lineW) / 2), boxY + 18 + i * 8, line, 1);
-        }
-    }
-
-    const footerText = footer || 'Back:No  Jog:Yes';
-    const footerW = deviceMeasure(footerText);
-    print(Math.floor((SCREEN_WIDTH - footerW) / 2), boxY + boxHeight - 12, footerText, 1);
+    /* Five body lines at 8px used to be how this fitted 64px; the card is
+     * sized from its content instead, so the height follows the message and a
+     * short confirm is a short box. */
+    drawOverlayCard(null, {
+        title,
+        lines: (messageLines || []).slice(0, 5),
+        footer: footer || 'Back:No  Jog:Yes',
+    });
 }
 
 /* Note: Label scroller is auto-ticked inside drawMenuList() */

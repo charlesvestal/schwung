@@ -80,12 +80,17 @@ import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
-import { drawChainEditorBands, drawChainPicker, shiftHintsFor, CHAIN_HINTS_AT_REST }
+import { drawChainEditorBands, drawChainPicker, drawListScreen, shiftHintsFor,
+         CHAIN_HINTS_AT_REST }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 /* The chain editor's knob feedback card, and the two resolvers it needs to be
  * handed a row: what each key IS (metaIndex) and which cells a viz group
  * covers. Both are pure and both are already on the device for the knob grid. */
 import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_card.mjs';
+/* Pixel-fitting for text this file hands to a drawer that does not fit its own
+ * -- drawConfirmOverlay CENTRES its message lines and asks the caller to have
+ * wrapped them, so an over-wide one starts at a negative x. */
+import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
@@ -105,6 +110,9 @@ import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
 import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mjs';
+import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
+    from '/data/UserData/schwung/shared/snapshot.mjs';
+import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
     ENTRY_ENTER, ENTRY_HOLD,
@@ -128,6 +136,7 @@ import {
     tickOverlay,
     drawOverlay,
     menuLayoutDefaults,
+    drawConfirmOverlay,
     LIST_INDICATOR_BOTTOM_Y,
     VALUE_RIGHT_CLEARANCE
 } from '/data/UserData/schwung/shared/menu_layout.mjs';
@@ -137,7 +146,8 @@ import {
     createScrollableText,
     handleScrollableTextJog,
     isActionSelected,
-    drawScrollableText
+    drawScrollableText,
+    visibleLinesFor
 } from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
 import {
@@ -160,6 +170,10 @@ import {
     setTextPreviewGlobal
 } from '/data/UserData/schwung/shared/text_entry.mjs';
 
+/* The module-lists model. Every rule lives there so it can be tested under
+ * node; this file only draws it and wires the gestures. */
+import * as ModuleLists from '/data/UserData/schwung/shared/module_lists.mjs';
+
 import {
     announce,
     announceMenuItem,
@@ -181,15 +195,7 @@ import {
     drawSamplerOverlay,
     drawSkipbackToast,
     drawShiftKnobOverlay,
-    drawSetPageToast,
-    SHIFT_KNOB_BOX_X,
-    SHIFT_KNOB_BOX_Y,
-    SHIFT_KNOB_BOX_W,
-    SHIFT_KNOB_BOX_H,
-    SET_PAGE_BOX_X,
-    SET_PAGE_BOX_Y,
-    SET_PAGE_BOX_W,
-    SET_PAGE_BOX_H
+    drawSetPageToast
 } from '/data/UserData/schwung/shared/sampler_overlay.mjs';
 
 import {
@@ -252,7 +258,7 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
-    paramPagesRefreshTrailing, paramPagesExitMenu
+    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue
 } from './shadow_ui_param_pages.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
@@ -303,6 +309,14 @@ const SHADOW_UI_FLAG_JUMP_TO_SCREENREADER = 0x10;
 const SHADOW_UI_FLAG_SET_CHANGED = 0x20;
 const SHADOW_UI_FLAG_JUMP_TO_SETTINGS = 0x40;
 const SHADOW_UI_FLAG_JUMP_TO_TOOLS = 0x80;
+/* 0x0100 and up live in the shim's `ui_flags_ext`, not `ui_flags` — the 8-bit
+ * field is full. js_shadow_get_ui_flags presents both as one flat word and
+ * shadow_clear_ui_flags splits a mask back apart, so nothing here has to know
+ * which field a flag came from. See shadow_constants.h. */
+const SHADOW_UI_FLAG_SNAPSHOT_TAKE = 0x0100;
+const SHADOW_UI_FLAG_SNAPSHOT_RECALL = 0x0200;
+const SHADOW_UI_FLAG_SNAPSHOT_QUEUED = 0x0400;
+const SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED = 0x0800;
 
 /* Knob CC range for parameter control */
 const KNOB_CC_START = MoveKnob1;  // CC 71
@@ -426,7 +440,10 @@ const VIEWS = {
     LFO_TARGET_GROUP: "lfotargetgroup",       // LFO target picker step 2: level group (skipped when ungrouped)
     LFO_TARGET_PARAM: "lfotargetparam",       // LFO target picker step 3: parameter
     ENUM_PICKER: "enumpick",                  // Option list for an enum param
-    COMPONENT_LOADING: "comploading"          // "Loading..." while a component's contract arrives
+    COMPONENT_LOADING: "comploading",         // "Loading..." while a component's contract arrives
+    MODULE_LISTS: "modulelists",             // Checkbox screen: which lists hold this module
+    MODULE_LISTS_EDIT: "modulelistsedit",    // The list of lists, for management
+    MODULE_LISTS_ACTIONS: "modulelistsact"   // Rename / Delete / Clear for one list
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -1478,6 +1495,30 @@ let knobCardCardName = null;    /* the name DRAWN in the header band — see bel
 let knobCardHeaderValue = null; /* header value, ditto */
 let knobCardAnnouncedKnob = -1; /* which knob the last announcement was about */
 
+/*
+ * The knob card does not survive the shadow UI being dismissed.
+ *
+ * It used to. Press Back to hand the screen to Move with a card up, come back,
+ * and the card was still there — sitting over the editor, showing a value read
+ * before you left. Reported from hardware.
+ *
+ * Watched as a display_mode TRANSITION rather than fixed at the Back handler,
+ * because Back is not the only way out and is not even the common one: the
+ * SHIM dismisses the shadow UI on a Track tap and a Menu tap (see
+ * schwung_shim.c, "Track tap: dismissing shadow UI"), writing display_mode = 0
+ * directly. JS never runs a handler for those at all, so a fix at any input
+ * site would have covered one exit of three.
+ */
+let lastDisplayMode = -1;
+function reconcileDisplayModeExit() {
+    const mode = (typeof shadow_get_display_mode === "function")
+        ? shadow_get_display_mode() : 1;
+    if (mode === lastDisplayMode) return;
+    /* Leaving, by any route. -1 is the first tick, which is not a transition. */
+    if (lastDisplayMode === 1 && mode !== 1) knobCardClose();
+    lastDisplayMode = mode;
+}
+
 function knobCardClose() {
     if (knobCardKnob < 0) return;
     knobCardKnob = -1;
@@ -2024,9 +2065,161 @@ function componentParamPagesIo(slotIndex, componentKey) {
 }
 
 /*
+ * A module's own help.json topics — the `children` array the Help viewer's
+ * "Modules" section already builds its per-module page out of — or null when
+ * the module ships none.
+ *
+ * The bases are the same five module_manager lays modules out under, and the
+ * same five host_get_module_metadata walks, because a module id does not carry
+ * its category: `component_type` decides the subdirectory at install time (see
+ * Deployment Layout) and nothing on the id says which one it landed in.
+ *
+ * CACHED BY ID, including the misses. componentTrailingMenus runs on every
+ * PLAN — page entry and after each of our own writes — and an uncached miss is
+ * five failed opens every time, for the many modules that ship no help at all.
+ * A module's help.json cannot change without an install, and an install
+ * restarts shadow_ui, so the cache has no invalidation to get wrong.
+ */
+const MODULE_HELP_BASES = [
+    "/data/UserData/schwung/modules",
+    "/data/UserData/schwung/modules/sound_generators",
+    "/data/UserData/schwung/modules/audio_fx",
+    "/data/UserData/schwung/modules/midi_fx",
+    "/data/UserData/schwung/modules/tools",
+];
+const moduleHelpCache = Object.create(null);
+
+function getModuleHelpChildren(moduleId) {
+    if (!moduleId) return null;
+    /* Same defence host_get_module_metadata applies: an id is a directory name
+     * here, and these are the only two ways one could escape the tree. */
+    if (moduleId.indexOf("/") >= 0 || moduleId.indexOf("..") >= 0) return null;
+    if (moduleId in moduleHelpCache) return moduleHelpCache[moduleId];
+
+    let children = null;
+    for (const base of MODULE_HELP_BASES) {
+        let raw = null;
+        try {
+            raw = std.loadFile(`${base}/${moduleId}/help.json`);
+        } catch (e) { /* not here */ }
+        if (!raw) continue;
+        /* Found the file — this is the module's answer whatever it says, so
+         * stop looking. A malformed or childless help.json means NO help
+         * content, not "keep searching the other categories". */
+        try {
+            const data = JSON.parse(raw);
+            if (data && Array.isArray(data.children) && data.children.length > 0) {
+                children = data.children;
+            }
+        } catch (e) {
+            debugLog("Bad help.json for " + moduleId + ": " + e);
+        }
+        break;
+    }
+    moduleHelpCache[moduleId] = children;
+    return children;
+}
+
+/* ===== MODULE LISTS =====
+ *
+ * Held in memory for the life of a screen session and written on every
+ * change. The file is small (a few hundred bytes) and the alternative is a
+ * Save row on a screen of checkboxes, which is a toggle the user can lose.
+ *
+ * `moduleListsCorrupt` is why the read is not simply re-done on each write: a
+ * file we could not parse must not be replaced by the seeded default, so a
+ * session that opened on a corrupt file works normally and persists nothing.
+ * Silently overwriting it would destroy the only copy of something a later
+ * version might read.
+ */
+const moduleListsIo = {
+    readFile: (p) => (typeof host_read_file === "function" ? host_read_file(p) : null),
+    writeFile: (p, body) => (typeof host_write_file === "function" ? host_write_file(p, body) : false),
+};
+let moduleListsState = null;        /* { version, lists } once loaded */
+let moduleListsCorrupt = false;     /* true = never write */
+let moduleListsSlot = -1;           /* the component this session is filing */
+let moduleListsKey = "";
+let moduleListsModuleId = "";
+let moduleListsMemberIndex = 0;     /* cursor on the membership screen */
+let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
+let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
+let moduleListsTarget = "";         /* the list the actions screen is acting on */
+let moduleListsConfirmDelete = false;
+/*
+ * A name the keyboard REJECTED, waiting to be re-offered from tick().
+ *
+ * It cannot be re-offered from inside onConfirm: text_entry.mjs calls
+ * onConfirm(buffer) and then runs closeTextEntry() UNCONDITIONALLY on the way
+ * out, so a keyboard opened inside the callback is torn down microseconds
+ * later -- the screen vanishes, nothing is created, and with padSelect on the
+ * pad LEDs are left wearing the keyboard's own colours (the reopen snapshots
+ * them while they are up, and the trailing close restores that snapshot).
+ * Recorded here and served one tick later, after the teardown has run.
+ */
+let moduleListsPendingName = null;  /* { existing, text } */
+
+function moduleListsLoad() {
+    const r = ModuleLists.loadLists(moduleListsIo);
+    moduleListsState = r.state;
+    moduleListsCorrupt = r.corrupt;
+    if (r.corrupt) debugLog("module_lists.json unreadable — changes will not persist");
+}
+
+function moduleListsSave() {
+    if (!moduleListsState || moduleListsCorrupt) return false;
+    return ModuleLists.saveLists(moduleListsIo, moduleListsState);
+}
+
+/*
+ * How many lists hold a module — the Module page row's value. Reads the file
+ * once per PLAN (componentTrailingMenus is not on the draw path), same budget
+ * as the `<prefix>:state` read next to it.
+ *
+ * The load is cached for the life of the process, and unlike moduleHelpCache
+ * beside it that cache CAN go stale: module_lists.json lives under
+ * /data/UserData and schwung-manager's file browser can replace it while we
+ * are running. The consequence is bounded and self-correcting — a count on one
+ * row is behind until the next entry to the lists screen, which reloads — so
+ * it is stated here rather than paid for with a read per plan.
+ */
+function moduleListsCountFor(moduleId) {
+    if (!moduleListsState) moduleListsLoad();
+    return ModuleLists.listsContaining(moduleListsState, moduleId).length;
+}
+
+/*
+ * The "Module" trailing page's rows.
+ *
+ * "Module Help" is CONDITIONAL and the other two are not: a module with no
+ * help.json has nothing to show, and a row that opens an empty viewer is worse
+ * than no row — it teaches that the feature is broken. It leads because the
+ * two rows under it are the destructive ones, and reading before swapping or
+ * removing is the order the page is for.
+ */
+function moduleMenuEntries(moduleId) {
+    const entries = [];
+    if (getModuleHelpChildren(moduleId)) {
+        entries.push({ label: "Module Help", action: "module_help" });
+    }
+    /* Unconditional, unlike Module Help: there is always a list to add to,
+     * because Favorites is seeded. The count is the affordance — a row that
+     * shows "2" says the feature is doing something without opening it, and
+     * blank at zero rather than "0" for the same reason a one-page section
+     * says nothing rather than "1". */
+    const inLists = moduleListsCountFor(moduleId);
+    entries.push({ label: "Add to List", value: inLists > 0 ? String(inLists) : "",
+                   action: "module_lists" });
+    entries.push({ label: "Swap Module", action: "swap_module" });
+    entries.push({ label: "Remove Module", action: "remove_module" });
+    return entries;
+}
+
+/*
  * The two trailing pages every REAL component gets: "My Presets" (an
  * informational row 1, then Load / Save / Save As / Delete) and "Module"
- * (Swap Module / Remove Module). [] when the position is empty — nothing is
+ * (Module Help, when the module ships one / Swap Module / Remove Module).
+ * [] when the position is empty — nothing is
  * loaded to show a preset for or to swap/remove.
  *
  * Called from planPages()/refreshTrailing() — i.e. on page ENTRY and after
@@ -2080,10 +2273,7 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
          * already plan a page called that, so claimName would dedupe this to
          * "Presets - 2". "My Presets" (46px) collides with nothing. */
         { name: "My Presets", entries: presetEntries },
-        { name: "Module", entries: [
-            { label: "Swap Module", action: "swap_module" },
-            { label: "Remove Module", action: "remove_module" },
-        ] },
+        { name: "Module", entries: moduleMenuEntries(loaded.module) },
     ];
 }
 
@@ -2091,8 +2281,10 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
  * Perform a "My Presets" / "Module" trailing-page ACTION, by key — the
  * fourth instance of the hand-off runSlotActionFromGrid / runMasterFxActionFromGrid
  * / runGlobalActionFromGrid perform, and it asks the same shared question
- * (gridActionOpenedSomething) rather than listing which of the six actions
- * leave.
+ * (gridActionOpenedSomething) rather than listing which of the actions leave.
+ * (Module Help is the exception: it hands off to a screen that does NOT come
+ * back through VIEWS.CHAIN_EDIT, so it returns before that question is asked
+ * and carries its own return pair — see the case and maybeReturnToComponentHelp.)
  *
  * Save and Save As never leave VIEWS.PARAM_PAGES (a text-entry overlay sits on
  * top of it, same as the browser's own "[Save current...]" row) — so for those
@@ -2150,6 +2342,85 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             result = true;
             break;
 
+        case "module_help": {
+            /*
+             * Opens the module's OWN help topics, not the Help tree with this
+             * module selected — so Back off the first frame leaves the viewer
+             * entirely and comes back here, rather than climbing up into
+             * Modules > ... > Help, which is a place the user never was.
+             *
+             * The stack is seeded with ONE frame for exactly that reason: the
+             * GLOBAL_SETTINGS back handler pops, and an empty stack is the
+             * signal maybeReturnToComponentHelp waits for.
+             */
+            const children = getModuleHelpChildren(moduleId);
+            /* Cannot happen from the row — it is only offered when this
+             * answers — but the action is reachable by key, and an empty
+             * viewer is a screen with no way to read it and no way out. */
+            if (!children) return false;
+            exitParamPages();
+            componentHelpReturnSlot = slotIndex;
+            componentHelpReturnKey = componentKey;
+            helpDetailScrollState = null;
+            helpNavStack = [{ items: children, selectedIndex: 0,
+                              title: getModuleDisplayName(moduleId) }];
+            /* The help viewer has no view of its own; GLOBAL_SETTINGS is its
+             * host (see drawGlobalSettings). helpReturnView is deliberately
+             * NOT set — that one routes back to the Global Settings grid, and
+             * this session belongs to a component grid instead. */
+            setView(VIEWS.GLOBAL_SETTINGS);
+            needsRedraw = true;
+            announce(helpNavStack[0].title + " Help, " + children[0].title);
+            /* Returns straight out: the componentModalFromGrid bookkeeping
+             * below is for the hand-offs that converge on CHAIN_EDIT, and
+             * leaving a flag raised for an arrival this flow never makes would
+             * fire it on somebody else's later one. */
+            return true;
+        }
+
+        case "module_lists": {
+            if (!moduleId) return false;
+            exitParamPages();
+            moduleListsLoad();
+            moduleListsSlot = slotIndex;
+            moduleListsKey = componentKey;
+            moduleListsModuleId = moduleId;
+            moduleListsMemberIndex = 0;
+            /* The same reset exitModuleLists() does, done again HERE because
+             * this site is unconditional and that one is not. Back is the only
+             * exit we WROTE, but it is not the only way a session can end: a
+             * hardware shortcut (Shift+Vol+Track, Shift+Vol+Menu) leaves the
+             * view without passing through it, and moduleListsConfirmDelete is
+             * a LATCH -- a session abandoned on an armed "yes, delete" hands
+             * the arming to the next one. Inert today only because re-entry
+             * happens to land on the membership screen, which is a fact about
+             * the current wiring rather than a rule. */
+            moduleListsEditIndex = 0;
+            moduleListsActionIndex = 0;
+            moduleListsTarget = "";
+            moduleListsConfirmDelete = false;
+            moduleListsPendingName = null;
+            setView(VIEWS.MODULE_LISTS);
+            needsRedraw = true;
+            /* Say it ONCE, on the way in, when a corrupt file means nothing
+             * done on this screen will persist. The alternative is the user
+             * finding out per click, or -- as it was -- not at all, because
+             * the only record was a debugLog line in a file nobody reading
+             * this screen is watching. */
+            announce("Add to List, " + moduleListsRowLabel(0) +
+                     (moduleListsCorrupt ? ", lists file unreadable, changes will not save" : ""));
+            /* Returns straight out, exactly as module_help does: the
+             * componentModalFromGrid bookkeeping below is for hand-offs that
+             * converge on CHAIN_EDIT, and this one never goes there. Leaving
+             * the flag raised would fire it on somebody else's later arrival.
+             *
+             * No reconciler is needed either — unlike Help (hosted by
+             * GLOBAL_SETTINGS, with three ways out), these are OUR views and
+             * Back is the only exit from them, so the return is written at
+             * that one site. */
+            return true;
+        }
+
         case "swap_module": {
             const at = slotChainComponentIndex(slotIndex, componentKey);
             if (at >= 0) enterComponentSelect(slotIndex, at);
@@ -2173,12 +2444,11 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     }
 
     /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
-     * four cases above that hand off to a real screen (Load, Delete, Swap,
+     * four remaining cases above that hand off to a real screen (Load, Delete, Swap,
      * Remove — the last via applyChainComponentPick, which always ends in
      * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
      * which never move `view` at all. Asking the screen rather than the key
-     * is what keeps a future seventh action from being silently wrong here
-     * too. */
+     * is what keeps a future action from being silently wrong here too. */
     if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
         componentModalFromGrid = true;
         componentGridReturnSlot = slotIndex;
@@ -2269,6 +2539,439 @@ function maybeReturnToComponentGrid() {
                     { enter: enterOnArrival });
     needsRedraw = true;
     return true;
+}
+
+/*
+ * ...and back to the grid once a Module Help session is done with.
+ *
+ * The sibling of maybeReturnToComponentGrid for the one component action whose
+ * hand-off does not converge on VIEWS.CHAIN_EDIT. Help is drawn by
+ * VIEWS.GLOBAL_SETTINGS, so "idle again" here means what it means for
+ * maybeReturnToGlobalGrid: the stack has emptied and no detail is open.
+ *
+ * RECONCILES from the draw path rather than hooking the exits, for the reason
+ * spelled out on maybeReturnToGlobalGrid — help has three ways out and only
+ * one of them is a single obvious site.
+ *
+ * ...and the position must STILL HOLD A MODULE, the same guard
+ * maybeReturnToComponentGrid needs: a component editor entered for a position
+ * with nothing in it is a contract read with nobody to answer it, which the
+ * device draws as a permanent "Loading...". Nothing in this flow removes a
+ * module, but the guard costs one lookup and covers whatever reaches
+ * GLOBAL_SETTINGS next.
+ *
+ * Lands on the "Module" page with its menu OPEN — that is the row the user
+ * clicked, and returning them to page 1 with the menu closed reads as being
+ * dumped somewhere else (reported from hardware for the Load and Delete
+ * hand-offs, which is why those land on "My Presets" rather than page 1).
+ */
+function maybeReturnToComponentHelp() {
+    if (componentHelpReturnSlot < 0) return false;
+    if (helpNavStack.length > 0 || helpDetailScrollState) return false;
+    if (isTextEntryActive()) return false;
+    const slotIndex = componentHelpReturnSlot;
+    const componentKey = componentHelpReturnKey;
+    componentHelpReturnSlot = -1;
+    componentHelpReturnKey = "";
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) return false;
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: true });
+    needsRedraw = true;
+    return true;
+}
+
+/*
+ * The membership screen's rows: one per list with a checkbox, then the two
+ * management doors.
+ *
+ * The checkbox is in the VALUE column, which is where a menu page puts a
+ * state — the same place the picker puts its `*` and a settings row puts
+ * "On". A prefix glyph would collide with the cursor.
+ */
+function moduleListsRows() {
+    /* NO load here. This is reached from drawModuleLists, i.e. from the DRAW
+     * path, and a host_read_file on the draw path is what the read budget
+     * forbids (docs/PARAM_PAGES.md). The entry loads, and the jog and click
+     * paths call moduleListsEnsureLoaded() before they read; a draw that
+     * somehow arrived with no state shows an empty screen rather than reading
+     * a file to fill one. */
+    if (!moduleListsState) return [];
+    const rows = moduleListsState.lists.map(l => ({
+        name: l.name,
+        value: ModuleLists.isMember(moduleListsState, l.name, moduleListsModuleId) ? "*" : "",
+        kind: "toggle",
+    }));
+    rows.push({ name: "New List...", value: "", kind: "new" });
+    rows.push({ name: "Edit Lists...", value: "", kind: "edit" });
+    return rows;
+}
+
+/* The load, for the INPUT paths — never the draw path. */
+function moduleListsEnsureLoaded() {
+    if (!moduleListsState) moduleListsLoad();
+}
+
+/*
+ * Clamp the MEMBERSHIP screen's cursor to the rows that exist NOW.
+ *
+ * Named for the cursor it MOVES, not for the screen that calls it: its call
+ * site is the Back case of the EDIT screen, where a bare "clamp the index"
+ * reads as that screen's own cursor -- which is the other one,
+ * moduleListsClampEditIndex().
+ *
+ * Rows come and go while a lists session is open (deleting a list on the Edit
+ * screen removes one), so every arrival back on this screen must re-resolve
+ * the cursor rather than trust the index it left with.
+ */
+function moduleListsClampMemberIndex() {
+    const n = moduleListsRows().length;
+    moduleListsMemberIndex = Math.max(0, Math.min(n > 0 ? n - 1 : 0, moduleListsMemberIndex));
+}
+
+function moduleListsRowLabel(i) {
+    const rows = moduleListsRows();
+    const r = rows[Math.max(0, Math.min(rows.length - 1, i))];
+    if (!r) return "";
+    return r.kind === "toggle" ? `${r.name}, ${r.value ? "on" : "off"}` : r.name;
+}
+
+function drawModuleLists() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    drawListScreen(ctx, {
+        headerLeft: getModuleDisplayName(moduleListsModuleId),
+        headerRight: "LISTS",
+        entries: moduleListsRows(),
+        index: moduleListsMemberIndex,
+        /* No JOG hint, and that is not a saving of space for its own sake:
+         * drawFooter DROPS a pair that does not fit, silently and along with
+         * everything after it, so "JOG SEL, CLK TOGGLE, BACK MODULE" rendered
+         * as "JOG SEL ... BACK MODULE" and the screen`s PRIMARY action was the
+         * one word missing from its own footer. Found by rendering it and
+         * looking. JOG is the pair worth losing: every list on this device
+         * jogs, and TOGGLE is the only hint here that says something. */
+        footer: [["CLK", "TOGGLE"], ["BACK", "MODULE"]],
+    });
+}
+
+/*
+ * The keyboard, for both New List and Rename. `existing` null = create.
+ *
+ * A rejected name REOPENS the keyboard carrying WHAT THE USER TYPED, and
+ * announces why. Closing it and doing nothing is the failure mode where the
+ * user cannot tell whether the name was taken or the click was missed; and
+ * reopening it seeded with `existing` would be the same loss one step
+ * quieter -- a rename would come back showing the OLD name and a new list
+ * would come back blank, both of them looking like the typing was discarded.
+ * Hence `prefill` as its own parameter rather than a reuse of `existing`.
+ *
+ * The reopen is DEFERRED to the next tick (moduleListsPendingName), because
+ * text_entry.mjs closes the keyboard unconditionally after onConfirm returns
+ * -- see the note on that variable.
+ */
+function moduleListsOpenNameEntry(existing, prefill) {
+    openTextEntry({
+        title: existing ? "Rename List" : "New List",
+        initialText: prefill === undefined ? (existing || "") : prefill,
+        onAnnounce: announce,
+        onConfirm: (text) => {
+            const r = existing
+                ? ModuleLists.renameList(moduleListsState, existing, text)
+                : ModuleLists.createList(moduleListsState, text);
+            if (!r.ok) {
+                announce(r.err);
+                moduleListsPendingName = { existing: existing, text: text };
+                return;
+            }
+            /* A write that did not happen must not be announced as one. The
+             * change IS in memory and the row will show it, so the
+             * announcement says both halves rather than replacing the result
+             * with the failure -- same rule as up_save's "Save failed", one
+             * step less destructive. */
+            const saved = moduleListsSave();
+            if (existing) moduleListsTarget = String(text).trim();
+            announce((existing ? `Renamed to ${text}` : `Created ${text}`) +
+                     (saved ? "" : ", save failed"));
+            needsRedraw = true;
+        },
+        onCancel: () => { needsRedraw = true; },
+    });
+}
+
+/*
+ * Re-offer a rejected name, one tick after the rejection.
+ *
+ * Called from tick() rather than from onConfirm for the reason recorded on
+ * moduleListsPendingName: the keyboard's own confirm path tears itself down
+ * after the callback returns, so anything opened inside the callback is
+ * closed by the caller that invoked it.
+ */
+function moduleListsTickPendingName() {
+    if (!moduleListsPendingName) return;
+    const pending = moduleListsPendingName;
+    moduleListsPendingName = null;
+    moduleListsOpenNameEntry(pending.existing, pending.text);
+}
+
+/*
+ * Back out of the whole lists session, to the Module page with its menu open
+ * — the row the user clicked. Landing on page 1 with the menu closed reads as
+ * being dumped somewhere else, which is the hardware report that put the
+ * Load and Delete hand-offs on "My Presets" rather than page 1.
+ *
+ * Written at this one site rather than as a reconciler because these are our
+ * own views: Back is the only way out of them, so there is nothing to
+ * reconcile FROM. maybeReturnToComponentHelp exists because help is hosted by
+ * a view we do not own and has three exits.
+ */
+function exitModuleLists() {
+    const slotIndex = moduleListsSlot;
+    const componentKey = moduleListsKey;
+    moduleListsSlot = -1;
+    moduleListsKey = "";
+    moduleListsModuleId = "";
+    /* The rest of the session, not just the three that identify it. The one
+     * that matters is moduleListsConfirmDelete: it is a LATCH, so a session
+     * left on an armed "yes, delete" would arm the next one, and the next
+     * click after entering would delete a list nobody asked about. The three
+     * cursors are cheap correctness beside it. */
+    moduleListsEditIndex = 0;
+    moduleListsActionIndex = 0;
+    moduleListsTarget = "";
+    moduleListsConfirmDelete = false;
+    moduleListsPendingName = null;
+    if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
+    const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    if (!stillLoaded || !stillLoaded.module) {
+        /* Same guard maybeReturnToComponentGrid needs: a component editor
+         * entered for an empty position is a contract read with nobody to
+         * answer it, which the device draws as a permanent "Loading...". */
+        setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+    enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
+                    componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
+                    { enter: true });
+    needsRedraw = true;
+}
+
+/*
+ * ===== EDIT LISTS =====
+ *
+ * The list of lists, with a member count each, and the per-list actions
+ * behind it. Every RULE below belongs to module_lists.mjs (which lists may be
+ * renamed, which may be deleted, what a clear does); what lives here is the
+ * drawing and the gestures.
+ */
+
+/*
+ * The Edit Lists rows.
+ *
+ * NO load here, for the same reason moduleListsRows() does not: this is
+ * reached from drawModuleListsEdit(), i.e. from the DRAW path, and a
+ * host_read_file on the draw path is what the read budget forbids
+ * (docs/PARAM_PAGES.md). The input paths call moduleListsEnsureLoaded()
+ * first.
+ */
+function moduleListsEditRows() {
+    if (!moduleListsState) return [];
+    return moduleListsState.lists.map(l => ({
+        name: l.name,
+        /* The count is the only thing distinguishing two lists at a glance,
+         * and it is what tells you a list is safe to delete. Printed even at
+         * zero, unlike the Module page row: there the blank says "this
+         * feature is doing nothing for this module", here a blank column
+         * beside a filled one would read as a missing value. */
+        value: String(l.modules.length),
+    }));
+}
+
+/*
+ * The Edit Lists row under the cursor, as spoken.
+ *
+ * One definition for the three places that say it -- the jog, Back off the
+ * actions screen, and the arrival after a confirmed delete -- because they are
+ * the same sentence about the same row and drifted wording between them reads
+ * as three different screens.
+ *
+ * The count carries its NOUN. "Live, 2" is two of what: the sibling screen one
+ * press out speaks "Favorites, on", so a bare number in that same position
+ * reads as another state word.
+ */
+function moduleListsEditRowLabel() {
+    const r = moduleListsEditRows()[moduleListsEditIndex];
+    if (!r) return "";
+    return `${r.name}, ${r.value} module${r.value === "1" ? "" : "s"}`;
+}
+
+/*
+ * Clamp the Edit Lists cursor to the rows that exist NOW — a delete removes
+ * one out from under it, and the screen is arrived at again immediately
+ * afterwards.
+ */
+function moduleListsClampEditIndex() {
+    const n = moduleListsEditRows().length;
+    moduleListsEditIndex = Math.max(0, Math.min(n > 0 ? n - 1 : 0, moduleListsEditIndex));
+}
+
+function drawModuleListsEdit() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    drawListScreen(ctx, {
+        headerLeft: "Edit Lists",
+        entries: moduleListsEditRows(),
+        index: moduleListsEditIndex,
+        footer: [["JOG", "SEL"], ["CLK", "EDIT"], ["BACK", "LISTS"]],
+    });
+}
+
+/*
+ * Favorites gets Clear alone. The other two rows are ABSENT rather than
+ * present and refusing: a row that answers a click by doing nothing teaches
+ * that the screen is broken, which is the same reasoning that keeps Move Left
+ * / Move Right off a position with nowhere to go.
+ *
+ * isProtected() is asked, not re-derived — the name comparison is
+ * case-insensitive and that rule is the model's, not this file's.
+ */
+function moduleListsActionRows() {
+    const rows = [];
+    if (!ModuleLists.isProtected(moduleListsTarget)) {
+        rows.push({ name: "Rename", kind: "rename" });
+        rows.push({ name: "Delete", kind: "delete" });
+    }
+    rows.push({ name: "Clear", kind: "clear" });
+    return rows;
+}
+
+/* The widest a drawConfirmOverlay message line may be. Its box is
+ * STATUS_OVERLAY_WIDTH (120) with a 2px double border, so 116 is the ink; 112
+ * keeps a pixel of air either side. */
+const CONFIRM_TEXT_W = 112;
+
+function drawModuleListsActions() {
+    clear_screen();
+    const ctx = { fillRect: fill_rect, print, textWidth: text_width };
+    drawListScreen(ctx, {
+        headerLeft: moduleListsTarget,
+        entries: moduleListsActionRows(),
+        index: moduleListsActionIndex,
+        /* BACK names where Back ACTUALLY goes (FOOTER_CANON): the Edit Lists
+         * screen, not the membership screen one further out.
+         *
+         * ...and while the confirm is up, Back goes somewhere ELSE, so the
+         * footer says so. drawConfirmOverlay's box is y=10..54 and FOOTER_Y is
+         * 57, so this row stays VISIBLE underneath it: leaving it be put two
+         * footers on one screen disagreeing about BACK, over a JOG that the
+         * overlay has deliberately made inert. */
+        footer: moduleListsConfirmDelete
+            ? [["CLK", "YES"], ["BACK", "NO"]]
+            /* One row means nothing to jog to, so naming JOG would name a
+             * gesture that does nothing — the same rule the picker`s empty
+             * state already follows. Favorites is the case: it offers Clear
+             * alone. */
+            : (moduleListsActionRows().length > 1
+                ? [["JOG", "SEL"], ["CLK", "DO"], ["BACK", "EDIT"]]
+                : [["CLK", "DO"], ["BACK", "EDIT"]]),
+    });
+    /* Drawn LAST, so it is fed FIRST — see moduleListsSelectAction() and the
+     * jog case, which early-out on moduleListsConfirmDelete before reading
+     * the rows. The draw order and the input order are the reverse of each
+     * other, and nothing at either site says so. */
+    if (moduleListsConfirmDelete) {
+        /* FITTED. drawConfirmOverlay centres its message lines and documents
+         * that the caller wraps them; nothing caps a list name at entry, so an
+         * unfitted one starts at a NEGATIVE x and runs out both sides of a box
+         * that is 120 wide with a 2px double border. The header above it is
+         * fine -- drawHeader fits in pixels itself. */
+        drawConfirmOverlay("Delete List",
+                           [fitText(ctx, moduleListsTarget + "?", CONFIRM_TEXT_W)],
+                           "CLK=Yes  BACK=No");
+    }
+}
+
+/*
+ * A click on the actions screen.
+ *
+ * Its own function rather than the body of a switch case so that the confirm
+ * LATCH and the save-failure branches are reachable by a test: everything
+ * inside handleSelect() is behind 21k lines node cannot load.
+ *
+ * Every write BRANCHES on moduleListsSave(). A write that did not happen must
+ * not be announced as one — with an unreadable file the list would vanish
+ * from the screen, the voice would say "Deleted", and the next entry would
+ * show it back.
+ */
+function moduleListsSelectAction() {
+    if (moduleListsConfirmDelete) {
+        /* Fed FIRST because it is drawn LAST. Disarm before acting, so no
+         * path can leave the latch set. */
+        moduleListsConfirmDelete = false;
+        const name = moduleListsTarget;
+        const r = ModuleLists.deleteList(moduleListsState, name);
+        const saved = r.ok ? moduleListsSave() : false;
+        moduleListsTarget = "";
+        moduleListsActionIndex = 0;
+        moduleListsClampEditIndex();
+        setView(VIEWS.MODULE_LISTS_EDIT);
+        /* Name the ARRIVAL as well as the action, in ONE announce() -- the
+         * announcer is not a queue, so a second call replaces this rather than
+         * following it. Every other arrival in this feature says screen + row,
+         * and a delete is the one that moves the cursor onto a list the user
+         * did not choose: "Deleted Live" alone leaves them two words and an
+         * unnamed screen. Read AFTER the clamp, so it is the resolved row. */
+        announce((r.ok ? "Deleted " + name + (saved ? "" : ", save failed")
+                       : (r.err || "Delete failed")) +
+                 ". Edit Lists, " + moduleListsEditRowLabel());
+        needsRedraw = true;
+        return;
+    }
+    const row = moduleListsActionRows()[moduleListsActionIndex];
+    if (!row) return;
+    if (row.kind === "rename") {
+        /* Seeded with the current name; a rejected one comes back carrying
+         * what was TYPED — see moduleListsOpenNameEntry. */
+        moduleListsOpenNameEntry(moduleListsTarget);
+    } else if (row.kind === "delete") {
+        moduleListsConfirmDelete = true;
+        announce("Delete " + moduleListsTarget + "?");
+    } else {
+        const r = ModuleLists.clearList(moduleListsState, moduleListsTarget);
+        if (!r.ok) {
+            announce(r.err || "Clear failed");
+        } else {
+            const saved = moduleListsSave();
+            announce("Cleared " + moduleListsTarget + (saved ? "" : ", save failed"));
+        }
+    }
+    needsRedraw = true;
+}
+
+/*
+ * Back on the actions screen: one level per press. With the confirm up, Back
+ * is "No" and cancels it — it does not also leave the screen, because the
+ * overlay is what the press was answering.
+ */
+function moduleListsActionsBack() {
+    if (moduleListsConfirmDelete) {
+        moduleListsConfirmDelete = false;
+        /* "state change, then where you are" -- the grammar its neighbours
+         * use. Announcing the target alone said "Live", which is the word
+         * already in the header, so a cancel was indistinguishable from a
+         * stray repeat and never said the delete had been called off. */
+        const row = moduleListsActionRows()[moduleListsActionIndex];
+        announce("Cancelled, " + moduleListsTarget + (row ? ", " + row.name : ""));
+    } else {
+        moduleListsClampEditIndex();
+        setView(VIEWS.MODULE_LISTS_EDIT);
+        /* The screen AND the row under the cursor, as every other arrival on
+         * this screen does -- the row can have moved while we were away. */
+        announce("Edit Lists, " + moduleListsEditRowLabel());
+    }
+    needsRedraw = true;
 }
 
 /*
@@ -3201,6 +3904,16 @@ let globalModalFromGrid = false;
 let componentModalFromGrid = false;
 let componentGridReturnSlot = -1;
 let componentGridReturnKey = "";
+
+/* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
+ * "Module Help". The help viewer has no view of its own -- it is drawn by
+ * VIEWS.GLOBAL_SETTINGS and VIEWS.MASTER_FX (see drawGlobalSettings) -- so a
+ * help session opened from a component grid lands on GLOBAL_SETTINGS and
+ * cannot be reconciled by the CHAIN_EDIT arrival above. Its own pair, for the
+ * same reason the other four are separate: a return pending for one hand-off
+ * must never be spent by another. See maybeReturnToComponentHelp. */
+let componentHelpReturnSlot = -1;
+let componentHelpReturnKey = "";
 
 function saveParamViewConfig() {
     try {
@@ -7778,6 +8491,426 @@ function autosaveAllSlots() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) autosaveOneSlot(i);
 }
 
+/* ==========================================================================
+ * Snapshot / recall  —  Shift+Copy takes, Shift+Delete puts back
+ *
+ * Snapshot the whole rig, tweak everything, get back. The pure decisions live
+ * in shared/snapshot.mjs (and are unit-tested there); this is the I/O.
+ *
+ * WHY THERE IS NO SECOND SERIALIZER. A take is `autosaveAllSlots()` +
+ * `saveMasterFxChainConfig()` — the writers the set state already uses, with
+ * every guard they have accumulated (the bail-if-empty that protects a good
+ * file from a timed-out read, the skip-if-unchanged that keeps eMMC quiet, the
+ * shim-reports-empty cross-check) — followed by a COPY of the twelve files
+ * they wrote. Building a parallel capture path would mean re-deriving all of
+ * that and then keeping the two in step forever.
+ *
+ * WHY IT LIVES IN THE SET DIRECTORY. Sets are per-directory. A global snapshot
+ * would be the one piece of chain state that does not travel with the set, and
+ * would be wrong the moment you changed sets or booted into a different one.
+ * Here it is deleted with the set for free.
+ *
+ * WHY IT IS RE-SEEDED ON EVERY SET LOAD. So the snapshot means one sentence:
+ * "how this set was when you loaded it, or the last time you pressed
+ * Shift+Copy in this session." A snapshot that outlived a set load would be
+ * invisible state a two-button gesture can trigger — recalling something you
+ * do not remember taking. It is still on DISK, so a shadow_ui restart
+ * mid-session does not lose it; being overwritten on load is what stops
+ * persistence outliving the explanation.
+ * ========================================================================== */
+
+const SNAPSHOT_SUBDIR = "/snapshot";
+
+function snapshotDir() { return activeSlotStateDir + SNAPSHOT_SUBDIR; }
+
+/* The twelve files a snapshot is: four slots and eight Master FX positions. */
+function snapshotFileNames() {
+    const names = [];
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/slot_" + i + ".json");
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) names.push("/master_fx_" + i + ".json");
+    return names;
+}
+
+/*
+ * Copy the set's current state files into the snapshot dir.
+ *
+ * A file that reads back empty is written as "{}" rather than skipped. Leaving
+ * the previous snapshot's file in place would splice two snapshots together —
+ * three positions from now and one from an hour ago — and nothing downstream
+ * could tell, because each file parses fine on its own. An empty marker is the
+ * honest answer: that position had nothing.
+ */
+function snapshotCopyFrom(srcDir) {
+    const dst = snapshotDir();
+    host_ensure_dir(dst);
+    let copied = 0;
+    for (const name of snapshotFileNames()) {
+        let content = null;
+        try { content = host_read_file(srcDir + name); } catch (e) { content = null; }
+        if (host_write_file(dst + name, content || "{}\n")) copied++;
+    }
+    return copied;
+}
+
+/* Take: flush live state to the set dir through the normal writers, then copy. */
+function snapshotTake() {
+    autosaveAllSlots();
+    saveMasterFxChainConfig();
+    const copied = snapshotCopyFrom(activeSlotStateDir);
+    debugLog("snapshot: took " + copied + "/" + snapshotFileNames().length +
+             " files into " + snapshotDir());
+    snapshotShowToast(["saved"]);
+    announce("Snapshot saved");
+}
+
+/*
+ * Seed: same copy, but only when there is no snapshot yet, or when a set has
+ * just loaded (`force`). The unforced form runs once at startup — without it a
+ * device that upgrades and boots straight into its existing set has no
+ * snapshot at all and the first Shift+Delete does nothing at all, silently.
+ */
+function snapshotSeed(force) {
+    if (!force && host_file_exists(snapshotDir() + "/slot_0.json")) return false;
+    snapshotCopyFrom(activeSlotStateDir);
+    debugLog("snapshot: seeded from set state (" +
+             (force ? "set load" : "startup, none present") + ")");
+    return true;
+}
+
+/*
+ * What is loaded at each position RIGHT NOW, for planRestore's id guard.
+ *
+ * Read from `chainConfigs` and `masterFxConfig`, which the UI already holds —
+ * no IPC. That matters: the guard is consulted once per position and a read
+ * per position would double the cost of a recall for information already in
+ * memory.
+ */
+function snapshotLiveIds() {
+    const live = {};
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        const cfg = chainConfigs[i] || createEmptyChainConfig();
+        live[i + ":synth"] = (cfg.synth && cfg.synth.module) || "";
+        for (let k = 0; k < cfg.midiFx.length; k++)
+            live[i + ":midi_fx" + (k + 1)] = (cfg.midiFx[k] && cfg.midiFx[k].module) || "";
+        for (let k = 0; k < cfg.fx.length; k++)
+            live[i + ":fx" + (k + 1)] = (cfg.fx[k] && cfg.fx[k].module) || "";
+    }
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++)
+        live["master_fx:fx" + i] = (masterFxConfig["fx" + i] || {}).module || "";
+    return live;
+}
+
+/*
+ * Recall.
+ *
+ * Writes STATE, never SHAPE. `load_file` is what restores module identity and
+ * it reinstantiates — cutting reverb tails and resetting arp phase, which is
+ * the opposite of what an A/B gesture is for. A position whose module changed
+ * since the snapshot is skipped and counted; see planRestore.
+ */
+function snapshotRecall() {
+    const dir = snapshotDir();
+    const live = snapshotLiveIds();
+    const records = [];
+
+    /* Slot records carry a per-slot prefix so one flat liveIds map can address
+     * all four slots plus Master FX without four separate plans. */
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        let content = null;
+        try { content = host_read_file(dir + "/slot_" + i + ".json"); } catch (e) {}
+        if (!content) continue;
+        for (const r of parseSlotSnapshot(content)) {
+            records.push({ ...r, slot: i, prefix: i + ":" + r.prefix, key: r.prefix });
+        }
+    }
+    for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+        let content = null;
+        try { content = host_read_file(dir + "/master_fx_" + i + ".json"); } catch (e) {}
+        if (!content) continue;
+        for (const r of parseMasterFxSnapshot(content, i)) {
+            records.push({ ...r, slot: 0, key: r.prefix });
+        }
+    }
+
+    if (records.length === 0) {
+        debugLog("snapshot: recall found nothing in " + dir);
+        snapshotShowToast(["none"]);
+        announce("No snapshot");
+        return;
+    }
+
+    const plan = planRestore(records, live);
+    const byPrefix = {};
+    for (const r of records) byPrefix[r.prefix] = r;
+
+    for (const w of plan.writes) {
+        const rec = byPrefix[w.prefix];
+        setSlotParam(rec.slot, rec.key + ":state", w.state);
+        setSlotParam(rec.slot, rec.key + ":bypassed", String(w.bypassed));
+    }
+    for (const r of plan.reasons) {
+        debugLog("snapshot: skipped " + r.prefix + " (" + r.reason +
+                 (r.was ? ", was " + r.was : "") + (r.now ? ", now " + r.now : "") + ")");
+    }
+    debugLog("snapshot: restored " + plan.writes.length + ", skipped " + plan.skipped);
+
+    /*
+     * Every value the grid is holding now describes the sound from before the
+     * gesture, so re-read the page.
+     *
+     * Not cosmetic. Nothing reads on the draw path, and `onKnobTurn` steps
+     * FROM the cached value — so without this the first knob move after a
+     * recall departed from the PRE-recall number and wrote the tweak straight
+     * back over what had just been restored. Reported from hardware.
+     *
+     * Both calls: revalue re-reads the page's params, refreshTrailing rebuilds
+     * "My Presets" (whose `*` modified-mark rides on the live state blob a
+     * recall has just replaced).
+     */
+    paramPagesRevalue();
+    paramPagesRefreshTrailing();
+    /*
+     * ...and the knob caches OUTSIDE the grid, which hold the same stale
+     * numbers for the same reason.
+     *
+     * paramPagesRevalue only reaches the knob-grid controller. The slot
+     * editor's own knob path keeps `knobValueCache` — read once on first touch
+     * and then advanced by local arithmetic precisely so a turn costs no IPC —
+     * and the knob card keeps a row of values captured on touch-down. Both
+     * described the sound from before the recall, so the first turn there
+     * jumped back exactly as it did on the grid. Reported from hardware
+     * separately, which is the tell that this is one defect with several
+     * caches rather than several defects.
+     */
+    invalidateKnobValueCache();
+    knobCardClose();
+    needsRedraw = true;
+
+    const lines = recallMessage(plan.skipped);
+    snapshotShowToast(lines);
+    announce("Snapshot " + lines.join(", "));
+}
+
+/* Toast state. Purely JS-owned — the shim has no field for this overlay; it
+ * composites whatever `display_overlay` points at. */
+let snapshotToastLines = null;
+let snapshotToastFrames = 0;
+const SNAPSHOT_TOAST_FRAMES = 45;   /* ~1s at the 45Hz redraw cadence */
+
+function snapshotShowToast(lines) {
+    snapshotToastLines = lines;
+    snapshotToastFrames = SNAPSHOT_TOAST_FRAMES;
+    needsRedraw = true;
+}
+
+function snapshotToastActive() {
+    return snapshotToastLines !== null && snapshotToastFrames > 0;
+}
+
+/* True when Move's own screen is up, i.e. the shadow display is a scratch
+ * surface the shim blits FROM rather than the screen itself. */
+function shadowDisplayHidden() {
+    return (typeof shadow_get_display_mode === "function") &&
+           shadow_get_display_mode() !== 1;
+}
+
+/*
+ * Paint the toast over whatever the shadow UI just drew. No clear_screen, no
+ * display_overlay — the shadow display already IS the screen in this mode, so
+ * clearing it wipes the view behind and setting an overlay rect would ask the
+ * shim to composite a picture onto itself.
+ */
+/*
+ * A recall is armed and waiting for its boundary.
+ *
+ * Small, top-right, drawn last so it survives whatever the screen underneath
+ * is doing — the toast that announced the arming is gone after a second, and
+ * without a persistent mark there is nothing to tell you the button is loaded.
+ *
+ * It DOES overdraw the last few pixels of a header. That is deliberate: for
+ * the beat or two it is up, "a recall is about to fire" outranks the tail of a
+ * module name. It is the smallest thing that can be seen from playing
+ * position, and it is gone the moment the recall lands.
+ */
+function drawSnapshotPendingMark() {
+    if (!snapshotQueuedPending || shadowDisplayHidden()) return;
+    const w = 9, h = 9, x = 128 - w, y = 0;
+    fill_rect(x, y, w, h, 1);
+    print(x + 2, y + 1, "Q", 0);
+}
+
+function drawSnapshotToastOnTop() {
+    if (!snapshotToastActive() || shadowDisplayHidden()) return;
+    snapshotToastFrames--;
+    const g = drawSnapshotToast(snapshotToastLines);
+    if (g.clipped > 0) {
+        debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
+    }
+    if (snapshotToastFrames <= 0) snapshotToastLines = null;
+}
+
+/*
+ * Is a recall armed and waiting for its boundary?
+ *
+ * Tracked here rather than read from the shim because there is nowhere to read
+ * it FROM — both SHM structs are exactly at their pinned size with no padding,
+ * so the shim reports arming and firing as edges (flags) and this is the state
+ * they imply. Every edge that ends the wait clears it, including the one the
+ * shim raises when the transport stops under an armed recall.
+ */
+let snapshotQueuedPending = false;
+
+/*
+ * Recall Quantize: 0 = Off, 1 = beat, 2 = bar, 3 = two bars.
+ *
+ * Held here AND pushed into the shim's register, because the two need it for
+ * different halves of the job: the shim decides when Shift+Delete fires, this
+ * side reports the setting back to the settings grid. Persisted to
+ * features.json so it survives a reboot, and pushed down again at startup —
+ * the register lives in SHM, which does not.
+ */
+let recallQuantizeValue = 0;
+const RECALL_QUANTIZE_NAMES = ["off", "beat", "bar", "2bars"];
+
+function setRecallQuantize(v) {
+    recallQuantizeValue = (v >= 0 && v <= 3) ? v : 0;
+    if (typeof shadow_recall_quantize_set === "function") {
+        shadow_recall_quantize_set(recallQuantizeValue);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadRecallQuantize() {
+    let v = 0;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const m = /"recall_quantize"\s*:\s*"([^"]*)"/.exec(raw);
+            if (m) {
+                const i = RECALL_QUANTIZE_NAMES.indexOf(m[1]);
+                if (i >= 0) v = i;
+            }
+        }
+    } catch (e) { debugLog("recall_quantize read failed: " + e); }
+    setRecallQuantize(v);
+}
+
+/*
+ * Save Stems: 0 = Master, 1 = Stems, 2 = Both. Global Settings -> Audio.
+ *
+ * Same shape as recallQuantizeValue above and for the same reason: the shim
+ * needs it (it mirrors the register into the sampler every frame, and it is
+ * what allocates the Skipback stem buffers), this side needs it to report the
+ * setting back to the grid, and SHM does not survive a reboot so features.json
+ * is the copy that does.
+ *
+ * ONE setting for the Quantized Sampler, Skipback and Song Mode's Record
+ * button alike -- all three record through the same sampler.
+ */
+let saveStemsValue = 0;
+const SAVE_STEMS_NAMES = ["master", "stems", "both"];
+
+function setSaveStems(v) {
+    saveStemsValue = (v >= 0 && v <= 2) ? v : 0;
+    if (typeof shadow_save_stems_set === "function") {
+        shadow_save_stems_set(saveStemsValue);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadSaveStems() {
+    let v = 0;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const m = /"save_stems"\s*:\s*"([^"]*)"/.exec(raw);
+            if (m) {
+                const i = SAVE_STEMS_NAMES.indexOf(m[1]);
+                if (i >= 0) v = i;
+            }
+        }
+    } catch (e) { debugLog("save_stems read failed: " + e); }
+    setSaveStems(v);
+}
+
+/*
+ * Metronome. Mirrors recallQuantizeValue above: the setting persists in
+ * features.json, the register in SHM does not, so JS reads the file at startup
+ * and pushes the value down.
+ */
+let metronomeMode = 1;                 /* 0 off, 1 follow, 2 on — default Follow */
+let metronomeLevel = 50;               /* percent */
+const METRONOME_MODE_NAMES = ["off", "follow", "on"];
+
+function setMetronome(mode, level) {
+    metronomeMode = (mode >= 0 && mode <= 2) ? mode : 0;
+    metronomeLevel = (level >= 0 && level <= 100) ? level : 50;
+    if (typeof shadow_metronome_set === "function") {
+        shadow_metronome_set(metronomeMode, metronomeLevel);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadMetronome() {
+    /* Default Follow: under Move->Schwung the click is missing, so shipping the
+     * fix switched off would leave it missing for everyone who has the problem.
+     * Follow is silent unless Move's own metronome is on. */
+    let mode = 1, level = 50;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const mm = /"metronome_mode"\s*:\s*"([^"]*)"/.exec(raw);
+            if (mm) {
+                const i = METRONOME_MODE_NAMES.indexOf(mm[1]);
+                if (i >= 0) mode = i;
+            }
+            const ml = /"metronome_level"\s*:\s*([0-9]+)/.exec(raw);
+            if (ml && ml[1]) {
+                const v = parseInt(ml[1], 10);
+                if (v >= 0 && v <= 100) level = v;
+            }
+        }
+    } catch (e) { debugLog("metronome read failed: " + e); }
+    setMetronome(mode, level);
+}
+
+/* Service the snapshot gesture flags. Called from the flag block in tick(). */
+function snapshotServiceFlags(flags) {
+    const SNAPSHOT_FLAGS = SHADOW_UI_FLAG_SNAPSHOT_TAKE |
+                           SHADOW_UI_FLAG_SNAPSHOT_RECALL |
+                           SHADOW_UI_FLAG_SNAPSHOT_QUEUED |
+                           SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED;
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_TAKE) {
+        snapshotTake();
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_QUEUED) {
+        snapshotQueuedPending = true;
+        snapshotShowToast(["queued"]);
+        announce("Snapshot queued");
+        needsRedraw = true;
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED) {
+        snapshotQueuedPending = false;
+        snapshotShowToast(["cancelled"]);
+        announce("Snapshot recall cancelled");
+        needsRedraw = true;
+    }
+    if (flags & SHADOW_UI_FLAG_SNAPSHOT_RECALL) {
+        /* Clear FIRST. snapshotRecall spends ~36ms writing state, and the mark
+         * must not still be on screen for the frame that draws its result. */
+        snapshotQueuedPending = false;
+        snapshotRecall();
+    }
+    if (flags & SNAPSHOT_FLAGS) {
+        if (typeof shadow_clear_ui_flags === "function") {
+            shadow_clear_ui_flags(SNAPSHOT_FLAGS);
+        }
+    }
+}
+
 /* Actually save the preset */
 function doSavePreset(slotIndex, name) {
     const json = buildSlotPatchJson(slotIndex, name);
@@ -8124,6 +9257,14 @@ function handleMasterFxSettingsAction(key) {
         return;
     }
     if (key === "help") {
+        /* Whoever opens a help session OWNS the way out of it. This is the one
+         * choke point for the Global Settings / Master FX entries, so a
+         * component's pending "Module Help" return (which never comes through
+         * here) is dropped rather than left to hijack the exit from a session
+         * it has nothing to do with — the flag survives a navigation away from
+         * VIEWS.GLOBAL_SETTINGS, and only a later arrival can spend it. */
+        componentHelpReturnSlot = -1;
+        componentHelpReturnKey = "";
         if (!helpContent) {
             try {
                 const raw = host_read_file("/data/UserData/schwung/shared/help_content.json");
@@ -8678,8 +9819,22 @@ function getWavDurationSec(filePath) {
  * SpleeterRT (3-stem): ~0.5x realtime on Move's Cortex-A72.
  * Spleeter TFLite (4-stem): ~3.0x realtime. */
 function getToolProcessingRatio() {
+    /* A tool's wall time relative to the input's duration, used only for the
+     * "about N remaining" estimate.
+     *
+     * Order matters: a per-engine value is more specific than the module's, and
+     * a module that ships several engines (each with its own speed) declares
+     * both. tool_config.processing_ratio was declared by stems from the start
+     * but never read here — and because the value it declared, 0.5, happened to
+     * equal the hardcoded default below, the field looked like it worked. It
+     * only showed up when stems corrected itself to a measured figure and the
+     * estimate did not move. */
     if (toolSelectedEngine && toolSelectedEngine.processing_ratio) {
         return toolSelectedEngine.processing_ratio;
+    }
+    if (toolActiveTool && toolActiveTool.tool_config &&
+        toolActiveTool.tool_config.processing_ratio) {
+        return toolActiveTool.tool_config.processing_ratio;
     }
     return 0.5;  /* default for legacy/unknown engines */
 }
@@ -9238,6 +10393,23 @@ function enterGlobalSettingsGrid(restorePageName) {
                        * pin — their Volume, Mute and Solo really are
                        * performance controls. */
                       layout: LAYOUT_LIST,
+                      /* AND THEREFORE NOT PAGINATED.
+                       *
+                       * A section is one scrolling list, however long. Eight is
+                       * the number of physical knobs -- a GRID page has eight
+                       * cells and nowhere to put a ninth -- and the planner was
+                       * chunking these levels at eight even though the grid
+                       * never draws them, so a ninth param in a section
+                       * silently became a second page named "<Section> - 2"
+                       * holding one row. A jog step nobody chose, on a screen
+                       * that was already scrolling five rows at a time.
+                       *
+                       * It rides here rather than being inferred from the
+                       * layout above, which is also LAYOUT_LIST when the screen
+                       * reader is on or Param View says List -- inferring it
+                       * would rearrange every module's pages behind a
+                       * preference. */
+                      paginate: false,
                       onExit: () => { leaveGlobalSettings(); } });
     needsRedraw = true;
 }
@@ -10322,9 +11494,12 @@ function handleStorePickerResultSelect() {
         return;
     }
     if (storePickerCategory) {
-        /* Came from the chain component picker. */
-        availableModules = scanModulesForType(
-            slotChainComponents(selectedSlot)[selectedChainComponent].key);
+        /* Came from the chain component picker. Rebuilt through
+         * enterComponentSelect rather than by re-scanning here: a bare scan
+         * has no Move rows, no list-filter row and no resolved cursor, so
+         * coming back from the store landed on a picker one row out of step
+         * with the one that was left. */
+        enterComponentSelect(selectedSlot, selectedChainComponent);
         setView(VIEWS.COMPONENT_SELECT);
         storeCatalog = null;
         storePickerCategory = null;
@@ -10341,6 +11516,83 @@ function handleStorePickerResultSelect() {
 function handleStorePickerBack() {
     handleStorePickerResultSelect();
     needsRedraw = true;
+}
+
+/* ===== SWAP-PICKER LIST FILTER =====
+ *
+ * `null` is All. Session state, not persisted: a filter that survived a reboot
+ * would be a picker that opens mysteriously short, with the explanation on the
+ * one row nobody reads on the first frame after boot.
+ *
+ * It DOES persist across pickers within a session, which is the whole workflow
+ * win — set Favorites once and every position you open honours it.
+ */
+const PICKER_FILTER_ID = "__list_filter__";
+let componentSelectFilter = null;
+
+/*
+ * The MODULE ids among a set of picker rows.
+ *
+ * A picker row is only a module if it carries an id that is not one of the
+ * synthetic ones, and the synthetic ones are not all shaped alike: `None` is
+ * the EMPTY id, while Move Left / Move Right / [Get more...] are `__`-prefixed.
+ * Written once because both callers below need exactly the same answer, and a
+ * second copy that remembered only the `__` half would quietly file `None`
+ * under every list it failed to match.
+ */
+function pickerRealIds(entries) {
+    return (entries || [])
+        .filter(m => m && m.id && String(m.id).indexOf("__") !== 0)
+        .map(m => m.id);
+}
+
+/* The lists this picker may cycle to: those with at least one member among
+ * the modules actually installed for this component type. Lists are GLOBAL, so
+ * without this a synth picker could land on an FX-only list and draw a screen
+ * with nothing on it and no explanation. */
+function pickerEligibleLists(scanned) {
+    moduleListsEnsureLoaded();
+    return ModuleLists.listsWithAnyOf(moduleListsState, pickerRealIds(scanned));
+}
+
+/*
+ * Apply the active filter to a scan result.
+ *
+ * The synthetic rows — None, Move Left/Right, [Get more...] — are never
+ * filtered: they are not modules, and a filtered picker with no way to clear
+ * the position and no way to reach the store is a dead end.
+ */
+function pickerApplyFilter(entries, filterName) {
+    if (!filterName) return entries;
+    moduleListsEnsureLoaded();
+    const kept = ModuleLists.filterIds(moduleListsState, pickerRealIds(entries), filterName);
+    /* null = no such list. Never the identity — see filterIds. The caller has
+     * already reset an ineligible filter to All, so reaching here means the
+     * list vanished under us; showing everything is the safe answer, and it is
+     * the same thing All would show. */
+    if (kept === null) return entries;
+    const keep = Object.create(null);
+    for (const id of kept) keep[id] = true;
+    return entries.filter(m => !m || !m.id || String(m.id).indexOf("__") === 0 || keep[m.id]);
+}
+
+/*
+ * Where the cursor may REST when a picker opens.
+ *
+ * Not an arithmetic offset. The obvious version — one past the filter row plus
+ * the move entries — is only right while the moves sit at the top, and they do
+ * not: chainMoveEntries is spliced in under the LOADED module, so with a
+ * filter active that hides the loaded module the moves end up in the middle of
+ * whatever survived and the arithmetic lands on "Move Right". Scan instead.
+ */
+function pickerFirstSelectableIndex(entries) {
+    for (let i = 0; i < entries.length; i++) {
+        const id = entries[i] && entries[i].id;
+        if (id === PICKER_FILTER_ID) continue;
+        if (id === "__move_left__" || id === "__move_right__") continue;
+        return i;
+    }
+    return 0;
 }
 
 /* Enter component module selection view */
@@ -10386,21 +11638,53 @@ function enterComponentSelect(slotIndex, componentIndex) {
     const moveEntries = chainMoveEntries(chainConfigs[slotIndex], comp.key);
     availableModules.splice(loadedIdx >= 0 ? loadedIdx + 1 : 0, 0, ...moveEntries);
 
+    /*
+     * Resolve the filter BEFORE applying it. A stored filter that matches
+     * nothing here — its list was deleted, or this component type has no
+     * member of it — falls back to All and SAYS so. A sticky filter that
+     * opens a near-empty screen is a trap: the row explaining it is one line
+     * up, and the user has no reason to suspect a filter they last touched in
+     * a different picker.
+     */
+    const eligible = pickerEligibleLists(availableModules);
+    let filterReset = false;
+    if (componentSelectFilter && eligible.indexOf(componentSelectFilter) < 0) {
+        componentSelectFilter = null;
+        filterReset = true;
+    }
+    availableModules = pickerApplyFilter(availableModules, componentSelectFilter);
+
+    /* Row 0, added LAST so the rows below are the finished, filtered set. */
+    availableModules.unshift({ id: PICKER_FILTER_ID, name: "List",
+                               value: componentSelectFilter || "All",
+                               /* This row cycles the filter; it does not load.
+                                * The footer reads the verb off the row under
+                                * the cursor, so the row that behaves unusually
+                                * is the one that has to say so. */
+                               clickVerb: "LIST" });
+
     /* Default the cursor to the loaded module — the list opens showing you
      * what is there now, with the moves right beneath it.
      *
-     * With no loaded module to sit on (an empty position, or one whose module
-     * has been uninstalled since) the moves went in at the top instead, so
-     * step PAST them: a list must never open with the cursor on "Move Left".
-     * moveEntries is empty for an unoccupied position, so that case is 0. */
-    selectedModuleIndex = loadedIdx >= 0 ? loadedIdx : moveEntries.length;
+     * With no loaded module to sit on (an empty position, one whose module has
+     * been uninstalled since, or one the active filter hides) fall to the
+     * first row that is neither the filter nor a move: a list must never open
+     * on "List" or on "Move Left". */
+    const shownIdx = loadedId
+        ? availableModules.findIndex(m => m.id === loadedId)
+        : -1;
+    selectedModuleIndex = shownIdx >= 0 ? shownIdx
+                                        : pickerFirstSelectableIndex(availableModules);
 
     setView(VIEWS.COMPONENT_SELECT);
     needsRedraw = true;
 
-    /* Announce menu title + initial selection */
+    /* Announce menu title + initial selection, and the filter when there is
+     * one to report — including the one we just took away. */
     const moduleName = availableModules[selectedModuleIndex]?.name || "None";
-    announce(`Select ${comp.label}, ${moduleName}`);
+    announce(`Select ${comp.label}, ${moduleName}` +
+             (filterReset ? ", list filter reset to All"
+                          : (componentSelectFilter ? `, list ${componentSelectFilter}` : "")));
 }
 
 /* Apply the selected module to the component - updates DSP in realtime */
@@ -10411,6 +11695,27 @@ function applyComponentSelection() {
     if (!comp || !isChainModuleKey(comp.key)) {
         cancelPendingChainInsert();
         setView(VIEWS.CHAIN_EDIT);
+        return;
+    }
+
+    /*
+     * The filter row cycles IN PLACE — it is the one row in this picker that
+     * does not leave the view, and the one row a click leaves the cursor on,
+     * so a second click cycles again.
+     *
+     * Re-entering rebuilds the list against the new filter rather than
+     * re-filtering here, so the entry path and the click path cannot drift.
+     * The eligible set is computed from a FRESH scan, not from
+     * availableModules: those are already filtered, and asking which lists
+     * intersect them would shrink the cycle every step until it could only
+     * reach All.
+     */
+    if (selected && selected.id === PICKER_FILTER_ID) {
+        componentSelectFilter = ModuleLists.nextFilter(
+            componentSelectFilter, pickerEligibleLists(scanModulesForType(comp.key)));
+        enterComponentSelect(selectedSlot, selectedChainComponent);
+        selectedModuleIndex = 0;
+        announce("List, " + (componentSelectFilter || "All"));
         return;
     }
 
@@ -10956,6 +12261,8 @@ function globalGridIoFor() {
             case "text_preview":       return bit(textPreviewGlobal);
             case "midi_indicator_enabled": return bit(midiIndicatorEnabled);
             case "param_view":         return String(paramViewGlobal === 1 ? 1 : 0);
+            case "stay_in_shadow":
+                return bit(typeof stay_in_shadow_get === "function" && stay_in_shadow_get());
 
             /* ---- audio. These four are the ONLY reads that cost IPC. */
             case "link_audio_routing":
@@ -10998,6 +12305,14 @@ function globalGridIoFor() {
                 return bit(typeof set_pages_get === "function" && set_pages_get());
             case "shadow_ui_trigger":
                 return String(typeof shadow_ui_trigger_get === "function" ? shadow_ui_trigger_get() : 2);
+            case "recall_quantize":
+                return String(recallQuantizeValue);
+            case "metronome_mode":
+                return String(metronomeMode);
+            case "metronome_level":
+                return String(metronomeLevel);
+            case "save_stems":
+                return String(saveStemsValue);
             case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
@@ -11037,6 +12352,9 @@ function globalGridIoFor() {
                 paramViewGlobal = on ? 1 : 0;
                 saveParamViewConfig();
                 announce(paramViewGlobal === 1 ? "Param View Knobs" : "Param View List");
+                return;
+            case "stay_in_shadow":
+                if (typeof stay_in_shadow_set === "function") stay_in_shadow_set(on ? 1 : 0);
                 return;
 
             /* ---- audio. The cache var is not a cache of the write; it is what
@@ -11113,6 +12431,18 @@ function globalGridIoFor() {
             /* ---- set pages / shortcuts / services */
             case "set_pages_enabled":
                 if (typeof set_pages_set === "function") set_pages_set(on ? 1 : 0);
+                return;
+            case "recall_quantize":
+                setRecallQuantize(parseInt(value, 10) || 0);
+                break;
+            case "metronome_mode":
+                setMetronome(parseInt(value, 10) || 0, metronomeLevel);
+                return;
+            case "metronome_level":
+                setMetronome(metronomeMode, Math.round(parseFloat(value)));
+                return;
+            case "save_stems":
+                setSaveStems(parseInt(value, 10) || 0);
                 return;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
@@ -15595,8 +16925,15 @@ function drawHierarchyEditor() {
         /* Draw preset browser UI */
         const centerY = 32;
 
-        /* Re-fetch preset count if zero (module may still be loading) */
-        if (hierEditorPresetCount === 0 && hierEditorLevel && hierEditorHierarchy && hierEditorHierarchy.levels) {
+        /* Re-resolve while EITHER the count or the name is still missing.
+         *
+         * It used to run only while the count was zero, so a name read that
+         * timed out once was cached as "" and never asked for again -- the
+         * browser sat on a blank name until the user left the level and came
+         * back. A read that did not answer must not latch, and the count is
+         * not the only read here that can fail to answer. */
+        if ((hierEditorPresetCount === 0 || !hierEditorPresetName)
+            && hierEditorLevel && hierEditorHierarchy && hierEditorHierarchy.levels) {
             const levelDef = hierEditorHierarchy.levels[hierEditorLevel];
             if (levelDef && levelDef.count_param) {
                 const retryPrefix = getComponentParamPrefix(hierEditorComponent);
@@ -15606,6 +16943,12 @@ function drawHierarchyEditor() {
                     hierEditorPresetCount = newCount;
                     const presetStr = getSlotParam(hierEditorSlot, `${retryPrefix}:${levelDef.list_param}`);
                     hierEditorPresetIndex = presetStr ? parseInt(presetStr) : 0;
+                }
+                /* Independently of the count: the name can be the half that
+                 * is missing, and a module that answers the count from one
+                 * table and the name from another will hand them over on
+                 * different frames. */
+                if (!hierEditorPresetName) {
                     const nameParam = levelDef.name_param || "preset_name";
                     hierEditorPresetName = getSlotParam(hierEditorSlot, `${retryPrefix}:${nameParam}`) || "";
                 }
@@ -15622,7 +16965,18 @@ function drawHierarchyEditor() {
              * transient state (e.g. "Loading... <name> <spinner>") that
              * updates without requiring another preset-change. Falls back to
              * the cached value while the IPC read settles. */
-            const freshPresetName = getSlotParam(hierEditorSlot, `${prefix}:preset_name`);
+            /* The LEVEL'S name_param, not the literal "preset_name".
+             *
+             * Hardcoding it meant this refresh asked for a key that only
+             * modules using the default name ever had. Everything else --
+             * JE-8086's patch_name / performance_name among them -- got an
+             * empty answer every frame and fell back to the value cached on
+             * entry, so the name could never change without leaving the
+             * level and coming back. */
+            const drawLevelDef = (hierEditorHierarchy && hierEditorHierarchy.levels)
+                ? hierEditorHierarchy.levels[hierEditorLevel] : null;
+            const drawNameParam = (drawLevelDef && drawLevelDef.name_param) || "preset_name";
+            const freshPresetName = getSlotParam(hierEditorSlot, `${prefix}:${drawNameParam}`);
             const presetNameForDraw = (freshPresetName && freshPresetName.length > 0)
                 ? freshPresetName : hierEditorPresetName;
             const name = truncateText(presetNameForDraw || "(unnamed)", 22);
@@ -16065,6 +17419,30 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem("Module", mod.name || mod.id || "Unknown");
             }
             break;
+        case VIEWS.MODULE_LISTS: {
+            moduleListsEnsureLoaded();
+            const rows = moduleListsRows();
+            moduleListsMemberIndex = Math.max(0, Math.min(rows.length - 1, moduleListsMemberIndex + delta));
+            announceMenuItem("List", moduleListsRowLabel(moduleListsMemberIndex));
+            break;
+        }
+        case VIEWS.MODULE_LISTS_EDIT: {
+            moduleListsEnsureLoaded();
+            const rows = moduleListsEditRows();
+            moduleListsEditIndex = Math.max(0, Math.min(rows.length - 1, moduleListsEditIndex + delta));
+            if (rows[moduleListsEditIndex]) announceMenuItem("List", moduleListsEditRowLabel());
+            break;
+        }
+        case VIEWS.MODULE_LISTS_ACTIONS: {
+            /* The confirm owns the jog while it is up — it is drawn LAST, so
+             * it is fed FIRST. */
+            if (moduleListsConfirmDelete) break;
+            const rows = moduleListsActionRows();
+            moduleListsActionIndex = Math.max(0, Math.min(rows.length - 1, moduleListsActionIndex + delta));
+            const r = rows[moduleListsActionIndex];
+            if (r) announceMenuItem(moduleListsTarget, r.name);
+            break;
+        }
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
                 namePreviewIndex = namePreviewIndex === 0 ? 1 : 0;
@@ -16412,7 +17790,11 @@ function handleSelect() {
                     helpDetailScrollState = createScrollableText({
                         lines: item.lines,
                         actionLabel: "Back",
-                        visibleLines: 4,
+                        /* ASKED, not counted. This was a hard-coded 4 against a
+                         * rect that holds five rows of the shared list pitch —
+                         * a line of help thrown away per screen. drawHelpDetail
+                         * draws into exactly this rect. */
+                        visibleLines: visibleLinesFor(LIST_TOP_Y, FOOTER_RULE_Y),
                         onActionSelected: (label) => announce(label)
                     });
                     needsRedraw = true;
@@ -16571,9 +17953,86 @@ function handleSelect() {
             /* Apply selected module to the component */
             if (availableModules.length > 0) {
                 const selMod = availableModules[selectedModuleIndex];
-                announce(`Loading ${selMod.name || selMod.id || "module"}`);
+                /* The filter row loads nothing — it cycles in place, and
+                 * applyComponentSelection announces the list it landed on.
+                 * "Loading List" would name an action that is not happening. */
+                if (!selMod || selMod.id !== PICKER_FILTER_ID) {
+                    announce(`Loading ${selMod.name || selMod.id || "module"}`);
+                }
             }
             applyComponentSelection();
+            break;
+        case VIEWS.MODULE_LISTS: {
+            moduleListsEnsureLoaded();
+            moduleListsClampMemberIndex();
+            const rows = moduleListsRows();
+            const row = rows[moduleListsMemberIndex];
+            if (!row) break;
+            if (row.kind === "toggle") {
+                const on = ModuleLists.toggleMembership(moduleListsState, row.name, moduleListsModuleId);
+                /* THREE answers, not two: null is "nothing was toggled" (the
+                 * list is gone, or we are filing a module with no id), and it
+                 * is neither an add nor a remove. Announcing "removed" for a
+                 * toggle that touched nothing reports a result that did not
+                 * happen, and writing the file would persist the non-event. */
+                if (on === null) {
+                    announce("List unavailable");
+                } else {
+                    /* Write on every change: a screen of checkboxes with a
+                     * Save row is a toggle the user can lose.
+                     *
+                     * And BRANCH on the write. moduleListsSave() declines on a
+                     * corrupt file and can fail on the host write, and the old
+                     * code discarded that boolean and announced a persisted
+                     * change either way -- so with an unreadable file the box
+                     * ticked, the voice said "added", and the next entry
+                     * showed it unticked, with the only evidence in a debug
+                     * log. Same defect class as move_midi_internal_send
+                     * returning true on a discarded write. */
+                    const saved = moduleListsSave();
+                    announce(`${row.name}, ${on ? "added" : "removed"}` +
+                             (saved ? "" : ", save failed"));
+                }
+            } else if (row.kind === "new") {
+                moduleListsOpenNameEntry(null);
+            } else {
+                moduleListsEditIndex = 0;
+                setView(VIEWS.MODULE_LISTS_EDIT);
+                /* lists[0] is Favorites BY CONSTRUCTION -- loadLists moves it
+                 * there or inserts it -- so the fallback is unreachable. It is
+                 * here because the alternative when it is not is interpolating
+                 * the string "undefined" into speech. */
+                announce("Edit Lists, " +
+                         ((moduleListsState.lists[0] || {}).name || ModuleLists.FAVORITES));
+            }
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.MODULE_LISTS_EDIT: {
+            moduleListsEnsureLoaded();
+            moduleListsClampEditIndex();
+            const rows = moduleListsEditRows();
+            const r = rows[moduleListsEditIndex];
+            if (!r) break;
+            moduleListsTarget = r.name;
+            moduleListsActionIndex = 0;
+            /* Never inherit a latch across an entry: arriving on a fresh
+             * list with "yes, delete" already armed would delete the NEXT
+             * list on the next click. */
+            moduleListsConfirmDelete = false;
+            setView(VIEWS.MODULE_LISTS_ACTIONS);
+            /* moduleListsActionRows() always returns at least Clear, so this
+             * guard is unreachable -- the same shape and the same reason as
+             * the lists[0] one above. Its fallback is the word it would have
+             * found rather than "", because "" speaks a dangling "Live, " and
+             * teaches that the screen has no rows. */
+            announce(`${r.name}, ${(moduleListsActionRows()[0] || {}).name || "Clear"}`);
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.MODULE_LISTS_ACTIONS:
+            moduleListsEnsureLoaded();
+            moduleListsSelectAction();
             break;
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerResultSelect();
@@ -17165,7 +18624,11 @@ function handleSelect() {
                     helpDetailScrollState = createScrollableText({
                         lines: item.lines,
                         actionLabel: "Back",
-                        visibleLines: 4,
+                        /* ASKED, not counted. This was a hard-coded 4 against a
+                         * rect that holds five rows of the shared list pitch —
+                         * a line of help thrown away per screen. drawHelpDetail
+                         * draws into exactly this rect. */
+                        visibleLines: visibleLinesFor(LIST_TOP_Y, FOOTER_RULE_Y),
                         onActionSelected: (label) => announce(label)
                     });
                     needsRedraw = true;
@@ -17284,6 +18747,20 @@ function handleBack() {
             setView(VIEWS.CHAIN_EDIT);
             announce("Chain Editor");
             needsRedraw = true;
+            break;
+        case VIEWS.MODULE_LISTS:
+            exitModuleLists();
+            break;
+        case VIEWS.MODULE_LISTS_EDIT:
+            /* One level per press, and the cursor is re-resolved on the way:
+             * a delete on this screen removed a row from the one below. */
+            moduleListsClampMemberIndex();
+            setView(VIEWS.MODULE_LISTS);
+            announce("Add to List, " + moduleListsRowLabel(moduleListsMemberIndex));
+            needsRedraw = true;
+            break;
+        case VIEWS.MODULE_LISTS_ACTIONS:
+            moduleListsActionsBack();
             break;
         case VIEWS.STORE_PICKER_RESULT:
             handleStorePickerBack();
@@ -18161,9 +19638,90 @@ function drawDynamicParamPicker() {
 
 /* ========== Help Viewer Draw Functions ========== */
 
+/*
+ * WHERE BACK ACTUALLY GOES, from wherever you are in the viewer.
+ *
+ * Reported from hardware: the footer read "Back: Braids" on a screen whose Back
+ * went to the "Controls" topic list, and "Back: Settings" on one whose Back went
+ * to the Braids module. Both draws asked the same question — "what is the frame
+ * BELOW the top one?" — and neither screen's Back does that:
+ *
+ *   detail            pops the detail, landing on the frame it was opened FROM
+ *                     -> that frame's own title, not its parent's
+ *   list, depth > 1   pops a frame -> the parent's title
+ *   list, depth 1     LEAVES the viewer -> wherever the session came from,
+ *                     which is the module for a "Module Help" session and the
+ *                     settings grid for a [Help...] one
+ *
+ * A footer that names a screen you do not arrive on is worse than no footer:
+ * it is the one thing on the display claiming to know the way out.
+ */
+function helpBackTarget(inDetail) {
+    const depth = helpNavStack.length;
+    if (depth === 0) return "Settings";
+    /* WHICH FRAME Back lands on. A detail pops the detail and lands on the frame
+     * it was opened FROM; a list pops itself and lands on its parent. Below 0 is
+     * "out of the viewer entirely". Deciding the frame first and labelling it
+     * second is what stopped the two screens giving different answers. */
+    const targetIdx = inDetail ? depth - 1 : depth - 2;
+
+    if (targetIdx < 0) {
+        /* The next Back LEAVES. maybeReturnToComponentHelp is what will catch
+         * that arrival, and its pending return is the only thing that knows a
+         * component grid is underneath — the same test it reconciles on, asked
+         * here so the two cannot disagree. */
+        return componentHelpReturnSlot >= 0 ? helpNavStack[0].title : "Settings";
+    }
+
+    /*
+     * "List", not the module name, for the first frame of a Module Help session.
+     *
+     * That frame is TITLED with the module — it is the module's own topic list —
+     * and so is the exit one step above it, so the module name meant two
+     * different destinations on two adjacent screens: at the top "Back: Braids"
+     * leaves for the Braids knob grid, one level in "Back: Braids" returns to the
+     * Braids topic list, and the header said "Braids" on the first of those
+     * anyway. Reported from hardware: "the top level is the module name, so it's
+     * confusing it stays the same."
+     *
+     * So the name is reserved for the one Back that really does go to the
+     * module, and the return INTO the list says so. Only for a component
+     * session: a [Help...] session's first frame is titled "Help", which
+     * collides with nothing and is a truer label than "List" would be.
+     */
+    if (targetIdx === 0 && componentHelpReturnSlot >= 0) return "List";
+    return helpNavStack[targetIdx].title;
+}
+
+/*
+ * The header for a help frame.
+ *
+ * The first frame of a Module Help session is the module's topic LIST, and it
+ * was headed with the bare module name — the same word the knob grid it was
+ * opened from already wears, so the screen did not say what it was, only what
+ * it was about. "HELP: BRAIDS" says both. Reported from hardware.
+ *
+ * Only that frame: a nested frame is headed with its own topic ("CONTROLS"),
+ * which is already unambiguous, and a [Help...] session's first frame is
+ * literally titled "Help".
+ *
+ * NOT truncated to 18 characters on the way in, which is what this used to do.
+ * The header face is PROPORTIONAL and drawHeader already fits it to the bar in
+ * PIXELS (fitText/FONT4_MEASURE), measuring the right side first and giving the
+ * left the remainder — so a char cap is a second, blinder truncation in front of
+ * a good one. It cut "Help: Junologue Chorus" to "Help: Junologue Ch" for room
+ * that was there.
+ */
+function helpHeaderTitle(frame) {
+    if (helpNavStack.length === 1 && componentHelpReturnSlot >= 0) {
+        return "Help: " + frame.title;
+    }
+    return frame.title;
+}
+
 function drawHelpList() {
     const frame = helpNavStack[helpNavStack.length - 1];
-    drawHeader(truncateText(frame.title, 18));
+    drawHeader(helpHeaderTitle(frame));
 
     drawMenuList({
         items: frame.items,
@@ -18174,16 +19732,15 @@ function drawHelpList() {
         valueAlignRight: true
     });
 
-    const backTarget = helpNavStack.length > 1
-        ? helpNavStack[helpNavStack.length - 2].title
-        : "Settings";
-    drawFooter("Back: " + backTarget);
+    drawFooter("Back: " + helpBackTarget(false));
 }
 
 function drawHelpDetail() {
     const frame = helpNavStack[helpNavStack.length - 1];
     const item = frame.items[frame.selectedIndex];
-    drawHeader(truncateText(item.title, 18));
+    /* The topic's own name, fitted in pixels by drawHeader — see
+     * helpHeaderTitle on why the 18-char cap that was here is gone. */
+    drawHeader(item.title);
 
     if (helpDetailScrollState) {
         drawScrollableText({
@@ -18194,10 +19751,7 @@ function drawHelpDetail() {
         });
     }
 
-    const backTarget = helpNavStack.length > 1
-        ? helpNavStack[helpNavStack.length - 2].title
-        : "Settings";
-    drawFooter("Back: " + backTarget);
+    drawFooter("Back: " + helpBackTarget(true));
 }
 
 /* ========== End Master Preset Draw Functions ========== */
@@ -19474,6 +21028,23 @@ globalThis.init = function() {
     }
     saveSlotsToConfig(slots);
 
+    /* Seed the snapshot if the active set has none.
+     *
+     * CONDITIONAL here, unlike the forced re-seed on set load. A snapshot the
+     * user took earlier this session must survive a shadow_ui restart — that
+     * is the entire reason it is on disk rather than in RAM, and shadow_ui
+     * restarts for ordinary reasons (overtake exit, a set change).
+     *
+     * It exists at all because the forced seed only fires on a set LOAD. A
+     * device that upgrades and boots straight into the set it was already in
+     * never sees one, so without this the first Shift+Delete would find an
+     * empty directory and do nothing — silently, which is the failure mode
+     * this whole feature is written to avoid. */
+    try { snapshotSeed(false); } catch (e) { debugLog("snapshot seed failed: " + e); }
+    try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
+    try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
+    try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
+
     /* Analytics: emit app_launched + census + diff against previous snapshot.
      * app_launched must emit here (not in shadow_ui.c main()) because
      * analytics_enabled() returns false until the opt-in prompt resolves,
@@ -19599,6 +21170,9 @@ function dispatchCoRunDraw() {
         case VIEWS.PRESETS:              drawPresets(); break;
         case VIEWS.PRESET_DETAIL:        drawPresetDetail(); break;
         case VIEWS.COMPONENT_SELECT:     drawComponentSelect(); break;
+        case VIEWS.MODULE_LISTS:         drawModuleLists(); break;
+        case VIEWS.MODULE_LISTS_EDIT:    drawModuleListsEdit(); break;
+        case VIEWS.MODULE_LISTS_ACTIONS: drawModuleListsActions(); break;
         case VIEWS.CHAIN_SETTINGS:       drawChainSettings(); break;
         case VIEWS.SLOT_SETTINGS:        drawSlotSettings(); break;
         case VIEWS.COMPONENT_EDIT:
@@ -19804,6 +21378,7 @@ globalThis.tick = function() {
          * `synth_module` the last session logged and attributed elsewhere.
          * Predicted, not yet measured — this span is the test. */
         const _h = (typeof host_trace_begin === 'function') ? host_trace_begin("js.feedback_guard") : 0;
+        try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
     }
@@ -19929,6 +21504,7 @@ globalThis.tick = function() {
                 }
             }
         }
+        snapshotServiceFlags(flags);
         if (flags & SHADOW_UI_FLAG_SAVE_STATE) {
             debugLog("SAVE_STATE flag detected — shutdown imminent, saving all state");
             autosaveAllSlots();
@@ -20182,6 +21758,21 @@ globalThis.tick = function() {
             saveSlotsToConfig(slots);
             needsRedraw = true;
 
+            /* 8b. Re-seed the snapshot from the set we just loaded.
+             *
+             * FORCED, not conditional. This is what makes the snapshot mean
+             * "how this set loaded" and never anything older: without the
+             * overwrite, a snapshot taken in the previous set would survive
+             * into this one, and Shift+Delete would restore a rig that has
+             * nothing to do with what is on screen.
+             *
+             * It runs HERE, after step 8 has restored the slots and refreshed
+             * their names — the files in activeSlotStateDir are the set's own
+             * state at this point, and the periodic autosave has not yet had a
+             * chance to overwrite them with anything the user has since
+             * touched. */
+            snapshotSeed(true);
+
             /* 9. Show overlay notification (~2 seconds) */
             if (setName) {
                 showOverlay("Set Loaded", setName, 60);
@@ -20206,6 +21797,35 @@ globalThis.tick = function() {
                                 debugLog("SET_CHANGED: requested Link tempo override " + bpm.toFixed(2) + " BPM");
                             }
                         }
+
+                        /*
+                         * Bar length for the metronome's downbeat accent.
+                         *
+                         * Parsed from the SAME songJson the tempo override
+                         * above already read — a second host_read_file for the
+                         * same file on the same event would be two reads that
+                         * can disagree.
+                         *
+                         * This is the shadow UI thread (SCHED_OTHER), which is
+                         * where every file op on SET_CHANGED belongs:
+                         * shadow_handle_set_loaded runs on the audio thread and
+                         * deliberately does no I/O at all.
+                         *
+                         * The [^}]*? keeps the match INSIDE the timeSignature
+                         * object, so an unrelated top-level "upper" cannot be
+                         * picked up. Unknown pushes 0 and the shim clamps to 4.
+                         */
+                        const ts = /"timeSignature"\s*:\s*\{[^}]*?"upper"\s*:\s*([0-9]+)/.exec(songJson);
+                        let upper = 0;
+                        if (ts && ts[1]) {
+                            const n = parseInt(ts[1], 10);
+                            if (n >= 1 && n <= 32) upper = n;
+                        }
+                        if (typeof shadow_metronome_beats_set === "function") {
+                            shadow_metronome_beats_set(upper);
+                        }
+                        debugLog("SET_CHANGED: metronome beats_per_bar = " +
+                                 (upper || "unknown (shim clamps to 4)"));
                     }
                 } catch (e) {
                     debugLog("SET_CHANGED: tempo-override write failed: " + e);
@@ -20479,6 +22099,11 @@ globalThis.tick = function() {
         }
     }
 
+    /* Re-offer a name the keyboard rejected. Serviced HERE and not from
+     * onConfirm because text_entry.mjs runs closeTextEntry() unconditionally
+     * after the callback returns -- see moduleListsPendingName. */
+    moduleListsTickPendingName();
+
     /* Update text entry state */
     if (isTextEntryActive()) {
         if (tickTextEntry()) {
@@ -20540,7 +22165,9 @@ globalThis.tick = function() {
     redrawCounter++;
     /* Force redraw every frame when overlay is active (for VU meter + flash) */
     const overlayActive = overlayState && overlayState.type !== OVERLAY_NONE;
-    if (!needsRedraw && !overlayActive && (redrawCounter % REDRAW_INTERVAL !== 0)) {
+    if (!needsRedraw && !overlayActive && !snapshotToastActive() &&
+        !snapshotQueuedPending &&
+        (redrawCounter % REDRAW_INTERVAL !== 0)) {
         return;
     }
     needsRedraw = false;
@@ -20553,13 +22180,44 @@ globalThis.tick = function() {
         return;
     }
 
+    /*
+     * Snapshot / recall toast, MOVE-NATIVE case only.
+     *
+     * This branch clears the screen and returns, which is right when Move's
+     * own screen is up: the shadow display is a scratch surface, and the shim
+     * blits only the toast's rect onto Move's picture.
+     *
+     * It is exactly WRONG when the shadow UI is displayed, because then the
+     * shadow display IS the screen. Reported from hardware as "it didn't
+     * overlay, it blanked the screen behind it" — clear_screen() wiped the
+     * knob grid and the early return meant nothing redrew it. The shim's own
+     * toasts get away with the same shape because they are only ever raised
+     * over Move; this one is raised from a gesture that works in both modes.
+     *
+     * The display_mode == 1 case is painted after the view switch instead,
+     * with the other on-top overlays. See drawSnapshotToastOnTop.
+     */
+    if (snapshotToastActive() && shadowDisplayHidden()) {
+        snapshotToastFrames--;
+        clear_screen();
+        const g = drawSnapshotToast(snapshotToastLines);
+        if (g.clipped > 0) {
+            debugLog("snapshot toast: " + g.clipped + " line(s) wider than the box");
+        }
+        if (typeof shadow_set_display_overlay === "function") {
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
+        }
+        if (snapshotToastFrames <= 0) snapshotToastLines = null;
+        return;
+    }
+
     /* Skipback toast - render to shadow display, request rect overlay on native */
     if (overlayState && overlayState.type === OVERLAY_SKIPBACK &&
         overlayState.skipbackActive && overlayState.skipbackOverlayTimeout > 0) {
         clear_screen();
-        drawSkipbackToast();
+        const g = drawSkipbackToast();
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1, 9, 22, 110, 20);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -20568,11 +22226,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SET_PAGE &&
         overlayState.setPageActive && overlayState.setPageTimeout > 0) {
         clear_screen();
-        drawSetPageToast(overlayState);
+        const g = drawSetPageToast(overlayState);
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1,
-                SET_PAGE_BOX_X, SET_PAGE_BOX_Y,
-                SET_PAGE_BOX_W, SET_PAGE_BOX_H);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -20581,11 +22237,9 @@ globalThis.tick = function() {
     if (overlayState && overlayState.type === OVERLAY_SHIFT_KNOB &&
         overlayState.shiftKnobActive && overlayState.shiftKnobTimeout > 0) {
         clear_screen();
-        drawShiftKnobOverlay(overlayState);
+        const g = drawShiftKnobOverlay(overlayState);
         if (typeof shadow_set_display_overlay === "function") {
-            shadow_set_display_overlay(1,
-                SHIFT_KNOB_BOX_X, SHIFT_KNOB_BOX_Y,
-                SHIFT_KNOB_BOX_W, SHIFT_KNOB_BOX_H);
+            shadow_set_display_overlay(1, g.blit.x, g.blit.y, g.blit.w, g.blit.h);
         }
         return;
     }
@@ -20647,6 +22301,17 @@ globalThis.tick = function() {
     /* ...and the Global Settings half. VIEWS.GLOBAL_SETTINGS is nothing but the
      * help viewer's host now, so "the surface is idle again" means the help
      * stack has emptied. */
+    /* Two reconciles share that host view, and they are told apart by WHICH
+     * return is pending, not by anything on screen: a help session opened from
+     * [Help...] on the Global Settings grid goes back there, one opened from a
+     * component's "Module" page goes back to that component's grid. Only one
+     * can ever be pending at a time — opening either exits the grid the other
+     * would return to — and the first to fire moves `view` off
+     * GLOBAL_SETTINGS, so the second line below cannot double-fire behind it.
+     * Two flat lines rather than one nested branch: the poll site is pinned
+     * line-shaped by tests/host/test_grid_action_reconcile.sh, which is what
+     * stops one of these being dropped while the others are edited. */
+    if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToComponentHelp();
     if (view === VIEWS.GLOBAL_SETTINGS) maybeReturnToGlobalGrid();
     /* ...and the component-actions half. These hand-offs are navigations, not
      * overlays, so "idle again" is arrival back at VIEWS.CHAIN_EDIT rather than
@@ -20694,6 +22359,15 @@ globalThis.tick = function() {
             break;
         case VIEWS.COMPONENT_SELECT:
             drawComponentSelect();
+            break;
+        case VIEWS.MODULE_LISTS:
+            drawModuleLists();
+            break;
+        case VIEWS.MODULE_LISTS_EDIT:
+            drawModuleListsEdit();
+            break;
+        case VIEWS.MODULE_LISTS_ACTIONS:
+            drawModuleListsActions();
             break;
         case VIEWS.CHAIN_SETTINGS:
             drawChainSettings();
@@ -20936,6 +22610,14 @@ globalThis.tick = function() {
 
         /* Draw overlay on top of main view (uses shared overlay system) */
         drawOverlay();
+
+        /* The snapshot toast, when the shadow UI is the screen. Its
+         * Move-native twin sits before the view switch and clears instead —
+         * see the comment there for why the two cannot be one branch. */
+        drawSnapshotToastOnTop();
+        /* ...and the armed-recall mark, after it: the toast is transient and
+         * the mark outlives it, so the mark must not be painted under it. */
+        drawSnapshotPendingMark();
     }
 
     } catch (e) {

@@ -206,12 +206,19 @@ static JSValue js_shadow_set_focused_slot(JSContext *ctx, JSValueConst this_val,
 }
 
 /* shadow_get_ui_flags() -> int
- * Returns the UI flags from shared memory.
+ * Returns the UI flags from shared memory as ONE flat word.
+ *
+ * The flags live in two fields — `ui_flags` (bits 0-7) and `ui_flags_ext`
+ * (bits 8+) — because `ui_flags` ran out of bits and cannot be widened
+ * without moving every field behind it. See the note in shadow_constants.h.
+ * JS is shown a single space so a caller never has to know which byte a flag
+ * sits in; shadow_clear_ui_flags() splits the mask back apart.
  */
 static JSValue js_shadow_get_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val; (void)argc; (void)argv;
     if (!shadow_control) return JS_NewInt32(ctx, 0);
-    return JS_NewInt32(ctx, shadow_control->ui_flags);
+    return JS_NewInt32(ctx, (int)shadow_control->ui_flags |
+                            ((int)shadow_control->ui_flags_ext << SHADOW_UI_FLAG_EXT_SHIFT));
 }
 
 /* shadow_get_open_tool_cmd() -> int (0=none, 1=open_tool; auto-clears) */
@@ -223,15 +230,114 @@ static JSValue js_shadow_get_open_tool_cmd(JSContext *ctx, JSValueConst this_val
     return JS_NewInt32(ctx, cmd);
 }
 
+static void features_json_set(const char *key, const char *value_json);
+
+/* shadow_recall_quantize_set(v) -> void   (0=off, 1=beat, 2=bar, 3=two bars)
+ *
+ * Writes shadow_control_t.recall_quantize, which the shim reads when
+ * Shift+Delete is pressed.
+ */
+static JSValue js_shadow_recall_quantize_set(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    if (v < 0) v = 0;
+    if (v > 3) v = 3;
+    shadow_control->recall_quantize = (uint8_t)v;
+
+    /* Persisted here rather than from JS, same as shadow_ui_trigger_set: the
+     * register lives in SHM and does not survive a reboot, so the file is the
+     * only copy that does. JS reads it back at startup and pushes it down. */
+    static const char *NAMES[4] = { "off", "beat", "bar", "2bars" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[v]);
+    features_json_set("recall_quantize", quoted);
+    return JS_UNDEFINED;
+}
+
+/* shadow_metronome_set(mode, level) -> void   (mode 0=off, 1=follow, 2=on)
+ *
+ * Writes shadow_control_t.metronome_mode / metronome_level, which the shim
+ * reads on the SPI callback, and persists both to features.json — the register
+ * lives in SHM and does not survive a reboot, exactly as for recall_quantize.
+ */
+static JSValue js_shadow_metronome_set(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 2) return JS_UNDEFINED;
+    int mode = 0, level = 50;
+    if (JS_ToInt32(ctx, &mode, argv[0])) return JS_UNDEFINED;
+    if (JS_ToInt32(ctx, &level, argv[1])) return JS_UNDEFINED;
+    if (mode < 0) mode = 0;
+    if (mode > 2) mode = 2;
+    if (level < 0) level = 0;
+    if (level > 100) level = 100;
+    shadow_control->metronome_mode = (uint8_t)mode;
+    shadow_control->metronome_level = (uint8_t)level;
+
+    static const char *NAMES[3] = { "off", "follow", "on" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[mode]);
+    features_json_set("metronome_mode", quoted);
+    snprintf(quoted, sizeof(quoted), "%d", level);
+    features_json_set("metronome_level", quoted);
+    return JS_UNDEFINED;
+}
+
+/* shadow_save_stems_set(v) -> void   (0 = Master, 1 = Stems, 2 = Both)
+ *
+ * Writes shadow_control_t.save_stems, which the shim mirrors into the sampler
+ * every frame, and persists to features.json — SHM does not survive a reboot,
+ * exactly as for recall_quantize and metronome_mode.
+ */
+static JSValue js_shadow_save_stems_set(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int v = 0;
+    if (JS_ToInt32(ctx, &v, argv[0])) return JS_UNDEFINED;
+    if (v < 0) v = 0;
+    if (v > 2) v = 2;
+    shadow_control->save_stems = (uint8_t)v;
+
+    static const char *NAMES[3] = { "master", "stems", "both" };
+    char quoted[16];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", NAMES[v]);
+    features_json_set("save_stems", quoted);
+    return JS_UNDEFINED;
+}
+
+/* shadow_metronome_beats_set(n) -> void
+ *
+ * Bar length for the downbeat accent, from the set's time signature. NOT
+ * persisted: it belongs to the set, and the shadow UI re-reads it on every
+ * SET_CHANGED. 0 means unknown and the shim clamps to 4.
+ */
+static JSValue js_shadow_metronome_beats_set(JSContext *ctx, JSValueConst this_val,
+                                             int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (!shadow_control || argc < 1) return JS_UNDEFINED;
+    int n = 0;
+    if (JS_ToInt32(ctx, &n, argv[0])) return JS_UNDEFINED;
+    if (n < 0) n = 0;
+    if (n > 32) n = 32;
+    shadow_control->metronome_beats_per_bar = (uint8_t)n;
+    return JS_UNDEFINED;
+}
+
 /* shadow_clear_ui_flags(mask) -> void
- * Clears the specified flags from ui_flags.
+ * Clears the specified flags, splitting the flat mask back across the two
+ * fields it came from in js_shadow_get_ui_flags.
  */
 static JSValue js_shadow_clear_ui_flags(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
     (void)this_val;
     if (!shadow_control || argc < 1) return JS_UNDEFINED;
     int mask = 0;
     if (JS_ToInt32(ctx, &mask, argv[0])) return JS_UNDEFINED;
-    shadow_control->ui_flags &= ~(uint8_t)mask;
+    shadow_control->ui_flags &= ~(uint8_t)(mask & 0xFF);
+    shadow_control->ui_flags_ext &= ~(uint16_t)((unsigned)mask >> SHADOW_UI_FLAG_EXT_SHIFT);
     return JS_UNDEFINED;
 }
 
@@ -2167,6 +2273,47 @@ static JSValue js_midi_indicator_get(JSContext *ctx, JSValueConst this_val,
     return JS_NewBool(ctx, shadow_control->midi_indicator_enabled != 0);
 }
 
+/* stay_in_shadow_set(enabled) - Write to shared memory + persist to features.json.
+ * The shim reads the SHM byte from the SPI callback path, so the toggle takes
+ * effect on the next Track tap without any file I/O on the realtime path. */
+static JSValue js_stay_in_shadow_set(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->stay_in_shadow = enabled ? 1 : 0;
+
+    /* Persist to features.json (off the SPI callback path - safe). */
+    features_json_set("stay_in_shadow", enabled ? "true" : "false");
+
+    return JS_UNDEFINED;
+}
+
+/* stay_in_shadow_set_shm(enabled) - Write to shared memory ONLY (no file I/O).
+ * Safe to call from tick() for web->device config sync. */
+static JSValue js_stay_in_shadow_set_shm(JSContext *ctx, JSValueConst this_val,
+                                         int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_UNDEFINED;
+    int enabled = 0;
+    JS_ToInt32(ctx, &enabled, argv[0]);
+    shadow_control->stay_in_shadow = enabled ? 1 : 0;
+    return JS_UNDEFINED;
+}
+
+/* stay_in_shadow_get() -> bool - Read from shared memory.
+ * Unmapped answers the DEFAULT (on), the way shadow_ui_trigger_get answers 2 —
+ * a fallback that reports the opposite of the default draws the switch wrong
+ * for the frames before the segment is there. */
+static JSValue js_stay_in_shadow_get(JSContext *ctx, JSValueConst this_val,
+                                     int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewBool(ctx, 1);
+    return JS_NewBool(ctx, shadow_control->stay_in_shadow != 0);
+}
+
 /* shadow_ui_trigger value names. Index matches the uint8 stored in shadow_control. */
 static const char *SHADOW_UI_TRIGGER_NAMES[3] = {"long_press", "shift_vol", "both"};
 
@@ -2824,6 +2971,10 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_request_patch", JS_NewCFunction(ctx, js_shadow_request_patch, "shadow_request_patch", 2));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_focused_slot", JS_NewCFunction(ctx, js_shadow_set_focused_slot, "shadow_set_focused_slot", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_ui_flags", JS_NewCFunction(ctx, js_shadow_get_ui_flags, "shadow_get_ui_flags", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_recall_quantize_set", JS_NewCFunction(ctx, js_shadow_recall_quantize_set, "shadow_recall_quantize_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_set", JS_NewCFunction(ctx, js_shadow_metronome_set, "shadow_metronome_set", 2));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_save_stems_set", JS_NewCFunction(ctx, js_shadow_save_stems_set, "shadow_save_stems_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_metronome_beats_set", JS_NewCFunction(ctx, js_shadow_metronome_beats_set, "shadow_metronome_beats_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_clear_ui_flags", JS_NewCFunction(ctx, js_shadow_clear_ui_flags, "shadow_clear_ui_flags", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_inbound_pad_midi_active", JS_NewCFunction(ctx, js_shadow_inbound_pad_midi_active, "shadow_inbound_pad_midi_active", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_overtake_move_inject_active", JS_NewCFunction(ctx, js_shadow_overtake_move_inject_active, "shadow_overtake_move_inject_active", 0));
@@ -2972,6 +3123,9 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "midi_indicator_get", JS_NewCFunction(ctx, js_midi_indicator_get, "midi_indicator_get", 0));
 
     /* Register long-press shadow shortcut functions */
+    JS_SetPropertyStr(ctx, global_obj, "stay_in_shadow_set", JS_NewCFunction(ctx, js_stay_in_shadow_set, "stay_in_shadow_set", 1));
+    JS_SetPropertyStr(ctx, global_obj, "stay_in_shadow_get", JS_NewCFunction(ctx, js_stay_in_shadow_get, "stay_in_shadow_get", 0));
+    JS_SetPropertyStr(ctx, global_obj, "stay_in_shadow_set_shm", JS_NewCFunction(ctx, js_stay_in_shadow_set_shm, "stay_in_shadow_set_shm", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set", JS_NewCFunction(ctx, js_shadow_ui_trigger_set, "shadow_ui_trigger_set", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_get", JS_NewCFunction(ctx, js_shadow_ui_trigger_get, "shadow_ui_trigger_get", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_ui_trigger_set_shm", JS_NewCFunction(ctx, js_shadow_ui_trigger_set_shm, "shadow_ui_trigger_set_shm", 1));

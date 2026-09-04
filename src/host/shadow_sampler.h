@@ -87,9 +87,59 @@ typedef struct {
 #define SAMPLER_RING_BUFFER_SIZE (SAMPLER_RING_BUFFER_SAMPLES * SAMPLER_NUM_CHANNELS * sizeof(int16_t))
 #define SAMPLER_RECORDINGS_DIR "/data/UserData/UserLibrary/Samples/Schwung/Resampler"
 
+/* ---------------------------------------------------------------- stems ---
+ *
+ * A STEM IS A SLOT, and under Move->Schwung that is not a simplification --
+ * the shim builds each slot as `move_track[s] + synth[s]` and then runs the
+ * slot FX chain on the SUM (schwung_shim.c, the rebuild_from_la branch). Move's
+ * track and Schwung's synth are inseparable after that point, and splitting
+ * them before it would hand back stems without their FX. So the four slot
+ * stems ARE the four tracks, and under Move->Schwung they sum to the master
+ * exactly: the reconstruction is composited from those four Link Audio
+ * channels and nothing else. (Which is also why Move's metronome is missing
+ * from it -- see shadow_metronome.h. Nothing else is in there either.)
+ *
+ * The fifth stem is MOVE, and it exists for the case the other four cannot
+ * cover. With Link Audio routing OFF there is no four-way split at all: Move's
+ * audio arrives as one mailbox mix, and the slots carry only Schwung's own
+ * synths. Without a Move stem the feature would quietly record four
+ * synth-only files and drop the rest of the music on the floor. It is empty
+ * under Move->Schwung, by construction, for the same reason the slot stems
+ * are complete there.
+ *
+ * Stems are PRE-MASTER-FX and pre-master-volume. Master FX processes the
+ * mixed bus, so there is no per-stem version of it to capture; a stem sum will
+ * differ from the master file by exactly whatever the Master FX chain does.
+ *
+ * Every stem file is opened eagerly and DELETED AT FINALIZE if it never saw a
+ * non-zero sample, so an unloaded slot leaves no file. Opening them lazily on
+ * first audio was the obvious alternative and is wrong: the file would then
+ * start at the first sound rather than at t=0, and the stems would no longer
+ * line up with each other or with the master.
+ */
+#define SAMPLER_STEM_COUNT 5
+#define SAMPLER_STEM_MOVE  4   /* index of the Move stem; 0-3 are the slots */
+
+/* File-name suffixes, parallel to the stem indices. */
+extern const char *const sampler_stem_names[SAMPLER_STEM_COUNT];
+
 #define SKIPBACK_DEFAULT_SECONDS 30
 #define SKIPBACK_MAX_SECONDS 300
 #define SKIPBACK_DIR "/data/UserData/UserLibrary/Samples/Schwung/Skipback"
+/*
+ * Stem rolling buffers are capped well below SKIPBACK_MAX_SECONDS.
+ *
+ * The master buffer is one stereo ring of up to 5 minutes (53 MB). Five of
+ * those is ~265 MB, which is not a budget this device has to spend on a
+ * feature that is off by default. 60 s x 5 is 53 MB -- the same as one master
+ * buffer at its maximum -- and it is the length that actually gets used: the
+ * default skipback length is 30 s and both fit under the cap untouched.
+ *
+ * When the master is longer than this, the stems are a SUFFIX of it. Both end
+ * at the same instant (the save), so the stem files line up with the tail of
+ * the master rather than drifting against it.
+ */
+#define SKIPBACK_STEM_MAX_SECONDS 60
 #define SKIPBACK_OVERLAY_FRAMES 171
 
 /* ============================================================================
@@ -115,6 +165,10 @@ extern const int sampler_duration_options[];
 extern int sampler_duration_index;
 
 extern int sampler_clock_count;
+/* Free-running MIDI clock pulses (24 PPQN) since the last MIDI Start. Unlike
+ * sampler_clock_count, advances whatever the sampler is doing — see the
+ * definition. */
+extern int shadow_transport_pulses;
 extern int sampler_target_pulses;
 extern int sampler_bars_completed;
 extern int sampler_fallback_blocks;
@@ -224,6 +278,39 @@ int skipback_get_seconds(void);
 
 /* Amend: mix additional audio into the last captured sampler block */
 void sampler_amend_audio(const int16_t *audio);
+
+/* ---------------------------------------------------------------- stems ---
+ *
+ * Mode is one of SAVE_STEMS_* (shadow_constants.h), mirrored from
+ * shadow_control_t.save_stems. Both setter and getter are RT-safe: the setter
+ * stores a byte and, when the skipback stem buffers need to appear or go away,
+ * posts SHIM_EVT_SKIPBACK_RESIZE for the worker to do the allocation.
+ *
+ * The mode is LATCHED when a recording is prepared, so changing the setting
+ * mid-take cannot leave half a take in one shape and half in another. */
+void sampler_set_stem_mode(int mode);
+int  sampler_get_stem_mode(void);
+
+/* Capture one block of per-stem audio (RT). `stems` is an array of `count`
+ * pointers to FRAMES_PER_BLOCK*2 interleaved int16 buffers, indexed as
+ * described above; a NULL entry captures silence for that stem, which keeps
+ * the stems sample-aligned rather than punching a hole.
+ *
+ * MUST be called BEFORE sampler_capture_audio_from_buffer() for the same
+ * block: both apply the start-of-recording fade-in ramp, and the master half
+ * is the one that consumes the counter. */
+void sampler_capture_stems(const int16_t *const *stems, int count);
+
+/* Same, for the skipback rolling buffers. No-op unless stems are enabled and
+ * the stem buffers were successfully allocated. */
+void skipback_capture_stems(const int16_t *const *stems, int count);
+
+/* Seconds actually allocated for the skipback STEM buffers, which is capped
+ * below the master's length (SKIPBACK_STEM_MAX_SECONDS) -- five rolling
+ * buffers at the master's 5-minute maximum would be ~265 MB. 0 when stems are
+ * off or allocation failed. The stems are a SUFFIX of the master: both end at
+ * the same instant. */
+int skipback_stems_get_seconds(void);
 
 /* Update VU meter from audio source */
 void sampler_update_vu(void);
