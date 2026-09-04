@@ -2012,6 +2012,20 @@ globalThis.canvas_overlay = {
 };
 ```
 
+**What you can draw with.** The frame context carries `fillRect`, `print`,
+`textWidth`, `setPixel`, `line`, `fillCircle`, `drawCircle` and `drawArc`. All of
+them are always present — they are implemented on the frame's own clipped
+`fillRect` rather than delegated to the host, so there is nothing to feature-detect
+and nothing that can escape your frame. `drawArc(cx, cy, r, startDeg, sweepDeg,
+color)` reads angles the way a knob does: **0 at twelve o'clock, increasing
+clockwise**, so a track from 210 to 510 puts its gap at the bottom. The circle and
+arc are pixel-identical to the host's, so yours sits beside a built-in arc knob
+without looking like a different object.
+
+They cost more bindings than the host's single call — a filled circle is one
+`fillRect` per row — which is the price of clipping being structural. Fine at cell
+and card sizes; reach for a rect if you are filling something large every frame.
+
 **The frame is not the screen.** `(0,0)` is your knob box's top-left and
 `ctx.width` / `ctx.height` are the box's, not the display's. There is no accessor
 that reaches absolute coordinates, and anything you draw outside the frame is

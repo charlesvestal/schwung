@@ -1365,6 +1365,18 @@ sizes** — 32×14 through 32×26, plus 16×15, 24×15 and 25×15 from clamped s
 than listing them, because `computeGeom`'s thresholds are module-private and a
 written-down table would go stale silently and green.
 
+**The primitives are implemented, not delegated.** The frame context offers
+`setPixel`, `line`, `fillCircle`, `drawCircle` and `drawArc` alongside
+`fillRect` / `print` / `textWidth`, built on its own clipped `fillRect`. Passing
+them through to the host was the obvious alternative and is wrong twice: a
+delegated call draws in the parent's coordinates with the parent's implementation,
+so nothing here could clip it — one `line` and the guarantee is gone — and the
+host builds several of them as `typeof draw_line === "function" ? … : undefined`,
+which would make availability depend on the caller and force every drawer to
+feature-detect. The algorithms are ports of `js_display.c`, asserted
+**pixel-identical** rather than merely plausible, because a widget's circle sits
+beside the grid's own arc knobs.
+
 **The frame ctx carries no `getParam`,** so the "nothing reads on the draw path"
 rule holds by construction. `clipped()` counts attempted overflow rather than
 absorbing it — the same bargain as `test_master_fx_diagram_fit.sh`, which exists
