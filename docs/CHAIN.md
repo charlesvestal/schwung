@@ -67,10 +67,19 @@ to ask, since it holds whatever effective value the overlay last wrote.
 ### `synth:last_note` — the chain host's own key, and why it is a NOTE
 
 **`synth:last_note`** — the MIDI note last played *into* the synth,
-post-MIDI-FX, or `-1`. It is the fallback input for "which voice is focused",
-for a module that declares neither `child_index_param` nor `focus_param` (the
-declaration contract is in `docs/MODULES.md`, "Declaring your performance
-surface"). It is reset to `-1` on instance create and on every synth load, so a
+post-MIDI-FX, or `-1`.
+
+**It is a DIAGNOSTIC. Nothing navigates on it**, and `test_voice_follow.sh`
+asserts the knob grid never even reads it. It was briefly the third input to
+"which voice is focused", for a module declaring neither `child_index_param`
+nor `focus_param`, and that was wrong: **a sequencer plays notes**, so a
+running pattern changed the editor's page on every hit in the bar. A pad press
+and a clip cannot be told apart here either — both reach the synth through
+Move's MIDI_OUT echo, tagged the same. The focus is the module's to declare
+(see `docs/MODULES.md`, "Declaring your performance surface"); a sequencer
+asking what last sounded is the legitimate use of this key.
+
+It is reset to `-1` on instance create and on every synth load, so a
 note left over from the previous module can never name a voice in a list that
 no longer exists.
 

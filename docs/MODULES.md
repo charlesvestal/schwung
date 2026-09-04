@@ -1690,8 +1690,10 @@ controller's geometry into every module that ever declares a voice.
 
 `synth:last_note` is the same fact from the host side: it records what the
 SYNTH received, so it is directly comparable to a declared `note` and never to
-a pad id.
-| `focus_param` | hierarchy top level | a param whose value is the focused **level name** (sibling shape) |
+a pad id. It is a diagnostic — **nothing navigates on it**, for the reason
+under "Why there is no note-based fallback" below.
+
+| `focus_param` | hierarchy top level | a param naming the focused voice: a **level name**, optionally prefixed `"<count>:"` |
 
 `role` is a **free string** and deliberately not an enumeration. It is a hint a
 consumer may use to colour or seat a rack it has never seen, and one that does
@@ -1705,23 +1707,58 @@ that budget. Sixteen `child_names` is nothing; 200 of them plus 200
 #### Which voice is focused — one live input, and you choose it
 
 A consumer showing a per-voice page needs to know which voice is focused, and
-to keep in step when *you* move that focus (a preset load, an auto-select).
-Three inputs can answer that, and **exactly one is live for any given module**,
-picked by what you declare:
+to keep in step when *you* move that focus (a pad press, a preset load, an
+auto-select). **YOU own that fact. Nothing infers it from what is played.**
 
 | You declare | Input read | Resolved by |
 |---|---|---|
 | `child_index_param` (template shape) | `<prefix>:<child_index_param>` — your own instance numbering | instance → voice index |
 | `focus_param` (sibling shape) | `<prefix>:<focus_param>` — a **level name** | level name → voice index |
-| neither, but voices declared | `<prefix>:last_note` (served by the chain host) | note → voice index |
+| neither | nothing is read | the grid does not follow |
 
-**The first input you declare wins and the others are not read at all** — so a
-module that owns its focus can never be second-guessed by a note. Two live
-sources would disagree the moment you moved your focus without a note behind it
-and the disagreement would latch, which is precisely the failure the
-single-source rule on `child_index_param` already exists to prevent: where you
-own the focus, the picker and your module are incapable of disagreeing because
-picking from the list *is* the write to your param.
+**Declaring neither is a valid choice**, not a gap: your voices are still
+declared, so a sequencer can lay out pads and the header minimap still works —
+the grid simply does not move on its own.
+
+##### Why there is no note-based fallback
+
+There used to be a third row here: the host would follow `synth:last_note`, the
+note it last saw reach your synth. It is gone, and the reason is worth stating
+because it is not obvious. **A SEQUENCER PLAYS NOTES.** With a pattern running,
+every hit is a note, so the page changed on every drum in the bar — the editor
+was unusable exactly while you listened to the thing you were editing. "The pad
+you HIT" is a gesture; "the note that SOUNDED" is a different fact and cannot
+stand in for it.
+
+Nor can the two be separated where it mattered: a pad press and a clip both
+reach your synth through Move's MIDI_OUT echo, tagged identically. Cable 0 does
+carry real presses — the shim routes them to the focused slot — but only for a
+module declaring capture rules, and a module able to do that is equally able to
+publish a focus param.
+
+`synth:last_note` is still served (see `docs/CHAIN.md`) and is a reasonable
+thing for a sequencer to ask. **Nothing navigates on it.**
+
+##### A focus answer may carry a CHANGE TOKEN
+
+Your focus param may answer either form:
+
+```
+snare        the level, and nothing else
+17:snare     a monotonic hit COUNT, then the level
+```
+
+**Prefer the second.** The grid acts on a CHANGE, not on a value — otherwise it
+would drag you back to the focused voice on every rotation stop and you could
+never navigate away. But that means a repeat of the same answer does nothing,
+and a repeat is exactly what a second hit on the pad you are already editing
+looks like. Hit the kick, browse to Reverb, hit the kick again: with a bare
+name you stay on Reverb, because the answer never changed. The count is the
+only thing that records the *event*.
+
+9W9 has published `"<count>:<level>"` from `ui_focus_level` since before this
+contract existed, for exactly this reason. Both forms are accepted; a bare name
+behaves as it always has.
 
 The two guarantees carried over from `child_index_param` hold for all three
 inputs. **A read that does not answer never moves the focus** — empty,

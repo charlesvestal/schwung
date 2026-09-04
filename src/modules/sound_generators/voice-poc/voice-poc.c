@@ -15,10 +15,11 @@
  * that cannot exist. Both would have gone green while proving nothing.
  *
  * It declares both fleet shapes at once:
- *   - SIBLING voices, each its own page:  kick 68, snare 69, hat 70
+ *   - SIBLING voices, each its own page:  kick 36, snare 38, hat 42
  *   - a PAGE that is not a voice:         reverb (no note, sounds nothing)
- *   - a TEMPLATE rack with declared names: pads, 4 instances from note 72
- *   - module-owned focus:                 focus_param "cur_voice" (a LEVEL NAME)
+ *   - a TEMPLATE rack with declared names: pads, 4 instances from note 48
+ *   - module-owned focus:                 focus_param "cur_voice", answering
+ *                                         the COUNTED form "<hits>:<level>"
  *
  * THE DECLARED NOTES ARE THE NOTES MOVE SENDS OUT, NOT PAD IDs. Notes 68+ on
  * cable 0 are Move's PAD IDENTIFIERS -- what the hardware surface reports when
@@ -47,7 +48,8 @@
 typedef struct {
     float kick_tune, snare_tune, hat_tune, verb_size;
     float pad_vol[PAD_COUNT];
-    char  cur_voice[32];       /* a LEVEL NAME — the focus_param contract */
+    char  cur_voice[32];       /* a LEVEL NAME - the focus_param contract */
+    unsigned focus_count;      /* bumped on every hit; see the getter */
 } vp_t;
 
 static void *vp_create(const char *module_dir, const char *json_defaults) {
@@ -73,9 +75,9 @@ static void vp_on_midi(void *inst, const uint8_t *msg, int len, int source) {
      * the focus_param path worth testing: the grid must follow this WITHOUT
      * ever reading last_note, because this module declares a focus param. */
     switch (msg[1]) {
-        case 36: snprintf(v->cur_voice, sizeof(v->cur_voice), "kick");  break;
-        case 38: snprintf(v->cur_voice, sizeof(v->cur_voice), "snare"); break;
-        case 42: snprintf(v->cur_voice, sizeof(v->cur_voice), "hat");   break;
+        case 36: snprintf(v->cur_voice, sizeof(v->cur_voice), "kick");  v->focus_count++; break;
+        case 38: snprintf(v->cur_voice, sizeof(v->cur_voice), "snare"); v->focus_count++; break;
+        case 42: snprintf(v->cur_voice, sizeof(v->cur_voice), "hat");   v->focus_count++; break;
         default: break;
     }
 }
@@ -115,8 +117,18 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
     vp_t *v = (vp_t *)inst;
     if (!v || !key || !buf) return -1;
 
-    if (strcmp(key, "cur_voice") == 0)
-        return snprintf(buf, buf_len, "%s", v->cur_voice);
+    if (strcmp(key, "cur_voice") == 0) {
+        /* "<hit-count>:<level>", the COUNTED form -- the one a module should
+         * prefer, and the one this POC exists to demonstrate.
+         *
+         * The host acts on a CHANGE, so a bare level name makes a second hit
+         * on the pad you are already editing a no-op: hit the kick, jog to
+         * Reverb, hit the kick again, and you stay on Reverb because the
+         * answer never changed. The count is the only thing that records the
+         * EVENT. 9W9 has published exactly this from ui_focus_level since
+         * before the contract existed. */
+        return snprintf(buf, buf_len, "%u:%s", v->focus_count, v->cur_voice);
+    }
     if (strcmp(key, "kick_tune") == 0)  return snprintf(buf, buf_len, "%.3f", v->kick_tune);
     if (strcmp(key, "snare_tune") == 0) return snprintf(buf, buf_len, "%.3f", v->snare_tune);
     if (strcmp(key, "hat_tune") == 0)   return snprintf(buf, buf_len, "%.3f", v->hat_tune);

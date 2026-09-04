@@ -425,15 +425,54 @@ declares no voices costs it nothing at all (`voicesOf` returns empty and the
 function returns before any read). At ~2.8 ms an IPC read is more expensive
 than redrawing the whole screen, so a stop of its own was never on the table.
 
-**Exactly one input is live per module**, in this priority: `child_index_param`
-if any level declares it (the existing child-index path already owns that
-module, and `last_note` is then **not read at all**), else `focus_param` from
-the hierarchy top level, else `<prefix>:last_note` from the chain host. The
-first declared wins because two live sources would disagree the moment a module
-moved its focus without a note — a preset load, mrdrums' auto-select — and the
-disagreement would latch. The `focus_param` read accepts a level **name** first,
-which is what the declaration documents, and a numeric voice index second,
-since a module may answer either and both are unambiguous.
+**THE MODULE OWNS THE FOCUS. Nothing is inferred from what is played.**
+`child_index_param` if any voice's level declares it (the existing child-index
+path already owns that module), else `focus_param` from the hierarchy top
+level, else **nothing is read and the grid does not follow**. The first
+declared wins because two live sources would disagree the moment a module moved
+its focus without a note — a preset load, mrdrums' auto-select — and the
+disagreement would latch.
+
+A `<prefix>:last_note` fallback used to sit at the end of that list. It is
+deleted: **a sequencer plays notes**, so a running pattern changed the page on
+every hit in the bar, and a pad press could not be told from a clip because
+both arrive through the same MIDI_OUT echo. `synth:last_note` is still served
+as a diagnostic and `test_voice_follow.sh` asserts it is never *read* — a read
+is what a later refactor quietly starts navigating on again.
+
+The `focus_param` read accepts a level **name** first, which is what the
+declaration documents, and a numeric voice index second. Either may be prefixed
+`"<count>:"`, and the latch is on that whole token rather than on the resolved
+voice — which is what makes **re-hitting the pad you are already on** navigate
+again. Without the count, hit kick → jog to Reverb → hit kick leaves you on
+Reverb, because the answer never changed. 9W9 shipped a counter for this before
+the contract existed; see `focusToken` in `voices.mjs`.
+
+### The header pad minimap
+
+A component declaring `pad_layout: "drums"` gets a 6px box in the header with
+one cell lit: `drawPadGridIcon` in `render_page_movy.mjs`, ported from
+schwung-movy's `renderer/header.ts`. It claims 7px (icon plus gap) from the
+header's measured split, and at 6×6 for a 16-pad rack it is exactly `HEADER_H`,
+so it fits the band without moving anything — the header's own note records
+that a third of the bar sits empty at the fleet median.
+
+**It is a PHYSICAL map.** The lit cell is the focused voice's `note` minus the
+rack base (36), so it shows where the pad sits under your hand — not where the
+voice sits in a list. A map agreeing with the page order would be a second bank
+bar, and there is one of those a row below. Move's rack counts up from 36 at the
+BOTTOM-LEFT, which is why the row is subtracted; upside down is invisible in a
+unit test and obvious the moment a hand is on the hardware, so the geometry was
+rendered and looked at rather than reasoned about.
+
+A voice whose note is off the rack draws the **empty box**, never the nearest
+cell: a minimap pointing at the wrong pad is worse than no minimap.
+
+Gated on `pad_layout`, not on "declares voices" — this is the one thing in
+Schwung's own UI that the layout declaration drives, and a chromatic module with
+per-zone notes must not grow a rack icon. The FOLLOW deliberately does not
+branch on it: a module that declares voices before settling its layout still
+follows.
 
 The tri-state is the usual one and it is load-bearing here: `null` moves
 nothing. Adopting voice 0 because a read timed out would move the user off the

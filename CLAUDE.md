@@ -548,11 +548,25 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   other. **ROOT ITSELF CAN BE THE RACK** — mrdrums declares its 16 pads *on*
   `root`, not in a sibling level, and skipping root made an earlier build a
   complete no-op for the flagship drum module while every fixture passed.
-- **The focus has ONE live input, chosen by what the module declares** —
-  `child_index_param`, else `focus_param`, else `synth:last_note`. The first
-  declared wins and the others are NOT READ. A module that owns its focus is
-  never asked for the note, so two sources cannot disagree the moment it moves
-  its focus without one — and then latch.
+- **THE MODULE OWNS THE FOCUS; nothing infers it from what is PLAYED.**
+  `child_index_param`, else `focus_param`, else the grid does not follow — and
+  declaring neither is a valid choice, not a gap. A `synth:last_note` fallback
+  was tried and deleted: **a sequencer plays notes**, so a running pattern
+  changed the page on every hit in the bar, and a pad press cannot be told from
+  a clip anyway (both arrive through the same MIDI_OUT echo). `last_note` is
+  still served as a diagnostic and the test asserts it is never READ, because a
+  read is what someone later starts navigating on again.
+- **A focus answer may carry a CHANGE TOKEN — `"<count>:<level>"`.** The follow
+  acts on a change, so a repeat does nothing — correct while a value is
+  re-reported, wrong when it marks a second hit on the pad you are already
+  editing. Hit kick, jog to Reverb, hit kick: a bare name leaves you on Reverb.
+  9W9 published a counter for this before the contract existed; reading the
+  fleet before designing at it is the whole lesson. `focusToken`, `voices.mjs`.
+- **The header pad minimap is a PHYSICAL map**, gated on `pad_layout: "drums"`:
+  the lit cell is the voice's note minus 36, so it shows where the pad is under
+  your hand. A map matching the page order would be a second bank bar. Move's
+  rack counts up from the BOTTOM-LEFT; off-rack draws the empty box rather than
+  the nearest cell.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
