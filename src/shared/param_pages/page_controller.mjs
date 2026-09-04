@@ -3482,6 +3482,12 @@ export function createController(io = {}) {
     }
 
     function render(ctx, { title, rect, footer, bands } = {}) {
+        /* The frame this page was drawn into, remembered for renderOverlays.
+         * A floating card is centred in it -- on the panel for the full-screen
+         * host, and inside the embedded region for a tool that supplies a rect.
+         * Kept here rather than passed to renderOverlays so an existing caller
+         * needs no change. */
+        s.frameRect = rect || null;
         /* LAYOUT_LIST is LAYOUT_MOVY with one page kind arranged differently, so
          * it takes the same branch: the header, bank bar, footer, section
          * picker, menu, items and preset pages are all literally the same draws.
@@ -3859,6 +3865,9 @@ export function createController(io = {}) {
         return drawParamCard(ctx, {
             meta,
             draw,
+            /* Where the page actually is. Null for the full-screen host, which
+             * param_card reads as the whole panel. */
+            frame: s.frameRect || null,
             name: meta && (meta.name || meta.label) ? (meta.name || meta.label) : key,
             /* The SAME reading the header would show, through the one
              * formatter -- a card that spelled a value differently from the

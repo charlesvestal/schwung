@@ -437,6 +437,77 @@ const ink = (fb) => fb.pixels.reduce((n, v) => n + (v ? 1 : 0), 0);
      + "— if this ever stops being true, the section above is obsolete, not wrong");
 }
 
+/* -------------------------------------------------------------------------
+ * A CARD IS CENTRED IN THE PAGES FRAME, NOT ON THE PANEL.
+ *
+ * paramCardRect took SCREEN_WIDTH/SCREEN_HEIGHT unconditionally. That is right
+ * for the full-screen host and wrong for the case this file claims to support:
+ * render() takes a rect so a tool can embed the grid in its own chrome, and a
+ * card centred on the panel while the page sits in a corner is not floating
+ * over that page -- it is painting over the hosts screen.
+ * ------------------------------------------------------------------------- */
+{
+  const full = paramCardRect({ card_w: 96, card_h: 44 });
+  ok(full.x === 16 && full.y === 10,
+     "with no frame the card centres on the panel, exactly as before");
+
+  const FRAME = { x: 0, y: 20, w: 64, h: 44 };
+  const r = paramCardRect({ card_w: 96, card_h: 44 }, FRAME);
+  ok(r.x >= FRAME.x && r.y >= FRAME.y &&
+     r.x + r.w <= FRAME.x + FRAME.w && r.y + r.h <= FRAME.y + FRAME.h,
+     "a card is CONTAINED by the frame it was given");
+  ok(r.w <= FRAME.w - 4, "and its width is clamped to that frame, not the panel");
+
+  const off = paramCardRect({ card_w: 40, card_h: 20 },
+                            { x: 60, y: 30, w: 60, h: 30 });
+  ok(off.x >= 60 && off.y >= 30, "a card follows a frame that is not at the origin");
+
+  for (const f of [{ x: 0, y: 0, w: 1, h: 1 }, { x: 0, y: 0, w: 0, h: 0 }]) {
+    const d = paramCardRect({ card_w: 96, card_h: 44 }, f);
+    ok(d.w > 0 && d.h > 0,
+       "a " + f.w + "x" + f.h + " frame still yields a positive rect");
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * A DRAWER THAT PAINTS AND THEN THROWS LEAVES NOTHING BEHIND.
+ *
+ * The frame was documented as "a plain empty card rather than a hole" and was
+ * not one: the partial output stayed inside it -- a picture built from an
+ * answer that never arrived. Measured at 400 lit pixels before the fix.
+ * ------------------------------------------------------------------------- */
+{
+  const px = new Set();
+  const ctx = {
+    fillRect(x, y, w, h, c) {
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+        const k = (x + i) + "," + (y + j);
+        if (c) px.add(k); else px.delete(k);
+      }
+    },
+    print() {}, textWidth: (t) => String(t).length * 4,
+  };
+  let errs = 0;
+  drawParamCard(ctx, {
+    meta: { card_w: 96, card_h: 44 },
+    draw: (c) => { c.fillRect(0, 0, 40, 10, 1); throw new Error("halfway"); },
+    name: "X", value: "1", raw: "1",
+    onError: () => { errs++; },
+  });
+  ok(errs === 1, "the throw is reported exactly once");
+
+  const outer = paramCardRect({ card_w: 96, card_h: 44 });
+  const c0 = paramCardContentRect(outer);
+  let inside = 0;
+  for (const k of px) {
+    const xy = k.split(",");
+    const x = Number(xy[0]), y = Number(xy[1]);
+    if (x >= c0.x && x < c0.x + c0.w && y >= c0.y && y < c0.y + c0.h) inside++;
+  }
+  ok(inside === 0,
+     "no partial output survives the throw -- the card really is empty, got " + inside);
+}
+
 console.log(fail === 0 ? "ALL PARAM CARD CHECKS PASSED" : (fail + " FAILED"));
 process.exit(fail === 0 ? 0 : 1);
 '

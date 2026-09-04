@@ -1349,6 +1349,14 @@ grid's business is eight values at once. A card answers a different question —
 *what does THIS value mean* — for the one knob under a finger. The two do not
 compete: a page may have both, and the card only exists during the gesture.
 
+**A card is centred in the page's FRAME, not on the panel.** `render()` takes a
+`rect` so a tool can embed the grid in its own chrome, and `paramCardRect` is
+given that rect (defaulting to the whole panel, so the full-screen host is
+unchanged). It centred on `SCREEN_WIDTH`/`SCREEN_HEIGHT` unconditionally at
+first, which put the card across the whole display while the page it belongs to
+sat in a corner — not floating over that page but painting over the host's
+screen. Needing no clear is not the same as knowing where to draw.
+
 **It FLOATS, and that is why it needs no `clearScreen`.** The enum peek beside it
 is full-screen on purpose and therefore cannot draw without the frame owner's
 clear. A card blanks its own rect with `fillRect`, keeps the page visible around
