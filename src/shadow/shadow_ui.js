@@ -93,6 +93,13 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
 import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+/* Absolute, matching every other shared/param_pages import in this file. QuickJS
+ * would resolve a relative specifier fine (eval_file gives this module its real
+ * absolute path, and ./shadow_ui_param_pages.mjs above relies on exactly that),
+ * so the prefix here is convention rather than necessity — do not diverge from
+ * it in one import. */
+import { registerWidget, clearWidgets, setWidgetLogger }
+    from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 /* Which user preset a component is currently on, and whether the live state
  * has moved away from it since — the "My Presets" trailing page's row 1
@@ -16306,6 +16313,11 @@ function resetCanvasState() {
     canvasParamMeta = null;
     canvasRuntime = null;
     canvasTickCounter = 0;
+    /* The widget registry is process-global and shadow_ui is long-lived, so a
+     * widget left registered would still be live after its module was swapped
+     * out -- and a later module declaring the same custom: name would silently
+     * inherit the wrong art. */
+    clearWidgets();
 }
 
 function moduleFileExists(path) {
@@ -16665,6 +16677,22 @@ function openCanvasPreview(paramKey, meta) {
         const loaded = loadCanvasOverlayScript(canvasRuntime.scriptPath, canvasRuntime.overlayRef);
         canvasRuntime.overlay = loaded.overlay;
         canvasRuntime.error = loaded.error || "";
+        /* A CANVAS OVERLAY MAY ALSO SUPPLY AN IN-GRID WIDGET.
+         *
+         * Same file, same author mental model, two scales: drawCell paints one
+         * knob box inside the grid, draw paints the fullscreen view you dive
+         * into from that same cell. Registering here rather than at the call
+         * site means it cannot run for a runtime whose script failed to load --
+         * `loaded.overlay` is null in that case and the guard below refuses it,
+         * so the kind stays unregistered and resolveViz falls through to the
+         * detector. */
+        const ov = canvasRuntime.overlay;
+        if (ov && typeof ov.drawCell === "function" && typeof ov.widgetKind === "string") {
+            registerWidget(ov.widgetKind, {
+                draw: ov.drawCell.bind(ov),
+                nominal: ov.widgetNominal || null,
+            });
+        }
     } else {
         canvasRuntime.error = "No canvas script found";
     }
@@ -20866,6 +20894,11 @@ function drawEnumPicker() {
 
 globalThis.init = function() {
     debugLog("Shadow UI init");
+
+    /* The widget registry is pure and node-testable, so it cannot reach
+     * debugLog on its own. Without this a widget disabled by one strike would
+     * vanish silently and the author would have nothing to go on. */
+    setWidgetLogger(debugLog);
 
     /* Opt-in one-shot draw benchmark. The param-pages draw design is built
      * around an assumed ~90-100us per QuickJS->C binding call, which nothing
