@@ -29,8 +29,8 @@
 
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
-import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire }
-    from "./child_key.mjs";
+import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
+         childName } from "./child_key.mjs";
 import { focusParamOf, voicesOf, voiceIndexFromLevel, voiceIndexFromNote,
          voiceIndexFromWire } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
@@ -562,6 +562,17 @@ export function createController(io = {}) {
         modCache: Object.create(null),
         /* Selected child per child-level, by level key. See childResolve(). */
         childIndex: Object.create(null),
+        /*
+         * The voice index syncVoiceFromModule last ACTED on, and the memoised
+         * voice list. The latch is what makes the follow an EDGE: all three
+         * focus inputs report a steady state, so without it a constant answer
+         * re-navigates on every rotation stop and the user cannot leave the
+         * page. Null means "nothing adopted yet", so the first answer after a
+         * component load still lands on the focused voice.
+         */
+        voiceLatch: null,
+        voiceCacheFor: undefined,
+        voiceCache: null,
         /* A page name to land on once the pages exist; see restorePage(). */
         restoreName: null,
         /* key -> live modulated ("effective") value, for the dot on the arc.
@@ -782,12 +793,26 @@ export function createController(io = {}) {
         const pg = p || page();
         if (!pg) return null;
         if (!pg.childLevel || pg.kind !== PAGE_KNOBS) return pg.name;
-        const label = pg.childLevel.child_label || "Item";
-        const at = childIndexFor(pg.level) + 1;
+        const i = childIndexFor(pg.level);
+        /*
+         * A DECLARED name wins outright. `child_names: ["Kick", ...]` already
+         * reaches the instance picker through childLabel, so a module that
+         * named its pads got "Rim" in the list and "Pad 3" in the header of
+         * the page that list opened — the same instance under two names, one
+         * of them the one it asked not to be called.
+         *
+         * Only the NAME is shared, not the fallback NUMBER: childName is split
+         * out of childLabel precisely because the picker counts from 1 while
+         * childLabel counts from `child_index_base`, and minijv declares no
+         * base, so unifying the numbering would renumber its picker.
+         */
+        const at = i + 1;
+        const base = childName(pg.childLevel, i)
+            || `${pg.childLevel.child_label || "Item"} ${at}`;
         const siblings = s.pages.filter(
             (q) => q.level === pg.level && q.kind === PAGE_KNOBS);
         const ord = siblings.indexOf(pg);
-        return ord > 0 ? `${label} ${at} - ${ord + 1}` : `${label} ${at}`;
+        return ord > 0 ? `${base} - ${ord + 1}` : base;
     }
     const keyAt = (slot) => {
         const p = page();
@@ -821,6 +846,13 @@ export function createController(io = {}) {
         /* Likewise "we gave up on this one" — a new component gets a clean
          * slate, and the retry budget below is already per-component. */
         if (!sameComponent) s.contractGaveUp = false;
+        /* A different component is a different set of voices, so the index we
+         * last adopted names nothing here. Re-seeding to null is what lets the
+         * first answer from the NEW component navigate — arriving on the voice
+         * it says is focused is right; it is only the REPEATS that must do
+         * nothing. Deliberately not cleared on a same-component re-plan: the
+         * user is still standing where they navigated to. */
+        if (!sameComponent) s.voiceLatch = null;
         s.slot = slot;
         s.component = component;
         s.prefix = nextPrefix;
@@ -1613,6 +1645,21 @@ export function createController(io = {}) {
         dropChildLevelCache(name);
     }
 
+    /*
+     * `voicesOf(s.hierarchy)`, memoised against the hierarchy OBJECT.
+     *
+     * Identity is the right key: s.hierarchy is replaced wholesale by load()
+     * and never mutated in place, so a new object IS a new contract, and a
+     * fingerprint comparison would be more code for the same answer.
+     */
+    function voiceList() {
+        if (s.voiceCacheFor !== s.hierarchy) {
+            s.voiceCacheFor = s.hierarchy;
+            s.voiceCache = s.hierarchy ? voicesOf(s.hierarchy) : [];
+        }
+        return s.voiceCache;
+    }
+
     /**
      * Adopt the voice the MODULE says is focused — the SIBLING shape, and the
      * note fallback for a module that declares neither focus param.
@@ -1642,21 +1689,54 @@ export function createController(io = {}) {
      * not change which pad you are editing; playing one does. Gating it would
      * mean the grid refused to follow the pad you just hit for as long as your
      * hand rested on a knob, which is precisely when it matters.
+     *
+     * IT IS AN EDGE, NOT A PIN — `s.voiceLatch`. The design says "HITTING a
+     * pad navigates the grid to that voice's page", which is an EVENT, and
+     * every one of the three inputs answers a STEADY STATE: `last_note` keeps
+     * reporting the kick long after you stopped playing it. Acting on the
+     * value rather than on its change re-navigated on every rotation stop, so
+     * a jog detent was undone two ticks later and the user could not leave the
+     * kick page at all — which on a 9W9 shape means Reverb, Delay and Main are
+     * unreachable, and those are exactly the pages that shape has. It also
+     * cost a warmCurrentPage() burst of IPC reads and made the screen reader
+     * speak BOTH pages on every detent.
+     *
+     * Compare syncChildIndexFromModule directly above: it changes an INDEX in
+     * place and never navigates, which is why running it on every stop is
+     * harmless and why it needs no latch.
+     *
+     * The latch seeds to null and no resolved index is null, so the FIRST
+     * answer after a component load still navigates — arriving on the focused
+     * voice is right. A null (unresolved) read returns BEFORE the latch is
+     * touched: clearing it would re-arm the yank on the next good read, so one
+     * timeout would resurrect the whole defect.
      */
     function syncVoiceFromModule() {
         const hier = s.hierarchy;
         if (!hier) return;
         /* The hierarchy is already in hand — re-reading `ui_hierarchy` here
          * would cost a stop AND could answer a different tri-state than the
-         * page set was planned from. */
-        const voices = voicesOf(hier);
+         * page set was planned from. Memoised against the hierarchy OBJECT,
+         * which is stable for the plan's lifetime: this runs on every rotation
+         * stop, and mrdrums' 16 voices were 16 objects allocated and thrown
+         * away each time, most stops discarding them at the very next line. */
+        const voices = voiceList();
         if (!voices.length) return;             /* opted out: costs nothing */
 
-        /* The template shape owns its focus. Nothing to do, and above all
-         * nothing to READ — see the priority note above. */
+        /*
+         * The template shape owns its focus. Nothing to do, and above all
+         * nothing to READ — see the priority note above.
+         *
+         * Scoped to the levels that actually CONTRIBUTE VOICES. Scanning every
+         * level in the file made one unrelated child level — an 8-instance LFO
+         * bank that happens to declare `child_index_param` — silently disable
+         * the follow for the whole module, sibling drum voices and all. The
+         * priority rule is about the level that owns the VOICES; a focus param
+         * on some other level is not a competing source for this one.
+         */
         const levels = hier.levels || {};
-        for (const name in levels) {
-            if (childIndexParam(levels[name])) return;
+        for (const v of voices) {
+            if (childIndexParam(levels[v.level])) return;
         }
 
         const focusParam = focusParamOf(hier);
@@ -1670,6 +1750,12 @@ export function createController(io = {}) {
                 (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
             if (vi === null) vi = voiceIndexFromWire(voices, raw);
         } else {
+            /* Only the SYNTH component serves `last_note` — chain_host stores
+             * it at the slot synth's on_midi call site and nowhere else. An FX
+             * declaring voices with no focus_param would otherwise burn one
+             * ~2.8 ms IPC read per rotation stop, forever, on a key that
+             * cannot answer. */
+            if (s.prefix !== "synth") return;
             const raw = getParam(`${s.prefix}:last_note`);
             const t = (raw === null || raw === undefined) ? "" : String(raw).trim();
             const n = t.length ? Number(t) : NaN;
@@ -1680,13 +1766,44 @@ export function createController(io = {}) {
          * first voice because a read timed out would move the user off the
          * pad they were editing, re-keying every page on screen and dropping
          * its cached values — the same cost the child-index path refuses.
+         *
+         * Before the latch, so a failed read leaves the latch alone.
          */
         if (vi === null) return;
 
+        /* THE EDGE. A repeat of the answer we last acted on does nothing at
+         * all — no navigation, no warm, no announce. */
+        if (vi === s.voiceLatch) return;
+        /* Latched on the ANSWER, not on the outcome: a voice we cannot route
+         * to below is still an answer we have dealt with, and re-deciding it
+         * every stop is the same waste. */
+        s.voiceLatch = vi;
+
         const v = voices[vi];
-        if (!v || v.childIndex !== null) return;  /* template shape, above */
+        if (!v || !v.level) return;
+
+        if (v.childIndex !== null) {
+            /*
+             * A rack contributed by a CHILD level whose level names no
+             * `child_index_param` — examples/voice-poc's own `pads` level is
+             * exactly this shape (`child_note_base: 60`, no focus param), and
+             * the old bail discarded it, so the shipped example advertised a
+             * shape the feature structurally could not reach.
+             *
+             * Nothing else owns the focus here, so adopt it locally the way a
+             * pick from the instance list does — the index re-keys the level's
+             * pages, and the cached values belonged to the previous instance.
+             * A level that DOES declare child_index_param never gets here (we
+             * returned above); syncChildIndexFromModule stays its single owner.
+             */
+            if (childIndexFor(v.level) !== v.childIndex) {
+                s.childIndex[v.level] = v.childIndex;
+                dropChildLevelCache(v.level);
+            }
+        }
+
         const cur = page();
-        if (!v.level || (cur && cur.level === v.level)) return;  /* already there */
+        if (cur && cur.level === v.level) return;   /* already there */
         const target = s.pages.findIndex(
             (q) => q && q.level === v.level && q.kind === PAGE_KNOBS);
         if (target < 0) return;                 /* a voice with no grid page */
