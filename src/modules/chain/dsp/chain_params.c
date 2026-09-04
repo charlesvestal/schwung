@@ -929,6 +929,73 @@ chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, 
     return NULL;
 }
 
+/* ---- One knob-turn law ---------------------------------------------------
+ *
+ * Three paths turn a chain knob and each had hand-rolled the same time-based
+ * acceleration curve: the relative CC decode and the absolute CC in
+ * chain_midi.c, and knob_N_adjust in chain_host.c -- which is the path the
+ * device's own encoders use, so it is the common case rather than an edge.
+ *
+ * Three copies of one curve is three places for it to drift, and it already
+ * had. The two spellings nested their bounds differently (`elapsed <
+ * KNOB_ACCEL_SLOW_MS` outside, vs `elapsed <= KNOB_ACCEL_FAST_MS` first) and
+ * happened to compute the same answer -- but they still disagree on the
+ * FALLBACK BASE STEP used when a parameter declares no step of its own:
+ * chain_midi.c uses KNOB_STEP_FLOAT (0.0015), chain_host.c uses 0.01f, a 6.7x
+ * difference between an external controller and the device's own encoder on
+ * the same parameter. That one is deliberately NOT resolved here: either value
+ * is a behaviour change for somebody, and picking one is a judgement call for
+ * review rather than a silent side effect of deduplication.
+ *
+ * Extracted here rather than into a header because chain_params.c IS compiled
+ * natively by tests/host (unlike chain_midi.c and chain_host.c, which dlopen
+ * plugins -- that asymmetry is why relative_cc.h exists at all). The curve is
+ * split from the clock read for the same reason relative_cc.h split the decode
+ * from its call site: a source-level pin cannot tell 4 from 8.
+ *
+ * Shape and name taken from #347, which reached the same extraction first.
+ */
+
+/*
+ * Time-based acceleration multiplier for one knob message, against the FLOAT
+ * ceiling. Callers that need the int or enum cap apply chain_knob_accel_cap
+ * afterwards, because only they know the parameter's type. `last_ms` is read
+ * and updated in place.
+ */
+int chain_knob_accel_for_gap(uint64_t elapsed_ms) {
+    if (elapsed_ms >= KNOB_ACCEL_SLOW_MS) return KNOB_ACCEL_MIN_MULT;
+    if (elapsed_ms <= KNOB_ACCEL_FAST_MS) return KNOB_ACCEL_MAX_MULT;
+
+    float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed_ms) /
+                  (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+    return KNOB_ACCEL_MIN_MULT +
+           (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+}
+
+int chain_knob_accel(uint64_t *last_ms) {
+    uint64_t now = get_time_ms();
+    uint64_t last = *last_ms;
+    *last_ms = now;
+
+    /* No previous message: the first turn of a session is a slow one. */
+    if (last == 0) return KNOB_ACCEL_MIN_MULT;
+    return chain_knob_accel_for_gap(now - last);
+}
+
+/*
+ * Cap the multiplier for a stepped parameter. Enums never accelerate on TIME
+ * (a deliberate slow turn must not overshoot a list of options); ints are
+ * limited rather than pinned. Both rules predate this extraction and are
+ * unchanged -- see relative_cc_multiplier for why a DETENT count is still
+ * honoured for an enum even though the time multiplier is not.
+ */
+int chain_knob_accel_cap(int accel, int type) {
+    if (type == KNOB_TYPE_ENUM) return KNOB_ACCEL_ENUM_MULT;
+    if (type == KNOB_TYPE_INT && accel > KNOB_ACCEL_MAX_MULT_INT)
+        return KNOB_ACCEL_MAX_MULT_INT;
+    return accel;
+}
+
 /*
  * Forward a formatted value string to the plugin identified by target.
  *

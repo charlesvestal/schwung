@@ -1287,29 +1287,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         chain_param_info_t *pinfo = knob_find_param(inst, target, param);
                         if (!pinfo) continue;
 
-                        /* Calculate acceleration based on time between events */
-                        uint64_t now = get_time_ms();
-                        uint64_t last = inst->knob_last_time_ms[i];
-                        inst->knob_last_time_ms[i] = now;
-                        int accel = KNOB_ACCEL_MIN_MULT;
-                        if (last > 0) {
-                            uint64_t elapsed = now - last;
-                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
-                                accel = KNOB_ACCEL_MAX_MULT;
-                            } else if (elapsed < KNOB_ACCEL_SLOW_MS) {
-                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
-                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
-                            }
-                        }
-
-                        /* Cap acceleration: enums never accelerate, ints limited */
+                        /* Acceleration from the time between events, then the
+                         * cap this parameter's type asks for. The two spellings
+                         * this replaces nested their bounds differently and
+                         * computed the same answer; chain_knob_accel is the one
+                         * that remains. */
+                        int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
+                        accel = chain_knob_accel_cap(accel, pinfo->type);
                         int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                        if (pinfo->type == KNOB_TYPE_ENUM) {
-                            accel = KNOB_ACCEL_ENUM_MULT;
-                        } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
-                            accel = KNOB_ACCEL_MAX_MULT_INT;
-                        }
                         /* Use step from param metadata, or 0.01 default for shadow adjust */
                         float base_step = (pinfo->step > 0) ? pinfo->step
                             : (is_int ? (float)KNOB_STEP_INT : 0.01f);

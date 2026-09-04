@@ -795,31 +795,11 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
                     if (!pinfo) continue;
 
-                    /* Calculate acceleration based on time between events */
-                    uint64_t now = get_time_ms();
-                    uint64_t last = inst->knob_last_time_ms[i];
-                    inst->knob_last_time_ms[i] = now;
-                    int accel = KNOB_ACCEL_MIN_MULT;
-                    if (last > 0) {
-                        uint64_t elapsed = now - last;
-                        if (elapsed < KNOB_ACCEL_SLOW_MS) {
-                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
-                                accel = KNOB_ACCEL_MAX_MULT;
-                            } else {
-                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
-                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
-                            }
-                        }
-                    }
-
-                    /* Cap acceleration: enums never accelerate, ints limited */
+                    /* Acceleration from the time between events, then the
+                     * cap this parameter's type asks for. */
+                    int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
+                    accel = chain_knob_accel_cap(accel, pinfo->type);
                     int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                    if (pinfo->type == KNOB_TYPE_ENUM) {
-                        accel = KNOB_ACCEL_ENUM_MULT;
-                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
-                        accel = KNOB_ACCEL_MAX_MULT_INT;
-                    }
 
                     /* Relative encoder: apply acceleration to base step */
                     float base_step = (pinfo->step > 0) ? pinfo->step
