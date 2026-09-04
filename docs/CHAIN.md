@@ -43,6 +43,92 @@ Modules expose `ui_hierarchy` (menu structure + knob mappings) via get_param:
 
 Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `default`, `unit`, `display_format`.
 
+### Knob destinations — one knob, several parameters
+
+Each of a slot's eight knobs drives up to **four** parameters (`MAX_KNOB_DESTS`),
+and each destination can be limited to a **window**: a slice of that parameter's
+own range.
+
+```
+knob 1  ->  synth: cutoff     0 .. 100%
+            fx1: mix         20 ..  80%
+            fx2: drive      100 ..   0%     (inverted)
+```
+
+`lo`/`hi` are **fractions of the destination parameter's own range**, never
+values in its units. That is what makes a window portable: re-point a
+destination at a parameter measured in Hz, dB or list positions and the window
+still means the same thing. `lo > hi` is an inverted destination — turn the knob
+up, that parameter goes down — and needs no extra machinery, because the
+interpolation simply runs backwards. An `enum` destination takes a **sub-range**
+of its option list, and its last option is reachable rather than one short.
+
+#### One destination keeps its parameter's feel
+
+> **The line is "several destinations", not "has a range".**
+
+- **One destination**, ranged or not, is the path that has always shipped plus a
+  clamp into its window. It keeps that parameter's own step size, its own
+  acceleration and its own enum behaviour.
+- **Several destinations** have no single parameter to be, so the knob's own
+  0..1 **position** becomes the thing being turned, and each destination follows
+  it through its own window.
+
+This asymmetry is arithmetic rather than taste, and it is worth stating because
+it looks like an inconsistency worth "simplifying" away. An 8-option enum spans
+7 units. A position moving by `KNOB_STEP_FLOAT` (0.0015) shifts that enum by
+0.0105 per detent — `4 -> 4.0105 -> (int) 4`, the same value — so it needs about
+95 detents per option instead of one. A parameter that shares a knob with others
+pays that by necessity. A parameter that does not must never be made to, which
+is why giving a single destination a window does **not** move it onto the
+position path. `tests/host/test_chain_knob_turn.c` measures both cases
+side by side.
+
+A knob's position is seeded from its first destination the moment it gains a
+second, so nothing jumps at that moment. It is never re-derived from a
+destination afterwards: doing so between detents would snap the position back to
+that destination's own quantisation grid, and a slow turn on a coarse
+destination would never advance.
+
+#### Editing
+
+Set-param keys, all per slot. `N` is the knob 1-8 and `M` the destination 1-4:
+
+| Key | Value | Meaning |
+| --- | --- | --- |
+| `knob_N_set` | `"target:param"` | Collapse this knob to **one whole-range** destination. Unchanged meaning. |
+| `knob_N_clear` | `"1"` | Remove the mapping. |
+| `knob_N_adjust` | `"+N"` / `"-N"` | Turn by an accumulated detent count. |
+| `knob_N_dest_M_set` | `"target:param"` | Point destination M, **keeping its window**. `M` one past the end appends. |
+| `knob_N_dest_M_range` | `"lo:hi"` | Its window, as fractions. **Applies immediately.** |
+| `knob_N_dest_M_clear` | `"1"` | Remove destination M. Removing the last clears the knob. |
+| `knob_N_position` | `"0.0".."1.0"` | Put the knob at a position; every destination follows. |
+
+⚠ `knob_N_set` **collapses** the knob, which is right for assigning an empty one
+and wrong for re-pointing the first destination of one that drives several — that
+is what `knob_N_dest_1_set` is for.
+
+A window **applies as it is set**, rather than on the next turn of the knob. A
+window is adjusted by ear, and one you cannot hear until you turn the knob again
+is one you are setting blind. On a multi-destination knob that re-derives the
+destination from the current position; on a single one it clamps the parameter
+into the new window, which can move it — deliberately, for the same reason.
+
+Readbacks: `knob_N_dests` answers the whole list as JSON in one read,
+`knob_N_dest_count` and `knob_N_position` the scalars. `knob_N_target` and
+`knob_N_param` keep answering the **first** destination, so anything that knew
+about knobs before destinations existed still gets a sensible answer.
+`knob_N_name` answers `cutoff +2` for a multi-destination knob and
+`knob_N_value` its position as a percentage.
+
+#### A knob write is a base, not a fight with an LFO
+
+`knob_forward_value` routes a modulated parameter through the modulation bus
+rather than writing past it — a knob turn is an edit of the **resting** value,
+exactly as an edit from the parameter's own page is (see the four forms above).
+Without that the next LFO tick recomputes from the stale base and erases the
+turn within milliseconds, and the knob reads as dead.
+
 ### Reading a modulated parameter — four forms, one rule
 
 While a chain-mod source (slot LFO, etc.) drives `<prefix>:<key>`, the overlay

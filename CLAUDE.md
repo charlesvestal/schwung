@@ -481,6 +481,12 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 - **Use `key`, not `param`**, for editable `params` entries — metadata comes from
   `chain_params`, and a module missing it gets an invented `float 0..1 step 0.01`
   knob writing `0.058750` into an enum.
+- **A knob drives up to four destinations, each through its own window** (a
+  slice of that parameter's range, stored as fractions so it survives
+  re-pointing). ⚠ **One destination keeps its parameter's own step and enum
+  feel; only SEVERAL are driven by the knob's 0..1 position** — driving a lone
+  enum from a position needs ~95 detents per option instead of one. The line is
+  "several destinations", not "has a range".
 - **A plain read of a modulated key answers the BASE**, never the plugin's value
   — the plugin holds the effective value the overlay keeps writing into it. The
   driven value is asked for as `<key>:effective` (#276).

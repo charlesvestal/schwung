@@ -363,7 +363,7 @@ console.log(msg)              // Routed to the unified logger when enabled
 | 63  | Right arrow       |                                |
 | 71-78 | Knobs 1-8       | Relative encoder (1-63 CW, 65-127 CCW) |
 | 79  | Master volume     | Relative encoder (1-63 CW, 65-127 CCW) |
-| 102-109 | Knobs 1-8 (absolute) | Absolute value (0-127 scaled to assigned param range); targets the same user-assigned knob mappings as CC 71-78 |
+| 102-109 | Knobs 1-8 (absolute) | Absolute POSITION (0-127) across the knob's own travel; targets the same user-assigned knob mappings as CC 71-78. See Chain Knob CC Out below |
 | 85  | Play              |                                |
 | 86  | Record            |                                |
 | 88  | Mute              |                                |
@@ -377,6 +377,23 @@ console.log(msg)              // Routed to the unified logger when enabled
 CC 102-109 above are the *inbound* half: they drive a chain slot's eight knob
 mappings. A slot can also send them, so a motorised controller follows values
 changed anywhere else — Move's own encoder, or a patch load.
+
+**What 0-127 means, in one sentence: where the knob sits across its own travel.**
+A knob driving several parameters sends its own position, which is the only
+thing they have in common; a knob driving one sends that parameter's value as a
+fraction of its own window. With a single whole-range destination — every knob
+that existed before destinations did — the second reduces to the parameter
+scaled across its full range, exactly as it always was, so nothing about an
+existing rig changes.
+
+Measuring a *ranged* single destination against its window rather than the full
+range is what keeps in and out symmetric. Against the full range, an external
+fader would map outside the window at both ends and clamp there, so a third of
+its throw would do nothing.
+
+Inbound is the same rule read backwards, so a controller that echoes what it was
+told lands where it started. See **Knob destinations** in `docs/CHAIN.md` for
+the destination model itself.
 
 Off by default. Enable it per slot on the device at **Slot Settings > Knobs >
 Knob CC Out**, at the bottom of the knob list. Turning it on immediately sends
