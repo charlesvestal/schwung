@@ -30,8 +30,17 @@ grep -q '#include "relative_cc.h"' "$midi" \
   || fail "chain_midi.c no longer includes relative_cc.h"
 grep -q 'relative_cc_ticks(' "$midi" \
   || fail "the relative CC path no longer decodes through relative_cc_ticks()"
-grep -q 'relative_cc_multiplier(' "$midi" \
-  || fail "the relative CC path no longer scales through relative_cc_multiplier()"
+# The scaling moved into knob_turn (chain_params.c) when a knob became able to
+# drive several destinations, so chain_midi.c decodes and delegates. Both ends
+# are still required: a decode that reached a hand-rolled scale, or a delegation
+# that lost the decode, would each pass a check on only one of them.
+params=src/modules/chain/dsp/chain_params.c
+grep -q 'knob_turn(inst, i, ticks,' "$midi" \
+  || fail "the relative CC path no longer hands its decoded detents to knob_turn()"
+grep -q 'relative_cc_multiplier(' "$params" \
+  || fail "knob_turn no longer scales through relative_cc_multiplier()"
+grep -q '#include "relative_cc.h"' "$params" \
+  || fail "chain_params.c no longer includes relative_cc.h"
 
 # A SECOND decode is the failure mode worth naming: the original bug was a
 # hand-rolled two-branch decode inline here, and the fix is only a fix while

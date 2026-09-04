@@ -63,16 +63,39 @@ set_line=$(command grep -n -- '->set_param(' "$work/kfv.c" | head -1 | cut -d: -
 [ "$base_line" -lt "$set_line" ] \
   || fail "knob_forward_value writes the plugin before telling the modulation bus"
 
-# Every knob path reaches a plugin through it. Counted, not merely present:
-# a path that grew its own plugin->set_param call would still match a bare
-# grep for the helper elsewhere in the file.
-for f in src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_host.c; do
-  command grep -q 'knob_forward_value(inst, target, param, val_str)' "$f" \
-    || fail "$f does not forward knob values through knob_forward_value"
-done
+# Every knob path reaches a plugin through it, and the two TUs that cannot be
+# compiled natively must not reach one any OTHER way. A path that grew its own
+# plugin->set_param call would bypass the modulation bus again and nothing
+# would say so, which is precisely how this bug survived.
+# chain_midi.c has no legitimate direct plugin write at all, so the whole file
+# is the window.
+if command grep -qE '(synth_plugin_v2|fx_plugins_v2|midi_fx_plugins)\[?[a-z]*\]?->set_param' \
+     src/modules/chain/dsp/chain_midi.c; then
+  fail "chain_midi.c writes a plugin parameter directly; a knob path must go through knob_forward_value"
+fi
 
-n=$(command grep -c 'knob_forward_value(inst, target, param, val_str)' src/modules/chain/dsp/chain_midi.c)
-[ "$n" -eq 2 ] \
-  || fail "chain_midi.c has $n knob_forward_value call sites, expected 2 (relative + absolute CC)"
+# chain_host.c does have legitimate ones -- the prefixed synth:/fxN:/midi_fxN:
+# set_param routes, which update the modulation base themselves. So the window
+# is the knob_ branch only, bounded by its own opening line and the next
+# same-indent `else if`. Both anchors are REQUIRED: a window that silently
+# found nothing would pass this check while examining an empty string.
+H=src/modules/chain/dsp/chain_host.c
+kstart=$(command grep -n 'else if (strncmp(key, "knob_", 5) == 0)' "$H" | head -1 | cut -d: -f1)
+[ -n "$kstart" ] || fail "could not find the knob_ set_param branch in $H"
+kend=$(awk -v s="$kstart" 'NR>s && /^    else if \(/ {print NR; exit}' "$H")
+[ -n "$kend" ] || fail "could not find the end of the knob_ branch in $H (its next sibling moved)"
+[ "$kend" -gt "$kstart" ] || fail "the knob_ branch window in $H is empty"
+# kend is the NEXT branch's own line, so the window stops before it.
+if sed -n "${kstart},$((kend - 1))p" "$H" \
+     | command grep -qE '(synth_plugin_v2|fx_plugins_v2|midi_fx_plugins)\[?[a-z]*\]?->set_param'; then
+  fail "the knob_ branch of $H writes a plugin parameter directly, bypassing the modulation bus"
+fi
+
+# The relative path delegates the whole turn; the absolute CC path still
+# formats and forwards its own value. Both must end at the helper.
+command grep -q 'knob_turn(inst, i, ticks,' src/modules/chain/dsp/chain_midi.c \
+  || fail "the relative CC path does not delegate to knob_turn"
+command grep -q 'knob_forward_value(inst, target, param, val_str)' src/modules/chain/dsp/chain_midi.c \
+  || fail "the absolute CC path no longer forwards through knob_forward_value"
 
 echo "PASS: a knob turn edits the base, and every knob path goes through it"

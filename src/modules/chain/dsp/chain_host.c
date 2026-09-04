@@ -1288,43 +1288,26 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Find mapping for this CC */
                 for (int i = 0; i < inst->knob_mapping_count; i++) {
                     if (inst->knob_mappings[i].cc == cc) {
-                        /* Look up parameter metadata */
-                        const char *target = inst->knob_mappings[i].dests[0].target;
-                        const char *param = inst->knob_mappings[i].dests[0].param;
-                        chain_param_info_t *pinfo = knob_find_param(inst, target, param);
-                        if (!pinfo) continue;
-
-                        /* Acceleration from the time between events, then the
-                         * cap this parameter's type asks for. The two spellings
-                         * this replaces nested their bounds differently and
-                         * computed the same answer; chain_knob_accel is the one
-                         * that remains. */
-                        int accel = chain_knob_accel(&inst->knob_last_time_ms[i]);
-                        accel = chain_knob_accel_cap(accel, pinfo->type);
-                        int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                        /* Use step from param metadata, or 0.01 default for shadow adjust */
-                        float base_step = (pinfo->step > 0) ? pinfo->step
-                            : (is_int ? (float)KNOB_STEP_INT : 0.01f);
-                        float delta = base_step * accel * (delta_int > 0 ? 1 : -1);
-
-                        /* Apply delta with clamping */
-                        float new_val = inst->knob_mappings[i].dests[0].current_value + delta;
-                        if (new_val < pinfo->min_val) new_val = pinfo->min_val;
-                        if (new_val > pinfo->max_val) new_val = pinfo->max_val;
-                        if (is_int) new_val = (float)((int)new_val);  /* Round to int */
-                        inst->knob_mappings[i].dests[0].current_value = new_val;
-
-                        /* Format value as string */
-                        char val_str[16];
-                        if (is_int) {
-                            snprintf(val_str, sizeof(val_str), "%d", (int)new_val);
-                        } else {
-                            snprintf(val_str, sizeof(val_str), "%.3f", new_val);
-                        }
-
-                        knob_forward_value(inst, target, param, val_str);
-                        /* Move's own encoder moved this knob. Nothing else
-                         * tells an external control surface that happened. */
+                        /*
+                         * ONE detent per message, whatever `val` says.
+                         *
+                         * handleKnobTurn in shadow_ui.js sums every detent for
+                         * this knob between frames, so `val` is an accumulated
+                         * COUNT and reading only its sign discards a fast turn.
+                         * Honouring the count would make the device's own
+                         * encoders move further for the same gesture -- a
+                         * change every existing user would feel on every chain
+                         * knob, and not one to make in passing. The sign is
+                         * what has always shipped here; max(1, accel) == accel,
+                         * so this is bit-identical to it.
+                         *
+                         * 0.01f rather than KNOB_STEP_FLOAT is this path's
+                         * historical fallback for a parameter that declares no
+                         * step -- a 6.7x difference from the external-CC path
+                         * on the same parameter, preserved for the same reason.
+                         * See the note above chain_knob_accel.
+                         */
+                        knob_turn(inst, i, (delta_int > 0) ? 1 : -1, 0.01f);
                         knob_emit_cc_out(inst, i);
                         inst->dirty = 1;
                         break;
