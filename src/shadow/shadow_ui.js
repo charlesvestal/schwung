@@ -16410,12 +16410,28 @@ function ensureComponentWidgets(moduleId, chainParams) {
     if (!id) return;
     if (id === widgetModuleLoaded) return;
 
+    /*
+     * AND chain_params IS A READ TOO. Same rule, one layer down.
+     *
+     * This latched on the module id alone, then asked whether the (also
+     * unsettled) chain_params declared a custom kind, got "no" from an EMPTY
+     * array, and returned -- already latched, so the retry stopped and nothing
+     * ever registered. Diving into the fullscreen canvas and back happens to
+     * run the editor-exit path, which clears the latch, so re-entry then
+     * worked with settled data. That is precisely the symptom reported from
+     * the device, twice.
+     *
+     * An empty chain_params is not "this module declares nothing" -- a chain
+     * component always declares something. It is an answer that has not
+     * arrived. Decide nothing, latch nothing, and let the retry ask again.
+     */
+    if (!Array.isArray(chainParams) || chainParams.length === 0) return;
+
     /* The registry is process-global and shadow_ui is long-lived: a widget left
      * registered would outlive its module, and a later module declaring the
      * same custom: name would silently inherit the wrong art. */
     clearWidgets();
     widgetModuleLoaded = id;
-    if (!Array.isArray(chainParams)) return;
 
     const wantsWidget = chainParams.some((p) => {
         const k = p && p.viz && p.viz.kind;
@@ -16425,6 +16441,7 @@ function ensureComponentWidgets(moduleId, chainParams) {
      * is only read when the contract says it is needed. */
     if (!wantsWidget) return;
 
+    debugLog(`widgets: ${id} declares a custom viz kind; loading canvas.js`);
     const dir = getModuleBasePath(id);
     if (!dir) return;
 

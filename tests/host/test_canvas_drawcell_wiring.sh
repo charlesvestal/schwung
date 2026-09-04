@@ -106,6 +106,17 @@ const guardIdx = ecwBody.indexOf("if (!id) return;");
 ok(guardIdx >= 0 && guardIdx < latchIdx,
    "the empty-id guard comes BEFORE the latch assignment");
 
+/* SAME RULE, ONE LAYER DOWN. chain_params is a read too, and an empty array is
+ * an answer that has not arrived rather than "this module declares nothing" --
+ * a chain component always declares something. Latching on the id alone and
+ * then deciding from unsettled params is what shipped, twice: it returned
+ * already-latched, the retry stopped, and only the editor-exit path (reached by
+ * diving into the canvas and back) cleared it. Pin EVERY guard against the
+ * latch, not just the one that was wrong last time. */
+const cpGuardIdx = ecwBody.search(/chainParams\.length === 0\s*\)\s*return;/);
+ok(cpGuardIdx >= 0, "an empty chainParams returns without deciding");
+ok(cpGuardIdx < latchIdx, "the empty-chainParams guard also comes BEFORE the latch");
+
 ok(/function tickComponentWidgets/.test(src), "there is a retry for the unresolved case");
 const tcwStart = src.indexOf("function tickComponentWidgets");
 const tcwBody = code(src.slice(tcwStart, src.indexOf("\nfunction ", tcwStart + 1)));
