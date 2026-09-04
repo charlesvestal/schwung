@@ -113,6 +113,24 @@ static int chain_midi_is_note(const uint8_t *msg, int len) {
     return t == 0x90 || t == 0x80;
 }
 
+/* Record the note the SYNTH receives, for synth:last_note.
+ *
+ * TWO paths feed the synth and both must call this. v2_on_midi carries
+ * notes a MIDI FX transformed in process_midi; v2_tick_midi_fx carries
+ * notes it emitted from tick() instead -- which is what an ARPEGGIATOR
+ * does, swallowing the held note and emitting its pattern on the clock.
+ * Instrumenting only the first means last_note never updates at all with
+ * an arp in the slot, and the grid follows a pad nobody played.
+ *
+ * Note-offs are ignored: a released pad is still the pad you are editing.
+ * Runs on the SPI callback -- an int store and nothing else. */
+static inline void chain_record_synth_note(chain_instance_t *inst,
+                                           const uint8_t *msg, int len) {
+    if (len >= 3 && (msg[0] & 0xF0) == 0x90 && msg[2] > 0) {
+        inst->synth_last_note = msg[1];
+    }
+}
+
 static void chain_midi_trace(const chain_instance_t *inst, const char *what,
                              const uint8_t *msg, int len, int a, int b) {
     if (!inst || !inst->host || !inst->host->log) return;
@@ -574,6 +592,7 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                  * only one of the two makes the other look like silence. */
                 if (chain_midi_is_note(out_msgs[i], out_lens[i]) && chain_midi_trace_enabled())
                     chain_midi_trace(inst, "  ~> synth(tick)", out_msgs[i], out_lens[i], -1, 0);
+                chain_record_synth_note(inst, out_msgs[i], out_lens[i]);
                 inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
             }
         }
@@ -900,6 +919,7 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     for (int i = 0; i < out_count; i++) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
             if (trace) chain_midi_trace(inst, "  -> synth", out_msgs[i], out_lens[i], -1, 0);
+            chain_record_synth_note(inst, out_msgs[i], out_lens[i]);
             inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], source);
         }
     }

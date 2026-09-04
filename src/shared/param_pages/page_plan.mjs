@@ -19,7 +19,7 @@
  * (c) 2026 megadake, MIT — https://github.com/DimaDake/schwung-movy
  */
 
-import { hasChildren, childCount, childIndexParam } from "./child_key.mjs";
+import { hasChildren, childCount, childIndexParam, childName } from "./child_key.mjs";
 
 /**
  * Every param key the hierarchy lists ANYWHERE — so the planner can ask
@@ -151,6 +151,48 @@ function keyOf(entry) {
 /* A nav entry points at another level and carries no param of its own. */
 function levelOf(entry) {
     return (entry && typeof entry === "object" && entry.level) ? entry.level : null;
+}
+
+/**
+ * A level's display name usually lives on the nav ENTRY that points at it, not
+ * on the level itself, so this collects labels from every level's nav entries.
+ * Nav label beats the level's own `label`: 24 levels across
+ * dexed/linein/minijv/obxd/sf2/sfz/nam disagree, and the nav label is the one
+ * users already see.
+ *
+ * Exported with `declaredLevelName` below because "what is this level called"
+ * is ONE fact with more than one consumer — the page title and the voice list
+ * — and a fact with several consumers written down in none of them is how the
+ * metronome and recall_quantize both got the same off-by-one. voices.mjs
+ * re-spelled two of the three sources as `level.name || levelKey` and the two
+ * measurably disagreed: a nav link `{level: "bd", label: "Bass Drum"}` gave the
+ * page header "Bass Drum" and the picker/voice list "bd", for the same thing.
+ */
+export function navLabelsOf(levels) {
+    const navLabel = Object.create(null);
+    for (const lvl of Object.values(levels || {})) {
+        for (const p of ((lvl && lvl.params) || [])) {
+            const target = levelOf(p);
+            if (target && p.label) navLabel[target] = p.label;
+        }
+    }
+    return navLabel;
+}
+
+/**
+ * The name a level DECLARES, from its three sources in priority order, or null
+ * when it declares none. Null is deliberate and load-bearing: the caller picks
+ * the fallback, and they differ — a page title prettifies the key ("osc1" ->
+ * "Osc1") while a voice name keeps the key verbatim, because a voice name is an
+ * identity a sequencer matches on, not chrome. Folding a fallback in here would
+ * force one of those on the other.
+ *
+ * `navLabel` is what navLabelsOf() returned for the same `levels` object;
+ * passing it in keeps this a pure function of its arguments and keeps the O(n)
+ * scan out of a per-level call.
+ */
+export function declaredLevelName(key, lvl, navLabel) {
+    return (lvl && lvl.name) || (navLabel && navLabel[key]) || (lvl && lvl.label) || null;
 }
 
 /* `children` is absent as null, missing, or the literal string "None" — dexed
@@ -553,25 +595,14 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
 
     const pages = [];
 
-    /* A level's display name usually lives on the nav entry that points at it,
-     * not on the level itself, so collect labels from every level's nav
-     * entries. Nav label beats the level's own `label`: 24 levels across
-     * dexed/linein/minijv/obxd/sf2/sfz/nam disagree, and the nav label is the
-     * one users already see. */
-    const navLabel = Object.create(null);
-    for (const lvl of Object.values(levels)) {
-        for (const p of ((lvl && lvl.params) || [])) {
-            const target = levelOf(p);
-            if (target && p.label) navLabel[target] = p.label;
-        }
-    }
+    const navLabel = navLabelsOf(levels);
     /* A level key is an internal identifier ("root", "patch_main", "osc1"); it
      * is only a last resort for a page title, and never raw — "osc1" reads as
      * "Osc1", not as a variable name. */
     const prettify = (key) => String(key)
         .replace(/[_-]+/g, " ")
         .replace(/\b[a-z]/g, (c) => c.toUpperCase());
-    const declaredName = (key, lvl) => (lvl && lvl.name) || navLabel[key] || (lvl && lvl.label) || null;
+    const declaredName = (key, lvl) => declaredLevelName(key, lvl, navLabel);
     const nameOf = (key, lvl) => declaredName(key, lvl) || prettify(key);
 
     /**
@@ -773,9 +804,21 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 /* The SAME derived-list field the mode selector uses. One
                  * mechanism: the planner decides what the labels say, and
                  * itemsState never learns there are two kinds of source. */
+                /* A DECLARED name wins over the generated one. Without this the
+                 * page built its labels inline and never consulted the
+                 * declaration, so a module that named its pads still saw
+                 * "Pad 1 ... Pad 16" HERE while every other list showed "Kick".
+                 * The unit test passed throughout because it called childLabel
+                 * directly and never came through the planner.
+                 *
+                 * Only the NAME is shared: the trailing number stays 1-based
+                 * here, because childLabel counts from child_index_base and
+                 * minijv declares none -- so borrowing that too would renumber
+                 * its picker from Part 1-8 to Part 0-7. See childName. */
                 derivedLabels: Array.from(
                     { length: childCount(lvl) },
-                    (_, i) => `${lvl.child_label || "Item"} ${i + 1}`),
+                    (_, i) => childName(lvl, i)
+                        || `${lvl.child_label || "Item"} ${i + 1}`),
                 childOf: levelKey,
                 childLevel: lvl,
             });

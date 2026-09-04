@@ -409,6 +409,113 @@ level. The one sanctioned divergence is the root's name — the walker calls its
 root "Main", and the picker overrides that with the mode's own name when
 `modes` gives it more than one root.
 
+### The grid FOLLOWS the focused voice, and writes no LEDs doing it
+
+A module can declare what its performance surface is — `pad_layout`, and a `note`
+per voice — and which voice it considers focused. The declaration contract is
+in `docs/MODULES.md`; `src/shared/param_pages/voices.mjs` is the only place the
+two fleet shapes (sibling levels, template children) collapse into one ordered
+voice list, and the only place the focus is resolved. It is pure: it never
+reads a param.
+
+`syncVoiceFromModule` in `page_controller.mjs` rides **the rotation stop
+`child_index_param` already takes** — the one that also carries the preset name
+— so following a voice costs the rotation nothing extra, and a module that
+declares no voices costs it nothing at all (`voicesOf` returns empty and the
+function returns before any read). At ~2.8 ms an IPC read is more expensive
+than redrawing the whole screen, so a stop of its own was never on the table.
+
+**THE MODULE OWNS THE FOCUS. Nothing is inferred from what is played.**
+`child_index_param` if any voice's level declares it (the existing child-index
+path already owns that module), else `focus_param` from the hierarchy top
+level, else **nothing is read and the grid does not follow**. The first
+declared wins because two live sources would disagree the moment a module moved
+its focus without a note — a preset load, mrdrums' auto-select — and the
+disagreement would latch.
+
+A `<prefix>:last_note` fallback used to sit at the end of that list. It is
+deleted: **a sequencer plays notes**, so a running pattern changed the page on
+every hit in the bar, and a pad press could not be told from a clip because
+both arrive through the same MIDI_OUT echo. `synth:last_note` is still served
+as a diagnostic and `test_voice_follow.sh` asserts it is never *read* — a read
+is what a later refactor quietly starts navigating on again.
+
+The `focus_param` read accepts a level **name** first, which is what the
+declaration documents, and a numeric voice index second. Either may be prefixed
+`"<count>:"`, and the latch is on that whole token rather than on the resolved
+voice — which is what makes **re-hitting the pad you are already on** navigate
+again. Without the count, hit kick → jog to Reverb → hit kick leaves you on
+Reverb, because the answer never changed. 9W9 shipped a counter for this before
+the contract existed; see `focusToken` in `voices.mjs`.
+
+### The header pad minimap
+
+A component declaring `pad_layout: "drums"` gets a 6px box in the header with
+one cell lit: `drawPadGridIcon` in `render_page_movy.mjs`, ported from
+schwung-movy's `renderer/header.ts`. It claims 7px (icon plus gap) from the
+header's measured split, and at 6×6 for a 16-pad rack it is exactly `HEADER_H`,
+so it fits the band without moving anything — the header's own note records
+that a third of the bar sits empty at the fleet median.
+
+**It is PINNED to the right edge**, and the page name gives ground instead.
+movy draws it immediately before the right-hand text, so its x is
+`W - 2 - rightW - PAD_ICON_W` and it moves whenever that text changes width —
+and that text is the page name, which changes on every page. An indicator you
+consult at a glance has to be findable without reading the thing beside it; one
+that slides a dozen pixels as you jog is something you hunt for each time.
+Reported from the device as wanting it "in a stable place". The name is already
+elastic — fitted, abbreviated, truncated — and the icon is six pixels that mean
+nothing if they move, so the name is the right one to yield.
+
+**It follows the PAGE, not the module's focus.** The two coincide whenever the
+follow moved you — it moves you *to* that voice's page — and they part the
+moment you jog by hand, at which point a focus-derived map answers a question
+you did not ask: it shows the pad the module thinks is focused while you are
+looking at a different drum. A child level answers for its current instance, so
+a rack page lights the pad selected within it, and a page that edits no pad
+(Reverb, My Presets, Module) lights nothing.
+
+**It is a PHYSICAL map.** The lit cell is that page's voice `note` minus the
+rack base (36), so it shows where the pad sits under your hand — not where the
+voice sits in a list. A map agreeing with the page order would be a second bank
+bar, and there is one of those a row below. Move's rack counts up from 36 at the
+BOTTOM-LEFT, which is why the row is subtracted; upside down is invisible in a
+unit test and obvious the moment a hand is on the hardware, so the geometry was
+rendered and looked at rather than reasoned about.
+
+A voice whose note is off the rack draws the **empty box**, never the nearest
+cell: a minimap pointing at the wrong pad is worse than no minimap.
+
+Gated on `pad_layout`, not on "declares voices" — this is the one thing in
+Schwung's own UI that the layout declaration drives, and a chromatic module with
+per-zone notes must not grow a rack icon. The FOLLOW deliberately does not
+branch on it: a module that declares voices before settling its layout still
+follows.
+
+The tri-state is the usual one and it is load-bearing here: `null` moves
+nothing. Adopting voice 0 because a read timed out would move the user off the
+pad they were editing, re-keying every page on screen and dropping its cached
+values. A voice whose level has no knob page, and a voice you are already on,
+are both no-ops too; the jump uses `remember: false`, because the module named
+a *voice*, so the grid lands on that voice's page rather than on whichever page
+of that section was last visited.
+
+**Nothing in this path writes a pad LED.** Move owns the pads while the shadow
+UI is up, and the follow path is a read plus a navigation — never a MIDI-out.
+"While I am here I will light the rack" is exactly the change someone makes
+later in good faith, so it is pinned rather than commented:
+`tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or LED write in
+`syncVoiceFromModule` or in `voices.mjs`.
+
+Names: `childLabel` (`child_key.mjs`) prefers a declared `child_names` entry
+over the generated "Pad 3", falling back per item, and `voices.mjs` routes its
+own naming through it — so the voice list and the name resolution cannot
+disagree about what pad 3 is called. **The grid's instance-picker page does not
+route through it yet**: `page_plan.mjs` builds that page's `derivedLabels` from
+`child_label` alone, so a module that names its pads still sees "Pad 1 … Pad
+16" on the *Selected Pad* page. That is the residual half of voice names in the
+picker, and it is one call site.
+
 ### The knob grid is the DEFAULT param view, and it reflows to stay drawable
 
 `paramViewGlobal` defaults to 1 (the grid). The hierarchy list is still there
@@ -1337,3 +1444,71 @@ is covered by `tests/host/test_widget_module_poc.sh`, which starts from the
 shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
 calling `registerWidget()` directly. Every other widget test registers directly,
 and that is exactly why none of them saw this.
+
+### A module's OTHER draw surface is a CARD, and it floats
+
+`drawCell` gives a module one cell. `card_script` gives it the page: a bordered
+picture, centred, raised while a knob is held or has just been turned, and gone
+on release. `param_card.mjs` owns the frame and the module owns the inside.
+
+**Why a second surface rather than a bigger cell.** A cell is 17×15 and the
+grid's business is eight values at once. A card answers a different question —
+*what does THIS value mean* — for the one knob under a finger. The two do not
+compete: a page may have both, and the card only exists during the gesture.
+
+**A card is centred in the page's FRAME, not on the panel.** `render()` takes a
+`rect` so a tool can embed the grid in its own chrome, and `paramCardRect` is
+given that rect (defaulting to the whole panel, so the full-screen host is
+unchanged). It centred on `SCREEN_WIDTH`/`SCREEN_HEIGHT` unconditionally at
+first, which put the card across the whole display while the page it belongs to
+sat in a corner — not floating over that page but painting over the host's
+screen. Needing no clear is not the same as knowing where to draw.
+
+**It FLOATS, and that is why it needs no `clearScreen`.** The enum peek beside it
+is full-screen on purpose and therefore cannot draw without the frame owner's
+clear. A card blanks its own rect with `fillRect`, keeps the page visible around
+it, and so stays drawable by an embedded consumer that owns no frame at all —
+which keeps the library's "no file here clears the screen" contract without an
+exception. The peek wins when both could show: a card is an aid to reading one
+value; the peek is the list of values you are moving between.
+
+**Same coordinate contract as a cell widget, through the same file.** The drawer
+is handed a `frameCtx` scoped to the inside of the card, so `(0,0)` is its own
+top-left and there is no way to name a screen pixel. The instability argument
+that made `frame_ctx.mjs` necessary for widgets applies here for a different
+reason: a card's size is declared **per parameter** (`card_w` / `card_h`, clamped
+to the panel), so absolute coordinates authored against one card are wrong on
+the next — and a floating card that could paint outside its border would eat the
+page it exists to float over. Two module draw hooks, one rule.
+`tests/host/test_param_card.sh` pins it by drawing `(-5, -5, 200, 200)` and
+asserting nothing outside the card is lit and the frame *counted* the overflow.
+
+**Centred, not anchored to the touched cell.** A cell is 30px wide and a card is
+not, so anchoring would put most cards off the edge and the rest in a different
+place per knob — a picture that moves while you read it.
+
+**No timer of its own.** `s.touched` is already "the knob being held, or the one
+just turned": a hold sets `turnClaimMs` to 0 so it never expires, a release
+clears it at once, and a turn no finger registered on expires through
+`TURN_CLAIM_MS`. Every other follow-the-knob surface here obeys that law and a
+second one would drift from it.
+
+**The load is off the draw path, and a null answer is cached.** Nothing
+module-side is resident while the grid is up and the host loader has no cache, so
+loading from `renderOverlays` would evaluate a module script on every frame of a
+turn. `warmCard` runs from touch and from a turn, once per spec per session,
+caching the failures too — a missing file or a bad export costs one attempt, not
+one per touch.
+
+**Default-off, and old-host-safe by construction.** A host with no `loadCard` in
+its io draws no card for a declaring parameter, and a parameter that declares
+nothing is untouched. So a module may ship `card_script` for years and change
+nothing anywhere it is not supported.
+
+⚠ **`frameCtx` exposes `fillRect` / `print` / `textWidth` only.** The context the
+host hands the grid also carries `line`, `setPixel`, `fillCircle`, `drawCircle`
+and `drawArc` (`shadow_ui.js`'s `movy` object), and the widget design spec names
+`setPixel` and `drawLine` as part of a frame context — so a drawer that wants
+them today must fall back to `fillRect` (a Bresenham built on it still clips
+correctly). Passing the optional primitives through, clipped, is a separate and
+generic change to `frame_ctx.mjs`; it is not part of the card.

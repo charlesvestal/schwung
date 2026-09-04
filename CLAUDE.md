@@ -489,6 +489,13 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **`synth:last_note` is recorded at BOTH synth-feed paths**, via
+  `chain_record_synth_note`. `v2_tick_midi_fx` is the one that looks optional
+  and is not: an ARPEGGIATOR emits from `tick()`, not `process_midi()`, so
+  instrumenting only `v2_on_midi` means it never updates with an arp in the
+  slot. It reports a NOTE, not a voice index — the canonical voice order lives
+  in `voices.mjs` and a C copy of it would fail silently as "the grid follows
+  the wrong pad".
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -539,6 +546,37 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
+- **A module DECLARES whether it is a rack or a keyboard; it is never
+  inferred.** `pad_layout` at the top of `ui_hierarchy` is `drums` | `chromatic`,
+  and **absent is a third state** — all 100 captured fleet modules are in it.
+  The tempting shortcut, "it has notes on its pages so it is drums", is wrong:
+  key zones, multitimbral parts and chord modules all carry notes on melodic
+  pages. Voices are described separately, and the two axes never imply each
+  other. **ROOT ITSELF CAN BE THE RACK** — mrdrums declares its 16 pads *on*
+  `root`, not in a sibling level, and skipping root made an earlier build a
+  complete no-op for the flagship drum module while every fixture passed.
+- **THE MODULE OWNS THE FOCUS; nothing infers it from what is PLAYED.**
+  `child_index_param`, else `focus_param`, else the grid does not follow — and
+  declaring neither is a valid choice, not a gap. A `synth:last_note` fallback
+  was tried and deleted: **a sequencer plays notes**, so a running pattern
+  changed the page on every hit in the bar, and a pad press cannot be told from
+  a clip anyway (both arrive through the same MIDI_OUT echo). `last_note` is
+  still served as a diagnostic and the test asserts it is never READ, because a
+  read is what someone later starts navigating on again.
+- **A focus answer may carry a CHANGE TOKEN — `"<count>:<level>"`.** The follow
+  acts on a change, so a repeat does nothing — correct while a value is
+  re-reported, wrong when it marks a second hit on the pad you are already
+  editing. Hit kick, jog to Reverb, hit kick: a bare name leaves you on Reverb.
+  9W9 published a counter for this before the contract existed; reading the
+  fleet before designing at it is the whole lesson. `focusToken`, `voices.mjs`.
+- **The header pad minimap is a PHYSICAL map**, gated on `pad_layout: "drums"`:
+  the lit cell is the voice's note minus 36, so it shows where the pad is under
+  your hand. A map matching the page order would be a second bank bar. Move's
+  rack counts up from the BOTTOM-LEFT; off-rack draws the empty box rather than
+  the nearest cell.
+- **The voice-follow path writes no pad LEDs.** Move owns the pads while the
+  shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
+  LED write in `syncVoiceFromModule` or `voices.mjs`.
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback

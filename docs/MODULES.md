@@ -1512,6 +1512,260 @@ Without this, adding a child level to a module that already follows the played
 pad would *cost* that behaviour — the grid would sit on the instance the picker
 last chose. With it, the declaration is purely additive.
 
+### Declaring your performance surface
+
+A sequencer driving your module — movy is the live case — has to lay out Move's
+pads before it can draw anything, and until now it could not ask you: a drum
+module wants a rack where one pad is one voice and hitting a pad is how you pick
+what to edit, a synth wants a chromatic keyboard, and nothing in `module.json`
+or `ui_hierarchy` said which. So it kept a private table instead — a
+`movy_config.json` per module, 14 bundled configs and a four-module override
+list — in which `padScoping.concreteKeyTemplate` is a verbatim re-spelling of
+`child_key_template`. Two optional declarations at the top of `ui_hierarchy`
+replace that table for every consumer at once.
+
+#### `pad_layout` — say it, because nobody can work it out
+
+```json
+{ "pad_layout": "drums", "levels": { } }
+```
+
+`"drums"` or `"chromatic"`. **Absent is a distinct third state meaning you have
+not said** — which is where all 100 captured fleet modules sit today. Absent is
+not a synonym for chromatic: a consumer picks its own default and is never told
+you are melodic when you have not said, so a sequencer can keep a bundled
+fallback for an undeclared module without that fallback ever overriding a real
+declaration. An unrecognised string is also unspecified, not a licence to
+guess. Same tri-state discipline the param channel already enforces between
+`null` and `""`.
+
+**The layout is never inferred from the presence of notes, and you must not
+rely on it being.** Declaring notes is not declaring a layout. A sampler with
+key zones, a multitimbral synth and a chord module all legitimately carry notes
+on melodic per-zone pages, and a consumer that read "has notes" as "is a drum
+rack" would seat every one of them as one. Notes describe *voices*; `pad_layout`
+describes the *surface*; the two axes never imply each other. `"drums"` with no
+voices declared is legal (a rack whose pages are not published yet), and
+`"chromatic"` with a note on every zone page is legal and correct.
+
+It lives in `ui_hierarchy` rather than in `module.json` capabilities so that a
+module whose answer depends on what is loaded — an sfz player, a slicer: drums
+or melodic according to the kit — can serve it from `get_param` and change it.
+**Where you put it depends on your `component_type`, and for a sound generator
+there is only one choice.** The chain host calls `parse_ui_hierarchy_cache` for
+audio FX and MIDI FX only (`chain_host.c:337`, `:705`, `chain_midi.c:317`), so
+those two may declare a fixed hierarchy in `module.json` and never implement
+`get_param("ui_hierarchy")`. **A sound generator's `module.json` hierarchy is
+never read** — `synth:ui_hierarchy` goes straight to the plugin
+(`chain_host.c:1755`), with no fallback. If you are writing a synth, serve it
+from `get_param` or it does not exist.
+
+This is easy to get wrong because the declaration looks identical either way,
+and a synth that declares one in `module.json` gets no error — it is simply
+ignored, and the grid plans from `chain_params` as though you had declared
+nothing.
+
+#### Voices: a level that declares `note` is a voice; one that does not is a page
+
+**The sibling shape** — one level per voice, each differently shaped, the way
+9W9 / 6W6 / 8W8 / CW78 are built. `reverb` declares no note, so it is a page,
+not a voice: it is navigable and it sounds nothing. That distinction is the
+whole point. Those four modules are on movy's override list precisely because
+their private configs put a pad on every bank *including* the ones with no
+voice behind them, and "every bank is a voice" collapses the module to a single
+page.
+
+```json
+{
+  "pad_layout": "drums",
+  "focus_param": "ui_voice",
+  "levels": {
+    "root": { "params": [
+      { "level": "bass_drum", "label": "Bass Drum" },
+      { "level": "snare",     "label": "Snare" },
+      { "level": "reverb",    "label": "Reverb" }
+    ] },
+    "bass_drum": { "name": "Bass Drum", "note": 36, "role": "kick",  "knobs": ["tune", "decay"] },
+    "snare":     { "name": "Snare",     "note": 38, "role": "snare", "knobs": ["tune", "snap"] },
+    "reverb":    { "name": "Reverb", "knobs": ["size", "mix"] }
+  }
+}
+```
+
+Two voices — `bass_drum` (index 0) then `snare` (index 1), in `root`'s nav-link
+order, which is the order the user sees and the order a rack is seated in. A
+voice level `root` does not link is **appended** after the linked ones in
+`levels` declaration order rather than dropped: a voice reachable only from a
+sub-level still needs a stable index, and dropping it would make two consumers
+disagree about the same list while both looked correct.
+
+**The template shape** — interchangeable instances behind one key template, the
+way mrdrums and po32-drum are built. The note map hangs off the same child
+level you already declare:
+
+```json
+{
+  "pad_layout": "drums",
+  "levels": {
+    "root": { "params": [{ "level": "pads", "label": "Pads" }] },
+    "pads": {
+      "child_count": 4,
+      "child_label": "Pad",
+      "child_key_template": "p{index}_{key}",
+      "child_index_base": 1,
+      "child_index_digits": 2,
+      "child_index_param": "ui_current_pad",
+      "child_notes": [36, 38, 42, 46],
+      "child_names": ["Kick", "Snare", "Closed Hat"],
+      "child_roles": ["kick", "snare", "hat", "hat"],
+      "knobs": ["vol", "pan", "tune", "decay"]
+    }
+  }
+}
+```
+
+Four voices: `Kick`/36, `Snare`/38, `Closed Hat`/42, and `Pad 4`/46 — the
+fourth name falls back **per item** to the generated `child_label` + index, so
+naming your first three pads is an improvement rather than a trade. The
+generated number honours `child_index_base` (hence "Pad 4" for the fourth
+instance under `child_index_base: 1`) while `child_names` and `child_notes` are
+indexed from **0**, in declaration order, always.
+
+**Your rack may be `root` itself.** Nothing requires a child level to sit
+behind a nav link from `root` — mrdrums declares its 16 pads *on* `root`, and
+that is the fleet's flagship template-shape drum module:
+
+```json
+{
+  "pad_layout": "drums",
+  "levels": {
+    "root": {
+      "name": "Pads",
+      "child_count": 16,
+      "child_label": "Pad",
+      "child_key_template": "p{index}_{key}",
+      "child_index_base": 1,
+      "child_index_digits": 2,
+      "child_index_param": "ui_current_pad",
+      "child_note_base": 36,
+      "knobs": ["vol", "pan", "tune", "decay"]
+    }
+  }
+}
+```
+
+Sixteen voices, `Pad 1`/36 … `Pad 16`/51. `child_note_base` is the contiguous
+form: instance *i* in declaration order plays `base + i`. Use `child_notes`
+when the map is sparse; it wins over `child_note_base` wherever both are
+declared.
+
+#### The fields
+
+| Field | Where | Purpose |
+|---|---|---|
+| `pad_layout` | hierarchy top level | `drums` \| `chromatic`; absent = unspecified, and unspecified is not chromatic |
+| `note` | a level | the MIDI note this level's voice plays; a level with none is a page |
+| `role` | a level | free-form hint (`kick`, `hat`); **no host behaviour depends on it** |
+| `child_note_base` | a child level | instance *i* plays `base + i` |
+| `child_notes` | a child level | sparse per-instance notes; wins over `child_note_base` |
+| `child_names` | a child level | per-instance names; falls back **per item** to `child_label` + index |
+| `child_roles` | a child level | per-instance roles, same free-form rule as `role` |
+
+#### A `note` is a MIDI NOTE, never a pad id
+
+Move's own surface reports **pad identifiers** on cable 0 — pad 1 is 68 — and
+those are not what you declare. A chain slot never sees them: it is fed the
+TRACK's output, so what reaches your `on_midi` is the note the track plays
+(36 for a drum track's first pad, a scale note for a melodic one). Declaring
+the pad id instead makes a voice that can never match anything the module
+receives, and the symptom is silent — the pads simply do nothing, with no error
+anywhere.
+
+The distinction is easy to lose because an **overtake** tool does see cable 0:
+it owns the surface. That is exactly why the note belongs on this side. You say
+"this voice plays note 38", and the consumer decides which pad to put it on —
+movy seats its own grid, a sequencer seats its own, and an external keyboard
+needs no seating at all. Declaring pad ids would invert that and bake one
+controller's geometry into every module that ever declares a voice.
+
+`synth:last_note` is the same fact from the host side: it records what the
+SYNTH received, so it is directly comparable to a declared `note` and never to
+a pad id. It is a diagnostic — **nothing navigates on it**, for the reason
+under "Why there is no note-based fallback" below.
+
+| `focus_param` | hierarchy top level | a param naming the focused voice: a **level name**, optionally prefixed `"<count>:"` |
+
+`role` is a **free string** and deliberately not an enumeration. It is a hint a
+consumer may use to colour or seat a rack it has never seen, and one that does
+not recognise a value ignores it. Constraining it would mean maintaining a
+percussion vocabulary inside the host for a field the host never reads.
+
+**Size.** `chain_params` over 64KB will not load, and `ui_hierarchy` shares
+that budget. Sixteen `child_names` is nothing; 200 of them plus 200
+`child_roles` is worth counting before you ship.
+
+#### Which voice is focused — one live input, and you choose it
+
+A consumer showing a per-voice page needs to know which voice is focused, and
+to keep in step when *you* move that focus (a pad press, a preset load, an
+auto-select). **YOU own that fact. Nothing infers it from what is played.**
+
+| You declare | Input read | Resolved by |
+|---|---|---|
+| `child_index_param` (template shape) | `<prefix>:<child_index_param>` — your own instance numbering | instance → voice index |
+| `focus_param` (sibling shape) | `<prefix>:<focus_param>` — a **level name** | level name → voice index |
+| neither | nothing is read | the grid does not follow |
+
+**Declaring neither is a valid choice**, not a gap: your voices are still
+declared, so a sequencer can lay out pads and the header minimap still works —
+the grid simply does not move on its own.
+
+##### Why there is no note-based fallback
+
+There used to be a third row here: the host would follow `synth:last_note`, the
+note it last saw reach your synth. It is gone, and the reason is worth stating
+because it is not obvious. **A SEQUENCER PLAYS NOTES.** With a pattern running,
+every hit is a note, so the page changed on every drum in the bar — the editor
+was unusable exactly while you listened to the thing you were editing. "The pad
+you HIT" is a gesture; "the note that SOUNDED" is a different fact and cannot
+stand in for it.
+
+Nor can the two be separated where it mattered: a pad press and a clip both
+reach your synth through Move's MIDI_OUT echo, tagged identically. Cable 0 does
+carry real presses — the shim routes them to the focused slot — but only for a
+module declaring capture rules, and a module able to do that is equally able to
+publish a focus param.
+
+`synth:last_note` is still served (see `docs/CHAIN.md`) and is a reasonable
+thing for a sequencer to ask. **Nothing navigates on it.**
+
+##### A focus answer may carry a CHANGE TOKEN
+
+Your focus param may answer either form:
+
+```
+snare        the level, and nothing else
+17:snare     a monotonic hit COUNT, then the level
+```
+
+**Prefer the second.** The grid acts on a CHANGE, not on a value — otherwise it
+would drag you back to the focused voice on every rotation stop and you could
+never navigate away. But that means a repeat of the same answer does nothing,
+and a repeat is exactly what a second hit on the pad you are already editing
+looks like. Hit the kick, browse to Reverb, hit the kick again: with a bare
+name you stay on Reverb, because the answer never changed. The count is the
+only thing that records the *event*.
+
+9W9 has published `"<count>:<level>"` from `ui_focus_level` since before this
+contract existed, for exactly this reason. Both forms are accepted; a bare name
+behaves as it always has.
+
+The two guarantees carried over from `child_index_param` hold for all three
+inputs. **A read that does not answer never moves the focus** — empty,
+non-numeric, an unknown level name or an out-of-range index is ignored rather
+than treated as voice 0. And **it costs no extra IPC**: the read rides a
+rotation stop the grid already takes.
+
 ### Example: Chord MIDI FX Hierarchy
 
 ```json
@@ -1830,6 +2084,66 @@ under `src/modules/`, so a fixture also has to be scrubbed from `build/` when
 the gate is off. A `module.json` shipped without its `.so` still appears in the
 FX picker, and a chain slot pointing at a module that cannot load is restored on
 every boot. `tests/host/test_test_fixtures_not_shipped.sh` pins both halves.
+
+#### The parameter card (`card_script`)
+
+A `drawCell` widget replaces one cell's graphic. A **card** is the other surface:
+a picture that floats over the whole page while a knob is held or has just been
+turned, and is gone the moment you let go. Use it when a value needs more room
+than a 17×15 box — a crossfade sitting between two named anchors, a feedback
+amount that computes to a repeat count, a mode whose meaning is a diagram.
+
+Declare it on the parameter, in the same `chain_params` entry the rest of the
+knob comes from:
+
+```json
+{ "key": "blend", "name": "Blend", "type": "float", "min": 0, "max": 1,
+  "card_script": "cards.js#blend_card", "card_w": 96, "card_h": 44 }
+```
+
+- `card_script` (required to get a card): `file.js#exportName`, spelled exactly
+  like `canvas_script`. The file is resolved from the module root, and the
+  export is looked up on `globalThis`.
+- `card_w` / `card_h` (optional): the size you want, in pixels. Defaults are
+  96×34; anything nonsense (zero, negative, NaN, a string) falls back to the
+  default, and anything larger than the panel is clamped to it.
+
+Then export the drawer:
+
+```javascript
+globalThis.blend_card = function (ctx, o) {
+    ctx.print(1, 0, o.name, 1);
+    ctx.print(o.w - 1 - ctx.textWidth(o.value), 0, o.value, 1);
+    const v = Number(o.raw);
+    if (isFinite(v)) ctx.fillRect(0, 12, Math.round(o.w * v), 6, 1);
+};
+```
+
+**The card is not the screen, exactly as a widget's cell is not.** `(0,0)` is the
+inside of the card — the host has already cleared it and drawn its border — and
+`ctx.width` / `ctx.height` (also `o.w` / `o.h`) are that inside, not the display.
+There is no accessor that reaches absolute space and nothing you draw outside
+the card can land, which matters twice here: the size is per parameter, so
+coordinates authored against one card are wrong on the next, and a card that
+could paint past its own border would eat the page it exists to float over.
+**Size everything against `o.w` / `o.h`; never write a fixed screen offset.**
+
+**You get the value; you cannot read it.** `o.name` is the parameter's name,
+`o.value` is the same formatted reading the header would show, and `o.raw` is
+the wire value — **and `o.raw` may be `null`**, meaning the module did not answer
+that read. Draw a word and stop when it does; a read that did not answer must
+never become a picture. There is no `getParam` on this path (~2.8 ms, against a
+1.68 ms whole-page render).
+
+**One strike.** A drawer that throws is retired for the session, the card is
+left as an empty frame rather than a hole, and the parameter goes back to
+drawing like any other — which is also what a host too old to know `card_script`
+shows, so the degraded state is one you already ship.
+
+**Keep the card file small and separate from `canvas.js`.** The host evaluates
+the script on the first touch of a declaring knob. If your bank editor lives in
+the same file, that whole file is evaluated on a gesture to reach one drawing
+function.
 
 #### Dynamic Target Pickers
 

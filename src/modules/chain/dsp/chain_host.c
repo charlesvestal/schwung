@@ -84,6 +84,10 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     inst->loaded_receive_channel = PATCH_CHANNEL_UNSET;
     inst->loaded_forward_channel = PATCH_CHANNEL_UNSET;
 
+    /* No note has been played into the synth yet. calloc would say 0, which is
+     * a real note number (C-1) and would name a voice nobody selected. */
+    inst->synth_last_note = -1;
+
     /* Set up host API for sub-plugins */
     if (g_host) {
         inst->host = g_host;
@@ -169,6 +173,7 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_param_count = 0;
     inst->mod_param_refresh_ms_synth = 0;
     inst->synth_default_forward_channel = -1;
+    inst->synth_last_note = -1;
     inst->synth_bypassed = 0;
 }
 
@@ -551,6 +556,9 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    /* Reset per synth load: a stale note from the previous module would name a
+     * voice in a list that no longer exists. */
+    inst->synth_last_note = -1;
     inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
     {
         char json_path[MAX_PATH_LEN];
@@ -1691,6 +1699,12 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
          * boot). Parsed from module.json capabilities at synth load. */
         if (strcmp(subkey, "consumes_line_input") == 0) {
             return snprintf(buf, buf_len, "%d", inst->synth_consumes_line_input);
+        }
+
+        /* MIDI note last played into the synth, or -1. Resolved against the
+         * module's declared voices by whoever holds that list. */
+        if (strcmp(subkey, "last_note") == 0) {
+            return snprintf(buf, buf_len, "%d", inst->synth_last_note);
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */

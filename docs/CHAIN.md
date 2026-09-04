@@ -64,6 +64,49 @@ shows the LFO's number and the knob reads as dead (#276). A UI that wants the
 driven value asks for `:effective` by name; the plugin itself is not the place
 to ask, since it holds whatever effective value the overlay last wrote.
 
+### `synth:last_note` — the chain host's own key, and why it is a NOTE
+
+**`synth:last_note`** — the MIDI note last played *into* the synth,
+post-MIDI-FX, or `-1`.
+
+**It is a DIAGNOSTIC. Nothing navigates on it**, and `test_voice_follow.sh`
+asserts the knob grid never even reads it. It was briefly the third input to
+"which voice is focused", for a module declaring neither `child_index_param`
+nor `focus_param`, and that was wrong: **a sequencer plays notes**, so a
+running pattern changed the editor's page on every hit in the bar. A pad press
+and a clip cannot be told apart here either — both reach the synth through
+Move's MIDI_OUT echo, tagged the same. The focus is the module's to declare
+(see `docs/MODULES.md`, "Declaring your performance surface"); a sequencer
+asking what last sounded is the legitimate use of this key.
+
+It is reset to `-1` on instance create and on every synth load, so a
+note left over from the previous module can never name a voice in a list that
+no longer exists.
+
+**Two paths feed the synth and both record it**, through one inline helper,
+`chain_record_synth_note` in `chain_midi.c`. `v2_on_midi` carries the notes a
+MIDI FX transformed in its `process_midi`; `v2_tick_midi_fx` carries the notes
+it emitted from its `tick()` instead — **which is exactly what an arpeggiator
+does**, swallowing the held note and emitting its pattern on the clock.
+Instrumenting only the first means `last_note` never updates at all with an arp
+in the slot, and the grid follows a pad nobody played. The same split already
+bit the MIDI trace, for the same reason.
+
+Note-offs are ignored: a released pad is still the pad you are editing. The
+record is an int store on the SPI callback and nothing else — no allocation, no
+parsing, no logging.
+
+**It reports a note and not a voice index on purpose.** Resolving the index
+needs the canonical voice order — `root`'s nav links, then unlinked voice
+levels, then child instances — and `chain_json.c`'s helpers are flat key scans
+that cannot walk `levels` in order. A C implementation would therefore be a
+*second* copy of that order sitting beside `voices.mjs`. That is the shape that
+gave the metronome and `recall_quantize` the same off-by-one, and here it would
+fail silently as "the grid follows the wrong pad". One fact, one
+implementation: the note → voice lookup happens wherever the voice list already
+lives (`src/shared/param_pages/voices.mjs` for the grid, a sequencer's own
+parse for itself).
+
 ### Chain Architecture
 
 Chain host (`modules/chain/dsp/chain_host.c` — lifecycle/set+get_param/render; helpers split into `chain_{json,params,mod,midi,patch,reorder}.c`, shared decls in `chain_internal.h`) dlopens sub-plugins, forwards MIDI to sound generator, routes audio through FX. Patches in `/data/UserData/schwung/patches/*.json`. Built-in MIDI FX: chord, arp (up/down/up_down/random). Built-in audio FX: freeverb. MIDI sources can provide `ui_chain.js` for fullscreen chain UI.

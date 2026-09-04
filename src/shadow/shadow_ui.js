@@ -75,8 +75,20 @@ import { drawEnumList }
  * as long as they did.
  */
 import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
-         childLabel as childLevelLabel, resolveChildKey }
+         childLabel as childLevelLabel, resolveChildKey, childIndexParam }
     from '/data/UserData/schwung/shared/param_pages/child_key.mjs';
+/* The voice model, for the LIST editor's follow.
+ *
+ * The knob grid gets this through page_controller; the list gets it here,
+ * because `paramPagesEnabled()` returns false whenever the screen reader is
+ * on, so a screen-reader user is ALWAYS on the list and would otherwise never
+ * have the feature at all. That is the group it matters most to: sighted users
+ * can see which voice they are on, and a blind user is told -- so "the pad you
+ * hit is the page you get" replaces a jog through eight entries counting
+ * announcements. Reported from the device as the pads doing nothing. */
+import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromWire,
+         focusToken }
+    from '/data/UserData/schwung/shared/param_pages/voices.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
@@ -13819,6 +13831,10 @@ function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx,
     hierEditorChildLabel = "";
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
+    /* A different component is a different set of voices, so the index we last
+     * adopted names nothing here — and re-seeding is what lets the FIRST answer
+     * from the new component navigate. Only the repeats must do nothing. */
+    hierEditorVoiceLatch = null;
     resetHierarchyEditState();
     hierEditorIsMasterFx = isMasterFx;
     hierEditorMasterFxSlot = masterFxSlot;
@@ -13966,6 +13982,106 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
     /* Announce menu title + initial selection */
     const moduleName = getMasterFxParam(fxSlot, "name") || `FX ${fxSlot + 1}`;
     announceHierarchyEditorEntry(moduleName);
+}
+
+/*
+ * The LIST editor's voice follow — parity with the knob grid's.
+ *
+ * WHY IT LIVES HERE AND NOT ONLY IN page_controller: `paramPagesEnabled()`
+ * returns false whenever the screen reader is on, so a screen-reader user
+ * never sees the grid and, until this existed, never had the follow. That is
+ * exactly backwards from where the feature earns its keep — someone who cannot
+ * see the header has to jog through eight entries counting announcements to
+ * reach the voice they just played. Reported from the device as "it only shows
+ * kick, and it is certainly not changing pages with the pads".
+ *
+ * Same three rules the grid follows, deliberately identical:
+ *   - ONE live input: `child_index_param` (the list already tracks that through
+ *     hierEditorChildIndex), else `focus_param`, else `last_note`.
+ *   - TRI-STATE: a read that did not answer moves nothing, ever.
+ *   - AN EDGE, NOT A PIN: a repeat of the answer we last acted on does
+ *     nothing, or the list would yank you back on every poll and you could
+ *     never navigate away from the voice that happens to be focused.
+ */
+let hierEditorVoiceLatch = null;
+let _voiceFollowTickCounter = 0;
+const VOICE_FOLLOW_CHECK_INTERVAL = 8;   /* ~7x/sec at 60fps */
+
+function syncHierEditorVoice() {
+    /* NEVER while the knob grid is up. The grid runs its own follow inside
+     * page_controller, and two followers on one screen is the two-live-sources
+     * defect wearing a different hat -- they would fight over the same focus
+     * on alternate polls. The grid and the list can share a view id, so
+     * paramPagesActive() is the honest test, not the view. */
+    if (paramPagesActive()) return;
+    if (view !== VIEWS.HIERARCHY_EDITOR) return;
+    if (!hierEditorHierarchy || hierEditorSlot < 0) return;
+    /* Editing a value, or picking from a list, is not a moment to be moved. */
+    if (hierEditorEditMode) return;
+
+    const voices = voicesOf(hierEditorHierarchy);
+    if (!voices.length) return;
+
+    /* The template shape owns its own focus through child_index_param, which
+     * the list already follows; asking for a second input would be the two
+     * live sources the design forbids. Scoped to levels that CONTRIBUTE
+     * voices, so an unrelated child level elsewhere does not disable this. */
+    const levels = hierEditorHierarchy.levels || {};
+    for (const v of voices) {
+        if (childIndexParam(levels[v.level])) return;
+    }
+
+    /* THE MODULE OWNS THE FOCUS. The `last_note` fallback was deleted here for
+     * the same reason as in page_controller: a sequencer plays notes, so a
+     * running pattern would change the page on every hit. See the long note
+     * there — the two must not diverge. */
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const focusParam = focusParamOf(hierEditorHierarchy);
+    if (!focusParam) return;
+    const raw = getSlotParam(hierEditorSlot, `${prefix}:${focusParam}`);
+    /* "<count>:<level>" or a bare value — the count is what makes re-hitting
+     * the pad you are already on work. See focusToken. */
+    const ft = focusToken(raw);
+    let vi = voiceIndexFromLevel(voices, ft.value);
+    if (vi === null) vi = voiceIndexFromWire(voices, ft.value);
+
+    if (vi === null) return;                    /* tri-state: no information */
+    if (ft.token === hierEditorVoiceLatch) return;   /* the edge, on the TOKEN */
+    hierEditorVoiceLatch = ft.token;
+
+    const v = voices[vi];
+    if (!v || !v.level || !levels[v.level]) return;
+
+    /* Already standing on it: adopt the child instance if that is what moved,
+     * and otherwise leave the cursor exactly where the user put it. */
+    if (hierEditorLevel === v.level) {
+        if (v.childIndex !== null && hierEditorChildIndex !== v.childIndex) {
+            hierEditorChildIndex = v.childIndex;
+            loadHierarchyLevel();
+            invalidateKnobContextCache();
+            announceHierarchyEditorEntry(v.name || v.level);
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    hierEditorPath = [];
+    hierEditorLevel = v.level;
+    hierEditorSelectedIdx = 0;
+    hierEditorPresetEditMode = false;
+    const targetLevel = levels[v.level];
+    if (childLevelHasChildren(targetLevel)) {
+        hierEditorChildIndex = (v.childIndex !== null) ? v.childIndex : -1;
+        hierEditorChildCount = childLevelCount(targetLevel);
+        hierEditorChildLabel = targetLevel.child_label || "Item";
+    } else {
+        hierEditorChildIndex = -1;
+        hierEditorChildCount = 0;
+    }
+    loadHierarchyLevel();
+    invalidateKnobContextCache();
+    announceHierarchyEditorEntry(v.name || v.level);
+    needsRedraw = true;
 }
 
 /* Load params and knobs for current hierarchy level */
@@ -16725,6 +16841,90 @@ function resolveCanvasScriptPath(meta) {
         scriptPath: moduleFileExists(scriptPath) ? scriptPath : "",
         overlayRef
     };
+}
+
+/*
+ * A CARD script's path, resolved against the loaded module.
+ *
+ * The same join resolveCanvasScriptPath makes, without the canvas's spelling
+ * variants: a card names one file and one export, and the fragment has already
+ * been split off by the controller. Returns "" when the module declares a file
+ * it did not ship, which the caller reads as "no card" — a missing file is a
+ * module bug, not a reason to fail a page.
+ */
+/*
+ * Evaluate a card script and return its named export.
+ *
+ * ⚠ NOT loadCanvasOverlayScript, and the difference is not cosmetic. That
+ * resolves a canvas OVERLAY OBJECT, and resolveOverlayObject treats a function
+ * as a FACTORY — it CALLS the candidate and keeps the object it returns. A card
+ * export is a plain drawer, so routing it through there invoked it with no
+ * arguments, it threw on the rect it was not given, and the loader reported
+ * "overlay factory returned invalid value" and answered null. The controller
+ * cached that null exactly as designed and the knob had no picture, with no
+ * error anywhere. It only showed up on one of the two consumers, because the
+ * other supplies its own loader.
+ *
+ * A card is a FUNCTION. Take it as one.
+ *
+ * The saved/restored names are the module globals a UI script may assign, plus
+ * the card's own export — which is arbitrary, so it has to be saved by name.
+ * shadow_load_ui_module evaluates into the shared globalThis, and clobbering
+ * init/tick there is how the host stops ticking.
+ */
+function loadCardDrawer(scriptPath, exportRef) {
+    if (!scriptPath || !exportRef) return null;
+    if (typeof shadow_load_ui_module !== "function") return null;
+
+    const NAMES = ["init", "tick", "onMidiMessageInternal", "onMidiMessageExternal",
+                   exportRef];
+    const had = {}, saved = {};
+    for (const n of NAMES) {
+        had[n] = Object.prototype.hasOwnProperty.call(globalThis, n);
+        saved[n] = globalThis[n];
+    }
+
+    let out = null;
+    try {
+        if (shadow_load_ui_module(scriptPath)) {
+            const fn = globalThis[exportRef];
+            if (typeof fn === "function") out = fn;
+        }
+    } catch (e) {
+        out = null;
+    } finally {
+        for (const n of NAMES) {
+            if (had[n]) globalThis[n] = saved[n];
+            else { try { delete globalThis[n]; } catch (e) {} }
+        }
+    }
+    return out;
+}
+
+function resolveCardScriptPath(slot, component, scriptRef) {
+    if (!scriptRef) return "";
+    if (scriptRef.startsWith("/")) {
+        return moduleFileExists(scriptRef) ? scriptRef : "";
+    }
+    /*
+     * ⚠ RESOLVED FROM THE SLOT AND COMPONENT THE GRID IS ON, never from
+     * getHierarchyActiveModuleId().
+     *
+     * That reads hierEditorSlot / hierEditorComponent — the LIST editor's
+     * state, which is stale or empty while the knob grid is up, the same
+     * hazard the binding documents for `visible`. Using it resolved to "" on a
+     * grid entered without the list editor, so the card silently never loaded:
+     * no error, a cached null, and a knob that simply had no picture. It
+     * worked in one consumer and not the other for exactly this reason, which
+     * is what a single-host test would have missed.
+     */
+    const prefix = getComponentParamPrefix(component);
+    if (!prefix || slot < 0) return "";
+    const moduleId = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleDir = getModuleBasePath(moduleId);
+    if (!moduleDir) return "";
+    const scriptPath = `${moduleDir}/${scriptRef}`;
+    return moduleFileExists(scriptPath) ? scriptPath : "";
 }
 
 function loadCanvasOverlayScript(scriptPath, overlayRef) {
@@ -20327,6 +20527,25 @@ function drawHelpDetail() {
         return (c && c.key) ? c.key : null;
     };
     _ctx.isParamModulated = (slot, fullKey) => isHierarchyParamModulated(slot, fullKey);
+    /*
+     * Load a module-supplied CARD DRAWER, for a parameter that declared one.
+     *
+     * The library cannot read a file and must not try, so this is injected the
+     * same way isParamModulated is. It resolves the script against the module
+     * that is actually loaded — the same base path the fullscreen canvas uses —
+     * and returns the named export, or null.
+     *
+     * ⚠ CALLED FROM THE GESTURE, NEVER FROM THE DRAW. page_controller warms it
+     * on touch and on turn and caches the answer, including a null. No module
+     * script is resident while the grid is up and shadow_load_ui_module has no
+     * cache of its own, so a load from the draw path would evaluate the script
+     * on every frame of a knob turn.
+     */
+    _ctx.loadCardScript = (slot, component, scriptPath, exportRef) => {
+        if (!scriptPath || !exportRef) return null;
+        return loadCardDrawer(
+            resolveCardScriptPath(slot, component, scriptPath), exportRef);
+    };
     _ctx.isMuteHeld = () => hostMuteHeld;
 
     /* Overtake session state (for tools menu "Resume" indicator) */
@@ -21634,6 +21853,18 @@ globalThis.tick = function() {
         try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
+    }
+
+    /*
+     * The LIST editor follows the focused voice — the grid's behaviour, for
+     * the screen-reader path that never reaches the grid. Throttled rather
+     * than run every tick: it costs ONE param read when a component declares
+     * voices and nothing at all when it does not, and the follow is a response
+     * to a pad, which no one can press 60 times a second.
+     */
+    if (++_voiceFollowTickCounter >= VOICE_FOLLOW_CHECK_INTERVAL) {
+        _voiceFollowTickCounter = 0;
+        try { syncHierEditorVoice(); } catch (e) { debugLog("syncHierEditorVoice error: " + e); }
     }
 
     /* Draw upgrade overlay if active (takes priority over normal UI) */
