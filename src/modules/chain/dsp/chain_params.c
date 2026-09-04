@@ -1065,9 +1065,10 @@ float knob_value_to_frac(float value, const chain_param_info_t *pinfo) {
     return f;
 }
 
-/* Where a destination sits when the knob is at `position`. lo > hi is an
- * inverted destination and needs no special case: the interpolation simply
- * runs backwards. */
+/* Clamp a value into a destination's window, in the parameter's own units.
+ * This is the whole of what a range means for a SINGLE-destination knob: the
+ * parameter keeps its own step and feel and is simply bounded. `lo > hi` names
+ * the same window from the other end, so the bounds are ordered here. */
 float knob_dest_clamp(const knob_dest_t *d, float value,
                       const chain_param_info_t *pinfo) {
     if (!d || !pinfo) return value;
@@ -1096,6 +1097,9 @@ float knob_dest_clamp(const knob_dest_t *d, float value,
     return value;
 }
 
+/* Where a destination sits when the knob is at `position`. lo > hi is an
+ * inverted destination and needs no special case: the interpolation simply
+ * runs backwards. */
 float knob_dest_value_at(const knob_dest_t *d, float position,
                          const chain_param_info_t *pinfo) {
     if (!d) return 0.0f;
@@ -1408,11 +1412,12 @@ void knob_dest_set_window(chain_instance_t *inst, knob_mapping_t *km, int di,
  *   follows it through its own window.
  *
  * The asymmetry is not tidiness. Driving a LONE stepped parameter from a
- * position makes it crawl: an 8-option enum spans 7 units, so one detent of
- * KNOB_STEP_FLOAT moves it 0.0105 -- 4 -> 4.0105 -> (int) 4, the same value,
- * for ~95 detents per option instead of one. A parameter that shares a knob
- * with others pays that price by necessity; one that does not must never be
- * made to.
+ * position makes it crawl: an 8-option enum spans 7 units, so one detent moves
+ * it by the position step times 7 -- 4 -> 4.0105 -> (int) 4, the same value,
+ * for ~95 detents per option instead of one at the MIDI path's 0.0015 step.
+ * The device's own encoder passes a coarser fallback and so crawls less, but
+ * the shape is the same at any step: a shared parameter pays this by
+ * necessity, and one that is not shared must never be made to.
  *
  * REALTIME: fixed arrays, a stack buffer per write, no allocation, no logging.
  * A multi-destination turn issues up to MAX_KNOB_DESTS plugin writes instead of
@@ -1569,15 +1574,6 @@ void knob_set_position(chain_instance_t *inst, int idx, float position) {
     }
 }
 
-static int knob_value_to_cc(float val, const chain_param_info_t *pinfo) {
-    if (!pinfo) return -1;
-    float span = pinfo->max_val - pinfo->min_val;
-    if (!(span > 0.0f)) return -1;
-    int cc_val = (int)(((val - pinfo->min_val) / span) * 127.0f + 0.5f);
-    if (cc_val < 0) cc_val = 0;
-    if (cc_val > 127) cc_val = 127;
-    return cc_val;
-}
 
 void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     if (!inst || !inst->knob_cc_out) return;
