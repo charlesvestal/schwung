@@ -884,21 +884,39 @@ export function drawHeader(ctx, left, right, inverted = false, padIcon = null) {
      * the title to nothing -- the right gives ground first. It is the old
      * 55%, so the worst case is exactly what shipped before.
      */
-    let r = right ? fit5(right, Math.floor(W * 0.6)) : "";
+    /*
+     * THE PAD ICON IS PINNED TO THE RIGHT EDGE, and that is the whole point of
+     * where it sits.
+     *
+     * movy draws it immediately before the right-hand text, so its x is
+     * `W - 2 - rightW - PAD_ICON_W` and it MOVES whenever that text changes
+     * width — and that text is the page name, which changes on every page.
+     * An indicator you consult at a glance has to be findable without reading
+     * the thing next to it; one that slides a dozen pixels as you jog is
+     * something you have to hunt for each time. Reported from the device as
+     * wanting it "in a stable place".
+     *
+     * So the icon owns the right edge and the page name is what gives ground,
+     * which is the right way round: the name is already elastic (it is fitted,
+     * truncated and abbreviated), and the icon is 6 pixels that mean nothing
+     * if they move.
+     */
+    const iconW = (padIcon !== null && padIcon !== undefined) ? PAD_ICON_W : 0;
+
+    /* Both budgets are measured against the icon, never assumed around it, or
+     * a long page name draws its last glyph through the box. */
+    let r = right ? fit5(right, Math.floor(W * 0.6) - iconW) : "";
     let rw = r ? fontWidth4x5(r) : 0;
-    if (rw && W - 4 - rw - HEADER_GAP < HEADER_MIN_LEFT) {
-        r = fit5(right, Math.max(0, W - 4 - HEADER_MIN_LEFT - HEADER_GAP));
+    if (rw && W - 4 - iconW - rw - HEADER_GAP < HEADER_MIN_LEFT) {
+        r = fit5(right, Math.max(0, W - 4 - iconW - HEADER_MIN_LEFT - HEADER_GAP));
         rw = r ? fontWidth4x5(r) : 0;
     }
-    /* The pad icon claims its width AHEAD of the left title, exactly as the
-     * right-hand text does — measured, never assumed, or a long module name
-     * draws its last glyph through the box. */
-    const iconW = (padIcon !== null && padIcon !== undefined) ? PAD_ICON_W : 0;
-    const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0) - iconW);
+    const l = fit5(left, W - 4 - iconW - (rw ? rw + HEADER_GAP : 0));
     fontPrint4x5(ctx, 2, 1, l, color);
-    if (iconW) drawPadGridIcon(ctx, W - 2 - rw - (rw ? HEADER_GAP : 0) - PAD_ICON_W + 1,
-                               0, padIcon, color);
-    if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
+    /* PAD_ICON_W is the icon plus its gap; the box itself is 6 wide, so the
+     * right edge lands on the same 2px margin the text keeps. */
+    if (iconW) drawPadGridIcon(ctx, W - 2 - (PAD_ICON_W - 1), 0, padIcon, color);
+    if (r) fontPrint4x5(ctx, W - rw - 2 - iconW, 1, r, color);
 }
 
 /* Width the pad icon claims, including the 1px gap before whatever follows. */

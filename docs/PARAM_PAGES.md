@@ -457,6 +457,16 @@ header's measured split, and at 6×6 for a 16-pad rack it is exactly `HEADER_H`,
 so it fits the band without moving anything — the header's own note records
 that a third of the bar sits empty at the fleet median.
 
+**It is PINNED to the right edge**, and the page name gives ground instead.
+movy draws it immediately before the right-hand text, so its x is
+`W - 2 - rightW - PAD_ICON_W` and it moves whenever that text changes width —
+and that text is the page name, which changes on every page. An indicator you
+consult at a glance has to be findable without reading the thing beside it; one
+that slides a dozen pixels as you jog is something you hunt for each time.
+Reported from the device as wanting it "in a stable place". The name is already
+elastic — fitted, abbreviated, truncated — and the icon is six pixels that mean
+nothing if they move, so the name is the right one to yield.
+
 **It is a PHYSICAL map.** The lit cell is the focused voice's `note` minus the
 rack base (36), so it shows where the pad sits under your hand — not where the
 voice sits in a list. A map agreeing with the page order would be a second bank
