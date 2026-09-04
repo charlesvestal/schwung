@@ -901,6 +901,13 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     for (int i = 0; i < out_count; i++) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
             if (trace) chain_midi_trace(inst, "  -> synth", out_msgs[i], out_lens[i], -1, 0);
+            /* The note the SYNTH receives, which is what a voice declaration
+             * names -- not the raw input, which a MIDI FX may have
+             * transposed, chorded or swallowed. Note-offs are ignored: a
+             * released pad is still the pad you are editing. */
+            if (out_lens[i] >= 3 && (out_msgs[i][0] & 0xF0) == 0x90 && out_msgs[i][2] > 0) {
+                inst->synth_last_note = out_msgs[i][1];
+            }
             inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], source);
         }
     }

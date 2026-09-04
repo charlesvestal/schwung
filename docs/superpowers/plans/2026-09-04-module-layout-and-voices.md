@@ -202,8 +202,13 @@ import("./src/shared/param_pages/voices.mjs").then((V) => {
 
   /* ---- lookups, all tri-state ---------------------------------------- */
 
-  if (V.voiceIndexFromNote(tv, 38) !== 1)
-    fail("note -> voice lookup failed");
+  if (V.voiceIndexFromNote(sv, 38) !== 1)
+    fail("note -> voice lookup failed on the sibling shape");
+  /* The template map is contiguous from 36, so 38 is the THIRD voice. Note
+   * lookup answers a POSITION IN THE LIST, never the note offset -- the two
+   * coincide only when a rack happens to start at the note it starts at. */
+  if (V.voiceIndexFromNote(tv, 38) !== 2)
+    fail("note -> voice lookup failed on the template shape");
   if (V.voiceIndexFromNote(tv, 99) !== null)
     fail("an unmapped note did not report null");
   if (V.voiceIndexFromLevel(sv, "snare") !== 1)
