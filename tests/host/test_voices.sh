@@ -159,7 +159,12 @@ Promise.all([
     fail("child instance -> voice lookup failed");
   if (V.voiceIndexFromChild(tv, "pads", 9) !== null)
     fail("an out-of-range child instance resolved to a voice");
-  if (V.voiceIndexFromChild(sv, "kick", 0) !== null)
+  /* NAME A REAL LEVEL HERE. This line first read voiceIndexFromChild(sv,
+   * "kick", 0) -- but "kick" is a ROLE, not a level name, and SIBLING declares
+   * bass_drum / snare / reverb / ride. So the lookup could not match under any
+   * implementation: relaxing the function to let a sibling voice through the
+   * child lookup, the exact bug this line names, left the suite green. */
+  if (V.voiceIndexFromChild(sv, "bass_drum", 0) !== null)
     fail("a sibling voice resolved through the child lookup");
 
   /* The wire tri-state, which is the one that costs a user their edit:
@@ -195,10 +200,49 @@ Promise.all([
       fail("an unnamed child level lost its generated label");
   }
 
+  /* ---- index is a LIST POSITION, not the child instance ---------------- */
+
+  /* These coincide in TEMPLATE, whose one voice level starts at position 0 --
+   * so `index: out.length` and `index: i` are indistinguishable there, and
+   * mutating one into the other left the suite green. A sibling voice linked
+   * BEFORE the rack is what separates them, and it is also the real shape:
+   * 9W9 has eleven sibling voices, and a module may well have both. */
+  const MIXED = {
+    layout: "drums",
+    levels: {
+      root: { params: [{ level: "kick" }, { level: "pads" }] },
+      kick: { name: "Kick", note: 36, knobs: ["tune"] },
+      pads: {
+        child_count: 3, child_label: "Pad",
+        child_key_template: "p{index}_{key}", child_index_base: 1,
+        child_note_base: 60, knobs: ["vol"],
+      },
+    },
+  };
+  const mv = MIXED.levels ? V.voicesOf(MIXED) : [];
+  if (mv.length !== 4)
+    fail("mixed shape: expected 4 voices, got " + mv.length);
+  if (mv[1].index !== 1 || mv[1].childIndex !== 0)
+    fail("voice.index is the child instance rather than the list position");
+  if (mv[3].index !== 3 || mv[3].childIndex !== 2)
+    fail("the last child voice has the wrong list position");
+  if (V.voiceIndexFromChild(mv, "pads", 0) !== 1)
+    fail("child lookup answered the instance rather than the voice index");
+
   /* ---- purity --------------------------------------------------------- */
 
-  const src = "" + V.voicesOf + V.layoutOf + V.voiceIndexFromNote;
-  if (/getParam|setParam|host_/.test(src))
+  /* READ THE FILE, not three stringified exports.
+   *
+   * This block used to stringify voicesOf/layoutOf/voiceIndexFromNote and
+   * grep for getParam|setParam|host_. Two holes, both proven by injection:
+   * the private helpers were not covered at all, and this codebase binding is
+   * `shadow_get_param`, which none of those three patterns match. A real param
+   * read inserted into voicesOf passed green. */
+  const fs = require("node:fs");
+  const src = fs.readFileSync("./src/shared/param_pages/voices.mjs", "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")   /* strip block comments -- an */
+      .replace(/^\s*\/\/.*$/gm, "");      /* assertion must not trip on prose */
+  if (/shadow_get_param|shadow_set_param|getParam|setParam|host_[a-z_]+\s*\(/.test(src))
     fail("voices.mjs reads or writes params -- it must stay pure");
 
   if (bad) process.exit(1);

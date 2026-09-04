@@ -67,11 +67,12 @@ function childNote(level, i) {
     return Number.isFinite(base) ? ((base | 0) + i) : null;
 }
 
+/* A voice's name is the INSTANCE LABEL, resolved by child_key.mjs and nowhere
+ * else. This function once repeated childLabel's `child_names` lookup verbatim
+ * — two implementations of one rule, agreeing only for as long as nobody
+ * touched either. The picker and the voice list must never be able to disagree
+ * about what pad 3 is called. */
 function childVoiceName(level, i) {
-    const names = level && level.child_names;
-    if (Array.isArray(names) && typeof names[i] === "string" && names[i].length) {
-        return names[i];
-    }
     return childLabel(level, i);
 }
 
