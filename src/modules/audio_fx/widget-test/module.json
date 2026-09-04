@@ -1,0 +1,54 @@
+{
+  "id": "widget-test",
+  "name": "Widget Test",
+  "version": "0.1.0",
+  "description": "Reference module for a custom in-grid widget (drawCell) plus its fullscreen canvas view.",
+  "author": "Schwung",
+  "component_type": "audio_fx",
+  "capabilities": {
+    "chainable": true,
+    "canvas_script": "canvas.js",
+    "chain_params": [
+      {
+        "key": "level",
+        "name": "Level",
+        "type": "float",
+        "min": 0,
+        "max": 1,
+        "step": 0.01,
+        "default": 0.5,
+        "viz": {
+          "kind": "custom:wtmeter"
+        }
+      },
+      {
+        "key": "detail",
+        "name": "Detail",
+        "type": "canvas",
+        "canvas_script": "canvas.js",
+        "show_value": false
+      }
+    ]
+  },
+  "ui_hierarchy": {
+    "levels": {
+      "root": {
+        "label": "Widget Test",
+        "knobs": [
+          "level"
+        ],
+        "params": [
+          {
+            "key": "level"
+          },
+          {
+            "key": "detail"
+          }
+        ]
+      }
+    }
+  },
+  "dsp": "widget-test.so",
+  "api_version": 2,
+  "abbrev": "WT"
+}
