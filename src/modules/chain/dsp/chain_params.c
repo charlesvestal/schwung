@@ -1018,6 +1018,25 @@ int chain_knob_accel_cap(int accel, int type) {
  * convert between the two, and they are the only place that arithmetic lives.
  */
 
+/*
+ * ceil and floor, without libm.
+ *
+ * `ceilf`/`floorf` live in libm on glibc and in libc on macOS, so using them
+ * here linked fine on a dev machine and broke CI with `undefined reference to
+ * ceilf` -- and it would have broken it again for the next person to compile
+ * chain_params.c into a test, of which there are thirteen. A cast truncates
+ * toward zero, which is all that is needed to build both: correct for negative
+ * inputs too, which signed parameter ranges make ordinary.
+ */
+static float knob_ceil_toward_pos(float v) {
+    float t = (float)(long)v;
+    return (t < v) ? t + 1.0f : t;
+}
+static float knob_floor_toward_neg(float v) {
+    float t = (float)(long)v;
+    return (t > v) ? t - 1.0f : t;
+}
+
 /* Fraction (0..1 of the parameter's range) -> a value in the parameter's own
  * units, WITHOUT quantisation. The bounds of a window come from here, so that
  * a whole-range window is exactly [min_val, max_val] and clamping to it cannot
@@ -1087,8 +1106,8 @@ float knob_dest_clamp(const knob_dest_t *d, float value,
     /* A stepped parameter's window is the whole steps INSIDE it: a window
      * ending at 4.3 offers 4, not a value the parameter cannot hold. */
     if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM) {
-        lo = ceilf(lo);
-        hi = floorf(hi);
+        lo = knob_ceil_toward_pos(lo);
+        hi = knob_floor_toward_neg(hi);
         if (hi < lo) hi = lo;
     }
 
