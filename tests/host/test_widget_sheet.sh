@@ -56,7 +56,21 @@ trap restore EXIT
 # Corrupt INSIDE the generated block, not at the end of the file: appending
 # past the END marker changes a byte the splice never compares, so the check
 # would rightly pass and the mutation would prove nothing.
-perl -pi -e 's/\Qarc knob\E/arc knobb/ if $. < 2000' docs/MODULES.md
+#
+# Anchored on the MARKERS, not on a line number. It was `if $. < 2000`, and
+# that is a fact about how much hand-written prose happens to sit above the
+# block -- so adding ~190 lines of author-facing documentation above it pushed
+# "arc knob" to line 2124, the substitution matched nothing, --check passed on
+# an uncorrupted file, and this test failed claiming the generator "is not
+# comparing anything". The mutation must be bounded by the thing it is
+# mutating.
+perl -pi -e '$in = 1 if /BEGIN generated widgets/;
+             $in = 0 if /END generated widgets/;
+             s/\Qarc knob\E/arc knobb/ if $in' docs/MODULES.md
+if ! command grep -q "arc knobb" docs/MODULES.md; then
+  echo "FAIL: the corruption matched nothing — the mutation proves nothing" >&2
+  exit 1
+fi
 if node tools/param-pages/widget_sheet.mjs --check >/dev/null 2>&1; then
   echo "FAIL: --check passed on a corrupted widget section — it is not comparing anything" >&2
   exit 1
