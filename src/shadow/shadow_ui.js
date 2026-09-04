@@ -440,6 +440,7 @@ const VIEWS = {
     FILEPATH_BROWSER: "filepathbrowser", // Generic filepath picker for filepath params
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
+    KNOB_DEST_LIST: "knobdests",   // A knob's destination list (several params, each with a window)
     DYNAMIC_PARAM_PICKER: "dynamicpick", // Dedicated picker UI for module_picker/parameter_picker
     STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
@@ -1832,6 +1833,17 @@ let knobEditorCcOut = 0;         // Cached knob_cc_out for the slot being edited
                                  // same as Off: this row is a TOGGLE, so a
                                  // failed read shown as "Off" makes the next
                                  // click write the value it already had.
+/* A knob may drive up to this many parameters. MUST equal MAX_KNOB_DESTS in
+ * src/modules/chain/dsp/chain_internal.h -- a JS copy that drifted high would
+ * offer a destination the DSP silently refuses, which reads as a dead row.
+ * test_chain_knob_dest_cap_js.sh pins the two together. */
+const MAX_KNOB_DESTS = 4;
+
+let knobEditorDests = [];        // Per knob: array of {target, param, lo, hi}
+let knobDestIndex = 0;           // Selected row in the destination list
+let knobDestEditing = null;      // null, or {di, field:"lo"|"hi"} being jogged
+let knobEditorDestIndex = 0;     // Which destination the param picker is editing
+
 let knobParamPickerFolder = null; // null = main (targets), string = target name for params
 let knobParamPickerIndex = 0;    // Selected index in param picker
 let knobParamPickerParams = [];  // Available params in current folder
@@ -12754,9 +12766,32 @@ function enterKnobEditor(slot) {
 /* Load current knob assignments from DSP */
 function loadKnobAssignments(slot) {
     knobEditorAssignments = [];
+    knobEditorDests = [];
     for (let i = 0; i < NUM_KNOBS; i++) {
+        /* One read for the whole destination list, which also carries the
+         * first destination -- so this is one read per knob where it used to
+         * be two, not three, even though it now returns strictly more. */
+        const raw = getSlotParam(slot, `knob_${i + 1}_dests`);
+        let dests = null;
+        if (raw) { try { dests = JSON.parse(raw); } catch (e) { dests = null; } }
+
+        if (Array.isArray(dests)) {
+            knobEditorDests.push(dests);
+            knobEditorAssignments.push(dests.length
+                ? { target: dests[0].target, param: dests[0].param }
+                : { target: "", param: "" });
+            continue;
+        }
+
+        /* Three answers, not two, and the same rule as knob_cc_out below.
+         * "" is a chain DSP older than destinations -- the two keys that have
+         * always answered still do, and one whole-range destination is exactly
+         * what such a knob has. null is a read that did not complete, and the
+         * fallback is harmless there too: it asks again rather than inventing
+         * an empty list, which would show the knob as unassigned. */
         const target = getSlotParam(slot, `knob_${i + 1}_target`) || "";
         const param = getSlotParam(slot, `knob_${i + 1}_param`) || "";
+        knobEditorDests.push(target && param ? [{ target, param, lo: 0, hi: 1 }] : []);
         knobEditorAssignments.push({ target, param });
     }
     /* Three answers, not two (CLAUDE.md). "" is a chain DSP older than this
@@ -13244,6 +13279,40 @@ function getKnobAssignmentLabel(assignment) {
     return `${assignment.target}: ${assignment.param}`;
 }
 
+/* Is this destination anything other than the whole of its parameter? */
+function knobDestIsRanged(d) {
+    return !!d && (d.lo !== 0 || d.hi !== 1);
+}
+
+/* A window as the user set it. An inverted one is shown the way it behaves --
+ * high to low -- rather than tidied into ascending order, because "100-0%" is
+ * the whole point of setting it that way. */
+function knobWindowLabel(d) {
+    if (!d) return "";
+    return `${Math.round(d.lo * 100)}-${Math.round(d.hi * 100)}%`;
+}
+
+/*
+ * The knob list's value column. Three shapes, in the 12 characters that column
+ * has:
+ *
+ *   unassigned          (None)
+ *   one destination     synth: cutoff        -- unchanged
+ *   one, ranged         synth: cutoff ~      -- the tilde is the only room there is
+ *   several             cutoff +2            -- what it drives, not what it is
+ */
+function knobRowLabel(knobIndex) {
+    const dests = knobEditorDests[knobIndex];
+    if (!dests || dests.length === 0) {
+        return getKnobAssignmentLabel(knobEditorAssignments[knobIndex]);
+    }
+    if (dests.length === 1) {
+        const base = `${dests[0].target}: ${dests[0].param}`;
+        return knobDestIsRanged(dests[0]) ? `${base} ~` : base;
+    }
+    return `${dests[0].param} +${dests.length - 1}`;
+}
+
 /* Enter param picker for current knob */
 function enterKnobParamPicker() {
     knobParamPickerFolder = null;
@@ -13345,25 +13414,51 @@ function applyKnobAssignment(target, param) {
 
     /* Save to DSP via set_param */
     const knobNum = knobEditorIndex + 1;
+    const destNum = knobEditorDestIndex + 1;
+    const hadDests = (knobEditorDests[knobEditorIndex] || []).length;
+
     if (target && param) {
-        /* Set knob mapping - DSP uses "target:param" format internally */
-        setSlotParam(knobEditorSlot, `knob_${knobNum}_set`, `${target}:${param}`);
-    } else {
+        /*
+         * knob_N_set means "this knob has ONE whole-range destination, here" --
+         * it collapses whatever the knob had. That is right for assigning an
+         * empty knob and WRONG for re-pointing the first destination of one
+         * that drives several: it would delete the others with no error.
+         *
+         * So the first destination of an assigned knob goes through
+         * knob_N_dest_1_set, which keeps its window and its siblings.
+         */
+        if (hadDests === 0 && knobEditorDestIndex === 0) {
+            setSlotParam(knobEditorSlot, `knob_${knobNum}_set`, `${target}:${param}`);
+        } else {
+            setSlotParam(knobEditorSlot, `knob_${knobNum}_dest_${destNum}_set`,
+                         `${target}:${param}`);
+        }
+    } else if (hadDests <= 1) {
         /* Clear knob mapping */
         setSlotParam(knobEditorSlot, `knob_${knobNum}_clear`, "1");
+    } else {
+        setSlotParam(knobEditorSlot, `knob_${knobNum}_dest_${destNum}_clear`, "1");
     }
 
     /* Refresh knob mappings cache */
+    loadKnobAssignments(knobEditorSlot);
     fetchKnobMappings(knobEditorSlot);
     invalidateKnobContextCache();
 
-    /* Announce and return to knob editor */
+    /* Announce and return to whichever screen this was reached from: an empty
+     * knob was assigned straight from the list, a knob with destinations was
+     * being edited in its own. */
     if (target && param) {
-        announce(`Knob ${knobNum} assigned to ${param}`);
+        announce(`Knob ${knobNum} destination ${destNum} assigned to ${param}`);
     } else {
         announce(`Knob ${knobNum} cleared`);
     }
-    setView(VIEWS.KNOB_EDITOR);
+    if ((knobEditorDests[knobEditorIndex] || []).length > 0) {
+        knobDestIndex = Math.min(knobDestIndex, knobDestRows().length - 1);
+        setView(VIEWS.KNOB_DEST_LIST);
+    } else {
+        setView(VIEWS.KNOB_EDITOR);
+    }
     needsRedraw = true;
 }
 
@@ -17977,6 +18072,9 @@ function handleJog(delta, shift = isShiftHeld()) {
                 announceMenuItem(`Knob ${knobNum}`, assignLabel);
             }
             break;
+        case VIEWS.KNOB_DEST_LIST:
+            knobDestListTurn(delta);
+            break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
                 /* Navigate targets list */
@@ -18814,10 +18912,20 @@ function handleSelect() {
                 setSlotParam(knobEditorSlot, "knob_cc_out", String(knobEditorCcOut));
                 announceMenuItem("Knob CC Out", knobCcOutLabel());
                 needsRedraw = true;
-            } else {
-                /* Edit this knob's assignment */
+            } else if ((knobEditorDests[knobEditorIndex] || []).length === 0) {
+                /* An empty knob goes straight to choosing -- a list with
+                 * nothing in it but "+ Add" is a click for nothing. */
+                knobEditorDestIndex = 0;
                 enterKnobParamPicker();
+            } else {
+                /* An assigned knob opens its destination list. One extra click
+                 * for the common case, and one route in and out of a mapping:
+                 * re-pointing, windows, adding and removing all live there. */
+                enterKnobDestList();
             }
+            break;
+        case VIEWS.KNOB_DEST_LIST:
+            knobDestListClick();
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder === null) {
@@ -19370,6 +19478,20 @@ function handleBack() {
              * user onto the list on the way back out, regardless of which
              * one they actually came from. */
             enterChainSettings(knobEditorSlot);
+            break;
+        case VIEWS.KNOB_DEST_LIST:
+            if (knobDestEditing) {
+                /* Back out of adjusting a window without leaving the list. The
+                 * window itself stays where it was jogged to -- every detent
+                 * already applied, which is the point of editing it by ear. */
+                knobDestEditing = null;
+                announce("Done");
+                needsRedraw = true;
+            } else {
+                setView(VIEWS.KNOB_EDITOR);
+                announce("Knob Editor");
+                needsRedraw = true;
+            }
             break;
         case VIEWS.KNOB_PARAM_PICKER:
             if (knobParamPickerFolder !== null) {
@@ -19966,6 +20088,7 @@ function drawKnobEditor() {
         items.push({
             type: "knob",
             label: `Knob ${i + 1}`,
+            knobIndex: i,
             assignment: knobEditorAssignments[i]
         });
     }
@@ -19982,7 +20105,7 @@ function drawKnobEditor() {
         selectedIndex: knobEditorIndex,
         getLabel: (item) => item.label,
         getValue: (item) => item.type === "knob"
-            ? truncateText(getKnobAssignmentLabel(item.assignment), 12)
+            ? truncateText(knobRowLabel(item.knobIndex), 12)
             : (item.type === "toggle" ? knobCcOutLabel() : ""),
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
         valueAlignRight: true,
@@ -19990,6 +20113,189 @@ function drawKnobEditor() {
     });
 
     drawFooter(["Back: cancel", "Click: edit"]);
+}
+
+/* ========== A knob's destination list ========== */
+
+/*
+ * The rows, derived rather than stored, so nothing can go stale between a
+ * write and the next draw:
+ *
+ *   Dest 1   synth: cutoff        <- click re-points it, Shift+click removes it
+ *     Lo       0%                 <- click starts jogging; each detent applies
+ *     Hi     100%
+ *   ...
+ *   + Add destination             (while there is room)
+ *   Remove knob
+ */
+function knobDestRows() {
+    const dests = knobEditorDests[knobEditorIndex] || [];
+    const rows = [];
+    for (let i = 0; i < dests.length; i++) {
+        rows.push({ kind: "dest", di: i });
+        rows.push({ kind: "lo", di: i });
+        rows.push({ kind: "hi", di: i });
+    }
+    if (dests.length < MAX_KNOB_DESTS) rows.push({ kind: "add" });
+    rows.push({ kind: "remove" });
+    return rows;
+}
+
+function knobDestRowLabel(row) {
+    const dests = knobEditorDests[knobEditorIndex] || [];
+    switch (row.kind) {
+        case "dest": return `Dest ${row.di + 1}`;
+        case "lo": return "  Lo";
+        case "hi": return "  Hi";
+        case "add": return "+ Add destination";
+        default: return "Remove knob";
+    }
+}
+
+function knobDestRowValue(row) {
+    const dests = knobEditorDests[knobEditorIndex] || [];
+    const d = dests[row.di];
+    switch (row.kind) {
+        case "dest": return d ? `${d.target}: ${d.param}` : "(None)";
+        case "lo": return d ? `${Math.round(d.lo * 100)}%` : "";
+        case "hi": return d ? `${Math.round(d.hi * 100)}%` : "";
+        default: return "";
+    }
+}
+
+function enterKnobDestList() {
+    knobDestIndex = 0;
+    knobDestEditing = null;
+    setView(VIEWS.KNOB_DEST_LIST);
+    needsRedraw = true;
+    const rows = knobDestRows();
+    announce(`Knob ${knobEditorIndex + 1} destinations, ` +
+             `${knobDestRowLabel(rows[0])}: ${knobDestRowValue(rows[0])}`);
+}
+
+function drawKnobDestList() {
+    clear_screen();
+    drawHeader(`Knob ${knobEditorIndex + 1}`);
+
+    const rows = knobDestRows();
+    drawMenuList({
+        items: rows,
+        selectedIndex: knobDestIndex,
+        getLabel: knobDestRowLabel,
+        getValue: (r) => truncateText(knobDestRowValue(r), 12),
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true,
+        prioritizeSelectedValue: true,
+        editMode: knobDestEditing !== null
+    });
+
+    drawFooter(knobDestEditing
+        ? ["Click: done", "Jog: adjust"]
+        : ["Back: knobs", "Click: edit"]);
+}
+
+/* Write one destination's window and let the DSP apply it immediately -- the
+ * whole reason a window is edited here rather than in a dialog is that it is
+ * being set by ear. */
+function knobDestWriteWindow(di) {
+    const d = (knobEditorDests[knobEditorIndex] || [])[di];
+    if (!d) return;
+    setSlotParam(knobEditorSlot, `knob_${knobEditorIndex + 1}_dest_${di + 1}_range`,
+                 `${d.lo.toFixed(4)}:${d.hi.toFixed(4)}`);
+}
+
+/* Jog inside the destination list: move the cursor, or adjust a window. */
+function knobDestListTurn(delta) {
+    const rows = knobDestRows();
+
+    if (knobDestEditing) {
+        const d = (knobEditorDests[knobEditorIndex] || [])[knobDestEditing.di];
+        if (!d) { knobDestEditing = null; return; }
+        /* 1% a detent. A window is a musical boundary, not a value being
+         * dialled in, so it wants a grain you can land on rather than the
+         * parameter's own step. */
+        const next = Math.max(0, Math.min(1,
+            d[knobDestEditing.field] + delta * 0.01));
+        if (next !== d[knobDestEditing.field]) {
+            d[knobDestEditing.field] = next;
+            knobDestWriteWindow(knobDestEditing.di);
+        }
+        announceMenuItem(knobDestEditing.field === "lo" ? "Lo" : "Hi",
+                         `${Math.round(next * 100)}%`);
+        needsRedraw = true;
+        return;
+    }
+
+    knobDestIndex = Math.max(0, Math.min(rows.length - 1, knobDestIndex + delta));
+    const row = rows[knobDestIndex];
+    announceMenuItem(knobDestRowLabel(row).trim(), knobDestRowValue(row) || "");
+    needsRedraw = true;
+}
+
+/* Click inside the destination list. */
+function knobDestListClick() {
+    const rows = knobDestRows();
+    const row = rows[knobDestIndex];
+    if (!row) return;
+
+    if (knobDestEditing) {          /* finish adjusting a window */
+        knobDestEditing = null;
+        announce("Done");
+        needsRedraw = true;
+        return;
+    }
+
+    switch (row.kind) {
+        case "dest":
+            /* Re-point THIS destination. Seeding the picker from the
+             * destination being edited rather than from the first one matters:
+             * opening destination 3's picker on destination 1's component
+             * reads as a wrong answer, never as an error. */
+            knobEditorDestIndex = row.di;
+            enterKnobParamPicker();
+            break;
+        case "add":
+            knobEditorDestIndex = (knobEditorDests[knobEditorIndex] || []).length;
+            enterKnobParamPicker();
+            break;
+        case "lo":
+        case "hi":
+            knobDestEditing = { di: row.di, field: row.kind };
+            announce(row.kind === "lo" ? "Lo" : "Hi");
+            needsRedraw = true;
+            break;
+        default:
+            setSlotParam(knobEditorSlot, `knob_${knobEditorIndex + 1}_clear`, "1");
+            loadKnobAssignments(knobEditorSlot);
+            fetchKnobMappings(knobEditorSlot);
+            invalidateKnobContextCache();
+            announce(`Knob ${knobEditorIndex + 1} cleared`);
+            setView(VIEWS.KNOB_EDITOR);
+            needsRedraw = true;
+            break;
+    }
+}
+
+/* Shift+click on a destination row removes that one destination. */
+function knobDestListShiftClick() {
+    const rows = knobDestRows();
+    const row = rows[knobDestIndex];
+    if (!row || row.kind !== "dest") return;
+
+    setSlotParam(knobEditorSlot, `knob_${knobEditorIndex + 1}_dest_${row.di + 1}_clear`, "1");
+    loadKnobAssignments(knobEditorSlot);
+    fetchKnobMappings(knobEditorSlot);
+    invalidateKnobContextCache();
+
+    const left = (knobEditorDests[knobEditorIndex] || []).length;
+    if (left === 0) {
+        announce(`Knob ${knobEditorIndex + 1} cleared`);
+        setView(VIEWS.KNOB_EDITOR);
+    } else {
+        knobDestIndex = Math.min(knobDestIndex, knobDestRows().length - 1);
+        announce(`Destination removed, ${left} left`);
+    }
+    needsRedraw = true;
 }
 
 /* Draw param picker - select target then param for knob assignment */
@@ -21660,6 +21966,7 @@ function dispatchCoRunDraw() {
             break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
+        case VIEWS.KNOB_DEST_LIST:       drawKnobDestList(); break;
         case VIEWS.KNOB_PARAM_PICKER:    drawKnobParamPicker(); break;
         case VIEWS.DYNAMIC_PARAM_PICKER: drawDynamicParamPicker(); break;
         case VIEWS.LFO_EDIT:             drawLfoEdit(); break;
@@ -22886,6 +23193,9 @@ globalThis.tick = function() {
         case VIEWS.KNOB_EDITOR:
             drawKnobEditor();
             break;
+        case VIEWS.KNOB_DEST_LIST:
+            drawKnobDestList();
+            break;
         case VIEWS.KNOB_PARAM_PICKER:
             drawKnobParamPicker();
             break;
@@ -23597,8 +23907,13 @@ globalThis.onMidiMessageInternal = function(data) {
                  */
                 return;
             }
+            /* Shift+Click on a destination row removes that one destination.
+             * Plain click there re-points it, which is the common case; the
+             * destructive one takes the modifier. */
+            if (isShiftHeld() && view === VIEWS.KNOB_DEST_LIST) {
+                knobDestListShiftClick();
             /* Shift+Click in chain edit enters component edit mode */
-            if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
+            } else if (isShiftHeld() && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                 handleShiftSelect();
             } else if (isShiftHeld() && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
