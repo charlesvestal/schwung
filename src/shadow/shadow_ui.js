@@ -75,8 +75,20 @@ import { drawEnumList }
  * as long as they did.
  */
 import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
-         childLabel as childLevelLabel, resolveChildKey }
+         childLabel as childLevelLabel, resolveChildKey, childIndexParam }
     from '/data/UserData/schwung/shared/param_pages/child_key.mjs';
+/* The voice model, for the LIST editor's follow.
+ *
+ * The knob grid gets this through page_controller; the list gets it here,
+ * because `paramPagesEnabled()` returns false whenever the screen reader is
+ * on, so a screen-reader user is ALWAYS on the list and would otherwise never
+ * have the feature at all. That is the group it matters most to: sighted users
+ * can see which voice they are on, and a blind user is told -- so "the pad you
+ * hit is the page you get" replaces a jog through eight entries counting
+ * announcements. Reported from the device as the pads doing nothing. */
+import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromNote,
+         voiceIndexFromWire }
+    from '/data/UserData/schwung/shared/param_pages/voices.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
  * Master FX so the two editors wear the same furniture. */
@@ -13812,6 +13824,10 @@ function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx,
     hierEditorChildLabel = "";
     hierEditorSelectedIdx = 0;
     hierEditorEditMode = false;
+    /* A different component is a different set of voices, so the index we last
+     * adopted names nothing here — and re-seeding is what lets the FIRST answer
+     * from the new component navigate. Only the repeats must do nothing. */
+    hierEditorVoiceLatch = null;
     resetHierarchyEditState();
     hierEditorIsMasterFx = isMasterFx;
     hierEditorMasterFxSlot = masterFxSlot;
@@ -13955,6 +13971,103 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
     /* Announce menu title + initial selection */
     const moduleName = getMasterFxParam(fxSlot, "name") || `FX ${fxSlot + 1}`;
     announceHierarchyEditorEntry(moduleName);
+}
+
+/*
+ * The LIST editor's voice follow — parity with the knob grid's.
+ *
+ * WHY IT LIVES HERE AND NOT ONLY IN page_controller: `paramPagesEnabled()`
+ * returns false whenever the screen reader is on, so a screen-reader user
+ * never sees the grid and, until this existed, never had the follow. That is
+ * exactly backwards from where the feature earns its keep — someone who cannot
+ * see the header has to jog through eight entries counting announcements to
+ * reach the voice they just played. Reported from the device as "it only shows
+ * kick, and it is certainly not changing pages with the pads".
+ *
+ * Same three rules the grid follows, deliberately identical:
+ *   - ONE live input: `child_index_param` (the list already tracks that through
+ *     hierEditorChildIndex), else `focus_param`, else `last_note`.
+ *   - TRI-STATE: a read that did not answer moves nothing, ever.
+ *   - AN EDGE, NOT A PIN: a repeat of the answer we last acted on does
+ *     nothing, or the list would yank you back on every poll and you could
+ *     never navigate away from the voice that happens to be focused.
+ */
+let hierEditorVoiceLatch = null;
+let _voiceFollowTickCounter = 0;
+const VOICE_FOLLOW_CHECK_INTERVAL = 8;   /* ~7x/sec at 60fps */
+
+function syncHierEditorVoice() {
+    if (view !== VIEWS.HIERARCHY_EDITOR) return;
+    if (!hierEditorHierarchy || hierEditorSlot < 0) return;
+    /* Editing a value, or picking from a list, is not a moment to be moved. */
+    if (hierEditorEditMode) return;
+
+    const voices = voicesOf(hierEditorHierarchy);
+    if (!voices.length) return;
+
+    /* The template shape owns its own focus through child_index_param, which
+     * the list already follows; asking for a second input would be the two
+     * live sources the design forbids. Scoped to levels that CONTRIBUTE
+     * voices, so an unrelated child level elsewhere does not disable this. */
+    const levels = hierEditorHierarchy.levels || {};
+    for (const v of voices) {
+        if (childIndexParam(levels[v.level])) return;
+    }
+
+    const prefix = getComponentParamPrefix(hierEditorComponent);
+    const focusParam = focusParamOf(hierEditorHierarchy);
+    let vi = null;
+    if (focusParam) {
+        const raw = getSlotParam(hierEditorSlot, `${prefix}:${focusParam}`);
+        vi = voiceIndexFromLevel(voices,
+            (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
+        if (vi === null) vi = voiceIndexFromWire(voices, raw);
+    } else {
+        /* Only the synth serves last_note — see the note in page_controller. */
+        if (prefix !== "synth") return;
+        const raw = getSlotParam(hierEditorSlot, `${prefix}:last_note`);
+        const t = (raw === null || raw === undefined) ? "" : String(raw).trim();
+        const n = t.length ? Number(t) : NaN;
+        vi = Number.isFinite(n) ? voiceIndexFromNote(voices, Math.round(n)) : null;
+    }
+
+    if (vi === null) return;                    /* tri-state: no information */
+    if (vi === hierEditorVoiceLatch) return;    /* the edge */
+    hierEditorVoiceLatch = vi;
+
+    const v = voices[vi];
+    if (!v || !v.level || !levels[v.level]) return;
+
+    /* Already standing on it: adopt the child instance if that is what moved,
+     * and otherwise leave the cursor exactly where the user put it. */
+    if (hierEditorLevel === v.level) {
+        if (v.childIndex !== null && hierEditorChildIndex !== v.childIndex) {
+            hierEditorChildIndex = v.childIndex;
+            loadHierarchyLevel();
+            invalidateKnobContextCache();
+            announceHierarchyEditorEntry(v.name || v.level);
+            needsRedraw = true;
+        }
+        return;
+    }
+
+    hierEditorPath = [];
+    hierEditorLevel = v.level;
+    hierEditorSelectedIdx = 0;
+    hierEditorPresetEditMode = false;
+    const targetLevel = levels[v.level];
+    if (childLevelHasChildren(targetLevel)) {
+        hierEditorChildIndex = (v.childIndex !== null) ? v.childIndex : -1;
+        hierEditorChildCount = childLevelCount(targetLevel);
+        hierEditorChildLabel = targetLevel.child_label || "Item";
+    } else {
+        hierEditorChildIndex = -1;
+        hierEditorChildCount = 0;
+    }
+    loadHierarchyLevel();
+    invalidateKnobContextCache();
+    announceHierarchyEditorEntry(v.name || v.level);
+    needsRedraw = true;
 }
 
 /* Load params and knobs for current hierarchy level */
@@ -21381,6 +21494,18 @@ globalThis.tick = function() {
         try { reconcileDisplayModeExit(); } catch (e) { debugLog("reconcileDisplayModeExit error: " + e); }
         try { reconcileFeedbackHolds(); } catch (e) { debugLog("reconcileFeedbackHolds error: " + e); }
         finally { if (_h && typeof host_trace_end === 'function') host_trace_end(_h); }
+    }
+
+    /*
+     * The LIST editor follows the focused voice — the grid's behaviour, for
+     * the screen-reader path that never reaches the grid. Throttled rather
+     * than run every tick: it costs ONE param read when a component declares
+     * voices and nothing at all when it does not, and the follow is a response
+     * to a pad, which no one can press 60 times a second.
+     */
+    if (++_voiceFollowTickCounter >= VOICE_FOLLOW_CHECK_INTERVAL) {
+        _voiceFollowTickCounter = 0;
+        try { syncHierEditorVoice(); } catch (e) { debugLog("syncHierEditorVoice error: " + e); }
     }
 
     /* Draw upgrade overlay if active (takes priority over normal UI) */
