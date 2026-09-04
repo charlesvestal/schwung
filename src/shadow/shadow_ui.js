@@ -16514,6 +16514,24 @@ function loadCanvasOverlayScript(scriptPath, overlayRef) {
     return { overlay: resolved.overlay, error: "" };
 }
 
+/* THE HOOKS THAT RUN ON THE DRAW PATH, WHERE A READ IS NOT AFFORDABLE.
+ *
+ * ctx.getParam below is a synchronous param round-trip: ~2.8 ms, one SPI
+ * frame. A WHOLE PAGE RENDER is 1.68 ms. So a single read costs more than
+ * redrawing the entire screen, and an overlay that read a couple of values
+ * per frame from draw() halved its own frame rate and everything drawn with
+ * it -- while looking like perfectly ordinary code.
+ *
+ * That is PARAM_PAGES.md hardest rule (nothing reads on the draw path), and
+ * it was unenforceable here because the ctx handed to draw() was the same one
+ * handed to onOpen(). Now it is not: draw and tick get a ctx with the four
+ * accessors removed, so the rule holds by construction rather than by review.
+ *
+ * onOpen / onMidi / onClose / onExit keep them. Those are EVENTS, not frames
+ * -- one read when the user opens an editor or turns a knob is affordable in
+ * a way that one read per frame is not. */
+const DRAW_PATH_HOOKS = new Set(["draw", "tick"]);
+
 function createCanvasRuntimeContext() {
     const fullCanvasKey = canvasParamKey ? buildHierarchyParamKey(canvasParamKey) : "";
     const prefix = getComponentParamPrefix(hierEditorComponent);
@@ -16563,15 +16581,40 @@ function createCanvasRuntimeContext() {
     };
 }
 
+/* The ctx a given hook is allowed to see. Built once and cached on the
+ * runtime, because a draw-path hook asks for it on every frame. */
+function canvasHookCtx(hookName) {
+    const base = canvasRuntime.ctx;
+    if (!DRAW_PATH_HOOKS.has(hookName)) return base;
+    if (!canvasRuntime.drawCtx) {
+        const { getParam, setParam, getValue, setValue, ...rest } = base;
+        canvasRuntime.drawCtx = rest;
+    }
+    return canvasRuntime.drawCtx;
+}
+
 function invokeCanvasOverlayHook(hookName, payload) {
     if (!canvasRuntime || !canvasRuntime.overlay) return false;
+    /* ONE STRIKE.
+     *
+     * This used to record canvasRuntime.error, log, and carry on -- so a
+     * throwing overlay threw on EVERY FRAME, forever, at 60Hz. The error was
+     * visible in the log and the flood was not.
+     *
+     * And it then returned TRUE, so a hook that threw reported success to its
+     * caller. Same defect class as move_midi_internal_send returning true on a
+     * discarded write: the failure is erased at the boundary, and nothing
+     * upstream can react to something it is never told about. */
+    if (canvasRuntime.hookDisabled) return false;
     const fn = canvasRuntime.overlay[hookName];
     if (typeof fn !== "function") return false;
     try {
-        fn(canvasRuntime.ctx, payload || {});
+        fn(canvasHookCtx(hookName), payload || {});
     } catch (e) {
         canvasRuntime.error = `${hookName} error: ${e}`;
-        debugLog(`canvas ${hookName} hook error: ${e}`);
+        canvasRuntime.hookDisabled = true;
+        debugLog(`canvas overlay disabled after throw in ${hookName}: ${e}`);
+        return false;
     }
     return true;
 }
