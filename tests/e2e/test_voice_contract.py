@@ -22,17 +22,18 @@ actually hears.
 
 Requires `voice-poc` installed on the device and slot 0 on receive channel 1.
 
-The notes are MOVE PAD NOTES (68+), not the GM drum map. Pressing pad 1 makes
-Move emit note 68, measured on the device -- so a POC declaring voices at
-36/38/42 could never be driven by a pad, which on hardware read as "the pads
-do nothing".
+The notes are MIDI NOTES, not pad ids. Cable 0 reports pad IDENTIFIERS (pad 1
+is 68) and a chain slot never sees them -- it is fed the track output. A POC
+declaring 68/69/70 could not be driven by a played pad at all, which on the
+hardware read as "the pads do nothing", and was confirmed working once the
+voices moved to the drum map.
 """
 
 from __future__ import annotations
 
 import pytest
 
-SNARE, HAT, TOM_LO = 69, 70, 72
+SNARE, HAT, TOM_LO = 38, 42, 48
 
 
 def _read(bus, key, tries=8):
@@ -87,19 +88,19 @@ def test_last_note_starts_unset(bus, voice_poc):
 
 def test_last_note_follows_a_played_note(bus, voice_poc):
     _note_on(bus, SNARE)
-    assert _read(bus, "synth:last_note") == "69"
+    assert _read(bus, "synth:last_note") == "38"
 
 
 def test_note_off_does_not_clear_last_note(bus, voice_poc):
     """A released pad is still the pad you are editing."""
     _note_on(bus, SNARE)
     _note_off(bus, SNARE)
-    assert _read(bus, "synth:last_note") == "69"
+    assert _read(bus, "synth:last_note") == "38"
 
 
 def test_last_note_follows_a_template_rack_voice(bus, voice_poc):
     _note_on(bus, TOM_LO)
-    assert _read(bus, "synth:last_note") == "72"
+    assert _read(bus, "synth:last_note") == "48"
 
 
 def test_module_owns_its_focus(bus, voice_poc):

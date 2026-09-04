@@ -1670,6 +1670,27 @@ declared.
 | `child_notes` | a child level | sparse per-instance notes; wins over `child_note_base` |
 | `child_names` | a child level | per-instance names; falls back **per item** to `child_label` + index |
 | `child_roles` | a child level | per-instance roles, same free-form rule as `role` |
+
+#### A `note` is a MIDI NOTE, never a pad id
+
+Move's own surface reports **pad identifiers** on cable 0 — pad 1 is 68 — and
+those are not what you declare. A chain slot never sees them: it is fed the
+TRACK's output, so what reaches your `on_midi` is the note the track plays
+(36 for a drum track's first pad, a scale note for a melodic one). Declaring
+the pad id instead makes a voice that can never match anything the module
+receives, and the symptom is silent — the pads simply do nothing, with no error
+anywhere.
+
+The distinction is easy to lose because an **overtake** tool does see cable 0:
+it owns the surface. That is exactly why the note belongs on this side. You say
+"this voice plays note 38", and the consumer decides which pad to put it on —
+movy seats its own grid, a sequencer seats its own, and an external keyboard
+needs no seating at all. Declaring pad ids would invert that and bake one
+controller's geometry into every module that ever declares a voice.
+
+`synth:last_note` is the same fact from the host side: it records what the
+SYNTH received, so it is directly comparable to a declared `note` and never to
+a pad id.
 | `focus_param` | hierarchy top level | a param whose value is the focused **level name** (sibling shape) |
 
 `role` is a **free string** and deliberately not an enumeration. It is a hint a

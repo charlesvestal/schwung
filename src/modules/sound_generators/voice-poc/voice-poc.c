@@ -20,11 +20,13 @@
  *   - a TEMPLATE rack with declared names: pads, 4 instances from note 72
  *   - module-owned focus:                 focus_param "cur_voice" (a LEVEL NAME)
  *
- * THE NOTES ARE MOVE PAD NOTES (68+), NOT GENERAL-MIDI DRUM NOTES. Pressing a
- * Move pad makes Move emit that pad number -- pad 1 is note 68, measured on
- * the device. Declaring voices at 36/38/42 (the GM drum map, and the obvious
- * choice) meant no pad press could ever match a voice, which read on the
- * hardware as "the pads do nothing".
+ * THE DECLARED NOTES ARE THE NOTES MOVE SENDS OUT, NOT PAD IDs. Notes 68+ on
+ * cable 0 are Move's PAD IDENTIFIERS -- what the hardware surface reports when
+ * a pad is struck -- and a chain slot never sees them: it is fed from the
+ * TRACK's output, which is the note the track plays. Measuring the pad ID and
+ * declaring voices at 68/69/70 meant no played note could ever match a voice,
+ * which on the hardware read as "the pads do nothing". So: 36/38/42 for a drum
+ * track, and the rack at 48+ for a melodic one.
  *
  * The knob NAMES differ per voice (KICK / SNARE / HAT) on purpose: every voice
  * page carries one knob, so when they were all called "Tune" the pages were
@@ -71,9 +73,9 @@ static void vp_on_midi(void *inst, const uint8_t *msg, int len, int source) {
      * the focus_param path worth testing: the grid must follow this WITHOUT
      * ever reading last_note, because this module declares a focus param. */
     switch (msg[1]) {
-        case 68: snprintf(v->cur_voice, sizeof(v->cur_voice), "kick");  break;
-        case 69: snprintf(v->cur_voice, sizeof(v->cur_voice), "snare"); break;
-        case 70: snprintf(v->cur_voice, sizeof(v->cur_voice), "hat");   break;
+        case 36: snprintf(v->cur_voice, sizeof(v->cur_voice), "kick");  break;
+        case 38: snprintf(v->cur_voice, sizeof(v->cur_voice), "snare"); break;
+        case 42: snprintf(v->cur_voice, sizeof(v->cur_voice), "hat");   break;
         default: break;
     }
 }
@@ -180,17 +182,17 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
               "{\"level\":\"reverb\",\"label\":\"Reverb\"},"
               "{\"level\":\"pads\",\"label\":\"Pads\"}"
             "]},"
-            "\"kick\":{\"name\":\"Kick\",\"note\":68,\"role\":\"kick\","
+            "\"kick\":{\"name\":\"Kick\",\"note\":36,\"role\":\"kick\","
               "\"knobs\":[\"kick_tune\"],\"params\":[{\"key\":\"kick_tune\"}]},"
-            "\"snare\":{\"name\":\"Snare\",\"note\":69,\"role\":\"snare\","
+            "\"snare\":{\"name\":\"Snare\",\"note\":38,\"role\":\"snare\","
               "\"knobs\":[\"snare_tune\"],\"params\":[{\"key\":\"snare_tune\"}]},"
-            "\"hat\":{\"name\":\"Hat\",\"note\":70,\"role\":\"hat\","
+            "\"hat\":{\"name\":\"Hat\",\"note\":42,\"role\":\"hat\","
               "\"knobs\":[\"hat_tune\"],\"params\":[{\"key\":\"hat_tune\"}]},"
             "\"reverb\":{\"name\":\"Reverb\","
               "\"knobs\":[\"verb_size\"],\"params\":[{\"key\":\"verb_size\"}]},"
             "\"pads\":{\"name\":\"Pads\",\"child_count\":4,\"child_label\":\"Pad\","
               "\"child_key_template\":\"p{index}_{key}\",\"child_index_base\":1,"
-              "\"child_note_base\":72,"
+              "\"child_note_base\":48,"
               "\"child_names\":[\"Tom Lo\",\"Tom Hi\",\"Rim\",\"Clap\"],"
               "\"knobs\":[\"vol\"],\"params\":[{\"key\":\"vol\"}]}"
           "}"
