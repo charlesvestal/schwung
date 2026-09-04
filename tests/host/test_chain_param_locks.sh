@@ -167,6 +167,15 @@ if rg -q 'if \(i == 0\) lock_state_init\(&shadow_master_fx_locks\);' "$mgmt"; th
   echo "FAIL: master locks re-initialised from the chain defaults pass — a set change would reset the user's Steps/Rate" >&2
   exit 1
 fi
+# The master engine must actually be TICKED. It was defined, keyed and tested
+# and the shim never called it — a scripted edit reported the change and
+# silently dropped the write, so master locks stored perfectly and the playhead
+# sat at -1 forever. Nothing failed; the feature was simply inert.
+if ! rg -n 'shadow_master_fx_lfo_tick\(FRAMES_PER_BLOCK\);' -A1 src/schwung_shim.c | rg -q 'shadow_master_fx_lock_tick\(\);'; then
+  echo "FAIL: the shim never ticks the master lock engine" >&2
+  exit 1
+fi
+
 # Master has no modulation bus, so a lock displaces the value directly and the
 # displaced BASE must be restored when the step passes — as a string, so an
 # enum or int round-trips exactly.

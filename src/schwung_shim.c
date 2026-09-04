@@ -2873,6 +2873,7 @@ skip_la_rebuild:
     /* Tick Master FX LFOs after processing so updated params apply next block.
      * This mirrors the legacy in-process mix path behavior. */
     shadow_master_fx_lfo_tick(FRAMES_PER_BLOCK);
+    shadow_master_fx_lock_tick();
 
     /* Sum ME bus (after FX) into mailbox at master volume level.
      * Move's audio in mailbox is already at mv; ME needs mv applied here.
