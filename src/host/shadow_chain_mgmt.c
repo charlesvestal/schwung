@@ -2183,6 +2183,7 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
             } else if (mfx->api && mfx->instance && mfx->api->set_param) {
                 mfx->api->set_param(mfx->instance, param_key, value);
                 mfx_lfo_update_base_from_set_param(mfx_slot, param_key, value);
+                shadow_master_fx_lock_record(mfx_slot, param_key, value);
             }
             if (host.on_param_changed) host.on_param_changed(slot, key, value);
         }
@@ -2590,6 +2591,127 @@ static int mfx_param_strip_suffix(const char *param_key,
     return 1;
 }
 
+
+/* ============================================================================
+ * Master FX parameter locks
+ *
+ * The chain slots get locks through the modulation bus (chain_mod_emit_absolute),
+ * which keeps the user's saved value untouched by construction. Master FX has
+ * no such bus: its LFO writes the target parameter directly and remembers the
+ * base it displaced (mfx_lfo_base_value). Locks here do the same dance, with
+ * the base kept as the STRING the module answered — an exact round trip, so an
+ * enum or an int comes back as itself rather than as a reconstructed float.
+ *
+ * Same timing as everywhere else: pattern length and step rate are settings,
+ * because nothing reports Move's clip length. See host/lock_common.h.
+ * ============================================================================ */
+
+lock_state_t shadow_master_fx_locks;
+static char mfx_lock_base[LOCK_MAX_LANES][64];
+static int  mfx_lock_base_valid[LOCK_MAX_LANES];
+
+static master_fx_slot_t *mfx_lock_target_slot(const lock_lane_t *lane) {
+    int idx = master_fx_route_target(lane->target, MASTER_FX_SLOTS);
+    if (idx < 0 || idx >= MASTER_FX_SLOTS) return NULL;
+    master_fx_slot_t *mfx = &shadow_master_fx_slots[idx];
+    if (!mfx->instance || !mfx->api || !mfx->api->set_param) return NULL;
+    return mfx;
+}
+
+/* Put back what the lock displaced. Silent when nothing was displaced. */
+static void mfx_lock_restore(int lane_index, const lock_lane_t *lane) {
+    if (lane_index < 0 || lane_index >= LOCK_MAX_LANES) return;
+    if (!mfx_lock_base_valid[lane_index]) return;
+    master_fx_slot_t *mfx = mfx_lock_target_slot(lane);
+    if (mfx) mfx->api->set_param(mfx->instance, lane->param, mfx_lock_base[lane_index]);
+    mfx_lock_base_valid[lane_index] = 0;
+    mfx_lock_base[lane_index][0] = '\0';
+}
+
+/* Apply a lock, snapshotting the base on the way in. */
+static void mfx_lock_apply(int lane_index, const lock_lane_t *lane, float value) {
+    master_fx_slot_t *mfx = mfx_lock_target_slot(lane);
+    if (!mfx) return;
+
+    if (!mfx_lock_base_valid[lane_index] && mfx->api->get_param) {
+        char cur[64] = "";
+        int n = mfx->api->get_param(mfx->instance, lane->param, cur, sizeof(cur));
+        if (n > 0) {
+            cur[n < (int)sizeof(cur) ? n : (int)sizeof(cur) - 1] = '\0';
+            strncpy(mfx_lock_base[lane_index], cur, sizeof(mfx_lock_base[lane_index]) - 1);
+            mfx_lock_base[lane_index][sizeof(mfx_lock_base[lane_index]) - 1] = '\0';
+            mfx_lock_base_valid[lane_index] = 1;
+        }
+    }
+
+    char val[32];
+    snprintf(val, sizeof(val), "%.6f", value);
+    mfx->api->set_param(mfx->instance, lane->param, val);
+}
+
+/* Drop every master lock, putting each displaced base back first. */
+void shadow_master_fx_lock_clear_all(void) {
+    for (int i = 0; i < shadow_master_fx_locks.lane_count && i < LOCK_MAX_LANES; i++) {
+        lock_lane_t *lane = &shadow_master_fx_locks.lanes[i];
+        if (lane->active) mfx_lock_restore(i, lane);
+    }
+    memset(shadow_master_fx_locks.lanes, 0, sizeof(shadow_master_fx_locks.lanes));
+    shadow_master_fx_locks.lane_count = 0;
+    shadow_master_fx_locks.cur_step = LOCK_STEP_NONE;
+    memset(mfx_lock_base_valid, 0, sizeof(mfx_lock_base_valid));
+}
+
+void shadow_master_fx_lock_tick(void) {
+    lock_state_t *st = &shadow_master_fx_locks;
+    if (st->lane_count <= 0 && !st->rec) return;
+
+    double bp = -1.0;
+    if (host.get_beat_position) bp = host.get_beat_position();
+
+    const int step = st->enabled
+        ? lock_step_at(bp, st->rate_div, st->pattern_len)
+        : LOCK_STEP_NONE;
+
+    if (step == st->cur_step) return;
+
+    /* Stop EDGE, for the reason the chain's tick gives: arming Record before
+     * pressing Play is the ordinary order, and a level test undoes it. */
+    if (step == LOCK_STEP_NONE && st->cur_step != LOCK_STEP_NONE) st->rec = 0;
+    st->cur_step = step;
+
+    for (int i = 0; i < st->lane_count && i < LOCK_MAX_LANES; i++) {
+        lock_lane_t *lane = &st->lanes[i];
+        if (!lane->active) continue;
+        if (step != LOCK_STEP_NONE && lock_lane_has_step(lane, step)) {
+            mfx_lock_apply(i, lane, lane->values[step]);
+        } else {
+            mfx_lock_restore(i, lane);
+        }
+    }
+}
+
+void shadow_master_fx_lock_record(int mfx_slot, const char *param, const char *value) {
+    lock_state_t *st = &shadow_master_fx_locks;
+    if (!st->rec || !st->enabled || st->cur_step < 0) return;
+    if (mfx_slot < 0 || mfx_slot >= MASTER_FX_SLOTS || !param || !value) return;
+
+    char target[16];
+    snprintf(target, sizeof(target), "fx%d", mfx_slot + 1);
+
+    lock_lane_t *lane = lock_alloc_lane(st, target, param);
+    if (!lane) return;
+    const int idx = (int)(lane - st->lanes);
+
+    /* The base this lane displaces is the value the user just replaced, not
+     * the one they are writing — snapshot BEFORE the write reaches the module
+     * is impossible here (the write already happened), so the base stays
+     * whatever a previous apply captured. When there is none, the value being
+     * written IS the base for every step that has no lock, which is exactly
+     * how the chain behaves: the base moves and unlocked steps follow it. */
+    lock_lane_set(lane, st->cur_step, (float)strtod(value, NULL));
+    mfx_lock_base_valid[idx] = 0;   /* re-snapshot on the next step change */
+}
+
 void shadow_master_fx_lfo_tick(int frames) {
     static uint64_t last_emit_ms[MASTER_FX_LFO_COUNT] = {0};
     float sample_rate = 44100.0f;
@@ -2964,6 +3086,121 @@ void shadow_inprocess_handle_param_request(void) {
     /* Handle master FX chain params */
     if (strncmp(shadow_param->key, "master_fx:", 10) == 0) {
         const char *fx_key = shadow_param->key + 10;
+
+        /* Parameter locks on the master bus. Same key vocabulary the chain
+         * serves under "lock:", so one settings page drives both (lockParams
+         * in shadow_ui_slot_grid.mjs) and one set of docs describes both. */
+        if (strncmp(fx_key, "lock:", 5) == 0 || strcmp(fx_key, "lock_config") == 0) {
+            lock_state_t *lst = &shadow_master_fx_locks;
+            const char *sub = (fx_key[4] == ':') ? fx_key + 5 : NULL;
+            char result[SHADOW_PARAM_VALUE_LEN];
+            result[0] = '\0';
+
+            if (req_type == 1) {          /* SET */
+                const char *v = shadow_param->value;
+                if (!sub) {
+                    /* "lock_config" as a SET restores a saved master preset. */
+                    shadow_master_fx_lock_clear_all();
+                    lock_from_json(lst, v, lfo_migrate_division_index);
+                } else if (strcmp(sub, "enabled") == 0) {
+                    lst->enabled = atoi(v) ? 1 : 0;
+                    lst->cur_step = LOCK_STEP_NONE;
+                    if (!lst->enabled) {
+                        for (int i = 0; i < LOCK_MAX_LANES; i++)
+                            mfx_lock_restore(i, &lst->lanes[i]);
+                    }
+                } else if (strcmp(sub, "rec") == 0) {
+                    lst->rec = atoi(v) ? 1 : 0;
+                } else if (strcmp(sub, "pattern_len") == 0) {
+                    lst->pattern_len = lock_clamp_pattern_len(atoi(v));
+                    lst->cur_step = LOCK_STEP_NONE;
+                } else if (strcmp(sub, "rate_div") == 0) {
+                    lst->rate_div = lock_clamp_rate_div(atoi(v));
+                    lst->cur_step = LOCK_STEP_NONE;
+                } else if (strcmp(sub, "clear_all") == 0) {
+                    shadow_master_fx_lock_clear_all();
+                } else if (strcmp(sub, "set") == 0) {
+                    char t[16] = "", pm[32] = "";
+                    const char *c1 = strchr(v, ':');
+                    const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+                    const char *c3 = c2 ? strchr(c2 + 1, ':') : NULL;
+                    if (c1 && c2 && c3) {
+                        size_t tl = (size_t)(c1 - v), pl = (size_t)(c2 - c1 - 1);
+                        if (tl && tl < sizeof(t) && pl && pl < sizeof(pm)) {
+                            memcpy(t, v, tl); t[tl] = '\0';
+                            memcpy(pm, c1 + 1, pl); pm[pl] = '\0';
+                            int stp = atoi(c2 + 1);
+                            if (stp >= 0 && stp < LOCK_MAX_STEPS) {
+                                lock_lane_t *ln = lock_alloc_lane(lst, t, pm);
+                                if (ln) {
+                                    lock_lane_set(ln, stp, strtof(c3 + 1, NULL));
+                                    lst->cur_step = LOCK_STEP_NONE;
+                                }
+                            }
+                        }
+                    }
+                } else if (strcmp(sub, "clear") == 0) {
+                    char t[16] = "", pm[32] = "";
+                    const char *c1 = strchr(v, ':');
+                    const char *c2 = c1 ? strchr(c1 + 1, ':') : NULL;
+                    if (c1 && c2) {
+                        size_t tl = (size_t)(c1 - v), pl = (size_t)(c2 - c1 - 1);
+                        if (tl && tl < sizeof(t) && pl && pl < sizeof(pm)) {
+                            memcpy(t, v, tl); t[tl] = '\0';
+                            memcpy(pm, c1 + 1, pl); pm[pl] = '\0';
+                            lock_lane_t *ln = lock_find_lane(lst, t, pm);
+                            if (ln) {
+                                lock_lane_clear(ln, atoi(c2 + 1));
+                                if (ln->mask == 0) {
+                                    mfx_lock_restore((int)(ln - lst->lanes), ln);
+                                    lock_retire_lane_if_empty(lst, ln);
+                                }
+                                lst->cur_step = LOCK_STEP_NONE;
+                            }
+                        }
+                    }
+                }
+            } else if (req_type == 2) {   /* GET */
+                if (!sub) {
+                    lock_to_json(lst, result, sizeof(result));
+                } else if (strcmp(sub, "enabled") == 0) {
+                    snprintf(result, sizeof(result), "%d", lst->enabled);
+                } else if (strcmp(sub, "rec") == 0) {
+                    snprintf(result, sizeof(result), "%d", lst->rec);
+                } else if (strcmp(sub, "pattern_len") == 0) {
+                    snprintf(result, sizeof(result), "%d", lst->pattern_len);
+                } else if (strcmp(sub, "rate_div") == 0) {
+                    snprintf(result, sizeof(result), "%d", lst->rate_div);
+                } else if (strcmp(sub, "rate_div_label") == 0) {
+                    snprintf(result, sizeof(result), "%s",
+                             lfo_divisions[lock_clamp_rate_div(lst->rate_div)].label);
+                } else if (strcmp(sub, "lane_count") == 0) {
+                    snprintf(result, sizeof(result), "%d", lst->lane_count);
+                } else if (strcmp(sub, "step") == 0) {
+                    snprintf(result, sizeof(result), "%d", lst->cur_step);
+                } else if (strncmp(sub, "at:", 3) == 0) {
+                    const int stp = atoi(sub + 3);
+                    int off = 0;
+                    off += snprintf(result + off, sizeof(result) - off, "{");
+                    int first = 1;
+                    if (stp >= 0 && stp < LOCK_MAX_STEPS) {
+                        for (int i = 0; i < lst->lane_count && i < LOCK_MAX_LANES; i++) {
+                            const lock_lane_t *ln = &lst->lanes[i];
+                            if (!lock_lane_has_step(ln, stp)) continue;
+                            off += snprintf(result + off, sizeof(result) - off,
+                                            "%s\"%s:%s\":%.6f", first ? "" : ",",
+                                            ln->target, ln->param, ln->values[stp]);
+                            first = 0;
+                        }
+                    }
+                    snprintf(result + off, sizeof(result) - off, "}");
+                }
+            }
+            strncpy(shadow_param->value, result, SHADOW_PARAM_VALUE_LEN - 1);
+            shadow_param->value[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+            shadow_param_publish_response(req_id);
+            return;
+        }
 
         /* Handle master FX LFO params: master_fx:lfo1:*, master_fx:lfo2:* */
         if (strncmp(fx_key, "lfo1:", 5) == 0 || strncmp(fx_key, "lfo2:", 5) == 0) {

@@ -570,11 +570,13 @@ export const MASTER_GRID_ACTIONS = [
      * Same filter getMasterFxSettingsItems applies to the list.
      */
     { label: "Save As", action: "save_as", always: true },
+    /* Drops every master lock; Steps/Rate stay, they describe the clip. */
+    { label: "Clear Locks", action: "lock_clear", always: true },
     { label: "Delete", action: "delete", always: false },
 ];
 
 /**
- * Page order is Master, LFO 1, LFO 2, Actions — the slot's order with the
+ * Page order is Master, LFO 1, LFO 2, Locks, Actions — the slot's order with the
  * values page shorter and Knob Mapping absent (the master bus has no knob
  * mapping table; §6 of the variable-length design records that as the one
  * genuinely easier thing about it).
@@ -592,20 +594,23 @@ export function masterGridHierarchy(hasPreset) {
             params: MASTER_GRID_PARAMS.map((p) => ({ key: p.key }))
                 .concat([{ level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
+                         { level: "locks", label: "Locks" },
                          { level: "actions", label: "Actions" }]),
         },
     };
-    /* The SAME builder the slot contract uses, one bus over. */
+    /* The SAME builders the slot contract uses, one bus over. */
     Object.assign(levels, lfoLevels([1, 2], MASTER_KEY_PREFIX));
+    levels.locks = lockLevel(MASTER_KEY_PREFIX);
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
     return { modes: null, levels };
 }
 
-/** Every declared param across the root page and both LFO pages. */
+/** Every declared param across the root page, both LFO pages and Locks. */
 export function allMasterGridParams() {
     return MASTER_GRID_PARAMS
         .concat(lfoParams(1, MASTER_KEY_PREFIX))
-        .concat(lfoParams(2, MASTER_KEY_PREFIX));
+        .concat(lfoParams(2, MASTER_KEY_PREFIX))
+        .concat(lockParams(MASTER_KEY_PREFIX));
 }
 
 const MASTER_LFO_KEY = new RegExp("^" + MASTER_KEY_PREFIX + "lfo[12]:");

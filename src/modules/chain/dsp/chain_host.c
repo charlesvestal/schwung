@@ -2224,12 +2224,18 @@ static void lock_tick(chain_instance_t *inst) {
         ? lock_step_at(beat_position, st->rate_div, st->pattern_len)
         : LOCK_STEP_NONE;
 
-    /* Recording ends with the transport. A toggle left on across a stop would
-     * turn the next knob you touched into a lock on whatever step the next
-     * Play started on, which is not a thing anyone meant to do. */
-    if (beat_position < 0.0 && st->rec) st->rec = 0;
-
     if (step == st->cur_step) return;
+
+    /* Recording ends on the transport's STOP EDGE — the step was playing and
+     * now is not — and NOT merely because the transport is stopped.
+     *
+     * The difference is the whole feature: you arm Record and THEN press Play,
+     * which is the order every drum machine uses. Clearing on "stopped" undid
+     * the arm within one audio block, so rec read back 0 the instant it was
+     * set and the playhead never started (lock_tick's own early-out needs
+     * either a lane or rec). Found on the device, not in the tests. */
+    if (step == LOCK_STEP_NONE && st->cur_step != LOCK_STEP_NONE) st->rec = 0;
+
     st->cur_step = step;
 
     char source_id[8];

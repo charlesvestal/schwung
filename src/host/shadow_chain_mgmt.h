@@ -13,6 +13,7 @@
 #include "plugin_api_v1.h"
 #include "audio_fx_api_v2.h"
 #include "lfo_common.h"
+#include "lock_common.h"
 #include "master_fx_key.h"
 #include "fx_midi_filter.h"   /* FX_MIDI_CHANNEL_ALL, for master_fx_midi_channel below */
 
@@ -164,6 +165,14 @@ extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 #define MASTER_FX_LFO_COUNT 2
 extern lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
 void shadow_master_fx_lfo_tick(int frames);
+
+/* Parameter locks on the MASTER bus — the same feature the chain slots have,
+ * on the same clock. Ticked once per block from the shim, beside the LFOs. */
+extern lock_state_t shadow_master_fx_locks;
+void shadow_master_fx_lock_tick(void);
+/* Live recording: a master param was written by the user. Records it onto the
+ * playing step when rec is armed. Target is "fx1".."fxN" by master position. */
+void shadow_master_fx_lock_record(int mfx_slot, const char *param, const char *value);
 
 /* Direct param set (web UI ring buffer — doesn't touch shadow_param_t) */
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value);

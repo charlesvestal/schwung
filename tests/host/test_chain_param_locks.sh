@@ -109,9 +109,15 @@ if ! rg -n 'static void lock_record_write' -A6 "$host" | rg -q 'if \(!st->rec \|
   echo "FAIL: live recording is not gated on rec + enabled + a playing step" >&2
   exit 1
 fi
-# Recording ends with the transport, or a stray toggle records the next knob.
-if ! rg -q 'if \(beat_position < 0.0 && st->rec\) st->rec = 0;' "$host"; then
-  echo "FAIL: lock:rec does not clear when the transport stops" >&2
+# Recording ends on the transport's STOP EDGE, not while merely stopped: you
+# arm Record and THEN press Play, and clearing on "stopped" undoes the arm
+# within one audio block (found on hardware — rec read back 0 instantly).
+if ! rg -q 'if \(step == LOCK_STEP_NONE && st->cur_step != LOCK_STEP_NONE\) st->rec = 0;' "$host"; then
+  echo "FAIL: lock:rec must clear on the stop EDGE, not whenever the transport is stopped" >&2
+  exit 1
+fi
+if rg -q 'if \(beat_position < 0.0 && st->rec\) st->rec = 0;' "$host"; then
+  echo "FAIL: the level-triggered rec clear is back — arming before Play cannot survive it" >&2
   exit 1
 fi
 # lock_tick must still run while recording with no lanes yet (the first

@@ -544,7 +544,7 @@ function makeMaster(over) {
   return { state, store, io };
 }
 
-/* ---- M1. the same four pages, in the same order ------------------------- */
+/* ---- M1. the same pages, in the same order ------------------------------ */
 {
   const { io, state } = makeMaster();
   state.preset = true;
@@ -554,11 +554,19 @@ function makeMaster(over) {
   const { pages } = planPages({ hierarchy: hier, chainParams: cp, visible: visFree });
 
   const names = pages.map((p) => p.name);
-  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  const order = ["Main", "LFO 1", "LFO 2", "Locks", "Actions"];
   if (names.join("|") !== order.join("|"))
     fail("master page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   if (pages[pages.length - 1].kind !== "menu")
     fail("master Actions must be the LAST page and a menu");
+
+  /* Locks is the SAME builder the slot page uses, one bus over — the rule this
+   * whole contract exists to hold. Only the key prefix differs. */
+  const mLocks = pages.find((p) => p.name === "Locks");
+  const wantM = SG.lockParams(SG.MASTER_KEY_PREFIX).map((p) => p.key);
+  if (!mLocks || (mLocks.keys || []).filter(Boolean).join("|") !== wantM.join("|"))
+    fail("master Locks page keys should be " + wantM.join(" / ") + ", got " +
+         ((mLocks && mLocks.keys) || []).join(" / "));
 
   /* The values page must hold EXACTLY the declared master-bus params, in
      order. The point is leakage: a cell that appeared here without being
@@ -588,8 +596,10 @@ function makeMaster(over) {
      one rate cell is hidden, and an orphan page holding a single control would
      land between LFO 1 and LFO 2. */
   for (const g of pages.filter((p) => p.kind === "knobs").slice(1)) {
-    if ((g.keys || []).length !== 8)
-      fail("master page " + JSON.stringify(g.name) + " should hold 8 knobs, got " +
+    /* Locks is four settings, deliberately not padded to eight with readouts. */
+    const want = g.name === "Locks" ? SG.lockParams().length : 8;
+    if ((g.keys || []).length !== want)
+      fail("master page " + JSON.stringify(g.name) + " should hold " + want + " knobs, got " +
            (g.keys || []).length);
   }
 
@@ -673,8 +683,8 @@ function makeMaster(over) {
   const { io, state } = makeMaster();
   const bare = () => JSON.parse(io.getParam("master_settings:ui_hierarchy"))
                        .levels.actions.menu.map((m) => m.action);
-  if (bare().join(",") !== "save,save_as")
-    fail("with no preset the master actions menu should be Save and Save As, got " +
+  if (bare().join(",") !== "save,save_as,lock_clear")
+    fail("with no preset the master actions menu should be Save, Save As and Clear Locks, got " +
          bare().join(","));
   /* The invariant, asserted separately from the contents: a ONE entry menu page
      is a page you must enter in order to press a single button, which is what
@@ -683,8 +693,8 @@ function makeMaster(over) {
   if (bare().length < 2)
     fail("the master actions menu is " + bare().length + " entry: " + bare().join(","));
   state.preset = true;
-  if (bare().join(",") !== "save,save_as,delete")
-    fail("with a preset the master actions menu should be Save/Save As/Delete, got " +
+  if (bare().join(",") !== "save,save_as,lock_clear,delete")
+    fail("with a preset the master actions menu should be Save/Save As/Clear Locks/Delete, got " +
          bare().join(","));
   /* There is no Knob Mapping here: the master bus has no knob-mapping table.
      Asserted so it cannot arrive by a copy-paste from the slot contract. */
@@ -794,10 +804,10 @@ function makeMaster(over) {
 }
 
 if (failures) process.exit(1);
-console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
-            "Save As/Delete gated on a preset, all three storage conventions, " +
+console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Locks + Actions in that " +
+            "order, Save As/Delete gated on a preset, all three storage conventions, " +
             "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered, " +
-            "LFO targets resolved per surface. Master FX: the same four pages, " +
-            "the SAME LFO builder param for param, actions gated, keys passed " +
+            "LFO targets resolved per surface. Master FX: the same pages, the SAME " +
+            "LFO and Locks builders param for param, actions gated, keys passed " +
             "through, and its own action runner");
 '

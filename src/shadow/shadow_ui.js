@@ -9138,6 +9138,14 @@ function loadMasterPreset(index, presetName) {
             }
         }
 
+        /* Restore master parameter locks. Always written, even when the preset
+         * has none: loading a preset must not leave the previous one's locks
+         * driving the new sound. The C side clears and re-parses in one step. */
+        if (typeof shadow_set_param === "function") {
+            shadow_set_param(0, "master_fx:lock_config",
+                             preset.locks ? JSON.stringify(preset.locks) : "");
+        }
+
         /* Restore master FX LFO configs */
         for (let li = 1; li <= 2; li++) {
             const lfoConfig = preset["lfo" + li];
@@ -9217,6 +9225,17 @@ function buildMasterPresetJson(name) {
         } catch (e) {}
     }
 
+    /* Include master parameter locks. Written only when something is locked —
+     * the timing settings travel with them because a lock without the timing
+     * it was placed against lands on a different step. */
+    try {
+        const locksJson = shadow_get_param(0, "master_fx:lock_config");
+        if (locksJson) {
+            const locks = JSON.parse(locksJson);
+            if (locks && locks.lanes && locks.lanes.length > 0) preset.locks = locks;
+        }
+    } catch (e) {}
+
     return JSON.stringify(preset);
 }
 
@@ -9252,6 +9271,13 @@ function doSaveMasterPreset(name) {
 
 /* Handle master FX settings menu actions */
 function handleMasterFxSettingsAction(key) {
+    if (key === "lock_clear") {
+        /* Drops every master lock and puts back each displaced base; Steps and
+         * Rate stay, they describe the clip rather than the locks. */
+        shadow_set_param(0, "master_fx:lock:clear_all", "1");
+        announce("Locks cleared");
+        return;
+    }
     if (key === "mfx_lfo1" || key === "mfx_lfo2") {
         const lfoIdx = (key === "mfx_lfo1") ? 0 : 1;
         lfoCtx = makeMfxLfoCtx(lfoIdx);

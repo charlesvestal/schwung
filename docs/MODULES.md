@@ -3027,6 +3027,13 @@ Locks persist in the patch, beside `lfos`, and are restored with it.
 (pattern length, 1–64) and `Rate` (step division). **Actions → Clear Locks**
 drops every lock and keeps Steps/Rate.
 
+**Master FX has the same feature**, on the same clock and the same page, keyed
+`master_fx:lock:*`. It is served by the shim rather than the chain — Master FX
+has no modulation bus — so a lock there displaces the parameter directly and
+the shim remembers the exact string it displaced, putting it back when the step
+passes. Master locks are saved in the master preset beside its LFO configs.
+Lane targets are `fx1`…`fxN` by master position.
+
 **Live recording.** Press Move's **Record** button while a Schwung slot is
 focused — Move arms its own clip recording on the same press; this is the
 Schwung half — or turn `Rec` on. While the transport runs, every knob move is
