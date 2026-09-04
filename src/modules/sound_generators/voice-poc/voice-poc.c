@@ -15,10 +15,20 @@
  * that cannot exist. Both would have gone green while proving nothing.
  *
  * It declares both fleet shapes at once:
- *   - SIBLING voices, each its own page:  kick 36, snare 38, hat 42
+ *   - SIBLING voices, each its own page:  kick 68, snare 69, hat 70
  *   - a PAGE that is not a voice:         reverb (no note, sounds nothing)
- *   - a TEMPLATE rack with declared names: pads, 4 instances from note 60
+ *   - a TEMPLATE rack with declared names: pads, 4 instances from note 72
  *   - module-owned focus:                 focus_param "cur_voice" (a LEVEL NAME)
+ *
+ * THE NOTES ARE MOVE PAD NOTES (68+), NOT GENERAL-MIDI DRUM NOTES. Pressing a
+ * Move pad makes Move emit that pad number -- pad 1 is note 68, measured on
+ * the device. Declaring voices at 36/38/42 (the GM drum map, and the obvious
+ * choice) meant no pad press could ever match a voice, which read on the
+ * hardware as "the pads do nothing".
+ *
+ * The knob NAMES differ per voice (KICK / SNARE / HAT) on purpose: every voice
+ * page carries one knob, so when they were all called "Tune" the pages were
+ * indistinguishable and a stuck page and a working one looked the same.
  *
  * It renders silence. The point is the contract, not the audio.
  */
@@ -61,9 +71,9 @@ static void vp_on_midi(void *inst, const uint8_t *msg, int len, int source) {
      * the focus_param path worth testing: the grid must follow this WITHOUT
      * ever reading last_note, because this module declares a focus param. */
     switch (msg[1]) {
-        case 36: snprintf(v->cur_voice, sizeof(v->cur_voice), "kick");  break;
-        case 38: snprintf(v->cur_voice, sizeof(v->cur_voice), "snare"); break;
-        case 42: snprintf(v->cur_voice, sizeof(v->cur_voice), "hat");   break;
+        case 68: snprintf(v->cur_voice, sizeof(v->cur_voice), "kick");  break;
+        case 69: snprintf(v->cur_voice, sizeof(v->cur_voice), "snare"); break;
+        case 70: snprintf(v->cur_voice, sizeof(v->cur_voice), "hat");   break;
         default: break;
     }
 }
@@ -105,9 +115,9 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
     if (strcmp(key, "chain_params") == 0) {
         const char *j =
         "["
-          "{\"key\":\"kick_tune\",\"name\":\"Tune\",\"type\":\"float\",\"min\":-24,\"max\":24},"
-          "{\"key\":\"snare_tune\",\"name\":\"Tune\",\"type\":\"float\",\"min\":-24,\"max\":24},"
-          "{\"key\":\"hat_tune\",\"name\":\"Tune\",\"type\":\"float\",\"min\":-24,\"max\":24},"
+          "{\"key\":\"kick_tune\",\"name\":\"KICK\",\"type\":\"float\",\"min\":-24,\"max\":24},"
+          "{\"key\":\"snare_tune\",\"name\":\"SNARE\",\"type\":\"float\",\"min\":-24,\"max\":24},"
+          "{\"key\":\"hat_tune\",\"name\":\"HAT\",\"type\":\"float\",\"min\":-24,\"max\":24},"
           "{\"key\":\"verb_size\",\"name\":\"Size\",\"type\":\"float\",\"min\":0,\"max\":1},"
           "{\"key\":\"p1_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1},"
           "{\"key\":\"p2_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1},"
@@ -133,17 +143,17 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
               "{\"level\":\"reverb\",\"label\":\"Reverb\"},"
               "{\"level\":\"pads\",\"label\":\"Pads\"}"
             "]},"
-            "\"kick\":{\"name\":\"Kick\",\"note\":36,\"role\":\"kick\","
+            "\"kick\":{\"name\":\"Kick\",\"note\":68,\"role\":\"kick\","
               "\"knobs\":[\"kick_tune\"],\"params\":[{\"key\":\"kick_tune\"}]},"
-            "\"snare\":{\"name\":\"Snare\",\"note\":38,\"role\":\"snare\","
+            "\"snare\":{\"name\":\"Snare\",\"note\":69,\"role\":\"snare\","
               "\"knobs\":[\"snare_tune\"],\"params\":[{\"key\":\"snare_tune\"}]},"
-            "\"hat\":{\"name\":\"Hat\",\"note\":42,\"role\":\"hat\","
+            "\"hat\":{\"name\":\"Hat\",\"note\":70,\"role\":\"hat\","
               "\"knobs\":[\"hat_tune\"],\"params\":[{\"key\":\"hat_tune\"}]},"
             "\"reverb\":{\"name\":\"Reverb\","
               "\"knobs\":[\"verb_size\"],\"params\":[{\"key\":\"verb_size\"}]},"
             "\"pads\":{\"name\":\"Pads\",\"child_count\":4,\"child_label\":\"Pad\","
               "\"child_key_template\":\"p{index}_{key}\",\"child_index_base\":1,"
-              "\"child_note_base\":60,"
+              "\"child_note_base\":72,"
               "\"child_names\":[\"Tom Lo\",\"Tom Hi\",\"Rim\",\"Clap\"],"
               "\"knobs\":[\"vol\"],\"params\":[{\"key\":\"vol\"}]}"
           "}"
