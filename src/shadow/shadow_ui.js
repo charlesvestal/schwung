@@ -14109,6 +14109,7 @@ function exitHierarchyEditor() {
      * (rather than in the canvas teardown, which runs on every canvas open and
      * close) is what makes the next component ask the question afresh. */
     widgetModuleLoaded = "";
+    widgetAttemptedFor = "";
     hierEditorAllParams = [];
     hierEditorAllKnobs = [];
     hierEditorChildIndex = -1;
@@ -16381,10 +16382,37 @@ let widgetModuleLoaded = "";
  * already does, and it stops entirely the moment the id resolves. */
 const WIDGET_RETRY_TICKS = 15;
 let widgetRetryTick = 0;
+/* The component the last attempt was made for, so a NEW one is attempted at
+ * once rather than at the next throttle boundary. */
+let widgetAttemptedFor = "";
 
 function tickComponentWidgets() {
     if (widgetModuleLoaded) return;                 /* resolved: nothing to ask */
-    if (++widgetRetryTick % WIDGET_RETRY_TICKS) return;
+
+    /*
+     * FIRST ATTEMPT IS IMMEDIATE; ONLY RETRIES ARE THROTTLED.
+     *
+     * With a flat throttle the first attempt landed a whole interval after the
+     * component opened -- measured on device as 258ms between "Entering
+     * component edit" and the widget registering, at 15 ticks / 58fps. For that
+     * quarter second the grid drew the DETECTOR'S built-in widget and then
+     * swapped it for the module's, which is visible and is precisely what
+     * PARAM_PAGES.md forbids: an unresolved answer must not become a picture,
+     * and least of all one that is replaced a moment later.
+     *
+     * Attempting the moment the component changes closes the window whenever
+     * the reads are already settled -- the common case, since the module has
+     * been loaded since the chain was built. The throttle still governs the
+     * genuinely-unsettled case, where repeating a ~2.8ms round trip every frame
+     * would cost more than the render.
+     */
+    const key = `${paramPagesSlot()}:${paramPagesComponent()}`;
+    if (key !== widgetAttemptedFor) {
+        widgetAttemptedFor = key;
+        widgetRetryTick = 0;
+    } else if (++widgetRetryTick % WIDGET_RETRY_TICKS) {
+        return;
+    }
 
     /*
      * ASK THE VIEW THAT IS ON SCREEN, NOT THE ONE THAT EXITED.
