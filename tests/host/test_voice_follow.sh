@@ -202,42 +202,35 @@ Promise.all([
     }
   }
 
-  /* --- no focus param, but voices: last_note is the fallback ----------- */
+  /* --- NO focus param: the module owns the focus, or nothing follows ----
+   *
+   * There used to be a third input here, `synth:last_note`, and it is gone.
+   * A SEQUENCER PLAYS NOTES: with a pattern running every hit is a note, so
+   * the grid changed page on every drum in the bar -- unusable exactly while
+   * you listen to the thing you are editing. Nor can a press be told from a
+   * clip at that point: both reach the synth through the MIDI_OUT echo,
+   * tagged the same.
+   *
+   * These assertions are the inverse of the ones they replace. The second is
+   * the load-bearing one: last_note must never be READ, because a read is
+   * what a later refactor quietly starts navigating on again. */
   const NOFOCUS = JSON.parse(JSON.stringify(SIBLING));
   delete NOFOCUS.focus_param;
   {
     const c = mk(NOFOCUS, { last_note: "38" });
-    spin(c, 200);
-    if (level(c) !== "snare")
-      fail("last_note 38 is the snare and the grid sits on " + level(c)
-         + " -- the note fallback does not follow the played pad");
+    const before = level(c);
+    spin(c, 300);
+    if (level(c) !== before)
+      fail("a module declaring no focus param moved from " + before + " to "
+         + level(c) + " -- nothing may infer focus from what is PLAYED");
   }
 
-  /* A note no voice plays, and a failed note read, both move nothing. Parked
-   * on the middle voice for the same reason as above. */
-  for (const answer of ["99", null, "", "   "]) {
-    const answers = { last_note: "38" };
-    const c = mk(NOFOCUS, answers);
-    spin(c, 200);
-    if (level(c) !== "snare") { fail("could not reach the middle voice via last_note"); break; }
-    answers.last_note = answer;
-    spin(c, 200);
-    if (level(c) !== "snare")
-      fail("last_note " + JSON.stringify(answer) + " moved the focus to " + level(c));
-  }
-
-  /* --- the note fallback is an EDGE too -------------------------------- */
   {
+    reads.length = 0;
     const c = mk(NOFOCUS, { last_note: "38" });
-    spin(c, 200);
-    if (level(c) !== "snare") fail("could not reach the middle voice via last_note");
-    else {
-      c.goToPage(pageFor(c, "reverb"));
-      spin(c, 200);
-      if (level(c) !== "reverb")
-        fail("last_note kept reporting 38 and dragged the user from reverb to "
-           + level(c) + " -- the note fallback is a pin, not an edge");
-    }
+    spin(c, 300);
+    if (reads.some((r) => r.key.endsWith(":last_note")))
+      fail("last_note was READ for a module with no focus param");
   }
 
   /* --- the read rides the EXISTING stop, it does not add one -----------
@@ -247,14 +240,14 @@ Promise.all([
    * land on the same tick as the preset-name read that syncChildIndexFromModule
    * already rides. */
   {
-    const c = mk(NOFOCUS, { last_note: "38" });
+    const c = mk(SIBLING, { cur_voice: "snare" });
     spin(c, 200);
     const presetTicks = new Set(reads.filter((r) => r.key.endsWith(":preset_name")).map((r) => r.tick));
-    const noteReads = reads.filter((r) => r.key.endsWith(":last_note"));
-    if (!noteReads.length) fail("the fallback never read last_note at all");
-    for (const r of noteReads) {
+    const focusReads = reads.filter((r) => r.key.endsWith(":cur_voice"));
+    if (!focusReads.length) fail("the follow never read the focus param at all");
+    for (const r of focusReads) {
       if (!presetTicks.has(r.tick)) {
-        fail("last_note was read on tick " + r.tick + ", which carries no "
+        fail("cur_voice was read on tick " + r.tick + ", which carries no "
            + "preset_name read -- that is a NEW rotation stop");
         break;
       }
@@ -333,24 +326,26 @@ Promise.all([
          + c.childIndexOf("pads") + ", expected 2");
   }
 
-  /* --- a rack with NO child_index_param is followed locally -------------
+  /* --- a rack that names NO focus param is NOT followed -----------------
    *
-   * examples/voice-poc declares exactly this: a `pads` level with
-   * child_note_base and no focus param. The old code resolved the note to a
-   * voice and then threw it away because it had a childIndex, so the shipped
-   * example advertised a shape the feature structurally could not reach.
-   * Nothing else owns the focus here, so the grid adopts it the way a pick
-   * from the instance list does. */
+   * This used to assert the opposite: the rack was followed from last_note,
+   * so a `pads` level with child_note_base and no focus param of any kind
+   * tracked the played note. That went with the fallback, and it should have:
+   * a sequencer playing the kit would have walked the instance selector
+   * through the pattern.
+   *
+   * A rack opts in by declaring `child_index_param`, and then
+   * syncChildIndexFromModule owns it. Saying nothing gets nothing. */
   {
     const RACK = mkPads(null);
     if (V.voicesOf(RACK).length !== 4) fail("the rack fixture declares no voices");
-    const answers = { last_note: "38" };   /* base 36 + instance 2 */
-    const c = mk(RACK, answers, padsCp(false));
-    spin(c, 200);
-    if (c.childIndexOf("pads") !== 2)
-      fail("note 38 is instance 2 of a rack that names no child_index_param, "
-         + "and childIndexOf is " + c.childIndexOf("pads")
-         + " -- a rack with no focus param can never be followed");
+    const c = mk(RACK, { last_note: "38" }, padsCp(false));
+    const before = c.childIndexOf("pads");
+    spin(c, 300);
+    if (c.childIndexOf("pads") !== before)
+      fail("a rack naming no focus param moved from instance " + before
+         + " to " + c.childIndexOf("pads")
+         + " -- nothing may infer focus from a played note");
   }
 
   /* --- one unrelated child level does not disable the whole module ------
@@ -407,14 +402,13 @@ Promise.all([
     console.log("  ok  a name that is not a voice moves nothing");
     console.log("  ok  a null, empty or nonsense focus read never re-keys the page");
     console.log("  ok  a failed read does not re-arm the follow");
-    console.log("  ok  with no focus param, the grid follows last_note");
-    console.log("  ok  an unplayed note and a failed note read move nothing");
-    console.log("  ok  the note fallback is an edge too");
+    console.log("  ok  with no focus param, NOTHING follows -- a sequencer plays notes");
+    console.log("  ok  last_note is never READ for a module with no focus param");
     console.log("  ok  the follow rides the existing preset-name stop");
     console.log("  ok  a module declaring no voices is never polled");
-    console.log("  ok  only the synth component is polled for last_note");
+    console.log("  ok  a component declaring no focus param is never polled");
     console.log("  ok  a module declaring child_index_param is never asked for last_note");
-    console.log("  ok  a rack with no child_index_param is followed locally");
+    console.log("  ok  a rack naming no focus param is not followed either");
     console.log("  ok  one unrelated child level does not disable the follow");
     console.log("  ok  the page header shows the declared instance name");
     console.log("PASS: voice follow");

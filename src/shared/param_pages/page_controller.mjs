@@ -31,7 +31,7 @@ import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
          childName } from "./child_key.mjs";
-import { focusParamOf, voicesOf, voiceIndexFromLevel, voiceIndexFromNote,
+import { focusParamOf, voicesOf, voiceIndexFromLevel,
          voiceIndexFromWire, padLayoutOf } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
 } from "./param_meta.mjs";
@@ -1774,28 +1774,41 @@ export function createController(io = {}) {
             if (childIndexParam(levels[v.level])) return;
         }
 
+        /*
+         * THE MODULE OWNS THE FOCUS, AND NOTHING INFERS IT FROM WHAT IS PLAYED.
+         *
+         * There used to be a third input here: `synth:last_note`, the note the
+         * chain host last saw reach the synth. It is deleted, and the reason is
+         * decisive — A SEQUENCER PLAYS NOTES. With a pattern running, every hit
+         * is a note, so the grid would change page on every drum in the bar and
+         * the editor would be unusable exactly when you are listening to what
+         * you edited. "The pad you HIT" is a human gesture; "the note that
+         * SOUNDED" is not the same fact and cannot stand in for it.
+         *
+         * Nor can the two be told apart where it mattered. A pad press and a
+         * clip playing both arrive at the synth through Move's MIDI_OUT echo,
+         * tagged the same. Cable 0 does carry real presses — the shim routes
+         * them to the focused slot as MOVE_MIDI_SOURCE_INTERNAL — but only for
+         * a module that declares CAPTURE RULES, and a module able to do that is
+         * equally able to publish a focus param. The fallback bought nothing
+         * its own precondition did not already provide.
+         *
+         * 9W9 is the proof by construction: its `seq_voice` is written only by
+         * `set_param` from the UI and never inferred from MIDI, in a drum
+         * module with eleven voices and a note map of its own.
+         *
+         * `synth:last_note` still exists and is still served — it is a useful
+         * thing for a sequencer to ask — but NOTHING NAVIGATES ON IT.
+         */
         const focusParam = focusParamOf(hier);
-        let vi = null;
-        if (focusParam) {
-            const raw = getParam(`${s.prefix}:${focusParam}`);
-            /* A level NAME first — that is what the declaration documents —
-             * and a numeric voice index second, because a module may answer
-             * either and both are unambiguous. Both refuse a failed read. */
-            vi = voiceIndexFromLevel(voices,
-                (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
-            if (vi === null) vi = voiceIndexFromWire(voices, raw);
-        } else {
-            /* Only the SYNTH component serves `last_note` — chain_host stores
-             * it at the slot synth's on_midi call site and nowhere else. An FX
-             * declaring voices with no focus_param would otherwise burn one
-             * ~2.8 ms IPC read per rotation stop, forever, on a key that
-             * cannot answer. */
-            if (s.prefix !== "synth") return;
-            const raw = getParam(`${s.prefix}:last_note`);
-            const t = (raw === null || raw === undefined) ? "" : String(raw).trim();
-            const n = t.length ? Number(t) : NaN;
-            vi = Number.isFinite(n) ? voiceIndexFromNote(voices, Math.round(n)) : null;
-        }
+        if (!focusParam) return;
+        const raw = getParam(`${s.prefix}:${focusParam}`);
+        /* A level NAME first — that is what the declaration documents — and a
+         * numeric voice index second, because a module may answer either and
+         * both are unambiguous. Both refuse a failed read. */
+        let vi = voiceIndexFromLevel(voices,
+            (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
+        if (vi === null) vi = voiceIndexFromWire(voices, raw);
         /*
          * TRI-STATE. null is "no information", never voice 0. Adopting the
          * first voice because a read timed out would move the user off the

@@ -86,8 +86,7 @@ import { hasChildren as childLevelHasChildren, childCount as childLevelCount,
  * can see which voice they are on, and a blind user is told -- so "the pad you
  * hit is the page you get" replaces a jog through eight entries counting
  * announcements. Reported from the device as the pads doing nothing. */
-import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromNote,
-         voiceIndexFromWire }
+import { voicesOf, focusParamOf, voiceIndexFromLevel, voiceIndexFromWire }
     from '/data/UserData/schwung/shared/param_pages/voices.mjs';
 /* The bands around a chain editor's row of boxes — header, label, info,
  * footer — and the module picker it opens on a position. Both shared with
@@ -14020,22 +14019,17 @@ function syncHierEditorVoice() {
         if (childIndexParam(levels[v.level])) return;
     }
 
+    /* THE MODULE OWNS THE FOCUS. The `last_note` fallback was deleted here for
+     * the same reason as in page_controller: a sequencer plays notes, so a
+     * running pattern would change the page on every hit. See the long note
+     * there — the two must not diverge. */
     const prefix = getComponentParamPrefix(hierEditorComponent);
     const focusParam = focusParamOf(hierEditorHierarchy);
-    let vi = null;
-    if (focusParam) {
-        const raw = getSlotParam(hierEditorSlot, `${prefix}:${focusParam}`);
-        vi = voiceIndexFromLevel(voices,
-            (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
-        if (vi === null) vi = voiceIndexFromWire(voices, raw);
-    } else {
-        /* Only the synth serves last_note — see the note in page_controller. */
-        if (prefix !== "synth") return;
-        const raw = getSlotParam(hierEditorSlot, `${prefix}:last_note`);
-        const t = (raw === null || raw === undefined) ? "" : String(raw).trim();
-        const n = t.length ? Number(t) : NaN;
-        vi = Number.isFinite(n) ? voiceIndexFromNote(voices, Math.round(n)) : null;
-    }
+    if (!focusParam) return;
+    const raw = getSlotParam(hierEditorSlot, `${prefix}:${focusParam}`);
+    let vi = voiceIndexFromLevel(voices,
+        (typeof raw === "string" && raw.trim().length) ? raw.trim() : null);
+    if (vi === null) vi = voiceIndexFromWire(voices, raw);
 
     if (vi === null) return;                    /* tri-state: no information */
     if (vi === hierEditorVoiceLatch) return;    /* the edge */
