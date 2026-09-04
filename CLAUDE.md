@@ -533,6 +533,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   was pixel-identical to a control.
 - A momentary fires from the knob too, **latched per gesture** — a rate limit
   still fires eight times across a two-second spin.
+- **A module's OTHER draw surface is a CARD, and it FLOATS.** `drawCell` gives it
+  one cell; `card_script` gives it the page — a bordered picture raised while a
+  knob is held, gone on release. It is centred in the page's **FRAME**, not on
+  the panel (`render()` takes a `rect`, so a full-screen centre painted over an
+  embedded host's own chrome), and it blanks only its own rect, which is why it
+  needs no `clearScreen` while the enum peek does. Same `frameCtx` contract as a
+  widget, for a second reason: `card_w`/`card_h` are declared **per parameter**,
+  so coordinates authored against one card are wrong on the next.
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.
