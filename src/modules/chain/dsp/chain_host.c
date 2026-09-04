@@ -1231,29 +1231,29 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     /* Set mapping */
+                    /* knob_N_set means "this knob has ONE whole-range
+                     * destination, here" -- it collapses whatever the knob had
+                     * before. That is what it has always meant for a knob with
+                     * a single destination, and it is the contract the shadow
+                     * UI and any external caller already rely on. */
                     if (found >= 0) {
                         /* Update existing (type/min/max looked up dynamically from pinfo) */
-                        strncpy(inst->knob_mappings[found].target, target, sizeof(inst->knob_mappings[found].target) - 1);
-                        inst->knob_mappings[found].target[sizeof(inst->knob_mappings[found].target) - 1] = '\0';
-                        strncpy(inst->knob_mappings[found].param, param, sizeof(inst->knob_mappings[found].param) - 1);
-                        inst->knob_mappings[found].param[sizeof(inst->knob_mappings[found].param) - 1] = '\0';
+                        knob_mapping_t *km = &inst->knob_mappings[found];
+                        knob_dest_assign(&km->dests[0], target, param);
+                        km->dest_count = 1;
                         /* Remapped: this knob now means something else. */
-                        inst->knob_mappings[found].last_cc_out = -1;
+                        km->last_cc_out = -1;
                         knob_emit_cc_out(inst, found);
                     } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
-                        inst->knob_mappings[i].cc = cc;
-                        strncpy(inst->knob_mappings[i].target, target, sizeof(inst->knob_mappings[i].target) - 1);
-                        inst->knob_mappings[i].target[sizeof(inst->knob_mappings[i].target) - 1] = '\0';
-                        strncpy(inst->knob_mappings[i].param, param, sizeof(inst->knob_mappings[i].param) - 1);
-                        inst->knob_mappings[i].param[sizeof(inst->knob_mappings[i].param) - 1] = '\0';
-                        if (pinfo) {
-                            inst->knob_mappings[i].current_value = pinfo->default_val;
-                        } else {
-                            inst->knob_mappings[i].current_value = 0.5f;
-                        }
-                        inst->knob_mappings[i].last_cc_out = -1;
+                        knob_mapping_t *km = &inst->knob_mappings[i];
+                        memset(km, 0, sizeof(*km));   /* no inherited destinations */
+                        km->cc = cc;
+                        knob_dest_assign(&km->dests[0], target, param);
+                        km->dest_count = 1;
+                        km->dests[0].current_value = pinfo ? pinfo->default_val : 0.5f;
+                        km->last_cc_out = -1;
                         knob_emit_cc_out(inst, i);
                     }
                 }
@@ -1268,6 +1268,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                             inst->knob_mappings[j] = inst->knob_mappings[j + 1];
                         }
                         inst->knob_mapping_count--;
+                        /* Blank the slot the shift vacated. It is past the
+                         * count and so unread today, but a mapping added later
+                         * lands on it, and only its first destination is
+                         * written on that path -- any others would be
+                         * inherited from whatever used to live here. */
+                        memset(&inst->knob_mappings[inst->knob_mapping_count], 0,
+                               sizeof(inst->knob_mappings[0]));
                         inst->dirty = 1;
                         break;
                     }
@@ -1282,8 +1289,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 for (int i = 0; i < inst->knob_mapping_count; i++) {
                     if (inst->knob_mappings[i].cc == cc) {
                         /* Look up parameter metadata */
-                        const char *target = inst->knob_mappings[i].target;
-                        const char *param = inst->knob_mappings[i].param;
+                        const char *target = inst->knob_mappings[i].dests[0].target;
+                        const char *param = inst->knob_mappings[i].dests[0].param;
                         chain_param_info_t *pinfo = knob_find_param(inst, target, param);
                         if (!pinfo) continue;
 
@@ -1301,11 +1308,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                         float delta = base_step * accel * (delta_int > 0 ? 1 : -1);
 
                         /* Apply delta with clamping */
-                        float new_val = inst->knob_mappings[i].current_value + delta;
+                        float new_val = inst->knob_mappings[i].dests[0].current_value + delta;
                         if (new_val < pinfo->min_val) new_val = pinfo->min_val;
                         if (new_val > pinfo->max_val) new_val = pinfo->max_val;
                         if (is_int) new_val = (float)((int)new_val);  /* Round to int */
-                        inst->knob_mappings[i].current_value = new_val;
+                        inst->knob_mappings[i].dests[0].current_value = new_val;
 
                         /* Format value as string */
                         char val_str[16];
@@ -1556,9 +1563,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         int off = 0;
         off += snprintf(buf + off, buf_len - off, "[");
         for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-            const char *target = inst->knob_mappings[i].target;
-            const char *param = inst->knob_mappings[i].param;
-            float value = inst->knob_mappings[i].current_value;
+            const char *target = inst->knob_mappings[i].dests[0].target;
+            const char *param = inst->knob_mappings[i].dests[0].param;
+            float value = inst->knob_mappings[i].dests[0].current_value;
 
             /* Try to read actual value from DSP plugin */
             char val_buf[64];
@@ -1608,8 +1615,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
                     /* Look up param info for all queries */
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
+                    const char *target = inst->knob_mappings[i].dests[0].target;
+                    const char *param = inst->knob_mappings[i].dests[0].param;
                     /* Indexed, not enumerated — see the knob_N_set site. This
                      * pinfo feeds the min/max/step/options answers below, so
                      * an unresolved fx4+ target made the whole knob undrivable. */
@@ -1630,13 +1637,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         chain_param_info_t *param_info = find_param_by_key(inst, target, param);
                         if (param_info) {
                             /* Use centralized formatting */
-                            return format_param_value(param_info, inst->knob_mappings[i].current_value, buf, buf_len);
+                            return format_param_value(param_info, inst->knob_mappings[i].dests[0].current_value, buf, buf_len);
                         }
                         /* Fallback for params without metadata */
                         if (pinfo && pinfo->type == KNOB_TYPE_INT) {
-                            return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].current_value);
+                            return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].dests[0].current_value);
                         } else {
-                            return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].current_value);
+                            return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].dests[0].current_value);
                         }
                     }
                     else if (strcmp(query_param, "min") == 0) {

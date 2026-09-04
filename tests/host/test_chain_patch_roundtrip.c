@@ -264,10 +264,10 @@ static void test_full_capacity(chain_instance_t *inst, patch_info_t *patch) {
      * no-metadata default. */
     CHECK(inst->knob_mapping_count == 2, "knob_mapping_count=%d", inst->knob_mapping_count);
     for (int i = 0; i < inst->knob_mapping_count; i++) {
-        CHECK(inst->knob_mappings[i].current_value > 0.24f &&
-              inst->knob_mappings[i].current_value < 0.26f,
+        CHECK(inst->knob_mappings[i].dests[0].current_value > 0.24f &&
+              inst->knob_mappings[i].dests[0].current_value < 0.26f,
               "knob mapping on %s did not re-read from the plugin (value=%.3f)",
-              inst->knob_mappings[i].target, (double)inst->knob_mappings[i].current_value);
+              inst->knob_mappings[i].dests[0].target, (double)inst->knob_mappings[i].dests[0].current_value);
     }
 }
 
@@ -303,8 +303,8 @@ static void test_legacy_two_fx(chain_instance_t *inst, patch_info_t *patch) {
     CHECK(strstr(fake_fx[1].log, "gain=0.3;") != NULL, "legacy fx2 params [%s]", fake_fx[1].log);
     CHECK(fake_fx[2].log[0] == '\0', "legacy touched fx3 [%s]", fake_fx[2].log);
     CHECK(inst->knob_mapping_count == 1 &&
-          inst->knob_mappings[0].current_value > 0.24f &&
-          inst->knob_mappings[0].current_value < 0.26f,
+          inst->knob_mappings[0].dests[0].current_value > 0.24f &&
+          inst->knob_mappings[0].dests[0].current_value < 0.26f,
           "legacy fx2 knob did not re-read from the plugin");
 }
 
@@ -560,9 +560,9 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
     for (int i = 0; i < 3; i++) {
         CHECK(patch->knob_mappings[i].cc == want_cc[i],
               "knob %d parsed CC %d, want %d", i, patch->knob_mappings[i].cc, want_cc[i]);
-        CHECK(strcmp(patch->knob_mappings[i].target, want_target[i]) == 0,
+        CHECK(strcmp(patch->knob_mappings[i].dests[0].target, want_target[i]) == 0,
               "knob %d parsed target \"%s\", want \"%s\"",
-              i, patch->knob_mappings[i].target, want_target[i]);
+              i, patch->knob_mappings[i].dests[0].target, want_target[i]);
     }
 
     CHECK(v2_load_from_patch_info(inst, patch) == 0, "knob patch load failed");
@@ -572,27 +572,27 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
     /* The two live ones re-read from THEIR plugin (0.25), not the saved 0.9 and
      * not the 0.5 no-metadata default. 0.9 would mean the lookup fell through;
      * 0.5 would mean it resolved nothing at all. */
-    CHECK(inst->knob_mappings[0].current_value > 0.24f &&
-          inst->knob_mappings[0].current_value < 0.26f,
+    CHECK(inst->knob_mappings[0].dests[0].current_value > 0.24f &&
+          inst->knob_mappings[0].dests[0].current_value < 0.26f,
           "the knob on fx6 did not re-read from its plugin (value=%.3f)",
-          (double)inst->knob_mappings[0].current_value);
-    CHECK(inst->knob_mappings[1].current_value > 0.24f &&
-          inst->knob_mappings[1].current_value < 0.26f,
+          (double)inst->knob_mappings[0].dests[0].current_value);
+    CHECK(inst->knob_mappings[1].dests[0].current_value > 0.24f &&
+          inst->knob_mappings[1].dests[0].current_value < 0.26f,
           "the knob on midi_fx6 did not re-read from its plugin (value=%.3f)",
-          (double)inst->knob_mappings[1].current_value);
-    CHECK(strcmp(inst->knob_mappings[0].target, "fx6") == 0,
-          "the loaded knob target became \"%s\"", inst->knob_mappings[0].target);
-    CHECK(strcmp(inst->knob_mappings[1].target, "midi_fx6") == 0,
-          "the loaded knob target became \"%s\"", inst->knob_mappings[1].target);
+          (double)inst->knob_mappings[1].dests[0].current_value);
+    CHECK(strcmp(inst->knob_mappings[0].dests[0].target, "fx6") == 0,
+          "the loaded knob target became \"%s\"", inst->knob_mappings[0].dests[0].target);
+    CHECK(strcmp(inst->knob_mappings[1].dests[0].target, "midi_fx6") == 0,
+          "the loaded knob target became \"%s\"", inst->knob_mappings[1].dests[0].target);
 
     /* Past the chain: must resolve to nothing. A read of 0.25 here means the
      * target was coerced onto a real slot -- almost certainly slot 0, which is
      * a knob driving the first module in the chain. */
-    CHECK(inst->knob_mappings[2].current_value < 0.24f ||
-          inst->knob_mappings[2].current_value > 0.26f,
+    CHECK(inst->knob_mappings[2].dests[0].current_value < 0.24f ||
+          inst->knob_mappings[2].dests[0].current_value > 0.26f,
           "a knob naming fx7 in a six-long chain read a plugin value (%.3f) -- it "
           "resolved onto a slot that is not the one it names",
-          (double)inst->knob_mappings[2].current_value);
+          (double)inst->knob_mappings[2].dests[0].current_value);
     /* ...and the cleared row is not among the loaded ones at all. */
     for (int i = 0; i < inst->knob_mapping_count; i++)
         CHECK(inst->knob_mappings[i].cc != 74,
@@ -657,14 +657,14 @@ static void test_knob_rejected_row_does_not_bleed(chain_instance_t *inst, patch_
 
     CHECK(patch->knob_mappings[0].cc == 71, "first mapping CC %d, want 71",
           patch->knob_mappings[0].cc);
-    CHECK(strcmp(patch->knob_mappings[0].target, "fx1") == 0,
-          "first mapping target \"%s\", want fx1", patch->knob_mappings[0].target);
+    CHECK(strcmp(patch->knob_mappings[0].dests[0].target, "fx1") == 0,
+          "first mapping target \"%s\", want fx1", patch->knob_mappings[0].dests[0].target);
 
     CHECK(patch->knob_mappings[1].cc == 73, "second mapping CC %d, want 73",
           patch->knob_mappings[1].cc);
-    CHECK(patch->knob_mappings[1].target[0] == '\0',
+    CHECK(patch->knob_mappings[1].dests[0].target[0] == '\0',
           "a mapping that names no target came back aimed at \"%s\" -- inherited "
-          "from the rejected row before it", patch->knob_mappings[1].target);
+          "from the rejected row before it", patch->knob_mappings[1].dests[0].target);
 }
 
 /* ---- 3. Modulation / knob targets reach every slot ---- */

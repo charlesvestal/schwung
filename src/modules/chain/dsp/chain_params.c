@@ -929,6 +929,21 @@ chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, 
     return NULL;
 }
 
+/*
+ * Point a destination at a parameter, whole-range.
+ *
+ * One owner for the three fields that must move together: a truncated name and
+ * an unreset range are both silent, and the strncpy-then-terminate spelling
+ * this replaces was six lines per assignment and appeared twice.
+ */
+void knob_dest_assign(knob_dest_t *d, const char *target, const char *param) {
+    if (!d) return;
+    snprintf(d->target, sizeof(d->target), "%s", target ? target : "");
+    snprintf(d->param, sizeof(d->param), "%s", param ? param : "");
+    d->lo = 0.0f;
+    d->hi = 1.0f;
+}
+
 /* ---- One knob-turn law ---------------------------------------------------
  *
  * Three paths turn a chain knob and each had hand-rolled the same time-based
@@ -1099,8 +1114,8 @@ void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     int recv_ch = inst->host->slot_recv_channel((void *)inst);
     if (recv_ch < 0 || recv_ch > 15) return;
 
-    chain_param_info_t *pinfo = knob_find_param(inst, km->target, km->param);
-    int cc_val = knob_value_to_cc(km->current_value, pinfo);
+    chain_param_info_t *pinfo = knob_find_param(inst, km->dests[0].target, km->dests[0].param);
+    int cc_val = knob_value_to_cc(km->dests[0].current_value, pinfo);
     if (cc_val < 0) return;
     if (cc_val == km->last_cc_out) return;          /* change detection at CC resolution */
 

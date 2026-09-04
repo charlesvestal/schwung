@@ -124,9 +124,9 @@ static void map_knob(chain_instance_t *inst, int idx, int cc, const char *param,
                      float value) {
     memset(&inst->knob_mappings[idx], 0, sizeof(inst->knob_mappings[idx]));
     inst->knob_mappings[idx].cc = cc;
-    snprintf(inst->knob_mappings[idx].target, sizeof(inst->knob_mappings[idx].target), "synth");
-    snprintf(inst->knob_mappings[idx].param, sizeof(inst->knob_mappings[idx].param), "%s", param);
-    inst->knob_mappings[idx].current_value = value;
+    snprintf(inst->knob_mappings[idx].dests[0].target, sizeof(inst->knob_mappings[idx].dests[0].target), "synth");
+    snprintf(inst->knob_mappings[idx].dests[0].param, sizeof(inst->knob_mappings[idx].dests[0].param), "%s", param);
+    inst->knob_mappings[idx].dests[0].current_value = value;
     inst->knob_mappings[idx].last_cc_out = -1;
     if (idx >= inst->knob_mapping_count) inst->knob_mapping_count = idx + 1;
 }
@@ -173,20 +173,20 @@ int main(void) {
     cap_reset();
     knob_emit_cc_out(inst, 0);
     check(cap_count == 0, "same value emits nothing");
-    inst->knob_mappings[0].current_value = 0.5001f;  /* still CC 64 */
+    inst->knob_mappings[0].dests[0].current_value = 0.5001f;  /* still CC 64 */
     knob_emit_cc_out(inst, 0);
     check(cap_count == 0, "a move too small to change the CC emits nothing");
-    inst->knob_mappings[0].current_value = 1.0f;
+    inst->knob_mappings[0].dests[0].current_value = 1.0f;
     knob_emit_cc_out(inst, 0);
     check(cap_count == 1 && cap[0][3] == 127, "max emits 127");
-    inst->knob_mappings[0].current_value = 0.0f;
+    inst->knob_mappings[0].dests[0].current_value = 0.0f;
     cap_reset();
     knob_emit_cc_out(inst, 0);
     check(cap_count == 1 && cap[0][3] == 0, "min emits 0");
 
     /* 4. NO CHANNEL TO ANSWER ON. */
     printf("silence rather than a guess\n");
-    inst->knob_mappings[0].current_value = 0.5f;
+    inst->knob_mappings[0].dests[0].current_value = 0.5f;
     inst->knob_mappings[0].last_cc_out = -1;
     cap_reset();
     g_recv_ch = -1;  /* All */
@@ -213,7 +213,7 @@ int main(void) {
     for (int c = 0; c <= 127; c++) {
         /* Exactly what chain_midi.c does with an inbound CC 102-109. */
         float abs_val = 0.0f + ((float)c / 127.0f) * (1.0f - 0.0f);
-        inst->knob_mappings[0].current_value = abs_val;
+        inst->knob_mappings[0].dests[0].current_value = abs_val;
         inst->knob_mappings[0].last_cc_out = -1;
         cap_reset();
         knob_emit_cc_out(inst, 0);

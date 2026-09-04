@@ -790,8 +790,8 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
+                    const char *target = inst->knob_mappings[i].dests[0].target;
+                    const char *param = inst->knob_mappings[i].dests[0].param;
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
                     if (!pinfo) continue;
 
@@ -826,11 +826,11 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     float delta = base_step * (float)mult;
                     if (ticks < 0) delta = -delta;
 
-                    float new_val = inst->knob_mappings[i].current_value + delta;
+                    float new_val = inst->knob_mappings[i].dests[0].current_value + delta;
                     if (new_val < pinfo->min_val) new_val = pinfo->min_val;
                     if (new_val > pinfo->max_val) new_val = pinfo->max_val;
                     if (is_int) new_val = (float)((int)new_val);  /* Round to int */
-                    inst->knob_mappings[i].current_value = new_val;
+                    inst->knob_mappings[i].dests[0].current_value = new_val;
 
                     /* Format as int or float */
                     char val_str[16];
@@ -856,8 +856,8 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
             int target_cc = KNOB_CC_START + (cc - KNOB_ABS_CC_START);
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == target_cc) {
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
+                    const char *target = inst->knob_mappings[i].dests[0].target;
+                    const char *param = inst->knob_mappings[i].dests[0].param;
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
                     if (!pinfo) return;
 
@@ -866,7 +866,7 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     if (is_int) abs_val = (float)((int)(abs_val + 0.5f));
                     if (abs_val < pinfo->min_val) abs_val = pinfo->min_val;
                     if (abs_val > pinfo->max_val) abs_val = pinfo->max_val;
-                    inst->knob_mappings[i].current_value = abs_val;
+                    inst->knob_mappings[i].dests[0].current_value = abs_val;
 
                     char val_str[16];
                     if (is_int) snprintf(val_str, sizeof(val_str), "%d", (int)abs_val);

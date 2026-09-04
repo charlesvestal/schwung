@@ -1255,7 +1255,7 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                         if (q2 && q2 < obj_end) {
                             int len = q2 - q1 - 1;
                             if (len > 15) len = 15;
-                            strncpy(m->target, q1 + 1, len);
+                            strncpy(m->dests[0].target, q1 + 1, len);
                         }
                     }
                 }
@@ -1269,20 +1269,25 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                         if (q2 && q2 < obj_end) {
                             int len = q2 - q1 - 1;
                             if (len > 31) len = 31;
-                            strncpy(m->param, q1 + 1, len);
+                            strncpy(m->dests[0].param, q1 + 1, len);
                         }
                     }
                 }
 
                 /* Parse saved value if present */
-                m->current_value = -999999.0f;  /* Sentinel: no saved value */
+                m->dests[0].current_value = -999999.0f;  /* Sentinel: no saved value */
                 const char *val_pos = strstr(obj_start, "\"value\"");
                 if (val_pos && val_pos < obj_end) {
                     const char *colon = strchr(val_pos, ':');
-                    if (colon) m->current_value = strtof(colon + 1, NULL);
+                    if (colon) m->dests[0].current_value = strtof(colon + 1, NULL);
                 }
 
-                if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->param[0]) {
+                if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->dests[0].param[0]) {
+                    /* Accepted: one whole-range destination. The memset above
+                     * left lo=hi=0, which would read as a zero-width window. */
+                    m->dests[0].lo = 0.0f;
+                    m->dests[0].hi = 1.0f;
+                    m->dest_count = 1;
                     patch->knob_mapping_count++;
                 }
 
@@ -1505,8 +1510,8 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
      * The saved value may be stale if params were changed via module UI,
      * so always read the real value from the plugin after state restore. */
     for (int i = 0; i < inst->knob_mapping_count; i++) {
-        const char *target = inst->knob_mappings[i].target;
-        const char *param = inst->knob_mappings[i].param;
+        const char *target = inst->knob_mappings[i].dests[0].target;
+        const char *param = inst->knob_mappings[i].dests[0].param;
 
         /* "Nothing sent to the controller yet" is -1, but the rows we just
          * copied came from a patch_info_t whose parser clears each row with
@@ -1537,20 +1542,20 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
 
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
         if (got > 0) {
-            inst->knob_mappings[i].current_value = dsp_value_to_float(
+            inst->knob_mappings[i].dests[0].current_value = dsp_value_to_float(
                 val_buf, pinfo, pinfo ? (pinfo->min_val + pinfo->max_val) / 2.0f : 0.5f);
         } else if (pinfo) {
             /* No DSP read — use saved value or midpoint */
-            float saved = patch->knob_mappings[i].current_value;
+            float saved = patch->knob_mappings[i].dests[0].current_value;
             if (saved > -999998.0f) {
                 if (saved < pinfo->min_val) saved = pinfo->min_val;
                 if (saved > pinfo->max_val) saved = pinfo->max_val;
-                inst->knob_mappings[i].current_value = saved;
+                inst->knob_mappings[i].dests[0].current_value = saved;
             } else {
-                inst->knob_mappings[i].current_value = (pinfo->min_val + pinfo->max_val) / 2.0f;
+                inst->knob_mappings[i].dests[0].current_value = (pinfo->min_val + pinfo->max_val) / 2.0f;
             }
         } else {
-            inst->knob_mappings[i].current_value = 0.5f;
+            inst->knob_mappings[i].dests[0].current_value = 0.5f;
         }
     }
 
