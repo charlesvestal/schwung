@@ -252,7 +252,19 @@ typedef struct chain_instance {
     char current_synth_module[MAX_NAME_LEN];
     int synth_default_forward_channel;  /* -1 = no default, 0-15 = channel */
     int synth_consumes_line_input;
-    int synth_wants_sysex;   /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
+    /* MIDI note last played INTO the synth, or -1.
+     *
+     * The fallback answer to "which voice is focused" for a module that
+     * declares no focus param of its own. It is a NOTE and not a voice index
+     * on purpose: resolving the index needs the canonical voice order, and a
+     * second implementation of that order in C -- next to voices.mjs, with
+     * chain_json.c's flat key-scan helpers, which cannot walk `levels` in
+     * order -- is the metronome / recall_quantize off-by-one shape. It would
+     * fail silently as "the grid follows the wrong pad".
+     *
+     * Written on the SPI callback: a plain int store, nothing else. */
+    int synth_last_note;
+    int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
