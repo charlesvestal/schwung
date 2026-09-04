@@ -42,12 +42,14 @@
 #include "host/shadow_constants.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_test_stream.h"
+#include "host/shadow_metronome.h"
 #include "host/shadow_chain_types.h"
 #include "host/unified_log.h"
 #include "host/schwung_trace.h"
 #include "host/tts_engine.h"
 #include "host/link_audio.h"
 #include "host/shadow_sampler.h"
+#include "host/recall_quantize.h"
 #include "host/shadow_transport.h"
 #include "host/shadow_set_pages.h"
 #include "host/shim_worker.h"
@@ -73,6 +75,7 @@ extern align_capture_t g_align_capture;
 #include "host/shadow_midi_filter.h"
 #include "host/fx_midi_filter.h"
 #include "host/shadow_shm_util.h"
+#include "host/perf_snapshot.h"
 
 /* Debug flags - set to 1 to enable various debug logging */
 #define SHADOW_TIMING_LOG 0      /* ioctl/DSP timing logs to /tmp */
@@ -176,6 +179,12 @@ static bool midi_indicator_enabled_setting = false; /* Off by default; persisted
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
+/* "Keep Schwung": a plain Track tap while the shadow UI is up switches slot
+ * instead of dismissing back to Move. Boot value from features.json; the live
+ * value rides in shadow_control->stay_in_shadow. DEFAULT ON — a track button
+ * selects a track, which is what it does everywhere else on this hardware; the
+ * dismiss was never a decision, it was the only way out before Shift+Track. */
+static bool stay_in_shadow_setting = true;
 
 /* Skipback resize hook — runs on the shim worker (off the audio path). */
 static void shim_hook_skipback_resize(void) {
@@ -811,6 +820,11 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
     (shadow_control ? shadow_control->shadow_ui_trigger : shadow_ui_trigger_setting)
 #define LONG_PRESS_ACTIVE() (SHADOW_UI_TRIGGER_MODE() == 0 || SHADOW_UI_TRIGGER_MODE() == 2)
 #define SHIFT_VOL_ACTIVE()  (SHADOW_UI_TRIGGER_MODE() == 1 || SHADOW_UI_TRIGGER_MODE() == 2)
+/* "Stay in Schwung" — read live from SHM so the toggle takes effect on the
+ * next frame, same as SHADOW_UI_TRIGGER_MODE(). */
+#define STAY_IN_SHADOW() \
+    (shadow_control ? shadow_control->stay_in_shadow != 0 : stay_in_shadow_setting)
+
 #define LONG_PRESS_MS 500
 
 static struct timespec track_press_time[4];
@@ -1050,6 +1064,22 @@ static void load_feature_config(void)
             while (*colon == ' ' || *colon == '\t') colon++;
             if (strncmp(colon, "true", 4) == 0) {
                 midi_indicator_enabled_setting = true;
+            }
+        }
+    }
+
+    /* Parse stay_in_shadow (defaults to true). Tests for "false", not for
+     * "true": a default-on flag parsed the other way round can only ever be
+     * turned ON by the file, so switching it off would silently do nothing —
+     * the same shape as ext_midi_remap_enabled and set_pages_enabled above. */
+    const char *stay_key = strstr(config_buf, "\"stay_in_shadow\"");
+    if (stay_key) {
+        const char *colon = strchr(stay_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t') colon++;
+            if (strncmp(colon, "false", 5) == 0) {
+                stay_in_shadow_setting = false;
             }
         }
     }
@@ -1828,6 +1858,16 @@ static void shadow_overtake_dsp_unload(void) {
 static uint64_t spi_slot_render_max[SHADOW_CHAIN_INSTANCES];
 static uint64_t spi_slot_synth_max[SHADOW_CHAIN_INSTANCES];  /* render_block only */
 static uint64_t spi_slot_fx_max[SHADOW_CHAIN_INSTANCES];     /* chain_process_fx only */
+/* Sums alongside the maxes: a max over a ~3 s window is a spike detector, not a
+ * load figure, and the CPU page needs the load figure. */
+static uint64_t spi_slot_render_sum[SHADOW_CHAIN_INSTANCES];
+static uint64_t spi_slot_synth_sum[SHADOW_CHAIN_INSTANCES];
+static uint64_t spi_slot_fx_sum[SHADOW_CHAIN_INSTANCES];
+/* Per-Master-FX-slot and overtake DSP, new call sites. */
+static uint64_t spi_mfx_sum[MASTER_FX_SLOTS];
+static uint64_t spi_mfx_max[MASTER_FX_SLOTS];
+static uint64_t spi_overtake_gen_sum, spi_overtake_gen_max;
+static uint64_t spi_overtake_fx_sum,  spi_overtake_fx_max;
 static uint32_t spi_slot_probe_burst_max;
 
 /* === DEFERRED DSP RENDERING ===
@@ -1921,6 +1961,7 @@ static void shadow_inprocess_render_to_buffer(void) {
                 clock_gettime(CLOCK_MONOTONIC, &synth_t1);
                 uint64_t synth_us = (synth_t1.tv_sec - synth_t0.tv_sec) * 1000000ULL +
                                     (synth_t1.tv_nsec - synth_t0.tv_nsec) / 1000;
+                spi_slot_synth_sum[s] += synth_us;
                 if (synth_us > spi_slot_synth_max[s]) spi_slot_synth_max[s] = synth_us;
                 shadow_slot_deferred_valid[s] = 1;
             } else {
@@ -2022,6 +2063,7 @@ static void shadow_inprocess_render_to_buffer(void) {
                     clock_gettime(CLOCK_MONOTONIC, &fx_t1);
                     uint64_t fx_us = (fx_t1.tv_sec - fx_t0.tv_sec) * 1000000ULL +
                                      (fx_t1.tv_nsec - fx_t0.tv_nsec) / 1000;
+                    spi_slot_fx_sum[s] += fx_us;
                     if (fx_us > spi_slot_fx_max[s]) spi_slot_fx_max[s] = fx_us;
                     memcpy(shadow_slot_fx_deferred[s], fx_buf, sizeof(fx_buf));
                     shadow_slot_fx_deferred_valid[s] = 1;
@@ -2058,6 +2100,7 @@ static void shadow_inprocess_render_to_buffer(void) {
             clock_gettime(CLOCK_MONOTONIC, &slot_t1);
             uint64_t slot_us = (slot_t1.tv_sec - slot_t0.tv_sec) * 1000000ULL +
                                (slot_t1.tv_nsec - slot_t0.tv_nsec) / 1000;
+            spi_slot_render_sum[s] += slot_us;
             if (slot_us > spi_slot_render_max[s]) spi_slot_render_max[s] = slot_us;
         }
     }
@@ -2093,7 +2136,16 @@ static void shadow_inprocess_render_to_buffer(void) {
         }
         int16_t render_buffer[FRAMES_PER_BLOCK * 2];
         memset(render_buffer, 0, sizeof(render_buffer));
+        struct timespec og_t0, og_t1;
+        clock_gettime(CLOCK_MONOTONIC, &og_t0);
         overtake_dsp_gen->render_block(overtake_dsp_gen_inst, render_buffer, MOVE_FRAMES_PER_BLOCK);
+        clock_gettime(CLOCK_MONOTONIC, &og_t1);
+        {
+            uint64_t og_us = (og_t1.tv_sec - og_t0.tv_sec) * 1000000ULL +
+                             (og_t1.tv_nsec - og_t0.tv_nsec) / 1000;
+            spi_overtake_gen_sum += og_us;
+            if (og_us > spi_overtake_gen_max) spi_overtake_gen_max = og_us;
+        }
         for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
             int32_t mixed = shadow_deferred_dsp_buffer[i] + (int32_t)render_buffer[i];
             if (mixed > 32767) mixed = 32767;
@@ -2162,8 +2214,72 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
     shadow_latency_delay_wp[slot] = wp + FRAMES_PER_BLOCK * 2;
 }
 
+/* ------------------------------------------------------------------ stems --
+ *
+ * One block of per-stem audio, rebuilt every frame for the Quantized Sampler
+ * and Skipback. Indices match sampler_stem_names[]: 0-3 are the chain slots,
+ * 4 is Move.
+ *
+ * A slot stem is that slot's output AFTER its FX chain and AT its slot volume
+ * — the same signal shadow_slot_capture[] publishes to Link Audio, tapped at
+ * the same three places the mix is built (the rebuild_from_la branch, and the
+ * deferred and inline halves of the non-rebuild branch). Under Move->Schwung
+ * that already contains Move's track N, because the shim summed it in BEFORE
+ * running the slot FX and there is no undoing that — see shadow_sampler.h.
+ *
+ * `valid` is per frame, not per slot lifetime: an unwritten stem captures
+ * SILENCE rather than repeating last frame's block. A stale block is the
+ * failure mode that would be hardest to see, since it sounds like audio.
+ */
+static int16_t shadow_stem_bus[SAMPLER_STEM_COUNT][FRAMES_PER_BLOCK * 2];
+static int shadow_stem_valid[SAMPLER_STEM_COUNT];
+/* Cleared unless the setting wants stems, so the whole tap costs nothing
+ * (not even the stores) when Save Stems is off — which is the default. */
+static int shadow_stems_wanted = 0;
+
+static inline void shadow_stem_frame_reset(void) {
+    if (!shadow_stems_wanted) return;
+    memset(shadow_stem_valid, 0, sizeof(shadow_stem_valid));
+}
+
+static inline void shadow_stem_store(int idx, const int16_t *src, float gain) {
+    if (!shadow_stems_wanted || idx < 0 || idx >= SAMPLER_STEM_COUNT || !src) return;
+    for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+        float v = (float)src[i] * gain;
+        if (v > 32767.0f) v = 32767.0f;
+        if (v < -32768.0f) v = -32768.0f;
+        shadow_stem_bus[idx][i] = (int16_t)lroundf(v);
+    }
+    shadow_stem_valid[idx] = 1;
+}
+
+/* Hand the frame's stems to a capture consumer. An invalid stem is passed as
+ * NULL, which the sampler and skipback both record as silence — see the
+ * "NULL entry writes SILENCE" note in shadow_sampler.c. */
+static inline void shadow_stem_dispatch(void (*sink)(const int16_t *const *, int)) {
+    if (!shadow_stems_wanted) return;
+    const int16_t *ptrs[SAMPLER_STEM_COUNT];
+    for (int i = 0; i < SAMPLER_STEM_COUNT; i++)
+        ptrs[i] = shadow_stem_valid[i] ? shadow_stem_bus[i] : NULL;
+    sink(ptrs, SAMPLER_STEM_COUNT);
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
+
+    /* Mirror Save Stems down into the sampler BEFORE either early return
+     * below. Both of them are reachable with the setting freshly changed, and
+     * this call is what allocates and frees the skipback stem buffers (via a
+     * worker post) — losing it on an idle frame would leave the feature
+     * switched on with nowhere to record. It is a compare-and-store on the
+     * unchanged path. */
+    if (shadow_control) {
+        int mode = shadow_control->save_stems;
+        if (mode < SAVE_STEMS_MASTER || mode > SAVE_STEMS_BOTH) mode = SAVE_STEMS_MASTER;
+        shadow_stems_wanted = SAVE_STEMS_WANTS_STEMS(mode);
+        sampler_set_stem_mode(mode);
+    }
+
     if (!shadow_deferred_dsp_valid) return;  /* No buffer to mix yet */
 
     /* Fast path: nothing active. Leave Move's mailbox untouched. Snapshot the
@@ -2189,6 +2305,8 @@ static void shadow_inprocess_mix_from_buffer(void) {
         native_bridge_split_valid = 1;
         return;
     }
+
+    shadow_stem_frame_reset();
 
     int16_t *mailbox_audio = (int16_t *)(global_mmap_addr + AUDIO_OUT_OFFSET);
     float mv = shadow_master_volume;
@@ -2496,6 +2614,10 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 /* Capture for Link Audio publisher */
                 if (s < LINK_AUDIO_SHADOW_CHANNELS) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                    /* Same signal, same gain — the stem tap for this slot.
+                     * Under Move->Schwung fx_buf is Move's track N plus this
+                     * slot's synth, already through the slot FX chain. */
+                    shadow_stem_store(s, fx_buf, cap_vol);
                     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                         shadow_slot_capture[s][i] = (int16_t)lroundf((float)fx_buf[i] * cap_vol);
                     /* Write to publisher shared memory for link_subscriber */
@@ -2525,7 +2647,13 @@ static void shadow_inprocess_mix_from_buffer(void) {
                 }
             } else if (have_move_track) {
                 /* Inactive slot: pass Link Audio through at unity level.
-                 * Master volume is applied after capture at the end. */
+                 * Master volume is applied after capture at the end.
+                 *
+                 * STILL A STEM. A slot with no Schwung module loaded is a Move
+                 * track playing on its own, and dropping it here would make
+                 * "stems" mean "only the tracks I happened to put a synth on"
+                 * — silently, since the file would exist and be empty. */
+                shadow_stem_store(s, move_track, 1.0f);
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
                     int32_t mixed = (int32_t)mailbox_audio[i] + (int32_t)move_track[i];
                     if (mixed > 32767) mixed = 32767;
@@ -2559,6 +2687,12 @@ skip_la_rebuild:
 
                 int16_t *fx_buf = shadow_slot_fx_deferred[s];
 
+                /* Stem tap. Outside Move->Schwung this is the SLOT ONLY —
+                 * Move's own audio never enters a slot on this path, and is
+                 * captured whole as the Move stem instead. */
+                shadow_stem_store(s, fx_buf,
+                                  shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
+
                 /* Write to publisher shared memory for link_subscriber */
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
@@ -2588,6 +2722,9 @@ skip_la_rebuild:
                 memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
                 shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                         fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                shadow_stem_store(s, fx_buf,
+                                  shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
 
                 if (link_audio.enabled && s < LINK_AUDIO_SHADOW_CHANNELS && shadow_pub_audio_shm) {
                     float cap_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
@@ -2695,7 +2832,16 @@ skip_la_rebuild:
 
     /* Overtake DSP FX: process ME bus (non-rebuild) or reconstructed mailbox (rebuild_from_la) */
     if (!overtake_fx_eoc && overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
+        struct timespec of_t0, of_t1;
+        clock_gettime(CLOCK_MONOTONIC, &of_t0);
         overtake_dsp_fx->process_block(overtake_dsp_fx_inst, fx_target, FRAMES_PER_BLOCK);
+        clock_gettime(CLOCK_MONOTONIC, &of_t1);
+        {
+            uint64_t of_us = (of_t1.tv_sec - of_t0.tv_sec) * 1000000ULL +
+                             (of_t1.tv_nsec - of_t0.tv_nsec) / 1000;
+            spi_overtake_fx_sum += of_us;
+            if (of_us > spi_overtake_fx_max) spi_overtake_fx_max = of_us;
+        }
     }
 
     /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
@@ -2708,7 +2854,17 @@ skip_la_rebuild:
         if (s->bypassed) {
             memcpy(mfx_dry, fx_target, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
+        /* Timed inside the `continue` guard above, so an empty slot costs
+         * nothing — a chain with one effect loaded pays two clock reads, not
+         * sixteen. */
+        struct timespec mfx_t0, mfx_t1;
+        clock_gettime(CLOCK_MONOTONIC, &mfx_t0);
         s->api->process_block(s->instance, fx_target, FRAMES_PER_BLOCK);
+        clock_gettime(CLOCK_MONOTONIC, &mfx_t1);
+        uint64_t mfx_us = (mfx_t1.tv_sec - mfx_t0.tv_sec) * 1000000ULL +
+                          (mfx_t1.tv_nsec - mfx_t0.tv_nsec) / 1000;
+        spi_mfx_sum[fx] += mfx_us;
+        if (mfx_us > spi_mfx_max[fx]) spi_mfx_max[fx] = mfx_us;
         if (s->bypassed) {
             memcpy(fx_target, mfx_dry, FRAMES_PER_BLOCK * 2 * sizeof(int16_t));
         }
@@ -2744,7 +2900,16 @@ skip_la_rebuild:
      * This also lands AFTER the capture snapshot taken below is built from
      * unity_view, so skipback / sampler / native-bridge captures stay dry. */
     if (overtake_fx_eoc && overtake_dsp_fx && overtake_dsp_fx_inst && overtake_dsp_fx->process_block) {
+        struct timespec of_t0, of_t1;
+        clock_gettime(CLOCK_MONOTONIC, &of_t0);
         overtake_dsp_fx->process_block(overtake_dsp_fx_inst, mailbox_audio, FRAMES_PER_BLOCK);
+        clock_gettime(CLOCK_MONOTONIC, &of_t1);
+        {
+            uint64_t of_us = (of_t1.tv_sec - of_t0.tv_sec) * 1000000ULL +
+                             (of_t1.tv_nsec - of_t0.tv_nsec) / 1000;
+            spi_overtake_fx_sum += of_us;
+            if (of_us > spi_overtake_fx_max) spi_overtake_fx_max = of_us;
+        }
     }
 
     /* Build unity_view for capture consumers (skipback, native bridge, sampler).
@@ -2772,12 +2937,50 @@ skip_la_rebuild:
             if (summed < -32768.0f) summed = -32768.0f;
             unity_view[i] = (int16_t)lroundf(summed);
         }
+        /* THE MOVE STEM, and it exists only on this path.
+         *
+         * Without Link Audio routing there is no per-track split to be had:
+         * Move hands us one mixed mailbox. Un-scaling it by the same smoothed
+         * mv the unity_view above uses puts it at unity with the slot stems,
+         * so the five files still sum to the master.
+         *
+         * Under rebuild_from_la this is left INVALID on purpose. Move's tracks
+         * are inside the four slot stems there, and a sixth file repeating
+         * them would double every instrument in a stem sum. */
+        shadow_stem_store(SAMPLER_STEM_MOVE, native_bridge_move_component, inv_mv);
     }
 
     /* Capture native bridge source AFTER master FX, BEFORE master volume.
      * This bakes master FX into native bridge resampling while keeping
      * capture independent of master-volume attenuation. */
     native_capture_total_mix_snapshot_from_buffer(unity_view);
+
+    /*
+     * Schwung's metronome. Move mixes its own at MASTER, which rebuild_from_la
+     * discards along with everything outside the four per-track channels, so
+     * under Move->Schwung there is no click unless we make one.
+     *
+     * POSITION IS THE WHOLE DESIGN. unity_view was snapshotted immediately
+     * above, so the click is absent from the Quantized Sampler, Skipback and
+     * the native resample bridge — a resample stays clean. It goes in before
+     * the master-volume scaling below, so it tracks the knob and gets speaker
+     * EQ like everything else on the DAC.
+     *
+     * Gated on rebuild_from_la in EVERY mode, "On" included: outside it Move's
+     * own metronome is audible and this would double it. That is why the gate
+     * is here rather than a fourth mode option — it cannot be forgotten.
+     */
+    if (rebuild_from_la && shadow_control) {
+        shadow_metronome_render(mailbox_audio, FRAMES_PER_BLOCK,
+                                shadow_control->metronome_mode,
+                                shadow_metronome_on,
+                                sampler_transport_playing,
+                                shadow_transport_pulses,
+                                shadow_control->metronome_beats_per_bar,
+                                shadow_control->metronome_level);
+    } else {
+        shadow_metronome_reset();
+    }
 
     /* Under rebuild_from_la, the mailbox was built at unity (per-slot vol only,
      * no master vol). Apply master volume now so DAC output respects the knob.
@@ -2911,11 +3114,17 @@ skip_la_rebuild:
     /* Capture audio for sampler at unity (Resample source only) — reads from
      * unity_view[] so it captures pre-master-volume audio. */
     if (sampler_source == SAMPLER_SOURCE_RESAMPLE) {
+        /* Stems FIRST, master second: both apply the start-of-recording
+         * fade-in ramp and the master half is the one that consumes the
+         * counter. Reversing these two lines ramps the stems by a block that
+         * has already been spent. */
+        shadow_stem_dispatch(sampler_capture_stems);
         sampler_capture_audio_from_buffer(unity_view);
         sampler_tick_preroll();
         /* Skipback: always capture Resample source into rolling buffer */
         skipback_init(skipback_seconds_setting);
         skipback_capture(unity_view);
+        shadow_stem_dispatch(skipback_capture_stems);
     }
 
 }
@@ -3594,6 +3803,104 @@ static void shadow_check_screenreader(void)
 /* PIN scanner state — moved to shadow_pin_scanner.c */
 
 /* Shift+Menu double-click detection state */
+/*
+ * Snapshot gesture: did we swallow this button's PRESS?
+ *
+ * [0] = Copy, [1] = Delete. Set when the press is consumed for the gesture,
+ * cleared by the matching release, and the only thing that decides whether a
+ * release reaches Move. See the branch in the CC scan for why the release
+ * cannot be gated on Shift.
+ */
+static int snapshot_gesture_swallow[2] = {0, 0};
+
+/*
+ * Recall Quantize, in MIDI clock pulses. 0 = Off.
+ *
+ * Read from shadow_control every time it is needed rather than cached, so a
+ * change made in Global Settings takes effect on the very next press —
+ * load_feature_config() runs once at init, so anything parsed there would need
+ * a reboot.
+ */
+static int recall_quantize_pulses(void)
+{
+    if (!shadow_control) return 0;
+    return SHADOW_RECALL_Q_PULSES(shadow_control->recall_quantize);
+}
+
+/* The armed recall: the pulse count at which it fires, or -1 for none. */
+static int recall_pending_target = -1;
+
+/*
+ * What Shift+Delete does, and which flag to raise for it.
+ *
+ * Immediate unless quantize is on AND the transport is running. A queue with
+ * no clock never fires, so with the transport stopped the setting is ignored
+ * rather than honoured into silence — that is the one case where doing the
+ * literal thing would be worse than useless.
+ *
+ * Pressed again while armed, it CANCELS. Re-arming to the same boundary would
+ * be a no-op you could not tell from a dead button, and there is no other way
+ * to call one back.
+ */
+static uint16_t snapshot_recall_gesture(void)
+{
+    if (recall_pending_target >= 0) {
+        recall_pending_target = -1;
+        return SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED;
+    }
+    if (recall_quantize_pulses() <= 0 || !sampler_transport_playing) {
+        return SHADOW_UI_FLAG_SNAPSHOT_RECALL;
+    }
+    /*
+     * The NEXT boundary, never the one we are standing on. `pulses / div * div
+     * + div` lands on the following division even when the press arrives
+     * exactly on the beat — pressing on the downbeat should give you the next
+     * one, not fire instantly and read as if quantize were off.
+     */
+    recall_pending_target =
+        recall_next_boundary(shadow_transport_pulses, recall_quantize_pulses());
+    return SHADOW_UI_FLAG_SNAPSHOT_QUEUED;
+}
+
+/*
+ * Fire an armed recall, slightly EARLY.
+ *
+ * The recall is ~13 param writes at ~2.8ms — about 36ms — so starting it on
+ * the boundary lands the change a fourteenth of a beat late at 120bpm.
+ * Starting it early enough to finish there is the difference between "on the
+ * beat" and "just after it".
+ *
+ * The lead is computed from the measured tempo rather than fixed in pulses:
+ * one pulse is 20.8ms at 120bpm and 41.7ms at 60, so a constant would be
+ * either useless or a whole beat early depending on the track. Clamped below
+ * the division so a slow tempo can never make the lead reach back past the
+ * previous boundary and fire immediately.
+ */
+#define RECALL_WRITE_MS 36
+static void snapshot_recall_check_boundary(void)
+{
+    if (recall_pending_target < 0 || !shadow_control) return;
+    if (!sampler_transport_playing) {
+        /* The clock stopped under an armed recall. Nothing will ever reach the
+         * target, so drop it rather than leave a mark on screen forever. */
+        recall_pending_target = -1;
+        shadow_control->ui_flags_ext |=
+            (uint16_t)(SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED >> SHADOW_UI_FLAG_EXT_SHIFT);
+        return;
+    }
+
+    tempo_source_t tsrc;
+    float bpm = sampler_get_bpm(&tsrc);
+    int d = recall_quantize_pulses();
+    int lead = recall_lead_pulses(bpm, d > 0 ? d : RECALL_PULSES_PER_BEAT,
+                                  RECALL_WRITE_MS);
+
+    if (recall_should_fire(shadow_transport_pulses, recall_pending_target, lead)) {
+        recall_pending_target = -1;
+        shadow_control->ui_flags_ext |=
+            (uint16_t)(SHADOW_UI_FLAG_SNAPSHOT_RECALL >> SHADOW_UI_FLAG_EXT_SHIFT);
+    }
+}
 static uint64_t shift_menu_pending_ms = 0;
 static int shift_menu_pending = 0;
 
@@ -4740,6 +5047,7 @@ static void shim_init_subsystems(void)
         shadow_control->skipback_seconds = (uint16_t)skipback_seconds_setting;
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
         shadow_control->midi_indicator_enabled = midi_indicator_enabled_setting ? 1 : 0;
+        shadow_control->stay_in_shadow = stay_in_shadow_setting ? 1 : 0;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
         /* Speaker-EQ auto stability clock starts now; EQ stays off until a
          * speaker reading has been stable for SPK_EQ_STABLE_SEC. */
@@ -5046,60 +5354,30 @@ static uint64_t spi_total_max = 0, spi_pre_max = 0, spi_ioctl_max = 0, spi_post_
 static int spi_timing_count = 0;
 static int spi_baseline_mode = -1;  /* -1 = unknown, 0 = full mode, 1 = baseline only */
 
-/* === SPI Timing Snapshot (written from SPI path, read by background logger) ===
- * All fields are written atomically (single writer) from the SPI callbacks.
- * The background thread reads them periodically — torn reads are harmless
- * since the data is purely informational. */
-typedef struct {
-    /* Frame-level timing (avg/max over last 1000 blocks) */
-    uint64_t frame_total_avg, frame_total_max;
-    uint64_t frame_pre_avg, frame_pre_max;
-    uint64_t frame_ioctl_avg, frame_ioctl_max;
-    uint64_t frame_post_avg, frame_post_max;
-    /* Granular pre-ioctl sections (avg/max) */
-    uint64_t midi_mon_avg, midi_mon_max;
-    uint64_t fwd_midi_avg, fwd_midi_max;
-    uint64_t mix_audio_avg, mix_audio_max;
-    uint64_t ui_req_avg, ui_req_max;
-    uint64_t param_req_avg, param_req_max;
-    uint64_t fwd_cc_avg, fwd_cc_max;
-    uint64_t proc_midi_avg, proc_midi_max;
-    uint64_t jack_stash_avg, jack_stash_max;
-    uint64_t drain_dsp_avg, drain_dsp_max;
-    uint64_t jack_wake_avg, jack_wake_max;
-    uint64_t mix_buf_avg, mix_buf_max;
-    uint64_t tts_avg, tts_max;
-    uint64_t display_avg, display_max;
-    uint64_t clear_leds_avg, clear_leds_max;
-    uint64_t jack_midi_avg, jack_midi_max;
-    uint64_t ui_midi_avg, ui_midi_max;
-    uint64_t flush_leds_avg, flush_leds_max;
-    uint64_t screenreader_avg, screenreader_max;
-    uint64_t jack_pre_avg, jack_pre_max;
-    uint64_t jack_disp_avg, jack_disp_max;
-    uint64_t pin_avg, pin_max;
-    /* Post-ioctl un-instrumented chunks (added 2026-05-15 for overrun hunt) */
-    uint64_t post_midi_scan_avg, post_midi_scan_max;  /* lines ~5841-6696 */
-    uint64_t post_drain_dsp_avg, post_drain_dsp_max;  /* shadow_drain_ui_midi_dsp */
-    uint64_t post_render_avg, post_render_max;        /* shadow_inprocess_render_to_buffer + slot dump */
-    /* Per-slot render breakdown (added 2026-05-15 for render spike hunt) */
-    uint64_t slot_render_max[4];
-    uint64_t slot_synth_max[4];
-    uint64_t slot_fx_max[4];
-    uint32_t slot_probe_burst_max;
-    /* JACK audio double-buffer stats */
-    uint32_t jack_audio_hits;
-    uint32_t jack_audio_misses;
-    /* Overrun tracking */
-    uint32_t overrun_count;
-    uint64_t last_overrun_total, last_overrun_pre, last_overrun_ioctl, last_overrun_post;
-    /* Sequence number — incremented on each snapshot update */
-    uint32_t seq;
-    uint32_t frame_ready;     /* 1 = frame snapshot valid */
-    uint32_t granular_ready;  /* 1 = granular snapshot valid */
-} spi_timing_snapshot_t;
+/* The snapshot lives in /schwung-perf when the segment is mapped, and in this
+ * static when it is not.
+ *
+ * A pointer rather than a copy-then-publish: the stores below are the ones the
+ * shim already performed, so publishing costs no memcpy and adds nothing to the
+ * SPI callback. The fallback means no store site needs a NULL check — there is
+ * always somewhere to write. The worker swings the pointer once, after the
+ * pages are faulted in; see shim_worker.c. */
+static volatile schwung_perf_snapshot_t spi_snap_fallback;
+static volatile schwung_perf_snapshot_t *spi_snap = &spi_snap_fallback;
 
-static volatile spi_timing_snapshot_t spi_snap = {0};
+/* Called from the worker thread ONLY (shm_open/mmap are not RT-safe). Idempotent. */
+void shim_perf_publish_to(volatile schwung_perf_snapshot_t *dst)
+{
+    if (!dst || dst == spi_snap) return;
+    /* Seed the new home with what we have so the first reader does not see a
+     * zeroed snapshot and report "everything idle" — which is exactly the lie
+     * a failed read must never tell. */
+    memcpy((void *)dst, (const void *)spi_snap, sizeof(*dst));
+    dst->magic = SCHWUNG_PERF_MAGIC;
+    dst->version = SCHWUNG_PERF_VERSION;
+    __sync_synchronize();
+    spi_snap = dst;
+}
 
 /* Link Audio path-flip counters (single-writer from SPI path, single-reader
  * from the background logger thread). Declared extern where incremented. */
@@ -6314,9 +6592,35 @@ pre_done:
                 long_press_elapsed(&track_press_time[i])) {
                 track_longpress_fired[i] = 1;
                 track_longpress_pending[i] = 0;
-                shadow_control->ui_slot = (uint8_t)i;
-                shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
-                if (!shadow_display_mode) {
+                /*
+                 * A TRACK LONG-PRESS IS A TOGGLE BETWEEN THE TWO WORLDS.
+                 *
+                 * From Move it opens the shadow UI on that slot; from the
+                 * shadow UI it hands the screen back to Move on that track.
+                 * One gesture, and it is its own inverse, so you can long-press
+                 * between the two without learning a second key for the way
+                 * back.
+                 *
+                 * The dismiss direction is not a new mechanism: the Move-track
+                 * tap below is injected on BOTH paths and always was — it is
+                 * what makes Move's selected track follow the slot — so
+                 * dismissing here lands on exactly the track the editor was
+                 * about. The only difference between the two directions is
+                 * which way display_mode goes.
+                 *
+                 * A tap keeps meaning what it meant (Keep Schwung: switch
+                 * slot; off: dismiss), and Shift+Track still dismisses, so the
+                 * escape hatch is untouched in both modes.
+                 */
+                if (shadow_display_mode) {
+                    shadow_display_mode = 0;
+                    shadow_control->display_mode = 0;
+                    /* No JUMP_TO_SLOT: we are leaving. Reopening on this track
+                     * lands on the matching slot anyway, because the open
+                     * direction below sets it. */
+                } else {
+                    shadow_control->ui_slot = (uint8_t)i;
+                    shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                     shadow_display_mode = 1;
                     shadow_control->display_mode = 1;
                     launch_shadow_ui_reset_backoff();
@@ -6349,7 +6653,9 @@ pre_done:
                     shadow_midi_inject_push(shadow_midi_inject_shm, rel);
                     track_swallow_release[i] = 1;
                 }
-                shadow_log("Track long-press: opening slot settings (Move track follows)");
+                shadow_log(shadow_display_mode
+                           ? "Track long-press: opening slot settings (Move track follows)"
+                           : "Track long-press: dismissing shadow UI (Move track follows)");
             }
         }
         /* Menu button */
@@ -6539,6 +6845,43 @@ static void shim_block_cable2_in_sh_midi(uint8_t *sh_midi) {
  *   - MIDI_IN filtering
  *   - All post-ioctl domain logic (track detection, shortcuts, DSP rendering)
  * ============================================================================ */
+/*
+ * Swallow one MIDI_IN event so NOBODY sees it — Move or us.
+ *
+ * There are two buffers and they have different readers, which is the whole
+ * reason this helper exists:
+ *
+ *   shadow  (= global_mmap_addr) is WHAT MOVE SEES.
+ *   src     (= hardware_mmap_addr) is the real mailbox, which Move never
+ *           reads; Schwung's own post-ioctl scans and shadow_forward_midi do.
+ *
+ * Twelve sites in shim_post_transfer meant "block this from reaching Move" and
+ * eleven of them zeroed only the HARDWARE mailbox. That does not block Move at
+ * all — and it is worse than a no-op, because a zeroed slot is a TERMINATOR,
+ * so it hid every event behind it from our own readers. Precisely backwards
+ * from the intent, at every one of them. It surfaced when Shift+Delete reached
+ * Move and deleted a clip; the other ten leak into Capture, Sample, Back, Jog
+ * Click and the arrows, none of which is destructive, which is why they had
+ * gone unnoticed and why the broken pattern looked like the house style.
+ *
+ * Index-paired, and safe only because shadow_midi_in_compact() runs LAST in
+ * shim_post_transfer: nothing may move a slot between the two writes.
+ *
+ * Takes both bases rather than reading globals so it stays usable from the
+ * loops that have already offset their own pointer.
+ */
+static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in, int j)
+{
+    if (shadow_midi_in) {
+        shadow_midi_in[j] = 0; shadow_midi_in[j + 1] = 0;
+        shadow_midi_in[j + 2] = 0; shadow_midi_in[j + 3] = 0;
+    }
+    if (hw_midi_in) {
+        hw_midi_in[j] = 0; hw_midi_in[j + 1] = 0;
+        hw_midi_in[j + 2] = 0; hw_midi_in[j + 3] = 0;
+    }
+}
+
 static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
 {
     (void)ctx;
@@ -7348,6 +7691,11 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * Scan for track button CCs (40-43) for D-Bus volume sync,
      * and volume knob touch (note 8) for master volume display reading.
      * NOTE: We scan hardware_mmap_addr (unfiltered) because shadow buffer is already filtered. */
+    /* An armed recall fires on the clock, not on a button, so it is checked
+     * every frame rather than from the CC scan. Cheap: a compare against a
+     * counter, and an early-out when nothing is armed. */
+    snapshot_recall_check_boundary();
+
     if (hardware_mmap_addr && shadow_inprocess_ready) {
         uint8_t *src = hardware_mmap_addr + MIDI_IN_OFFSET;
         int overtake_active = shadow_control ? shadow_control->overtake_mode : 0;
@@ -7454,9 +7802,32 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             }
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
-                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                            midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        }
+
+                        /* "Stay in Schwung": a plain Track tap while the shadow
+                         * UI is up switches to that slot instead of handing the
+                         * screen back to Move. Fired on the PRESS, not the
+                         * release, so it is independent of the long-press
+                         * bookkeeping below — that whole block is gated on
+                         * LONG_PRESS_ACTIVE(), and with the trigger set to
+                         * Shift+Vol a tap would otherwise do nothing at all.
+                         *
+                         * Every modifier is excluded: Shift+Vol+Track already
+                         * jumped above, Shift+Track is the deliberate dismiss
+                         * below (the escape hatch this setting must not close),
+                         * Mute+Track is slot mute and Shift+Mute+Track is solo,
+                         * and a volume touch during a track press is the track
+                         * volume gesture.
+                         *
+                         * The Track CC is NOT blocked from Move: Move's own
+                         * selected track stays in step with the slot, which is
+                         * what it did when the tap dismissed. */
+                        if (STAY_IN_SHADOW() && shadow_display_mode && shadow_ui_enabled &&
+                            shadow_control && !shadow_shift_held && !shadow_mute_held &&
+                            !shadow_volume_knob_touched) {
+                            shadow_control->ui_slot = (uint8_t)new_slot;
+                            shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_SLOT;
                         }
 
                         /* Shift + Track (without Volume / Mute) while shadow UI is displayed = dismiss shadow UI
@@ -7483,9 +7854,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          * what Move reads, src keeps the debug scan honest. */
                         if (!pressed && track_swallow_release[lp_slot]) {
                             track_swallow_release[lp_slot] = 0;
-                            uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                            sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                            src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                            midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         }
                         if (pressed) {
                             track_swallow_release[lp_slot] = 0;
@@ -7501,12 +7870,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              * releasing Track shouldn't immediately dismiss it).
                              * Skip if vol was touched during the press (volume tweak gesture
                              * shouldn't side-effect into dismissing shadow UI).
+                             * Skip if "Stay in Schwung" is on — a plain tap
+                             * switches slot instead (handled on the press above),
+                             * and dismissing here would undo it.
                              * Skip if Mute is held — Mute+Track (slot mute) and
                              * Shift+Mute+Track (solo) are modifier combos; releasing
                              * Track must not dismiss the shadow UI, or the trailing
                              * Mute release leaks to Move firmware and latches Mute. */
                             if (track_longpress_pending[lp_slot] && !track_longpress_fired[lp_slot] &&
                                 shadow_display_mode && shadow_control &&
+                                !STAY_IN_SHADOW() &&
                                 !track_vol_touched_during_press[lp_slot] &&
                                 !shadow_mute_held &&
                                 !(shadow_shift_held && shadow_volume_knob_touched)) {
@@ -7552,7 +7925,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         shadow_control->suspend_overtake = 1;
                         shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                         /* Block Back from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7571,7 +7944,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->ui_flags |= SHADOW_UI_FLAG_JUMP_TO_OVERTAKE;
                         }
                         /* Block Jog Click from reaching Move */
-                        src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7583,7 +7956,78 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (require_vol && !SHIFT_VOL_ACTIVE()) require_vol = 0;
                     if (!require_vol || shadow_volume_knob_touched) {
                         skipback_trigger_save();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    }
+                }
+
+                /*
+                 * Snapshot / recall: Shift+Copy takes, Shift+Delete recalls.
+                 *
+                 * The shim only RAISES A FLAG. The work is ~20 param round
+                 * trips at ~2.8ms each, and this is the SPI callback — it does
+                 * none of it. shadow_ui.js (SCHED_OTHER, and running even with
+                 * the display hidden) services the flag, which is also why the
+                 * gesture works whether or not the shadow UI is on screen.
+                 *
+                 * BOTH EDGES ARE SWALLOWED, and that is not tidiness.
+                 *
+                 * Blocking only the press (d2 > 0) left Move a lone BUTTON-UP
+                 * for a key it never saw go down — and Move acted on it. On
+                 * hardware that deleted the clip. Every press in the log had
+                 * fired the gesture correctly and been zeroed; the release was
+                 * the whole leak, and for CC_DELETE the consequence is
+                 * destructive rather than cosmetic.
+                 *
+                 * The latch is why this cannot just test shadow_shift_held on
+                 * the release too: Shift is very often let go BEFORE the
+                 * button, so the release arrives with shift already down and
+                 * would sail through. `snapshot_gesture_swallow` remembers
+                 * that we ate the press and eats the matching release whatever
+                 * Shift is doing by then. A press we did NOT consume never
+                 * sets it, so Move's own bare Copy and Delete are untouched.
+                 *
+                 * The cost is Move's own Shift+Copy and Shift+Delete while
+                 * Schwung's UI is enabled, which is the accepted price.
+                 *
+                 * Overtake is already handled: the `overtake_active` early-out
+                 * above `continue`s past this for every CC but its own three.
+                 *
+                 * Nothing is LOGGED here. shadow_log() calls unified_log(),
+                 * which the RT rules forbid on this path; the neighbouring
+                 * skipback and sampler branches do it anyway and that is a
+                 * known wart, not a licence. shadow_ui logs both gestures from
+                 * SCHED_OTHER where logging is legal.
+                 */
+                if (d1 == CC_COPY || d1 == CC_DELETE) {
+                    int gi = (d1 == CC_COPY) ? 0 : 1;
+                    if (d2 > 0) {
+                        if (shadow_shift_held && shadow_ui_enabled && shadow_control) {
+                            uint16_t raise;
+                            if (d1 == CC_COPY) {
+                                raise = SHADOW_UI_FLAG_SNAPSHOT_TAKE;
+                            } else {
+                                raise = snapshot_recall_gesture();
+                            }
+                            shadow_control->ui_flags_ext |=
+                                (uint16_t)(raise >> SHADOW_UI_FLAG_EXT_SHIFT);
+                            snapshot_gesture_swallow[gi] = 1;
+                        }
+                    }
+                    if (snapshot_gesture_swallow[gi]) {
+                        /*
+                         * BOTH BUFFERS. `src` is hardware_mmap_addr — the real
+                         * mailbox — and Move does not read it. What Move reads
+                         * is `shadow` (see the declarations: "library shadow
+                         * buffer (what Move sees)"). Zeroing only `src`
+                         * blocks nothing at all, which is how Shift+Delete
+                         * reached Move and deleted a clip.
+                         *
+                         * Index-paired, and safe because shadow_midi_in_compact
+                         * runs LAST in this function — nothing may move a slot
+                         * between these two writes.
+                         */
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                        if (d2 == 0) snapshot_gesture_swallow[gi] = 0;
                     }
                 }
 
@@ -7592,10 +8036,10 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_shift_held && shadow_volume_knob_touched && d2 > 0) {
                     if (d1 == CC_LEFT && set_page_current > 0) {
                         shadow_change_set_page(set_page_current - 1);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (d1 == CC_RIGHT && set_page_current < SET_PAGES_TOTAL - 1) {
                         shadow_change_set_page(set_page_current + 1);
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7642,17 +8086,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_log("Sampler: preroll cancelled via Shift+Sample");
                             sampler_request_stop();
                         }
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (sampler_state == SAMPLER_RECORDING) {
                         /* Bare Sample while recording: stop */
                         shadow_log("Sampler: stopped via Sample button");
                         sampler_request_stop();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (sampler_state == SAMPLER_PREROLL) {
                         /* Bare Sample while preroll: cancel back to armed */
                         shadow_log("Sampler: preroll cancelled via Sample button");
                         sampler_request_stop();
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7665,7 +8109,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_overlay_sync();
                     shadow_log("Sampler: fullscreen dismissed via Back");
                     send_screenreader_announcement("Sampler hidden. Shift+Sample to resume.");
-                    src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
 
                 /* Jog wheel while sampler is armed = navigate menu */
@@ -7682,7 +8126,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
                     /* Block jog from reaching Move/shadow UI */
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
 
                 /* Jog click while sampler is armed = cycle selected menu item */
@@ -7698,7 +8142,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     }
                     shadow_overlay_sync();
                     sampler_announce_menu_item();
-                    src[j] = 0; src[j + 1] = 0; src[j + 2] = 0; src[j + 3] = 0;
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 }
             }
 
@@ -7748,9 +8192,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     }
                 }
 
@@ -7765,9 +8207,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         launch_shadow_ui_reset_backoff();
                         launch_shadow_ui();  /* No-op if already running */
                         /* Block Step note from reaching Move */
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     } else if (LONG_PRESS_ACTIVE() && shadow_shift_held &&
                                !shadow_volume_knob_touched && shadow_control && shadow_ui_enabled) {
                         /* Shift+Step13 without Vol — immediate tools shortcut.
@@ -7781,9 +8221,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                         clock_gettime(CLOCK_MONOTONIC, &step13_press_time);
                         step13_longpress_pending = 1;
                         step13_longpress_fired = 0;
-                        uint8_t *sh = shadow + MIDI_IN_OFFSET;
-                        sh[j] = 0; sh[j+1] = 0; sh[j+2] = 0; sh[j+3] = 0;
-                        src[j] = 0; src[j+1] = 0; src[j+2] = 0; src[j+3] = 0;
+                        midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                         shadow_log("Shift+Step13: opening tools");
                     }
                 }
@@ -8537,24 +8975,24 @@ post_timing:
     if (total_us > OVERRUN_THRESHOLD_US) {
         static uint32_t hook_overrun_count = 0;
         hook_overrun_count++;
-        spi_snap.overrun_count = hook_overrun_count;
-        spi_snap.last_overrun_total = total_us;
-        spi_snap.last_overrun_pre = pre_us;
-        spi_snap.last_overrun_ioctl = ioctl_us;
-        spi_snap.last_overrun_post = post_us;
+        spi_snap->overrun_count = hook_overrun_count;
+        spi_snap->last_overrun_total = total_us;
+        spi_snap->last_overrun_pre = pre_us;
+        spi_snap->last_overrun_ioctl = ioctl_us;
+        spi_snap->last_overrun_post = post_us;
     }
 
     /* Snapshot frame-level timing every 1000 blocks (~3s) — no I/O */
     if (spi_timing_count >= 1000) {
-        spi_snap.frame_total_avg = spi_total_sum / spi_timing_count;
-        spi_snap.frame_total_max = spi_total_max;
-        spi_snap.frame_pre_avg = spi_pre_sum / spi_timing_count;
-        spi_snap.frame_pre_max = spi_pre_max;
-        spi_snap.frame_ioctl_avg = spi_ioctl_sum / spi_timing_count;
-        spi_snap.frame_ioctl_max = spi_ioctl_max;
-        spi_snap.frame_post_avg = spi_post_sum / spi_timing_count;
-        spi_snap.frame_post_max = spi_post_max;
-        spi_snap.frame_ready = 1;
+        spi_snap->frame_total_avg = spi_total_sum / spi_timing_count;
+        spi_snap->frame_total_max = spi_total_max;
+        spi_snap->frame_pre_avg = spi_pre_sum / spi_timing_count;
+        spi_snap->frame_pre_max = spi_pre_max;
+        spi_snap->frame_ioctl_avg = spi_ioctl_sum / spi_timing_count;
+        spi_snap->frame_ioctl_max = spi_ioctl_max;
+        spi_snap->frame_post_avg = spi_post_sum / spi_timing_count;
+        spi_snap->frame_post_max = spi_post_max;
+        spi_snap->frame_ready = 1;
         spi_total_sum = spi_pre_sum = spi_ioctl_sum = spi_post_sum = 0;
         spi_total_max = spi_pre_max = spi_ioctl_max = spi_post_max = 0;
         spi_timing_count = 0;
@@ -8564,43 +9002,63 @@ post_timing:
     spi_granular_count++;
     if (spi_granular_count >= 1000) {
         int n = spi_granular_count;
-        spi_snap.midi_mon_avg = spi_midi_mon_sum / n; spi_snap.midi_mon_max = spi_midi_mon_max;
-        spi_snap.fwd_midi_avg = spi_fwd_midi_sum / n; spi_snap.fwd_midi_max = spi_fwd_midi_max;
-        spi_snap.mix_audio_avg = spi_mix_audio_sum / n; spi_snap.mix_audio_max = spi_mix_audio_max;
-        spi_snap.ui_req_avg = spi_ui_req_sum / n; spi_snap.ui_req_max = spi_ui_req_max;
-        spi_snap.param_req_avg = spi_param_req_sum / n; spi_snap.param_req_max = spi_param_req_max;
-        spi_snap.fwd_cc_avg = spi_fwd_ext_cc_sum / n; spi_snap.fwd_cc_max = spi_fwd_ext_cc_max;
-        spi_snap.proc_midi_avg = spi_proc_midi_sum / n; spi_snap.proc_midi_max = spi_proc_midi_max;
-        spi_snap.jack_stash_avg = spi_jack_stash_sum / n; spi_snap.jack_stash_max = spi_jack_stash_max;
-        spi_snap.drain_dsp_avg = spi_drain_ui_midi_sum / n; spi_snap.drain_dsp_max = spi_drain_ui_midi_max;
-        spi_snap.jack_wake_avg = spi_jack_wake_sum / n; spi_snap.jack_wake_max = spi_jack_wake_max;
-        spi_snap.mix_buf_avg = spi_inproc_mix_sum / n; spi_snap.mix_buf_max = spi_inproc_mix_max;
-        spi_snap.tts_avg = spi_tts_mix_sum / n; spi_snap.tts_max = spi_tts_mix_max;
-        spi_snap.display_avg = spi_display_sum / n; spi_snap.display_max = spi_display_max;
-        spi_snap.clear_leds_avg = spi_clear_leds_sum / n; spi_snap.clear_leds_max = spi_clear_leds_max;
-        spi_snap.jack_midi_avg = spi_jack_midi_out_sum / n; spi_snap.jack_midi_max = spi_jack_midi_out_max;
-        spi_snap.ui_midi_avg = spi_ui_midi_out_sum / n; spi_snap.ui_midi_max = spi_ui_midi_out_max;
-        spi_snap.flush_leds_avg = spi_flush_leds_sum / n; spi_snap.flush_leds_max = spi_flush_leds_max;
-        spi_snap.screenreader_avg = spi_screenreader_sum / n; spi_snap.screenreader_max = spi_screenreader_max;
-        spi_snap.jack_pre_avg = spi_jack_pre_sum / n; spi_snap.jack_pre_max = spi_jack_pre_max;
-        spi_snap.jack_disp_avg = spi_jack_disp_sum / n; spi_snap.jack_disp_max = spi_jack_disp_max;
-        spi_snap.pin_avg = spi_pin_sum / n; spi_snap.pin_max = spi_pin_max;
-        spi_snap.post_midi_scan_avg = spi_post_midi_scan_sum / n;
-        spi_snap.post_midi_scan_max = spi_post_midi_scan_max;
-        spi_snap.post_drain_dsp_avg = spi_post_drain_dsp_sum / n;
-        spi_snap.post_drain_dsp_max = spi_post_drain_dsp_max;
-        spi_snap.post_render_avg = spi_post_render_sum / n;
-        spi_snap.post_render_max = spi_post_render_max;
-        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < 4; s++) {
-            spi_snap.slot_render_max[s] = spi_slot_render_max[s];
-            spi_snap.slot_synth_max[s] = spi_slot_synth_max[s];
-            spi_snap.slot_fx_max[s] = spi_slot_fx_max[s];
+        /* Seqlock: odd means a write is in flight. A reader that sees the same
+         * EVEN value before and after its read got a consistent snapshot. Two
+         * stores per ~1000 frames — this is not a cost. */
+        spi_snap->seq++;
+        __sync_synchronize();
+        spi_snap->midi_mon_avg = spi_midi_mon_sum / n; spi_snap->midi_mon_max = spi_midi_mon_max;
+        spi_snap->fwd_midi_avg = spi_fwd_midi_sum / n; spi_snap->fwd_midi_max = spi_fwd_midi_max;
+        spi_snap->mix_audio_avg = spi_mix_audio_sum / n; spi_snap->mix_audio_max = spi_mix_audio_max;
+        spi_snap->ui_req_avg = spi_ui_req_sum / n; spi_snap->ui_req_max = spi_ui_req_max;
+        spi_snap->param_req_avg = spi_param_req_sum / n; spi_snap->param_req_max = spi_param_req_max;
+        spi_snap->fwd_cc_avg = spi_fwd_ext_cc_sum / n; spi_snap->fwd_cc_max = spi_fwd_ext_cc_max;
+        spi_snap->proc_midi_avg = spi_proc_midi_sum / n; spi_snap->proc_midi_max = spi_proc_midi_max;
+        spi_snap->jack_stash_avg = spi_jack_stash_sum / n; spi_snap->jack_stash_max = spi_jack_stash_max;
+        spi_snap->drain_dsp_avg = spi_drain_ui_midi_sum / n; spi_snap->drain_dsp_max = spi_drain_ui_midi_max;
+        spi_snap->jack_wake_avg = spi_jack_wake_sum / n; spi_snap->jack_wake_max = spi_jack_wake_max;
+        spi_snap->mix_buf_avg = spi_inproc_mix_sum / n; spi_snap->mix_buf_max = spi_inproc_mix_max;
+        spi_snap->tts_avg = spi_tts_mix_sum / n; spi_snap->tts_max = spi_tts_mix_max;
+        spi_snap->display_avg = spi_display_sum / n; spi_snap->display_max = spi_display_max;
+        spi_snap->clear_leds_avg = spi_clear_leds_sum / n; spi_snap->clear_leds_max = spi_clear_leds_max;
+        spi_snap->jack_midi_avg = spi_jack_midi_out_sum / n; spi_snap->jack_midi_max = spi_jack_midi_out_max;
+        spi_snap->ui_midi_avg = spi_ui_midi_out_sum / n; spi_snap->ui_midi_max = spi_ui_midi_out_max;
+        spi_snap->flush_leds_avg = spi_flush_leds_sum / n; spi_snap->flush_leds_max = spi_flush_leds_max;
+        spi_snap->screenreader_avg = spi_screenreader_sum / n; spi_snap->screenreader_max = spi_screenreader_max;
+        spi_snap->jack_pre_avg = spi_jack_pre_sum / n; spi_snap->jack_pre_max = spi_jack_pre_max;
+        spi_snap->jack_disp_avg = spi_jack_disp_sum / n; spi_snap->jack_disp_max = spi_jack_disp_max;
+        spi_snap->pin_avg = spi_pin_sum / n; spi_snap->pin_max = spi_pin_max;
+        spi_snap->post_midi_scan_avg = spi_post_midi_scan_sum / n;
+        spi_snap->post_midi_scan_max = spi_post_midi_scan_max;
+        spi_snap->post_drain_dsp_avg = spi_post_drain_dsp_sum / n;
+        spi_snap->post_drain_dsp_max = spi_post_drain_dsp_max;
+        spi_snap->post_render_avg = spi_post_render_sum / n;
+        spi_snap->post_render_max = spi_post_render_max;
+        for (int s = 0; s < SHADOW_CHAIN_INSTANCES && s < PERF_CHAIN_SLOTS; s++) {
+            spi_snap->slot_render_max[s] = spi_slot_render_max[s];
+            spi_snap->slot_synth_max[s]  = spi_slot_synth_max[s];
+            spi_snap->slot_fx_max[s]     = spi_slot_fx_max[s];
+            spi_snap->slot_render_avg[s] = spi_slot_render_sum[s] / n;
+            spi_snap->slot_synth_avg[s]  = spi_slot_synth_sum[s] / n;
+            spi_snap->slot_fx_avg[s]     = spi_slot_fx_sum[s] / n;
         }
-        spi_snap.slot_probe_burst_max = spi_slot_probe_burst_max;
-        spi_snap.jack_audio_hits = schwung_jack_bridge_get_hit_count();
-        spi_snap.jack_audio_misses = schwung_jack_bridge_get_miss_count();
-        spi_snap.granular_ready = 1;
-        spi_snap.seq++;
+        for (int fx = 0; fx < MASTER_FX_SLOTS && fx < PERF_MASTER_FX_SLOTS; fx++) {
+            spi_snap->mfx_avg[fx] = spi_mfx_sum[fx] / n;
+            spi_snap->mfx_max[fx] = spi_mfx_max[fx];
+        }
+        spi_snap->overtake_gen_avg = spi_overtake_gen_sum / n;
+        spi_snap->overtake_gen_max = spi_overtake_gen_max;
+        spi_snap->overtake_fx_avg  = spi_overtake_fx_sum / n;
+        spi_snap->overtake_fx_max  = spi_overtake_fx_max;
+
+        spi_snap->sample_window_frames = (uint32_t)n;
+        /* The denominator, measured. frame_total_avg is the whole loop
+         * iteration, which the blocking ioctl paces to the frame period. */
+        spi_snap->frame_period_us = spi_snap->frame_total_avg;
+        spi_snap->slot_probe_burst_max = spi_slot_probe_burst_max;
+        spi_snap->jack_audio_hits = schwung_jack_bridge_get_hit_count();
+        spi_snap->jack_audio_misses = schwung_jack_bridge_get_miss_count();
+        spi_snap->granular_ready = 1;
 
         spi_midi_mon_sum = spi_midi_mon_max = spi_fwd_midi_sum = spi_fwd_midi_max = 0;
         spi_mix_audio_sum = spi_mix_audio_max = spi_ui_req_sum = spi_ui_req_max = 0;
@@ -8621,8 +9079,19 @@ post_timing:
             spi_slot_render_max[s] = 0;
             spi_slot_synth_max[s] = 0;
             spi_slot_fx_max[s] = 0;
+            spi_slot_render_sum[s] = 0;
+            spi_slot_synth_sum[s] = 0;
+            spi_slot_fx_sum[s] = 0;
         }
+        for (int fx = 0; fx < MASTER_FX_SLOTS; fx++) {
+            spi_mfx_sum[fx] = 0;
+            spi_mfx_max[fx] = 0;
+        }
+        spi_overtake_gen_sum = spi_overtake_gen_max = 0;
+        spi_overtake_fx_sum  = spi_overtake_fx_max  = 0;
         spi_slot_probe_burst_max = 0;
+        __sync_synchronize();
+        spi_snap->seq++;   /* back to EVEN — snapshot is consistent */
         spi_granular_count = 0;
     }
 
@@ -8768,81 +9237,81 @@ static void *spi_timing_logger_thread(void *arg)
         schwung_trace_poll_enable();
 
         if (!unified_log_enabled()) continue;
-        if (spi_snap.seq == last_seq) continue;  /* No new data */
-        last_seq = spi_snap.seq;
+        if (spi_snap->seq == last_seq) continue;  /* No new data */
+        last_seq = spi_snap->seq;
 
         /* Read snapshot (torn reads are harmless — data is informational) */
-        if (spi_snap.frame_ready) {
+        if (spi_snap->frame_ready) {
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Frame(us): total avg=%llu max=%llu | pre avg=%llu max=%llu | ioctl avg=%llu max=%llu | post avg=%llu max=%llu | overruns=%u",
-                (unsigned long long)spi_snap.frame_total_avg, (unsigned long long)spi_snap.frame_total_max,
-                (unsigned long long)spi_snap.frame_pre_avg, (unsigned long long)spi_snap.frame_pre_max,
-                (unsigned long long)spi_snap.frame_ioctl_avg, (unsigned long long)spi_snap.frame_ioctl_max,
-                (unsigned long long)spi_snap.frame_post_avg, (unsigned long long)spi_snap.frame_post_max,
-                spi_snap.overrun_count);
+                (unsigned long long)spi_snap->frame_total_avg, (unsigned long long)spi_snap->frame_total_max,
+                (unsigned long long)spi_snap->frame_pre_avg, (unsigned long long)spi_snap->frame_pre_max,
+                (unsigned long long)spi_snap->frame_ioctl_avg, (unsigned long long)spi_snap->frame_ioctl_max,
+                (unsigned long long)spi_snap->frame_post_avg, (unsigned long long)spi_snap->frame_post_max,
+                spi_snap->overrun_count);
         }
 
-        if (spi_snap.granular_ready) {
+        if (spi_snap->granular_ready) {
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Pre(us): midi_mon=%llu/%llu fwd_midi=%llu/%llu mix_audio=%llu/%llu "
                 "ui_req=%llu/%llu param=%llu/%llu fwd_cc=%llu/%llu proc_midi=%llu/%llu "
                 "jack_stash=%llu/%llu drain_dsp=%llu/%llu jack_wake=%llu/%llu "
                 "mix_buf=%llu/%llu tts=%llu/%llu display=%llu/%llu",
-                (unsigned long long)spi_snap.midi_mon_avg, (unsigned long long)spi_snap.midi_mon_max,
-                (unsigned long long)spi_snap.fwd_midi_avg, (unsigned long long)spi_snap.fwd_midi_max,
-                (unsigned long long)spi_snap.mix_audio_avg, (unsigned long long)spi_snap.mix_audio_max,
-                (unsigned long long)spi_snap.ui_req_avg, (unsigned long long)spi_snap.ui_req_max,
-                (unsigned long long)spi_snap.param_req_avg, (unsigned long long)spi_snap.param_req_max,
-                (unsigned long long)spi_snap.fwd_cc_avg, (unsigned long long)spi_snap.fwd_cc_max,
-                (unsigned long long)spi_snap.proc_midi_avg, (unsigned long long)spi_snap.proc_midi_max,
-                (unsigned long long)spi_snap.jack_stash_avg, (unsigned long long)spi_snap.jack_stash_max,
-                (unsigned long long)spi_snap.drain_dsp_avg, (unsigned long long)spi_snap.drain_dsp_max,
-                (unsigned long long)spi_snap.jack_wake_avg, (unsigned long long)spi_snap.jack_wake_max,
-                (unsigned long long)spi_snap.mix_buf_avg, (unsigned long long)spi_snap.mix_buf_max,
-                (unsigned long long)spi_snap.tts_avg, (unsigned long long)spi_snap.tts_max,
-                (unsigned long long)spi_snap.display_avg, (unsigned long long)spi_snap.display_max);
+                (unsigned long long)spi_snap->midi_mon_avg, (unsigned long long)spi_snap->midi_mon_max,
+                (unsigned long long)spi_snap->fwd_midi_avg, (unsigned long long)spi_snap->fwd_midi_max,
+                (unsigned long long)spi_snap->mix_audio_avg, (unsigned long long)spi_snap->mix_audio_max,
+                (unsigned long long)spi_snap->ui_req_avg, (unsigned long long)spi_snap->ui_req_max,
+                (unsigned long long)spi_snap->param_req_avg, (unsigned long long)spi_snap->param_req_max,
+                (unsigned long long)spi_snap->fwd_cc_avg, (unsigned long long)spi_snap->fwd_cc_max,
+                (unsigned long long)spi_snap->proc_midi_avg, (unsigned long long)spi_snap->proc_midi_max,
+                (unsigned long long)spi_snap->jack_stash_avg, (unsigned long long)spi_snap->jack_stash_max,
+                (unsigned long long)spi_snap->drain_dsp_avg, (unsigned long long)spi_snap->drain_dsp_max,
+                (unsigned long long)spi_snap->jack_wake_avg, (unsigned long long)spi_snap->jack_wake_max,
+                (unsigned long long)spi_snap->mix_buf_avg, (unsigned long long)spi_snap->mix_buf_max,
+                (unsigned long long)spi_snap->tts_avg, (unsigned long long)spi_snap->tts_max,
+                (unsigned long long)spi_snap->display_avg, (unsigned long long)spi_snap->display_max);
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Post(us): clear_leds=%llu/%llu jack_midi=%llu/%llu ui_midi=%llu/%llu "
                 "flush_leds=%llu/%llu screenreader=%llu/%llu jack_pre=%llu/%llu "
                 "jack_disp=%llu/%llu pin=%llu/%llu "
                 "midi_scan=%llu/%llu drain_dsp2=%llu/%llu render=%llu/%llu",
-                (unsigned long long)spi_snap.clear_leds_avg, (unsigned long long)spi_snap.clear_leds_max,
-                (unsigned long long)spi_snap.jack_midi_avg, (unsigned long long)spi_snap.jack_midi_max,
-                (unsigned long long)spi_snap.ui_midi_avg, (unsigned long long)spi_snap.ui_midi_max,
-                (unsigned long long)spi_snap.flush_leds_avg, (unsigned long long)spi_snap.flush_leds_max,
-                (unsigned long long)spi_snap.screenreader_avg, (unsigned long long)spi_snap.screenreader_max,
-                (unsigned long long)spi_snap.jack_pre_avg, (unsigned long long)spi_snap.jack_pre_max,
-                (unsigned long long)spi_snap.jack_disp_avg, (unsigned long long)spi_snap.jack_disp_max,
-                (unsigned long long)spi_snap.pin_avg, (unsigned long long)spi_snap.pin_max,
-                (unsigned long long)spi_snap.post_midi_scan_avg, (unsigned long long)spi_snap.post_midi_scan_max,
-                (unsigned long long)spi_snap.post_drain_dsp_avg, (unsigned long long)spi_snap.post_drain_dsp_max,
-                (unsigned long long)spi_snap.post_render_avg, (unsigned long long)spi_snap.post_render_max);
+                (unsigned long long)spi_snap->clear_leds_avg, (unsigned long long)spi_snap->clear_leds_max,
+                (unsigned long long)spi_snap->jack_midi_avg, (unsigned long long)spi_snap->jack_midi_max,
+                (unsigned long long)spi_snap->ui_midi_avg, (unsigned long long)spi_snap->ui_midi_max,
+                (unsigned long long)spi_snap->flush_leds_avg, (unsigned long long)spi_snap->flush_leds_max,
+                (unsigned long long)spi_snap->screenreader_avg, (unsigned long long)spi_snap->screenreader_max,
+                (unsigned long long)spi_snap->jack_pre_avg, (unsigned long long)spi_snap->jack_pre_max,
+                (unsigned long long)spi_snap->jack_disp_avg, (unsigned long long)spi_snap->jack_disp_max,
+                (unsigned long long)spi_snap->pin_avg, (unsigned long long)spi_snap->pin_max,
+                (unsigned long long)spi_snap->post_midi_scan_avg, (unsigned long long)spi_snap->post_midi_scan_max,
+                (unsigned long long)spi_snap->post_drain_dsp_avg, (unsigned long long)spi_snap->post_drain_dsp_max,
+                (unsigned long long)spi_snap->post_render_avg, (unsigned long long)spi_snap->post_render_max);
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Slot render max(us): s0=%llu s1=%llu s2=%llu s3=%llu probe_burst_max=%u",
-                (unsigned long long)spi_snap.slot_render_max[0],
-                (unsigned long long)spi_snap.slot_render_max[1],
-                (unsigned long long)spi_snap.slot_render_max[2],
-                (unsigned long long)spi_snap.slot_render_max[3],
-                spi_snap.slot_probe_burst_max);
+                (unsigned long long)spi_snap->slot_render_max[0],
+                (unsigned long long)spi_snap->slot_render_max[1],
+                (unsigned long long)spi_snap->slot_render_max[2],
+                (unsigned long long)spi_snap->slot_render_max[3],
+                spi_snap->slot_probe_burst_max);
             unified_log("spi_timing", LOG_LEVEL_DEBUG,
                 "Slot synth max(us): s0=%llu s1=%llu s2=%llu s3=%llu | "
                 "Slot fx max(us): s0=%llu s1=%llu s2=%llu s3=%llu",
-                (unsigned long long)spi_snap.slot_synth_max[0],
-                (unsigned long long)spi_snap.slot_synth_max[1],
-                (unsigned long long)spi_snap.slot_synth_max[2],
-                (unsigned long long)spi_snap.slot_synth_max[3],
-                (unsigned long long)spi_snap.slot_fx_max[0],
-                (unsigned long long)spi_snap.slot_fx_max[1],
-                (unsigned long long)spi_snap.slot_fx_max[2],
-                (unsigned long long)spi_snap.slot_fx_max[3]);
-            if (spi_snap.jack_audio_hits > 0 || spi_snap.jack_audio_misses > 0) {
+                (unsigned long long)spi_snap->slot_synth_max[0],
+                (unsigned long long)spi_snap->slot_synth_max[1],
+                (unsigned long long)spi_snap->slot_synth_max[2],
+                (unsigned long long)spi_snap->slot_synth_max[3],
+                (unsigned long long)spi_snap->slot_fx_max[0],
+                (unsigned long long)spi_snap->slot_fx_max[1],
+                (unsigned long long)spi_snap->slot_fx_max[2],
+                (unsigned long long)spi_snap->slot_fx_max[3]);
+            if (spi_snap->jack_audio_hits > 0 || spi_snap->jack_audio_misses > 0) {
                 unified_log("spi_timing", LOG_LEVEL_DEBUG,
                     "JACK audio: hits=%u misses=%u (%.3f%% miss)",
-                    spi_snap.jack_audio_hits,
-                    spi_snap.jack_audio_misses,
-                    spi_snap.jack_audio_hits > 0
-                        ? (100.0 * spi_snap.jack_audio_misses /
-                           (spi_snap.jack_audio_hits + spi_snap.jack_audio_misses))
+                    spi_snap->jack_audio_hits,
+                    spi_snap->jack_audio_misses,
+                    spi_snap->jack_audio_hits > 0
+                        ? (100.0 * spi_snap->jack_audio_misses /
+                           (spi_snap->jack_audio_hits + spi_snap->jack_audio_misses))
                         : 0.0);
             }
         }

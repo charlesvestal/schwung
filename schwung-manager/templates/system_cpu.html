@@ -1,0 +1,91 @@
+{{template "base" .}}
+
+{{define "title"}}CPU - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>CPU</h1>
+</div>
+
+<section class="info-card">
+    <h2>About these numbers</h2>
+    <p>Two different quantities. They cannot be added together.</p>
+    <dl class="detail-list">
+        <dt>Frame budget &mdash; core 3</dt>
+        <dd>
+            Per-module time as a share of the {{.FramePeriodUs}}&nbsp;&micro;s SPI frame
+            period. This is the number that decides whether you get dropouts.
+            Modules are not processes &mdash; every synth and effect runs inside
+            MoveOriginal on the SPI callback &mdash; so this is the only per-module
+            attribution that exists.
+        </dd>
+        <dt>Process CPU &mdash; cores 0&ndash;3</dt>
+        <dd>
+            Ordinary per-process percentages from <code>/proc</code>, measured
+            as a share of <strong>one core</strong> &mdash; 100% is one core
+            saturated, not the whole device. The Link Audio subscriber is a real
+            process and appears here.
+        </dd>
+    </dl>
+    <p class="muted">
+        Collection in the shim is always on and costs nothing measurable. This
+        button starts the <em>polling</em>, which is the only part with a real
+        cost &mdash; and it runs off the realtime path.
+    </p>
+</section>
+
+{{/* The panel OWNS the polling, and is never itself replaced - only its
+     children are. An earlier version put hx-trigger on the returned fragment,
+     i.e. inside the element it replaces, so htmx destroyed its own requester
+     once a second; the swap then reset the scroll position and the page jumped
+     to the top while you were reading it. */}}
+<div id="cpu-panel"
+     hx-get="/system/cpu/values"
+     hx-target="this"
+     hx-swap="innerHTML">
+    {{template "cpu_idle" .}}
+</div>
+
+<script>
+(function () {
+    var panel = document.getElementById('cpu-panel');
+    if (!panel) return;
+
+    // Start / stop are attribute changes on the STABLE panel, so nothing that
+    // issues a request is ever swapped away.
+    window.cpuStart = function () {
+        panel.setAttribute('hx-trigger', 'every 1s');
+        htmx.process(panel);
+        htmx.ajax('GET', '/system/cpu/values', {target: panel, swap: 'innerHTML'});
+    };
+    window.cpuStop = function () {
+        panel.removeAttribute('hx-trigger');
+        htmx.process(panel);
+        // /system/cpu/idle also resets the delta baseline, so resuming primes
+        // again rather than diffing against a sample from before the pause.
+        htmx.ajax('GET', '/system/cpu/idle', {target: panel, swap: 'innerHTML'});
+    };
+
+    // Belt and braces: hold the height across the swap and put the scroll back.
+    // The restructure above removes the cause; this covers a row count that
+    // genuinely changes the height mid-read.
+    var y = null;
+    document.addEventListener('htmx:beforeSwap', function () {
+        y = window.scrollY;
+        panel.style.minHeight = panel.offsetHeight + 'px';
+    });
+    function restore() {
+        if (y !== null && Math.abs(window.scrollY - y) > 1) window.scrollTo(0, y);
+    }
+    document.addEventListener('htmx:afterSwap', restore);
+    document.addEventListener('htmx:afterSettle', function () {
+        restore();
+        requestAnimationFrame(function () {
+            panel.style.minHeight = '';
+            restore();
+            y = null;
+        });
+    });
+})();
+</script>
+{{end}}

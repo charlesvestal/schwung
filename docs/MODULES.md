@@ -87,6 +87,7 @@ for keys anywhere in `module.json`).
 | `button_passthrough` | Array of CC numbers the module wants Move to keep handling (e.g. `[85]` to let Play reach Move while the module is active). |
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
+| `forks_processes` | Module creates child **processes** (not threads) to do its DSP, as JE-8086 does. See below. |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -94,6 +95,23 @@ for keys anywhere in `module.json`).
 > shim and shadow UI code paths that actually run on device — search
 > for the flag name in `src/schwung_shim.c`, `src/shadow/shadow_ui.{c,js}`,
 > and `src/modules/chain/dsp/chain_host.c` to find the consumer.
+
+### `forks_processes`
+
+Set `capabilities.forks_processes: true` when your module's DSP runs in
+child **processes** it forks (`fork()`), not threads. It is metadata
+only — nothing about how your module runs changes because of this flag.
+
+It exists for the CPU page (`/system/cpu` in schwung-manager, see
+`docs/DIAGNOSTICS.md`), which cannot work out ownership from the forked
+processes' names: a fork inherits its parent's `comm`, so your children
+report as `MoveOriginal` — or worse, as `Audio Main/SPI`, the same name
+six of Move's own realtime threads use. The flag tells the page these
+processes are yours to attribute.
+
+**Omitting it does not hide your module's cost.** The forked processes
+still show up on the page with their real CPU time, just as
+"Unattributed" instead of under your module's name.
 
 ### Tool Config
 
@@ -116,8 +134,28 @@ Tool modules (`"component_type": "tool"`) appear in the Tools menu and support a
 | `allow_new_file` | Show a "+ New File" action in the file browser |
 | `command` | Shell command to run for non-interactive tools |
 | `overtake` | `true` to use overtake display mode (full LED clear, ~500ms init delay, Shift+Vol+Jog-Click exit). Default is `false`. |
+| `stems` | Array of stem names a separation tool produces, used for the progress readout |
+| `processing_ratio` | Wall time as a fraction of the input's duration, used only for the "about N remaining" estimate. `0.5` means a 4-minute file takes about 2 minutes. Default `0.5`. |
 
 Interactive tools use `host_exit_module()` to return to the tools menu when the user presses Back.
+
+**`processing_ratio` is a measurement, not an aspiration, and it should err
+LONG.** An estimate that runs out while the tool is still working reads as a
+hang; one that finishes early reads as a pleasant surprise.
+
+A tool that ships several engines of different speeds puts a `processing_ratio`
+on each entry of `tool_config.engines[]` instead; the per-engine value wins over
+the module-level one.
+
+The module-level field went unread for the life of the field — `getToolProcessingRatio()`
+consulted only the per-engine value and otherwise returned a hardcoded `0.5`.
+It stayed invisible because the single module declaring it declared `0.5`, the
+same number as the default, so a working declaration and an ignored one were
+indistinguishable. It surfaced only when that module corrected itself to a
+measured figure and the on-screen estimate did not move.
+`tests/host/test_tool_processing_ratio.sh` now runs both copies of the function
+— `shadow_ui.js` drives the confirm screen, `shadow_ui_tools.mjs` the processing
+screen — against the same cases and fails if they disagree.
 
 ### Defaults
 
@@ -561,6 +599,29 @@ globalThis.chain_ui = {
     onMidiMessageExternal
 };
 ```
+
+#### If your `ui_chain.js` draws the knob grid (`param_pages`)
+
+A module may bind Schwung's own page engine instead of drawing its own screens
+— import `page_controller.mjs` from `/data/UserData/schwung/shared/param_pages/`
+and you get the whole knob grid, the widgets, the viz graphics, the section
+picker and the gestures for free.
+
+**Then two calls are yours, not one:**
+
+```javascript
+clear_screen();                                   /* the frame is YOURS */
+controller.render(ctx, { title: title() });
+controller.renderOverlays(ctx, { clearScreen: clear_screen });
+```
+
+The library never clears the screen — that is what lets `render()` place a page
+inside a rect you own — so anything full-screen is handed back to you.
+Today that is the enum peek: turn a multi-option enum and its option list
+should rise over the grid for ~700 ms. Skip `renderOverlays` and the controller
+still tracks the peek and still swallows the Back that dismisses it; it is
+simply never painted, with no error anywhere. Two shipped modules had exactly
+that bug.
 
 #### Back-button handling (`handleBack`)
 
@@ -1722,7 +1783,7 @@ your parameter is not both.
 | value | meaning | host behaviour |
 |---|---|---|
 | `readwrite` | an ordinary control (default) | turnable, divable if it has options |
-| `read` | a **readout** — the value means something, writing means nothing | never turnable, never opens a picker, still refreshed on screen |
+| `read` | a **readout** — the value means something, writing means nothing | never turnable, never opens a picker, still refreshed on screen, and drawn inside a **dotted frame** |
 | `write` | a **trigger** — writing does something, the value means nothing | never turnable, a click **fires** it |
 
 ```json
@@ -1736,6 +1797,10 @@ when an enum could only be nudged one detent at a time. Enums became divable in
 1.0, so the picker opened on it and silently discarded whatever you chose. That
 was a gap in the contract, not a bug in the module: display-only was never
 expressible.
+
+The cell says so too: a readout is **dotted** — the enum square draws its own
+frame dotted, a dial or a big number gains a dotted frame around the cell. See
+*Which widget a cell draws* above.
 
 **Why a trigger needs saying, and why it is the more urgent half.** A momentary
 action modelled as a two-option enum is a live hazard. `euclidrum`'s
@@ -1945,6 +2010,39 @@ wears one across its whole span when any covered cell `opensOnClick`.
 See *Divability, and the two cell marks* below for why the brackets and the
 chevron are not two spellings of one idea.
 
+![readout](images/widgets/readout.png)
+
+A **dotted frame** means `access: "read"` — telemetry you can look at and not
+change. Each pair above is the same declaration with and without it.
+
+The input layer has always honoured `access`: turning a readout shows the
+reading and writes nothing, a click opens no picker, and `isDivable` /
+`isTurnable` exclude it. The *drawing* did not, so a readout was
+pixel-identical to a control — reported from the device as a knob that "does
+not seem to do anything", which was a correct reading of the picture.
+
+- **The rule is *a readout is dotted*; where the stroke lives is the widget's
+  business.** A dial and a big number have none, so a frame is added around the
+  cell; the enum square has one, so it dots that. One dotted rectangle per cell,
+  never two. Either way the value does not move.
+- **The square dots its own stroke because an outer frame did not work there.**
+  Measured against an identical editable twin, an outer frame differed by 17
+  pixels at full width against 27 at the narrow one — the wider the value, the
+  more of the mark the square absorbed — and side by side the two cells were
+  indistinguishable. It failed exactly where the feature is for: `keydetect`'s
+  values are musical keys, always full width. Dotting the stroke inverts the
+  gradient, to 39 against 26.
+- **Not an inverted slab** — inversion already means *a finger is on this knob*
+  in the label band and *this is the selection* in a list. **Not corner
+  brackets** — those mean the opposite claim, that the knob works *and* opens
+  something.
+- **An opaque cell is not marked at all.** Its own notched frame is on the same
+  rect, so an outer frame's dots would show only in the chevron's cut, and
+  dotting that frame would blunt the one widget that says which direction its
+  door goes.
+- **A readout inside a viz graphic is not framed.** No fleet module has one;
+  if one appears, mark the span once, the way the door bracket does.
+
 #### Chrome
 
 | | |
@@ -2076,11 +2174,23 @@ Every enum with a non-empty `options` array is **divable**: on the knob grid,
 holding its knob and clicking opens a scrolling option list. You get this for
 free — there is nothing to declare, and nothing to declare it away.
 
-**A two-option enum is turned differently, too.** With two values there is
-nowhere to go but the other one, so a detent TOGGLES it whichever way you
-turned — and one flick of the encoder is one flip, not a dozen. Three or more
-options keep the four-detent gate and clamp at the ends. A trigger
-(`access: "write"`) is never toggled; it fires.
+**A two-option param is turned differently, too, and how it is DRAWN decides
+how it turns.**
+
+- A param drawn as a **switch** — `Off`/`On`, or an `int` 0..1 — is
+  **direction-absolute**: clockwise is on, anticlockwise is off. The switch has
+  a track with its knob at one end, so the picture already tells you which way
+  is which. Turning an already-on switch clockwise is a no-op, not a flip, and
+  there is no gesture latch because the write is idempotent.
+- A param drawn as the **enum square** — `Mix`/`Reverb`, `Saw`/`Square` — is a
+  boxed value: both options sit in the same place, so it shows a state and names
+  no direction. A detent **toggles** it whichever way you turned, and one flick
+  of the encoder is one flip, not a dozen.
+
+You do not choose between these; the widget rule does, and it follows your
+`options`. Three or more options keep the four-detent gate and clamp at the
+ends. A trigger (`access: "write"`) is never toggled and never draws as a
+switch; it fires.
 
 **Except at exactly two options, where there is no list to open.** On the knob
 grid the click FLIPS it — the picker would show the value already in the cell
@@ -2243,6 +2353,13 @@ src/modules/your-module/
 ```
 
 The host scans all installed module directories for `help.json` at runtime. Module help topics appear alphabetically in the "Modules" section of the Help viewer.
+
+They are also reachable **in place**: a chain component whose module ships a
+`help.json` with a non-empty `children` array gets a **`Module Help`** row on the
+`Module` page at the end of its knob-grid jog sequence, which opens that module's
+topics directly (Back returns to the module, not up into the Help tree). A module
+with no help content gets no row — an empty viewer is worse than no door — so
+shipping `help.json` is what puts your help one jog from your controls.
 
 ### Format
 

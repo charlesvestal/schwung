@@ -211,9 +211,35 @@ export function formatParamForSet(rawValue, meta) {
     }
     if (meta.type === "int") return String(Math.round(Number(rawValue)));
     if (meta.type === "enum") {
+        /*
+         * A NUMBER IS AN INDEX. A NAME IS A NAME. The two are not interchangeable
+         * and the option text cannot arbitrate between them.
+         *
+         * This used to try `options.indexOf(String(rawValue))` FIRST, for any
+         * value. Every caller in this repo hands over `knobStep()` output — an
+         * index, a number — so an index whose numeral happened to appear among
+         * the options was resolved as that OPTION'S POSITION instead:
+         *
+         *   options ["-100","-50","0","+50","+100"], user picks -100 (index 0)
+         *   -> indexOf("0") is 2 -> the module is told 2, i.e. "0"
+         *
+         * Measured over tests/fixtures/module-contracts.json, 40 enum params in
+         * the fleet write a wrong value that way — minijv's four lfo1offsets,
+         * v_octave, transpose, the chord_pc family — and it is SILENT, because
+         * the cell goes on showing the value the grid believes it wrote. An
+         * enum of ["0","1"] is unharmed only by the coincidence that there the
+         * text equals the index.
+         *
+         * The label lookup itself is not wrong; its PRECEDENCE was. It exists
+         * for enums a plugin wires by name, and `enumWiresNames` is the
+         * declared signal for exactly that — so a string is read as a label
+         * only when the plugin actually speaks names, and a number is always
+         * an index.
+         */
         let idx;
-        if (Array.isArray(meta.options)) {
-            const labelIdx = meta.options.indexOf(String(rawValue));
+        const wiresNames = enumWiresNames(meta);
+        if (Array.isArray(meta.options) && typeof rawValue === "string" && wiresNames) {
+            const labelIdx = meta.options.indexOf(rawValue);
             idx = labelIdx >= 0 ? labelIdx : Math.round(Number(rawValue));
         } else {
             idx = Math.round(Number(rawValue));

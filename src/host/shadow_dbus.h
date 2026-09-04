@@ -53,6 +53,11 @@ extern volatile uint8_t native_knob_mapped[8];
 /* Set overview detection (written by D-Bus handler) */
 extern volatile int in_set_overview;
 
+/* 1 = Move's metronome is on. Set from Move's own announcement in
+ * shadow_dbus_handle_text; read by the shim on the SPI callback. NEVER
+ * persisted — Move does not persist it either, so 0 at boot is correct. */
+extern volatile int shadow_metronome_on;
+
 
 /* Priority announcement blocking (shared with TTS subsystem) */
 extern bool tts_priority_announcement_active;

@@ -304,14 +304,22 @@ function world() {
      "moveChainComponent", "slotChainTarget", "slotChainComponentIndex", "chainEditorKeyAt",
      "lastChainComponent",
      "announce", "needsRedraw", "pendingChainInsertFor", "cancelPendingChainInsert",
-     "applyChainComponentPick"])(
+     "applyChainComponentPick",
+     /* The list-filter row cycles in place at the top of this function and
+        returns, so its four names are referenced before any branch this test
+        exercises. None of them is reachable here -- the fixture picker never
+        selects the filter row -- but an unbound name is a ReferenceError at
+        CALL time, not at branch time. */
+     "PICKER_FILTER_ID", "ModuleLists", "componentSelectFilter",
+     "pickerEligibleLists", "scanModulesForType", "enterComponentSelect"])(
     slotChainComponents, 0, w.picker.selectedChainComponent, w.picker.availableModules,
     w.picker.selectedModuleIndex, isChainModuleKey, noop, VIEWS, getChainComponentModule,
     w.chainConfigs, noop, getComponentParamPrefix, noop,
     w.moveChainComponent, slotChainTarget, slotChainComponentIndex, chainEditorKeyAt,
     w.lastChainComponent,
     noop, false, pend.pendingChainInsertFor, pend.cancelPendingChainInsert,
-    applyChainComponentPick)();
+    applyChainComponentPick,
+    "__list_filter__", null, null, noop, noop, noop)();
 
   /*
    * The `+` click, lifted out of the CHAIN_EDIT jog-click switch.

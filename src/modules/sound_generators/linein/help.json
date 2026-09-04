@@ -1,0 +1,165 @@
+{
+  "title": "Line In",
+  "children": [
+    {
+      "title": "Overview",
+      "lines": [
+        "Brings the physical",
+        "input into a chain",
+        "slot, so Schwung FX",
+        "can process it.",
+        "",
+        "It sits in the sound",
+        "generator position,",
+        "because it is where",
+        "the sound comes",
+        "from - then MIDI FX",
+        "and audio FX follow",
+        "as usual.",
+        "",
+        "Guitar, a mic, or",
+        "another synth."
+      ]
+    },
+    {
+      "title": "Feedback",
+      "lines": [
+        "READ THIS FIRST.",
+        "",
+        "Speakers on and no",
+        "cable plugged in is",
+        "a feedback loop.",
+        "Schwung warns you",
+        "before loading, and",
+        "keeps the slot",
+        "BYPASSED until it is",
+        "safe.",
+        "",
+        "You will see a B",
+        "over the module box",
+        "while it is held.",
+        "",
+        "Plug in, or use",
+        "headphones, and it",
+        "clears itself.",
+        "",
+        "Unplug mid-session",
+        "and it bypasses",
+        "again."
+      ]
+    },
+    {
+      "title": "Controls",
+      "lines": [
+        "Knob 1: Input Type",
+        " Line, Guitar,",
+        " Phono",
+        "Knob 2: Input Mode",
+        " Stereo or mono",
+        "Knob 3: Input Trim",
+        " -12 to +40 dB",
+        "Knob 4: Output Trim",
+        " -24 to +12 dB",
+        "",
+        "Gate and Line pages",
+        "are one jog on."
+      ]
+    },
+    {
+      "title": "Input Type",
+      "lines": [
+        "Line is a normal",
+        "level source -",
+        "another synth, a",
+        "mixer, a phone.",
+        "",
+        "Guitar expects a",
+        "much weaker signal",
+        "and a pickup, so it",
+        "adds gain.",
+        "",
+        "Phono is for a",
+        "turntable and adds",
+        "the RIAA curve as",
+        "well as gain.",
+        "",
+        "Pick the wrong one",
+        "and it will be far",
+        "too quiet or far",
+        "too loud."
+      ]
+    },
+    {
+      "title": "Trim",
+      "lines": [
+        "Input Trim sets how",
+        "much gain is added",
+        "on the way in. Push",
+        "it up until the",
+        "sound is healthy,",
+        "not until it is",
+        "loud.",
+        "",
+        "Output Trim sets the",
+        "level handed to the",
+        "rest of the chain.",
+        "",
+        "Use Input Trim for a",
+        "weak source, and",
+        "Output Trim to",
+        "balance against your",
+        "other slots."
+      ]
+    },
+    {
+      "title": "Gate",
+      "lines": [
+        "A gate mutes the",
+        "input when nothing",
+        "is playing, so hum",
+        "and hiss do not sit",
+        "under everything.",
+        "",
+        "Off leaves it open.",
+        "Auto sets itself.",
+        "Manual uses the Gate",
+        "page.",
+        "",
+        "On that page:",
+        "Threshold is how",
+        "loud it must be to",
+        "open, Attack how",
+        "fast it opens, Hold",
+        "how long it stays,",
+        "Release how it",
+        "closes, Range how",
+        "far down it mutes.",
+        "",
+        "If notes disappear,",
+        "the Threshold is",
+        "too high."
+      ]
+    },
+    {
+      "title": "Line page",
+      "lines": [
+        "HPF cuts low rumble",
+        "before anything",
+        "else - handy on a",
+        "mic or a turntable.",
+        "",
+        "Off, or 20 up to",
+        "120 Hz.",
+        "",
+        "Safety Limiter",
+        "catches peaks so a",
+        "sudden loud input",
+        "does not slam the",
+        "rest of the chain.",
+        "",
+        "Leave it On unless",
+        "you have a reason."
+      ]
+    }
+  ]
+}

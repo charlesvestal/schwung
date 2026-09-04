@@ -80,7 +80,30 @@
  * MIDI_OUT must be bounded by this to avoid corrupting the display. */
 #define HW_MIDI_OUT_SIZE    80
 #define DISPLAY_BUFFER_SIZE 1024  /* 128x64 @ 1bpp = 1024 bytes */
-#define CONTROL_BUFFER_SIZE 84  /* corun masks widened to uint32 + flags byte (cede-default model); static-asserted below */
+/*
+ * The control segment. 256 bytes for a struct that currently uses ~85.
+ *
+ * It was 84 — not a designed size, just wherever the struct happened to end
+ * after the corun masks were widened, with a `==` assert that had to be bumped
+ * by hand each time. That made it read as FULL: adding a byte failed the
+ * assert, which looked like a hard limit and is why the Recall Quantize
+ * setting was first squeezed into two spare bits of ui_flags_ext instead of
+ * being given a field.
+ *
+ * IT COSTS NOTHING. /dev/shm is tmpfs and allocates by page: measured on the
+ * device, schwung-control declared 84 bytes and occupied 4096 — the same 8
+ * blocks as schwung-ui's 512. Anything up to a page is free.
+ *
+ * RESIZING IS A LAYOUT CHANGE, handled the same way as SHADOW_UI_MIDI_BYTES
+ * (#358) and SHADOW_MIDI_OUT_BUFFER_SIZE (#361): the segment outlives the
+ * processes, so a new consumer can meet a stale short one. shadow_shm_map()
+ * fstats on attach and REFUSES rather than handing back a mapping whose tail
+ * is SIGBUS — the feature goes quiet and logs why. Deploy the shim and
+ * shadow_ui together, as install.sh does. Growing is also the safe direction
+ * for the other order: an old consumer asking for 84 attaches to a 256-byte
+ * segment quite happily.
+ */
+#define CONTROL_BUFFER_SIZE 256
 #define SHADOW_UI_BUFFER_SIZE     512
 #define SHADOW_PARAM_BUFFER_SIZE  65664  /* Large buffer for complex ui_hierarchy */
 /* The shadow_ui -> shim MIDI out buffer: 256 USB-MIDI packets.
@@ -109,7 +132,10 @@
 /* MIDI inject ring capacity is SHADOW_MIDI_INJECT_SLOTS (defined with the
  * struct below) — the old flat byte-buffer size is gone. */
 #define SHADOW_SCREENREADER_BUFFER_SIZE 8448  /* Screen reader message buffer */
-#define SHADOW_OVERLAY_BUFFER_SIZE 256        /* Overlay state buffer */
+/* Overlay state. 512 for a struct that uses 256 — same reasoning as
+ * CONTROL_BUFFER_SIZE above, and the same zero cost. It was exactly 256 with
+ * an `==` assert, so it read as full for the same wrong reason. */
+#define SHADOW_OVERLAY_BUFFER_SIZE 512
 
 /* Web UI ring buffer sizes */
 #define WEB_PARAM_KEY_LEN     64
@@ -141,6 +167,35 @@
 #define SHADOW_UI_FLAG_JUMP_TO_SETTINGS 0x40     /* Jump to Global Settings */
 #define SHADOW_UI_FLAG_JUMP_TO_TOOLS 0x80        /* Jump to Tools menu */
 
+/*
+ * Flags 0x0100 and up live in `ui_flags_ext`, NOT in `ui_flags`.
+ *
+ * `ui_flags` is a uint8_t and all eight bits above are taken. Widening it is
+ * not free: `ui_patch_index` (uint16_t) sits IMMEDIATELY after it at offset 8
+ * with no padding to absorb the growth, so a uint16_t `ui_flags` would move
+ * every field behind it and change sizeof(shadow_control_t). The shim and
+ * shadow_ui are separate binaries mapping the same segment; a layout change
+ * that lands in one before the other is silent corruption, not a build error.
+ *
+ * `ui_flags_ext` was `reserved16` — already at that offset, already the right
+ * width, referenced nowhere. Using it costs zero layout change.
+ *
+ * js_shadow_get_ui_flags() presents the two as ONE 24-bit word
+ * (`ui_flags | (ui_flags_ext << 8)`) and js_shadow_clear_ui_flags() splits a
+ * mask back across them, so JS sees a flat flag space and never has to know
+ * which byte a flag lives in. Keep new flags dense from 0x0100 upward.
+ */
+#define SHADOW_UI_FLAG_EXT_SHIFT 8
+#define SHADOW_UI_FLAG_SNAPSHOT_TAKE   0x0100  /* Shift+Copy: snapshot whole rig */
+#define SHADOW_UI_FLAG_SNAPSHOT_RECALL 0x0200  /* Shift+Delete: recall snapshot NOW */
+#define SHADOW_UI_FLAG_SNAPSHOT_QUEUED 0x0400  /* recall armed for the next boundary */
+#define SHADOW_UI_FLAG_SNAPSHOT_UNQUEUED 0x0800 /* armed recall cancelled */
+
+/* Recall Quantize in MIDI clock pulses, from shadow_control_t.recall_quantize.
+ * 0 = Off, 1 = beat, 2 = bar, 3 = two bars, at 24 PPQN. */
+#define SHADOW_RECALL_Q_PULSES(v) \
+    ((v) == 1 ? 24 : (v) == 2 ? 96 : (v) == 3 ? 192 : 0)
+
 /* ============================================================================
  * Special Values
  * ============================================================================ */
@@ -165,7 +220,7 @@ typedef struct shadow_control_t {
     volatile uint8_t ui_slot;         /* UI-highlighted slot for knob routing */
     volatile uint8_t ui_flags;        /* UI flags (SHADOW_UI_FLAG_*) */
     volatile uint16_t ui_patch_index; /* Requested patch index */
-    volatile uint16_t reserved16;
+    volatile uint16_t ui_flags_ext;   /* UI flags 0x0100+ (see SHADOW_UI_FLAG_EXT_SHIFT) */
     volatile uint32_t ui_request_id;  /* Incremented on patch request */
     volatile uint32_t shim_counter;   /* Debug: shim tick counter */
     volatile uint8_t selected_slot;   /* Track-selected slot (0-3) for playback/knobs */
@@ -258,6 +313,25 @@ typedef struct shadow_control_t {
      * Set by JS on leaving the grid; the shim consumes it and clears it, so it
      * is an edge and not a state. */
     volatile uint8_t restore_knob_leds;
+    /*
+     * Recall Quantize: 0 = Off, 1 = beat, 2 = bar, 3 = two bars.
+     *
+     * Written by JS when the setting changes and once at startup; read by the
+     * shim when Shift+Delete is pressed, because the shim is where MIDI clock
+     * is counted. A plain field, in the headroom CONTROL_BUFFER_SIZE now has.
+     *
+     * It was two bits inside ui_flags_ext, on the belief that this struct was
+     * full — it was not, the buffer was just sized to the struct with an `==`
+     * assert. The register cost a mask, a shift, a bespoke JS binding, and one
+     * real bug (the flat mask applied to ext space, which reads zero always).
+     * The lesson generalises: an assert that fails when you add a field is
+     * telling you to size the buffer, not to pack bits.
+     *
+     * It is NOT persisted here — SHM does not survive a reboot. The C setter
+     * writes features.json, and JS reads that back at startup and pushes it
+     * down, the same shape as shadow_ui_trigger.
+     */
+    volatile uint8_t recall_quantize;
     /* 1 = suppress CC 79 (master volume) and the master-touch note (8) from
      * their hardcoded overtake passthrough to Move firmware, and from the
      * plain-volume-touch OLED handoff in shadow_swap_display(). Both of
@@ -284,7 +358,78 @@ typedef struct shadow_control_t {
      * (schwung_shim.c); a mid-session flip has no equivalent. A tool should
      * raise and lower the flag OUTSIDE a held master-volume touch. */
     volatile uint8_t overtake_suppress_master_volume;
+    /*
+     * 1 = a plain Track tap while the shadow UI is up SWITCHES SLOT instead of
+     * dismissing back to Move ("Keep Schwung", Global Settings -> Display).
+     *
+     * APPENDED, which is only free because CONTROL_BUFFER_SIZE is 256 for a
+     * struct that uses ~86. It was first written into the low byte of
+     * `reserved16` — the tail had no padding at 84, so growing the struct meant
+     * bumping an `==` assert that read as a hard limit. That is exactly the
+     * misreading the sizing comment at the top of this file records, and
+     * `reserved16` is `ui_flags_ext` now, so the byte lives at the end where a
+     * new field belongs. Read live by the shim (STAY_IN_SHADOW) and by
+     * schwung-manager at a raw offset — see shmconfig.go, which must move with
+     * it. Default 0 keeps the tap-dismisses behaviour.
+     */
+    volatile uint8_t stay_in_shadow;
+
+    /*
+     * Metronome. All three APPENDED after stay_in_shadow so nothing behind
+     * them moves: sizeof is a contract between two binaries, and
+     * schwung-manager reads stay_in_shadow at a RAW OFFSET (shmconfig.go).
+     * Appending is free; inserting is not.
+     *
+     * Free in the other sense too — CONTROL_BUFFER_SIZE is 256 for a struct
+     * that uses ~86, and /dev/shm allocates by page, so three bytes cost
+     * nothing. Only SHRINKING the container fails the build.
+     *
+     * These live here rather than in features.json because
+     * load_feature_config() runs ONCE at init: a value parsed there would need
+     * a reboot to change. Same reason recall_quantize is a field.
+     */
+
+    /* 0 = off, 1 = follow Move's metronome, 2 = always on while playing. */
+    volatile uint8_t metronome_mode;
+
+    /* 0-100 %. */
+    volatile uint8_t metronome_level;
+
+    /*
+     * Beats per bar, for the downbeat accent. From timeSignature.upper in the
+     * current set's Song.abl, read by the shadow UI on SET_CHANGED — never on
+     * the SPI callback. 0 means "not yet known"; the consumer clamps to 4.
+     */
+    volatile uint8_t metronome_beats_per_bar;
+
+    /*
+     * Save Stems (Global Settings -> Audio). 0 = Master, 1 = Stems, 2 = Both.
+     *
+     * Governs the Quantized Sampler, Skipback and Song Mode's record button
+     * alike -- one setting, because all three record through the same sampler
+     * and a per-surface switch would be three places to get it wrong.
+     *
+     * APPENDED after the metronome trio for the same reason they were appended
+     * after stay_in_shadow: sizeof is a contract between two binaries and
+     * schwung-manager reads stay_in_shadow at a RAW offset (shmconfig.go).
+     * Appending is free; inserting is not.
+     *
+     * A FIELD rather than a features.json read, because load_feature_config()
+     * runs once at init and this has to be changeable without a reboot -- the
+     * same reason recall_quantize and metronome_mode are fields. The C setter
+     * writes features.json and JS pushes it back down at startup.
+     */
+    volatile uint8_t save_stems;
 } shadow_control_t;
+
+/* Values for shadow_control_t.save_stems. */
+#define SAVE_STEMS_MASTER 0
+#define SAVE_STEMS_STEMS  1
+#define SAVE_STEMS_BOTH   2
+/* Write the mixed master file? Both Master and Both do. */
+#define SAVE_STEMS_WANTS_MASTER(v) ((v) != SAVE_STEMS_STEMS)
+/* Write the per-stem files? Both Stems and Both do. */
+#define SAVE_STEMS_WANTS_STEMS(v)  ((v) != SAVE_STEMS_MASTER)
 
 /* Co-run control-surface groups. A co-running overtake tool declares which
  * groups it KEEPS (corun_keep_mask); every other group's input cedes to the
@@ -870,11 +1015,23 @@ typedef struct test_stream_shm {
 
 /* Compile-time size checks */
 typedef char test_stream_size_check[(sizeof(test_stream_shm_t) == 16 + TEST_STREAM_CAPACITY * 8) ? 1 : -1];
-typedef char shadow_control_size_check[(sizeof(shadow_control_t) == CONTROL_BUFFER_SIZE) ? 1 : -1];
+/*
+ * FITS IN, rather than EQUALS. The buffer is a container with headroom now, so
+ * adding a field is free; `==` meant every addition had to bump the constant,
+ * and a failing assert reads as "there is no room" rather than "say how much
+ * you want".
+ *
+ * The second assert is the one that still matters: the buffer must never
+ * SHRINK. A tidy-up that resized it down to sizeof would make every already
+ * deployed consumer's attach fail against the smaller segment.
+ */
+typedef char shadow_control_size_check[(sizeof(shadow_control_t) <= CONTROL_BUFFER_SIZE) ? 1 : -1];
+typedef char shadow_control_floor_check[(CONTROL_BUFFER_SIZE >= 256) ? 1 : -1];
 typedef char shadow_ui_state_size_check[(sizeof(shadow_ui_state_t) <= SHADOW_UI_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_param_size_check[(sizeof(shadow_param_t) <= SHADOW_PARAM_BUFFER_SIZE) ? 1 : -1];
 typedef char shadow_screenreader_size_check[(sizeof(shadow_screenreader_t) <= SHADOW_SCREENREADER_BUFFER_SIZE) ? 1 : -1];
-typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) == SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
+typedef char shadow_overlay_size_check[(sizeof(shadow_overlay_state_t) <= SHADOW_OVERLAY_BUFFER_SIZE) ? 1 : -1];
+typedef char shadow_overlay_floor_check[(SHADOW_OVERLAY_BUFFER_SIZE >= 512) ? 1 : -1];
 typedef char schwung_ext_midi_remap_size_check[(sizeof(schwung_ext_midi_remap_t) == 64) ? 1 : -1];
 
 #endif /* SHADOW_CONSTANTS_H */

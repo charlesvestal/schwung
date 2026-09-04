@@ -9,6 +9,7 @@
 #include "shadow_midi_inject_writer.h"
 #include "shadow_overtake_midi.h"
 #include "shadow_chain_mgmt.h"
+#include "forward_channel.h"   /* AUTO asks the module before the receive channel */
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
 #include "ui_midi_out_carry.h"  /* outbound packets that did not fit this frame */
@@ -212,23 +213,29 @@ void midi_routing_init(const midi_host_t *host)
 
 /* Apply forward channel remapping for a slot.
  * If forward_channel >= 0, remap to that specific channel.
- * If forward_channel == -1 (auto), use the slot's receive channel. */
+ * If forward_channel == -1 (auto), ASK THE MODULE first, then fall back to the
+ * slot's receive channel.
+ *
+ * Auto used to mean only "use the receive channel", and a module's declared
+ * capabilities.default_forward_channel was applied by *overwriting*
+ * forward_channel at four load call sites in shadow_chain_mgmt.c. That made
+ * Auto a one-shot conversion rather than a live answer, with two consequences:
+ * a slot seeded from an older module.json kept that channel forever, and a
+ * module whose default only mattered on some load paths silently got the
+ * receive channel instead. The JP-8000 is the case that surfaced it — its
+ * arpeggiator is reachable only on the Remote Control Channel, so an Auto slot
+ * with receive=1 forwarded on ch1 and never arpeggiated.
+ *
+ * default_forward_channel is CACHED on the slot at load. Never call get_param
+ * from here: this runs per MIDI event. */
 uint8_t shadow_chain_remap_channel(int slot, uint8_t status)
 {
-    int fwd_ch = host_chain_slots[slot].forward_channel;
-    if (fwd_ch == -2) {
-        /* Passthrough: preserve original MIDI channel */
-        return status;
-    }
-    if (fwd_ch >= 0 && fwd_ch <= 15) {
-        /* Specific forward channel */
-        return (status & 0xF0) | (uint8_t)fwd_ch;
-    }
-    /* Auto (-1): use the receive channel, but if recv=All (-1), passthrough */
-    if (host_chain_slots[slot].channel < 0) {
-        return status;  /* Recv=All + Fwd=Auto → passthrough */
-    }
-    return (status & 0xF0) | (uint8_t)host_chain_slots[slot].channel;
+    const int ch = forward_channel_resolve(host_chain_slots[slot].forward_channel,
+                                           host_chain_slots[slot].default_forward_channel,
+                                           host_chain_slots[slot].channel);
+    if (ch == SHADOW_FORWARD_THRU)
+        return status;                       /* preserve the original channel */
+    return (status & 0xF0) | (uint8_t)ch;
 }
 
 /* Per-slot active-note tracker: remembers the *transposed* note value that

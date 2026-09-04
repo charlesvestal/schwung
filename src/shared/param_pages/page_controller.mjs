@@ -41,6 +41,7 @@ import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
 import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { createAnimState } from "./anim_state.mjs";
 import { drawMenuList } from "../menu_layout.mjs";
+import { drawEnumList } from "./enum_list.mjs";
 
 export { LAYOUT_MOVY };
 
@@ -657,6 +658,16 @@ export function createController(io = {}) {
          * cleared on every enter, and nothing reads it unless the page it
          * belongs to is entered. */
         knobEditing: false,
+        /*
+         * Does this contract's levels get chunked into 8-key grid pages?
+         *
+         * A property of the CONTRACT, set by load(), not of the layout: the
+         * layout is LAYOUT_LIST whenever the screen reader is on or Param View
+         * says List, and un-paginating there would rearrange every module's
+         * pages behind a preference. Global Settings sets it false because its
+         * sections are one scrolling list each. Default true.
+         */
+        paginate: true,
         /* Every knob currently held, oldest first. See onKnobTouch. */
         touchOrder: [],
         /* ms at which a TURN claimed the header with nothing held, or 0.
@@ -790,8 +801,14 @@ export function createController(io = {}) {
      * Safe to call repeatedly — it rebuilds only when the declared contract
      * actually changed, and keeps the user's place when it does.
      */
-    function load({ slot = 0, component = "synth", prefix, mode, visible } = {}) {
+    function load({ slot = 0, component = "synth", prefix, mode, visible,
+                    paginate = true } = {}) {
         const nextPrefix = prefix || component;
+        /* Carried on the state so the two REPLAN paths (mode change, visible_if
+         * change) reach the planner with the same answer as the initial plan.
+         * They read s.lastLoadOpts for mode and visible; this is the third
+         * thing they must not forget, so it sits beside them. */
+        s.paginate = paginate !== false;
         /* Whether we are re-reading the SAME component decides what an
          * unresolved read may keep — see below. */
         const sameComponent = (s.slot === slot && s.component === component && s.prefix === nextPrefix);
@@ -926,7 +943,8 @@ export function createController(io = {}) {
             ? (sameComponent ? s.chainParams : null)
             : parse(rawChain);
         if (chainFailed && sameComponent) armContractSettle();
-        const planned = planPages({ hierarchy, chainParams, mode: activeMode, visible, trailingMenus: trailingMenus() });
+        const planned = planPages({ hierarchy, chainParams, mode: activeMode, visible,
+                                    trailingMenus: trailingMenus(), paginate: s.paginate });
         /* Retained so a visibility re-plan costs no extra device reads. */
         s.hierarchy = hierarchy;
         s.chainParams = chainParams;
@@ -966,6 +984,41 @@ export function createController(io = {}) {
         warmCurrentPage();
         announcePageChange();
         return true;
+    }
+
+    /**
+     * Every cached value is now wrong — re-read the page.
+     *
+     * For a change made to the module from OUTSIDE this controller while the
+     * grid is standing on a page. The snapshot recall is the case: it writes
+     * `<prefix>:state` for every position at once, so every value the grid
+     * holds describes the sound from before the gesture.
+     *
+     * Nothing reads on the draw path — values arrive on touch-down, on the
+     * rotation, or in the entry warm — which is why a stale cache is not
+     * merely a late repaint. `onKnobTurn` steps FROM the cached value, so the
+     * first knob move after a recall departed from the pre-recall number and
+     * wrote the tweak back over the thing that had just been restored.
+     * Reported from hardware as "my next knob move is from the pre-restore
+     * state".
+     *
+     * A preset Load does not need this only because it comes back through the
+     * browser, and the re-entry replans and re-warms. A recall happens under
+     * your hands with no re-entry at all.
+     *
+     * Drops the same three maps a child-instance change drops, for the same
+     * reason and with the same caveat: `pendingWrite` is deliberately FLUSHED
+     * rather than discarded, because a write still in flight belongs to the
+     * user's own gesture and dropping it cancels it. Then re-warms, bounded
+     * the way every other warm here is, so a module that has stopped
+     * answering costs one timeout rather than a page of them.
+     */
+    function revalue() {
+        flushDueWritesUnconditionally();
+        s.values = Object.create(null);
+        s.knobStates = Object.create(null);
+        s.pendingWrite = Object.create(null);
+        warmCurrentPage();
     }
 
     /**
@@ -2892,6 +2945,7 @@ export function createController(io = {}) {
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
             trailingMenus: trailingMenus(),
+            paginate: s.paginate,
         });
         if (!planned.pages.length) return;   /* never plan from nothing */
         s.pages = planned.pages;
@@ -2942,6 +2996,7 @@ export function createController(io = {}) {
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
             visible: s.lastLoadOpts && s.lastLoadOpts.visible,
             trailingMenus: trailingMenus(),
+            paginate: s.paginate,
         });
         if (planned.pages.length !== oldPages.length ||
             planned.pages.some((p, i) => (p.keys || []).join() !== ((oldPages[i] || {}).keys || []).join())) {
@@ -3635,6 +3690,65 @@ export function createController(io = {}) {
         });
     }
 
+    /*
+     * WHAT render() DOES NOT DRAW, AND WHY IT CANNOT.
+     *
+     * render() paints a page into a rect the CALLER owns. Nothing in
+     * src/shared/param_pages/ clears the screen -- grep it, there is not one
+     * clear_screen in the whole library -- and that is the contract `rect` and
+     * `bands` depend on: a consumer hosting a page inside its own chrome
+     * (movy's header, a tool's status row) must get the body alone. See the
+     * bands comment in render().
+     *
+     * The enum peek is the opposite kind of screen: FULL, over the top, on
+     * purpose, because while you are turning a knob you are not reading the
+     * rest of the grid. It therefore cannot live inside render() -- it would
+     * ignore the caller's rect and blank a frame the caller composed -- and it
+     * lived in the host binding instead, where the clear was available.
+     *
+     * That made it INVISIBLE TO EVERY OTHER CONSUMER. A module binding
+     * page_controller from its own ui_chain.js calls render() and stops, which
+     * is what every line of the library suggests is the whole draw; the
+     * controller then tracks a peek on every enum detent that is never
+     * painted, and applyInput dutifully routes Back to dismissPeek() to take
+     * down a panel nobody can see. Silent, with no error, and not discoverable
+     * from the API -- CW-78 and 6W6 both shipped that way, with a correct
+     * integration in every other respect.
+     *
+     * So the obligation is a FUNCTION rather than a paragraph in a doc. A
+     * caller that owns the frame calls render() then renderOverlays(), and a
+     * caller embedding a page in its own chrome passes no clearScreen and
+     * simply gets nothing -- a full-screen overlay is meaningless there.
+     *
+     * `ctx` is render()'s, plus `clearScreen`. Returns true when something was
+     * drawn, so a caller that flushes conditionally can tell.
+     */
+    function renderOverlays(ctx, { clearScreen } = {}) {
+        const peek = enumPeek();
+        if (!peek) return false;
+        /*
+         * No clear, no overlay. Drawing the list into a frame we may not blank
+         * would leave it interleaved with the grid underneath -- two screens at
+         * once, which is worse than the one we have.
+         */
+        if (typeof clearScreen !== "function") return false;
+        clearScreen();
+        drawEnumList(ctx, {
+            title: peek.title,
+            /* Not "SELECT". Nothing is being selected -- the value is already
+             * set -- and naming a gesture the screen does not have is how a
+             * user learns to press a button that does nothing. */
+            headerRight: "TURNING",
+            options: peek.options,
+            index: peek.index,
+            /* Cursor and live value are the SAME here, unlike the picker where
+             * the `*` marks what Back would return you to. */
+            markIndex: peek.index,
+            footer: [["TURN", "SET"]],
+        });
+        return true;
+    }
+
     let vizCache = null;
     function vizGroups() {
         const p = page();
@@ -3882,7 +3996,7 @@ export function createController(io = {}) {
     }
 
     return {
-        load, reloadIfChanged, tick, refreshTrailing,
+        load, reloadIfChanged, tick, refreshTrailing, revalue,
         describePage,
         /* For a selection made OUTSIDE the controller — the list editor drives
          * the same modules through its own preset browser and has the same
@@ -3919,7 +4033,8 @@ export function createController(io = {}) {
         get pickerOpen() { return s.pickerOpen; },
         get pickerEntries() { return s.pickerEntries; },
         get pickerIndex() { return s.pickerIndex; },
-        setLayout, setReveal, setDecorations, render, announceContents,
+        setLayout, setReveal, setDecorations, render, renderOverlays,
+        announceContents,
         get state() { return s; },
         get page() { return page(); },
         get pages() { return s.pages; },

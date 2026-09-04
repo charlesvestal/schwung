@@ -2224,3 +2224,42 @@ code {
     background: #4caf50;
     color: #fff;
 }
+
+/* --- CPU page ------------------------------------------------------------
+   The generic table / th / td rules above already style these; only the
+   genuinely new bits live here, and they use the same design tokens so the
+   page does not drift from the rest of the manager.
+
+   The progress bars are DECORATION. Every row states its numbers in adjacent
+   cells, so each table reads correctly with CSS off, images off, or through a
+   screen reader; the bar only makes the ranking scannable. */
+
+/* Row headers are the What/Process/Core column: <th scope="row"> for the
+   screen reader, but not shouty uppercase like a column header. */
+.data-table tbody th {
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    font-size: inherit;
+    color: inherit;
+    border-bottom: 1px solid var(--border);
+}
+
+.data-table .progress-bar { min-width: 8rem; margin: 0; }
+
+/* Wide tables scroll inside their own box rather than making the page scroll
+   horizontally. */
+.table-scroll { overflow-x: auto; }
+
+/* A read that FAILED, said in place of the table it would have filled. */
+.notice-warn {
+    padding: var(--space-sm) var(--space-md);
+    border-left: 3px solid #b58900;
+    background: rgba(181, 137, 0, 0.08);
+}
+
+.muted { color: var(--text-muted); }
+
+/* The explanatory paragraph after a definition list needs its own air, or it
+   reads as a runaway third <dd>. */
+.info-card dl + p { margin-top: var(--space-md); }

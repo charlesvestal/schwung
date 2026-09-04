@@ -1273,6 +1273,10 @@ fi
 existing_link_audio=$(get_existing_feature "link_audio_enabled" "$link_audio_val")
 existing_display_mirror=$(get_existing_feature "display_mirror_enabled" "false")
 existing_ext_midi_remap=$(get_existing_feature "ext_midi_remap_enabled" "true")
+# "Stay in Schwung" (Global Settings -> Display -> Track Tap). Preserved across
+# installs: this file is REWRITTEN from the keys listed below, so a key that is
+# not carried over here is silently reset to its default on every deploy.
+existing_stay_in_shadow=$(get_existing_feature "stay_in_shadow" "true")
 
 # Shadow UI trigger: prefer the new "shadow_ui_trigger" string key. If only the
 # legacy bool "long_press_shadow" exists, migrate (true→both, false→shift_vol).
@@ -1289,13 +1293,53 @@ if [ -z "$existing_trigger" ]; then
     fi
 fi
 
+# Carry over every OTHER key the existing file holds.
+#
+# This file is REWRITTEN from the keys named above, so until now a key that was
+# not on that list was silently reset to its default on every single deploy.
+# That was not hypothetical and it was not one key: set_pages_enabled,
+# midi_indicator_enabled, skipback_require_volume, skipback_seconds,
+# recall_quantize, metronome_mode and metronome_level are all written to this
+# file by features_json_set() in src/shadow/shadow_ui.c and none of them were
+# listed, so all seven reverted whenever the user installed an update. The
+# symptom is a settings page that has quietly gone back to its defaults after
+# an upgrade -- which reads as "the update reset my settings" rather than as a
+# bug in the installer, and so never gets reported as one.
+#
+# Enumerating the missing keys would fix it once and re-break it the next time
+# somebody adds a setting, which is exactly how it got to seven. So the rule is
+# inverted: the block above owns the keys the INSTALLER decides (it can be
+# overridden by a CLI flag, or migrated from a legacy name), and everything else
+# in the file is preserved verbatim without the installer needing to know what
+# it is. A new setting is carried across from the day it is first written.
+#
+# sed rather than a JSON parser because this runs on whatever the user's Mac
+# has; the file is written by features_json_set() one key per line, which is
+# what makes a line-oriented pass sufficient here.
+managed_keys="shadow_ui_enabled link_audio_enabled display_mirror_enabled ext_midi_remap_enabled shadow_ui_trigger stay_in_shadow long_press_shadow"
+carried_features=""
+if [ -n "$existing_features" ]; then
+    while IFS= read -r line; do
+        # _-prefixed: this block is a plain run of statements in the installer's
+        # own scope, so a generic `key` here would clobber the caller's.
+        _fkey=$(echo "$line" | sed -n 's/^[[:space:]]*"\([A-Za-z0-9_]*\)"[[:space:]]*:.*/\1/p')
+        [ -z "$_fkey" ] && continue
+        case " $managed_keys " in *" $_fkey "*) continue ;; esac
+        # Normalise: strip a trailing comma, keep the value exactly as written.
+        _fentry=$(echo "$line" | sed 's/^[[:space:]]*//; s/,[[:space:]]*$//')
+        carried_features="$carried_features,
+  $_fentry"
+    done <<< "$existing_features"
+fi
+
 # Build features.json content
 features_json="{
   \"shadow_ui_enabled\": $shadow_ui_val,
   \"link_audio_enabled\": $existing_link_audio,
   \"display_mirror_enabled\": $existing_display_mirror,
   \"ext_midi_remap_enabled\": $existing_ext_midi_remap,
-  \"shadow_ui_trigger\": \"$existing_trigger\"
+  \"shadow_ui_trigger\": \"$existing_trigger\",
+  \"stay_in_shadow\": $existing_stay_in_shadow$carried_features
 }"
 
 # Write features.json

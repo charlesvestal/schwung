@@ -31,6 +31,27 @@ Index.
 
 **Deploy shortcut**: `./scripts/install.sh local --skip-modules --skip-confirmation` — **never scp individual files**. The install script handles setuid, symlinks, feature config, and service restart.
 
+### install.sh REWRITES features.json, and a key it does not list was reset
+
+Not merged — rewritten from a literal in the script, so **a key absent from that
+literal reverted to its default on every single deploy.** Seven did:
+`set_pages_enabled`, `midi_indicator_enabled`, `skipback_require_volume`,
+`skipback_seconds`, `recall_quantize`, `metronome_mode`, `metronome_level` —
+every one of them written to this file by `features_json_set()` in
+`shadow_ui.c`, none of them listed. The symptom is a settings page that has
+quietly gone back to its defaults after an update, which reads as *"the update
+reset my settings"* rather than as an installer bug, and so was never filed as
+one.
+
+Enumerating the missing keys fixes it once and re-breaks it the next time
+somebody adds a setting — which is exactly how it reached seven. **The rule is
+inverted instead**: the script owns the six keys the INSTALLER decides (a CLI
+flag can override them, or they migrate from a legacy name) and carries every
+other line across verbatim, so a new setting is preserved from the day it is
+first written. `tests/host/test_features_json_preserved.sh` lifts the merge out
+of `install.sh` and runs it, and derives its key list from `shadow_ui.c` rather
+than restating one.
+
 Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 
 ## Testing
@@ -74,6 +95,20 @@ tally, each with its arming file. Read it before measuring anything on hardware:
   same amount. The old overrun counter fired on *every* frame: 43,986 in two
   minutes on an idle device.
 - The tally stays **silent for ~20 s after arming**, which looks like a broken build.
+- The **CPU usage page** (`/system/cpu`, schwung-manager, `/schwung-perf`) is the
+  one diagnostic that is **always on** — its timing was already being collected
+  unconditionally, so only its 1 Hz polling is armed, by a button, not a file.
+  It shows two numbers (frame budget vs process CPU) that must never be added —
+  modules are not processes, so a module's cost already sits inside
+  `MoveOriginal`'s `/proc` percentage. MIDI FX are not separable and land in
+  `proc_midi`.
+- A **fork-parallel module** (JP-8000) hides from the frame budget — its DSP
+  runs in child processes the CPU page can't find by name (`comm` is
+  inherited; one child reported as `Audio Main/SPI`, same as six of
+  MoveOriginal's own threads). Attribution walks the process **tree** minus
+  the four shim helpers; ownership is `capabilities.forks_processes`, else a
+  marked inference, else unattributed. Module identity is read from disk
+  (`active_set.txt` → `chain.synth.module`), not the param channel.
 **When the UI feels slow, check the tick rate FIRST.** The shadow UI loop is
 paced to an absolute deadline (60 Hz); it previously slept a fixed 16 ms
 *after* the work, making the real rate `1/(work + 16ms)` — so every parameter
@@ -253,6 +288,48 @@ One drop, two stuck consumers, with the note-off sitting present and correctly
 ordered in the raw hardware mailbox the whole time. That last part is what makes
 this look like it must be somewhere else; it isn't.
 
+### An SHM buffer sized to `sizeof` reads as FULL, and is not
+
+`CONTROL_BUFFER_SIZE` was 84 with a `sizeof(...) == BUFFER` assert — not a
+designed size, just wherever the struct happened to end after the corun masks
+were widened. Adding a byte failed the build, which looks like a hard limit,
+and is why Recall Quantize was first squeezed into two spare bits of
+`ui_flags_ext` — costing a mask, a shift and one real bug (a flat mask applied
+to ext space, which reads zero always).
+
+**It costs nothing.** `/dev/shm` is tmpfs and allocates by page: measured on the
+device, an 84-byte segment occupied 4096 — the same 8 blocks as a 512-byte one.
+Both buffers are containers with headroom now (256 / 512) under a `<=` assert
+plus a floor, so adding a field is free and only SHRINKING fails the build.
+
+**And a resize is not a SIGBUS.** `shadow_shm_map()` fstats on attach and
+refuses a segment shorter than requested, logging "restart the shim so it is
+recreated" — the feature goes quiet rather than crashing. Two earlier resizes
+(#358, #361) used exactly that procedure. Deploy the shim and shadow_ui
+together, as `install.sh` does; growing is also safe for an old consumer, which
+asks for less than the segment holds.
+
+### Blocking an event means silencing TWO buffers, and eleven sites silenced one
+
+`shadow` (`= global_mmap_addr`) is **what Move sees**. `hardware_mmap_addr` is
+the real mailbox, which **Move never reads** — Schwung's own post-ioctl scans
+do. Twelve sites in `shim_post_transfer` meant "block this from reaching Move"
+and **eleven zeroed only the hardware mailbox**: no block at all, and worse than
+a no-op, because a zeroed slot is a terminator, so they hid every event *behind*
+them from our own readers. Exactly backwards, at every one.
+
+It surfaced only when **Shift+Delete reached Move and deleted a clip**. The
+other ten leaked into Capture, Sample, Back, Jog Click and the arrows — none
+destructive, which is why they went unnoticed and why the broken form read as
+the house style. `midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)` is now the
+only sanctioned way; `tests/host/test_midi_in_swallow_pairs_buffers.sh` fails on
+any hand-rolled hardware-mailbox zeroing.
+
+**Swallowing a button needs BOTH EDGES, latched.** Press-only leaves Move a lone
+button-up for a key it never saw go down, and Move acts on it. The release
+cannot be gated on `shadow_shift_held` either — Shift is usually let go *before*
+the button.
+
 `shadow_midi_in_compact()` (`src/host/shadow_midi_filter.c`) closes the gaps and
 runs **last** in `shim_post_transfer` — the blocking sites above it pair `sh[j]`
 with `hw[j]` by index, so nothing may move while they run. Zero a slot after it
@@ -424,11 +501,29 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   draw path — values arrive on touch-down, on the rotation, or in the entry warm.
 - **A read that did not answer must never become a picture.** Placeholder frames
   animated the first page of 46 of 95 fleet modules in.
-- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and a
-  detent TOGGLES, latched to one flick. `flipsOnClick` defines "is a two-way",
-  not "flip".
+- **`render()` is not the whole draw.** Nothing in `src/shared/param_pages/`
+  clears the screen — that is what lets `render(ctx, {rect, bands})` place a
+  page inside a caller's chrome — so anything full-screen is the frame owner's
+  second call: `controller.renderOverlays(ctx, { clearScreen })`. Today that is
+  the enum peek. It lived in `shadow_ui_param_pages.mjs`, where it was
+  invisible to every module binding the controller from its own `ui_chain.js`:
+  the peek was tracked on each detent, `applyInput` swallowed the Back that
+  dismissed it, and it was painted nowhere. CW-78 and 6W6 both shipped that
+  way.
+- **Two-option enums: the GRID flips on click, a LIST focuses instead** — and on
+  the KNOB they split BY WIDGET, not by semantics: a **switch** has a track, so
+  its form names a direction and it is direction-absolute (clockwise on,
+  idempotent, no latch); the **boxed** enum square shows a state and no
+  direction, so it TOGGLES either way, latched to one flick. The turn partition
+  must EQUAL the draw partition or a shape promises what the knob won't do.
+  `flipsOnClick` defines "is a two-way", not "flip".
 - **Corner brackets and the chevron box do NOT both mean divable.** 967 divable
   cells on knob pages, 953 of them wearing no mark. Divability is a FOOTER fact.
+- **`access: "read"` is a STROKE, not a widget** — dotted, ONCE per cell,
+  wherever that cell's stroke already lives: a frameless dial gains a frame, the
+  enum square dots the one it has, the opaque box is left alone. The input layer
+  honoured readOnly for a long time while the DRAW layer did not, so a readout
+  was pixel-identical to a control.
 - A momentary fires from the knob too, **latched per gesture** — a rate limit
   still fires eight times across a two-second spin.
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
@@ -443,6 +538,31 @@ Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
 (Shift+Capture) — see Shadow Mode below. (The old chain-host CC 118 recording
 was deleted in the 2026-06 cleanup; it was only reachable through the
 unreachable v1 plugin path.)
+
+**Save Stems — `docs/SHADOW_UI.md`.** Global Settings → Audio → **Save**
+(Master / Stems / Both), honoured by all three recorders — the sampler,
+Skipback and **Song Mode's Record button, which needed no new recording code
+because it already went through the same sampler**.
+
+- **A stem is a SLOT, and that is forced, not chosen.** Under Move→Schwung the
+  shim builds a slot as `move_track[s] + synth[s]` and *then* runs the slot FX
+  on the SUM, so Move's track and Schwung's synth are inseparable after that
+  point — the four slot stems ARE the four tracks, and they sum to the master
+  exactly. A fifth **Move** stem carries the mailbox mix for the case
+  Move→Schwung is OFF and there is no split to be had; under Move→Schwung it is
+  left INVALID on purpose, or a stem sum would double every instrument.
+- **Stems are PRE-Master-FX.** MFX runs on the summed bus, so with a chain
+  loaded the stems do not add up to the master file.
+- **The capture gate opens on the RT ARM, not in the worker** — `sampler_state`
+  is RECORDING the moment the arm returns and the worker runs ~200 ms later, so
+  opening it there put a few hundred ms in the master and not the stems, offset
+  for the whole take by the master's preroll trim. The mode is latched there
+  too. **And stems are captured BEFORE the master**, because both apply the
+  fade-in ramp and the master is what consumes the counter.
+- **A silent stem's file is DELETED at finalize, never opened lazily** — a lazy
+  open would start the file at the first sound rather than at t=0.
+- Skipback stems are capped at **60 s** against the master's 5 minutes (five
+  rings at the maximum is ~265 MB) and are a SUFFIX of it.
 
 ## Shadow Mode
 
@@ -498,13 +618,33 @@ component load gate, and the input-dispatch order. Read it before editing
 - **A component editor WAITS; it does not decide from one read.** Everything that
   knows how to wait sits behind the entry, and the fallback is irreversible.
 - Global Settings is seven sections = seven PAGES. **One section, one page** is
-  load-bearing: a ninth param paginates silently and the bank bar takes over a
-  split nobody chose.
+  load-bearing — but the rule is "never SPLIT", not "never exceed eight".
+  **Eight is the number of physical KNOBS**, and this screen is pinned to the
+  LIST (`layout: LAYOUT_LIST`), which draws five rows and scrolls the rest.
+  The planner was chunking it as a grid anyway, so a ninth param silently
+  became a `<Section> - 2` page holding one row; it is handed `paginate: false`
+  now and a section is one list however long. Audio holds nine. The flag is a
+  property of the CONTRACT, never inferred from the layout — the layout is
+  also `LAYOUT_LIST` with the screen reader on or Param View set to List, and
+  a module's pages are authored groupings that must keep their shape.
 - **The LFO target picker groups by level, and the grouping is LOSSLESS** — an
   orphan sweep into "Other", asserted over all 95 modules. It was one flat list
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
   branches on that. **A child level lists TEMPLATES** — resolve them through
   `child_key.mjs` or a drum module files 200+ keys under "Other".
+- **A Track tap switches SLOT (`Keep Schwung`, default ON — a reversal); off it
+  dismisses** — enforced in the SHIM, on the PRESS, *outside* the long-press block
+  (that block is gated on the trigger mode, so a jump inside it works on
+  `Both`/`Hold` and silently not on `Shift+Vol`). Shift+Track still exits. It is
+  a **bool**, not a two-option enum: same click path, but only `off|on|…` words
+  draw the SWITCH — anything else is the enum square, i.e. a menu.
+- **Module lists file a module into Favorites or your own lists, and
+  `drawFooter` DROPS a hint pair that does not fit** — silently, with every
+  pair after it, so the membership screen's PRIMARY action was the one word
+  missing from its own footer. A footer names the verb of the row under the
+  CURSOR. The swap picker's row 0 filters by list; the filter persists across
+  pickers but is re-resolved per picker, and its cursor SCANS rather than
+  counting, because the move rows sit under the loaded module.
 ### Shortcuts
 
 Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger** (`shadow_ui_trigger` in `features.json`): `Both` (default) / `Long Press` / `Shift+Vol`.
@@ -517,12 +657,27 @@ Shadow UI access gated by **Global Settings → Shortcuts → Shadow UI Trigger*
 - **Shift+Sample** — Quantized Sampler
 - **Shift+Capture** — Skipback (last 30 s)
 
+Both write the mixed master by default, or per-track stems, or both — Global
+Settings → Audio → **Save** (see Recording / capture).
+
+**Anywhere** (independent of the trigger mode, and whether or not the shadow UI
+is on screen):
+- **Shift+Copy** — snapshot every slot + Master FX
+- **Shift+Delete** — put the snapshot back
+
 **Long-press** (modes Both / Long Press):
-- Hold Track 1–4 (500ms) → slot editor
+- **Hold Track 1–4 (500ms) → TOGGLE between the two worlds.** From Move it opens
+  that slot's editor; from the shadow UI it dismisses and leaves you on that
+  Move track. Its own inverse, so you long-press back and forth. The Move-track
+  tap is injected on BOTH directions — it is what made Move's selected track
+  follow the slot, and it is why the dismiss lands somewhere useful rather than
+  on whatever track Move was on.
 - Hold Menu (500ms) → Master FX
 - Shift + hold Step 2 (500ms) → Global Settings
 - Shift + Step 13 (immediate) → Tools menu
-- Tap Track / Menu while shadow UI shown → dismiss
+- Tap Menu while shadow UI shown → dismiss. **Tap Track → switch to that slot**
+  (**Global Settings → Display → Keep Schwung**, default ON; off restores the
+  old dismiss). Shift+Track dismisses either way.
 
 Long-press is suppressed once the volume knob is touched during a track press (so Track-hold + knob adjusts track volume without opening shadow UI). See `track_vol_touched_during_press[]` in `schwung_shim.c`.
 
@@ -531,6 +686,28 @@ Long-press is suppressed once the volume knob is touched during a track press (s
 - **Mute + Track 1–4** — slot mute. **Shift + Mute + Track 1–4** — slot solo.
 
 Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) so Move-native **Mute + Pad** (per-drum mute) works. `shadow_mute_held` is tracked from the hardware buffer independently, so the shadow combos above still work. Consequences: a plain Mute tap also toggles Move's selected-track mute, and Mute + Track double-mutes (shadow slot + Move track) — these stay in sync, which is intended. Shadow slot mute/solo is set **only** by these combos — there is no D-Bus screen-reader text sync. (A former `shadow_dbus.c` auto-correct matched any announcement ending in " muted"/" soloed" and applied it to the selected slot; Move utters drum kit/pad names with those suffixes — e.g. "Lay Down Kit muted" — and Schwung's own TTS loops back through the same handler, so it spuriously muted slots and persisted the state, silencing audio across all projects. Removed; a version-stamped one-time heal in `shadow_state.c` clears any already-stuck persisted mute/solo on upgrade.) Bypass persists via per-slot autosave (`slot_N.json`, `master_fx_N.json`); patch-library reloads start with bypass=0.
+
+### A master-bus metronome is gone under Move→Schwung by CONSTRUCTION
+
+- Not by a bug: `rebuild_from_la` composites only the four per-track Link Audio
+  slots, and Move mixes its click at master. Schwung plays its own, detected
+  from Move's `"Metronome On"` / `"Metronome Off"` announcement — **exact
+  equality on the whole normalised string**, which is what separates it from
+  the removed mute auto-correct that matched a suffix and fired on Move's own
+  drum-kit names. **Never persisted, because Move does not persist it either**
+  — that is what makes off-at-boot the truth rather than a guess. The click
+  mixes **between the `unity_view` snapshot and the master-volume scaling**, so
+  it is on the DAC and in no recording. `Main − Σ(tracks)` is NOT the
+  metronome (`returnTracks`, `masterTrack`).
+- **A click that is "early, worse at low tempo" is a PHASE error, not a
+  latency.** `shadow_transport_pulses` is zeroed on MIDI Start and incremented
+  by the first clock — which IS the downbeat — so beats sit at **24N+1**, and
+  firing at 24N was one pulse early (125 ms at 20 BPM, 20.8 at 120). Measured
+  at two tempos to separate it from the 19.6 ms Link Audio transit stacked on
+  top; **one tempo cannot separate two terms.** `recall_quantize` had the
+  identical off-by-one and is fixed with it — the grid now lives once, in
+  `src/host/transport_grid.h`, because one fact with two consumers written
+  down nowhere is how both got it wrong. See `docs/SHADOW_UI.md`.
 
 ### Quantized Sampler
 
@@ -553,6 +730,36 @@ Impl: `src/shared/feedback_gate.mjs` (predicate + modal), `src/shadow/shadow_ui.
 ### Skipback
 
 Shift+Capture saves last 30 s. Same source as sampler. Output: `Samples/Schwung/Skipback/YYYY-MM-DD/`.
+### Snapshot / recall — `docs/SHADOW_UI.md`
+
+Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
+
+- **A recall writes STATE, never SHAPE.** `load_file` is what restores module
+  identity and it REINSTANTIATES — cutting reverb tails, resetting arp phase,
+  which is the opposite of an A/B. A position whose module was swapped since is
+  skipped and **counted**; the count is the whole feature, because a partial
+  restore that reports nothing is indistinguishable from a working one.
+- **Recall Quantize** (Global Settings → Shortcuts, default Off) makes
+  Shift+Delete wait for the next beat / bar / 2 bars. A SETTING, not a second
+  gesture. Ignored while the transport is stopped — a queue with no clock never
+  fires. The division is a field in `shadow_control_t`;
+  `load_feature_config()` runs once at init, so a setting parsed there would
+  need a reboot. `sampler_clock_count` is NOT a beat
+  counter — it only advances while the sampler is RECORDING — so the queue uses
+  `shadow_transport_pulses`. The boundary maths is in `recall_quantize.h` so
+  `tests/host/` can run it: the next boundary is never the current one, and the
+  lead is clamped below the division or a fast tempo degrades it to instant.
+- **The snapshot is re-seeded from the set on every set load**, so it means one
+  sentence and is never older than the session. It lives in
+  `set_state/<uuid>/snapshot/` — a global dir would be the one piece of chain
+  state that does not travel with the set.
+- **There is no second serializer.** A take is `autosaveAllSlots()` +
+  `saveMasterFxChainConfig()` and a file copy; those writers already carry every
+  guard (bail-if-empty, skip-if-unchanged, shim-reports-empty).
+- **`ui_flags` is FULL and cannot be widened** — `ui_patch_index` sits at +8
+  with no padding, so a uint16 moves every field behind it and `sizeof` is a
+  contract between two binaries. Flags 0x0100+ live in `ui_flags_ext` (was
+  `reserved16`); the JS binding presents one flat word.
 ### USB-C Audio-Out Source
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
@@ -576,7 +783,7 @@ governs whether Schwung restores it.
 
 SHM segments: `/schwung-audio` (mixed shadow output), `/schwung-control` (`shadow_control_t`), `/schwung-param` (param requests, `shadow_param_t`), `/schwung-ui` (`shadow_ui_state_t`).
 
-`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`.
+`shadow_control_t.ui_flags`: `JUMP_TO_SLOT (0x01)`, `JUMP_TO_MASTER_FX (0x02)`, `JUMP_TO_OVERTAKE (0x04)`. **Flags 0x0100+ live in `ui_flags_ext`, not here** — the 8-bit field is full and widening it moves every field behind it.
 
 ### Shadow Slot Features
 
@@ -602,6 +809,25 @@ pages the PLANNER appends to the end of every component's knob grid.
   `root`, so there is no level an injection could target.
 - Scope is the 4 chain slots' real components. **Master FX is excluded**, in one
   helper, so a new call site cannot silently opt it in.
+- **`drawScrollbar` is EXPORTED from `menu_layout.mjs`** — a list is not the only
+  thing that scrolls, and `scrollable_text.mjs` kept drawing the arrows it
+  replaced, so the help list wore a bar and the help text wore arrows on the same
+  jog. The help footer now names where Back *actually* goes (`helpBackTarget`):
+  a detail returns to the list it was opened from, not that list's parent, and
+  the **module name is reserved for the Back that LEAVES** — one level in reads
+  `Back: List`, because frame 0 is titled with the module and the two adjacent
+  screens meant different destinations by the same word. That frame's header is
+  **`Help: <module>`**, and its 18-char cap is gone — `drawHeader` fits in
+  PIXELS, and the cap cut 12 of 133 fleet names that all fit. The
+  help text also had its **own 10px row pitch** against the list's 9 in the same
+  rect — four lines where the list drew five — so it uses `LIST_LINE_HEIGHT` and
+  `visibleLinesFor(topY, bottomY)` now, never a counted row total.
+- The Module page's **`Module Help`** is the ONE component action that does not
+  come back through `VIEWS.CHAIN_EDIT` — the help viewer is hosted by
+  `VIEWS.GLOBAL_SETTINGS` — so it carries its own return pair and reconciler.
+  It seeds **exactly one** help frame so Back lands on the MODULE rather than
+  climbing the Help tree, and the row is hidden when the module ships no
+  `help.json`.
 ### MIDI Cable Filtering
 
 MIDI_IN (offset 2048): cable 0 = Move hw controls, cable 2 = external USB MIDI.

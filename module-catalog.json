@@ -4,8 +4,8 @@
     "name": "Schwung",
     "github_repo": "charlesvestal/schwung",
     "asset_name": "schwung.tar.gz",
-    "latest_version": "1.0.0",
-    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.0.0/schwung.tar.gz",
+    "latest_version": "1.1.1",
+    "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.1.1/schwung.tar.gz",
     "min_host_version": "0.1.0"
   },
   "modules": [
@@ -538,7 +538,7 @@
     {
       "id": "stems",
       "name": "Stems",
-      "description": "Separate audio into stems: drums, vocals, accompaniment (0.5x realtime)",
+      "description": "Separate audio into stems: drums, vocals, accompaniment (0.85x realtime)",
       "author": "charlesvestal",
       "component_type": "tool",
       "github_repo": "charlesvestal/schwung-stems",
@@ -889,7 +889,7 @@
       "github_repo": "charlesvestal/schwung-tb3po",
       "default_branch": "main",
       "asset_name": "tb3po-module.tar.gz",
-      "min_host_version": "1.0.0"
+      "min_host_version": "1.1.0"
     },
     {
       "id": "breakbeat",
@@ -1292,7 +1292,7 @@
     {
       "id": "tablor",
       "name": "Tablor",
-      "description": "2-osc wavetable synth. Position morphing, bend, formant shift and 4-voice unison; sub and noise; multimode filter with its own ADSR; 2 envelopes, 2 LFOs, 4-slot mod matrix and 8 assignable macros. 8 voices poly or mono with glide. Unlimited shareable .tblr presets, 115 seeded wavetables, and Serum/Vital/Ableton tables via Move Manager. Web panel with a live display of the loaded wavetable.",
+      "description": "2-osc wavetable synth. Position morphing, bend, formant shift and 4-voice unison; sub and noise; multimode filter with its own ADSR. Four envelopes: amp, filter, and two spare ones you can point at wavetable position, level, tune, bend, formant, pan, cutoff, resonance, sub, noise or amp with a bipolar amount. 8 voices poly or mono with glide. 115 seeded wavetables and Serum/Vital/Ableton tables of any frame size via Move Manager. Web panel with a live display of the loaded wavetable.",
       "author": "athousanddetails; after Wavetable by Roland Rabien (FigBug)",
       "component_type": "sound_generator",
       "github_repo": "athousanddetails/schwung-tablor",
@@ -1387,6 +1387,28 @@
       "github_repo": "kliegsablaze/wayward",
       "default_branch": "main",
       "asset_name": "wayward-module.tar.gz",
+      "min_host_version": "1.0.0"
+    },
+    {
+      "id": "maze_seq",
+      "name": "Maze",
+      "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
+      "author": "Sam Di Domizio",
+      "component_type": "tool",
+      "github_repo": "sd88me/schwung-maze-sequencer",
+      "default_branch": "main",
+      "asset_name": "maze_seq-module.tar.gz",
+      "min_host_version": "1.0.0"
+    },
+    {
+      "id": "maze_seq_lite",
+      "name": "Maze Lite",
+      "description": "Dual generative clock-synced sequencer (Moog Labyrinth style). Slot MIDI FX.",
+      "author": "Sam Di Domizio",
+      "component_type": "midi_fx",
+      "github_repo": "sd88me/schwung-maze-sequencer",
+      "default_branch": "main",
+      "asset_name": "maze_seq_lite-module.tar.gz",
       "min_host_version": "1.0.0"
     }
   ]
