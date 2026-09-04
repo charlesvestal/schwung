@@ -93,6 +93,13 @@ import { drawKnobCard } from '/data/UserData/schwung/shared/param_pages/knob_car
 import { fitText } from '/data/UserData/schwung/shared/param_pages/render_page.mjs';
 import { buildMetaIndex } from '/data/UserData/schwung/shared/param_pages/param_meta.mjs';
 import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pages/viz.mjs';
+/* Absolute, matching every other shared/param_pages import in this file. QuickJS
+ * would resolve a relative specifier fine (eval_file gives this module its real
+ * absolute path, and ./shadow_ui_param_pages.mjs above relies on exactly that),
+ * so the prefix here is convention rather than necessity — do not diverge from
+ * it in one import. */
+import { registerWidget, clearWidgets, setWidgetLogger }
+    from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 /* Which user preset a component is currently on, and whether the live state
  * has moved away from it since — the "My Presets" trailing page's row 1
@@ -13869,6 +13876,10 @@ function enterHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
     /* Fetch chain_params metadata for this component */
     hierEditorChainParams = getComponentChainParams(slotIndex, componentKey);
 
+    /* The contract is now known, which is the moment a module's in-grid widgets
+     * can be registered -- not when someone opens a canvas param. */
+    ensureComponentWidgets(getHierarchyActiveModuleId(), hierEditorChainParams);
+
     /* Set up param shims for this component */
     setupModuleParamShims(slotIndex, componentKey);
 
@@ -14155,6 +14166,11 @@ function exitHierarchyEditor() {
     hierEditorComponent = "";
     hierEditorHierarchy = null;
     hierEditorChainParams = [];
+    /* Leaving the component ends its widgets lifetime. Clearing the latch here
+     * (rather than in the canvas teardown, which runs on every canvas open and
+     * close) is what makes the next component ask the question afresh. */
+    widgetModuleLoaded = "";
+    widgetAttemptedFor = "";
     hierEditorAllParams = [];
     hierEditorAllKnobs = [];
     hierEditorChildIndex = -1;
@@ -16367,6 +16383,13 @@ function resetCanvasState() {
     canvasParamMeta = null;
     canvasRuntime = null;
     canvasTickCounter = 0;
+    /* NO clearWidgets() HERE.
+     *
+     * This is the CANVAS VIEW's teardown, and it runs on every open and every
+     * close of a fullscreen canvas. Clearing the widget registry from it made
+     * an in-grid widget flicker out the moment the user backed out of the
+     * canvas they had just opened. Widget lifetime belongs to the COMPONENT,
+     * not to the canvas view -- see ensureComponentWidgets. */
 }
 
 function moduleFileExists(path) {
@@ -16388,6 +16411,180 @@ function getHierarchyActiveModuleId() {
     const prefix = getComponentParamPrefix(hierEditorComponent);
     if (!prefix) return "";
     return getSlotParam(hierEditorSlot, `${prefix}_module`) || "";
+}
+
+/* Module id whose in-grid widgets are currently registered. "" = none. */
+let widgetModuleLoaded = "";
+
+/*
+ * REGISTER A MODULE'S IN-GRID WIDGETS WHEN ITS CONTRACT IS KNOWN.
+ *
+ * This existed at the overlay load inside openCanvasPreview, which was wrong in
+ * three ways at once and all of them invisible to a source-level test:
+ *
+ *   - openCanvasPreview only runs when the user CLICKS a type:"canvas" param,
+ *     so an in-grid widget did not appear on first paint -- it appeared only
+ *     after the fullscreen canvas had been opened once;
+ *   - openCanvasPreview and the canvas teardown both call resetCanvasState,
+ *     which cleared the registry, so the widget vanished again on the way out;
+ *   - a module wanting ONLY an in-grid widget, with no canvas param at all,
+ *     never registered anything.
+ *
+ * A widget's lifetime is its COMPONENT's. Called wherever a component's
+ * chain_params become known; a no-op when the module has not changed, so it is
+ * safe on a path that runs often.
+ */
+/* Retry while the module id has not resolved yet.
+ *
+ * THROTTLED, because the id comes from getSlotParam -- a ~2.8ms IPC round trip,
+ * against a 1.68ms whole-page render. Asking every frame would cost more than
+ * redrawing the screen, for a question that is only open for the first few
+ * frames after entering a component. ~4x/sec matches what the contract retry
+ * already does, and it stops entirely the moment the id resolves. */
+const WIDGET_RETRY_TICKS = 15;
+let widgetRetryTick = 0;
+/* The component the last attempt was made for, so a NEW one is attempted at
+ * once rather than at the next throttle boundary. */
+let widgetAttemptedFor = "";
+
+function tickComponentWidgets() {
+    if (widgetModuleLoaded) return;                 /* resolved: nothing to ask */
+
+    /*
+     * FIRST ATTEMPT IS IMMEDIATE; ONLY RETRIES ARE THROTTLED.
+     *
+     * With a flat throttle the first attempt landed a whole interval after the
+     * component opened -- measured on device as 258ms between "Entering
+     * component edit" and the widget registering, at 15 ticks / 58fps. For that
+     * quarter second the grid drew the DETECTOR'S built-in widget and then
+     * swapped it for the module's, which is visible and is precisely what
+     * PARAM_PAGES.md forbids: an unresolved answer must not become a picture,
+     * and least of all one that is replaced a moment later.
+     *
+     * Attempting the moment the component changes closes the window whenever
+     * the reads are already settled -- the common case, since the module has
+     * been loaded since the chain was built. The throttle still governs the
+     * genuinely-unsettled case, where repeating a ~2.8ms round trip every frame
+     * would cost more than the render.
+     */
+    const key = `${paramPagesSlot()}:${paramPagesComponent()}`;
+    if (key !== widgetAttemptedFor) {
+        widgetAttemptedFor = key;
+        widgetRetryTick = 0;
+    } else if (++widgetRetryTick % WIDGET_RETRY_TICKS) {
+        return;
+    }
+
+    /*
+     * ASK THE VIEW THAT IS ON SCREEN, NOT THE ONE THAT EXITED.
+     *
+     * This used to read hierEditorChainParams and getHierarchyActiveModuleId,
+     * and logged `id="" params=0` forever. Not an unsettled read -- entering
+     * PARAM_PAGES tears the hierarchy editor down, so hierEditorSlot is -1 and
+     * getHierarchyActiveModuleId returns "" on its FIRST LINE without ever
+     * performing an IPC read, while hierEditorChainParams has been reset to [].
+     * The retry was interrogating a view that no longer existed.
+     *
+     * The knob grid carries its own identity. Diving into the fullscreen canvas
+     * and back rebuilds the hierarchy editor, which is the only reason the
+     * widget ever appeared at all.
+     */
+    const slot = paramPagesSlot();
+    const comp = paramPagesComponent();
+    if (slot < 0 || !comp) return;
+
+    const prefix = getComponentParamPrefix(comp);
+    if (!prefix) return;
+    const id = getSlotParam(slot, `${prefix}_module`) || "";
+    ensureComponentWidgets(id, getComponentChainParams(slot, comp));
+}
+
+function ensureComponentWidgets(moduleId, chainParams) {
+    const id = moduleId || "";
+
+    /* DIAGNOSTIC. Four wrong theories in a row about why this returns early --
+     * unresolved id, unsettled chain_params, wrong view, viz stripped in
+     * transit -- each of which cost a build and a deploy. Print what the
+     * function ACTUALLY sees, at the top, before any guard can hide it.
+     * Bounded: the retry that drives this runs at most ~4x/sec and stops the
+     * moment the id resolves. */
+    if (!widgetModuleLoaded) {
+        const n = Array.isArray(chainParams) ? chainParams.length : -1;
+        const kinds = Array.isArray(chainParams)
+            ? chainParams.map((p) => (p && p.viz && p.viz.kind) || "-").join(",")
+            : "(not-an-array)";
+        debugLog(`widgets: id="${id}" params=${n} vizKinds=[${kinds}]`);
+    }
+
+    /*
+     * AN UNRESOLVED MODULE ID IS NOT "NO MODULE", AND MUST NOT LATCH.
+     *
+     * getHierarchyActiveModuleId ends in getSlotParam(...) || "" -- an IPC
+     * read, and on first entry it has not settled, so it answers "". Recording
+     * that as the loaded module id was the bug: the retry never happened,
+     * nothing registered, and the widget appeared only after the user dived
+     * into the fullscreen canvas and came back, because THAT re-entered the
+     * editor and read again once the value was there.
+     *
+     * Exactly the tri-state rule in CLAUDE.md: a read that did not answer must
+     * never become a plan, a default or a cached verdict. Returning without
+     * touching widgetModuleLoaded leaves the question open, and the next call
+     * -- loadHierarchyLevel runs on entry and on every level change -- asks it
+     * again.
+     */
+    if (!id) return;
+    if (id === widgetModuleLoaded) return;
+
+    /*
+     * AND chain_params IS A READ TOO. Same rule, one layer down.
+     *
+     * This latched on the module id alone, then asked whether the (also
+     * unsettled) chain_params declared a custom kind, got "no" from an EMPTY
+     * array, and returned -- already latched, so the retry stopped and nothing
+     * ever registered. Diving into the fullscreen canvas and back happens to
+     * run the editor-exit path, which clears the latch, so re-entry then
+     * worked with settled data. That is precisely the symptom reported from
+     * the device, twice.
+     *
+     * An empty chain_params is not "this module declares nothing" -- a chain
+     * component always declares something. It is an answer that has not
+     * arrived. Decide nothing, latch nothing, and let the retry ask again.
+     */
+    if (!Array.isArray(chainParams) || chainParams.length === 0) return;
+
+    /* The registry is process-global and shadow_ui is long-lived: a widget left
+     * registered would outlive its module, and a later module declaring the
+     * same custom: name would silently inherit the wrong art. */
+    clearWidgets();
+    widgetModuleLoaded = id;
+
+    const wantsWidget = chainParams.some((p) => {
+        const k = p && p.viz && p.viz.kind;
+        return typeof k === "string" && k.startsWith("custom:");
+    });
+    /* Nothing is loaded for a module that declares no custom kind -- the script
+     * is only read when the contract says it is needed. */
+    if (!wantsWidget) return;
+
+    debugLog(`widgets: ${id} declares a custom viz kind; loading canvas.js`);
+    const dir = getModuleBasePath(id);
+    if (!dir) return;
+
+    const loaded = loadCanvasOverlayScript(`${dir}/canvas.js`, "");
+    const ov = loaded && loaded.overlay;
+    if (ov && typeof ov.drawCell === "function" && typeof ov.widgetKind === "string") {
+        registerWidget(ov.widgetKind, {
+            draw: ov.drawCell.bind(ov),
+            nominal: ov.widgetNominal || null,
+        });
+    } else {
+        /* Declared a custom kind and we could not load a widget for it. Not
+         * fatal: the kind stays unregistered, so resolveViz leaves those keys to
+         * the detector and the built-in draws. But say so, because otherwise the
+         * author sees a reasonable picture and no reason it is not theirs. */
+        debugLog(`widgets: ${id} declares a custom viz kind but no usable drawCell` +
+                 (loaded && loaded.error ? ` (${loaded.error})` : ""));
+    }
 }
 
 function getModuleBasePath(moduleId) {
@@ -16575,6 +16772,24 @@ function loadCanvasOverlayScript(scriptPath, overlayRef) {
     return { overlay: resolved.overlay, error: "" };
 }
 
+/* THE HOOKS THAT RUN ON THE DRAW PATH, WHERE A READ IS NOT AFFORDABLE.
+ *
+ * ctx.getParam below is a synchronous param round-trip: ~2.8 ms, one SPI
+ * frame. A WHOLE PAGE RENDER is 1.68 ms. So a single read costs more than
+ * redrawing the entire screen, and an overlay that read a couple of values
+ * per frame from draw() halved its own frame rate and everything drawn with
+ * it -- while looking like perfectly ordinary code.
+ *
+ * That is PARAM_PAGES.md hardest rule (nothing reads on the draw path), and
+ * it was unenforceable here because the ctx handed to draw() was the same one
+ * handed to onOpen(). Now it is not: draw and tick get a ctx with the four
+ * accessors removed, so the rule holds by construction rather than by review.
+ *
+ * onOpen / onMidi / onClose / onExit keep them. Those are EVENTS, not frames
+ * -- one read when the user opens an editor or turns a knob is affordable in
+ * a way that one read per frame is not. */
+const DRAW_PATH_HOOKS = new Set(["draw", "tick"]);
+
 function createCanvasRuntimeContext() {
     const fullCanvasKey = canvasParamKey ? buildHierarchyParamKey(canvasParamKey) : "";
     const prefix = getComponentParamPrefix(hierEditorComponent);
@@ -16624,15 +16839,40 @@ function createCanvasRuntimeContext() {
     };
 }
 
+/* The ctx a given hook is allowed to see. Built once and cached on the
+ * runtime, because a draw-path hook asks for it on every frame. */
+function canvasHookCtx(hookName) {
+    const base = canvasRuntime.ctx;
+    if (!DRAW_PATH_HOOKS.has(hookName)) return base;
+    if (!canvasRuntime.drawCtx) {
+        const { getParam, setParam, getValue, setValue, ...rest } = base;
+        canvasRuntime.drawCtx = rest;
+    }
+    return canvasRuntime.drawCtx;
+}
+
 function invokeCanvasOverlayHook(hookName, payload) {
     if (!canvasRuntime || !canvasRuntime.overlay) return false;
+    /* ONE STRIKE.
+     *
+     * This used to record canvasRuntime.error, log, and carry on -- so a
+     * throwing overlay threw on EVERY FRAME, forever, at 60Hz. The error was
+     * visible in the log and the flood was not.
+     *
+     * And it then returned TRUE, so a hook that threw reported success to its
+     * caller. Same defect class as move_midi_internal_send returning true on a
+     * discarded write: the failure is erased at the boundary, and nothing
+     * upstream can react to something it is never told about. */
+    if (canvasRuntime.hookDisabled) return false;
     const fn = canvasRuntime.overlay[hookName];
     if (typeof fn !== "function") return false;
     try {
-        fn(canvasRuntime.ctx, payload || {});
+        fn(canvasHookCtx(hookName), payload || {});
     } catch (e) {
         canvasRuntime.error = `${hookName} error: ${e}`;
-        debugLog(`canvas ${hookName} hook error: ${e}`);
+        canvasRuntime.hookDisabled = true;
+        debugLog(`canvas overlay disabled after throw in ${hookName}: ${e}`);
+        return false;
     }
     return true;
 }
@@ -16683,6 +16923,9 @@ function openCanvasPreview(paramKey, meta) {
         const loaded = loadCanvasOverlayScript(canvasRuntime.scriptPath, canvasRuntime.overlayRef);
         canvasRuntime.overlay = loaded.overlay;
         canvasRuntime.error = loaded.error || "";
+        /* Widgets are NOT registered here. This runs only when the user opens a
+         * fullscreen canvas, which is far too late and far too narrow for an
+         * in-grid widget -- see ensureComponentWidgets. */
     } else {
         canvasRuntime.error = "No canvas script found";
     }
@@ -20885,6 +21128,11 @@ function drawEnumPicker() {
 globalThis.init = function() {
     debugLog("Shadow UI init");
 
+    /* The widget registry is pure and node-testable, so it cannot reach
+     * debugLog on its own. Without this a widget disabled by one strike would
+     * vanish silently and the author would have nothing to go on. */
+    setWidgetLogger(debugLog);
+
     /* Opt-in one-shot draw benchmark. The param-pages draw design is built
      * around an assumed ~90-100us per QuickJS->C binding call, which nothing
      * in the tree re-measures; this settles it. Costs nothing when the flag
@@ -21282,6 +21530,11 @@ globalThis.tick = function() {
     /* Per-second param read/write report; one boolean test when disarmed. */
     if (paramTallyArmed()) paramTallyTick();
     /* One staggered param read per frame while the grid is up. */
+    /* Its own statement, not folded into the line below: that line is pinned
+     * verbatim by tests/host/test_param_pages_wiring.sh as the proof that the
+     * view is ticked at all, and loosening a real invariant to make room for a
+     * new call is the wrong trade. */
+    if (view === VIEWS.PARAM_PAGES) tickComponentWidgets();
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
     /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
      * from the tick, never from a draw function, and cheap to poll when

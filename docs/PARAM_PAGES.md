@@ -1224,3 +1224,116 @@ read as a coverage hole, exactly like the prefetch's two guards.
 "at least": the cached-key skip is invisible on the happy path, and without it a
 plain page costs 16 reads — twice the entry budget, and a mutant that survived
 the first version of this test.
+
+### A module-supplied widget draws into a FRAME, and cannot name a screen pixel
+
+A module can replace one cell's graphic with its own drawing. It declares the
+kind on the existing `viz` field — `viz` is an object, so the namespace goes on
+its `kind`: `viz: { kind: "custom:mymeter" }`, in exactly the shape a built-in is
+declared, grouped or single. `custom:` is a **reserved prefix**; no built-in kind
+may ever be named into it.
+
+The implementation is a `drawCell` hook on the same `canvas.js` overlay that
+already provides the fullscreen `draw` — one file, one author mental model, two
+scales. `shadow_ui.js` registers it at the overlay load and clears the registry
+in `resetCanvasState`, because the registry is process-global and shadow_ui is
+long-lived: a widget left registered would outlive its module, and a later module
+reusing the name would silently inherit the wrong art.
+
+**The frame is not a rect the widget may reason about in screen terms.**
+`frame_ctx.mjs` gives `(0,0)` as the box's top-left, `width`/`height` as the
+box's, and no accessor that reaches absolute space. That is stronger than
+clipping-as-safety-net, and it has to be, because the rect is unstable in ways an
+author cannot see from one screenshot:
+
+* `render_page.mjs:619` — `cellW = floor(rect.w / COLS)`, caller-dependent.
+* `render_page.mjs:116` — `rowH` is **dynamic**, and `computeGeom` picks the whole
+  render mode from it (dial → shrinking radius → bar-value → bar-label → bar-only).
+* `render_page.mjs:671` — `Math.min(g.slotSpan, COLS - col)` silently **clamps** a
+  two-slot group near the right edge.
+
+Driving the real renderers across a rect sweep produces **sixteen distinct frame
+sizes** — 32×14 through 32×26, plus 16×15, 24×15 and 25×15 from clamped spans.
+`tests/host/test_widget_frame_matrix.sh` captures them from the renderers rather
+than listing them, because `computeGeom`'s thresholds are module-private and a
+written-down table would go stale silently and green.
+
+**The frame ctx carries no `getParam`,** so the "nothing reads on the draw path"
+rule holds by construction. `clipped()` counts attempted overflow rather than
+absorbing it — the same bargain as `test_master_fx_diagram_fit.sh`, which exists
+because a fixed-width row cannot report that it overflowed.
+
+**The label is not the widget's.** Movy already splits `KW = 17` art from
+`drawLabelCell`, so Schwung keeps drawing every label and a page mixing custom and
+built-in cells stays consistent.
+
+#### An unknown kind falls through by NOT CLAIMING, and that is the whole story
+
+`collectDeclared` claims keys as it walks. A custom kind that is not registered
+simply does not claim, so its keys stay in the detector pool and the built-in
+draws. One branch covers four failures — an author typo, a widget whose script
+failed to load, an **older host reading a newer module**, and a widget disabled
+after throwing. They share a path, so forward compatibility cannot rot separately
+from typo handling.
+
+**The guard's placement is load-bearing, and the obvious placement is wrong.** A
+group's `kind` may be declared on *any* member, so guarding in the shared walk
+drops only the member carrying it: the remaining roles still form a group,
+`inferKindFromRoles` still names it, and an `attack` declaring an unavailable
+custom kind silently becomes a **three-cell envelope with its own key orphaned
+beside it**. The singles guard therefore lives inside the `else if (v.kind)`
+branch, and the group loop `continue`s so the whole group is abandoned at once.
+A test that only asserts "some envelope exists" goes green over the broken
+version — pin the span.
+
+An unavailable kind is **not** recorded in `invalid`, and `validate_contract`
+does not flag it: it is legal, being exactly what an older host sees. What it
+does flag is a `custom:` kind on a module shipping no `canvas_script` — the
+author forgot the file, and nothing else would ever say so. That check is silent
+when `capabilities` is not supplied, because the caller cannot answer it.
+
+#### One strike, and the full-page sprite cost
+
+A throwing widget is disabled for the session and the throw is logged; the next
+`resolveViz` stops claiming its keys and the built-in draws. Catching every frame
+would flood the log and burn the budget forever; not catching would take the
+shadow UI down for someone who merely installed a module.
+
+For sprite art, **check the full-page cost, not the per-sprite one.** A binding
+is ~490 ns, so a 17×15 knob box blitted per pixel is 255 calls ≈ 125 µs — which
+sounds survivable against a 1.68 ms render until you notice a page holds **eight**
+boxes, and a module shipping one custom widget ships eight. That is ~1 ms gone
+before anything else draws. Run-length rows are ~45 calls ≈ 22 µs, so a page is
+~180 µs. That is what makes RLE non-optional rather than a nicety.
+
+1-bit art is **never fractionally scaled** — it dithers into mush. A sprite
+carries the nominal frame it was drawn for, anchors 1:1 with integer scale only
+on an exact multiple, and is refused when it does not fit, at which point the
+built-in draws a correct picture instead of a smeared one.
+
+#### A widget's lifetime is its COMPONENT's, and the obvious hook is the wrong one
+
+Registration originally sat at the canvas overlay load, which reads as the
+natural place: it is where a module's `canvas.js` is parsed and where its
+`drawCell` first exists. It is wrong, and three ways at once.
+
+`openCanvasPreview` is the only caller of that load, and it fires when the user
+**clicks a `type: "canvas"` param**. So an in-grid widget did not appear on first
+paint — only after the fullscreen canvas had been opened once. Both opening and
+closing that canvas call `resetCanvasState`, so a `clearWidgets()` there made the
+widget vanish again on the way out. And a module wanting *only* an in-grid
+widget, with no canvas param at all, never registered anything.
+
+`ensureComponentWidgets` runs where a component's `chain_params` become known,
+reads `canvas.js` only when the contract actually declares a `custom:` kind, and
+no-ops when the module has not changed. `resetCanvasState` must not touch the
+registry.
+
+**No source-level test can catch this**, which is the transferable part. The
+lines were all present and correct; only their *call ordering* was wrong.
+`tests/host/test_canvas_drawcell_wiring.sh` pins what a source test *can* see —
+which function owns the lifetime and which must not touch it — and the behaviour
+is covered by `tests/host/test_widget_module_poc.sh`, which starts from the
+shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
+calling `registerWidget()` directly. Every other widget test registers directly,
+and that is exactly why none of them saw this.

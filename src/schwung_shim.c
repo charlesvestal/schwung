@@ -9328,6 +9328,11 @@ static void *spi_timing_logger_thread(void *arg)
             shim_la_starve_fallback_count = 0;
 
             int any_nonzero = (flips || fallback);
+            {
+                extern volatile uint32_t la_trim_count[LINK_AUDIO_IN_SLOT_COUNT];
+                for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++)
+                    if (__atomic_load_n(&la_trim_count[s], __ATOMIC_RELAXED)) any_nonzero = 1;
+            }
             uint32_t slot_starve[LINK_AUDIO_IN_SLOT_COUNT];
             uint32_t slot_catchup[LINK_AUDIO_IN_SLOT_COUNT];
             uint32_t slot_dropped[LINK_AUDIO_IN_SLOT_COUNT];
@@ -9371,9 +9376,21 @@ static void *spi_timing_logger_thread(void *arg)
                         slot_max_avail[s], slot_produced[s],
                         slot_would_overrun[s], slot_max_frames[s]);
                 }
-                unified_log("link_audio", LOG_LEVEL_DEBUG,
-                    "path: rebuild_flips=%u la_starve_fallback=%u",
-                    flips, fallback);
+                {
+                    extern volatile uint32_t la_trim_count[LINK_AUDIO_IN_SLOT_COUNT];
+                    extern volatile uint32_t la_trim_dropped[LINK_AUDIO_IN_SLOT_COUNT];
+                    uint32_t tc = 0, td = 0;
+                    for (int s = 0; s < LINK_AUDIO_IN_SLOT_COUNT; s++) {
+                        tc += __atomic_exchange_n(&la_trim_count[s], 0, __ATOMIC_RELAXED);
+                        td += __atomic_exchange_n(&la_trim_dropped[s], 0, __ATOMIC_RELAXED);
+                    }
+                    /* backlog_trims counts sustained backlogs removed;
+                     * trim_dropped_ms is the latency reclaimed. */
+                    unified_log("link_audio", LOG_LEVEL_DEBUG,
+                        "path: rebuild_flips=%u la_starve_fallback=%u "
+                        "backlog_trims=%u trim_dropped_ms=%u",
+                        flips, fallback, tc, (unsigned)(td / 2 / 44));
+                }
             }
         }
 

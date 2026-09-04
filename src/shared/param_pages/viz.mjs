@@ -28,6 +28,7 @@
  */
 
 import { KIND_NUMBER, KIND_ENUM, KIND_OPAQUE, isTrigger } from "./param_meta.mjs";
+import { isCustomKind, isWidgetAvailable } from "./widget_registry.mjs";
 
 /* Matches render_page.mjs COLS. Not imported from there to avoid a cycle
  * (render_page imports this module to draw what it resolves). */
@@ -233,6 +234,25 @@ function collectDeclared(keys, metaIndex, invalid) {
             if (v.role) g.roles[v.role] = { key, slot, span: v.span !== false };
             if (v.kind && !g.kind) g.kind = v.kind;
         } else if (v.kind) {
+            /*
+             * A CUSTOM KIND CLAIMS NOTHING UNLESS IT CAN BE DRAWN.
+             *
+             * Returning here leaves the key in the detector pool, so an unknown
+             * or disabled widget degrades to the built-in one rather than to a
+             * hole. See widget_registry.mjs -- this is the fall-through for a
+             * typo, a failed load, an older host and a one-strike disable, all
+             * on one path.
+             *
+             * IT BELONGS HERE AND NOT IN THE SHARED WALK ABOVE. A group's kind
+             * may be declared on ANY member, so guarding before the v.group
+             * branch would drop only that member: the remaining roles would
+             * still form a group, inferKindFromRoles would name it, and an
+             * `attack` declaring an unavailable custom kind would silently
+             * become a THREE-cell envelope with its own key orphaned beside it.
+             * The group case is handled below, where the whole group can be
+             * abandoned at once.
+             */
+            if (isCustomKind(v.kind) && !isWidgetAvailable(v.kind)) return;
             singles.push({ kind: v.kind, key, slot });
         }
     });
@@ -245,6 +265,13 @@ function collectDeclared(keys, metaIndex, invalid) {
         const slots = spanning.map((r) => r.slot);
         const kind = g.kind || inferKindFromRoles(Object.keys(g.roles));
         if (!kind) continue;
+        /* Abandon the WHOLE group when its custom widget cannot be drawn, so
+         * every one of its keys reaches the detector together and is grouped
+         * as the built-in the author was decorating. Not recorded in `invalid`:
+         * an unavailable custom kind is LEGAL -- it is exactly what an older
+         * host sees reading a newer module -- and flagging it would make every
+         * forward-compatible module look broken. */
+        if (isCustomKind(kind) && !isWidgetAvailable(kind)) continue;
         if (!slots.length) {
             invalid.push({ group: g.groupId, kind, reason: "no spanning roles" });
             continue;
