@@ -81,6 +81,19 @@ static void vp_on_midi(void *inst, const uint8_t *msg, int len, int source) {
 static void vp_set_param(void *inst, const char *key, const char *val) {
     vp_t *v = (vp_t *)inst;
     if (!v || !key || !val) return;
+    if (strcmp(key, "state") == 0) {
+        /* Recall needs only the focused voice back; every other param is
+         * restored by the host through its own key. */
+        const char *p = strstr(val, "\"cur_voice\":\"");
+        if (p) {
+            p += 13;
+            size_t i = 0;
+            while (p[i] && p[i] != '"' && i < sizeof(v->cur_voice) - 1) i++;
+            memcpy(v->cur_voice, p, i);
+            v->cur_voice[i] = '\0';
+        }
+        return;
+    }
     if (strcmp(key, "cur_voice") == 0) {
         snprintf(v->cur_voice, sizeof(v->cur_voice), "%s", val);
         return;
@@ -110,6 +123,30 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
         char k[16];
         snprintf(k, sizeof(k), "p%d_vol", i + 1);
         if (strcmp(key, k) == 0) return snprintf(buf, buf_len, "%.3f", v->pad_vol[i]);
+    }
+
+    if (strcmp(key, "preset_name") == 0) {
+        /* EMPTY, not -1. The tri-state again, from the module side this time:
+         * "" means "served, and there is nothing", while a negative return is
+         * "no answer" -- which the grid is right to retry. Returning -1 here
+         * produced 29 FAILED READS PER SECOND on the device, measured
+         * (param_giveup ... error=29 last_key=synth:preset_name): a retry
+         * storm on the one channel every value on screen shares.
+         *
+         * A module with no presets must still ANSWER. */
+        if (buf_len > 0) buf[0] = '\0';
+        return 0;
+    }
+
+    if (strcmp(key, "state") == 0) {
+        /* A module that does not answer `state` makes the slot autosave RETRY,
+         * every few seconds, forever: "slot 0 synth:state read FAILED after
+         * retries" once per 5 s in the device log, measured. Those retries
+         * share the ONE param channel the knob grid reads its contract
+         * through, and a read that loses that race is a read that did not
+         * answer. A silent POC quietly starving the UI it exists to
+         * demonstrate is not a POC of anything. */
+        return snprintf(buf, buf_len, "{\"cur_voice\":\"%s\"}", v->cur_voice);
     }
 
     if (strcmp(key, "chain_params") == 0) {
