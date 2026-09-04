@@ -35,8 +35,21 @@
  * here as root-owned 04755 before doing its other work. Hardcoded path only,
  * so the audit story holds: ableton already controls /data and we already
  * mirror /data's shim to /usr/lib setuid-root.
+ *
+ * Standalone tools: a tool module that relaunches Move under its own build
+ * ("standalone": true) needs a privileged helper of its own for the same
+ * reason we do — its shim has to reach /usr/lib setuid. Rather than grow
+ * this binary a flag per tool, the tool stages its helper at the hardcoded
+ * pattern /data/UserData/schwung/modules/tools/<id>/bin/heal.new and this
+ * heal installs it beside the stage as bin/heal, root-owned 04755, exactly
+ * like its own self-update. Same trust as schwung-heal.new: ableton can
+ * already stage anything at that path. <id> is the directory name, taken
+ * from a directory scan (never argv) and limited to [A-Za-z0-9_.-].
+ * Nothing is installed unless a tool has staged something; stock devices
+ * never hit this path.
  */
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -162,6 +175,52 @@ static int needs_copy(const char *src, const char *dst) {
     return contents_differ(src, dst);             /* same size → verify bytes */
 }
 
+/* Install every staged standalone-tool helper (see the file header). One
+ * failure does not stop the others; returns nonzero if any failed. */
+static int install_tool_helpers(void) {
+    static const char *tools_dir = "/data/UserData/schwung/modules/tools";
+    DIR *d = opendir(tools_dir);
+    if (!d) return 0;                              /* no tools dir → nothing to do */
+
+    int rc = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *id = e->d_name;
+        if (id[0] == '.') continue;
+        int ok = 1;
+        for (const char *c = id; *c; c++) {
+            if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
+                  (*c >= '0' && *c <= '9') || *c == '_' || *c == '-' || *c == '.')) {
+                ok = 0;
+                break;
+            }
+        }
+        if (!ok) continue;
+
+        char staged[512], dst[512];
+        int n1 = snprintf(staged, sizeof(staged), "%s/%s/bin/heal.new", tools_dir, id);
+        int n2 = snprintf(dst, sizeof(dst), "%s/%s/bin/heal", tools_dir, id);
+        if (n1 < 0 || (size_t)n1 >= sizeof(staged) ||
+            n2 < 0 || (size_t)n2 >= sizeof(dst)) continue;
+
+        struct stat st;
+        if (lstat(staged, &st) < 0) continue;      /* nothing staged for this tool */
+        if (!S_ISREG(st.st_mode)) {                /* a symlink or dir is not a stage */
+            fprintf(stderr, "schwung-heal: %s: not a regular file, ignored\n", staged);
+            continue;
+        }
+
+        if (copy_atomic(staged, dst, 04755) == 0) {
+            unlink(staged);
+            fprintf(stderr, "schwung-heal: installed tool helper %s\n", dst);
+        } else {
+            rc = 2;
+        }
+    }
+    closedir(d);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     /* Setuid bit on the binary should give us euid=0; some kernels also
      * keep ruid=ableton. Force ruid=0 too so child processes (rename,
@@ -213,6 +272,9 @@ int main(int argc, char **argv) {
             }
         }
     }
+
+    /* Standalone tools' staged helpers (see the file header). */
+    if (install_tool_helpers() != 0) rc = 2;
 
     /* Shim — perms 04755 (-rwsr-xr-x). The setuid bit on the .so is
      * required for glibc 2.35+ AT_SECURE on devices where MoveOriginal
