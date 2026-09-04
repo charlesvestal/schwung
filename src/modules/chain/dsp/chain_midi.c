@@ -342,6 +342,29 @@ int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name) 
         inst->midi_fx_count = slot + 1;
     }
 
+    /*
+     * Params and layout from the DSP when module.json declares none -- the
+     * third component kind needing the same fallback the synth and audio FX
+     * got. Without it a MIDI FX shows in the CC Map with nothing to assign and
+     * no page names, which reads as the map being broken for that module.
+     *
+     * After midi_fx_count, because the refresh rejects a slot at or beyond it.
+     */
+    if (inst->midi_fx_param_counts[slot] <= 0) {
+        char t[16];
+        snprintf(t, sizeof(t), "midi_fx%d", slot + 1);
+        chain_mod_refresh_target_param_cache(inst, t);
+    }
+    if (inst->midi_fx_ui_hierarchy[slot] && !inst->midi_fx_ui_hierarchy[slot][0] &&
+        api && api->get_param && inst->midi_fx_instances[slot]) {
+        if (api->get_param(inst->midi_fx_instances[slot], "ui_pages", inst->midi_fx_ui_hierarchy[slot],
+                           CHAIN_UI_HIERARCHY_LEN) <= 0) {
+            api->get_param(inst->midi_fx_instances[slot], "ui_hierarchy", inst->midi_fx_ui_hierarchy[slot],
+                           CHAIN_UI_HIERARCHY_LEN);
+        }
+    }
+    chain_auto_cc_refresh(inst, NULL);
+
     snprintf(msg, sizeof(msg), "MIDI FX loaded: %s (slot %d)", fx_name, slot);
     v2_chain_log(inst, msg);
     return 0;
@@ -768,6 +791,32 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
         uint8_t cc = msg[1];
+        /*
+         * LEARN: the UI armed a parameter, so the next CC claims it.
+         *
+         * Ahead of EVERY other CC block, including the two knob ranges, and it
+         * CONSUMES the message. Two reasons it sits this high. The CC being
+         * taught almost certainly already drives something, and moving that
+         * parameter on the way past would be a surprise edit. And a reserved
+         * number has to reach the reject below to be reported -- behind the
+         * knob blocks, turning a 71-78 or 102-109 encoder while armed produced
+         * silence, which is indistinguishable from the controller not being
+         * heard at all.
+         */
+        if (inst->cc_control && inst->cc_learn_target[0]) {
+            if (chain_cc_reserved((int)cc)) {
+                /* Stay armed and report the number: refusing in silence looks
+                 * exactly like the controller not being heard, which is the
+                 * failure this whole path exists to make visible. */
+                inst->cc_learn_reject = (int)cc;
+                return;
+            }
+            chain_cc_assign(inst, inst->cc_learn_target, inst->cc_learn_param, (int)cc);
+            inst->cc_learn_target[0] = '\0';
+            inst->cc_learn_param[0] = '\0';
+            return;
+        }
+
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
@@ -884,7 +933,42 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
                     return;
                 }
             }
-            return;  /* CC 102-109 consumed even if unmapped — don't forward to synth */
+            return;  /* CC 102-109 consumed even if unmapped -- don't forward to synth */
+        }
+
+        /*
+         * Auto-assigned CC -> any parameter of the loaded chain.
+         *
+         * Runs AFTER both legacy blocks, so 71-78 and 102-109 keep their exact
+         * previous meaning and an existing patch behaves identically. Reaches
+         * everything those eight knobs cannot, which is what lets a 16-encoder
+         * surface address a whole module without paging on Move.
+         *
+         * Absolute, like 102-109: the sender owns the value and 0-127 spans the
+         * declared range. No CC is echoed back -- a controller that listens to
+         * its own output would fight the user mid-turn, the same reasoning the
+         * absolute knob block records.
+         */
+        if (inst->cc_control) {
+            auto_cc_t *a = chain_auto_cc_find(inst, cc);
+            if (a && chain_cc_component_enabled(inst, a->target)) {
+                chain_param_info_t *pinfo = knob_find_param(inst, a->target, a->param);
+                if (!pinfo) return;   /* assigned but unresolvable: consume, do not forward */
+
+                float v = pinfo->min_val +
+                          ((float)msg[2] / 127.0f) * (pinfo->max_val - pinfo->min_val);
+                int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
+                if (is_int) v = (float)((int)(v + 0.5f));
+                if (v < pinfo->min_val) v = pinfo->min_val;
+                if (v > pinfo->max_val) v = pinfo->max_val;
+
+                char val_str[16];
+                if (is_int) snprintf(val_str, sizeof(val_str), "%d", (int)v);
+                else        snprintf(val_str, sizeof(val_str), "%.3f", v);
+
+                knob_forward_value(inst, a->target, a->param, val_str);
+                return;   /* consumed, like every other mapped CC */
+            }
         }
     }
 

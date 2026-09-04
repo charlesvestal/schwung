@@ -79,6 +79,11 @@ int v2_scan_patches(chain_instance_t *inst) {
 
     snprintf(patches_dir, sizeof(patches_dir), "%s/../../patches", inst->module_dir);
     inst->patch_count = 0;
+    /* Heap fields must go before the wipe, or the memset leaks them. */
+    for (int i = 0; i < MAX_PATCHES; i++) {
+        free(inst->patches[i].cc_overrides);
+        inst->patches[i].cc_overrides = NULL;
+    }
     /* Clear old data to prevent stale/garbage entries */
     memset(inst->patches, 0, sizeof(inst->patches));
 
@@ -1301,6 +1306,39 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     /* Parse knob_cc_out (top-level; absence = off). */
     json_get_int(json, "knob_cc_out", &patch->knob_cc_out);
 
+    /* cc_control: absence = ON. Opposite default to knob_cc_out above, and
+     * deliberately so -- every patch written before this field existed should
+     * keep responding to CC, whereas knob_cc_out is an opt-in echo. */
+    patch->cc_control = 1;
+    json_get_int(json, "cc_control", &patch->cc_control);
+
+    /* Saved CC assignments, verbatim. Absence = none, which is correct: with
+     * nothing auto-assigned, a patch written before this simply had no
+     * mappings. */
+    free(patch->cc_overrides);
+    patch->cc_overrides = NULL;
+    {
+        const char *k = strstr(json, "\"cc_overrides\"");
+        const char *c = k ? strchr(k, ':') : NULL;
+        const char *q1 = c ? strchr(c, '"') : NULL;
+        const char *q2 = q1 ? strchr(q1 + 1, '"') : NULL;
+        if (q1 && q2 && q2 > q1) {
+            size_t n = (size_t)(q2 - q1 - 1);
+            patch->cc_overrides = (char *)malloc(n + 1);
+            if (patch->cc_overrides) {
+                memcpy(patch->cc_overrides, q1 + 1, n);
+                patch->cc_overrides[n] = '\0';
+            }
+        }
+    }
+
+    /* Per-component gate; absence = every component on, same reasoning. */
+    {
+        int mask = -1;
+        json_get_int(json, "cc_component_mask", &mask);
+        patch->cc_component_mask = (mask < 0) ? 0xFFFFFFFFu : (unsigned)mask;
+    }
+
     /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
     const char *lfos_pos = strstr(json, "\"lfos\"");
     if (lfos_pos) {
@@ -1588,6 +1626,18 @@ int v2_load_patch(chain_instance_t *inst, int patch_idx) {
         inst->current_patch = patch_idx;
         inst->midi_fx_pre_mode = inst->patches[patch_idx].midi_fx_pre_mode ? 1 : 0;
         inst->knob_cc_out = inst->patches[patch_idx].knob_cc_out ? 1 : 0;
+        inst->cc_control  = inst->patches[patch_idx].cc_control ? 1 : 0;
+        inst->cc_component_mask = inst->patches[patch_idx].cc_component_mask;
+        /*
+         * Replay the saved assignments.
+         *
+         * Here, not at parse time: the table these edit is built when the
+         * modules load, so applying earlier would rewrite rows that do not
+         * exist yet and the mappings would vanish on every reboot -- saved
+         * correctly, restored into nothing.
+         */
+        chain_cc_parse_overrides(inst, inst->patches[patch_idx].cc_overrides
+                                       ? inst->patches[patch_idx].cc_overrides : "");
         /* A patch load moves every mapped knob at once, with no per-knob event
          * for a control surface to have observed. Without this the motors keep
          * showing the previous patch until each one is touched. */

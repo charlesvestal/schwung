@@ -610,6 +610,14 @@ means absent. The tri-state exists only where the wire is visible.
 (granny's read fails because it loads a WAV synchronously inside `set_param`, on
 the SPI thread that serves param requests. That realtime violation lives in its
 own repo and is not fixed here.)
+### The CC Map — `docs/CC_MAP.md`
+
+Assigning MIDI CC to parameters: the per-slot and Master FX maps, the card that
+edits them, page order and naming from a module's own layout, the numbers that
+cannot be assigned, and how an assignment is stored and replayed. Read it before
+touching the CC paths in `modules/chain/dsp/chain_midi.c`, the Master FX table in
+`src/host/shadow_chain_mgmt.c`, or the CC Map pages in `shadow_ui_slot_grid.mjs`.
+
 ### Shadow UI internals — `docs/SHADOW_UI.md`
 
 The synthesised contracts (Global Settings, Slot Settings, Master FX Settings), the

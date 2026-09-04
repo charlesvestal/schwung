@@ -89,7 +89,10 @@ if (!/function getUserPresetRecord\(/.test(src) || !/function setUserPresetRecor
 }
 
 /* ---- behavioural: run buildSlotPatchJson for real ----------------------- */
-const deps = ["chainConfigs", "getSlotStateWithRetry", "debugLog", "getSlotParam", "getUserPresetRecord"];
+/* ccOverridesSeen is the per-boot memory that stops an empty live CC map
+   overwriting a saved one -- see docs/CC_MAP.md. It is a free identifier in
+   buildSlotPatchJson, so the lift has to be handed it like the rest. */
+const deps = ["chainConfigs", "getSlotStateWithRetry", "debugLog", "getSlotParam", "getUserPresetRecord", "ccOverridesSeen"];
 const buildSlotPatchJsonMaker = lift("buildSlotPatchJson", deps);
 
 if (buildSlotPatchJsonMaker) {
@@ -102,12 +105,13 @@ if (buildSlotPatchJsonMaker) {
   const state = { "synth:state": "SYNTH_BLOB", "midi_fx1:state": "MFX_BLOB", "fx1:state": "FX_BLOB" };
   const getSlotStateWithRetry = (slot, key) => (key in state ? state[key] : "");
   const getSlotParam = (slot, key) => "0";
+  const ccOverridesSeen = [];   /* nothing seen on disk in this harness */
   const debugLog = () => {};
 
   /* Case A: nothing loaded a preset anywhere in this slot -- absent means
      absent, on every one of the three shapes. */
   const noRecord = () => null;
-  const buildNone = buildSlotPatchJsonMaker(chainConfigs, getSlotStateWithRetry, debugLog, getSlotParam, noRecord);
+  const buildNone = buildSlotPatchJsonMaker(chainConfigs, getSlotStateWithRetry, debugLog, getSlotParam, noRecord, ccOverridesSeen);
   const patchNone = JSON.parse(buildNone(0, "Name", false, false));
   if ("user_preset" in patchNone.synth) fail("no preset loaded, but synth carries a user_preset key");
   if ("user_preset" in patchNone.midi_fx[0]) fail("no preset loaded, but midi_fx carries a user_preset key");
@@ -116,7 +120,7 @@ if (buildSlotPatchJsonMaker) {
   /* Case B: a preset is loaded on the synth only -- the OTHER two positions
      must not pick it up (keyed by slot+prefix, not by slot alone). */
   const onlySynth = (slot, prefix) => (prefix === "synth" ? { name: "Fat Brass", hash: "abc:3" } : null);
-  const buildSynth = buildSlotPatchJsonMaker(chainConfigs, getSlotStateWithRetry, debugLog, getSlotParam, onlySynth);
+  const buildSynth = buildSlotPatchJsonMaker(chainConfigs, getSlotStateWithRetry, debugLog, getSlotParam, onlySynth, ccOverridesSeen);
   const patchSynth = JSON.parse(buildSynth(0, "Name", false, false));
   if (!patchSynth.synth.user_preset || patchSynth.synth.user_preset.name !== "Fat Brass") {
     fail("synth preset record did not reach the saved patch");
@@ -127,7 +131,7 @@ if (buildSlotPatchJsonMaker) {
 
   /* Case C: a preset on the audio FX only. */
   const onlyFx = (slot, prefix) => (prefix === "fx1" ? { name: "Warm Plate", hash: "def:5" } : null);
-  const buildFx = buildSlotPatchJsonMaker(chainConfigs, getSlotStateWithRetry, debugLog, getSlotParam, onlyFx);
+  const buildFx = buildSlotPatchJsonMaker(chainConfigs, getSlotStateWithRetry, debugLog, getSlotParam, onlyFx, ccOverridesSeen);
   const patchFx = JSON.parse(buildFx(0, "Name", false, false));
   if (!patchFx.audio_fx[0].user_preset || patchFx.audio_fx[0].user_preset.name !== "Warm Plate") {
     fail("audio_fx preset record did not reach the saved patch");
@@ -138,7 +142,7 @@ if (buildSlotPatchJsonMaker) {
      record must not paper over a failed state read. */
   const failingState = (slot, key) => (key === "synth:state" ? null : "");
   const buildBailed = buildSlotPatchJsonMaker(chainConfigs, failingState, debugLog, getSlotParam,
-    () => ({ name: "Should Not Matter", hash: "x:1" }));
+    () => ({ name: "Should Not Matter", hash: "x:1" }), ccOverridesSeen);
   const bailed = buildBailed(0, "Name", true, false);
   if (bailed !== null) fail("a failed state read with bailIfEmpty must still abandon the whole save (got non-null)");
 
@@ -155,7 +159,7 @@ if (buildSlotPatchJsonMaker) {
   const state2 = { "synth:state": "S", "midi_fx1:state": "M1", "midi_fx2:state": "M2" };
   const getSlotStateWithRetry2 = (slot, key) => (key in state2 ? state2[key] : "");
   const firstMidiOnly = (slot, prefix) => (prefix === "midi_fx1" ? { name: "Swing 8th", hash: "m1:2" } : null);
-  const buildMulti = buildSlotPatchJsonMaker(chainConfigs2, getSlotStateWithRetry2, debugLog, getSlotParam, firstMidiOnly);
+  const buildMulti = buildSlotPatchJsonMaker(chainConfigs2, getSlotStateWithRetry2, debugLog, getSlotParam, firstMidiOnly, ccOverridesSeen);
   const patchMulti = JSON.parse(buildMulti(0, "Name", false, false));
   if (!patchMulti.midi_fx[0].user_preset || patchMulti.midi_fx[0].user_preset.name !== "Swing 8th") {
     fail("multi-position: midi_fx[0] record did not reach the saved patch");

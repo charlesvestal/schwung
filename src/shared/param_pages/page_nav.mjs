@@ -35,7 +35,22 @@ export function clampIndex(pages, index) {
  * page to the first turns an overshoot into a total loss of place.
  */
 export function step(pages, index, delta) {
-    return clampIndex(pages, clampIndex(pages, index) + delta);
+    const target = clampIndex(pages, clampIndex(pages, index) + delta);
+    /*
+     * HIDDEN pages are reachable but not walked.
+     *
+     * A page opened from a menu row belongs to that row, not to the sequence:
+     * the CC Map's per-module pages would otherwise sit in the jog order after
+     * it, so paging past "CC Map" walked into a module's list and out the other
+     * side. goToPage still lands on them, which is how the row opens one.
+     */
+    if (!pages || !pages[target] || !pages[target].hidden) return target;
+    const dir = delta < 0 ? -1 : 1;
+    for (let i = target; i >= 0 && i < pages.length; i += dir) {
+        if (!pages[i].hidden) return i;
+    }
+    /* Nothing visible that way: stay put rather than land on a hidden page. */
+    return clampIndex(pages, index);
 }
 
 /**
@@ -53,6 +68,7 @@ export function stepLevel(pages, index, delta) {
     const dir = delta < 0 ? -1 : 1;
 
     for (let i = cur + dir; i >= 0 && i < pages.length; i += dir) {
+        if (pages[i].hidden) continue;
         if (!sameLevel(pages[i], from)) {
             /* Going backwards lands mid-level; rewind to that level's first page. */
             if (dir < 0) {

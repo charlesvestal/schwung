@@ -713,7 +713,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                  * different thing from the knob page that shares its level. */
                 kind: PAGE_PRESET,
                 name: claimName(declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets"),
-                level: levelKey,
+                level: levelKey, hidden: !!lvl.hidden,
                 listParam: lvl.list_param, countParam: lvl.count_param,
                 nameParam: lvl.name_param || "preset_name",
             });
@@ -723,7 +723,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * expansions): the page exists statically, its contents do not. */
         if (lvl.items_param) {
             pages.push({
-                kind: PAGE_ITEMS, name: claimName(base), level: levelKey,
+                kind: PAGE_ITEMS, name: claimName(base), level: levelKey, hidden: !!lvl.hidden,
                 itemsParam: lvl.items_param, selectParam: lvl.select_param || null,
                 /* Where the module wants you AFTER choosing — the list editor
                  * honours this and so should the grid, or choosing a soundfont
@@ -767,7 +767,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
             pages.push({
                 kind: PAGE_ITEMS,
                 name: claimName(`Selected ${lvl.child_label || "Item"}`),
-                level: levelKey,
+                level: levelKey, hidden: !!lvl.hidden,
                 childCount: childCount(lvl),
                 childLabel: lvl.child_label || "Item",
                 /* The SAME derived-list field the mode selector uses. One
@@ -885,7 +885,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 pages.push({
                     kind: PAGE_KNOBS,
                     name: pageName,
-                    level: levelKey, keys: alignKnobs(keys, pageName),
+                    level: levelKey, hidden: !!lvl.hidden, keys: alignKnobs(keys, pageName),
                     /* The level object travels with the page so the controller
                      * resolves concrete child keys without re-reading the
                      * hierarchy. Null for an ordinary level, which is what
@@ -923,7 +923,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 pages.push({
                     kind: PAGE_MENU,
                     name: claimName(lvl.menu_label || `${base} Menu`),
-                    level: levelKey,
+                    level: levelKey, hidden: !!lvl.hidden,
                     entries: menuEntries,
                 });
             }
@@ -973,6 +973,23 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
             const target = levelOf(p);
             if (target) visit(target, childPrefix, false);
         }
+        /*
+         * A MENU row is a third nav edge.
+         *
+         * The menu shape has always documented `{ label, level }` alongside
+         * `{ label, action }`, and mapMenuEntries carries it through as
+         * `target`, but the walk never followed it -- so a level reached ONLY
+         * from a menu got no page, the row drew and moved the cursor normally,
+         * and clicking it did nothing. Nothing failed; the destination simply
+         * did not exist.
+         *
+         * This is what an index page needs: one list of doors rather than a
+         * grid of door CELLS, which is a page per entry.
+         */
+        for (const e of ((lvl.menu) || [])) {
+            const target = e && e.level;
+            if (target) visit(target, childPrefix, false);
+        }
         const kid = childOf(lvl);
         if (kid) visit(kid, prefix, true);
     }
@@ -991,7 +1008,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         if (visited.has(key)) continue;
         if (inactiveModeLevels.has(key)) continue;
         const lvl = levels[key];
-        if (knobKeys(lvl).length === 0 && paramKeys(lvl).length === 0 && !lvl.items_param && !lvl.list_param) continue;
+        /* A menu-only level has neither knobs nor params and is still a real
+         * page -- it is the whole point of PAGE_MENU. Without `lvl.menu` here
+         * the sweep drops exactly the levels the edge above now reaches. */
+        if (knobKeys(lvl).length === 0 && paramKeys(lvl).length === 0
+            && !(Array.isArray(lvl.menu) && lvl.menu.length)
+            && !lvl.items_param && !lvl.list_param) continue;
         visit(key, null, false);
     }
 

@@ -52,7 +52,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_perf_snapshot_size \
-	$(BUILD_DIR)/test_relative_cc
+	$(BUILD_DIR)/test_relative_cc \
+	$(BUILD_DIR)/test_cc_reserved
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising

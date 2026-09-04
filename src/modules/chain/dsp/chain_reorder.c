@@ -123,6 +123,30 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
             k->param[0] = '\0';
         }
     }
+    /*
+     * The CC map names a position by string too, so a shape edit has to move it
+     * with the module -- otherwise every assignment silently addresses whatever
+     * slid into the index it names, and a knob that was reverb mix becomes
+     * something else without the user touching it.
+     *
+     * A retarget that fails means the module is GONE: drop the row rather than
+     * leave it pointing at nothing. The saved override is keyed by
+     * component+parameter and is replayed on the next rebuild, so a module that
+     * comes back gets its number back.
+     */
+    for (int i = 0; i < inst->auto_cc_count && i < MAX_AUTO_CC; i++) {
+        auto_cc_t *a = &inst->auto_cc[i];
+        if (chain_perm_retarget(a->target, sizeof(a->target), prefix, max, map, count) < 0) {
+            a->param[0] = '\0';
+            a->cc = CC_NONE;
+        }
+    }
+    for (int i = 0; i < inst->cc_override_count && i < MAX_CC_OVERRIDES; i++) {
+        cc_override_t *o = &inst->cc_overrides[i];
+        if (chain_perm_retarget(o->target, sizeof(o->target), prefix, max, map, count) < 0) {
+            o->param[0] = '\0';
+        }
+    }
 }
 
 /* Which section a request names, resolved once so the three verbs below cannot

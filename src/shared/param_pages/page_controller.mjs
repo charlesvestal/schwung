@@ -3479,7 +3479,13 @@ export function createController(io = {}) {
             const pageChrome = (right, inverted = false) => {
                 if (wantHeader) drawHeaderMovy(ctx, title || "", right, inverted);
                 if (wantBank) {
-                    drawBankBar(ctx, s.pageIndex | 0, Math.max(1, s.pages.length), pageGroups());
+                    /* Hidden pages are reachable but not walked, so the rule
+                     * must not count them -- a segment the jog can never reach
+                     * is a tab pointing at nothing. The index is remapped for
+                     * the same reason, or the marker sits one segment off for
+                     * every hidden page ahead of it. */
+                    drawBankBar(ctx, visibleRule().index, visibleRule().count,
+                                visibleGroups());
                 }
             };
             const footerBand = () => { if (footer && wantFooter) drawFooter(ctx, footer); };
@@ -3487,7 +3493,7 @@ export function createController(io = {}) {
             if (knobsAsList()) { drawKnobsAsList(ctx, title, footer, pageChrome, footerBand); return; }
             renderPageMovy(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
-                title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
+                title: title || "", pageIndex: visibleRule().index, pageCount: visibleRule().count,
                 touched: s.hintLines ? -1 : s.touched,
                 /* Both undefined for the device's own full-screen draw, which
                  * is what keeps that path byte-identical. */
@@ -3664,7 +3670,7 @@ export function createController(io = {}) {
         if (s.hintLines) {
             renderPage(ctx, {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
-                title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
+                title: title || "", pageIndex: visibleRule().index, pageCount: visibleRule().count,
                 touched: -1, layout: s.layout, rect,
             });
             renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
@@ -3676,7 +3682,7 @@ export function createController(io = {}) {
         }
         renderPage(ctx, {
             page: page(), metaIndex: s.metaIndex, values: s.values,
-            title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
+            title: title || "", pageIndex: visibleRule().index, pageCount: visibleRule().count,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
             modulated: (key) => !!s.modCache[key],
@@ -3859,6 +3865,38 @@ export function createController(io = {}) {
     }
 
     let groupCache = null;
+    /*
+     * The page rule counts only pages you can WALK to.
+     *
+     * A hidden page belongs to the row that opens it, not to the sequence, so
+     * counting it draws a segment the jog can never reach -- a tab pointing at
+     * nothing. The index has to be remapped too, or the marker sits one segment
+     * off for every hidden page ahead of it.
+     */
+    /* pageGroups(), minus the hidden pages, so it still lines up with the
+     * count drawBankBar is given -- a mismatched length silently drops the
+     * section grouping and the bar becomes an undifferentiated row of ticks. */
+    function visibleGroups() {
+        const g = pageGroups();
+        if (!Array.isArray(g)) return g;
+        const out = [];
+        for (let i = 0; i < s.pages.length && i < g.length; i++) {
+            if (s.pages[i] && s.pages[i].hidden) continue;
+            out.push(g[i]);
+        }
+        return out;
+    }
+
+    function visibleRule() {
+        let count = 0, idx = 0;
+        for (let i = 0; i < s.pages.length; i++) {
+            if (s.pages[i] && s.pages[i].hidden) continue;
+            if (i === s.pageIndex) idx = count;
+            count++;
+        }
+        return { count: Math.max(1, count), index: idx };
+    }
+
     function pageGroups() {
         if (groupCache && groupCache.fp === s.fingerprint) return groupCache.groups;
         const groups = s.pages.map((p) => (p.level === null || p.level === undefined) ? p.kind : p.level);

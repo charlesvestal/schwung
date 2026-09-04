@@ -18,6 +18,7 @@
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
 #include "master_fx_snapshot.h" /* master_fx_snapshot_* — likewise */
 #include "master_fx_saved_state.h" /* object or opaque-string state at boot */
+#include "cc_reserved.h"
 #include "fx_midi_filter.h"   /* fx_midi_channel_accepts — header-only so tests/host can run it */
 #include "chain_permute.h"    /* insert/remove/move as an array permutation; shared with the chain DSP */
 #include "shadow_set_pages.h"
@@ -1180,9 +1181,154 @@ volatile int master_fx_midi_channel = FX_MIDI_CHANNEL_ALL;
  * Note-range filtering is deliberately NOT here: two of the three callers
  * carry external MIDI, where a note number is a pitch. That guard is
  * cable-0-only and lives at those call sites. */
+
+/* ============================================================================
+ * Master FX CC map
+ *
+ * The slot chain gets its map from the chain DSP, which owns a parameter table
+ * and a patch to persist into. Master FX has neither: each position is a
+ * standalone audio-FX plugin, so the map lives here.
+ *
+ * The RANGE travels with the assignment rather than being looked up. The UI has
+ * already parsed chain_params to draw the page, so it knows min/max/type; the
+ * alternative is a second JSON parser in the host, on the path that also has to
+ * stay cheap enough for the MIDI callback. Sending six fields once at assign
+ * time is the whole of it.
+ *
+ * Persistence is the UI's, exactly as for a slot: it reads the table back as
+ * one string and writes it into the Master FX patch.
+ * ==========================================================================*/
+#define MFX_CC_MAX 128
+typedef struct {
+    int      slot;            /* 0-based master FX position */
+    char     param[32];
+    uint8_t  cc;
+    float    min_val, max_val;
+    int      is_int;
+} mfx_cc_t;
+
+static mfx_cc_t mfx_cc[MFX_CC_MAX];
+static int mfx_cc_count = 0;
+
+/* Armed by the UI: the next external CC claims this parameter. */
+static int  mfx_learn_slot = -1;
+static char mfx_learn_param[32];
+static float mfx_learn_min, mfx_learn_max;
+static int  mfx_learn_is_int;
+static int  mfx_learn_reject = -1;
+
+/*
+ * CC control for the master bus, on by default.
+ *
+ * A slot can say "notes yes, CC no" per slot and per component; the master bus
+ * could not say it at all, which is the same asymmetry as having no CC Map --
+ * with every parameter addressable, any controller sending on the listen
+ * channel moves something, so refusing has to be expressible.
+ */
+static int mfx_cc_control = 1;
+
+/* One rule, shared with the chain DSP -- see cc_reserved.h. */
+static int mfx_cc_reserved(int cc) { return cc_reserved(cc); }
+
+static mfx_cc_t *mfx_cc_find_cc(uint8_t cc)
+{
+    for (int i = 0; i < mfx_cc_count; i++)
+        if (mfx_cc[i].cc == cc) return &mfx_cc[i];
+    return NULL;
+}
+
+static mfx_cc_t *mfx_cc_find_param(int slot, const char *param)
+{
+    for (int i = 0; i < mfx_cc_count; i++)
+        if (mfx_cc[i].slot == slot && strcmp(mfx_cc[i].param, param) == 0)
+            return &mfx_cc[i];
+    return NULL;
+}
+
+/*
+ * Give slot:param the number cc, swapping with whoever holds it.
+ *
+ * Swap rather than displace, for the reason the chain does: the alternative
+ * leaves a parameter with no address and says nothing about it.
+ */
+static void mfx_cc_assign(int slot, const char *param, int cc,
+                          float mn, float mx, int is_int)
+{
+    if (slot < 0 || slot >= MASTER_FX_SLOTS || !param || !param[0]) return;
+    if (cc >= 0 && mfx_cc_reserved(cc)) return;
+
+    mfx_cc_t *mine = mfx_cc_find_param(slot, param);
+
+    if (cc < 0) {                      /* clear */
+        if (!mine) return;
+        int idx = (int)(mine - mfx_cc);
+        for (int j = idx; j < mfx_cc_count - 1; j++) mfx_cc[j] = mfx_cc[j + 1];
+        mfx_cc_count--;
+        return;
+    }
+    if (cc > 127) return;
+
+    mfx_cc_t *theirs = mfx_cc_find_cc((uint8_t)cc);
+    if (theirs && theirs == mine) return;
+
+    if (!mine) {
+        if (mfx_cc_count >= MFX_CC_MAX) return;
+        mine = &mfx_cc[mfx_cc_count++];
+        mine->slot = slot;
+        snprintf(mine->param, sizeof(mine->param), "%s", param);
+        mine->cc = 255;
+    }
+    uint8_t was = mine->cc;
+    mine->cc = (uint8_t)cc;
+    mine->min_val = mn; mine->max_val = mx; mine->is_int = is_int;
+    if (theirs) theirs->cc = was;       /* 255 when mine had no number */
+    if (theirs && theirs->cc == 255) {  /* it had nothing to swap back to */
+        int idx = (int)(theirs - mfx_cc);
+        for (int j = idx; j < mfx_cc_count - 1; j++) mfx_cc[j] = mfx_cc[j + 1];
+        mfx_cc_count--;
+    }
+}
+
 void shadow_master_fx_forward_midi(const uint8_t *msg, int len, int source) {
     if (len >= 1 && !fx_midi_channel_accepts(master_fx_midi_channel, msg[0]))
         return;
+
+    /*
+     * CC map first, and it CONSUMES.
+     *
+     * A mapped CC drives the parameter the user chose; passing it on as well
+     * would let a module that handles that number natively move something else
+     * at the same time, which is the double-apply the chain avoids by the same
+     * rule.
+     */
+    if (mfx_cc_control && len >= 3 && (msg[0] & 0xF0) == 0xB0) {
+        uint8_t cc = msg[1];
+        if (mfx_learn_slot >= 0) {
+            if (mfx_cc_reserved((int)cc)) {
+                mfx_learn_reject = (int)cc;   /* stay armed; the card says why */
+            } else {
+                mfx_cc_assign(mfx_learn_slot, mfx_learn_param, (int)cc,
+                              mfx_learn_min, mfx_learn_max, mfx_learn_is_int);
+                mfx_learn_slot = -1;
+                mfx_learn_param[0] = '\0';
+            }
+            return;
+        }
+        mfx_cc_t *m = mfx_cc_find_cc(cc);
+        if (m) {
+            float span = m->max_val - m->min_val;
+            float v = m->min_val + ((float)msg[2] / 127.0f) * span;
+            if (m->is_int) v = (float)((int)(v + 0.5f));
+            if (v < m->min_val) v = m->min_val;
+            if (v > m->max_val) v = m->max_val;
+            char key[64], val[24];
+            snprintf(key, sizeof(key), "master_fx:fx%d:%s", m->slot + 1, m->param);
+            if (m->is_int) snprintf(val, sizeof(val), "%d", (int)v);
+            else           snprintf(val, sizeof(val), "%.3f", v);
+            shadow_direct_set_param(0, key, val);
+            return;
+        }
+    }
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         master_fx_slot_t *s = &shadow_master_fx_slots[i];
         if (s->on_midi && s->instance) {
@@ -2988,6 +3134,108 @@ void shadow_inprocess_handle_param_request(void) {
                                                     &mfx_slot, &param_key);
         if (!has_slot_prefix) { mfx_slot = 0; param_key = fx_key; }
 
+        /*
+         * CC map keys, ahead of everything else under master_fx:.
+         *
+         * They are position-less by design -- the map spans all Master FX
+         * positions, so it is read and written once rather than per position,
+         * which is also what lets the UI persist it as a single string.
+         */
+        if (!has_slot_prefix) {
+            if (strcmp(param_key, "cc_map") == 0) {
+                if (req_type == 2) {                 /* GET -- 2, not 1 */
+                    int off = 0;
+                    for (int i = 0; i < mfx_cc_count; i++) {
+                        int n = snprintf(shadow_param->value + off,
+                                         (size_t)(SHADOW_PARAM_VALUE_LEN - off),
+                                         "%d|%s|%u|%g|%g|%d;",
+                                         mfx_cc[i].slot, mfx_cc[i].param,
+                                         (unsigned)mfx_cc[i].cc,
+                                         mfx_cc[i].min_val, mfx_cc[i].max_val,
+                                         mfx_cc[i].is_int);
+                        if (n < 0 || n >= SHADOW_PARAM_VALUE_LEN - off) break;
+                        off += n;
+                    }
+                    shadow_param->value[off] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = off;
+                } else {                              /* write: restore */
+                    mfx_cc_count = 0;
+                    const char *p = shadow_param->value;
+                    while (p && *p && mfx_cc_count < MFX_CC_MAX) {
+                        char rec[96]; int n = 0;
+                        while (*p && *p != ';' && n < (int)sizeof(rec) - 1) rec[n++] = *p++;
+                        rec[n] = '\0';
+                        if (*p == ';') p++;
+                        int sl = -1, cc = -1, isint = 0;
+                        char prm[32] = {0};
+                        double mn = 0, mx = 1;
+                        if (sscanf(rec, "%d|%31[^|]|%d|%lf|%lf|%d",
+                                   &sl, prm, &cc, &mn, &mx, &isint) == 6 &&
+                            sl >= 0 && sl < MASTER_FX_SLOTS && cc >= 0 && cc <= 127) {
+                            mfx_cc_t *e = &mfx_cc[mfx_cc_count++];
+                            e->slot = sl; e->cc = (uint8_t)cc;
+                            e->min_val = (float)mn; e->max_val = (float)mx;
+                            e->is_int = isint;
+                            snprintf(e->param, sizeof(e->param), "%s", prm);
+                        }
+                    }
+                    shadow_param->error = 0;
+                }
+                shadow_param_publish_response(req_id);
+                return;
+            }
+            if (strcmp(param_key, "cc_assign") == 0 && req_type != 2) {
+                int sl = -1, cc = -1, isint = 0; char prm[32] = {0};
+                double mn = 0, mx = 1;
+                if (sscanf(shadow_param->value, "%d|%31[^|]|%d|%lf|%lf|%d",
+                           &sl, prm, &cc, &mn, &mx, &isint) == 6) {
+                    mfx_cc_assign(sl, prm, cc, (float)mn, (float)mx, isint);
+                }
+                shadow_param->error = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
+            if (strcmp(param_key, "cc_learn") == 0 && req_type != 2) {
+                int sl = -1, isint = 0; char prm[32] = {0};
+                double mn = 0, mx = 1;
+                mfx_learn_slot = -1; mfx_learn_param[0] = '\0';
+                if (sscanf(shadow_param->value, "%d|%31[^|]|%lf|%lf|%d",
+                           &sl, prm, &mn, &mx, &isint) == 5 &&
+                    sl >= 0 && sl < MASTER_FX_SLOTS) {
+                    mfx_learn_slot = sl;
+                    snprintf(mfx_learn_param, sizeof(mfx_learn_param), "%s", prm);
+                    mfx_learn_min = (float)mn; mfx_learn_max = (float)mx;
+                    mfx_learn_is_int = isint;
+                }
+                shadow_param->error = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
+            if (strcmp(param_key, "cc_control") == 0) {
+                if (req_type == 2) {
+                    shadow_param->result_len =
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN,
+                                 "%d", mfx_cc_control ? 1 : 0);
+                } else {
+                    mfx_cc_control = (shadow_param->value[0] == '1' ||
+                                      shadow_param->value[0] == 't') ? 1 : 0;
+                }
+                shadow_param->error = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
+            if (strcmp(param_key, "cc_learn_reject") == 0 && req_type == 2) {
+                int r = mfx_learn_reject;
+                mfx_learn_reject = -1;               /* read once: an event */
+                shadow_param->result_len =
+                    snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d", r);
+                shadow_param->error = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
+        }
+
         /* Delegate shim-specific params (resample_bridge, link_audio_*, jack:*, suspend_overtake) */
         if (!has_slot_prefix && host.handle_param_special) {
             if (strcmp(param_key, "resample_bridge") == 0 ||
@@ -3278,6 +3526,19 @@ void shadow_inprocess_handle_param_request(void) {
                 if (mfx->api && mfx->instance && mfx->api->get_param) {
                     int len = mfx->api->get_param(mfx->instance, "ui_hierarchy",
                                                    shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    /*
+                     * A module may publish its layout under EITHER key --
+                     * ui_hierarchy is the documented one, ui_pages is what
+                     * several modules actually export (4k-eq does). Asking for
+                     * only one returns nothing and the caller cannot tell an
+                     * absent layout from a differently-spelled one; on the CC
+                     * Map that shows as four parameters called "Gain" with no
+                     * page to tell them apart.
+                     */
+                    if (len <= 2) {
+                        len = mfx->api->get_param(mfx->instance, "ui_pages",
+                                                  shadow_param->value, SHADOW_PARAM_VALUE_LEN);
+                    }
                     if (len > 2) {
                         shadow_param->error = 0;
                         shadow_param->result_len = len;

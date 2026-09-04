@@ -82,6 +82,33 @@ CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *targe
                                        const char *param, const char *val_str) {
     (void)inst; (void)target; (void)param; (void)val_str;
 }
+/* The CC map lives in chain_params.c, which this file does not link. The MIDI
+ * FX loader asks it to refresh after a load, and the CC path asks it what a
+ * number is assigned to -- neither is what this test drives. The map itself is
+ * proved in test_cc_map.sh, test_cc_map_master.sh and test_cc_reserved. */
+CHAIN_INTERNAL int chain_mod_refresh_target_param_cache(chain_instance_t *inst,
+                                                        const char *target) {
+    (void)inst; (void)target;
+    return -1;
+}
+CHAIN_INTERNAL void chain_auto_cc_refresh(chain_instance_t *inst, const char *synth_hier) {
+    (void)inst; (void)synth_hier;
+}
+CHAIN_INTERNAL auto_cc_t *chain_auto_cc_find(chain_instance_t *inst, uint8_t cc) {
+    (void)inst; (void)cc;
+    return NULL;
+}
+CHAIN_INTERNAL int chain_cc_reserved(int cc) { (void)cc; return 0; }
+CHAIN_INTERNAL int chain_cc_assign(chain_instance_t *inst, const char *target,
+                                   const char *param, int cc) {
+    (void)inst; (void)target; (void)param; (void)cc;
+    return -1;
+}
+CHAIN_INTERNAL int chain_cc_component_enabled(chain_instance_t *inst, const char *target) {
+    (void)inst; (void)target;
+    return 1;
+}
+
 /* The relative-CC path answers the sender with the absolute value it landed
  * on. That is chain_params.c's job and this file does not link it; whether the
  * echo is emitted is proved in test_chain_knob_cc_out. */

@@ -5,6 +5,7 @@
  */
 
 #include "chain_internal.h"
+#include "host/cc_reserved.h"
 
 /*
  * Format a parameter value for display based on its metadata.
@@ -909,6 +910,259 @@ chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const
  * five-FX chain got a target it could route but not modulate. The bound is
  * MAX_AUDIO_FX / MAX_MIDI_FX so the next cap bump needs no edit here.
  */
+/* True when target/param is already driven by one of the eight knobs. */
+static int auto_cc_is_on_knob(chain_instance_t *inst, const char *target, const char *param)
+{
+    for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
+        if (!inst->knob_mappings[i].param[0]) continue;
+        if (strcmp(inst->knob_mappings[i].target, target) == 0 &&
+            strcmp(inst->knob_mappings[i].param, param) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Already assigned in this rebuild? */
+static int auto_cc_have(chain_instance_t *inst, const char *target, const char *param)
+{
+    for (int i = 0; i < inst->auto_cc_count; i++)
+        if (strcmp(inst->auto_cc[i].target, target) == 0 &&
+            strcmp(inst->auto_cc[i].param, param) == 0) return 1;
+    return 0;
+}
+
+/*
+ * Declare a row. It starts with NO number.
+ *
+ * Handing every parameter an address automatically was the wrong default: one
+ * 97-parameter synth consumed every usable CC, so an FX behind it could not be
+ * reached at all, and the numbers a user did want were buried among ninety they
+ * did not. The map now lists what CAN be controlled and the user says which
+ * ones matter -- by jogging a number or learning one from the surface.
+ *
+ * The conventional-defaults mechanism below it stays wired but its table is
+ * empty (see CC_DEFAULTS for why), so nothing arrives pre-assigned.
+ */
+static void auto_cc_assign_one(chain_instance_t *inst, const char *target,
+                               const char *key, const char *group)
+{
+    if (inst->auto_cc_count >= MAX_AUTO_CC) return;
+    if (!key || !key[0]) return;
+    if (auto_cc_is_on_knob(inst, target, key)) return;
+    if (auto_cc_have(inst, target, key)) return;
+
+    auto_cc_t *a = &inst->auto_cc[inst->auto_cc_count++];
+    a->cc = CC_NONE;
+    a->last_cc_out = -1;
+    snprintf(a->target, sizeof(a->target), "%s", target);
+    snprintf(a->param, sizeof(a->param), "%s", key);
+    snprintf(a->group, sizeof(a->group), "%s", group ? group : "");
+}
+
+/*
+ * Conventional CCs, applied on load where a parameter's key matches.
+ *
+ * Deliberately small and deliberately OUTSIDE 71-78: that range is Move's own
+ * knobs (relative), so a default there would be moved by the hardware the user
+ * is holding. The classic "74 = cutoff" lives in exactly that range, which is
+ * why it is not here -- the convention collides with the device. Anything
+ * further should be settled against real modules rather than assumed.
+ */
+typedef struct { const char *key; uint8_t cc; } cc_default_t;
+static const cc_default_t CC_DEFAULTS[] = {
+    /*
+     * EMPTY, deliberately.
+     *
+     * A default put "24 Ch1" on MVerb's Decay that the user had not assigned
+     * and could not account for, in a map whose whole premise is that the user
+     * decides. A number nobody chose is worse than no number: it has to be
+     * found and removed before the one you wanted can be put there.
+     *
+     * The mechanism stays because the conventions are real (74 for cutoff and
+     * so on) and worth revisiting -- but against actual modules, and not while
+     * 71-78 collides with Move's own knobs.
+     */
+    { 0, 0 },
+};
+#define CC_DEFAULTS_LEN ((int)(sizeof(CC_DEFAULTS)/sizeof(CC_DEFAULTS[0])))
+
+static void auto_cc_apply_defaults(chain_instance_t *inst)
+{
+    for (int d = 0; d < CC_DEFAULTS_LEN; d++) {
+        if (!CC_DEFAULTS[d].key) continue;      /* the empty-table sentinel */
+        /* One holder per number: the first component declaring the key gets
+         * it, so a synth and an FX both owning "cutoff" do not fight. */
+        int taken = 0;
+        for (int i = 0; i < inst->auto_cc_count; i++)
+            if (inst->auto_cc[i].cc == CC_DEFAULTS[d].cc) { taken = 1; break; }
+        if (taken) continue;
+        for (int i = 0; i < inst->auto_cc_count; i++) {
+            if (inst->auto_cc[i].cc != CC_NONE) continue;
+            if (strcmp(inst->auto_cc[i].param, CC_DEFAULTS[d].key) != 0) continue;
+            inst->auto_cc[i].cc = CC_DEFAULTS[d].cc;
+            break;
+        }
+    }
+}
+
+/*
+ * Assign a component in the order its own UI presents it.
+ *
+ * Declaration order is whatever the module author happened to write and bears
+ * no relation to the pages a user sees, so CC 12 landing on a hidden note-map
+ * enum while the first knob on screen sits at CC 40 is not a bug but it is
+ * useless. ui_hierarchy.levels.<level>.knobs[] is the knob-grid order for each
+ * page, so walking those arrays in document order assigns CCs in the order the
+ * parameters actually appear -- first pot on the first page gets the first CC.
+ *
+ * Anything the pages do not mention still gets an address afterwards, so no
+ * parameter is unreachable.
+ */
+static void auto_cc_add_component(chain_instance_t *inst, const char *target,
+                                  const chain_param_info_t *params, int count,
+                                  const char *hier)
+{
+    /*
+     * Pass 1: page order AND page name, straight out of the layout.
+     *
+     * A level object is {"name":"Band 1", ... ,"knobs":[...]}, so the nearest
+     * name or label BEFORE a knobs array is that page's. Scanning backwards for
+     * it is what makes this work for any module without knowing its schema:
+     * four parameters called "Gain" become "Band 1 Gain" .. "Band 4 Gain"
+     * purely from what the module already publishes to draw its own pages.
+     */
+    if (hier && hier[0]) {
+        const char *p = hier;
+        while ((p = strstr(p, "\"knobs\"")) != NULL) {
+            /* Nearest "name"/"label" behind this knobs array. */
+            char group[20]; group[0] = '\0';
+            {
+                const char *best = NULL;
+                for (const char *tag = hier; tag < p; ) {
+                    const char *n1 = strstr(tag, "\"name\"");
+                    const char *l1 = strstr(tag, "\"label\"");
+                    const char *hit = (!n1) ? l1 : (!l1 ? n1 : (n1 < l1 ? n1 : l1));
+                    if (!hit || hit >= p) break;
+                    best = hit;
+                    tag = hit + 5;
+                }
+                if (best) {
+                    const char *c = strchr(best, ':');
+                    const char *q1 = c ? strchr(c, '"') : NULL;
+                    const char *q2 = q1 ? strchr(q1 + 1, '"') : NULL;
+                    if (q1 && q2 && q2 > q1 + 1) {
+                        size_t n = (size_t)(q2 - q1 - 1);
+                        if (n >= sizeof(group)) n = sizeof(group) - 1;
+                        memcpy(group, q1 + 1, n);
+                        group[n] = '\0';
+                    }
+                }
+            }
+            p += 7;
+            const char *lb = strchr(p, '[');
+            const char *rb = lb ? strchr(lb, ']') : NULL;
+            if (!lb || !rb) break;
+            const char *q = lb;
+            while (q < rb) {
+                const char *k1 = strchr(q, '"');
+                if (!k1 || k1 > rb) break;
+                const char *k2 = strchr(k1 + 1, '"');
+                if (!k2 || k2 > rb) break;
+                size_t len = (size_t)(k2 - k1 - 1);
+                if (len > 0 && len < 32) {
+                    char key[32];
+                    memcpy(key, k1 + 1, len);
+                    key[len] = '\0';
+                    /* only assign keys this component actually declares */
+                    for (int i = 0; i < count; i++) {
+                        if (strcmp(params[i].key, key) == 0) {
+                            auto_cc_assign_one(inst, target, key, group);
+                            break;
+                        }
+                    }
+                }
+                q = k2 + 1;
+            }
+            p = rb;
+        }
+    }
+
+    /* Pass 2: everything the pages did not mention, declaration order. */
+    /* Pass 2: anything the layout does not mention. No page to name it with. */
+    for (int i = 0; i < count; i++)
+        auto_cc_assign_one(inst, target, params[i].key, "");
+}
+
+/*
+ * Signature of the position parameter set. Cheap to compute and compare on
+ * every CC message; a change means the module was swapped or reloaded.
+ */
+static int auto_cc_signature(chain_instance_t *inst)
+{
+    int sig = inst->synth_param_count * 31 + inst->fx_count * 7 + inst->midi_fx_count * 3;
+    for (int i = 0; i < inst->fx_count && i < MAX_AUDIO_FX; i++)
+        sig += inst->fx_param_counts[i] * (i + 2);
+    for (int i = 0; i < inst->midi_fx_count && i < MAX_MIDI_FX; i++)
+        sig += inst->midi_fx_param_counts[i] * (i + 11);
+    /* knob bindings are skipped by the builder, so they belong in the signature */
+    sig += inst->knob_mapping_count * 101;
+    return sig;
+}
+
+/*
+ * Rebuild the derived auto-CC table if the parameter signature moved.
+ * Order matches the audible chain: midi_fx, synth, then audio fx.
+ */
+CHAIN_INTERNAL void chain_auto_cc_refresh(chain_instance_t *inst, const char *synth_hier)
+{
+    if (!inst) return;
+    int sig = auto_cc_signature(inst);
+    if (sig == inst->auto_cc_sig && inst->auto_cc_count > 0) return;
+    inst->auto_cc_sig = sig;
+    inst->auto_cc_count = 0;
+
+    char target[16];
+    for (int i = 0; i < inst->midi_fx_count && i < MAX_MIDI_FX; i++) {
+        /* 1-based id: chain_fx_index_from_id maps "fx1" to index 0, and every
+         * other consumer (knob_find_param, the knob editor, get_param
+         * readback) spells it that way. Emitting "fx0" here made every FX
+         * assignment unresolvable -- invisible while no FX was loaded. */
+        snprintf(target, sizeof(target), "midi_fx%d", i + 1);
+        auto_cc_add_component(inst, target, inst->midi_fx_params[i],
+                              inst->midi_fx_param_counts[i],
+                              inst->midi_fx_ui_hierarchy[i]);
+    }
+    auto_cc_add_component(inst, "synth", inst->synth_params,
+                          inst->synth_param_count, synth_hier);
+    for (int i = 0; i < inst->fx_count && i < MAX_AUDIO_FX; i++) {
+        snprintf(target, sizeof(target), "fx%d", i + 1);
+        auto_cc_add_component(inst, target, inst->fx_params[i],
+                              inst->fx_param_counts[i],
+                              inst->fx_ui_hierarchy[i]);
+    }
+
+    auto_cc_apply_defaults(inst);
+    chain_cc_apply_overrides(inst);
+
+    /* Logged by the CALLER, not here: two host tests compile this file
+     * standalone and v2_chain_log lives in chain_host.c, so logging from this
+     * translation unit turns a unit test into a link error. */
+
+}
+
+/* Look up an auto-assigned CC. Returns NULL when the CC is not assigned. */
+CHAIN_INTERNAL auto_cc_t *chain_auto_cc_find(chain_instance_t *inst, uint8_t cc)
+{
+    if (!inst) return NULL;
+    /* Read-only on this path. The table is built at module load
+     * (chain_host.c); rebuilding here would drag a ~1 MB stack frame onto the
+     * audio thread via chain_mod_refresh_target_param_cache. */
+    if (cc > 127) return NULL;                 /* CC_NONE is not an address */
+    for (int i = 0; i < inst->auto_cc_count; i++)
+        if (inst->auto_cc[i].cc == cc) return &inst->auto_cc[i];
+    return NULL;
+}
+
 chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param) {
     if (!inst || !target) return NULL;
     if (strcmp(target, "synth") == 0)
@@ -986,6 +1240,286 @@ static int knob_value_to_cc(float val, const chain_param_info_t *pinfo) {
     if (cc_val < 0) cc_val = 0;
     if (cc_val > 127) cc_val = 127;
     return cc_val;
+}
+
+
+/*
+ * Echo an auto-mapped parameter back out as CC.
+ *
+ * This is what makes controller LEARN work: the user arms learn on the
+ * controller, moves the pot on Move for the parameter they want, and the
+ * controller sees the CC that drives it. Nothing else tells an external
+ * surface which address belongs to which knob -- without this the map exists
+ * only in a log file.
+ *
+ * Same shape as knob_emit_cc_out: slot receive channel, cable 2, change
+ * detection at CC resolution, and last_cc_out recorded ONLY on a successful
+ * send so a mailbox drop retries instead of leaving the surface stale.
+ */
+/*
+ * Per-component CC gate.
+ *
+ * A slot is a chain of parts from different authors -- midi_fx, synth, fx1..3 --
+ * and wanting CC on the synth while keeping it off the FX (or the reverse) is
+ * the normal case, not an edge one. cc_component_mask carries one bit per
+ * component; the table itself is NOT rebuilt when a bit changes, so addresses
+ * stay put and a component switched back on has the CCs it had before.
+ *
+ * bit 0        synth
+ * bits 1..8    fx0..fx7
+ * bits 9..12   midi_fx0..midi_fx3
+ */
+CHAIN_INTERNAL int chain_cc_component_bit(const char *target)
+{
+    if (!target) return -1;
+    if (strcmp(target, "synth") == 0) return 0;
+    if (strncmp(target, "midi_fx", 7) == 0) {
+        int i = atoi(target + 7) - 1;          /* "midi_fx1" -> 0 */
+        if (i >= 0 && i < MAX_MIDI_FX) return 9 + i;
+        return -1;
+    }
+    if (strncmp(target, "fx", 2) == 0) {
+        int i = atoi(target + 2) - 1;          /* "fx1" -> 0 */
+        if (i >= 0 && i < MAX_AUDIO_FX) return 1 + i;
+        return -1;
+    }
+    return -1;
+}
+
+CHAIN_INTERNAL int chain_cc_component_enabled(chain_instance_t *inst, const char *target)
+{
+    if (!inst) return 0;
+    int bit = chain_cc_component_bit(target);
+    if (bit < 0) return 1;   /* unknown component: do not silently mute it */
+    return (inst->cc_component_mask & (1u << bit)) ? 1 : 0;
+}
+
+
+/*
+ * Give `target:param` the number `cc`, swapping with whoever holds it.
+ *
+ * Swap rather than displace: the alternative leaves a parameter with no
+ * address, and on a chain that already has more parameters than numbers that
+ * is how a user loses a control without being told. Returns the CC the other
+ * parameter received, or -1 if nothing changed.
+ */
+/* First declared parameter of a component, for "learn onto this module" when
+ * it has no address at all. */
+CHAIN_INTERNAL const char *chain_cc_first_param(chain_instance_t *inst, const char *target)
+{
+    if (!inst || !target) return NULL;
+    if (strcmp(target, "synth") == 0)
+        return inst->synth_param_count > 0 ? inst->synth_params[0].key : NULL;
+    int fx = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+    if (fx >= 0 && fx < inst->fx_count)
+        return inst->fx_param_counts[fx] > 0 ? inst->fx_params[fx][0].key : NULL;
+    int mfx = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+    if (mfx >= 0 && mfx < inst->midi_fx_count)
+        return inst->midi_fx_param_counts[mfx] > 0 ? inst->midi_fx_params[mfx][0].key : NULL;
+    return NULL;
+}
+
+
+/*
+ * Numbers a parameter may not be given -- see src/host/cc_reserved.h, which the
+ * Master FX map asks too so the two buses cannot drift apart.
+ */
+CHAIN_INTERNAL int chain_cc_reserved(int cc)
+{
+    return cc_reserved(cc);
+}
+
+CHAIN_INTERNAL int chain_cc_assign(chain_instance_t *inst, const char *target,
+                                   const char *param, int cc)
+{
+    if (!inst || !target || !param) return -1;
+    if (cc < 0) {
+        /* Clear: a parameter can be given its number back later, and a map you
+         * cannot un-assign fills up with numbers you no longer want. */
+        for (int i = 0; i < inst->auto_cc_count; i++) {
+            auto_cc_t *a = &inst->auto_cc[i];
+            if (strcmp(a->target, target) || strcmp(a->param, param)) continue;
+            a->cc = CC_NONE;
+            a->last_cc_out = -1;
+            inst->dirty = 1;
+            break;
+        }
+        return -1;
+    }
+    if (cc > 127) return -1;
+    if (chain_cc_reserved(cc)) return -1;
+
+    auto_cc_t *mine = NULL, *theirs = NULL;
+    for (int i = 0; i < inst->auto_cc_count; i++) {
+        auto_cc_t *a = &inst->auto_cc[i];
+        if (strcmp(a->target, target) == 0 && strcmp(a->param, param) == 0) mine = a;
+        if (a->cc == (uint8_t)cc) theirs = a;
+    }
+    if (theirs == mine && mine) return -1;        /* already there */
+
+    if (!mine) {
+        /*
+         * The parameter has NO address yet, which is the case that matters:
+         * a chain can declare more parameters than there are usable CC
+         * numbers, so an FX behind a 97-parameter synth gets none at all and
+         * the only way to reach it is to take one.
+         *
+         * There is nothing to swap with here -- the previous holder simply
+         * loses its address, which is the honest outcome when every number is
+         * already spoken for. Everywhere a swap IS possible, above, it swaps.
+         */
+        if (!knob_find_param(inst, target, param)) return -1;   /* not a real param */
+        if (inst->auto_cc_count >= MAX_AUTO_CC) return -1;
+
+        if (theirs) {
+            /* Drop the previous holder from the table. */
+            int idx = (int)(theirs - inst->auto_cc);
+            for (int j = idx; j < inst->auto_cc_count - 1; j++)
+                inst->auto_cc[j] = inst->auto_cc[j + 1];
+            inst->auto_cc_count--;
+        }
+        auto_cc_t *a = &inst->auto_cc[inst->auto_cc_count++];
+        a->cc = (uint8_t)cc;
+        a->last_cc_out = -1;
+        snprintf(a->target, sizeof(a->target), "%s", target);
+        snprintf(a->param, sizeof(a->param), "%s", param);
+
+        int slot = -1;
+        for (int i = 0; i < inst->cc_override_count; i++) {
+            if (strcmp(inst->cc_overrides[i].target, target) == 0 &&
+                strcmp(inst->cc_overrides[i].param, param) == 0) { slot = i; break; }
+        }
+        if (slot < 0 && inst->cc_override_count < MAX_CC_OVERRIDES) {
+            slot = inst->cc_override_count++;
+            snprintf(inst->cc_overrides[slot].target, sizeof(inst->cc_overrides[slot].target), "%s", target);
+            snprintf(inst->cc_overrides[slot].param,  sizeof(inst->cc_overrides[slot].param),  "%s", param);
+        }
+        if (slot >= 0) inst->cc_overrides[slot].cc = (uint8_t)cc;
+        inst->dirty = 1;
+        return -1;
+    }
+
+    uint8_t was = mine->cc;
+    mine->cc = (uint8_t)cc;
+    mine->last_cc_out = -1;
+    if (theirs) { theirs->cc = was; theirs->last_cc_out = -1; }
+
+    /* Record both sides: replaying only one would put them back on the same
+     * number after the next rebuild. */
+    const struct { const char *t; const char *p; uint8_t c; } pair[2] = {
+        { target, param, (uint8_t)cc },
+        { theirs ? theirs->target : NULL, theirs ? theirs->param : NULL, was },
+    };
+    for (int k = 0; k < 2; k++) {
+        if (!pair[k].t) continue;
+        int slot = -1;
+        for (int i = 0; i < inst->cc_override_count; i++) {
+            if (strcmp(inst->cc_overrides[i].target, pair[k].t) == 0 &&
+                strcmp(inst->cc_overrides[i].param, pair[k].p) == 0) { slot = i; break; }
+        }
+        if (slot < 0) {
+            if (inst->cc_override_count >= MAX_CC_OVERRIDES) continue;
+            slot = inst->cc_override_count++;
+            snprintf(inst->cc_overrides[slot].target, sizeof(inst->cc_overrides[slot].target), "%s", pair[k].t);
+            snprintf(inst->cc_overrides[slot].param,  sizeof(inst->cc_overrides[slot].param),  "%s", pair[k].p);
+        }
+        inst->cc_overrides[slot].cc = pair[k].c;
+    }
+    inst->dirty = 1;
+    return was;
+}
+
+/* Replay saved reassignments after a rebuild. */
+/*
+ * "target|param|cc;" -> the override list.
+ *
+ * Shared by the patch loader and the set_param entry point: the UI pushes the
+ * same string it saved, and a patch carries it verbatim, so one parser is the
+ * only way the two cannot drift.
+ */
+CHAIN_INTERNAL void chain_cc_parse_overrides(chain_instance_t *inst, const char *str)
+{
+    if (!inst) return;
+    inst->cc_override_count = 0;
+    const char *p = str;
+    while (p && *p && inst->cc_override_count < MAX_CC_OVERRIDES) {
+        char rec[80]; int n = 0;
+        while (*p && *p != ';' && n < (int)sizeof(rec) - 1) rec[n++] = *p++;
+        rec[n] = '\0';
+        if (*p == ';') p++;
+        char *b1 = strchr(rec, '|');
+        char *b2 = b1 ? strchr(b1 + 1, '|') : NULL;
+        if (!b1 || !b2) continue;
+        *b1 = '\0'; *b2 = '\0';
+        cc_override_t *o = &inst->cc_overrides[inst->cc_override_count++];
+        snprintf(o->target, sizeof(o->target), "%s", rec);
+        snprintf(o->param, sizeof(o->param), "%s", b1 + 1);
+        o->cc = (uint8_t)atoi(b2 + 1);
+    }
+    chain_cc_apply_overrides(inst);
+
+}
+
+
+CHAIN_INTERNAL void chain_cc_apply_overrides(chain_instance_t *inst)
+{
+    if (!inst) return;
+    for (int i = 0; i < inst->cc_override_count; i++) {
+        const cc_override_t *o = &inst->cc_overrides[i];
+        /* Straight into the table, not through chain_cc_assign: that records
+         * an override, and replaying one must not rewrite the list it is
+         * reading. */
+        auto_cc_t *mine = NULL, *theirs = NULL;
+        for (int j = 0; j < inst->auto_cc_count; j++) {
+            auto_cc_t *a = &inst->auto_cc[j];
+            if (strcmp(a->target, o->target) == 0 && strcmp(a->param, o->param) == 0) mine = a;
+            if (a->cc == o->cc) theirs = a;
+        }
+        if (!mine || theirs == mine) continue;
+        uint8_t was = mine->cc;
+        mine->cc = o->cc;
+        if (theirs) theirs->cc = was;
+    }
+}
+
+
+CHAIN_INTERNAL void auto_cc_emit(chain_instance_t *inst, const char *target,
+                                 const char *param, const char *val_str)
+{
+    if (!inst || !inst->cc_control) return;
+    if (!chain_cc_component_enabled(inst, target)) return;
+    if (!inst->host || !inst->host->midi_send_external) return;
+    if (!inst->host->slot_recv_channel) return;
+    int recv_ch = inst->host->slot_recv_channel((void *)inst);
+    if (recv_ch < 0 || recv_ch > 15) return;
+
+    for (int i = 0; i < inst->auto_cc_count; i++) {
+        auto_cc_t *a = &inst->auto_cc[i];
+        if (a->cc == CC_NONE) continue;           /* no number, nothing to say */
+        if (strcmp(a->target, target) != 0 || strcmp(a->param, param) != 0) continue;
+
+        chain_param_info_t *pinfo = knob_find_param(inst, target, param);
+        if (!pinfo || !val_str) return;
+        /* The value the caller just wrote -- no read-back needed, and a read on
+         * this path would cost ~2.8ms against a 1.68ms page render. */
+        float cur = (float)atof(val_str);
+
+        float span = pinfo->max_val - pinfo->min_val;
+        int cc_val = (span > 0.0f)
+            ? (int)(((cur - pinfo->min_val) / span) * 127.0f + 0.5f) : 0;
+        if (cc_val < 0) cc_val = 0;
+        if (cc_val > 127) cc_val = 127;
+        if (cc_val == a->last_cc_out) return;
+
+        const uint8_t msg[4] = {
+            (uint8_t)((2 << 4) | 0x0B),
+            (uint8_t)(0xB0 | (uint8_t)recv_ch),
+            a->cc,
+            (uint8_t)cc_val
+        };
+        if (inst->host->midi_send_external(msg, 4) > 0) a->last_cc_out = cc_val;
+        return;
+    }
 }
 
 void knob_emit_cc_out(chain_instance_t *inst, int idx) {

@@ -72,21 +72,32 @@ function makeSlot(over) {
    * would chunk to 8 + 1 and put an orphan page holding a single control
    * between LFO 1 and LFO 2.
    */
-  if (grids.length !== 3) fail("expected 3 grid pages (Main + two LFOs), got " + grids.length);
-  if (menus.length !== 1) fail("expected one actions menu page, got " + menus.length);
+  /* MIDI is a fourth grid page and CC Map a second menu, both after Actions --
+   * see docs/CC_MAP.md. The LFO claim above is unchanged: each is still exactly
+   * one page. */
+  if (grids.length !== 4) fail("expected 4 grid pages (Main + two LFOs + MIDI), got " + grids.length);
+  if (menus.length !== 2) fail("expected two menu pages (Actions, CC Map), got " + menus.length);
   if (pages[pages.length - 1].kind !== "menu") {
-    fail("Actions must come LAST — a level emits its menu before any level it " +
+    fail("a menu must come LAST — a level emits its menu before any level it " +
          "navigates to, which is why the menu lives on its own level: " +
          pages.map((p) => p.name).join(" / "));
   }
   const names = pages.map((p) => p.name);
-  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  const order = ["Main", "LFO 1", "LFO 2", "Actions", "MIDI", "CC Map"];
   if (names.join("|") !== order.join("|")) {
     fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   }
+  /*
+   * The eight-knob rule is about CHUNKING -- a ninth control spills to 8 + 1 and
+   * orphans a page. MIDI declares six and is exempt: six is a complete page, not
+   * an overflow. Asserting its exact count still catches a seventh gate being
+   * added without thinking about the chunk boundary.
+   */
   for (const g of grids) {
-    if ((g.keys || []).length !== 8) {
-      fail("page " + JSON.stringify(g.name) + " should hold 8 knobs, got " + (g.keys || []).length);
+    const want = (g.name === "MIDI") ? 6 : 8;
+    if ((g.keys || []).length !== want) {
+      fail("page " + JSON.stringify(g.name) + " should hold " + want +
+           " knobs, got " + (g.keys || []).length);
     }
   }
 
@@ -544,7 +555,10 @@ function makeMaster(over) {
   const { pages } = planPages({ hierarchy: hier, chainParams: cp, visible: visFree });
 
   const names = pages.map((p) => p.name);
-  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  /* Master FX gains the same two pages, with ONE gate rather than the six a
+   * slot has: its positions are not a chain of parts from different authors,
+   * so there is no per-component case to answer. */
+  const order = ["Main", "LFO 1", "LFO 2", "Actions", "MIDI", "CC Map"];
   if (names.join("|") !== order.join("|"))
     fail("master page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   if (pages[pages.length - 1].kind !== "menu")
@@ -577,7 +591,9 @@ function makeMaster(over) {
   /* Each LFO is exactly ONE page here too: nine params chunk to 8 + 1 unless
      one rate cell is hidden, and an orphan page holding a single control would
      land between LFO 1 and LFO 2. */
-  for (const g of pages.filter((p) => p.kind === "knobs").slice(1)) {
+  /* MIDI is exempt for the same reason as the slot: one gate is a complete
+     page, not an overflow. The rule this loop enforces is about CHUNKING. */
+  for (const g of pages.filter((p) => p.kind === "knobs" && p.name !== "MIDI").slice(1)) {
     if ((g.keys || []).length !== 8)
       fail("master page " + JSON.stringify(g.name) + " should hold 8 knobs, got " +
            (g.keys || []).length);

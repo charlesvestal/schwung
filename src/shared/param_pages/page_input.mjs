@@ -198,6 +198,25 @@ export function applyInput(controller, intent, { nowMs, reveal } = {}) {
              * is: you went into it, so Back comes out of it. */
             if (controller.pickerOpen) { controller.closePicker(); return null; }
             if (controller.exitMenu && controller.exitMenu()) return null;
+            /*
+             * A HIDDEN page steps back to whoever opened it.
+             *
+             * It is not in the walk, so there is no previous page to step to
+             * and Back would leave the view -- which from a module's CC list
+             * means landing on the slot menu, skipping the index the user came
+             * through. Same one-layer-at-a-time rule as the picker and menu
+             * above.
+             */
+            {
+                const st = controller.state;
+                const cur = st && st.pages && st.pages[st.pageIndex];
+                if (cur && cur.hidden && typeof st.returnPage === "number"
+                    && st.returnPage >= 0 && st.returnPage < st.pages.length) {
+                    controller.goToPage(st.returnPage, { remember: false });
+                    st.returnPage = -1;
+                    return null;
+                }
+            }
             return { action: "exit" };
 
         case "shift":

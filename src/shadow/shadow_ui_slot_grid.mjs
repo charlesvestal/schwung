@@ -26,6 +26,13 @@
  * show.
  */
 
+/** "0".."127", the option list every CC cell shares. */
+const CC_NUMBERS = (() => {
+    const out = [];
+    for (let i = 0; i <= 127; i++) out.push(String(i));
+    return out;
+})();
+
 /** 1..16 as strings, for the channel enums. */
 const CHANNELS = (() => {
     const out = [];
@@ -292,7 +299,222 @@ export const SLOT_GRID_ACTIONS = [
 /**
  * @param {boolean} hasPreset  whether this slot already holds a saved preset
  */
-export function slotGridHierarchy(hasPreset) {
+/*
+ * The MIDI page.
+ *
+ * Every parameter of a loaded chain has an auto-assigned CC (see auto_cc_t in
+ * the chain DSP), which is what lets a 16-encoder surface reach a whole module
+ * without paging on Move. That is only usable if it can be switched off: with
+ * every parameter addressable, any controller sending CC on the slot's channel
+ * moves something, so "notes yes, CC no" has to be expressible.
+ *
+ * Two granularities, because a slot is a chain of parts by different authors:
+ * the whole slot, and one component. Both default On, and both gate the learn
+ * echo as well as incoming CC.
+ *
+ * FX3 and MIDI FX 2+ are deliberately absent: eight cells is one page, and a
+ * ninth would push the page into an overflow the user has no reason to visit.
+ * The components declared here cover every chain the fleet actually ships.
+ */
+export const SLOT_MIDI_PARAMS = [
+    { key: "cc_all", name: "CC Ctrl", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    { key: "cc_synth", name: "Synth", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    { key: "cc_fx1", name: "FX 1", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    { key: "cc_fx2", name: "FX 2", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    { key: "cc_fx3", name: "FX 3", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+    { key: "cc_mfx1", name: "MIDI FX", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+];
+
+/*
+ * "12,synth,bd_c_tune;13,synth,bd_c_attack;..." -> menu rows.
+ *
+ * Read-only: every row is an entry with a name and no consequence, which is
+ * the one thing a menu page is not usually for. It earns the page anyway
+ * because the alternative is a map that exists only in a log file -- a user
+ * has no way to learn which CC reaches which parameter except by turning all
+ * 97 and listening.
+ *
+ * The component prefix is dropped for a single-component chain (the common
+ * case) and kept otherwise, because "FX1 mix" and "mix" are different answers
+ * and the cell has no room to always say both.
+ */
+/*
+ * A module writes its parameter names however it likes, and 4k-eq writes them
+ * in caps: "GAIN", "HPF". Shouting reads badly down a list.
+ *
+ * Title-case only words of FOUR letters or more. Shorter all-caps words are
+ * acronyms -- LF, HF, LMF, HPF, EQ -- and "Lmf Gain" is worse than "LMF GAIN"
+ * was. Anything already mixed-case is left alone, so a module that names things
+ * properly is never second-guessed.
+ */
+export function prettyName(str) {
+    return String(str || "").replace(/[A-Za-z]+/g, (w) => {
+        if (w.length < 4) return w;
+        if (w !== w.toUpperCase()) return w;      /* already has case: leave it */
+        return w.charAt(0) + w.slice(1).toLowerCase();
+    });
+}
+
+export function ccMapMenu(raw) {
+    /* "cc|target|key|Display Name;" -- pipe, not comma, because a display
+     * name may contain one. */
+    const rows = String(raw || "").split(";").filter(Boolean);
+    const parsed = [];
+    for (const r of rows) {
+        const bits = r.split("|");
+        if (bits.length < 3) continue;
+        const name = prettyName((bits[3] && bits[3].length) ? bits[3] : bits[2]);
+        const group = prettyName(bits[4] || "");
+        parsed.push({
+            index: parsed.length,          /* position in the map == cc_idx:N */
+            cc: bits[0], target: bits[1], param: bits[2],
+            name, group,
+            /*
+             * The page name earns its place: an EQ declares four parameters
+             * called "Gain" and the list is unreadable without it. Dropped when
+             * the name already starts with it, so a module that spells its own
+             * parameters "Band 1 Gain" does not read "Band 1 Band 1 Gain".
+             */
+            label: (group && name.toLowerCase().indexOf(group.toLowerCase()) !== 0)
+                ? (group + " " + name) : name,
+        });
+    }
+    return parsed;
+}
+
+/** "target|module|ch|on;" -> [{target, module, ch, on}] */
+export function ccComponents(raw) {
+    const out = [];
+    for (const r of String(raw || "").split(";").filter(Boolean)) {
+        const b = r.split("|");
+        if (b.length < 4) continue;
+        /* 0 = the slot receives on ALL channels (the DSP reports -1, +1'd). */
+        out.push({ target: b[0], module: b[1], ch: parseInt(b[2], 10) || 0,
+                   on: b[3] === "1" });
+    }
+    return out;
+}
+
+/**
+ * CC Map, two levels deep.
+ *
+ * The top level is the loaded modules, because ~97 rows across several
+ * components is a list to scroll rather than a thing to read, and a user
+ * looking at one module wants that module's numbers. Each row carries the
+ * channel those CCs arrive on, since a map without a channel is only half an
+ * address -- and OFF where the component's gate is closed, so a page of
+ * numbers that currently do nothing says so.
+ */
+export function ccMapLevels(mapRaw, compRaw) {
+    const rows = ccMapMenu(mapRaw);
+    const comps = ccComponents(compRaw);
+    const levels = {};
+
+    if (!comps.length) {
+        levels.ccmap = { label: "CC Map", knobs: [], params: [],
+                         menu: [{ label: "No module", action: "cc_map_none" }],
+                         menu_label: "CC Map" };
+        return levels;
+    }
+
+    /*
+     * The index is a MENU, not a set of level-doors.
+     *
+     * A menu entry may carry `level` as well as `action` (see mapMenuEntries),
+     * so it navigates AND draws as one list -- which is the point: doors render
+     * as grid cells, one page per component, and the thing wanted here is a
+     * single list reading "module, channel, count". `value` is right-aligned,
+     * so the channel and count line up down the page.
+     */
+    const index = comps.map((c) => {
+        const n = rows.filter((r) => r.target === c.target).length;
+        return {
+            label: c.module,
+            value: (c.on ? (c.ch > 0 ? ("Ch " + c.ch) : "All") : "OFF") + "  " + n,
+            level: "ccmap_" + c.target,
+        };
+    });
+    levels.ccmap = { label: "CC Map", knobs: [], params: [],
+                     menu: index, menu_label: "CC Map" };
+
+    for (const c of comps) {
+        const mine = rows.filter((r) => r.target === c.target);
+        levels["ccmap_" + c.target] = {
+            /* Reachable from the CC Map row, but NOT in the jog order: these
+             * belong to the row that opens them, not to the settings walk. */
+            hidden: true,
+            label: c.module,
+            knobs: [], params: [],
+            /*
+             * EDITABLE cells, not a list of text.
+             *
+             * Each parameter is an enum over "0".."127" whose value is its CC,
+             * so the number is visible, turning it changes the assignment, and
+             * clicking opens the option picker -- an overlay the controller
+             * owns and survives, unlike a confirm modal raised from the grid.
+             * A read-only list gave the user nothing to do and no way to see
+             * that anything had happened.
+             *
+             * Keyed by INDEX into the map, because a grid key is split on its
+             * first colon and "synth:bd_c_tune" would lose half of itself.
+             */
+            /*
+             * A LIST, and one page. Cells would be a page per eight rows and
+             * make a 97-parameter module thirteen pages deep, which is not a
+             * map you can read. Clicking a row raises the CC card instead --
+             * an overlay over this list, the way the knob card sits over the
+             * grid.
+             */
+            knobs: [], params: [],
+            menu: mine.length
+                ? mine.map((r) => ({
+                      label: r.label,
+                      /* "--" reads as "no number yet", which is most rows now
+                       * that nothing is auto-assigned. The channel is only
+                       * meaningful once there IS a number. */
+                      value: (parseInt(r.cc, 10) < 0)
+                          ? "--"
+                          : (r.cc + (c.ch > 0 ? (" Ch " + c.ch) : " All")),
+                      /* index AND label: the card shows the parameter name,
+                       * and a read to fetch it would cost ~2.8ms on a click. */
+                      action: "cc_edit:" + r.index + "|" + r.label,
+                  })).concat(
+                      /*
+                       * A trailing Clear all, only when there is something to
+                       * clear. Move keeps the Delete button for itself -- the
+                       * shim forwards only jog, back, tracks, knobs and mute --
+                       * so this has to be a row. Forwarding Delete would work,
+                       * but Move own delete still fires, and losing a clip
+                       * because you meant to clear a CC is the worse trade.
+                       */
+                      mine.some((q) => parseInt(q.cc, 10) >= 0)
+                          ? [{ label: "Clear all", action: "cc_clear_all:" + c.target }]
+                          : [])
+                /* Every parameter is listed now, assigned or not, so an
+                 * empty list means the module declares none -- not that the
+                 * numbers ran out. No action: there is nothing to assign. */
+                : [{ label: "No parameters", action: "" }],
+            menu_label: c.module + (c.ch > 0 ? (" Ch " + c.ch) : " All"),
+        };
+    }
+    return levels;
+}
+
+/** "fx1" -> "FX1", "midi_fx1" -> "MF1", "synth" -> "SY". */
+function shortTarget(t) {
+    if (t === "synth") return "SY";
+    if (t.startsWith("midi_fx")) return "MF" + t.slice(7);
+    if (t.startsWith("fx")) return "FX" + t.slice(2);
+    return t;
+}
+
+export function slotGridHierarchy(hasPreset, ccMapRaw, ccCompRaw) {
     const menu = SLOT_GRID_ACTIONS
         .filter((a) => a.always || hasPreset)
         .map((a) => ({ label: a.label, action: a.action }));
@@ -312,23 +534,64 @@ export function slotGridHierarchy(hasPreset) {
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
                 .concat([{ level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
-                         { level: "actions", label: "Actions" }]),
+                         { level: "actions", label: "Actions" },
+                         /* After Actions: a level emits straight after the
+                          * entry that navigates to it, so listing MIDI last
+                          * puts the page last. */
+                         { level: "midi", label: "MIDI" }]),
         },
     };
     Object.assign(levels, lfoLevels([1, 2]));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
+    levels.midi = {
+        label: "MIDI",
+        knobs: SLOT_MIDI_PARAMS.map((p) => p.key),
+        params: SLOT_MIDI_PARAMS.map((p) => ({ key: p.key }))
+            .concat([{ level: "ccmap", label: "CC Map" }]),
+    };
+    Object.assign(levels, ccMapLevels(ccMapRaw, ccCompRaw));
     return { modes: null, levels };
 }
 
 /** Every declared param across the slot page and both LFO pages. */
-export function allSlotGridParams() {
-    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2));
+export function allSlotGridParams(ccMapRaw) {
+    const cc = ccMapMenu(ccMapRaw).map((r) => ({
+        key: "cc" + r.index, name: r.label, type: "enum",
+        options: CC_NUMBERS, short_options: CC_NUMBERS, default: 0,
+    }));
+    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2))
+                           .concat(SLOT_MIDI_PARAMS).concat(cc);
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
 export function realKeyFor(gridKey) {
     if (gridKey === "mpe_mode") return null;            /* derived, see below */
     if (gridKey === "midi_fx_pre_mode") return "midi_fx_pre_mode";  /* bare */
+    /* CC gates are bare too: the chain DSP serves "cc_control" and
+     * "cc_control:<component>" directly, and "slot:" would address a param
+     * that does not exist and read empty -- which for a TOGGLE is worse than
+     * failing, since an unreadable Off makes the next click write On to
+     * something already on. */
+    /*
+     * CC gates map to bare device keys, and the GRID key deliberately carries
+     * no colon.
+     *
+     * bare() strips everything up to the FIRST colon, so a grid key spelled
+     * "cc_control:synth" arrives here as "synth" whenever the caller does not
+     * prefix it -- and "slot:synth" reads empty. For a TOGGLE an unreadable
+     * value is worse than an error: shown as Off, the next click writes On to
+     * something that was already on. Colon-free keys make the mapping explicit
+     * and immune to how the caller spells the prefix.
+     */
+    /* ccN -> the Nth row of the map. The device answers with the CC number,
+     * and writing one reassigns it (swapping with whoever held it). */
+    if (/^cc\d+$/.test(gridKey)) return "cc_idx:" + gridKey.slice(2);
+    if (gridKey === "cc_all") return "cc_control";
+    if (gridKey === "cc_synth") return "cc_control:synth";
+    if (gridKey === "cc_fx1") return "cc_control:fx1";
+    if (gridKey === "cc_fx2") return "cc_control:fx2";
+    if (gridKey === "cc_fx3") return "cc_control:fx3";
+    if (gridKey === "cc_mfx1") return "cc_control:midi_fx1";
     /* LFO params are declared with their real prefix already ("lfo1:shape"),
      * the same one makeSlotLfoCtx uses, so they pass straight through. Adding
      * "slot:" would address a param that does not exist and read empty. */
@@ -369,8 +632,22 @@ export function createSlotGridIo(io) {
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
-            if (k === "ui_hierarchy") return JSON.stringify(slotGridHierarchy(!!io.hasPreset()));
-            if (k === "chain_params") return JSON.stringify(allSlotGridParams());
+            if (k === "ui_hierarchy") {
+                /* One read, on entry only -- ui_hierarchy is not fetched on the
+                 * draw path. The whole map comes back in a single call rather
+                 * than a row at a time: 97 reads at ~2.8ms each would cost most
+                 * of a second and paint the page in pieces. */
+                const map = io.readSlotParam ? io.readSlotParam("auto_cc_map") : "";
+                const comps = io.readSlotParam ? io.readSlotParam("cc_components") : "";
+                return JSON.stringify(slotGridHierarchy(!!io.hasPreset(), map, comps));
+            }
+            if (k === "chain_params") {
+                /* The CC cells are declared from the same map the pages are
+                 * built from, so the two cannot disagree about how many rows
+                 * there are or what they are called. */
+                const map = io.readSlotParam ? io.readSlotParam("auto_cc_map") : "";
+                return JSON.stringify(allSlotGridParams(map));
+            }
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";
             if (k === "forward_channel") {
                 const raw = parseInt(io.readSlotParam("slot:forward_channel"), 10);
@@ -540,7 +817,73 @@ export const MASTER_GRID_ACTIONS = [
  *
  * @param {boolean} hasPreset  whether a master preset is currently loaded
  */
-export function masterGridHierarchy(hasPreset) {
+
+/*
+ * Master FX CC Map.
+ *
+ * Same two levels as a slot: the loaded positions, then one position's
+ * parameters. It cannot share the slot builder because the two get their rows
+ * from opposite directions -- a slot reads one map string from the chain DSP,
+ * while Master FX has no chain, so the caller assembles the rows from each
+ * position's chain_params plus the host's assignment table.
+ *
+ * `rows` is [{ slot, module, params: [{ key, name, group, cc }] }].
+ */
+export function masterCcMapLevels(rows, chLabel) {
+    const levels = {};
+    const list = Array.isArray(rows) ? rows.filter((r) => r && r.module) : [];
+
+    if (!list.length) {
+        levels.ccmap = { label: "CC Map", knobs: [], params: [],
+                         menu: [{ label: "No Master FX", action: "" }],
+                         menu_label: "CC Map" };
+        return levels;
+    }
+
+    levels.ccmap = {
+        label: "CC Map", knobs: [], params: [],
+        /* The channel Master FX listens on belongs in the header: a CC number
+         * without one is half an address, and unlike a slot this bus has its
+         * own setting (All by default). */
+        menu_label: "CC Map " + (chLabel || ""),
+        menu: list.map((r) => ({
+            label: r.module,
+            value: String((r.params || []).filter((p) => p.cc >= 0).length) +
+                   "/" + (r.params || []).length,
+            level: "mccmap_fx" + r.slot,
+        })),
+    };
+
+    for (const r of list) {
+        const ps = r.params || [];
+        levels["mccmap_fx" + r.slot] = {
+            hidden: true,                 /* opened by its row, not walked to */
+            label: r.module, knobs: [], params: [],
+            menu_label: r.module + " " + (chLabel || ""),
+            menu: ps.length
+                ? ps.map((p, i) => ({
+                      label: (() => {
+                          const nm = prettyName(p.name), gp = prettyName(p.group);
+                          return (gp && nm.toLowerCase().indexOf(gp.toLowerCase()) !== 0)
+                              ? (gp + " " + nm) : nm;
+                      })(),
+                      /* "3 Ch 16", the same shape a slot row uses -- a CC
+                       * number without its channel is half an address, and the
+                       * two buses must read alike. */
+                      value: p.cc >= 0 ? (p.cc + " " + (chLabel || "")) : "--",
+                      action: "mcc_edit:" + r.slot + ":" + i + "|" + p.name,
+                  })).concat(
+                      /* Only when there is something to clear. */
+                      ps.some((q) => q.cc >= 0)
+                          ? [{ label: "Clear all", action: "mcc_clear_all:" + r.slot }]
+                          : [])
+                : [{ label: "No parameters", action: "" }],
+        };
+    }
+    return levels;
+}
+
+export function masterGridHierarchy(hasPreset, ccRows, chLabel) {
     const menu = MASTER_GRID_ACTIONS
         .filter((a) => a.always || hasPreset)
         .map((a) => ({ label: a.label, action: a.action }));
@@ -557,12 +900,40 @@ export function masterGridHierarchy(hasPreset) {
     /* The SAME builder the slot contract uses, one bus over. */
     Object.assign(levels, lfoLevels([1, 2], MASTER_KEY_PREFIX));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
+    /*
+     * A MIDI page, as a slot has. One switch rather than a slot's six: Master
+     * FX positions are not a chain of parts from different authors, so there is
+     * no per-component case to answer -- but "notes yes, CC no" must still be
+     * sayable on this bus.
+     */
+    levels.midi = {
+        label: "MIDI",
+        knobs: [MASTER_CC_CONTROL_KEY],
+        params: [{ key: MASTER_CC_CONTROL_KEY }, { level: "ccmap", label: "CC Map" }],
+    };
+    Object.assign(levels, masterCcMapLevels(ccRows, chLabel));
+    /* After Actions, same as a slot: a level emits straight after the entry
+     * that navigates to it. */
+    levels.root.params.push({ level: "midi", label: "MIDI" });
     return { modes: null, levels };
 }
 
 /** Every declared param across the root page and both LFO pages. */
+export const MASTER_CC_CONTROL_KEY = MASTER_KEY_PREFIX + "cc_control";
+
+/*
+ * One switch, not a slot's six: Master FX positions are not a chain of parts
+ * from different authors, so there is no per-component case to answer. But
+ * "notes yes, CC no" has to be sayable here too -- with every parameter
+ * addressable, any controller on the listen channel moves something.
+ */
+export const MASTER_MIDI_PARAMS = [
+    { key: MASTER_CC_CONTROL_KEY, name: "CC Ctrl", type: "enum",
+      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
+];
+
 export function allMasterGridParams() {
-    return MASTER_GRID_PARAMS
+    return MASTER_MIDI_PARAMS.concat(MASTER_GRID_PARAMS)
         .concat(lfoParams(1, MASTER_KEY_PREFIX))
         .concat(lfoParams(2, MASTER_KEY_PREFIX));
 }
@@ -597,7 +968,14 @@ export function createMasterGridIo(io) {
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
-            if (k === "ui_hierarchy") return JSON.stringify(masterGridHierarchy(!!io.hasPreset()));
+            if (k === "ui_hierarchy") {
+                /* Assembled here rather than in the pure builder: it needs a
+                 * read per loaded position plus the host assignment table, and
+                 * ui_hierarchy is fetched on entry, not on the draw path. */
+                return JSON.stringify(masterGridHierarchy(!!io.hasPreset(),
+                    io.ccRows ? io.ccRows() : [],
+                    io.ccChannel ? io.ccChannel() : ""));
+            }
             if (k === "chain_params") return JSON.stringify(allMasterGridParams());
             /* Wire -> option index. A failed read must stay a failed read: the
              * grid distinguishes null from "", and turning either into index 0

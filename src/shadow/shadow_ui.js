@@ -263,6 +263,7 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
+    paramPagesContractChanged,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
     paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue
@@ -8207,6 +8208,56 @@ function getSlotStateWithRetry(slotIndex, key, retries) {
  * Note: save_patch expects raw chain content (synth, audio_fx at root)
  * with "custom_name" for the name. It wraps it with name/version/chain.
  */
+/* Per-slot, per-boot memory of the CC assignments seen on disk. Undefined
+ * means "not looked yet"; "" means looked and there were none. */
+let ccOverridesSeen = [];
+
+
+/*
+ * Master FX CC Map rows.
+ *
+ * The slot map comes ready-made from the chain DSP. Master FX has no chain, so
+ * this joins the three things that make a row: the loaded positions, the
+ * parameters each publishes, and the host table of assignments. The parameter
+ * RANGE travels with an assignment (see master_fx:cc_assign), which is why it
+ * is carried here rather than looked up again when a CC arrives.
+ */
+function buildMasterCcRows() {
+    const rows = [];
+    const assigned = {};
+    const raw = getSlotParam(0, "master_fx:cc_map") || "";
+    for (const rec of raw.split(";")) {
+        if (!rec) continue;
+        const b = rec.split("|");
+        if (b.length < 3) continue;
+        assigned[b[0] + ":" + b[1]] = parseInt(b[2], 10);
+    }
+
+    for (let i = 1; i <= MASTER_FX_SLOTS; i++) {
+        const mod = masterFxConfig && masterFxConfig["fx" + i] && masterFxConfig["fx" + i].module;
+        if (!mod) continue;
+        let params = [];
+        try {
+            const cp = getSlotParam(0, "master_fx:fx" + i + ":chain_params");
+            const parsed = cp ? JSON.parse(cp) : [];
+            if (Array.isArray(parsed)) {
+                params = parsed.map((p) => ({
+                    key: p.key,
+                    name: p.name || p.key,
+                    group: p.group || "",
+                    type: p.type || "float",
+                    min: (typeof p.min === "number") ? p.min : 0,
+                    max: (typeof p.max === "number") ? p.max : 1,
+                    cc: (assigned[(i - 1) + ":" + p.key] !== undefined)
+                        ? assigned[(i - 1) + ":" + p.key] : -1,
+                })).filter((p) => p.key);
+            }
+        } catch (e) { /* a module with no contract contributes no rows */ }
+        rows.push({ slot: i - 1, module: mod, params });
+    }
+    return rows;
+}
+
 function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     const cfg = chainConfigs[slotIndex];
     if (!cfg) return null;
@@ -8327,6 +8378,53 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
      * controller rig it exists to serve. */
     const knobCcOut = getSlotParam(slotIndex, "knob_cc_out");
     if (knobCcOut !== null) patch.knob_cc_out = parseInt(knobCcOut) ? 1 : 0;
+
+    /* CC gates, same reasoning as knob_cc_out above: runtime-only would mean a
+     * slot you muted for CC comes back listening after a reload, which is the
+     * opposite of what the switch is for. Absence still means ON when loading,
+     * so patches written before this keep working. */
+    const ccControl = getSlotParam(slotIndex, "cc_control");
+    if (ccControl !== null) patch.cc_control = parseInt(ccControl) ? 1 : 0;
+    /*
+     * CC assignments, with the same protection the empty-slot branch gives a
+     * chain: never let an empty live map overwrite a saved one.
+     *
+     * Observed twice on device: a restore that does not happen leaves the map
+     * empty, the next autosave faithfully writes that empty map over the file,
+     * and the user\'s assignments are gone with no way back. Autosave is not
+     * the place to find out the restore failed.
+     *
+     * The disk is read ONCE per slot per boot, not per autosave -- reads are
+     * what this function is otherwise careful to avoid.
+     */
+    const ccOverrides = getSlotParam(slotIndex, "cc_overrides");
+    if (ccOverrides) {
+        patch.cc_overrides = ccOverrides;
+        ccOverridesSeen[slotIndex] = ccOverrides;
+    } else {
+        if (ccOverridesSeen[slotIndex] === undefined && activeSlotStateDir) {
+            let onDisk = "";
+            try {
+                const raw = host_read_file(activeSlotStateDir + "/slot_" + slotIndex + ".json");
+                if (raw) {
+                    const prev = JSON.parse(raw);
+                    onDisk = (prev && prev.chain && prev.chain.cc_overrides) || "";
+                }
+            } catch (e) { /* malformed or missing: nothing to preserve */ }
+            ccOverridesSeen[slotIndex] = onDisk;
+        }
+        const keep = ccOverridesSeen[slotIndex];
+        if (keep) {
+            patch.cc_overrides = keep;
+            debugLog("autosave: slot " + slotIndex + " reports no CC assignments but " +
+                     "slot_" + slotIndex + ".json has some — preserving");
+        }
+    }
+    const ccMask = getSlotParam(slotIndex, "cc_component_mask");
+    if (ccMask !== null && ccMask !== "") {
+        const m = parseInt(ccMask, 10);
+        if (Number.isFinite(m)) patch.cc_component_mask = m;
+    }
 
     /* Include knob mappings */
     const knobMappingsJson = getSlotParam(slotIndex, "knob_mappings");
@@ -11956,7 +12054,360 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
  * step. Everything else it touches (pendingSaveName, confirmingOverwrite,
  * lfoCtx, ...) is module state it always mutated and still does.
  */
+
+/*
+ * THE CC CARD — an overlay over the CC Map list.
+ *
+ * A row that only showed a number gave the user nothing to do and no sign that
+ * a click had registered. This is the same shape as the knob card: a bordered
+ * panel over the list it belongs to, raised by a click and dropped by Back.
+ *
+ * Two gestures, no focus to manage:
+ *   JOG   changes the CC, live -- the number moves in front of you and the
+ *         assignment moves with it, swapping with whoever held it
+ *   CLICK arms LEARN -- turn any control on the surface and it claims this
+ *         parameter, which is the gesture the E16 already answers
+ *
+ * Drawn LAST and therefore fed FIRST (docs/SHADOW_UI.md): the grid's input
+ * early-out claims the jog, so an overlay added only to the draw path reads as
+ * a dead panel. That is the documented half-working-overlay bug.
+ */
+let ccCardOpen = false;
+let ccCardSlot = 0;
+let ccCardIndex = -1;
+let ccCardName = "";
+let ccCardCc = 0;
+let ccCardLearning = false;
+/* Which bus the open card edits. A slot addresses rows by index into the chain
+ * map; Master FX addresses them by position + parameter, because the host table
+ * is keyed that way and there is no chain map to index into. */
+let ccCardMaster = null;   /* null = a slot; else { slot, key, min, max, isInt } */
+let ccCardNotice = "";        /* transient line, e.g. a refused CC */
+let ccCardNoticeUntil = 0;
+
+/*
+ * Numbers a parameter may not be given -- must match chain_cc_reserved.
+ *   0, 32     bank select MSB/LSB, a 14-bit pair rather than a control
+ *   71-78     Move own chain knobs (relative)
+ *   102-109   the same eight, absolute
+ */
+function ccReserved(n) {
+    return n === 0 || n === 32 ||
+           (n >= 71 && n <= 78) || (n >= 102 && n <= 109);
+}
+
+function openCcCard(slot, index, name) {
+    ccCardSlot = slot;
+    ccCardIndex = index;
+    ccCardMaster = null;
+    ccCardName = name || "";
+    ccCardLearning = false;
+    ccCardNotice = "";
+    const cur = getSlotParam(slot, "cc_idx:" + index);
+    const parsed = cur === null ? NaN : parseInt(cur, 10);
+    ccCardCc = isNaN(parsed) ? -1 : parsed;   /* -1 = no number yet */
+    ccCardOpen = true;
+    needsRedraw = true;
+}
+
+function openMasterCcCard(row, p) {
+    ccCardSlot = 0;                    /* Master FX is IPC slot 0 by convention */
+    ccCardIndex = -1;
+    ccCardMaster = { slot: row.slot, key: p.key, min: p.min, max: p.max,
+                     isInt: (p.type === "int" || p.type === "enum") ? 1 : 0 };
+    ccCardName = p.name || p.key;
+    ccCardLearning = false;
+    ccCardNotice = "";
+    ccCardCc = (typeof p.cc === "number") ? p.cc : -1;
+    ccCardOpen = true;
+    needsRedraw = true;
+}
+
+function ccCardWrite(next) {
+    if (ccCardMaster) {
+        const m = ccCardMaster;
+        setSlotParam(0, "master_fx:cc_assign",
+                     m.slot + "|" + m.key + "|" + next + "|" + m.min + "|" + m.max + "|" + m.isInt);
+    } else {
+        setSlotParam(ccCardSlot, "cc_idx:" + ccCardIndex, String(next));
+    }
+    paramPagesContractChanged();
+}
+
+function closeCcCard() {
+    if (!ccCardOpen) return false;
+    ccCardOpen = false;
+    ccCardLearning = false;
+    /* Disarm: leaving the card must not leave a controller able to steal the
+     * next CC into a parameter the user is no longer looking at. */
+    if (ccCardMaster) setSlotParam(0, "master_fx:cc_learn", "");
+    else              setSlotParam(ccCardSlot, "cc_learn", "");
+    ccCardMaster = null;
+    needsRedraw = true;
+    return true;
+}
+
+function ccCardOutline(x, y, w, h) {
+    fill_rect(x, y, w, 1, 1);
+    fill_rect(x, y + h - 1, w, 1, 1);
+    fill_rect(x, y, 1, h, 1);
+    fill_rect(x + w - 1, y, 1, h, 1);
+}
+
+function drawCcCard() {
+    if (!ccCardOpen) return;
+    const x = 6, y = 10, w = SCREEN_WIDTH - 12, h = 44;
+
+    /* Clear behind, then frame. The 1px gap matters for the same reason the
+     * knob card's does: border and content both draw white, so without it the
+     * panel reads as a stripe across the list. */
+    fill_rect(x - 1, y - 1, w + 2, h + 2, 0);
+    ccCardOutline(x, y, w, h);
+
+    const name = ccCardName.length > 18 ? ccCardName.slice(0, 18) : ccCardName;
+    print(x + 4, y + 3, name, 1);
+    fill_rect(x + 1, y + 13, w - 2, 1, 1);
+
+    if (ccCardLearning) {
+        const m = "TURN A CONTROL";
+        print(x + Math.max(2, ((w - text_width(m)) >> 1)), y + 19, m, 1);
+    } else {
+        const num = (ccCardCc < 0) ? "CC --" : ("CC " + ccCardCc);
+        print(x + 6, y + 19, num, 2);
+        const b = "LEARN";
+        const bx = x + w - text_width(b) - 10;
+        ccCardOutline(bx - 4, y + 17, text_width(b) + 8, 14);
+        print(bx, y + 19, b, 1);
+    }
+
+    let hint = ccCardLearning ? "BACK cancel" : "JOG set  CLK learn  BACK out";
+    /* A refusal outranks the hint: the user just did something and needs to
+     * know it did not take, and why. */
+    if (ccCardNotice && Date.now() < ccCardNoticeUntil) hint = ccCardNotice;
+    else if (ccCardNotice) ccCardNotice = "";
+    print(x + Math.max(2, ((w - text_width(hint)) >> 1)), y + h - 10, hint, 1);
+}
+
+/* Input for the card. Returns true when it consumed the event. */
+function handleCcCardMidi(data) {
+    if (!ccCardOpen || !data || data.length < 3) return false;
+    if ((data[0] & 0xF0) !== 0xB0) return false;
+    const d1 = data[1], d2 = data[2];
+
+    if (d1 === 51) {                       /* BACK */
+        if (d2 > 0) closeCcCard();
+        return true;
+    }
+    if (d1 === 3) {                        /* jog CLICK */
+        if (d2 > 0) {
+            ccCardLearning = true;
+            if (ccCardMaster) {
+                const m = ccCardMaster;
+                setSlotParam(0, "master_fx:cc_learn",
+                             m.slot + "|" + m.key + "|" + m.min + "|" + m.max + "|" + m.isInt);
+            } else {
+                setSlotParam(ccCardSlot, "cc_learn_idx:" + ccCardIndex, "1");
+            }
+            needsRedraw = true;
+        }
+        return true;
+    }
+    if (d1 === 14) {                       /* jog TURN */
+        if (ccCardLearning) return true;   /* waiting for the surface, not the jog */
+        const delta = (d2 < 64) ? d2 : d2 - 128;
+        if (!delta) return true;
+        /* -1 sits below 0 and is reachable, so a number can be taken back:
+         * a map with no way to un-assign fills with numbers nobody wants. */
+        const dir = delta > 0 ? 1 : -1;
+        let next = ccCardCc + dir;
+        /* Step OVER the chain-knob ranges rather than stopping on them: the
+         * assign would be refused and the number would sit there looking set. */
+        while (ccReserved(next)) next += dir;
+        if (next < -1) next = -1;
+        if (next > 127) next = 127;
+        if (next !== ccCardCc) {
+            ccCardCc = next;
+            /* The row behind the card carries this number in its label, so the
+             * grid has to re-read or the list keeps showing the old value. */
+            ccCardWrite(next);
+            needsRedraw = true;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* While learning, the DSP is the one that changes the value, so read it back
+ * until it moves. One read, only while the card is up and only while armed. */
+function ccCardPoll() {
+    /*
+     * Left the card by some route other than Back -- a view change, a jump, a
+     * module reload. Learn must not stay armed: the next CC from the surface
+     * would land on a parameter the user is no longer looking at.
+     */
+    if (ccCardOpen && view !== VIEWS.PARAM_PAGES) { closeCcCard(); return; }
+    if (!ccCardOpen || !ccCardLearning) return;
+
+    /* Did the DSP refuse a reserved number? Read once -- it is an event. */
+    const rej = ccCardMaster
+        ? getSlotParam(0, "master_fx:cc_learn_reject")
+        : getSlotParam(ccCardSlot, "cc_learn_reject");
+    const rejN = rej === null ? -1 : parseInt(rej, 10);
+    if (!isNaN(rejN) && rejN >= 0) {
+        ccCardNotice = "CC " + rejN + " RESERVED";
+        ccCardNoticeUntil = Date.now() + 2000;
+        needsRedraw = true;
+    }
+
+    let v = null;
+    if (ccCardMaster) {
+        /* No index to read: find this parameter in the host table. */
+        const raw = getSlotParam(0, "master_fx:cc_map") || "";
+        for (const rec of raw.split(";")) {
+            const b = rec.split("|");
+            if (b.length >= 3 && parseInt(b[0], 10) === ccCardMaster.slot &&
+                b[1] === ccCardMaster.key) { v = parseInt(b[2], 10); break; }
+        }
+    } else {
+        const cur = getSlotParam(ccCardSlot, "cc_idx:" + ccCardIndex);
+        v = cur === null ? null : parseInt(cur, 10);
+    }
+    if (v !== null && !isNaN(v) && v !== ccCardCc) {
+        ccCardCc = v;
+        ccCardLearning = false;
+        paramPagesContractChanged();
+        needsRedraw = true;
+    }
+}
+
+
+/*
+ * CLEAR, with a confirm.
+ *
+ * Both clears are destructive and neither is undoable, so a mis-hit on a whole
+ * module would silently discard every number a user had chosen.
+ *
+ * The confirm is an overlay over the list, drawn last and therefore fed input
+ * FIRST -- the grid claims the jog in its own early-out, so a panel fed after it
+ * draws correctly and answers nothing (docs/SHADOW_UI.md).
+ */
+let ccDelConfirm = null;   /* null | { master, target, label } */
+
+function ccClearArm(target, isMaster) {
+    ccDelConfirm = { master: isMaster, target: target,
+                     label: isMaster ? ("FX " + (target + 1)) : String(target) };
+    needsRedraw = true;
+}
+
+function ccClearCommit() {
+    if (!ccDelConfirm) return;
+    const c = ccDelConfirm;
+    ccDelConfirm = null;
+
+    if (c.master) {
+        const rows = buildMasterCcRows();
+        const row = rows.find((r) => r.slot === c.target);
+        if (row) {
+            for (const prm of row.params) {
+                if (!prm || prm.cc < 0) continue;          /* nothing to clear */
+                setSlotParam(0, "master_fx:cc_assign",
+                             row.slot + "|" + prm.key + "|-1|" + prm.min + "|" + prm.max + "|0");
+            }
+            masterCcRowsCache = null;
+        }
+    } else {
+        /* Every row of this component, by index into the slot map. */
+        const slot = paramPagesSlot();
+        const raw = getSlotParam(slot, "auto_cc_map") || "";
+        let i = 0;
+        for (const rec of raw.split(";")) {
+            if (!rec) continue;
+            const b = rec.split("|");
+            if (b.length >= 3 && b[1] === c.target && parseInt(b[0], 10) >= 0) {
+                setSlotParam(slot, "cc_idx:" + i, "-1");
+            }
+            i++;
+        }
+    }
+    paramPagesContractChanged();
+    needsRedraw = true;
+}
+
+function drawCcClearConfirm() {
+    if (!ccDelConfirm) return;
+    const x = 6, y = 14, w = SCREEN_WIDTH - 12, h = 38;
+    fill_rect(x - 1, y - 1, w + 2, h + 2, 0);
+    ccCardOutline(x, y, w, h);
+    const t = "CLEAR ALL CC?";
+    print(x + Math.max(2, ((w - text_width(t)) >> 1)), y + 5, t, 1);
+    const sub = (ccDelConfirm.label || "").slice(0, 20);
+    if (sub) print(x + Math.max(2, ((w - text_width(sub)) >> 1)), y + 17, sub, 1);
+    const hint = "CLK yes   BACK no";
+    print(x + Math.max(2, ((w - text_width(hint)) >> 1)), y + h - 10, hint, 1);
+}
+
+/*
+ * ONE entry point for both CC overlays, fed before the grid.
+ *
+ * The grid claims the jog in its own early-out, so an overlay offered after it
+ * draws correctly and answers nothing -- the half-working-overlay bug
+ * docs/SHADOW_UI.md describes. One call rather than two also keeps the call
+ * site short: test_param_pages_wiring asserts a maximum distance between
+ * paramPagesActive() and handleParamPagesMidi(), which exists to catch the view
+ * being cut off from input entirely.
+ *
+ * Confirm first: it is a modal over the card, so it outranks it.
+ */
+function handleCcOverlay(data) {
+    return handleCcClearMidi(data) || handleCcCardMidi(data);
+}
+
+function handleCcClearMidi(data) {
+    if (!ccDelConfirm || !data || data.length < 3) return false;
+    if ((data[0] & 0xF0) !== 0xB0) return false;
+    const d1 = data[1], d2 = data[2];
+    if (d1 === 51 && d2 > 0) { ccDelConfirm = null; needsRedraw = true; return true; }
+    if (d1 === 3 && d2 > 0) { ccClearCommit(); return true; }
+    return true;                       /* modal: swallow the rest */
+}
+
 function runChainSettingAction(slot, key) {
+    /*
+     * CC Map rows arm LEARN rather than opening an editor.
+     *
+     * A confirm/editor modal raised from the knob grid renders nowhere and
+     * cannot be answered -- the documented reason Save/Save As/Delete hand off
+     * to the list view. Learn needs neither: the user clicks the parameter,
+     * turns any control on their surface, and the CC that arrives claims it,
+     * swapping with whatever held it. The gesture is the confirmation.
+     */
+    if (key && key.indexOf("mcc_clear_all:") === 0) {
+        ccClearArm(parseInt(key.slice(14), 10), true);
+        return false;
+    }
+    if (key && key.indexOf("mcc_edit:") === 0) {
+        /* "mcc_edit:<position>:<paramIndex>|<name>" -- the rows are rebuilt
+         * from the same three sources the page was, so the indices agree. */
+        const rest = key.slice(9);
+        const bar = rest.indexOf("|");
+        const bits = (bar >= 0 ? rest.slice(0, bar) : rest).split(":");
+        const rows = buildMasterCcRows();
+        const row = rows.find((r) => r.slot === parseInt(bits[0], 10));
+        const p = row && row.params[parseInt(bits[1], 10)];
+        if (p) openMasterCcCard(row, p);
+        return;
+    }
+    if (key && key.indexOf("cc_clear_all:") === 0) {
+        ccClearArm(key.slice(13), false);
+        return;
+    }
+    if (key && key.indexOf("cc_edit:") === 0) {
+        const rest = key.slice(8);
+        const bar = rest.indexOf("|");
+        const idx = parseInt(bar >= 0 ? rest.slice(0, bar) : rest, 10);
+        if (!isNaN(idx)) openCcCard(slot, idx, bar >= 0 ? rest.slice(bar + 1) : "");
+        return;
+    }
     if (key === "knobs") {
         enterKnobEditor(slot);
         return;
@@ -12175,6 +12626,14 @@ function masterGridIoFor() {
          * declared key already carries its "master_fx:" prefix, so these are
          * pass-throughs rather than a mapping. */
         readParam: (key) => getSlotParam(0, key),
+        /*
+         * The CC Map rows, assembled from three sources because Master FX has
+         * no chain to hold them: which positions are loaded (masterFxConfig),
+         * what each declares (its chain_params), and which numbers are taken
+         * (the host assignment table). Called when ui_hierarchy is fetched --
+         * on entry, never on the draw path.
+         */
+        ccRows: () => buildMasterCcRows(),
         /*
          * A WRITE HERE CARRIES THE SAME SIDE EFFECTS THE LIST PATH CARRIED.
          *
@@ -21438,6 +21897,8 @@ function dispatchCoRunDraw() {
          * list editor, which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
             if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
+            drawCcCard();   /* over the list it belongs to */
+            drawCcClearConfirm();
             break;
         case VIEWS.CANVAS:               drawCanvasPreview(); break;
         case VIEWS.KNOB_EDITOR:          drawKnobEditor(); break;
@@ -21536,6 +21997,14 @@ globalThis.tick = function() {
      * new call is the wrong trade. */
     if (view === VIEWS.PARAM_PAGES) tickComponentWidgets();
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
+    /* While the card is armed the DSP is what changes the value, so notice it.
+     * One read, only while armed -- never on the draw path.
+     *
+     * Called unconditionally, and it guards itself: test_param_pages_wiring
+     * asserts the literal shape of the tick line above, and wrapping that line
+     * in a block to add this one silently broke an assertion that exists to
+     * catch the view never being ticked at all. */
+    ccCardPoll();
     /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
      * from the tick, never from a draw function, and cheap to poll when
      * nothing is pending (one boolean test). */
@@ -22645,6 +23114,8 @@ globalThis.tick = function() {
          * which drawParamPages declines by returning false. */
         case VIEWS.PARAM_PAGES:
             if (!drawParamPages()) { if (enterHierarchyEditorFromParamPages()) drawHierarchyEditor(); }
+            drawCcCard();   /* over the list it belongs to */
+            drawCcClearConfirm();
             break;
         case VIEWS.CANVAS:
             drawCanvasPreview();
@@ -22920,6 +23391,7 @@ globalThis.onMidiMessageInternal = function(data) {
      * working, because decodeInput claims CC 14 but returns null for pads. */
     if (view === VIEWS.PARAM_PAGES && paramPagesActive() && !isTextEntryActive()) {
         if (maybeDismissWarningFromInput(status, d1, d2)) { needsRedraw = true; return; }
+        if (handleCcOverlay(data)) { needsRedraw = true; return; }
         if (handleParamPagesMidi(data)) { needsRedraw = true; return; }
     }
 

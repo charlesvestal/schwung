@@ -5891,6 +5891,28 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
             if (((mi[j] >> 4) & 0x0F) != 2) continue;  /* cable 2 only */
             uint8_t st = mi[j + 1], ty = st & 0xF0, d1b = mi[j + 2], d2b = mi[j + 3];
+
+            /*
+             * EXTERNAL CC -> Master FX. This route did not exist.
+             *
+             * shadow_master_fx_forward_midi had two callers and neither carries
+             * ordinary cable-2 input: one is the MIDI_OUT echo path, the other
+             * is the MPE/THRU passthrough, which skips any slot whose channel
+             * is not All. So Master FX heard Move own pads and nothing from a
+             * controller -- CC never reached it, and a Master FX CC map could
+             * not work however it was written.
+             *
+             * Here because this scan already walks the raw cable-2 input every
+             * frame and is not gated on overtake mode or on any slot matching
+             * the channel. CC only: notes already reach Master FX by the pad
+             * route above, and forwarding them again would double-trigger a
+             * module like ducker. The listen-channel filter stays inside
+             * shadow_master_fx_forward_midi, which is the one place it lives.
+             */
+            if (ty == 0xB0) {
+                const uint8_t cc_msg[3] = { st, d1b, d2b };
+                shadow_master_fx_forward_midi(cc_msg, 3, MOVE_MIDI_SOURCE_EXTERNAL);
+            }
             if (ty == 0x90 && d2b > 0) {
                 midi_indicator_in_channel = (int)(st & 0x0F) + 1;
                 midi_indicator_active_notes++;

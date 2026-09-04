@@ -1178,10 +1178,41 @@ export function handleParamPagesMidi(data) {
         return true;
     }
     if (todo.action === 'menu') {
+        try {
+            const _e = todo.entry || {};
+            const _pl = ((controller && controller.state && controller.state.pages) || [])
+                .map((q) => q && q.level).join(",");
+            console.log("CCDBG menu entry label=" + _e.label + " action=" + _e.action +
+                        " target=" + _e.target + " pages=[" + _pl + "]");
+        } catch (err) { console.log("CCDBG log failed: " + err); }
         /* A menu entry was activated. The controller never performs an action —
          * the host owns what Save or Knob Mapping means — so this only forwards
          * which one was chosen, and the host runs the same code the list runs. */
         const entry = todo.entry || {};
+        /*
+         * A menu entry may NAVIGATE as well as act.
+         *
+         * page_plan documents the shape ({ label: "LFO 1", level: "lfo1" }) and
+         * mapMenuEntries has always carried it through as `target`, but nothing
+         * here ever read it -- so such a row drew correctly, moved the cursor
+         * correctly, and did nothing at all when clicked. An index page built
+         * as a menu (module list -> that module's rows) needs exactly this, and
+         * a list is the right shape for it: level-doors render as grid CELLS,
+         * one page per entry, which is not an index.
+         */
+        if (!entry.action && entry.target && controller) {
+            const pages = (controller.state && controller.state.pages) || [];
+            const idx = pages.findIndex((pg) => pg && pg.level === entry.target);
+            if (idx >= 0) {
+                /* Remember the opener: a hidden page is not in the walk, so
+                 * Back has nowhere to step to and would leave the view
+                 * entirely -- from a module's CC list that lands on the slot
+                 * menu, two levels further out than the user asked for. */
+                if (controller.state) controller.state.returnPage = controller.state.pageIndex;
+                controller.goToPage(idx, { enterIfDoor: true });
+                return true;
+            }
+        }
         if (entry.action) {
             /*
              * A synthesised contract may carry its OWN runner, and Master FX
@@ -1311,4 +1342,36 @@ export function enumPickerFooterHints() {
 /** True while the section picker is over the grid. */
 export function paramPagesPickerOpen() {
     return !!(controller && controller.pickerOpen);
+}
+
+/*
+ * The contract changed underneath the grid.
+ *
+ * The CC Map's rows carry their CC in the label, so an assignment changes the
+ * hierarchy the pages were planned from -- without a re-read the row you just
+ * learned still reads "--" and the feature looks like it did nothing. Arms the
+ * same settle a selection does, so a run of jog detents costs one read at the
+ * end rather than one per detent.
+ */
+export function paramPagesContractChanged() {
+    if (controller && typeof controller.selectionChanged === 'function') {
+        controller.selectionChanged();
+        return true;
+    }
+    return false;
+}
+
+/* The menu row under the cursor, for a host screen that needs to act on it
+ * (the CC Map's Delete). Null when the current page is not a menu. */
+export function paramPagesMenuEntry() {
+    if (!controller || typeof controller.menuEntry !== 'function') return null;
+    return controller.menuEntry() || null;
+}
+
+/* The level key of the current page, so the host can tell a CC Map page from
+ * any other menu without matching on its title. */
+export function paramPagesPageLevel() {
+    if (!controller) return null;
+    const p = controller.page;
+    return (p && p.level) || null;
 }
