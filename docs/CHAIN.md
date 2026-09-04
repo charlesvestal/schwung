@@ -121,6 +121,26 @@ about knobs before destinations existed still gets a sensible answer.
 `knob_N_name` answers `cutoff +2` for a multi-destination knob and
 `knob_N_value` its position as a percentage.
 
+#### Older hosts and a patch that uses destinations
+
+The rows are flat — several ordinary objects sharing one `cc` — so a host that
+predates destinations still *parses* the array correctly: nothing is nested, and
+the first `]` is still the end of it. A knob with one whole-range destination is
+written exactly as it always was, so an ordinary patch is unchanged in every
+respect.
+
+⚠ **But a patch that actually uses destinations is not safe to round-trip
+through an older host.** That parser stops after `MAX_KNOB_MAPPINGS` (8)
+*mappings*, and each row is one mapping to it. One four-destination knob plus
+seven ordinary ones is eleven rows, so it loads eight and silently drops the
+last three knobs — and saving from there writes back what it loaded, deleting
+them and stripping every window. `knob_N_set` and `knob_N_clear` on such a host
+also touch only the first row for that CC, so a knob "cleared" there comes back
+to a newer host still carrying its other destinations.
+
+Downgrading is therefore lossy in a way that opening is not. It is worth knowing
+before assuming a patch library is portable in both directions.
+
 #### A knob write is a base, not a fight with an LFO
 
 `knob_forward_value` routes a modulated parameter through the modulation bus
