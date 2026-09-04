@@ -820,7 +820,7 @@ export const HEADER_GAP = 4;
 /** The title's floor: the old fixed 55%, so the worst case is what shipped. */
 export const HEADER_MIN_LEFT = Math.floor(W * 0.55);
 
-export function drawHeader(ctx, left, right, inverted = false) {
+export function drawHeader(ctx, left, right, inverted = false, padIcon = null) {
     /* font4x5, not the label face: the header is secondary text (the slot
      * title, the page name, and the touched parameter's full name and value),
      * so it can afford to be smaller than the thing you read at a glance. A
@@ -890,9 +890,56 @@ export function drawHeader(ctx, left, right, inverted = false) {
         r = fit5(right, Math.max(0, W - 4 - HEADER_MIN_LEFT - HEADER_GAP));
         rw = r ? fontWidth4x5(r) : 0;
     }
-    const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0));
+    /* The pad icon claims its width AHEAD of the left title, exactly as the
+     * right-hand text does — measured, never assumed, or a long module name
+     * draws its last glyph through the box. */
+    const iconW = (padIcon !== null && padIcon !== undefined) ? PAD_ICON_W : 0;
+    const l = fit5(left, W - 4 - (rw ? rw + HEADER_GAP : 0) - iconW);
     fontPrint4x5(ctx, 2, 1, l, color);
+    if (iconW) drawPadGridIcon(ctx, W - 2 - rw - (rw ? HEADER_GAP : 0) - PAD_ICON_W + 1,
+                               0, padIcon, color);
     if (r) fontPrint4x5(ctx, W - rw - 2, 1, r, color);
+}
+
+/* Width the pad icon claims, including the 1px gap before whatever follows. */
+export const PAD_ICON_W = 7;
+
+/**
+ * The pad minimap — Move's 4x4 drum rack, with the focused voice lit.
+ *
+ * Ported from schwung-movy's renderer/header.ts drawPadGridIcon, and it is a
+ * PHYSICAL map: `padIndex` is the voice's note minus the rack's base (36), so
+ * the lit cell is where the pad sits under your hand, not where the voice sits
+ * in a list. That is the whole point of it — a minimap that agreed with the
+ * page order rather than the hardware would be a second page indicator, and
+ * the bank bar is already that.
+ *
+ * Move's drum rack counts UP from the bottom-left (36 37 38 39 on the bottom
+ * row), which is why the row is subtracted: `y + rows - row` puts note 36 on
+ * the lowest interior row. Getting this upside down is invisible in a unit
+ * test and obvious the instant a hand is on the hardware.
+ *
+ * 6 wide, rows+2 tall — 6x6 for a 16-pad rack, which is exactly HEADER_H, so
+ * it fits the band without moving anything.
+ */
+export const DRUM_RACK_BASE_NOTE = 36;
+
+export function drawPadGridIcon(ctx, x, y, note, color = 1) {
+    const rows = 4;
+    const padIndex = (note === null || note === undefined || note < 0)
+        ? -1 : (note | 0) - DRUM_RACK_BASE_NOTE;
+    const w = 6, h = rows + 2;
+    ctx.fillRect(x, y, w, 1, color);
+    ctx.fillRect(x, y + h - 1, w, 1, color);
+    ctx.fillRect(x, y, 1, h, color);
+    ctx.fillRect(x + w - 1, y, 1, h, color);
+    /* Out of the rack draws the EMPTY box rather than a wrong cell: a module
+     * whose voice notes are not a contiguous 36.. block has no place on this
+     * map, and lighting the nearest cell would be a confident lie. */
+    if (!(padIndex >= 0 && padIndex < rows * 4)) return;
+    const row = Math.floor(padIndex / 4);
+    const col = padIndex % 4;
+    ctx.fillRect(x + 1 + col, y + rows - row, 1, 1, color);
 }
 
 /**
@@ -3117,7 +3164,8 @@ export function renderPageMovy(ctx, o) {
 
     if (L.header !== null) {
         const h = movyHeaderFor(o);
-        drawHeader(translateCtx(ctx, L.x, L.header), h.left, h.right, h.inverted);
+        drawHeader(translateCtx(ctx, L.x, L.header), h.left, h.right, h.inverted,
+                   (o.padIcon === null || o.padIcon === undefined) ? null : (o.padIcon | 0));
     }
     if (L.bank !== null) {
         drawBankBar(translateCtx(ctx, L.x, L.bank - BAR_Y),

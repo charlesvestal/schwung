@@ -32,7 +32,7 @@ import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
          childName } from "./child_key.mjs";
 import { focusParamOf, voicesOf, voiceIndexFromLevel, voiceIndexFromNote,
-         voiceIndexFromWire } from "./voices.mjs";
+         voiceIndexFromWire, padLayoutOf } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
 } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -1674,11 +1674,12 @@ export function createController(io = {}) {
      * mrdrums' auto-select), and the disagreement LATCHES, because each source
      * keeps re-asserting itself on the next rotation.
      *
-     * `padLayoutOf` is deliberately not imported. The grid follows whatever
-     * voices are declared and does not branch on pad_layout; having the name in
-     * scope invites an `if (pad_layout !== "drums") return`, which would silently
-     * stop following for every module that declares voices before it has
-     * settled its layout.
+     * THE FOLLOW DOES NOT BRANCH ON `pad_layout`, and that is deliberate: it
+     * follows whatever voices are declared, so a module that declares voices
+     * before settling its layout still works. `padLayoutOf` IS imported now,
+     * but only for the header minimap in padIconIndex — drawing a rack icon is
+     * a claim about the surface and belongs to the layout; following a voice
+     * is not. Do not add an `if (pad_layout !== "drums") return` here.
      *
      * Nothing here writes an LED or a MIDI byte. Move's firmware owns the pads;
      * this path is a read plus a navigation.
@@ -1711,6 +1712,40 @@ export function createController(io = {}) {
      * touched: clearing it would re-arm the yank on the next good read, so one
      * timeout would resurrect the whole defect.
      */
+    /**
+     * The header's pad minimap: which cell of Move's 4x4 drum rack is lit, or
+     * null to draw nothing.
+     *
+     * PHYSICAL, not the list position — the note minus the rack base, so the
+     * lit cell is where the pad sits under your hand. A map agreeing with the
+     * page order instead would be a second bank bar, and there is already one
+     * of those a row below.
+     *
+     * Gated on `pad_layout: "drums"` and NOT merely on "declares voices",
+     * because this is the one thing in Schwung's own UI the layout declaration
+     * drives: a chromatic module with per-zone notes is not a rack and must not
+     * grow a rack icon. It is also why the field is declared rather than
+     * inferred — see voices.mjs.
+     *
+     * Answers a NOTE, not a cell. Where note N sits on Move's rack is the
+     * RENDERER's fact — it owns the rack's base and its bottom-left origin —
+     * and computing a cell here would be a second copy of that geometry in a
+     * file whose constants are pinned precisely to stop rects being redefined.
+     * `-1` means "draw the empty box": we are on a rack but cannot place this
+     * voice.
+     *
+     * Costs no read: `s.voiceLatch` is what the follow already resolved.
+     */
+    function padIconNote() {
+        if (!s.hierarchy || padLayoutOf(s.hierarchy) !== "drums") return null;
+        const voices = voiceList();
+        if (!voices.length) return null;
+        const vi = (s.voiceLatch === null || s.voiceLatch === undefined)
+            ? null : s.voiceLatch;
+        if (vi === null || !voices[vi]) return -1;  /* the box, with no cell lit */
+        return voices[vi].note;
+    }
+
     function syncVoiceFromModule() {
         const hier = s.hierarchy;
         if (!hier) return;
@@ -3711,6 +3746,7 @@ export function createController(io = {}) {
                 modValues: s.modValues,
                 pageGroups: pageGroups(),
                 pageLabel: pageLabel(),
+                padIcon: padIconNote(),
                 /* Graphics stand down while p-locks are live, the same rule the
                  * dial/bar branch has always applied: one picture replacing
                  * four cells cannot show which of the four is locked. Without
