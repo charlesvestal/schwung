@@ -23,7 +23,7 @@
             { "key": "p4_vol", "name": "Vol", "type": "float", "min": 0, "max": 1 }
         ],
         "ui_hierarchy": {
-            "layout": "drums",
+            "pad_layout": "drums",
             "focus_param": "cur_voice",
             "levels": {
                 "root": { "params": [

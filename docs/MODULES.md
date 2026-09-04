@@ -1524,10 +1524,10 @@ list — in which `padScoping.concreteKeyTemplate` is a verbatim re-spelling of
 `child_key_template`. Two optional declarations at the top of `ui_hierarchy`
 replace that table for every consumer at once.
 
-#### `layout` — say it, because nobody can work it out
+#### `pad_layout` — say it, because nobody can work it out
 
 ```json
-{ "layout": "drums", "levels": { } }
+{ "pad_layout": "drums", "levels": { } }
 ```
 
 `"drums"` or `"chromatic"`. **Absent is a distinct third state meaning you have
@@ -1543,7 +1543,7 @@ guess. Same tri-state discipline the param channel already enforces between
 rely on it being.** Declaring notes is not declaring a layout. A sampler with
 key zones, a multitimbral synth and a chord module all legitimately carry notes
 on melodic per-zone pages, and a consumer that read "has notes" as "is a drum
-rack" would seat every one of them as one. Notes describe *voices*; `layout`
+rack" would seat every one of them as one. Notes describe *voices*; `pad_layout`
 describes the *surface*; the two axes never imply each other. `"drums"` with no
 voices declared is legal (a rack whose pages are not published yet), and
 `"chromatic"` with a note on every zone page is legal and correct.
@@ -1566,7 +1566,7 @@ page.
 
 ```json
 {
-  "layout": "drums",
+  "pad_layout": "drums",
   "focus_param": "ui_voice",
   "levels": {
     "root": { "params": [
@@ -1594,7 +1594,7 @@ level you already declare:
 
 ```json
 {
-  "layout": "drums",
+  "pad_layout": "drums",
   "levels": {
     "root": { "params": [{ "level": "pads", "label": "Pads" }] },
     "pads": {
@@ -1626,7 +1626,7 @@ that is the fleet's flagship template-shape drum module:
 
 ```json
 {
-  "layout": "drums",
+  "pad_layout": "drums",
   "levels": {
     "root": {
       "name": "Pads",
@@ -1652,7 +1652,7 @@ declared.
 
 | Field | Where | Purpose |
 |---|---|---|
-| `layout` | hierarchy top level | `drums` \| `chromatic`; absent = unspecified, and unspecified is not chromatic |
+| `pad_layout` | hierarchy top level | `drums` \| `chromatic`; absent = unspecified, and unspecified is not chromatic |
 | `note` | a level | the MIDI note this level's voice plays; a level with none is a page |
 | `role` | a level | free-form hint (`kick`, `hat`); **no host behaviour depends on it** |
 | `child_note_base` | a child level | instance *i* plays `base + i` |

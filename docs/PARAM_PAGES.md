@@ -411,7 +411,7 @@ root "Main", and the picker overrides that with the mode's own name when
 
 ### The grid FOLLOWS the focused voice, and writes no LEDs doing it
 
-A module can declare what its performance surface is — `layout`, and a `note`
+A module can declare what its performance surface is — `pad_layout`, and a `note`
 per voice — and which voice it considers focused. The declaration contract is
 in `docs/MODULES.md`; `src/shared/param_pages/voices.mjs` is the only place the
 two fleet shapes (sibling levels, template children) collapse into one ordered

@@ -57,11 +57,11 @@ makes that unrepresentable rather than merely fixed.
 Top level of `ui_hierarchy`, beside `levels`:
 
 ```json
-{ "layout": "drums", "levels": { } }
+{ "pad_layout": "drums", "levels": { } }
 ```
 
 Values `"drums"` | `"chromatic"`. **Absent is a distinct third state meaning the
-module has not said** — which is every one of the 95 fleet modules today. A
+module has not said** — which is every one of the 100 captured fleet modules today. A
 consumer picks its own default for unspecified and is never handed `"chromatic"`
 by a module that never answered. Same tri-state discipline `shadow_get_param`
 already enforces between `null` and `""`, and it is what lets movy keep a bundled
@@ -117,9 +117,9 @@ does not recognise a value ignores it. It is deliberately not an enumeration:
 constraining it would mean maintaining a percussion vocabulary in the host for a
 field the host never reads.
 
-`layout` and voices are independent on purpose. `"drums"` with no voices declared
+`pad_layout` and voices are independent on purpose. `"drums"` with no voices declared
 is legal (a rack whose pages are not published yet); `"chromatic"` with notes is
-legal and correct. No consumer seats a surface from anything but `layout`.
+legal and correct. No consumer seats a surface from anything but `pad_layout`.
 
 **Movy's `rawMidi` becomes derivable and is not part of the contract.** A
 per-voice note describes both a sparse whole-grid map and a 4-wide rack. Voice
@@ -199,7 +199,7 @@ navigation and never a MIDI-out. This gets a source-invariant pin, because "whil
 I am here I will light the rack" is exactly the change someone makes later in
 good faith.
 
-**Movy** is external and out of scope for the code. It reads `layout`, the voice
+**Movy** is external and out of scope for the code. It reads `pad_layout`, the voice
 list and `focused_voice`, and keeps its bundled configs as a fallback for modules
 answering *unspecified* — the rule `loader.ts` already states ("delete an entry as
 soon as the module ships a config movy can use"). The tri-state is what makes
@@ -237,7 +237,7 @@ that catches a notes-imply-drums inference reappearing, since several fleet
 modules carry notes on melodic pages.
 
 **Unit tests:** both shapes' voice ordering; sparse `child_notes`; absent
-`layout` reported as unspecified and never as `chromatic`; the focus tri-state
+`pad_layout` reported as unspecified and never as `chromatic`; the focus tri-state
 (`null` / `""` / out-of-range never move focus); note → voice for contiguous and
 sparse maps; and "a declared focus param means `last_note` is never consulted".
 Each mutated to prove it can fail before it is trusted green.
@@ -267,5 +267,5 @@ consumer is what drifts until a 4-module exception list is needed to correct it.
 - **`ui_hierarchy` size.** `chain_params` over 64KB will not load; `child_names`
   arrays add to the hierarchy. Negligible for 16 pads, worth a sentence in the
   docs for anyone declaring 200.
-- **Dynamic hierarchies.** A module serving `layout` from `get_param` may change
+- **Dynamic hierarchies.** A module serving `pad_layout` from `get_param` may change
   its answer; consumers re-read on the triggers they already re-plan on.

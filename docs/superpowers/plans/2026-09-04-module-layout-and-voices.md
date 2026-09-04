@@ -4,7 +4,7 @@
 
 **Goal:** Let a module declare whether its surface is a drum rack or a chromatic keyboard, describe its voices, and report which voice is focused — so a sequencer (movy) and Schwung's own knob grid can lay out pads and follow the played pad without a per-module config table.
 
-**Architecture:** Two independent declarations at the top of `ui_hierarchy`: `layout` (`drums` | `chromatic` | absent-means-unspecified) and per-voice `note` fields on the levels a module already declares. A new pure module, `src/shared/param_pages/voices.mjs`, is the single place both fleet shapes (sibling levels, template children) collapse into one ordered voice list, and the single place the focused voice is resolved from the three raw inputs. The chain host contributes one thing only: `synth:last_note`, an int recorded where the synth's `on_midi` is already called.
+**Architecture:** Two independent declarations at the top of `ui_hierarchy`: `pad_layout` (`drums` | `chromatic` | absent-means-unspecified) and per-voice `note` fields on the levels a module already declares. A new pure module, `src/shared/param_pages/voices.mjs`, is the single place both fleet shapes (sibling levels, template children) collapse into one ordered voice list, and the single place the focused voice is resolved from the three raw inputs. The chain host contributes one thing only: `synth:last_note`, an int recorded where the synth's `on_midi` is already called.
 
 **Tech Stack:** ES modules (`.mjs`, QuickJS on device / node in tests), C99 (chain host DSP), bash test harness under `tests/host/`.
 
@@ -48,7 +48,7 @@
 - Test: `tests/host/test_voices.sh`
 
 **Acceptance Criteria:**
-- [ ] `layoutOf()` returns `"drums"`, `"chromatic"`, or `null` — and `null` for an unrecognised string, never a coerced `"chromatic"`
+- [ ] `padLayoutOf()` returns `"drums"`, `"chromatic"`, or `null` — and `null` for an unrecognised string, never a coerced `"chromatic"`
 - [ ] `voicesOf()` orders sibling voices by `root`'s nav links, then appends voice levels `root` does not link, in `levels` declaration order
 - [ ] `voicesOf()` expands a child level with `child_note_base` into `child_count` voices, and honours `child_notes` for a sparse map
 - [ ] A level with no `note` and no note map produces no voice (9W9's Reverb/Delay/Main)
@@ -95,29 +95,29 @@ import("./src/shared/param_pages/voices.mjs").then((V) => {
 
   /* ---- layout is declared, never inferred ---------------------------- */
 
-  if (V.layoutOf({ layout: "drums", levels: {} }) !== "drums")
+  if (V.padLayoutOf({ pad_layout: "drums", levels: {} }) !== "drums")
     fail("declared drums not reported");
-  if (V.layoutOf({ layout: "chromatic", levels: {} }) !== "chromatic")
+  if (V.padLayoutOf({ pad_layout: "chromatic", levels: {} }) !== "chromatic")
     fail("declared chromatic not reported");
   /* Absent is a THIRD state. Answering "chromatic" here puts words in the
    * mouth of all 100 fleet modules, and makes "declared melodic"
    * indistinguishable from "never asked". */
-  if (V.layoutOf({ levels: {} }) !== null)
+  if (V.padLayoutOf({ levels: {} }) !== null)
     fail("absent layout did not report null");
-  if (V.layoutOf(null) !== null)
+  if (V.padLayoutOf(null) !== null)
     fail("null hierarchy did not report null");
   /* An unrecognised value is unspecified, not a default. */
-  if (V.layoutOf({ layout: "isomorphic", levels: {} }) !== null)
+  if (V.padLayoutOf({ layout: "isomorphic", levels: {} }) !== null)
     fail("unrecognised layout was coerced instead of reported unspecified");
   /* Notes present, layout absent -> still unspecified. This is the melodic
    * per-zone module, and inferring drums here is the bug this asserts. */
-  if (V.layoutOf({ levels: { zone_a: { note: 60 }, zone_b: { note: 62 } } }) !== null)
+  if (V.padLayoutOf({ levels: { zone_a: { note: 60 }, zone_b: { note: 62 } } }) !== null)
     fail("layout was inferred from the presence of notes");
 
   /* ---- the sibling shape (9W9) --------------------------------------- */
 
   const SIBLING = {
-    layout: "drums",
+    pad_layout: "drums",
     levels: {
       root: { params: [
         { level: "bass_drum", label: "Bass Drum" },
@@ -154,7 +154,7 @@ import("./src/shared/param_pages/voices.mjs").then((V) => {
   /* ---- the template shape (mrdrums) ---------------------------------- */
 
   const TEMPLATE = {
-    layout: "drums",
+    pad_layout: "drums",
     levels: {
       root: { params: [{ level: "pads", label: "Pads" }] },
       pads: {
@@ -236,7 +236,7 @@ import("./src/shared/param_pages/voices.mjs").then((V) => {
 
   /* ---- purity --------------------------------------------------------- */
 
-  const src = "" + V.voicesOf + V.layoutOf + V.voiceIndexFromNote;
+  const src = "" + V.voicesOf + V.padLayoutOf + V.voiceIndexFromNote;
   if (/getParam|setParam|host_/.test(src))
     fail("voices.mjs reads or writes params -- it must stay pure");
 
@@ -275,7 +275,7 @@ Create `src/shared/param_pages/voices.mjs`:
  * LAYOUT IS DECLARED, NEVER INFERRED. The obvious shortcut — "it has notes on
  * its pages, so it is drums" — is wrong: a sampler with key zones, a
  * multitimbral synth and a chord module all legitimately carry notes on
- * per-zone pages, and inference would seat them as racks. So `layout` is its
+ * per-zone pages, and inference would seat them as racks. So `pad_layout` is its
  * own statement, and ABSENT IS A THIRD STATE meaning the module has not said.
  * All 100 captured fleet modules are in that state; answering "chromatic" for
  * them would put words in their mouth and make "declared melodic"
@@ -301,8 +301,8 @@ const LAYOUTS = ["drums", "chromatic"];
  * Null for absent, for a non-string, and for a string we do not recognise —
  * an unknown value is an unanswered question, not a licence to pick a default.
  */
-export function layoutOf(hierarchy) {
-    const v = hierarchy && hierarchy.layout;
+export function padLayoutOf(hierarchy) {
+    const v = hierarchy && hierarchy.pad_layout;
     return (typeof v === "string" && LAYOUTS.indexOf(v) >= 0) ? v : null;
 }
 
@@ -485,9 +485,9 @@ git commit -m "param_pages: a module can declare its layout and its voices"
 - Read-only: `tests/fixtures/module-contracts.json` (100 captured fleet contracts)
 
 **Acceptance Criteria:**
-- [ ] Every module in the fixture reports `layoutOf() === null`
+- [ ] Every module in the fixture reports `padLayoutOf() === null`
 - [ ] The test names the offending module ids on failure, not just a count
-- [ ] The test fails if `layoutOf` is changed to default to `"chromatic"`
+- [ ] The test fails if `padLayoutOf` is changed to default to `"chromatic"`
 
 **Verify:** `bash tests/host/test_voices_fleet_inert.sh` → `PASS: 100 fleet modules report unspecified layout`
 
@@ -547,7 +547,7 @@ import("./src/shared/param_pages/voices.mjs").then((V) => {
     if (typeof h === "string") { try { h = JSON.parse(h); } catch { h = null; } }
     if (!h) continue;
     checked++;
-    if (V.layoutOf(h) !== null) declared.push(m.id + "=" + V.layoutOf(h));
+    if (V.padLayoutOf(h) !== null) declared.push(m.id + "=" + V.padLayoutOf(h));
     const vs = V.voicesOf(h);
     if (vs.length) voiced.push(m.id + "(" + vs.length + ")");
   }
@@ -580,7 +580,7 @@ import("./src/shared/param_pages/voices.mjs").then(async (V) => {
     if (typeof h === "string") { try { h = JSON.parse(h); } catch { h = null; } }
     if (!h) continue;
     checked++;
-    if (V.layoutOf(h) !== null) declared.push(m.id);
+    if (V.padLayoutOf(h) !== null) declared.push(m.id);
   }
   if (!checked) {
     console.log("FAIL: no fleet hierarchies were checked -- the fixture key is wrong");
@@ -843,7 +843,7 @@ Promise.all([
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
   const SIBLING = {
-    layout: "drums",
+    pad_layout: "drums",
     focus_param: "cur_voice",
     levels: {
       root: { params: [{ level: "kick", label: "Kick" }, { level: "snare", label: "Snare" }] },
@@ -934,7 +934,7 @@ import { focusParamOf, voicesOf, voiceIndexFromLevel,
          voiceIndexFromNote, voiceIndexFromWire } from "./voices.mjs";
 ```
 
-(`layoutOf` is deliberately **not** imported here. The grid does not branch on
+(`padLayoutOf` is deliberately **not** imported here. The grid does not branch on
 layout — it follows whatever voices are declared — and importing it unused
 invites someone to add a `if (layout !== "drums") return`, which would break
 every module that declares voices without having settled its layout.)
@@ -1223,7 +1223,7 @@ git commit -m "tests: pin that voice-follow never writes pad LEDs"
 - Modify: `CLAUDE.md` — one bullet under each of the two subsystem hooks
 
 **Acceptance Criteria:**
-- [ ] `docs/MODULES.md` documents `layout`, `note`, `role`, `child_note_base`, `child_notes`, `child_names`, `child_roles`, `focus_param` with a worked example of each fleet shape
+- [ ] `docs/MODULES.md` documents `pad_layout`, `note`, `role`, `child_note_base`, `child_notes`, `child_names`, `child_roles`, `focus_param` with a worked example of each fleet shape
 - [ ] The tri-state (absent ≠ chromatic) is stated where an author will read it
 - [ ] `docs/CHAIN.md` documents `synth:last_note` and why it is a note and not a voice index
 - [ ] `CLAUDE.md` gains bullets, not prose — it is an index for the subsystem docs
@@ -1238,7 +1238,7 @@ git commit -m "tests: pin that voice-follow never writes pad LEDs"
 Insert a new `### Declaring your performance surface` section after the `child_index_param` section. It must contain, in this order:
 
 1. The problem in two sentences: a sequencer must lay out pads and cannot ask.
-2. `layout` at the top of `ui_hierarchy`, `"drums"` | `"chromatic"`, **absent means unspecified** — with the sentence "absent is not a synonym for chromatic; a consumer picks its own default and is never told you are melodic when you have not said."
+2. `pad_layout` at the top of `ui_hierarchy`, `"drums"` | `"chromatic"`, **absent means unspecified** — with the sentence "absent is not a synonym for chromatic; a consumer picks its own default and is never told you are melodic when you have not said."
 3. **Why it is not inferred from notes**, naming the melodic-per-zone case. An author reading only this section must not conclude that declaring notes is enough.
 4. The sibling example (9W9 shape) — copy the JSON from Task 1's `SIBLING` fixture, with Reverb present to show a page that is not a voice.
 5. The template example (mrdrums shape) — copy from Task 1's `TEMPLATE` fixture, showing `child_note_base`, `child_notes`, `child_names`.
@@ -1246,7 +1246,7 @@ Insert a new `### Declaring your performance surface` section after the `child_i
 
 | Field | Where | Purpose |
 |---|---|---|
-| `layout` | hierarchy top level | `drums` \| `chromatic`; absent = unspecified |
+| `pad_layout` | hierarchy top level | `drums` \| `chromatic`; absent = unspecified |
 | `note` | a level | the MIDI note this level's voice plays; a level with none is a page |
 | `role` | a level | free-form hint (`kick`, `hat`); no host behaviour depends on it |
 | `child_note_base` | a child level | instance *i* plays `base + i` |
@@ -1276,7 +1276,7 @@ Under the `docs/MODULES.md` / `docs/PARAM_PAGES.md` hooks, add:
 
 ```markdown
 - **A module DECLARES whether it is a rack or a keyboard; it is never inferred.**
-  `layout` at the top of `ui_hierarchy` is `drums` | `chromatic`, and **absent is
+  `pad_layout` at the top of `ui_hierarchy` is `drums` | `chromatic`, and **absent is
   a third state** — all 100 captured fleet modules are in it. The tempting
   shortcut, "it has notes on its pages so it is drums", is wrong: key zones,
   multitimbral parts and chord modules all carry notes on melodic pages.
@@ -1361,7 +1361,7 @@ Create `examples/voice-poc/module.json`. It needs no DSP — a static `ui_hierar
             { "key": "p4_vol", "name": "Vol", "type": "float", "min": 0, "max": 1 }
         ],
         "ui_hierarchy": {
-            "layout": "drums",
+            "pad_layout": "drums",
             "focus_param": "cur_voice",
             "levels": {
                 "root": { "params": [
@@ -1403,7 +1403,7 @@ const fs = require("fs");
 const m = JSON.parse(fs.readFileSync("examples/voice-poc/module.json", "utf8"));
 const h = m.capabilities.ui_hierarchy;
 import("./src/shared/param_pages/voices.mjs").then((V) => {
-  console.log("layout:", V.layoutOf(h));
+  console.log("layout:", V.padLayoutOf(h));
   for (const v of V.voicesOf(h)) console.log(v.index, v.level, v.name, "note=" + v.note);
 });'
 ```
@@ -1453,7 +1453,7 @@ git commit -m "examples: POC module declaring both voice shapes"
 ```
 
 ```json:metadata
-{"userGate": true, "tags": ["user-gate"], "files": ["examples/voice-poc/module.json", "examples/voice-poc/README.md"], "verifyCommand": "node -e 'const m=JSON.parse(require(\"fs\").readFileSync(\"examples/voice-poc/module.json\",\"utf8\"));import(\"./src/shared/param_pages/voices.mjs\").then(V=>console.log(V.layoutOf(m.capabilities.ui_hierarchy), JSON.stringify(V.voicesOf(m.capabilities.ui_hierarchy).map(v=>[v.level,v.note]))))'", "acceptanceCriteria": ["sibling shape: three voices shown, Reverb not among them", "template shape: declared names in the picker, not Pad 1..4", "playing a mapped pad moves the grid to that voice, for focus_param AND for last_note", "synth:last_note returns the played note, -1 before any", "no pad LED changes as a result of following", "an undeclared fleet module behaves exactly as today"], "modelTier": "standard"}
+{"userGate": true, "tags": ["user-gate"], "files": ["examples/voice-poc/module.json", "examples/voice-poc/README.md"], "verifyCommand": "node -e 'const m=JSON.parse(require(\"fs\").readFileSync(\"examples/voice-poc/module.json\",\"utf8\"));import(\"./src/shared/param_pages/voices.mjs\").then(V=>console.log(V.padLayoutOf(m.capabilities.ui_hierarchy), JSON.stringify(V.voicesOf(m.capabilities.ui_hierarchy).map(v=>[v.level,v.note]))))'", "acceptanceCriteria": ["sibling shape: three voices shown, Reverb not among them", "template shape: declared names in the picker, not Pad 1..4", "playing a mapped pad moves the grid to that voice, for focus_param AND for last_note", "synth:last_note returns the played note, -1 before any", "no pad LED changes as a result of following", "an undeclared fleet module behaves exactly as today"], "modelTier": "standard"}
 ```
 
 ---
@@ -1462,7 +1462,7 @@ git commit -m "examples: POC module declaring both voice shapes"
 
 ```
 Task 1 (voices.mjs)
-  ├── Task 2 (fleet inertness)      — needs layoutOf/voicesOf
+  ├── Task 2 (fleet inertness)      — needs padLayoutOf/voicesOf
   ├── Task 4 (grid follows)         — needs the whole model; also needs Task 3 for last_note
   └── Task 5 (picker names)         — needs childLabel, which voices.mjs calls
 Task 3 (last_note)                  — independent of Task 1, can run in parallel

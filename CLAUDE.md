@@ -540,7 +540,7 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
 - **A module DECLARES whether it is a rack or a keyboard; it is never
-  inferred.** `layout` at the top of `ui_hierarchy` is `drums` | `chromatic`,
+  inferred.** `pad_layout` at the top of `ui_hierarchy` is `drums` | `chromatic`,
   and **absent is a third state** — all 100 captured fleet modules are in it.
   The tempting shortcut, "it has notes on its pages so it is drums", is wrong:
   key zones, multitimbral parts and chord modules all carry notes on melodic
