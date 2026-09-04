@@ -1790,6 +1790,29 @@ so a mismatched frame cannot be corrected at runtime and the generator refuses
 it on your machine instead. Output is run-length encoded because a page holds
 eight knob boxes: per-pixel blitting would cost ~1 ms of the 1.68 ms page render.
 
+##### The reference module
+
+`src/modules/audio_fx/widget-test/` is a working example: one `canvas.js`
+supplying both a `drawCell` segmented meter and the fullscreen `draw`, plus a
+passthrough DSP so it is a real, loadable chain FX.
+
+**It does not ship.** Like `gesture-test` and `sysex-test` it is a hardware
+fixture, built and packaged only on request:
+
+```bash
+SCHWUNG_BUILD_TEST_MODULES=1 ./scripts/build.sh
+./scripts/install.sh local --skip-modules --skip-confirmation
+```
+
+Then add **Widget Test** as an audio FX and look at the Level knob.
+
+Note that the gate covers both halves. Compiling the `.so` conditionally is not
+enough on its own — `build.sh`'s generic copy step collects every `module.json`
+under `src/modules/`, so a fixture also has to be scrubbed from `build/` when
+the gate is off. A `module.json` shipped without its `.so` still appears in the
+FX picker, and a chain slot pointing at a module that cannot load is restored on
+every boot. `tests/host/test_test_fixtures_not_shipped.sh` pins both halves.
+
 #### Dynamic Target Pickers
 
 Use `module_picker` and `parameter_picker` for chain-aware target routing without custom UI code.
