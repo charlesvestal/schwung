@@ -111,6 +111,12 @@ Template children — the child level gains a note map:
 plays `base + i`), `child_notes` for a sparse map. `child_names` / `role` and
 `child_roles` are optional.
 
+**`role` is a free string and no host behaviour depends on it.** It is a hint a
+consumer may use to colour or seat a rack it has never seen, and a consumer that
+does not recognise a value ignores it. It is deliberately not an enumeration:
+constraining it would mean maintaining a percussion vocabulary in the host for a
+field the host never reads.
+
 `layout` and voices are independent on purpose. `"drums"` with no voices declared
 is legal (a rack whose pages are not published yet); `"chromatic"` with notes is
 legal and correct. No consumer seats a surface from anything but `layout`.
@@ -125,7 +131,11 @@ order is rack order; seating is the consumer's business.
 writable. It answers the **0-based index into the canonical voice list** — the
 list the consumer already has from the same `ui_hierarchy` read, so index → name
 / note / level is a local lookup rather than another round trip. Canonical order:
-nav-link order from `root` for sibling levels, instance order for a child level.
+instance order for a child level; for sibling levels, nav-link order from `root`,
+with any voice level `root` does not link appended afterwards in `levels`
+declaration order — a voice reachable only from a sub-level must still have a
+stable index, and silently dropping it would make the list disagree with itself
+between two consumers.
 
 Writing it moves focus, which is how `child_index_param` already behaves and is
 what makes the picker and the module incapable of disagreeing — they are the same
