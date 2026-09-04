@@ -1159,6 +1159,161 @@ static void knob_format_and_forward(chain_instance_t *inst, const knob_dest_t *d
     knob_forward_value(inst, d->target, d->param, val_str);
 }
 
+/* ---- Destination editing -------------------------------------------------
+ *
+ * One owner for every change to a knob's destination list, so the two things
+ * that must happen alongside a change cannot be forgotten at a call site:
+ * seeding the position when a knob first gains a second destination, and
+ * re-writing the destinations when a window moves.
+ */
+
+/*
+ * Find the knob mapping for a CC, creating one if there is room.
+ * Returns NULL when the table is full.
+ */
+knob_mapping_t *knob_mapping_for_cc(chain_instance_t *inst, int cc, int create) {
+    if (!inst) return NULL;
+    for (int i = 0; i < inst->knob_mapping_count; i++)
+        if (inst->knob_mappings[i].cc == cc) return &inst->knob_mappings[i];
+    if (!create || inst->knob_mapping_count >= MAX_KNOB_MAPPINGS) return NULL;
+
+    knob_mapping_t *km = &inst->knob_mappings[inst->knob_mapping_count++];
+    memset(km, 0, sizeof(*km));
+    km->cc = cc;
+    km->last_cc_out = -1;
+    return km;
+}
+
+/*
+ * Seed the knob's position from its FIRST destination's live value.
+ *
+ * Called at the moment a knob gains a second destination. Without it the
+ * position is wherever it was left -- 0 for a new mapping -- and the first
+ * turn would yank every destination to the bottom of its window. Seeding from
+ * destination 0 means nothing moves at the moment of adding.
+ *
+ * NOT called from a poll, and that is deliberate: re-deriving the position
+ * from a destination's own quantisation grid between detents would stall a
+ * slow turn on a coarse destination, which is the same arithmetic that keeps a
+ * single destination off this path in the first place.
+ */
+void knob_seed_position(chain_instance_t *inst, knob_mapping_t *km) {
+    if (!inst || !km || km->dest_count < 1) return;
+    const knob_dest_t *d = &km->dests[0];
+    chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+    if (!pinfo) return;
+
+    float span = d->hi - d->lo;
+    if (span == 0.0f) { km->position = 0.0f; return; }
+
+    float pos = (knob_value_to_frac(d->current_value, pinfo) - d->lo) / span;
+    if (pos < 0.0f) pos = 0.0f;
+    if (pos > 1.0f) pos = 1.0f;
+    km->position = pos;
+}
+
+/* A mapping's index in the table, or -1. The knob helpers take a pointer, but
+ * the CC-out and position calls are indexed. */
+int knob_mapping_index(chain_instance_t *inst, const knob_mapping_t *km) {
+    if (!inst || !km) return -1;
+    for (int i = 0; i < inst->knob_mapping_count; i++)
+        if (&inst->knob_mappings[i] == km) return i;
+    return -1;
+}
+
+/* Remove a mapping from the table, blanking the slot the shift vacates -- a
+ * mapping added later lands on it and only writes its first destination. */
+void knob_mapping_drop(chain_instance_t *inst, knob_mapping_t *km) {
+    int i = knob_mapping_index(inst, km);
+    if (i < 0) return;
+    for (int j = i; j < inst->knob_mapping_count - 1; j++)
+        inst->knob_mappings[j] = inst->knob_mappings[j + 1];
+    inst->knob_mapping_count--;
+    memset(&inst->knob_mappings[inst->knob_mapping_count], 0, sizeof(inst->knob_mappings[0]));
+}
+
+/* Point destination `di` (0-based) at a parameter, keeping its window -- a
+ * window is a fraction of whatever parameter is there, so re-pointing is
+ * exactly the case it was designed to survive. `di == dest_count` appends.
+ * Returns 0 on success. */
+int knob_dest_point(chain_instance_t *inst, knob_mapping_t *km, int di,
+                    const char *target, const char *param) {
+    if (!inst || !km || di < 0 || di >= MAX_KNOB_DESTS) return -1;
+    if (di > km->dest_count) return -1;          /* no gaps */
+
+    int appending = (di == km->dest_count);
+    if (appending) {
+        memset(&km->dests[di], 0, sizeof(km->dests[di]));
+        km->dests[di].lo = 0.0f;
+        km->dests[di].hi = 1.0f;
+    }
+
+    float lo = km->dests[di].lo, hi = km->dests[di].hi;
+    knob_dest_assign(&km->dests[di], target, param);
+    km->dests[di].lo = lo;
+    km->dests[di].hi = hi;
+
+    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
+    if (pinfo) {
+        char val_buf[64];
+        int got = -1;
+        if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance)
+            got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+        km->dests[di].current_value = (got > 0)
+            ? dsp_value_to_float(val_buf, pinfo, pinfo->default_val)
+            : pinfo->default_val;
+    }
+
+    if (appending) km->dest_count = di + 1;
+
+    /* Crossing from one destination to two is where the position starts to
+     * mean something. */
+    if (km->dest_count == 2 && appending) knob_seed_position(inst, km);
+    return 0;
+}
+
+/* Remove destination `di`, closing the gap. Returns the remaining count. */
+int knob_dest_remove(chain_instance_t *inst, knob_mapping_t *km, int di) {
+    (void)inst;
+    if (!km || di < 0 || di >= km->dest_count) return km ? km->dest_count : 0;
+    for (int j = di; j < km->dest_count - 1; j++) km->dests[j] = km->dests[j + 1];
+    memset(&km->dests[km->dest_count - 1], 0, sizeof(km->dests[0]));
+    km->dest_count--;
+    return km->dest_count;
+}
+
+/*
+ * Set destination `di`'s window and APPLY IT NOW.
+ *
+ * Applying immediately is the point: the window is being adjusted by ear, and
+ * a range you cannot hear until the next turn is a range you are setting
+ * blind. For a multi-destination knob that means re-deriving this destination
+ * from the current position; for a single one it means clamping the value into
+ * the new window, which can move the parameter -- deliberately, for the same
+ * reason.
+ */
+void knob_dest_set_window(chain_instance_t *inst, knob_mapping_t *km, int di,
+                          float lo, float hi) {
+    if (!inst || !km || di < 0 || di >= km->dest_count) return;
+    if (lo < 0.0f) lo = 0.0f;
+    if (lo > 1.0f) lo = 1.0f;
+    if (hi < 0.0f) hi = 0.0f;
+    if (hi > 1.0f) hi = 1.0f;
+
+    knob_dest_t *d = &km->dests[di];
+    d->lo = lo;
+    d->hi = hi;
+
+    chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+    if (!pinfo) return;
+
+    float nv = knob_is_multi(km) ? knob_dest_value_at(d, km->position, pinfo)
+                                 : knob_dest_clamp(d, d->current_value, pinfo);
+    if (nv == d->current_value) return;
+    d->current_value = nv;
+    knob_format_and_forward(inst, d, pinfo, nv);
+}
+
 /* ---- The turn -----------------------------------------------------------
  *
  * One place a chain knob becomes parameter writes, called by all three input

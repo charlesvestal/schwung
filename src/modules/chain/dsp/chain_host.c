@@ -1198,6 +1198,73 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (sscanf(key + 5, "%d_%31s", &knob_num, action) == 2 && knob_num >= 1 && knob_num <= 8) {
             int cc = 70 + knob_num;  /* CC 71-78 for knobs 1-8 */
 
+            /* Destination editing: knob_N_dest_M_set / _clear / _range, and
+             * knob_N_position. M is 1-based to match knob_N, fxN and lfoN.
+             *
+             * A key family rather than a JSON value: this set_param is reached
+             * from the SPI callback, and the existing dispatcher already
+             * sscanf's `knob_N_<action>`, so a second sscanf on the action
+             * finishes the job with no structural change and no parser on a
+             * realtime path. */
+            if (strncmp(action, "dest_", 5) == 0) {
+                int dest_num; char sub[16];
+                if (sscanf(action + 5, "%d_%15s", &dest_num, sub) == 2 &&
+                    dest_num >= 1 && dest_num <= MAX_KNOB_DESTS) {
+                    int di = dest_num - 1;
+
+                    if (strcmp(sub, "set") == 0 && val) {
+                        char target[32] = "", param[64] = "";
+                        const char *colon = strchr(val, ':');
+                        if (colon) {
+                            int tlen = colon - val;
+                            if (tlen > 0 && tlen < 32) { strncpy(target, val, tlen); target[tlen] = '\0'; }
+                            strncpy(param, colon + 1, 63); param[63] = '\0';
+                        }
+                        if (target[0] && param[0]) {
+                            knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 1);
+                            if (km && knob_dest_point(inst, km, di, target, param) == 0) {
+                                km->last_cc_out = -1;
+                                knob_emit_cc_out(inst, knob_mapping_index(inst, km));
+                                inst->dirty = 1;
+                            }
+                        }
+                    }
+                    else if (strcmp(sub, "clear") == 0) {
+                        knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 0);
+                        if (km) {
+                            /* Removing the last destination is the same thing
+                             * as clearing the knob, and must leave the table
+                             * in the same state either way. */
+                            if (knob_dest_remove(inst, km, di) == 0)
+                                knob_mapping_drop(inst, km);
+                            inst->dirty = 1;
+                        }
+                    }
+                    else if (strcmp(sub, "range") == 0 && val) {
+                        /* "lo:hi", fractions of the destination's own range. */
+                        const char *colon = strchr(val, ':');
+                        if (colon) {
+                            knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 0);
+                            if (km) {
+                                knob_dest_set_window(inst, km, di,
+                                                     strtof(val, NULL), strtof(colon + 1, NULL));
+                                knob_emit_cc_out(inst, knob_mapping_index(inst, km));
+                                inst->dirty = 1;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            if (strcmp(action, "position") == 0 && val) {
+                knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 0);
+                if (km) {
+                    knob_set_position(inst, knob_mapping_index(inst, km), strtof(val, NULL));
+                    inst->dirty = 1;
+                }
+                return;
+            }
+
             if (strcmp(action, "set") == 0 && val) {
                 /* Parse "target:param" format */
                 char target[32] = "";
@@ -1645,8 +1712,42 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     if (strcmp(query_param, "name") == 0) {
+                        /* A multi-destination knob is not any one parameter, so
+                         * it says what it DRIVES: the first destination plus a
+                         * count of the others. This one string is what puts the
+                         * label on the touched-knob card -- refreshPendingKnobOverlay
+                         * passes knob_N_name and knob_N_value straight through --
+                         * so the card needs no change and, more to the point, no
+                         * extra read. */
+                        if (knob_is_multi(&inst->knob_mappings[i]))
+                            return snprintf(buf, buf_len, "%s +%d", param,
+                                            inst->knob_mappings[i].dest_count - 1);
                         /* Construct display name from target and param */
                         return snprintf(buf, buf_len, "%s: %s", target, param);
+                    }
+                    else if (strcmp(query_param, "dest_count") == 0) {
+                        return snprintf(buf, buf_len, "%d", inst->knob_mappings[i].dest_count);
+                    }
+                    else if (strcmp(query_param, "position") == 0) {
+                        return snprintf(buf, buf_len, "%.4f", inst->knob_mappings[i].position);
+                    }
+                    else if (strcmp(query_param, "dests") == 0) {
+                        /* The whole destination list in ONE read, for the
+                         * editor screen. Eight knobs times four destinations
+                         * times three reads each would be most of a second of
+                         * IPC on entry. */
+                        const knob_mapping_t *km = &inst->knob_mappings[i];
+                        int off = snprintf(buf, buf_len, "[");
+                        for (int di = 0; di < km->dest_count && di < MAX_KNOB_DESTS; di++) {
+                            off += snprintf(buf + off, buf_len - off,
+                                "%s{\"target\":\"%s\",\"param\":\"%s\",\"lo\":%.4f,\"hi\":%.4f}",
+                                di ? "," : "",
+                                km->dests[di].target, km->dests[di].param,
+                                km->dests[di].lo, km->dests[di].hi);
+                            if (off >= buf_len - 2) return snprintf(buf, buf_len, "[]");
+                        }
+                        off += snprintf(buf + off, buf_len - off, "]");
+                        return off;
                     }
                     else if (strcmp(query_param, "target") == 0) {
                         return snprintf(buf, buf_len, "%s", target);
@@ -1655,6 +1756,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         return snprintf(buf, buf_len, "%s", param);
                     }
                     else if (strcmp(query_param, "value") == 0) {
+                        /* A multi-destination knob has no single parameter
+                         * value to show, so it shows where it sits: the same
+                         * thing it sends on CC 102-109, in the same units the
+                         * user set it in. */
+                        if (knob_is_multi(&inst->knob_mappings[i]))
+                            return snprintf(buf, buf_len, "%d%%",
+                                            (int)(inst->knob_mappings[i].position * 100.0f + 0.5f));
                         /* Look up param metadata */
                         chain_param_info_t *param_info = find_param_by_key(inst, target, param);
                         if (param_info) {
