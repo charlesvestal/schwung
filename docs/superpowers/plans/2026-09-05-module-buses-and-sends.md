@@ -1037,7 +1037,16 @@ load so an id from the previous module cannot name a voice that is gone."
 - [ ] Only the DISTINCT bus buffers named by `bus_mix_active_mask` are cleared each frame
 - [ ] Bus inserts run in series per bus, honouring per-position bypass exactly as the main chain does
 - [ ] Buses sum into the main buffer BEFORE the main chain's 8 FX
-- [ ] `external_fx_mode` still returns raw synth output with no bus FX applied downstream of the shim's split
+- [ ] `external_fx_mode` still returns the slot's audio with **no main-chain FX
+      and no inject mix** — but the bus inserts and the bus->main sum DO run,
+      because a bus insert belongs to the instrument, not to the slot chain.
+      (Amended after Task 4: the original wording said "no bus FX applied",
+      which reads as the opposite. Under Move->Schwung the shim mixes Move's
+      track audio in and calls `chain_process_fx` on the SUM, so a deferred bus
+      insert would process Move's audio through a per-voice effect; and
+      `chain_process_fx` only ever sees the already-summed buffer, so a
+      deferred sum would drop those voices entirely. Either deferral makes the
+      feature a silent no-op on the common Move->Schwung path.)
 - [ ] Nothing in the added path allocates, logs or does I/O
 
 **Verify:** `./scripts/build.sh` succeeds; `bash tests/host/test_chain_host_v2_only.sh` and `make -C tests/host test` stay green
