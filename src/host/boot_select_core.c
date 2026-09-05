@@ -19,7 +19,7 @@ void bs_input_scan(bs_input_state_t *st, const uint8_t *src,
     out->click_pressed = 0;
     out->jog_delta = 0;
 
-    for (int slot = 0; slot < 31; slot++) {
+    for (int slot = 0; slot < BS_MIDI_IN_BYTES / 8; slot++) {
         const uint8_t *e = src + slot * 8;
 
         /* Terminator: the first all-zero event (bytes 0..3) ends the list
@@ -49,13 +49,8 @@ void bs_input_scan(bs_input_state_t *st, const uint8_t *src,
                 out->click_pressed = 1;
             st->click_down = down;
         } else if (cc == BS_CC_JOG) {
-            if (st->frames_seen > 0) {
-                if (val >= 1 && val <= 63)
-                    out->jog_delta += val;
-                else if (val >= 65 && val <= 127)
-                    out->jog_delta -= (128 - val);
-                /* val == 0 or 64: no motion, ignore */
-            }
+            if (st->frames_seen > 0)
+                out->jog_delta += (val < 64) ? (int)val : (int)val - 128;
         }
     }
 
@@ -71,16 +66,26 @@ int bs_json_field(const char *buf, const char *key, char *out, size_t outlen) {
     if (n <= 0 || (size_t)n >= sizeof(needle))
         return 0;
 
-    const char *p = strstr(buf, needle);
-    if (!p)
-        return 0;
+    const char *search = buf;
+    const char *p = NULL;
+    for (;;) {
+        const char *hit = strstr(search, needle);
+        if (!hit)
+            return 0;
 
-    p += n;
-    /* skip whitespace up to ':' */
-    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-        p++;
-    if (*p != ':')
-        return 0;
+        const char *q = hit + n;
+        /* skip whitespace up to ':' */
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')
+            q++;
+        if (*q == ':') {
+            p = q;
+            break;
+        }
+        /* This hit was a VALUE occurrence of the quoted key text (e.g.
+         * {"desc": "name", "name": "Foo"}), not the key itself -- keep
+         * searching from just past it rather than bailing. */
+        search = hit + 1;
+    }
     p++;
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
         p++;
@@ -157,13 +162,13 @@ int bs_build_rows(const char *dir, bs_row_t *rows, int max) {
 
             bs_row_t row;
             memset(&row, 0, sizeof(row));
-            snprintf(row.id, sizeof(row.id), "%s", ent->d_name);
+            snprintf(row.id, sizeof(row.id), "%.*s", (int)sizeof(row.id) - 1, ent->d_name);
 
             char name_buf[64];
             if (bs_json_field(json_buf, "name", name_buf, sizeof(name_buf))) {
                 snprintf(row.name, sizeof(row.name), "%s", name_buf);
             } else {
-                snprintf(row.name, sizeof(row.name), "%s", ent->d_name);
+                snprintf(row.name, sizeof(row.name), "%.*s", (int)sizeof(row.name) - 1, ent->d_name);
             }
 
             if (strcmp(ent->d_name, "schwung") == 0) {

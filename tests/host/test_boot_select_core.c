@@ -3,6 +3,19 @@
  * press-edge detection, jog delta decoding, flat-JSON field extraction, and
  * the picker row model. No SPI, no display -- see boot_select_core.h.
  */
+/* mkdtemp() is POSIX.1-2008, not C11 -- without this, glibc (Linux CI) leaves
+ * it implicitly declared (int return, truncated through a pointer) and the
+ * test SIGSEGVs (exit 139). Must be the FIRST line, before any include pulls
+ * in <features.h>.
+ *
+ * Darwin's <sys/cdefs.h> derives __DARWIN_C_LEVEL from _POSIX_C_SOURCE
+ * *unless* _DARWIN_C_SOURCE is also defined, and mkdtemp is gated on
+ * __DARWIN_C_LEVEL >= __DARWIN_C_FULL -- so _POSIX_C_SOURCE alone fixes
+ * glibc and, symmetrically, HIDES mkdtemp on macOS (verified: this file
+ * fails to build there with just the one macro). _DARWIN_C_SOURCE is a
+ * no-op everywhere else, so define both. */
+#define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -132,12 +145,28 @@ static void test_jog_delta(void) {
     put_cc(buf2, 0, 14, 127);
     bs_input_scan(&st, buf2, &ev);
     check(ev.jog_delta == -1, "value 127 decodes to -1");
+
+    /* Contract formula: delta += (v < 64 ? v : (int)v - 128). v == 64 is not
+     * a dead zone -- it decodes to -64, same branch as 65..127. */
+    uint8_t buf3[BS_MIDI_IN_BYTES]; memset(buf3, 0, sizeof(buf3));
+    put_cc(buf3, 0, 14, 64);
+    bs_input_scan(&st, buf3, &ev);
+    check(ev.jog_delta == -64, "value 64 decodes to -64, per the contract formula");
 }
 
 /* Wrapping struct with a canary right after the exact 248-byte hardware
  * region, so an out-of-bounds walk (e.g. a 4-byte-stride bug, or reading
  * MIDI_BUFFER_SIZE == 256 instead of 31*8 == 248) is caught even though the
- * buffer lives on the stack. */
+ * buffer lives on the stack.
+ *
+ * The canary bytes are a VALID cable-0 CC14 jog-turn event (val 1, i.e. a
+ * +1 detent), not 0xAA filler. A canary the scanner would never parse as an
+ * event only detects a WRITE past the boundary (a stray store), not a READ
+ * -- mutating the loop bound (31 -> 32) drove jog_delta to 32 while an 0xAA
+ * canary sat there untouched and unread, so that mutation survived the
+ * original suite. With a real event sitting there, an over-read is caught by
+ * the delta itself (32 instead of 31), and by the slot going untouched (it
+ * is never zeroed by an in-bounds scan). */
 typedef struct {
     uint8_t midi_in[BS_MIDI_IN_BYTES];
     uint8_t canary[8];
@@ -147,8 +176,10 @@ static void test_all_31_slots_no_oob(void) {
     printf("31 filled slots: delta == 31, no out-of-bounds read past byte 248\n");
     canary_frame_t frame;
     memset(&frame, 0, sizeof(frame));
-    for (int i = 0; i < 8; i++)
-        frame.canary[i] = 0xAA;
+    /* slot 31 (bytes 248..255) would be the 32nd MIDI_IN slot if the walk
+     * over-read -- plant a jog event there so an over-read is visible in
+     * jog_delta rather than needing a separate detector. */
+    put_cc(frame.canary, 0, 14, 1);
 
     bs_input_state_t st; memset(&st, 0, sizeof(st));
     bs_input_events_t ev;
@@ -159,12 +190,13 @@ static void test_all_31_slots_no_oob(void) {
         put_cc(frame.midi_in, slot, 14, 1);
 
     bs_input_scan(&st, frame.midi_in, &ev);
-    check(ev.jog_delta == 31, "all 31 slots contribute +1 each");
+    check(ev.jog_delta == 31, "all 31 slots contribute +1 each -- the canary slot is NOT counted");
 
     int canary_intact = 1;
+    uint8_t expect[8] = {0x0B, 0xB0, 14, 1, 1, 0, 0, 0};
     for (int i = 0; i < 8; i++)
-        if (frame.canary[i] != 0xAA) canary_intact = 0;
-    check(canary_intact, "canary past the 248-byte region is untouched");
+        if (frame.canary[i] != expect[i]) canary_intact = 0;
+    check(canary_intact, "canary past the 248-byte region is untouched (not written to)");
 }
 
 static void test_json_field(void) {
@@ -188,6 +220,15 @@ static void test_json_field(void) {
     check(ok == 1, "truncated read still reports success (value was present)");
     check(strlen(small) == 3, "truncated to outlen-1 chars");
     check(small[3] == '\0', "always NUL-terminated even when truncated");
+
+    /* The quoted key text can appear as a VALUE first ("desc": "name"),
+     * which is not the key -- the first strstr hit must be skipped in
+     * favor of the real "name": "Foo" that follows. */
+    const char *collide = "{\"desc\": \"name\", \"name\": \"Foo\"}";
+    char out2[128];
+    int ok2 = bs_json_field(collide, "name", out2, sizeof(out2));
+    check(ok2 == 1, "key found despite a same-text VALUE occurrence earlier in the buffer");
+    check(strcmp(out2, "Foo") == 0, "value extracted is the real key's, not the value collision");
 }
 
 static void write_file(const char *path, const char *content) {
@@ -231,6 +272,87 @@ static void test_build_rows(void) {
     }
 }
 
+static void test_build_rows_skips_stock_and_no_json_dirs(void) {
+    printf("bs_build_rows: a subdir named stock is skipped as SOURCE; a subdir without boot.json is excluded; missing \"name\" falls back to the dirname\n");
+    char tmpl[] = "/tmp/bs_core_test_XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    if (!dir) { perror("mkdtemp"); exit(1); }
+
+    char path[512];
+
+    /* A real "stock" subdirectory on disk -- must never become its own row
+     * (the synthesized stock row is appended separately, always last). */
+    snprintf(path, sizeof(path), "%s/stock", dir);
+    mkdir_or_die(path);
+    snprintf(path, sizeof(path), "%s/stock/boot.json", dir);
+    write_file(path, "{\"name\": \"Should Never Appear\"}\n");
+
+    /* A subdir with no boot.json at all -- excluded entirely, not even as
+     * a fallback-named row. */
+    snprintf(path, sizeof(path), "%s/no-json", dir);
+    mkdir_or_die(path);
+
+    /* A subdir whose boot.json has no "name" field -- falls back to the
+     * dirname for its display name. */
+    snprintf(path, sizeof(path), "%s/nameless", dir);
+    mkdir_or_die(path);
+    snprintf(path, sizeof(path), "%s/nameless/boot.json", dir);
+    write_file(path, "{\"exec\": \"/data/x/entry.sh\"}\n");
+
+    bs_row_t rows[8];
+    int n = bs_build_rows(dir, rows, 8);
+    check(n == 2, "exactly 2 rows: nameless, stock (no-json excluded, real stock/ dir not a source row)");
+    if (n == 2) {
+        check(strcmp(rows[0].id, "nameless") == 0, "row 0 is the nameless-name dir, sorted alphabetically");
+        check(strcmp(rows[0].name, "nameless") == 0, "boot.json without \"name\" falls back to the dirname");
+        check(strcmp(rows[1].id, "stock") == 0, "row 1 is the synthesized stock row");
+        check(strcmp(rows[1].name, "Stock Move") == 0, "synthesized stock row name is Stock Move, not the on-disk stock/boot.json's name");
+    }
+}
+
+static void test_build_rows_max_constrained(void) {
+    printf("bs_build_rows: max caps the row count, stock is ALWAYS last regardless\n");
+    char tmpl[] = "/tmp/bs_core_test_XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    if (!dir) { perror("mkdtemp"); exit(1); }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/schwung", dir);
+    mkdir_or_die(path);
+    snprintf(path, sizeof(path), "%s/schwung/boot.json", dir);
+    write_file(path, "{\"name\": \"Schwung\"}\n");
+
+    snprintf(path, sizeof(path), "%s/a", dir);
+    mkdir_or_die(path);
+    snprintf(path, sizeof(path), "%s/a/boot.json", dir);
+    write_file(path, "{\"name\": \"A\"}\n");
+
+    snprintf(path, sizeof(path), "%s/b", dir);
+    mkdir_or_die(path);
+    snprintf(path, sizeof(path), "%s/b/boot.json", dir);
+    write_file(path, "{\"name\": \"B\"}\n");
+
+    /* max = 3: room for schwung + others is (max - 1) = 2, so schwung and
+     * "a" (alphabetically first) fill it; "b" is dropped; stock still gets
+     * its always-reserved final slot. */
+    bs_row_t rows3[8];
+    int n3 = bs_build_rows(dir, rows3, 3);
+    check(n3 == 3, "max=3 yields exactly 3 rows");
+    if (n3 == 3) {
+        check(strcmp(rows3[0].id, "schwung") == 0, "row 0 is schwung");
+        check(strcmp(rows3[1].id, "a") == 0, "row 1 is a (b dropped for lack of room)");
+        check(strcmp(rows3[2].id, "stock") == 0, "row 2 is stock, still last");
+    }
+
+    /* max = 1: the whole reserved-room budget for schwung + others is
+     * (max - 1) = 0, so ONLY the always-appended stock row survives. */
+    bs_row_t rows1[8];
+    int n1 = bs_build_rows(dir, rows1, 1);
+    check(n1 == 1, "max=1 yields exactly 1 row");
+    if (n1 == 1)
+        check(strcmp(rows1[0].id, "stock") == 0, "the one row is stock");
+}
+
 int main(void) {
     test_frame_zero_never_fires();
     test_held_then_release_press();
@@ -240,6 +362,8 @@ int main(void) {
     test_all_31_slots_no_oob();
     test_json_field();
     test_build_rows();
+    test_build_rows_skips_stock_and_no_json_dirs();
+    test_build_rows_max_constrained();
 
     if (failures == 0)
         printf("ALL PASS\n");
