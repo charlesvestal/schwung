@@ -1248,7 +1248,12 @@ the active mask are cleared, so an unrouted bus costs nothing per frame."
 - [ ] The worker demotes itself to SCHED_OTHER and pins to cores 0-2 as its FIRST action
 - [ ] A bus with no buffer yet renders through Main (Task 1 already proves the fallback) rather than dropping audio
 - [ ] Slot memory is unchanged from today until a bus exists
-- [ ] Destroying an instance frees every bus buffer and chain
+- [ ] Destroying an instance frees every bus buffer AND destroys every bus FX
+      instance AND dlcloses every bus FX handle — the three TODO(Task 5) markers
+      Task 4 left at the teardown sites
+- [ ] The RT-side read of `buses[].buf` uses `__ATOMIC_ACQUIRE`, pairing with the
+      worker's `__ATOMIC_RELEASE`; a release store against a plain load orders
+      nothing
 
 **Verify:** `./scripts/build.sh`; on device, create a bus and confirm `tests/host/test_spi_path_rt_hygiene.sh`-style grep finds no `calloc`/`malloc` reachable from the bus creation call on the callback
 
@@ -1299,11 +1304,24 @@ static void *chain_bus_worker_fn(void *arg) {
             if (!inst->bus_alloc_pending[b]) continue;
             slot_bus_t *bus = &inst->buses[b];
             if (!bus->buf) {
-                int16_t *buf = (int16_t *)calloc(FRAMES_PER_BLOCK * 2, sizeof(int16_t));
+                /* BUS_BUF_SAMPLES, not a restated FRAMES_PER_BLOCK * 2. The
+                 * render path sizes its memset/memcpy from the same name; a
+                 * second spelling here is a silent heap overflow on the SPI
+                 * callback the moment the two disagree. */
+                int16_t *buf = (int16_t *)calloc(BUS_BUF_SAMPLES, sizeof(int16_t));
                 if (buf) {
                     /* Publish LAST: the RT side reads buf and, seeing it
                      * non-NULL, starts routing voices into it. Everything it
-                     * will touch must already be valid. */
+                     * will touch must already be valid.
+                     *
+                     * THE READER MUST PAIR THIS WITH AN ACQUIRE. A release
+                     * store against a plain load orders nothing: the RT side
+                     * could observe a non-NULL pointer whose calloc'd zeroes
+                     * are not yet visible to core 3, and render into memory
+                     * it then reads as garbage. v2_render_block's snapshot
+                     * loop uses __atomic_load_n(..., __ATOMIC_ACQUIRE) for
+                     * exactly this reason -- change one and you must change
+                     * both. */
                     __atomic_store_n(&bus->buf, buf, __ATOMIC_RELEASE);
                 }
             }
@@ -1343,9 +1361,24 @@ if (inst->bus_worker_started) {
     pthread_join(inst->bus_worker, NULL);
 }
 for (int b = 0; b < SLOT_BUSES; b++) {
-    free(inst->buses[b].buf);
-    inst->buses[b].buf = NULL;
-    /* unload each bus FX position exactly as the main chain's are unloaded */
+    slot_bus_t *bus = &inst->buses[b];
+    /* Release EVERYTHING this task allocates, in the reverse order it was
+     * acquired. Task 4 left a TODO(Task 5) at both teardown sites naming
+     * these three: the FX instances, the dlopen handles, and the buffer.
+     * Missing any one is a leak plus a dangling handle, and the render path
+     * cannot see the difference. */
+    for (int i = 0; i < MAX_AUDIO_FX; i++) {
+        if (bus->fx_plugins_v2[i] && bus->fx_instances[i] &&
+            bus->fx_plugins_v2[i]->destroy_instance) {
+            bus->fx_plugins_v2[i]->destroy_instance(bus->fx_instances[i]);
+        }
+        bus->fx_instances[i] = NULL;
+        bus->fx_plugins_v2[i] = NULL;
+        if (bus->fx_handles[i]) { dlclose(bus->fx_handles[i]); bus->fx_handles[i] = NULL; }
+    }
+    bus->fx_count = 0;
+    free(bus->buf);
+    bus->buf = NULL;
 }
 ```
 
