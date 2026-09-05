@@ -36,7 +36,7 @@ import { resolveViz } from "./src/shared/param_pages/viz.mjs";
 import { drawVizGroup } from "./src/shared/param_pages/viz_draw.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
 import { validateContract } from "./src/shared/param_pages/validate_contract.mjs";
-import { registerWidget, clearWidgets, isWidgetAvailable }
+import { registerOverlayWidgets, clearWidgets, isWidgetAvailable }
   from "./src/shared/param_pages/widget_registry.mjs";
 import { drawParamCard, paramCardRect } from "./src/shared/param_pages/param_card.mjs";
 
@@ -52,8 +52,16 @@ const CP = caps.chain_params || [];
 ok(typeof caps.canvas_script === "string", "module.json declares a canvas_script");
 const declared = CP.filter((p) => p.viz && typeof p.viz.kind === "string" &&
                                   p.viz.kind.startsWith("custom:"));
-ok(declared.length === 1, "exactly one param declares a custom viz kind");
-const KIND = declared[0].viz.kind;
+/* TWO kinds, from ONE module. The fixture declares both on purpose: a module
+ * used to be limited to a single widget, not by the registry (always a map) but
+ * by a call site that read one string, and the second kind fell through to a
+ * built-in dial with no error. This test is the consumer that proves it does
+ * not any more. */
+ok(declared.length === 2, "the fixture declares two custom viz kinds");
+const KIND = "custom:wtmeter";
+const KIND2 = "custom:wtmode";
+ok(declared.some((p) => p.viz.kind === KIND) && declared.some((p) => p.viz.kind === KIND2),
+   "both expected kinds are declared in chain_params");
 const declaredCard = CP.find((p) => typeof p.card_script === "string") || null;
 
 /* The validator is happy with it -- no errors, and no missing-script warning. */
@@ -72,22 +80,26 @@ new Function("globalThis", src)(g);
 const overlay = g.canvas_overlay;
 ok(!!overlay, "canvas.js sets globalThis.canvas_overlay");
 
-/* THE SAME GUARD shadow_ui applies before registering. */
-const registrable = !!(overlay && typeof overlay.drawCell === "function" &&
-                       typeof overlay.widgetKind === "string");
-ok(registrable, "the overlay satisfies the drawCell + widgetKind guard");
 ok(overlay.widgetKind === KIND,
    `the overlays widgetKind matches the chain_params declaration (${KIND})`);
+ok(overlay.widgetKinds && typeof overlay.widgetKinds === "object",
+   "and it declares a second kind through widgetKinds");
 ok(typeof overlay.draw === "function",
    "the same overlay also supplies the fullscreen draw");
 
-/* ---- register it exactly as shadow_ui would, then RESOLVE and DRAW ---- */
+/* ---- register exactly as shadow_ui does, then RESOLVE and DRAW ---- */
 clearWidgets();
-registerWidget(overlay.widgetKind, {
-  draw: overlay.drawCell.bind(overlay),
-  nominal: overlay.widgetNominal || null,
-});
+const reg = registerOverlayWidgets(overlay);
+ok(reg.skipped.length === 0,
+   "nothing the fixture declares is skipped: " + JSON.stringify(reg.skipped));
 ok(isWidgetAvailable(KIND), "the widget registers");
+ok(isWidgetAvailable(KIND2), "and so does the SECOND kind, from the same module");
+
+/* EVERY declared kind must actually be registered. The old failure was silent
+ * and partial -- one of two -- so counting is the assertion that catches it. */
+for (const d of declared) {
+  ok(isWidgetAvailable(d.viz.kind), `declared kind ${d.viz.kind} is available`);
+}
 
 const keys = ["level", null, null, null, null, null, null, null];
 const metaIndex = buildMetaIndex({ hierarchy: mod.ui_hierarchy, chainParams: CP });
@@ -108,6 +120,19 @@ const lit = (calls) => calls.reduce((n, [, , w, h]) => n + w * h, 0);
 
 ok(draw(0, FRAME).length > 0, "at 0 the widget still draws (a baseline, not a blank cell)");
 ok(lit(draw(1, FRAME)) > lit(draw(0, FRAME)), "a full value lights more than an empty one");
+
+/* ---- the SECOND widget resolves and draws too ---- */
+{
+  const keys2 = ["mode", null, null, null, null, null, null, null];
+  const r2 = resolveViz({ keys: keys2, metaIndex });
+  const g2 = r2.groups.find((x) => x.kind === KIND2);
+  ok(!!g2, "resolveViz gives the second key to the second widget");
+  const calls = [];
+  drawVizGroup({ fillRect: (...a) => calls.push(a), print() {},
+                 textWidth: (t) => String(t).length * 4 },
+               FRAME, g2, { mode: "1" }, metaIndex);
+  ok(calls.length > 0, "the second widget draws");
+}
 ok(lit(draw(0.5, FRAME)) > lit(draw(0, FRAME)) && lit(draw(0.5, FRAME)) < lit(draw(1, FRAME)),
    "a mid value sits between the two");
 

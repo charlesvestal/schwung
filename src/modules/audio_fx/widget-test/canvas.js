@@ -35,6 +35,45 @@ globalThis.canvas_overlay = {
      *   "viz": { "kind": "custom:wtmeter" } */
     widgetKind: "custom:wtmeter",
 
+    /*
+     * A SECOND WIDGET, because one module may declare several.
+     *
+     * This used to be impossible, and impossible in the quiet way: the host
+     * read a single `widgetKind` string, so a module naming two kinds got the
+     * first registered and the second ignored -- and an ignored kind is not an
+     * error, it just falls through to a built-in dial. A correct-looking page
+     * and nothing to search for.
+     *
+     * The object form gives each kind its own drawer, which is what you want
+     * when the two widgets have nothing to do with each other. (An ARRAY of
+     * names is the other form: several kinds sharing one drawCell, told apart
+     * by group.keys -- right when they really are one drawing at two crops.)
+     */
+    widgetKinds: {
+        "custom:wtmode": {
+            nominal: null,
+            /* Three states, drawn as a filled box that grows. Deliberately not
+             * a meter: it is here to look like a DIFFERENT widget, so that a
+             * page carrying both shows two kinds rather than one twice. */
+            draw(ctx, { values, group }) {
+                const key = group && group.keys && group.keys[0];
+                const v = key && values ? Number(values[key]) : NaN;
+                const w = ctx.width, h = ctx.height;
+                if (w < 5 || h < 5) return;
+                /* Frame, then a bar whose height reads the state. */
+                ctx.fillRect(0, 0, w, 1, 1);
+                ctx.fillRect(0, h - 1, w, 1, 1);
+                ctx.fillRect(0, 0, 1, h, 1);
+                ctx.fillRect(w - 1, 0, 1, h, 1);
+                if (!Number.isFinite(v)) return;   /* no answer, no picture */
+                const steps = 3;
+                const lit = Math.max(1, Math.min(steps, Math.round(v) + 1));
+                const barH = Math.max(1, Math.round((h - 4) * (lit / steps)));
+                ctx.fillRect(2, h - 2 - barH, w - 4, barH, 1);
+            },
+        },
+    },
+
     /* Only sprite-based widgets need a nominal frame. This one draws
      * proportionally, so it has none and works at every size. */
 

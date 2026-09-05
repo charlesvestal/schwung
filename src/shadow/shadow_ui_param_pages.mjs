@@ -299,6 +299,17 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
                      * states for the other accessors. */
                     ? ctx.loadCardScript(currentSlot, currentComponent, scriptPath, exportRef)
                     : null),
+            /*
+             * A CUSTOM UI PAGE's body. Same shape and same reasoning as
+             * loadCard: resolving the module's script needs its directory and
+             * the host loader, so it comes from the consumer. A consumer that
+             * offers none simply gets an empty body under a normal header and
+             * footer, rather than a broken page.
+             */
+            drawCanvasPage: (drawCtx, band, canvas, payload) => {
+                if (typeof ctx.drawCanvasPageBody !== 'function') return;
+                ctx.drawCanvasPageBody(currentSlot, currentComponent, drawCtx, band, canvas, payload);
+            },
         }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,

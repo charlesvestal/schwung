@@ -10,6 +10,21 @@
     "canvas_script": "canvas.js",
     "chain_params": [
       {
+        "key": "mode",
+        "name": "Mode",
+        "short_name": "Mod",
+        "type": "enum",
+        "options": [
+          "Dry/Wet",
+          "In/Out",
+          "A/B"
+        ],
+        "default": 0,
+        "viz": {
+          "kind": "custom:wtmode"
+        }
+      },
+      {
         "key": "level",
         "name": "Level",
         "type": "float",
@@ -22,7 +37,8 @@
         },
         "card_script": "cards.js#blend_card",
         "card_w": 96,
-        "card_h": 34
+        "card_h": 34,
+        "short_name": "Lvl"
       },
       {
         "key": "detail",
@@ -38,11 +54,15 @@
       "root": {
         "label": "Widget Test",
         "knobs": [
-          "level"
+          "level",
+          "mode"
         ],
         "params": [
           {
             "key": "level"
+          },
+          {
+            "key": "mode"
           },
           {
             "key": "detail"

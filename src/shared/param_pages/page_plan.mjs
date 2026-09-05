@@ -414,6 +414,38 @@ export function levelShortNames(lvl) {
     return out;
 }
 
+/*
+ * Params a module wants drawn as a WHOLE PAGE of its own.
+ *
+ *     { "key": "face", "type": "canvas", "canvas_script": "canvas.js",
+ *       "canvas_overlay": "face_page", "as_page": true }
+ *
+ * Without `as_page` a canvas param is a CELL you click to dive into, which is
+ * the behaviour that already existed. With it, the level gains an extra page in
+ * the jog rotation carrying the level's own knobs -- so it is reached by paging
+ * rather than by diving, and the eight encoders do there exactly what they do
+ * on the level's grid.
+ */
+function canvasPageParams(chainParams) {
+    const out = new Map();
+    for (const p of chainParams || []) {
+        if (!p || typeof p.key !== "string") continue;
+        if (p.type !== "canvas") continue;
+        if (!(p.as_page === true || p.asPage === true)) continue;
+        out.set(p.key, {
+            key: p.key,
+            /* `preset_browser` merges this page WITH the level's preset browser
+             * instead of adding a second one -- see the emission below. */
+            presetBrowser: p.preset_browser === true || p.presetBrowser === true,
+            script: typeof p.canvas_script === "string" ? p.canvas_script : "canvas.js",
+            overlay: typeof p.canvas_overlay === "string" ? p.canvas_overlay
+                   : (typeof p.overlay === "string" ? p.overlay : ""),
+            name: p.name || p.short_name || p.key,
+        });
+    }
+    return out;
+}
+
 export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                             trailingMenus, paginate = true } = {}) {
     /*
@@ -498,6 +530,7 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
      * count and no level — hashing the length alone would call that unchanged
      * and leave the placeholder on screen for the rest of the session. */
     const fingerprint = fingerprintOf([hierarchy || null, chainParams || null, mode || null]);
+    const canvasPages = canvasPageParams(chainParams);
 
     /*
      * "the module declares no hierarchy" and "we could not READ the hierarchy"
@@ -739,14 +772,48 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * 13 nav entries and the preset triple), and a knob is the wrong control
          * for minijv's 2427 or surge's 675 presets. */
         if (lvl.list_param && lvl.count_param) {
+            /*
+             * A MODULE MAY DRAW ITS OWN BROWSER.
+             *
+             * A canvas page declaring `preset_browser` becomes THIS page rather
+             * than a second one beside it: same jog, same enter/exit, same
+             * announcements, but the module paints the body. A synth with a
+             * face per preset is a better picker than a row of text, and two
+             * pages -- one showing the character, one naming it -- would be two
+             * doors onto the same choice.
+             *
+             * It carries the level's knobs too, so the sound is still editable
+             * while you browse. See pageHasKnobs in page_controller.
+             */
+            let browserCanvas = null;
+            for (const key of paramKeys(lvl)) {
+                const cp2 = canvasPages.get(key);
+                if (cp2 && cp2.presetBrowser && !isHiddenParam(lvl, key, isVisible)) {
+                    browserCanvas = cp2;
+                    emitted.add(key);
+                    break;
+                }
+            }
             pages.push({
                 /* "Presets", not the level's name — the preset browser is a
-                 * different thing from the knob page that shares its level. */
+                 * different thing from the knob page that shares its level.
+                 * A module-drawn one takes the param's name instead, because
+                 * it IS that screen. */
                 kind: PAGE_PRESET,
-                name: claimName(declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets"),
+                name: claimName(browserCanvas ? browserCanvas.name
+                     : (declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets")),
                 level: levelKey,
                 listParam: lvl.list_param, countParam: lvl.count_param,
                 nameParam: lvl.name_param || "preset_name",
+                ...(browserCanvas ? {
+                    canvas: { key: browserCanvas.key, script: browserCanvas.script,
+                              overlay: browserCanvas.overlay },
+                    keys: knobKeys(lvl).filter(
+                        (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k))
+                        .slice(0, perPage === Infinity ? undefined : perPage),
+                    childLevel: hasChildren(lvl) ? lvl : null,
+                    shortNames: levelShortNames(lvl),
+                } : {}),
             });
         }
 
@@ -866,6 +933,12 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
             !isHiddenParam(lvl, k, isVisible) &&
             !selectorKeys.has(k) &&
             !/^ui_/.test(k) &&
+            /* A canvas PAGE key gets a page of its own below; a cell for it as
+             * well would be a second door to the same screen, and on a level
+             * whose knobs already fill the grid it lands as an overflow page
+             * holding one control. Reported from the device as "one page that
+             * is just the face". */
+            !canvasPages.has(k) &&
             !emitted.has(k));
 
         /* Dedupe applies to the AUTHORED key list only. 16 modules publish a
@@ -953,6 +1026,49 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                      * false, including a page that mixes the two. */
                     authored: keys.every((k) => authored.includes(k)),
                 });
+            });
+        }
+
+        /*
+         * CUSTOM UI PAGES, after this level's grids and before its menu.
+         *
+         * A page the MODULE draws, carrying THIS LEVEL'S OWN KNOBS. That is the
+         * whole trick and it is why this is a PAGE_KNOBS page and not a new
+         * kind: reads, knob turns, touch, the touch strip, announce, dive
+         * targets and the list layout are twenty-two branches in the
+         * controller, and a new kind would have to be threaded through every
+         * one of them. As a knobs page it inherits all of it and only the
+         * picture differs.
+         *
+         * So a custom page is reached by PAGING, responds to the eight encoders
+         * exactly as the level's grid does, and wears the host's own header and
+         * footer. The module supplies the body and nothing else.
+         *
+         * `alignKnobs` is deliberately NOT applied: its business is reflowing
+         * cells so a graphic stays inside one row, and there are no cells here.
+         */
+        for (const key of paramKeys(lvl)) {
+            const cp = canvasPages.get(key);
+            if (!cp) continue;
+            if (isHiddenParam(lvl, key, isVisible)) continue;
+            /* Already merged into the level's preset browser above. */
+            if (cp.presetBrowser && lvl.list_param && lvl.count_param) continue;
+            emitted.add(key);
+            pages.push({
+                kind: PAGE_KNOBS,
+                name: claimName(cp.name || title),
+                level: levelKey,
+                /* The level's own knobs, so the mapping matches its grid. A
+                 * level with no knobs still gets the page -- it simply has
+                 * nothing to turn, which is a legitimate thing for a display
+                 * page to be. */
+                keys: authored.slice(0, perPage === Infinity ? authored.length : perPage),
+                childLevel: hasChildren(lvl) ? lvl : null,
+                shortNames: levelShortNames(lvl),
+                authored: true,
+                /* What makes it custom. render_page hands the module this and
+                 * the body band; everything else about the page is ordinary. */
+                canvas: { key: cp.key, script: cp.script, overlay: cp.overlay },
             });
         }
 

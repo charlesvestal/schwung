@@ -614,7 +614,48 @@ export function renderPage(ctx, o) {
         drawTouchStrip(ctx, rect, m, v, dec && dec.locked);
     }
 
+    /*
+     * A CUSTOM UI PAGE: the module draws the body, the host draws the chrome.
+     *
+     * It is an ordinary PAGE_KNOBS page that happens to carry a drawer, which
+     * is the whole design. Making it a new page KIND would have meant auditing
+     * twenty-two places in the controller that branch on PAGE_KNOBS -- reads,
+     * knob turns, touch, announce, the list layout, dive targets -- and getting
+     * one wrong means a page that looks right and does not respond. As a knobs
+     * page it inherits every one of those behaviours untouched, and only the
+     * picture changes.
+     *
+     * So the header above (including the touch strip that replaces it while a
+     * knob is held) and the footer the caller draws underneath are the SAME
+     * ones every other page gets. The module is handed the band the eight cells
+     * would have occupied and nothing else -- it cannot paint chrome, and it
+     * does not have to draw any.
+     */
+    /*
+     * GRAPHICS SEE THE LIVE VALUE, exactly as they do under the movy layout.
+     *
+     * A key that is modulated -- or that a module declared `live` -- has its
+     * effective value refreshed every tick into modValues, while `values` stays
+     * the base the knob edits. render_page_movy has always merged the two for
+     * its graphics; this renderer did not, so the same widget animated on one
+     * layout and sat frozen on the other. That class of split already shipped
+     * once today (a custom page drew under the dial renderer and not under the
+     * one the device uses), which is reason enough to keep them in step.
+     */
+    let vizValues = o.values;
+    if (o.modValues) {
+        for (const _k in o.modValues) { vizValues = Object.assign({}, o.values, o.modValues); break; }
+    }
+
     const geo = geometry(rect, layout);
+    if (page.canvas && typeof o.drawCanvasPage === "function") {
+        const top = geo.gridTop;
+        const band = { x: rect.x, y: top, w: rect.w, h: Math.max(0, rect.y + rect.h - top) };
+        /* ctx is passed through: the module's body must be frame-scoped to the
+         * band, and only the host knows how to build that context. */
+        if (band.h > 0) o.drawCanvasPage(ctx, band, page.canvas, { touched });
+        return;
+    }
     if (geo.rowH < 6) return;   /* nothing meaningful fits */
     const cellW = Math.floor(rect.w / COLS);
     /* Labels are resolved for the whole page at once so cells can be
@@ -670,7 +711,7 @@ export function renderPage(ctx, o) {
                 y: geo.gridTop + row * geo.rowH,
                 w: cellW * Math.min(g.slotSpan, COLS - col),
                 h: geo.rowH,
-            }, g, o.values, o.metaIndex);
+            }, g, vizValues, o.metaIndex);
             continue;
         }
         if (vizCovered[slot]) continue;   /* drawn by this group's anchor cell */

@@ -432,7 +432,32 @@ int chain_mod_get_effective_for_subkey(chain_instance_t *inst,
         return snprintf(buf, buf_len, "%.6f", entry->effective_value);
     }
 
-    /* If not modulated, return current plugin value for compatibility. */
+    /*
+     * NOT MODULATED BY THE CHAIN -- BUT THE PLUGIN MAY STILL BE DRIVING IT.
+     *
+     * This stripped ":effective" and asked for the plain key, which is right
+     * only if the chain is the sole thing that can move a parameter. It is not.
+     * A synth that drives its own value serves `<key>:effective` itself --
+     * MonkSynth sweeps its vowel from pad pressure, exactly as the original
+     * swept it from the pitch wheel -- and that answer was thrown away here:
+     * the suffix consumed, the plain key asked, the KNOB value returned. Every
+     * picture of that vowel sat still while the sound moved.
+     *
+     * So ask the plugin BY NAME first, and fall back to the plain key only when
+     * it does not answer. A module that has never heard of `:effective` misses,
+     * and the old behaviour is exactly what remains.
+     *
+     * "" is a MISS, not a value: an unserved key comes back as an empty buffer,
+     * and taking that as an answer would blank the reading on screen.
+     */
+    char eff_key[96];
+    const int n = snprintf(eff_key, sizeof(eff_key), "%s:effective", param);
+    if (n > 0 && n < (int)sizeof(eff_key)) {
+        const int r = chain_mod_get_param_string(inst, target, eff_key, buf, buf_len);
+        if (r > 0 && buf[0] != '\0') return r;
+    }
+
+    /* Nothing is driving it: the plugin's current value IS the effective one. */
     return chain_mod_get_param_string(inst, target, param, buf, buf_len);
 }
 

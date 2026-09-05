@@ -64,6 +64,22 @@ shows the LFO's number and the knob reads as dead (#276). A UI that wants the
 driven value asks for `:effective` by name; the plugin itself is not the place
 to ask, since it holds whatever effective value the overlay last wrote.
 
+**`:effective` ON AN UNMODULATED KEY REACHES THE PLUGIN.** The chain owns the
+suffix and answers from its own table while a source is routed. When none is,
+it used to strip `:effective` and ask the plugin for the PLAIN key — which is
+right only if the chain is the sole thing that can move a parameter, and it is
+not. A synth driving its own value (MonkSynth sweeps its vowel from pad
+pressure) serves `<key>:effective` itself, and that answer was being thrown
+away: the suffix consumed, the plain key asked, the knob's value returned. Every
+picture of that parameter sat still while the sound moved.
+
+It now asks the plugin **by name first** and falls back to the plain key only on
+a miss, so a module that has never heard of the suffix is unaffected. An empty
+answer counts as a miss — an unserved key comes back as an empty buffer, and
+taking that for a value would blank the reading. See `"live": true` in
+`docs/MODULES.md` for the UI half: it is what makes the host ask often enough
+for the answer to be worth serving.
+
 ### `synth:last_note` — the chain host's own key, and why it is a NOTE
 
 **`synth:last_note`** — the MIDI note last played *into* the synth,

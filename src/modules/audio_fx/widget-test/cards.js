@@ -24,6 +24,17 @@
  * drawer draws nothing interpretive then, rather than drawing zero. A read that
  * did not answer must never become a picture.
  *
+ * THE REST OF THE PAGE IS HANDED IN TOO, as `values` -- the same map a cell
+ * widget gets. That matters for a card whose MEANING depends on a sibling: this
+ * one names what the blend is between, which is a fact about `mode`, not about
+ * `level`. Before it existed, such a card had no route to that fact at all --
+ * no getParam on this path, and the card script is its own closure, so it
+ * cannot see a variable the module drawCell set either. The first module to
+ * need it went through globalThis, which worked and was a side channel.
+ *
+ * Same null rules apply: a sibling may be missing or null, and an absent one
+ * must not become a picture either -- here the label is simply omitted.
+ *
  * ONE STRIKE. If this throws it is retired for the session and the card is left
  * empty; the page keeps working.
  *
@@ -31,7 +42,9 @@
  *     "card_script": "cards.js#blend_card", "card_w": 96, "card_h": 34
  */
 
-globalThis.blend_card = function (ctx, { name, value, raw }) {
+const MODE_NAMES = ["Dry/Wet", "In/Out", "A/B"];
+
+globalThis.blend_card = function (ctx, { name, value, raw, values }) {
     const w = ctx.width, h = ctx.height;
     if (w < 8 || h < 8) return;
 
@@ -59,6 +72,16 @@ globalThis.blend_card = function (ctx, { name, value, raw }) {
     const s = String(value || "");
     const tw = ctx.textWidth(s);
     if (tw <= w) ctx.print(w - tw, 0, s, 1);
+
+    /*
+     * WHAT THE BLEND IS BETWEEN -- a fact that lives on a DIFFERENT parameter.
+     * Omitted rather than guessed when `mode` is absent or unanswered.
+     */
+    const mode = values ? Number(values.mode) : NaN;
+    if (Number.isFinite(mode) && MODE_NAMES[mode | 0]) {
+        const label = MODE_NAMES[mode | 0];
+        if (ctx.textWidth(label) <= w) ctx.print(0, 8, label, 1);
+    }
 
     /* A bar, sized from the frame rather than from a constant. */
     const barY = Math.max(9, h - 10);

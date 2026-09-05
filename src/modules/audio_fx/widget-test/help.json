@@ -1,22 +1,125 @@
 {
   "title": "Widget Test",
-  "summary": "Reference module for the three module-supplied draw surfaces: an in-grid widget, a card that floats while the knob turns, and a fullscreen canvas view.",
-  "sections": [
+  "children": [
     {
-      "heading": "What it shows",
-      "body": "The Level knob draws as a segmented meter supplied by the module rather than a built-in dial. Turn it and a card floats over the page with the reading and a bar. Click Detail for the module's own fullscreen view. All three come from files beside the module."
+      "title": "What it shows",
+      "lines": [
+        "Every draw surface a",
+        "module can supply,",
+        "on one page.",
+        "",
+        "Level draws as the",
+        "module's own meter,",
+        "not a built-in dial.",
+        "Mode draws as a",
+        "SECOND widget from",
+        "the same module.",
+        "",
+        "Turn Level and a",
+        "card floats up with",
+        "the reading and the",
+        "name of what the",
+        "blend is between -",
+        "which is a fact",
+        "about Mode, read off",
+        "the page.",
+        "",
+        "Click Detail for the",
+        "fullscreen view."
+      ]
     },
     {
-      "heading": "For module authors",
-      "body": "In grid: viz: { kind: \"custom:<name>\" } plus widgetKind and drawCell in canvas.js. On a turn: card_script: \"cards.js#export\" plus card_w and card_h. Fullscreen: type \"canvas\". Coordinates are frame-local everywhere: (0,0) is your own box and ctx.width/ctx.height are its size."
+      "title": "For authors",
+      "children": [
+        {
+          "title": "In the grid",
+          "lines": [
+            "viz: { kind:",
+            "\"custom:<name>\" }",
+            "plus drawCell in",
+            "canvas.js.",
+            "",
+            "Name it with",
+            "widgetKind for one,",
+            "or widgetKinds for",
+            "several: an array",
+            "shares one drawer,",
+            "an object gives",
+            "each its own."
+          ]
+        },
+        {
+          "title": "On a turn",
+          "lines": [
+            "card_script:",
+            "\"cards.js#export\"",
+            "plus card_w and",
+            "card_h.",
+            "",
+            "The drawer gets",
+            "values and nowMs as",
+            "well as raw, so it",
+            "can read a sibling",
+            "parameter."
+          ]
+        },
+        {
+          "title": "Coordinates",
+          "lines": [
+            "Frame-local",
+            "everywhere: (0,0)",
+            "is your own box and",
+            "ctx.width and",
+            "ctx.height are its",
+            "size.",
+            "",
+            "There is no way to",
+            "name a screen",
+            "pixel, and anything",
+            "outside the frame",
+            "is clipped."
+          ]
+        }
+      ]
     },
     {
-      "heading": "No reads on any of them",
-      "body": "Values are handed in; there is no getParam. A card's raw value may be null, meaning the read did not answer, and the contract is to draw nothing interpretive rather than to draw zero. Watch the card at null: it shows -- and no bar."
+      "title": "No reads",
+      "lines": [
+        "Values are handed",
+        "in; there is no",
+        "getParam on a draw",
+        "path.",
+        "",
+        "A card's raw value",
+        "may be null, meaning",
+        "the read did not",
+        "answer. Draw nothing",
+        "interpretive then -",
+        "a bar at zero looks",
+        "exactly like a real",
+        "zero.",
+        "",
+        "Watch the card at",
+        "null: it shows --",
+        "and no bar."
+      ]
     },
     {
-      "heading": "If something does not appear",
-      "body": "An unknown or broken drawer falls back to the built-in rather than leaving a hole, so the page always looks correct. Check debug.log: a drawer that threw is retired for the session and names itself there."
+      "title": "If nothing appears",
+      "lines": [
+        "An unknown or broken",
+        "drawer falls back to",
+        "the built-in rather",
+        "than leaving a hole,",
+        "so the page always",
+        "looks correct.",
+        "",
+        "Check debug.log: a",
+        "drawer that threw is",
+        "retired for the",
+        "session and names",
+        "itself there."
+      ]
     }
   ]
 }
