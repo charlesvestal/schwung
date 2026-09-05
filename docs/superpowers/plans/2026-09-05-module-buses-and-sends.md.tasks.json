@@ -65,7 +65,7 @@
     {
       "id": 7,
       "subject": "Task 8: Persistence and the param surface",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Buses, voice assignments and send levels round-trip through the slot file; send chains, return levels and A->B round-trip per set; send presets are one store shared by A and B.\n\n**Files:**\n- Modify: `src/modules/chain/dsp/chain_host.c` (`bus<N>:` dispatch in `v2_set_param`/`v2_get_param`)\n- Modify: `src/modules/chain/dsp/chain_patch.c` (bus serialization)\n- Modify: `src/host/shadow_chain_mgmt.c` (`send_fx_N.json`, shared preset store)\n\n**Acceptance Criteria:**\n- [ ] `bus<N>:create`, `:delete`, `:name`, `:voices`, `:send<M>`, `:fx<K>:module`, `:fx<K>:<param>`, `:fx<K>:bypassed` all route through `bus_route.h`\n- [ ] A bus whose stored voice ids no longer exist keeps its chain and REPORTS the orphaned ids; it does not silently re-point to whatever is at that index now\n- [ ] Restored state writes STATE, never SHAPE \u2014 restoring a bus does not reinstantiate a running FX whose module is unchanged\n- [ ] The shim is authoritative for send chains: `send<N>:modules` is one GET returning the whole chain, positional, never compacted\n- [ ] A send preset saved from A loads onto B\n- [ ] Autosave's existing bail-if-empty and skip-if-unchanged guards cover buses without new copies of them\n\n**Verify:** `./scripts/build.sh`; on device, build a two-bus kit, reboot, confirm it comes back; save a preset on A and load it on B\n\n**Steps:**\n- Step 1: Add the `bus<N>:` dispatch\n- Step 2: Serialize\n- Step 3: Send persistence, shim-authoritative\n- Step 4: Shared preset store\n- Step 5: Build and round-trip on device\n- Step 6: Commit\n\n```json:metadata\n{\"files\": [\"send_fx_N.json\", \"src/host/shadow_chain_mgmt.c\", \"src/modules/chain/dsp/chain_host.c\", \"src/modules/chain/dsp/chain_patch.c\"], \"verifyCommand\": \"./scripts/build.sh\", \"acceptanceCriteria\": [\"`bus<N>:create`, `:delete`, `:name`, `:voices`, `:send<M>`, `:fx<K>:module`, `:fx<K>:<param>`, `:fx<K>:bypassed` all route through `bus_route.h`\", \"A bus whose stored voice ids no longer exist keeps its chain and REPORTS the orphaned ids; it does not silently re-point to whatever is at that index now\", \"Restored state writes STATE, never SHAPE \\u2014 restoring a bus does not reinstantiate a running FX whose module is unchanged\", \"The shim is authoritative for send chains: `send<N>:modules` is one GET returning the whole chain, positional, never compacted\", \"A send preset saved from A loads onto B\", \"Autosave's existing bail-if-empty and skip-if-unchanged guards cover buses without new copies of them\"], \"modelTier\": \"deep\"}\n```",
       "blockedBy": [
         3,
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T22:57:58.460898"
+  "lastUpdated": "2026-09-05T23:17:44.040729"
 }
