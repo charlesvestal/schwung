@@ -1887,7 +1887,19 @@ ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/U
 # reboot re-runs init from scratch and reliably loads the new shim — same
 # thing users were doing manually anyway.
 ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
-reboot_and_wait_for_shim "Move came back up but the new shim isn't mapped — install incomplete?"
+# The shim-mapped check assumes the device boots Schwung — false when the boot
+# selector's default is a third-party target (the device then boots that
+# target, no MoveOriginal, no shim, and the check reports a phantom failure;
+# hit in the field with default=dronage). Payload verification happened above;
+# skip the shim probe and say why.
+boot_default=$($ssh_ableton "head -n 1 /data/UserData/boot-targets/default 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$boot_default" ] && [ "$boot_default" != "schwung" ]; then
+  iecho "Boot default is '$boot_default' (not Schwung) — rebooting without the shim check."
+  iecho "  The update is installed; it activates next time Schwung boots."
+  ssh_root_with_retry "reboot" || true
+else
+  reboot_and_wait_for_shim "Move came back up but the new shim isn't mapped — install incomplete?"
+fi
 qecho "  Web UI available at http://move.local:7700"
 
 iecho ""
