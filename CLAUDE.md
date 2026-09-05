@@ -741,7 +741,7 @@ component load gate, and the input-dispatch order. Read it before editing
   was outdated and then sent you to the manager to install it — which shows
   that list beside the button that acts on it. The store pointer printed
   `move.local:7700`. Both are replaced by **Connect** (Global Settings →
-  System → Help & Connect → `[Connect...]`, and every `[Get more...]` row),
+  System → Connect → `[Connect...]`, and every `[Get more...]` row),
   which draws the device's own IP and a QR of `http://<ip>:7700` —
   `src/shared/{qr,connect_screen}.mjs`, `host_get_device_ip()`. The File
   Browser toggle started a bundled binary serving all of `/data/UserData`

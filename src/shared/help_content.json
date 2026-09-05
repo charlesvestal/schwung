@@ -117,12 +117,12 @@
             "always gets the",
             "list.",
             "",
-            "System has one",
-            "extra page, Help &",
-            "Connect: this help,",
-            "and the address of",
-            "Schwung Manager",
-            "with a QR code."
+            "System has a second",
+            "page, Connect: this",
+            "Move's IP address",
+            "and a QR code for",
+            "Schwung Manager,",
+            "plus this help."
           ]
         },
         {
@@ -835,8 +835,8 @@
           "title": "Connect",
           "lines": [
             "Global Settings >",
-            "System > Help &",
-            "Connect > Connect.",
+            "System > Connect >",
+            "[Connect...].",
             "",
             "Shows this Move's",
             "IP address and a",

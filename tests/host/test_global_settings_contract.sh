@@ -144,7 +144,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    */
   const names = plan.pages.map((p) => p.name);
   const WANT_PAGES = ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts",
-                      "System", "Help & Connect"];
+                      "System", "Connect"];
   if (names.join(" | ") !== WANT_PAGES.join(" | ")) {
     fail("the page list should be [" + WANT_PAGES.join(", ") + "], got [" + names.join(", ") + "]");
   }
@@ -161,12 +161,12 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     const m = menuPages[0];
     if (m.level !== "system") fail("the menu page belongs to level " + m.level + ", want system");
     const labels = (m.entries || []).map((e) => e.label);
-    if (labels.join(",") !== "[Help...],[Connect...]") {
-      fail("the System menu should offer [Help...] and [Connect...], got " + labels.join(","));
+    if (labels.join(",") !== "[Connect...],[Help...]") {
+      fail("the System menu should offer [Connect...] then [Help...], got " + labels.join(","));
     }
     const actions = (m.entries || []).map((e) => e.action);
-    if (actions.join(",") !== "help,connect") {
-      fail("the System menu actions should be help,connect -- got " + actions.join(",") +
+    if (actions.join(",") !== "connect,help") {
+      fail("the System menu actions should be connect,help -- got " + actions.join(",") +
            " (runGlobalActionFromGrid dispatches on these strings)");
     }
   }
@@ -654,7 +654,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 
 if (failures) process.exit(1);
 console.log("PASS: global settings contract — six levels (7/9/6/1/4/1 params, System also " +
-            "carrying the Help & Connect menu), no section SPLIT and no length limit (Audio " +
+            "carrying the Connect menu), no section SPLIT and no length limit (Audio " +
             "holds nine), every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +

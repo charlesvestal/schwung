@@ -620,9 +620,30 @@ export const SYSTEM_PARAMS = [
  * TWO pages for one section, which is a deliberate split and not the silent
  * kind -- see the note on GLOBAL_SECTIONS.
  */
+/*
+ * THE PAGE IS CALLED "CONNECT", NOT "HELP & CONNECT", AND THAT IS A MEASURED
+ * DECISION RATHER THAN A PREFERENCE.
+ *
+ * The header's right-hand side has about 60px beside "SETTINGS": "CONNECT" is
+ * 42px and fits, "HELP" is 24px and fits, "HELP & CONNECT" is 84px and is
+ * silently cut to "HELP & CONN" -- rendered and looked at, not guessed. So one
+ * of the two names the page.
+ *
+ * It is Connect, because HELP HAS A SECOND DOOR AND CONNECT WOULD HAVE NONE.
+ * The same viewer is reachable from Master FX -> Settings -> Help
+ * (handleMasterFxSettingsAction), so a user who cannot find it here has
+ * somewhere else to go. The Connect screen's only other entrance is a
+ * `[Get more...]` row inside a module picker, which is not somewhere you look
+ * for your own IP address.
+ *
+ * [Connect...] is FIRST for the same reason it names the page: with the screen
+ * reader on, landing on row 0 of a page called Connect and hearing "Connect"
+ * is the version of this screen that explains itself. [Help...] is the row
+ * below and both are on screen at once -- it is a two-row menu.
+ */
 export const SYSTEM_ACTIONS = [
-    { label: "[Help...]", action: "help" },
     { label: "[Connect...]", action: "connect" },
+    { label: "[Help...]", action: "help" },
 ];
 
 /* --------------------------------------------------------------- assembly */
@@ -653,7 +674,7 @@ export const GLOBAL_SECTIONS = [
     { id: "set_pages", label: "Set Pages", params: SET_PAGES_PARAMS },
     { id: "shortcuts", label: "Shortcuts", params: SHORTCUTS_PARAMS },
     { id: "system", label: "System", params: SYSTEM_PARAMS, menu: SYSTEM_ACTIONS,
-      menu_label: "Help & Connect" },
+      menu_label: "Connect" },
 ];
 
 /** Every declared param, across every section. */

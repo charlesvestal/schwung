@@ -4283,7 +4283,10 @@ let connectIpReadAt = 0;
 
 function connectDeviceIp(force) {
     const now = Date.now();
-    if (!force && connectIp !== '' && (now - connectIpReadAt) < CONNECT_IP_TTL_MS) return connectIp;
+    /* connectIpReadAt, not connectIp, is the freshness test: "" is a real
+     * answer (the device is off the network) and treating it as "not read yet"
+     * would walk getifaddrs on every frame of exactly the screen that has the
+     * least to draw. */
     if (!force && connectIpReadAt !== 0 && (now - connectIpReadAt) < CONNECT_IP_TTL_MS) return connectIp;
     connectIpReadAt = now;
     try {
@@ -10677,9 +10680,17 @@ function applyMasterFxModuleSelection() {
     const selected = masterFxPickerItems[selectedMasterFxModuleIndex];
 
     if (selected && selected.id === "__get_more__") {
-        /* "Where do I get more of these" is answered by the address of the
-         * machine that installs them, so Back returns to this picker. */
-        selectingMasterFxModule = false;
+        /*
+         * "Where do I get more of these" is answered by the address of the
+         * machine that installs them, and Back comes straight back to THIS
+         * PICKER -- `selectingMasterFxModule` is deliberately left true.
+         *
+         * The store browser had to clear it and rebuild the picker on the way
+         * back (scanForAudioFxModules + enterMasterFxModuleSelect), because it
+         * took the screen over and left nothing to return to. Connect touches
+         * no picker state at all, so the list, the cursor and the list filter
+         * are all still exactly where they were.
+         */
         enterConnect(VIEWS.MASTER_FX);
         return;
     }
