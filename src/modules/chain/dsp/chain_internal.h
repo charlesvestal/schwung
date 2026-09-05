@@ -47,6 +47,22 @@
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
 #define MAX_AUDIO_FX 8      /* Max FX loaded per active chain */
+
+/* Buses a slot can hold, BESIDE Main. Main is bus 0 and is implicit: it is
+ * never created or deleted, holds every voice not assigned elsewhere, and its
+ * insert chain IS the slot's existing main chain. So a slot holds up to
+ * SLOT_BUSES + 1 mixing destinations and (SLOT_BUSES + 1) * MAX_AUDIO_FX
+ * positions.
+ *
+ * Raising this should be a one-line change: all "bus<N>:" key routing goes
+ * through bus_route.h with this passed in as bus_count, and every loop over
+ * buses is bounded by this name. Read out of this line by
+ * tests/host/test_bus_route.sh. The bitmask in bus_mix_active_mask is a
+ * uint32_t, so 32 is the hard ceiling. */
+#define SLOT_BUSES 4
+_Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= 32,
+               "SLOT_BUSES must fit bus_mix_active_mask's uint32_t");
+
 #define MAX_MIDI_FX 8       /* Max native MIDI FX modules per chain */
 #define CHAIN_PRE_DELAY_MAX 32  /* Pre-mode inject-delay buffer: one clock's output */
 #define MAX_PATH_LEN 256

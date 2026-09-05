@@ -55,7 +55,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
-	$(BUILD_DIR)/test_bus_mix
+	$(BUILD_DIR)/test_bus_mix \
+	$(BUILD_DIR)/test_bus_route
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -72,6 +73,14 @@ endif
 PERF_MFX_SLOTS := $(shell awk '/^\#define PERF_MASTER_FX_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
 ifneq ($(strip $(PERF_MFX_SLOTS)),$(strip $(MASTER_FX_SLOTS)))
 $(error PERF_MASTER_FX_SLOTS ($(PERF_MFX_SLOTS)) != MASTER_FX_SLOTS ($(MASTER_FX_SLOTS)) - update src/host/perf_snapshot.h)
+endif
+
+# Same reasoning as MASTER_FX_SLOTS above, for the bus cap: bus_route.h takes
+# bus_count as a runtime parameter and holds no copy of SLOT_BUSES, so this is
+# the one place the test's range is tied to the shipped cap.
+SLOT_BUSES := $(shell awk '/^\#define SLOT_BUSES /{print $$3}' ../../src/modules/chain/dsp/chain_internal.h)
+ifeq ($(strip $(SLOT_BUSES)),)
+$(error could not read SLOT_BUSES from ../../src/modules/chain/dsp/chain_internal.h)
 endif
 
 .DEFAULT_GOAL := all
@@ -144,6 +153,9 @@ $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../sr
 
 $(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../src/modules/chain/dsp/chain_internal.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SLOT_BUSES=$(SLOT_BUSES) $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \
