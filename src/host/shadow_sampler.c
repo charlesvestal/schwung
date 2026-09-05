@@ -225,7 +225,9 @@ void sampler_init(const sampler_host_t *host, float *sampler_set_tempo_ptr) {
         }
     }
     /* The stem rings, allocated up front for the same reason: the RT
-     * half of a recording start only resets positions. ~1.7 MB, resident
+     * half of a recording start only resets positions. ~2.4 MB (seven rings
+     * of SAMPLER_RING_BUFFER_SIZE, since the send returns became stems),
+     * resident
      * whether or not stems are ever switched on — the alternative is a
      * malloc on the path that arms a take, and a failure there would have to
      * be discovered in the middle of one. */

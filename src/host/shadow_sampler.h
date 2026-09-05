@@ -95,8 +95,10 @@ typedef struct {
  * track and Schwung's synth are inseparable after that point, and splitting
  * them before it would hand back stems without their FX. So the four slot
  * stems ARE the four tracks, and under Move->Schwung they sum to the master
- * exactly: the reconstruction is composited from those four Link Audio
- * channels and nothing else. (Which is also why Move's metronome is missing
+ * exactly -- UNTIL A GLOBAL SEND CARRIES SIGNAL: the reconstruction is
+ * composited from those four Link Audio channels and nothing else, but a send
+ * return belongs to no slot, which is why SendA/SendB exist as stems below.
+ * With sends silent the four-way statement still holds as written. (Which is also why Move's metronome is missing
  * from it -- see shadow_metronome.h. Nothing else is in there either.)
  *
  * The fifth stem is MOVE, and it exists for the case the other four cannot
