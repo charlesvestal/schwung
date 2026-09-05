@@ -41,7 +41,13 @@ import {
 
 export function enterMasterFxSettings() {
     const { scanForAudioFxModules, loadMasterFxChainConfig,
-            getMasterFxSlotModule, setView, VIEWS } = ctx;
+            getMasterFxSlotModule, setView, VIEWS, fxBus } = ctx;
+
+    /* Whatever bus the picker put us on. The name is read here and used for
+     * every announcement below, so the screen never says "Master FX" while
+     * showing Send A's chain — which is exactly what a hardcoded string does
+     * the first time a screen is parameterised. */
+    const busLabel = fxBus().label;
 
     ctx.MASTER_FX_OPTIONS = scanForAudioFxModules();
     loadMasterFxChainConfig();
@@ -55,9 +61,9 @@ export function enterMasterFxSettings() {
      * the `+`, whose label already is the whole instruction — "Add FX, Empty"
      * would say nothing. */
     const comp = ctx.MASTER_FX_CHAIN_COMPONENTS[0];
-    if (!comp) announce("Master FX");
-    else if (comp.kind === "add") announce(`Master FX, ${comp.label}`);
-    else announce(`Master FX, ${comp.label} ${getMasterFxSlotModule(0) || "Empty"}`);
+    if (!comp) announce(busLabel);
+    else if (comp.kind === "add") announce(`${busLabel}, ${comp.label}`);
+    else announce(`${busLabel}, ${comp.label} ${getMasterFxSlotModule(0) || "Empty"}`);
 }
 
 /* ---- Display name (used in slot list) ----------------------------------- */
@@ -77,6 +83,22 @@ export function getMasterFxDisplayName() {
     return parts.length > 0 ? parts.join("+") : "None";
 }
 
+/*
+ * Back leaves a BUS for the FX-bus picker, not for Move, so the footer may not
+ * keep saying EXIT — a footer names the verb of the gesture, and this one now
+ * goes up a level instead of out.
+ *
+ * DERIVED from the shared chrome's pairs rather than written out again: the two
+ * editors must spell JOG/SEL and CLK/OPEN identically, and the only pair that
+ * genuinely differs is the one whose destination differs. A second literal here
+ * is how the two footers drift, which is the drift the shared chrome exists to
+ * stop.
+ */
+const FX_BUS_BACK_LABEL = "BUS";
+function fxBusHints(hints) {
+    return (hints || []).map(p => (p && p[0] === "BACK") ? [p[0], FX_BUS_BACK_LABEL] : p);
+}
+
 /* ---- Draw --------------------------------------------------------------- */
 
 export function drawMasterFx() {
@@ -90,7 +112,7 @@ export function drawMasterFx() {
             drawHelpDetail, drawHelpList,
             MASTER_CHAIN_TARGET, chainLfoTargetMap, chainComponentBypassed,
             ensureMasterFxConfigFresh, isShiftHeld,
-            knobCardDrawState } = ctx;
+            knobCardDrawState, fxBus, sendBusLevelRead } = ctx;
 
     clear_screen();
 
@@ -259,7 +281,23 @@ export function drawMasterFx() {
             infoLine = "(empty)";
         }
     } else if (selectedComp && selectedComp.kind === "settings") {
-        infoLine = "Configure master FX";
+        /* A send's settings box shows the LEVELS on the band, not just a verb.
+         * "A send's editor shows its return level" is the acceptance criterion,
+         * and the band is the only place on this screen with room for a number
+         * — the header's right side is four characters and the diagram row is
+         * boxes. The values come from the same reader the settings rows use,
+         * and a null (read did not complete) prints "--" rather than a zero. */
+        const bus = fxBus();
+        if (bus.busLevelKeys.length > 0) {
+            const parts = bus.busLevelKeys.map(k => {
+                const v = sendBusLevelRead(k);
+                const shown = (v === null) ? "--" : String(v);
+                return (k === "return") ? `Ret ${shown}` : `>B ${shown}`;
+            });
+            infoLine = parts.join("  ");
+        } else {
+            infoLine = "Configure master FX";
+        }
     }
 
     /*
@@ -286,12 +324,16 @@ export function drawMasterFx() {
      * out deliberately — the gesture did not exist then. It does now.
      */
     drawChainEditorBands(dctx, {
-        headerLeft: currentMasterPresetName || "Master FX",
-        headerRight: "MFX",
+        /* The preset name is the master bus's alone — a send has no preset
+         * store — so a send names itself here instead. */
+        headerLeft: fxBus().hasPresets
+            ? (currentMasterPresetName || fxBus().label)
+            : fxBus().label,
+        headerRight: fxBus().short,
         label,
         info: infoLine,
-        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
-                             : CHAIN_HINTS_AT_REST,
+        hints: fxBusHints(isShiftHeld() ? shiftHintsFor(selectedComp)
+                                        : CHAIN_HINTS_AT_REST),
     });
 
     /*
@@ -342,9 +384,9 @@ export function drawMasterFx() {
  */
 function drawMasterFxSettingsMenu() {
     const { currentMasterPresetName, selectedMasterFxSetting,
-            getMasterFxSettingsItems, getMasterFxSettingValue } = ctx;
+            getMasterFxSettingsItems, getMasterFxSettingValue, fxBus } = ctx;
 
-    const title = currentMasterPresetName || "Master FX";
+    const title = (fxBus().hasPresets && currentMasterPresetName) || fxBus().label;
     drawHeader(truncateText(title, 18));
 
     const items = getMasterFxSettingsItems();
@@ -397,7 +439,7 @@ function drawMasterFxModuleSelect() {
         /* The slot picker's header grammar — which chain, then which position
          * in it — with MFX where the slot editor says S1. Same two words the
          * Master FX chain view already puts on the right of its own band. */
-        headerLeft: `MFX > ${comp ? comp.label : "FX"}`,
+        headerLeft: `${ctx.fxBus().short} > ${comp ? comp.label : "FX"}`,
         entries: masterFxPickerItems,
         index: selectedMasterFxModuleIndex,
         currentId: comp ? (masterFxConfig[comp.key]?.module || "") : "",

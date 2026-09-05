@@ -142,6 +142,13 @@ function render(cap, selected, opts = {}) {
     /* Costs no IPC by construction: the card is handed its values, it never
        reads. A card here must not move the read budget below. */
     knobCardDrawState: () => (opts.card || null),
+    /* The FX bus the editor is on. drawMasterFx is parameterised by it (the
+       key prefix, the header, the LFO question), so a harness has to say which
+       bus it is rendering. Master, here: every case below is a master case. */
+    fxBus: () => ({ id: "master", label: "Master FX", short: "MFX",
+                    prefix: "master_fx:", send: -1, hasLfos: true,
+                    hasPresets: true, busLevelKeys: [] }),
+    sendBusLevelRead: () => null,
   };
 
   const getSlotParam = (slot, key) => shadow_get_param(slot, key);
@@ -174,6 +181,16 @@ function render(cap, selected, opts = {}) {
     drawMasterNamePreview: () => {}, drawMasterConfirmOverwrite: () => {},
     drawMasterConfirmDelete: () => {}, drawMasterPresetPicker: () => {},
     drawMasterFxSettingsMenu: () => {}, drawMasterFxModuleSelect: () => {},
+    /* The Back-word rewriter that lives beside drawMasterFx — a free
+       identifier under the lift, supplied REAL because what it changes is a
+       word in the footer. */
+    fxBusHints: (() => {
+      const fAt = mjsSrc.indexOf("function fxBusHints(");
+      if (fAt < 0) { console.error("FAIL: fxBusHints is gone"); process.exit(1); }
+      return new Function("FX_BUS_BACK_LABEL",
+        mjsSrc.slice(fAt, mjsSrc.indexOf("\n}\n", fAt) + 2) +
+        "\nreturn fxBusHints;")("BUS");
+    })(),
     drawKnobCard,
   };
   const names = Object.keys(deps);

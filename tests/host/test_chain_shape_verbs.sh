@@ -93,13 +93,16 @@ function masterTarget(cfg, onInvalidate) {
   const end = src.indexOf("\n};\n", at);
   if (at < 0 || end < 0) { fail("MASTER_CHAIN_TARGET is gone"); return null; }
   const held = { cfg: cfg || { midiFx: [], synth: null, fx: [] } };
+  /* fxBus: the target keys are prefixed by the FX bus the editor is on, so a
+     lift has to say which. Master, here. */
   const t = new Function("parseChainId", "MASTER_FX_SLOTS", "masterFxChainComponents",
-    "masterFxChainConfig", "setMasterFxChainConfig", "invalidateMasterFxConfig",
+    "masterFxChainConfig", "setMasterFxChainConfig", "invalidateMasterFxConfig", "fxBus",
     src.slice(at, end + 4) + "\nreturn MASTER_CHAIN_TARGET;")(
     parseChainId, 8,
     () => chainEditorComponents(held.cfg, { hasSynth: false, hasMidiFx: false }),
     () => held.cfg, (c) => { held.cfg = c; },
-    () => { if (onInvalidate) onInvalidate(); });
+    () => { if (onInvalidate) onInvalidate(); },
+    () => ({ id: "master", label: "Master FX", short: "MFX", prefix: "master_fx:", send: -1, hasLfos: true, hasPresets: true, busLevelKeys: [] }));
   t.__held = held;
   return t;
 }

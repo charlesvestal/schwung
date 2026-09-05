@@ -117,7 +117,11 @@ import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter,
   from "./src/shared/param_pages/render_page_movy.mjs";
 import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
-import { drawMenuHeader } from "./src/shared/menu_layout.mjs";
+import { drawMenuHeader, drawMenuList, drawMenuFooter }
+  from "./src/shared/menu_layout.mjs";
+/* The list rect the FX-bus picker hands drawMenuList, from the same module the
+   device reads it from. */
+import { LIST_TOP_Y, FOOTER_RULE_Y } from "./src/shared/chain_ui_views.mjs";
 import { truncateText } from "./src/shared/chain_ui_views.mjs";
 import { drawChainEditorBands, drawChainPicker } from "./src/shared/chain_editor_chrome.mjs";
 
@@ -346,7 +350,33 @@ const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
      knobCardDrawState is deliberately NOT here: drawMasterFx destructures it
      from ctx, and a const cannot shadow a parameter of the same name. It is
      supplied on mfxCtx below instead, where a missing one is a TypeError. */
+  /* fxBusHints, the file own Back-word rewriter. REAL, lifted from the same
+     file: what it changes is a word in the footer, and a stub would baseline a
+     footer nobody draws. */
+  "fxBusHints",
   "drawKnobCard"];
+/* The real rewriter, from the same file, applied to whatever pairs the
+   chrome hands it. */
+const FX_BUS_HINTS = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "fxBusHints",
+                              ["FX_BUS_BACK_LABEL"])("BUS");
+/* The three FX buses, as shadow_ui.js declares them. Written out here rather
+   than lifted because FX_BUSES sits inside a 1500-line declaration block that
+   this harness has no other reason to evaluate; test_fx_bus_contract.sh is what
+   fails if the two drift. */
+/* Which bus renderMaster is currently drawing. A CELL, not a captured value:
+   the lifted target and its key rule are built once and every case changes the
+   bus underneath them. */
+let mBusCell = { cur: null };
+const FX_BUS_STUBS = {
+  master: { id: "master", label: "Master FX", short: "MFX", prefix: "master_fx:",
+            send: -1, hasLfos: true,  hasPresets: true,  busLevelKeys: [] },
+  send1:  { id: "send1",  label: "Send A",    short: "SNDA", prefix: "send1:",
+            send: 0,  hasLfos: false, hasPresets: false,
+            busLevelKeys: ["return", "to_send2"] },
+  send2:  { id: "send2",  label: "Send B",    short: "SNDB", prefix: "send2:",
+            send: 1,  hasLfos: false, hasPresets: false, busLevelKeys: ["return"] },
+};
+
 const mkMasterDraw = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "drawMasterFx", MFX_DRAW_DEPS);
 
 function renderMaster(c) {
@@ -357,10 +387,16 @@ function renderMaster(c) {
      bypass markers through them, so this harness must supply the REAL ones or
      it would be snapshotting a screen the device never draws. */
   const mGetSlotParam = (slot, key) => (c.state[key] !== undefined ? c.state[key] : "");
-  const mTarget = new Function("parseChainId", "MASTER_FX_SLOTS",
+  mBusCell.cur = c.bus || FX_BUS_STUBS.master;
+  const mTarget = new Function("parseChainId", "MASTER_FX_SLOTS", "fxBus",
     uiSrc.slice(uiSrc.indexOf("const MASTER_CHAIN_TARGET = {"),
                 uiSrc.indexOf("\n};\n", uiSrc.indexOf("const MASTER_CHAIN_TARGET = {")) + 4) +
-    "\nreturn MASTER_CHAIN_TARGET;")(parseChainId, MASTER_FX_SLOTS);
+    "\nreturn MASTER_CHAIN_TARGET;")(parseChainId, MASTER_FX_SLOTS,
+    /* Which FX bus the target addresses — its whole key rule is the bus prefix,
+       so this MUST follow the case or a send case would silently read the
+       master bus keys and render identically to it. Held in a cell rather
+       than captured, because the target is built once and the case changes. */
+    () => mBusCell.cur);
   const mChainTargetGetParam = lift("chainTargetGetParam", ["getSlotParam"])(mGetSlotParam);
   const mLfoMap = lift("chainLfoTargetMap", ["getSlotParam"])(mGetSlotParam);
   const mBypassed = lift("chainComponentBypassed",
@@ -392,13 +428,23 @@ function renderMaster(c) {
     /* Same shape renderChain passes drawChainEdit, so a card case on one
        screen and a card case on the other are driven from identical data. */
     knobCardDrawState: () => (c.card || null),
+    /* WHICH FX bus this case is. drawMasterFx is parameterised by it — the key
+       prefix, the header text and side, whether a preset name may appear, and
+       whether the LFO markers are asked for at all — so a case that does not
+       say defaults to the master bus and the send cases say so explicitly.
+       These stubs mirror FX_BUSES in shadow_ui.js. */
+    fxBus: () => (c.bus || FX_BUS_STUBS.master),
+    /* The bus-level scalars the settings band prints for a send. null is "the
+       read did not complete" and must print as "--", which is one of the
+       cases below. */
+    sendBusLevelRead: (k) => (c.levels && (k in c.levels)) ? c.levels[k] : null,
   };
   const draw = mkMasterDraw(mfxCtx, drawMenuHeader, drawChainDiagram, DIAGRAM_W,
     DIAGRAM_Y, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
     boom("drawMasterFxModuleSelect"), drawChainEditorBands, CHROME_SHIFT_HINTS,
-    CHROME_REST_HINTS, drawKnobCard);
+    CHROME_REST_HINTS, FX_BUS_HINTS, drawKnobCard);
   draw();
   clearGlobals();
   return fb;
@@ -480,11 +526,54 @@ function renderMasterPicker(c) {
     masterFxPickerItems: c.entries,
     selectedMasterFxModuleIndex: c.index,
     masterFxConfig: c.config,
+    /* The picker header names the bus. Master, here. */
+    fxBus: () => ({ id: "master", label: "Master FX", short: "MFX",
+                    prefix: "master_fx:", send: -1, hasLfos: true,
+                    hasPresets: true, busLevelKeys: [] }),
   }, drawChainPicker);
   draw();
   clearGlobals();
   return fb;
 }
+
+/* ======================================================================== */
+/* THE FX-BUS PICKER                                                         */
+/* ======================================================================== */
+/*
+ * The screen Shift+Vol+Menu and hold-Menu now open: three rows, Master FX,
+ * Send A and Send B, on the ONE list engine (drawMenuHeader / drawMenuList /
+ * drawMenuFooter). Rendered here because it is the only way into the sends and
+ * because the module pickers already proved what an unrendered screen does —
+ * they diverged completely and a user found it before any test did.
+ *
+ * drawFxBusPicker is lifted out of shadow_ui.js with its free identifiers
+ * supplied. FX_BUSES is supplied as the same stub table the send editor cases
+ * use, so a row label that changed in one place and not the other is a diff in
+ * a picture.
+ */
+const mkBusPicker = lift("drawFxBusPicker",
+  ["clear_screen", "drawHeader", "drawMenuList", "drawFooter", "FX_BUSES",
+   "selectedFxBusRow", "fxBusSummaries", "LIST_TOP_Y", "FOOTER_RULE_Y"]);
+
+function renderBusPicker(c) {
+  const fb = createFramebuffer();
+  installGlobals(fb, () => "");
+  mkBusPicker(fb.clearScreen, drawMenuHeader, drawMenuList, drawMenuFooter,
+              [FX_BUS_STUBS.master, FX_BUS_STUBS.send1, FX_BUS_STUBS.send2],
+              c.row, c.summaries, LIST_TOP_Y, FOOTER_RULE_Y)();
+  clearGlobals();
+  return fb;
+}
+
+const busPickerCases = [
+  /* Every row, so the highlight and the value column are pinned on each. */
+  { id: "buspicker/row-master", row: 0, summaries: ["2 FX", "Empty", "Empty"] },
+  { id: "buspicker/row-send-a", row: 1, summaries: ["2 FX", "1 FX", "Empty"] },
+  { id: "buspicker/row-send-b", row: 2, summaries: ["2 FX", "1 FX", "3 FX"] },
+  /* A summary read that did not complete prints "--", never "Empty" — that is
+     what would send someone looking for the reverb they just loaded. */
+  { id: "buspicker/unread",     row: 0, summaries: ["--", "--", "--"] },
+];
 
 /* ======================================================================== */
 /* MASTER FX SETTINGS, AS THE KNOB GRID                                      */
@@ -805,6 +894,10 @@ const addMaster = (id, o) => {
   masterCases.push({ id, sel, config, state: o.extra || {},
                      card: o.card || null, shift: !!o.shift,
                      presetName: o.presetName || "",
+                     /* Which FX bus. Absent means the master bus, so every case
+                        written before the sends existed keeps its meaning. */
+                     bus: o.bus ? FX_BUS_STUBS[o.bus] : null,
+                     levels: o.levels || null,
                      options: o.options || [{ id: "cloudseed", name: "CloudSeed" }] });
 };
 
@@ -852,6 +945,35 @@ addMaster("master/len2/info-preset",  { modules: M2, sel: "fx2",
   extra: { "master_fx:fx2:preset_name": "Cathedral" } });
 addMaster("master/len2/info-optname", { modules: M2, sel: "fx2",
   options: [{ id: "cloudseed", name: "CloudSeed Reverb" }] });
+
+/* --- THE TWO SEND BUSES, through the same editor -------------------------
+ *
+ * The whole point of the FX-bus work is that these are not a second screen:
+ * every case here is renderMaster with a different `bus`, so a difference
+ * between a send and the master bus can only come from something that reads
+ * fxBus(). What SHOULD differ, and what these cases pin:
+ *   - the header names the bus (SNDA / SNDB, and no preset name),
+ *   - the settings band prints the LEVELS instead of a verb,
+ *   - Send A has a -> Send B row and Send B does not,
+ *   - no LFO markers, ever, even with the master LFO keys set in `extra`.
+ */
+addMaster("send/a/len0/sel-add-fx", { bus: "send1", modules: [], sel: "add_fx" });
+addMaster("send/a/len2/sel-fx1",    { bus: "send1", modules: M2, sel: "fx1" });
+addMaster("send/a/len2/sel-fx2",    { bus: "send1", modules: M2, sel: "fx2" });
+addMaster("send/b/len2/sel-fx1",    { bus: "send2", modules: M2, sel: "fx1" });
+addMaster("send/a/len5/sel-fx3",    { bus: "send1", modules: M5, sel: "fx3" });
+/* The settings box: Send A shows BOTH levels, Send B shows one. */
+addMaster("send/a/len2/sel-settings", { bus: "send1", modules: M2, sel: "settings",
+  levels: { return: 100, to_send2: 40 } });
+addMaster("send/b/len2/sel-settings", { bus: "send2", modules: M2, sel: "settings",
+  levels: { return: 64 } });
+/* A level whose read did not complete prints "--", never a zero. */
+addMaster("send/a/len2/sel-settings-unread", { bus: "send1", modules: M2, sel: "settings" });
+/* Bypass still marks a box; the LFO keys are set and must mark NOTHING,
+   because a send has no LFOs and is never asked. */
+addMaster("send/a/len2/bypassed-no-lfo", { bus: "send1", modules: M2, sel: "fx2",
+  extra: { "send1:fx1:bypassed": "1",
+           "send1:lfo1:enabled": "1", "send1:lfo1:target": "fx1" } });
 
 /* --- the knob card, over the Master FX diagram (4b) ---------------------- *
  *
@@ -1046,6 +1168,7 @@ run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/slot/" + c.id.slic
 run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/master/" + c.id.slice(7) })),
     renderMasterPicker, "picker");
 run(settingsCases, renderSettings, "settings");
+run(busPickerCases, renderBusPicker, "picker");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
@@ -1170,8 +1293,9 @@ if (!failures) {
 
 if (failures) process.exit(1);
 console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain, " +
-            masterCases.length + " Master FX, " + (pickerCases.length * 2) +
-            " module-picker and " + settingsCases.length +
+            masterCases.length + " FX-bus (master and send), " +
+            (pickerCases.length * 2) + " module-picker, " + busPickerCases.length +
+            " FX-bus-picker and " + settingsCases.length +
             " Master FX settings renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");

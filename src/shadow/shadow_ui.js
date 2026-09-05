@@ -448,7 +448,8 @@ const VIEWS = {
     PRESET_DETAIL: "modpresetdetail", // Load/Delete a selected module preset
     COMPONENT_SELECT: "compselect", // Select module for a component
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
-    MASTER_FX: "masterfx",    // Master FX selection
+    MASTER_FX: "masterfx",    // One FX bus's 8-position editor (master or a send)
+    FX_BUS_PICKER: "fxbuspicker", // Which FX bus to edit: Master FX, Send A, Send B
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
     PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
@@ -3202,17 +3203,152 @@ function slotChainTarget(slotIndex) {
     };
 }
 
-/* The master bus chain. One section, no synth, addressed at slot 0 under the
- * "master_fx:" prefix. */
+/*
+ * THE THREE FX BUSES, and why there is still only one chain TARGET.
+ *
+ * Master FX, Send A and Send B are the same machinery: 8 positions of
+ * master_fx_slot_t in the shim, one editor, one diagram, one picker. What
+ * separates them on the wire is a key PREFIX and nothing else — "master_fx:",
+ * "send1:", "send2:" — so the editor is parameterised by that prefix rather
+ * than triplicated. `currentFxBusIndex` is the one piece of state the FX-bus
+ * picker sets.
+ *
+ * Two things a send does NOT have, and both are declared here rather than
+ * inferred at the draw site:
+ *   hasLfos  — the shim serves no send LFOs at all, so asking for one is an
+ *              IPC round trip that can only answer "". A false here is what
+ *              keeps four reads per frame off a send's diagram.
+ *   presets  — a send has no preset store yet; the settings menu is built from
+ *              this flag rather than from a `kind === "send"` at the menu, so
+ *              a future send preset store is one word here.
+ * A send DOES have a return level, and Send A additionally has the A->B feed;
+ * `busLevelKeys` names them so the settings menu and the info band read one
+ * list instead of two copies of the same conditional.
+ */
+const FX_BUSES = [
+    { id: "master", label: "Master FX", short: "MFX",  prefix: "master_fx:",
+      send: -1, hasLfos: true,  hasPresets: true,  busLevelKeys: [] },
+    { id: "send1",  label: "Send A",    short: "SNDA", prefix: "send1:",
+      send: 0,  hasLfos: false, hasPresets: false, busLevelKeys: ["return", "to_send2"] },
+    { id: "send2",  label: "Send B",    short: "SNDB", prefix: "send2:",
+      send: 1,  hasLfos: false, hasPresets: false, busLevelKeys: ["return"] },
+];
+let currentFxBusIndex = 0;
+function fxBus() { return FX_BUSES[currentFxBusIndex] || FX_BUSES[0]; }
+function fxBusIsMaster() { return fxBus().send < 0; }
+
+/* Send levels are 0..127 so they survive a CC round trip and need no float in
+ * the shim's audio path — the same range BUS_MIX_SEND_LEVEL_MAX names on the C
+ * side, mirrored here the way MASTER_FX_SLOTS is. A detent per unit would make
+ * a full sweep 127 turns of the jog, so the row steps by four. */
+const SEND_LEVEL_MAX = 127;
+const SEND_LEVEL_STEP = 4;
+
+/* Which row the FX-bus picker is on. Seeded from the bus you are already in,
+ * so opening the picker from Send B puts the cursor on Send B rather than
+ * making you jog back to where you were. */
+let selectedFxBusRow = 0;
+
+/*
+ * Open one bus's editor. THE ONE PLACE currentFxBusIndex changes.
+ *
+ * Everything the editor holds about "the chain" is keyed by position, not by
+ * bus — masterFxConfig, the selection, the chain length override — so switching
+ * bus must drop all of it. It is dropped rather than stashed per bus because
+ * the shim is the authority on what is loaded (`<prefix>modules`) and
+ * loadMasterFxChainConfig re-reads it on entry: a stashed mirror could only be
+ * staler than that read, never fresher.
+ */
+function enterFxBus(index) {
+    currentFxBusIndex = (index >= 0 && index < FX_BUSES.length) ? index : 0;
+    selectedFxBusRow = currentFxBusIndex;
+    invalidateMasterFxConfig();
+    masterFxChainLength = -1;
+    selectedMasterFxComponent = 0;
+    inMasterFxSettingsMenu = false;
+    editingMasterFxSetting = false;
+    inMasterPresetPicker = false;
+    selectingMasterFxModule = false;
+    /* A preset name belongs to the master bus's preset store; a send has none,
+     * so carrying the name across would put Master FX's preset in a send's
+     * header band. */
+    if (!fxBusIsMaster()) currentMasterPresetName = "";
+    enterMasterFxSettings();
+}
+
+/* A one-line summary of what a bus holds, for the picker's value column. It
+ * reads the MIRROR for the bus you are in and asks the shim for the others —
+ * three positional GETs at most, once per picker entry, never per frame. */
+function fxBusSummary(index) {
+    const bus = FX_BUSES[index];
+    if (typeof shadow_get_param !== "function") return "";
+    let raw;
+    try { raw = shadow_get_param(0, bus.prefix + "modules"); } catch (e) { return "--"; }
+    /* Branch on the RAW value: null is "the read did not complete" and must not
+     * be drawn as "Empty", which is what would send someone looking for the
+     * reverb they just loaded. */
+    if (raw === null || raw === undefined) return "--";
+    if (raw === "") return "Empty";
+    let arr;
+    try { arr = JSON.parse(raw); } catch (e) { return "--"; }
+    if (!Array.isArray(arr)) return "--";
+    const ids = arr.map(e => (e && e.id) || "").filter(s => s);
+    /* A bare count reads as a number of nothing in a value column. "Empty" is
+       the other half of the same sentence, so the unit belongs on both. */
+    return ids.length ? `${ids.length} FX` : "Empty";
+}
+
+let fxBusSummaries = ["", "", ""];
+
+function enterFxBusPicker() {
+    selectedFxBusRow = currentFxBusIndex;
+    /* Read the three summaries ONCE, on entry. Three IPC round trips at ~2.8 ms
+     * each is already more than a whole page render, so they must never land on
+     * the draw path of a screen that redraws every frame. */
+    fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
+    setView(VIEWS.FX_BUS_PICKER);
+    needsRedraw = true;
+    announce(`FX Buses, ${FX_BUSES[selectedFxBusRow].label}`);
+}
+
+function drawFxBusPicker() {
+    clear_screen();
+    drawHeader("FX Buses");
+    drawMenuList({
+        items: FX_BUSES,
+        selectedIndex: selectedFxBusRow,
+        getLabel: (item) => item.label,
+        getValue: (item) => fxBusSummaries[FX_BUSES.indexOf(item)] || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true
+    });
+    /* The verb of the row under the CURSOR, and only two pairs — drawFooter
+     * drops a pair that does not fit along with every pair after it, so the
+     * primary action goes FIRST. */
+    drawFooter(["Click: open", "Back: exit"]);
+}
+
+/* The FX bus chain the editor is pointing at. One section, no synth, addressed
+ * at slot 0 under the current bus's prefix.
+ *
+ * `id` and `label` are GETTERS, not constants, and that is load-bearing:
+ * several caches downstream are keyed by target.id (display names, component
+ * errors), so a fixed "master" would have Send A serving Master FX's cached
+ * module name at the same position. Making them follow the bus makes every one
+ * of those caches per-bus for free. Nothing branches on `kind`. */
 const MASTER_CHAIN_TARGET = {
     kind: "master",
     /* See slotChainTarget.id. */
-    id: "master",
+    get id() { return fxBus().id; },
     slot: 0,
-    /* See slotChainTarget.label. "MFX", never "S1" — Master FX is addressed at
-     * slot 0 but it is not instrument slot 1, and a title that said so would be
-     * the conflation that comment warns about. */
-    label: "MFX",
+    /* See slotChainTarget.label. "MFX", never "S1" — the master bus is
+     * addressed at slot 0 but it is not instrument slot 1, and a title that
+     * said so would be the conflation that comment warns about. A send says
+     * SNDA / SNDB for the same reason. */
+    get label() { return fxBus().short; },
+    /* False on a send, so chainLfoTargetMap skips two reads per frame rather
+     * than asking for a key the shim does not serve. */
+    get hasLfos() { return fxBus().hasLfos; },
     key: (componentKey, suffix) => {
         /* "settings" is a box in the list but not a module position, so it has
          * no params — same rule chainComponentParamKey applies for the slot
@@ -3220,9 +3356,9 @@ const MASTER_CHAIN_TARGET = {
         if (!componentKey || componentKey === "settings") return null;
         const at = parseChainId(componentKey);
         if (!at || at.section !== "fx" || at.index >= MASTER_FX_SLOTS) return null;
-        return `master_fx:${componentKey}:${suffix}`;
+        return `${fxBus().prefix}${componentKey}:${suffix}`;
     },
-    chainKey: (suffix) => `master_fx:${suffix}`,
+    chainKey: (suffix) => `${fxBus().prefix}${suffix}`,
     components: () => masterFxChainComponents(),
     config: () => masterFxChainConfig(),
     setConfig: (cfg) => { setMasterFxChainConfig(cfg); },
@@ -3369,6 +3505,17 @@ function chainEditorFocus() {
  */
 function chainLfoTargetMap(target) {
     const out = {};
+    /* A chain that says it has no LFOs is answered without asking. The send
+     * buses say so — the shim serves no send<N>:lfoN key at all — and this
+     * would otherwise be two IPC reads per frame that can only come back empty,
+     * on a screen where a round trip already costs more than the whole page
+     * render.
+     *
+     * Asked of the TARGET, not of the bus, for the same reason hasMidiFx is
+     * below: a `kind === "master"` here drifts from the draw site. And tested
+     * for `=== false` specifically — an absent flag keeps today's behaviour, so
+     * a target that never heard of this question still gets its LFOs. */
+    if (target.hasLfos === false) return out;
     for (let li = 1; li <= 2; li++) {
         if (getSlotParam(target.slot, target.chainKey(`lfo${li}:enabled`)) !== "1") continue;
         let t = getSlotParam(target.slot, target.chainKey(`lfo${li}:target`)) || "";
@@ -4166,8 +4313,35 @@ function parseResampleBridgeMode(raw) {
     return 0;
 }
 
+/* The two level rows a send has and the master bus does not: how much of the
+ * send comes back into the mix, and (Send A only) how much of A is fed into B.
+ *
+ * Built from fxBus().busLevelKeys rather than from a `kind === "send"` here,
+ * so the A-only A->B row is declared once, beside the bus it belongs to. */
+const SEND_LEVEL_ROW_LABELS = { return: "Return", to_send2: "-> Send B" };
+
+function sendBusLevelItems() {
+    return fxBus().busLevelKeys.map(k => ({
+        key: "send_level:" + k,
+        label: SEND_LEVEL_ROW_LABELS[k] || k,
+        /* "int", not a new type: the settings menu's jog-adjust and its
+         * click-to-edit toggle are both gated on the existing type names, so a
+         * fresh one would draw correctly and respond to nothing. The rows are
+         * told apart by busKey. */
+        type: "int",
+        busKey: k,
+    }));
+}
+
 /* Get dynamic settings items based on whether preset is loaded */
 function getMasterFxSettingsItems() {
+    if (!fxBusIsMaster()) {
+        /* A send's settings are its levels and its MIDI channel is the master
+         * bus's, not its own — the shim serves no send<N>:midi_channel. No LFO
+         * rows (hasLfos) and no preset rows (hasPresets): both would be menu
+         * entries whose only possible outcome is an unserved key. */
+        return sendBusLevelItems();
+    }
     if (currentMasterPresetName) {
         /* Existing preset: show all items */
         return MASTER_FX_SETTINGS_ITEMS_BASE;
@@ -10987,6 +11161,194 @@ function saveMasterFxChainConfig() {
     }
 }
 
+/*
+ * The two send buses' state, per set: one file per position plus one for the
+ * three scalars.
+ *
+ * A SEPARATE writer from saveMasterFxChainConfig, deliberately, and this is the
+ * reasoning so it is not "simplified" into a parameterised copy of it. That
+ * function does five things a send has none of — the shadow_config.json
+ * master_fx_chain section, the preset name, the LFO snapshot filed under
+ * position 0, the resample/link/usbc cached scalars, and the display-name cache
+ * eviction that goes with adopting into masterFxConfig. Threading a bus through
+ * all of it would put a `if (master)` at each. What DOES have to agree between
+ * the two is the FILE SHAPE, and that agreement is enforced on the C side,
+ * where one function (fx_boot_restore_one) reads both families.
+ *
+ * THE SHIM SAYS WHAT IS LOADED. `send<N>:modules` is one positional GET
+ * returning the whole chain, never compacted, for the same reason
+ * master_fx:modules is: an in-file mirror that never saw a write made straight
+ * to the shim — an overtake tool, a Remote UI client — wrote {} over it and
+ * lost the entire master chain on the next boot. There is no send mirror at all
+ * here; the shim's answer IS the source, and a read that does not complete
+ * leaves every file alone rather than writing an empty one over it.
+ */
+function saveSendFxChainConfig() {
+    if (typeof shadow_get_param !== "function") return;
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+
+        let raw;
+        try { raw = shadow_get_param(0, bus.prefix + "modules"); } catch (e) { raw = null; }
+        /* Branch on the RAW value. null is "the read did not complete" —
+         * writing "{}" over eight positions on the strength of it is exactly
+         * the erase this path exists to prevent — while "" would be a served
+         * answer, which this key never gives (it refuses rather than truncate).
+         * Either way: write nothing, try again on the next autosave. */
+        if (raw === null || raw === undefined || raw === "") continue;
+        let arr;
+        try { arr = JSON.parse(raw); } catch (e) { continue; }
+        if (!Array.isArray(arr)) continue;
+
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+            const entry = arr[i];
+            const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
+            const moduleId = (entry && entry.id) || "";
+            const dspPath = (entry && entry.path) || "";
+            if (!moduleId || !dspPath) {
+                /* An empty position is written as "{}" rather than skipped, so
+                 * a position emptied in this set does not restore from the file
+                 * the previous occupant left. A position the shim named without
+                 * a path is a HALF answer and is skipped instead — the boot
+                 * loader restores by path, so a file without one restores
+                 * nothing and would be the same erase. */
+                if (!moduleId) host_write_file(path, "{}\n");
+                continue;
+            }
+
+            const key = `fx${i + 1}`;
+            const stateFile = { module_path: dspPath, module_id: moduleId };
+            let snapshotOk = false;
+            try {
+                const stateJson = shadow_get_param(0, `${bus.prefix}${key}:state`);
+                if (stateJson) {
+                    try { stateFile.state = JSON.parse(stateJson); }
+                    catch (e) { stateFile.state = stateJson; }
+                    snapshotOk = true;
+                }
+            } catch (e) {}
+            if (!snapshotOk) {
+                /* No opaque state blob: fall back to the declared params, the
+                 * same order the master saver uses. */
+                const params = {};
+                try {
+                    const pluginId = shadow_get_param(0, `${bus.prefix}${key}:plugin_id`);
+                    if (pluginId) params["plugin_id"] = pluginId;
+                } catch (e) {}
+                let chainParams = [];
+                try {
+                    const cp = shadow_get_param(0, `${bus.prefix}${key}:chain_params`);
+                    if (cp) chainParams = JSON.parse(cp);
+                } catch (e) {}
+                if (Array.isArray(chainParams)) {
+                    for (const cp of chainParams) {
+                        if (!cp || !cp.key) continue;
+                        let v = null;
+                        try { v = shadow_get_param(0, `${bus.prefix}${key}:${cp.key}`); } catch (e) {}
+                        if (v !== null && v !== undefined && v !== "") params[cp.key] = v;
+                    }
+                }
+                const real = Object.keys(params).filter(k => k !== "plugin_id");
+                if (real.length > 0) { stateFile.params = params; snapshotOk = true; }
+            }
+            if (!snapshotOk) {
+                /* Same guard the slot and master autosaves carry: a module that
+                 * answered nothing (still loading, shim stalled) must not
+                 * overwrite the good file it already has. */
+                continue;
+            }
+            let bypassed = 0;
+            try {
+                bypassed = parseInt(shadow_get_param(0, `${bus.prefix}${key}:bypassed`) || "0", 10);
+            } catch (e) {}
+            if (bypassed === 1) stateFile.bypassed = 1;
+            host_write_file(path, JSON.stringify(stateFile, null, 2) + "\n");
+        }
+    }
+
+    /* The three scalars, in their own file — they belong to the BUS and not to
+     * any position in it, so filing them under position 0 would lose them the
+     * moment that position was emptied. Each is skipped on a failed read rather
+     * than written as 0, which would silence a send on the next boot. */
+    const levels = {};
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        for (const k of bus.busLevelKeys) {
+            let v = null;
+            try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            if (v === null || v === undefined || v === "") continue;
+            const n = parseInt(v, 10);
+            if (!Number.isFinite(n)) continue;
+            levels[(k === "return") ? `send${bus.send + 1}_return` : "send1_to_send2"] = n;
+        }
+    }
+    if (Object.keys(levels).length > 0) {
+        host_write_file(activeSlotStateDir + "/send_levels.json",
+                        JSON.stringify(levels, null, 2) + "\n");
+    }
+}
+
+/*
+ * Bring both send chains up from the set that has just been loaded.
+ *
+ * The shim restores these at BOOT from the same files (fx_boot_restore_one);
+ * this is the set-CHANGE path, where the shim is already running and holds the
+ * previous set's chains. An absent file therefore has to UNLOAD, not be
+ * skipped — that is what stops the outgoing set's reverb staying in Send A.
+ * Same rule the Master FX set-change loop follows.
+ */
+function loadSendFxChainConfigForSet() {
+    if (typeof shadow_set_param !== "function") return;
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+            const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
+            let data = null;
+            if (host_file_exists(path)) {
+                try {
+                    const rawFile = host_read_file(path);
+                    if (rawFile && rawFile.length > 10) data = JSON.parse(rawFile);
+                } catch (e) {}
+            }
+            const key = `fx${i + 1}`;
+            const dspPath = (data && data.module_path) || "";
+            shadow_set_param(0, `${bus.prefix}${key}:module`, dspPath);
+            if (!dspPath || !data) continue;
+            try {
+                if (data.state !== undefined) {
+                    const s = (typeof data.state === "string") ? data.state
+                                                               : JSON.stringify(data.state);
+                    shadow_set_param(0, `${bus.prefix}${key}:state`, s);
+                } else if (data.params) {
+                    for (const [pk, pv] of Object.entries(data.params)) {
+                        shadow_set_param(0, `${bus.prefix}${key}:${pk}`, String(pv));
+                    }
+                }
+                if (data.bypassed === 1) {
+                    shadow_set_param(0, `${bus.prefix}${key}:bypassed`, "1");
+                }
+            } catch (e) {}
+        }
+    }
+
+    /* Levels LAST, and an absent value writes 0 — a set with no send_levels.json
+     * is a set with the sends down, and inheriting the previous set's return
+     * would leave a bus audible that this set never asked for. */
+    let levels = {};
+    try {
+        const rawFile = host_read_file(activeSlotStateDir + "/send_levels.json");
+        if (rawFile) levels = JSON.parse(rawFile) || {};
+    } catch (e) {}
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        for (const k of bus.busLevelKeys) {
+            const field = (k === "return") ? `send${bus.send + 1}_return` : "send1_to_send2";
+            const n = parseInt(levels[field], 10);
+            shadow_set_param(0, bus.prefix + k, String(Number.isFinite(n) ? n : 0));
+        }
+    }
+}
+
 function saveBrowserPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -13399,7 +13761,7 @@ function componentEntryReader(slotIndex, componentKey, mfxIndex) {
             hierarchy: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "ui_hierarchy"),
             /* The get spelling, which for Master FX is the colon form — see
              * getHierarchyActiveModuleId, whose two spellings these mirror. */
-            module: () => getSlotParam(MASTER_CHAIN_TARGET.slot, `master_fx:${fxKey}:module`),
+            module: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "module"),
             isLoading: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "is_loading"),
         };
     }
@@ -17557,7 +17919,36 @@ function getMasterFxSettingValue(setting) {
         if (raw === null || raw === "") return "--";
         return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
     }
+    if (setting.busKey) {
+        /* Same three-answer rule: "--" is "the read did not complete", not a
+         * level of zero. Writing a zero back from a failed read would silence a
+         * send the user had turned up. */
+        const raw = sendBusLevelRead(setting.busKey);
+        return (raw === null) ? "--" : String(raw);
+    }
     return "-";
+}
+
+/* Read / write one bus-level scalar of the CURRENT bus ("return", "to_send2").
+ *
+ * Returns null when the read did not complete or the key was not served, so
+ * every caller has to decide what to do about it rather than inheriting a
+ * silent 0. */
+function sendBusLevelRead(busKey) {
+    if (typeof shadow_get_param !== "function") return null;
+    let raw;
+    try { raw = shadow_get_param(0, fxBus().prefix + busKey); } catch (e) { return null; }
+    if (raw === null || raw === undefined || raw === "") return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+function sendBusLevelWrite(busKey, value) {
+    if (typeof shadow_set_param !== "function") return false;
+    let v = value | 0;
+    if (v < 0) v = 0;
+    if (v > SEND_LEVEL_MAX) v = SEND_LEVEL_MAX;
+    return shadow_set_param(0, fxBus().prefix + busKey, String(v));
 }
 
 function adjustMasterFxSetting(setting, delta) {
@@ -17582,6 +17973,19 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:midi_channel", String(newVal));
         cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
+        return;
+    }
+
+    if (setting.busKey) {
+        const cur = sendBusLevelRead(setting.busKey);
+        /* A failed read must not produce a write — see the MIDI Ch branch
+         * above. Stepping from a value nobody saw is how a send ends up at a
+         * level the user did not choose, and it would then be persisted. */
+        if (cur === null) return;
+        /* SEND_LEVEL_STEP, not 1: the range is 0..127 and a detent per unit
+         * makes a full sweep 127 turns of the jog. */
+        sendBusLevelWrite(setting.busKey, cur + delta * SEND_LEVEL_STEP);
+        saveSendFxChainConfig();
         return;
     }
 }
@@ -17671,6 +18075,13 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.SLOTS:
             handleSlotsJog(delta);
             break;
+        case VIEWS.FX_BUS_PICKER: {
+            selectedFxBusRow = Math.max(0, Math.min(FX_BUSES.length - 1,
+                                                    selectedFxBusRow + delta));
+            const bus = FX_BUSES[selectedFxBusRow];
+            announceMenuItem(bus.label, fxBusSummaries[selectedFxBusRow] || "");
+            break;
+        }
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
                 /* Navigate Edit/OK */
@@ -17728,7 +18139,12 @@ function handleJog(delta, shift = isShiftHeld()) {
                  * Bounded by the list's own length, which is the LOADED chain
                  * plus its `+` and Settings — never by the cap. */
                 const comps = masterFxChainComponents();
-                selectedMasterFxComponent = Math.max(-1, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
+                /* -1 is the PRESET row, and it exists only on a bus that HAS
+                 * a preset store. On a send there is none, so jogging left off
+                 * position 0 must stop there rather than land on a row that
+                 * would open the MASTER bus's preset picker. */
+                const floor = fxBus().hasPresets ? -1 : 0;
+                selectedMasterFxComponent = Math.max(floor, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
                 if (selectedMasterFxComponent === -1) {
                     announce("Preset Selection");
                 } else {
@@ -18066,6 +18482,9 @@ function handleSelect() {
         case VIEWS.SLOTS:
             handleSlotsSelect();
             break;
+        case VIEWS.FX_BUS_PICKER:
+            enterFxBus(selectedFxBusRow);
+            break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
                 /* Name preview: Edit or OK */
@@ -18225,7 +18644,12 @@ function handleSelect() {
                      * Settings position gets. The screen reader still gets the
                      * list (paramPagesEnabled returns false for it): a grid has
                      * eight cells and nothing selected to read out. */
-                    if (paramPagesEnabled() && !suppressMasterGridOnce) {
+                    /* The settings GRID is a synthesised contract that names
+                     * master_fx: keys directly (MASTER_GRID_PARAMS), so on a
+                     * send it would draw the master bus's rows under the send's
+                     * title. A send stays on the list until that contract is
+                     * parameterised too — two rows is not a grid's worth. */
+                    if (paramPagesEnabled() && fxBusIsMaster() && !suppressMasterGridOnce) {
                         enterMasterFxSettingsGrid();
                         break;
                     }
@@ -18239,7 +18663,7 @@ function handleSelect() {
                     if (items.length > 0) {
                         const item = items[0];
                         const value = getMasterFxSettingValue(item);
-                        announce(`Master FX Settings, ${item.label}: ${value}`);
+                        announce(`${fxBus().label} Settings, ${item.label}: ${value}`);
                     }
                 } else {
                     /* FX slot - check if module is loaded with hierarchy */
@@ -19107,10 +19531,19 @@ function handleBack() {
                 needsRedraw = true;
                 announce("Master FX");
             } else {
-                /* Exit shadow mode and return to Move */
-                if (typeof shadow_request_exit === "function") {
-                    shadow_request_exit();
-                }
+                /* Back from a BUS returns to the picker it was opened from,
+                 * matching every other list: the picker is the level above.
+                 * It used to leave shadow mode from here, which was right while
+                 * Master FX was the only FX screen and there was no level above
+                 * it. Back from the PICKER is what leaves now. */
+                enterFxBusPicker();
+            }
+            break;
+        case VIEWS.FX_BUS_PICKER:
+            /* The top of this branch of the tree — dismiss, as the chain editor
+             * does from its own top. */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
             }
             break;
         case VIEWS.CHAIN_EDIT:
@@ -20282,6 +20715,12 @@ function drawHelpDetail() {
     _ctx.userPresetHeaderMark = (...args) => userPresetHeaderMark(...args);
 
     /* Master FX functions */
+    /* Which of the three FX buses the editor is on. A FUNCTION, not the
+     * descriptor itself: the view module draws every frame and the bus changes
+     * underneath it when the picker is used, so a snapshotted object would keep
+     * drawing the bus you left. */
+    _ctx.fxBus = () => fxBus();
+    _ctx.sendBusLevelRead = (...args) => sendBusLevelRead(...args);
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
     _ctx.ensureMasterFxConfigFresh = () => ensureMasterFxConfigFresh();
@@ -21536,6 +21975,7 @@ globalThis.init = function() {
 globalThis.shadow_save_state_now = function() {
     autosaveAllSlots();
     saveMasterFxChainConfig();
+    saveSendFxChainConfig();
     /* Also persist volumes/channels/mute/solo — otherwise the set's
      * shadow_chain_config.json drifts from slot_N.json across reboots,
      * e.g. toggling MPE (recv=All) before shutdown would revert on boot. */
@@ -21583,6 +22023,7 @@ function dispatchCoRunDraw() {
          * must render these too, not just the chain-editor subtree. */
         case VIEWS.SLOTS:                drawSlots(); break;
         case VIEWS.MASTER_FX:            drawMasterFx(); break;
+        case VIEWS.FX_BUS_PICKER:        drawFxBusPicker(); break;
         case VIEWS.GLOBAL_SETTINGS:      drawGlobalSettings(); break;
         case VIEWS.CHAIN_EDIT:           drawChainEdit(); break;
         case VIEWS.PATCHES:              drawPatches(); break;
@@ -21907,8 +22348,12 @@ globalThis.tick = function() {
                 }
             }
             if (flags & SHADOW_UI_FLAG_JUMP_TO_MASTER_FX) {
-                /* Always jump to Master FX view */
-                enterMasterFxSettings();
+                /* The gesture (Shift+Vol+Menu, hold-Menu) now opens the BUS
+                 * PICKER rather than the master bus directly: Master FX is one
+                 * of three buses and there is no other way to reach the sends.
+                 * The shim flag is unchanged — it says "the user asked for the
+                 * FX screen", and which FX screen that is is a UI decision. */
+                enterFxBusPicker();
                 /* Clear the flag */
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);
@@ -22183,6 +22628,8 @@ globalThis.tick = function() {
                 }
                 debugLog("SET_CHANGED: MFX " + mfxi + " -> " + (mfxModuleId || "(none)"));
             }
+            /* 7b. And both send buses, from this set's own files. */
+            loadSendFxChainConfigForSet();
             /* 8. Refresh slot names from new autosave files */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 slots[i].name = "";
@@ -22468,10 +22915,17 @@ globalThis.tick = function() {
         if (isOvertakeActive) {
             autosaveJob = null;          /* overtake owns the surface; abandon */
         } else {
+            /* One job per tick: the four slots, then Master FX, then the two
+             * send buses. The sends are their OWN job rather than a tail on the
+             * Master FX one because each is a positional GET plus a state read
+             * per loaded position — at ~2.8 ms a round trip that is more than a
+             * whole page render, and the split is the whole reason this
+             * schedule exists. */
             if (autosaveJob < SHADOW_UI_SLOTS) autosaveOneSlot(autosaveJob);
-            else saveMasterFxChainConfig();
+            else if (autosaveJob === SHADOW_UI_SLOTS) saveMasterFxChainConfig();
+            else saveSendFxChainConfig();
             autosaveJob++;
-            if (autosaveJob > SHADOW_UI_SLOTS) autosaveJob = null;
+            if (autosaveJob > SHADOW_UI_SLOTS + 1) autosaveJob = null;
         }
     }
     /* Refresh dirty cache frequently for responsive UI */
@@ -22790,6 +23244,9 @@ globalThis.tick = function() {
             break;
         case VIEWS.MASTER_FX:
             drawMasterFx();
+            break;
+        case VIEWS.FX_BUS_PICKER:
+            drawFxBusPicker();
             break;
         case VIEWS.CHAIN_EDIT:
             drawChainEdit();
