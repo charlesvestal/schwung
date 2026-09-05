@@ -476,8 +476,19 @@ int main(int argc, char **argv) {
         bs_input_events_t ev;
         bs_scan_input(map, &input_state, &ev);
 
-        if (ev.back_pressed)
-            bs_finish(fd, map, incoming_id); /* cancel: leave the id unchanged */
+        if (ev.back_pressed) {
+            /* Cancel. In --forced mode, dismissing the failure banner also
+             * clears the strike stamp: the user has seen and waved off the
+             * accusation, and without this a target that merely got
+             * power-cycled twice inside its 30s liveness window re-forces
+             * the picker on every boot (hit in the field on day one). */
+            if (forced) {
+                char stamp[600];
+                snprintf(stamp, sizeof(stamp), "%s/.boot-attempt", targets_dir);
+                unlink(stamp);
+            }
+            bs_finish(fd, map, incoming_id); /* leave the id unchanged */
+        }
 
         int dirty = 0;
         if (ev.jog_delta != 0) {
