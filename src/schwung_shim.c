@@ -190,6 +190,30 @@ static bool stay_in_shadow_setting = true;
 static void shim_hook_skipback_resize(void) {
     skipback_resize(skipback_seconds_setting);
 }
+
+/* Boot-healthy touch hook — runs on the shim worker (off the audio path).
+ * The boot selector counts attempts in /data/UserData/boot-targets/.boot-attempt
+ * and treats a boot as good once the target touches its own healthy marker;
+ * this is that touch for the schwung target. mkdir/open are not RT-safe, so
+ * the RT path only posts SHIM_EVT_BOOT_HEALTHY (see shim_pre_transfer) and
+ * this hook does the actual file I/O ~200ms later. */
+static void shim_hook_boot_healthy(void) {
+    if (mkdir("/data/UserData/boot-targets", 0755) != 0 && errno != EEXIST) {
+        LOG_DEBUG("shim", "boot-healthy: mkdir boot-targets failed: %s", strerror(errno));
+        return;
+    }
+    if (mkdir("/data/UserData/boot-targets/schwung", 0755) != 0 && errno != EEXIST) {
+        LOG_DEBUG("shim", "boot-healthy: mkdir boot-targets/schwung failed: %s", strerror(errno));
+        return;
+    }
+    int fd = open("/data/UserData/boot-targets/schwung/healthy", O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) {
+        LOG_DEBUG("shim", "boot-healthy: open healthy failed: %s", strerror(errno));
+        return;
+    }
+    close(fd);
+    LOG_DEBUG("shim", "boot-healthy: touched the healthy marker");
+}
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
 static int shadow_line_in_connected = 0;       /* 1 = cable plugged, 0 = internal mic active (from CC 114) */
@@ -5734,6 +5758,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         shim_init_subsystems();
     }
 
+    static int boot_healthy_posted = 0;   /* RT path: post only, no file I/O */
+    if (!boot_healthy_posted) {
+        boot_healthy_posted = 1;
+        shim_worker_post(SHIM_EVT_BOOT_HEALTHY);
+    }
+
     /* Timing and overrun statics are at file scope (shared between pre/post callbacks) */
 
     /* Check for baseline timing mode (set SHADOW_BASELINE=1 to disable all processing) */
@@ -9475,6 +9505,7 @@ static void shim_spi_init(void)
             .preview_play_pending   = shim_hook_preview_play,
             .overtake_dsp_load_pending = overtake_dsp_load_pending,
             .overtake_dsp_free_pending = overtake_dsp_free_pending,
+            .boot_healthy           = shim_hook_boot_healthy,
         };
         shim_worker_set_hooks(&hooks);
     }
