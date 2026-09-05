@@ -1901,7 +1901,14 @@ every other stem."
 - [ ] A bus whose stored voice ids no longer exist keeps its chain and REPORTS the orphaned ids; it does not silently re-point to whatever is at that index now
 - [ ] Restored state writes STATE, never SHAPE — restoring a bus does not reinstantiate a running FX whose module is unchanged
 - [ ] The shim is authoritative for send chains: `send<N>:modules` is one GET returning the whole chain, positional, never compacted
-- [ ] A send preset saved from A loads onto B
+- [ ] ~~A send preset saved from A loads onto B~~ — **DESCOPED to follow-on
+      (coordinator decision, Task 9).** Sends ship with no preset store; a
+      position is emptied by loading `""`, exactly as Master FX is. It is
+      declared as a flag (`hasPresets: false`) rather than assumed, so adding
+      it later is localised to the editor. Descoped because the core send
+      feature — load an FX, set levels, survive a reboot — is complete without
+      it, and presets are a convenience on top. **This was an acceptance
+      criterion and is recorded as unmet, not quietly dropped.**
 - [ ] Autosave's existing bail-if-empty and skip-if-unchanged guards cover buses without new copies of them
 
 **Verify:** `./scripts/build.sh`; on device, build a two-bus kit, reboot, confirm it comes back; save a preset on A and load it on B
@@ -2086,6 +2093,19 @@ Design credit PR #121 (legsmechanical)."
 ```
 
 ---
+
+> **Follow-on work left by Task 9, none of it blocking:**
+> - **A send's settings screen is pinned to the LIST** even with Param View =
+>   Grid. The master settings grid is a synthesised contract
+>   (`MASTER_GRID_PARAMS`) naming `master_fx:` keys directly, so on a send it
+>   would draw the MASTER bus's rows under the send's title.
+> - **Sends have no insert / remove / move**, same as Master FX today.
+> - **`shadow_set_pages.c` does not seed empty send files** into a new set. Not
+>   a bug — absent is handled at boot (zeros stand) and at set change (explicit
+>   unload) — but an asymmetry with `master_fx_N.json`.
+> - **The JS send saver is a separate function** from `saveMasterFxChainConfig`,
+>   deliberately. What must agree is the FILE SHAPE, enforced on the C side
+>   where one function reads both families.
 
 ## Task 10: The bus list and the down-gesture
 

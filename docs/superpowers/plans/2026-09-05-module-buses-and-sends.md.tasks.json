@@ -75,7 +75,7 @@
     {
       "id": 8,
       "subject": "Task 9: The FX-bus picker",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Shift+Vol+Menu opens a picker listing Master FX, Send A and Send B; Master FX becomes one bus among them.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui.js` (the Menu / Shift+Vol+Menu entry, a `VIEWS.FX_BUS_PICKER`)\n- Modify: `src/shadow/shadow_ui_master_fx.mjs` (parameterize by bus)\n\n**Acceptance Criteria:**\n- [ ] Shift+Vol+Menu and hold-Menu both open the picker rather than Master FX directly\n- [ ] Choosing Master FX gives the screen that exists today, unchanged\n- [ ] Choosing Send A or Send B gives the same 8-position editor against that send's chain\n- [ ] A send's editor shows its return level, and Send A's shows the -> Send B amount\n- [ ] Sends show no LFO rows; Master keeps them\n- [ ] Back from a bus returns to the picker; Back from the picker dismisses, matching every other list\n\n**Verify:** `bash tests/host/test_master_fx_slot_routing.sh` and the shadow suite stay green; render the picker and both editors through the PNG harness and LOOK at them\n\n**Steps:**\n- Step 1: Add the view and the list\n- Step 2: Parameterize the Master FX editor by bus\n- Step 3: Render and look\n- Step 4: Commit\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"src/shadow/shadow_ui_master_fx.mjs\"], \"verifyCommand\": \"bash tests/host/test_master_fx_slot_routing.sh\", \"acceptanceCriteria\": [\"Shift+Vol+Menu and hold-Menu both open the picker rather than Master FX directly\", \"Choosing Master FX gives the screen that exists today, unchanged\", \"Choosing Send A or Send B gives the same 8-position editor against that send's chain\", \"A send's editor shows its return level, and Send A's shows the -> Send B amount\", \"Sends show no LFO rows; Master keeps them\", \"Back from a bus returns to the picker; Back from the picker dismisses, matching every other list\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         5
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T23:40:46.662115"
+  "lastUpdated": "2026-09-06T00:14:40.807685"
 }
