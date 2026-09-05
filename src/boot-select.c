@@ -149,6 +149,57 @@ static void bs_pump_frame(int fd) {
     ioctl(fd, _IOC(_IOC_NONE, 0, SCHWUNG_IOCTL_WAIT_SEND_SIZE, 0), 0x300);
 }
 
+/* ── Boot LED-animation cancel ────────────────────────────────────────────
+ * The XMOS runs the power-on LED sweep as per-LED ANIMATIONS: colors live on
+ * MIDI channel 1, animations on channel 2, and an animation persists until
+ * something sends anim-none (0x00) for that address on channel 2. Move's
+ * firmware does that at startup — a third-party boot target does not know
+ * to, so the sweep ran forever under one (observed on hardware: repainting
+ * colors did not stop it). boot-select owns the device during the window,
+ * so it cancels every animation once, and every target inherits a still
+ * surface. Address table from schwung-spi's schwung_move_ui.c (MIT).
+ * {is_cc, addr}: notes are pads 68-99 + steps 16-31; the rest are CCs. */
+typedef struct { uint8_t is_cc; uint8_t addr; } bs_led_t;
+static const bs_led_t bs_all_leds[] = {
+    {0,68},{0,69},{0,70},{0,71},{0,72},{0,73},{0,74},{0,75},
+    {0,76},{0,77},{0,78},{0,79},{0,80},{0,81},{0,82},{0,83},
+    {0,84},{0,85},{0,86},{0,87},{0,88},{0,89},{0,90},{0,91},
+    {0,92},{0,93},{0,94},{0,95},{0,96},{0,97},{0,98},{0,99},
+    {0,16},{0,17},{0,18},{0,19},{0,20},{0,21},{0,22},{0,23},
+    {0,24},{0,25},{0,26},{0,27},{0,28},{0,29},{0,30},{0,31},
+    {1,16},{1,17},{1,18},{1,19},{1,20},{1,21},{1,22},{1,23},
+    {1,24},{1,25},{1,26},{1,27},{1,28},{1,29},{1,30},{1,31},
+    {1,40},{1,41},{1,42},{1,43},
+    {1,71},{1,72},{1,73},{1,74},{1,75},{1,76},{1,77},{1,78},
+    {1,85},{1,86},{1,118},
+    {1,49},{1,50},{1,51},{1,52},{1,54},{1,55},{1,56},
+    {1,58},{1,60},{1,62},{1,63},{1,88},{1,119},
+};
+
+/* MIDI_OUT is 20 x 4-byte slots at TX offset 0, consumed per transfer.
+ * Emit anim-none on channel 2 (0-indexed 1) for every LED, 20 per frame. */
+static void bs_cancel_led_anims(int fd, uint8_t *map) {
+    const int total = (int)(sizeof(bs_all_leds) / sizeof(bs_all_leds[0]));
+    int sent = 0;
+    while (sent < total) {
+        int batch = total - sent;
+        if (batch > 20)
+            batch = 20;
+        for (int i = 0; i < batch; i++) {
+            const bs_led_t *led = &bs_all_leds[sent + i];
+            uint8_t *slot = map + i * 4;
+            uint8_t status = (uint8_t)((led->is_cc ? 0xB0 : 0x90) | 0x01);
+            slot[0] = (uint8_t)(led->is_cc ? 0x0B : 0x09);  /* cable 0 | CIN */
+            slot[1] = status;
+            slot[2] = led->addr;
+            slot[3] = 0x00;                                  /* ANIM_NONE */
+        }
+        bs_pump_frame(fd);
+        memset(map, 0, 20 * 4);
+        sent += batch;
+    }
+}
+
 /* MIDI_IN events persist in the RX mailbox across frames until overwritten
  * (the shim keeps dedup rings for exactly this reason). boot-select is the
  * device's exclusive owner here, so the simplest fix is to scan once, then
@@ -320,6 +371,8 @@ int main(int argc, char **argv) {
     memset(map, 0, SCHWUNG_PAGE_SIZE);
 
     ioctl(fd, _IOC(_IOC_NONE, 0, SCHWUNG_IOCTL_SET_SPEED, 0), 0x1312d00);
+
+    bs_cancel_led_anims(fd, map);
 
     bs_input_state_t input_state;
     memset(&input_state, 0, sizeof(input_state));
