@@ -7,10 +7,11 @@ opens a picker (jog scrolls, jog-click selects and sets the new default, Back
 cancels). This document is everything a third-party platform needs to do to be
 one of those targets.
 
-**Status: design-stage.** The selector described here is specced
-(`docs/superpowers/specs/2026-09-05-boot-selector-design.md`) but not yet
-shipped. Schema and paths below may still move; treat this as the draft
-contract to build against and review.
+**Status: implemented.** The selector is built on branch `boot-selector-spec`
+(design: `docs/superpowers/specs/2026-09-05-boot-selector-design.md`), pending
+on-hardware verification and release. The schema and paths below match the
+implementation (`src/shim-entrypoint.sh`, `src/host/boot_target_lib.sh`,
+`src/boot-select.c`, `src/schwung-entry.sh`).
 
 ## The contract in one paragraph
 
@@ -30,7 +31,13 @@ heal, which is worse). That's it: your target appears in the picker by name.
   healthy       # optional, see Watchdog
 ```
 
-`<id>` is lowercase-hyphenated, and must not be `schwung` or `stock`.
+`<id>` is lowercase-hyphenated, and must not be `schwung` or `stock` — both are
+reserved. `stock` is a built-in row with no directory (see below); `schwung`'s
+`boot.json` is **self-registered by Schwung's own selector on every boot**, not
+written once by an installer — a wiped, hand-edited, or missing
+`schwung/boot.json` heals itself on the very next boot, pointing `exec` at
+`/data/UserData/schwung/schwung-entry.sh`. Do not create a `schwung/` directory
+of your own; the selector owns and rewrites it unconditionally.
 
 `boot.json`:
 
@@ -85,19 +92,29 @@ Two ways your boot counts as good — pick either:
 1. **Do nothing.** A detached watcher clears the stamp if your process is
    still alive ~30 seconds after exec. Staying alive is participation.
 2. **Opt in (better):** touch `/data/UserData/boot-targets/<id>/healthy` once
-   your platform has actually reached working state (Schwung touches it after
-   ~30 seconds of healthy audio). This catches "alive but wedged", which
-   the liveness fallback cannot. Touch it once your platform has been in
+   your platform has actually reached working state (Schwung's own shim
+   touches it after ~30 seconds of continuously clocked SPI frames). This
+   catches "alive but wedged", which the liveness fallback cannot. Touch it
+   once your platform has been in
    working state for tens of seconds, not merely started — a first-frame or
    first-callback touch defeats the watchdog entirely: a build that crashes
    seconds into the session would still mark every boot healthy, and the
    attempt count could never reach two.
 
+A target whose entry script is permanently missing or broken (so its process
+never starts, and neither the liveness fallback nor a `healthy` touch can ever
+fire) accumulates strikes with no decay: the forced picker appears on **every**
+boot from then on, not just the first two, until the target is repaired or
+another default is chosen. This is deliberate — the alternative is a watchdog
+that quietly stops warning you.
+
 ## Installing / uninstalling your platform
 
-- **Depend on Schwung.** Check `/opt/move/Move` is Schwung's selector (it will
-  carry a version marker); if Schwung isn't installed, tell the user to
-  install it first rather than improvising your own entrypoint.
+- **Depend on Schwung.** Check that the boot selector is present before you
+  register — e.g. `grep -q 'Boot selector' /opt/move/Move` (its comment
+  banner), or simply `test -f /data/UserData/schwung/bin/boot-select`. If
+  Schwung isn't installed, tell the user to install it first rather than
+  improvising your own entrypoint.
 - Install = create your `boot-targets/<id>/` directory. You may set
   `/data/UserData/boot-targets/default` to your id **only on explicit user
   choice** — never as a silent side effect of installing.

@@ -43,11 +43,19 @@ A *neutral* path, so peer platforms never write inside Schwung's directory:
 /data/UserData/boot-targets/
   default                 # plain text: target id
   .boot-attempt           # watchdog stamp: target id + attempt count
-  schwung/boot.json       # registered by Schwung's installer
-  schwung/entry.sh        # Schwung's target entry (today's shim-entrypoint minus selection)
+  schwung/boot.json       # self-registered by the selector, every boot
+  schwung/healthy         # touched by the shim after ~30s of healthy SPI frames
   v/boot.json             # registered by V's installer
   v/...
 ```
+
+As built, Schwung's own target entry keeps the name `schwung-entry.sh`
+(`/data/UserData/schwung/schwung-entry.sh`) rather than moving under
+`boot-targets/schwung/`; `boot.json`'s `exec` field just points at it. The
+`schwung/boot.json` file is not written once by the installer — it is
+**self-registered by the selector on every boot** (see Entrypoint split
+below), so a wiped or hand-edited entry heals itself on the next boot rather
+than needing a reinstall.
 
 - `default` is a bare id in its own file — **not** a `features.json` key. The
   installer rewrites `features.json` from a merge and this value must survive
@@ -130,11 +138,18 @@ reboot + Back, which always works because the window shows on every boot.
 
 1. `boot-select` C binary (SPI window + picker; ARM64 cross-compile in the
    existing Docker build).
-2. Entrypoint split: thin selector at `/opt/move/Move`; today's
-   `shim-entrypoint.sh` becomes `boot-targets/schwung/entry.sh`.
-3. `install.sh` + `schwung-heal` updates: install/mirror the selector, register
-   the `schwung` target, create the registry, migrate existing installs
-   (default = `schwung`).
+2. Entrypoint split: `shim-entrypoint.sh` keeps its name and stays what
+   `/opt/move/Move` execs, but its old tail (services + LD_PRELOAD exec) moves
+   out to a new `/data/UserData/schwung/schwung-entry.sh`, which is what
+   `schwung/boot.json`'s `exec` field points at. `shim-entrypoint.sh` itself
+   becomes the thin selector described below.
+3. `install.sh` + `schwung-heal` updates: install/mirror the selector and the
+   new `schwung-entry.sh`, ship `host/boot_target_lib.sh` and `bin/boot-select`
+   in the payload, and assert/chmod them. **The registry itself is not created
+   by the installer** — `schwung/boot.json` is self-registered by the selector
+   at every boot (see Registry layout), so there is nothing here to migrate;
+   an existing `default` file (or its absence, which resolves to `schwung`) is
+   left alone.
 4. `uninstall.sh`: restore stock `/opt/move/Move`, remove the registry.
 5. Shim: touch `healthy` after ~30 s of continuously clocked SPI frames (a
    first-frame touch would mark a boot healthy even when a restored module
