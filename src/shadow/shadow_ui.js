@@ -21309,8 +21309,6 @@ globalThis.init = function() {
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
 
-    /* Auto-update check is manual only (Settings → Updates → Check Updates) */
-
     /* Detect whether the self-heal entrypoint is installed. If not, the
      * device is in the "needs bootstrap" state — first tick will surface
      * a one-shot banner pointing at the web manager / GUI installer. */

@@ -2947,7 +2947,7 @@ For native code, shared headers are in `src/host/`:
 
 ## Help Content (help.json)
 
-Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → Updates → `[Help...]`). Add a `help.json` file to your module's source directory.
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → System → Connect → `[Help...]`). Add a `help.json` file to your module's source directory.
 
 ### File Location
 
