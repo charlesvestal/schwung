@@ -715,14 +715,15 @@ component load gate, and the input-dispatch order. Read it before editing
   and the *correct* read milliseconds later is what made it permanent, by matching.
 - **A component editor WAITS; it does not decide from one read.** Everything that
   knows how to wait sits behind the entry, and the fallback is irreversible.
-- Global Settings is six sections = **seven** PAGES, because System also
-  carries a menu. **One section, one page** is load-bearing — but the rule is
-  "never SPLIT a section's PARAMS", not "one page per section" and not
-  "never exceed eight". A `menu` is a second page of a kind the grid cannot
-  hold, authored and named (`menu_label`), visible in the section picker as
-  its own row — which is what made `[Help...]` findable instead of being the
-  last line of a page called Updates. The contract test pins the exact page
-  LIST for that reason: a bare count of seven could not say which fact moved.
+- Global Settings is six sections = six PAGES. **One section, one page** is
+  load-bearing — but the rule is "never SPLIT", not "never exceed eight".
+  **A `menu` on a level costs that section a SECOND page**: the planner emits
+  it after the level's grids and nothing merges menu entries into a knobs
+  page. That is why Connect and Help are write-only PARAMS on System rather
+  than a menu — `access: "write"` makes a two-option enum a trigger, so a
+  click fires it and a knob cannot edit it, and three rows fit one screen.
+  The contract test pins the exact page LIST, so folding a menu back in fails
+  with the shape rather than with a count.
   **Eight is the number of physical KNOBS**, and this screen is pinned to the
   LIST (`layout: LAYOUT_LIST`), which draws five rows and scrolls the rest.
   The planner was chunking it as a grid anyway, so a ninth param silently
@@ -741,7 +742,8 @@ component load gate, and the input-dispatch order. Read it before editing
   was outdated and then sent you to the manager to install it — which shows
   that list beside the button that acts on it. The store pointer printed
   `move.local:7700`. Both are replaced by **Connect** (Global Settings →
-  System → Connect → `[Connect...]`, and every `[Get more...]` row),
+  System → **Connect**, a row beside Analytics and Help, and every
+  `[Get more...]` row),
   which draws the device's own IP and a QR of `http://<ip>:7700` —
   `src/shared/{qr,connect_screen}.mjs`, `host_get_device_ip()`. The File
   Browser toggle started a bundled binary serving all of `/data/UserData`

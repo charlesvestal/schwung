@@ -117,12 +117,11 @@
             "always gets the",
             "list.",
             "",
-            "System has a second",
-            "page, Connect: this",
-            "Move's IP address",
-            "and a QR code for",
-            "Schwung Manager,",
-            "plus this help."
+            "System holds three",
+            "rows: Analytics,",
+            "then Connect and",
+            "Help, which open",
+            "rather than change."
           ]
         },
         {
@@ -737,7 +736,7 @@
             " http://<ip>:7700",
             "",
             "Global Settings >",
-            "System > Connect",
+            "System > Connect.",
             "shows the address",
             "and a QR code.",
             "",
@@ -835,8 +834,7 @@
           "title": "Connect",
           "lines": [
             "Global Settings >",
-            "System > Connect >",
-            "[Connect...].",
+            "System > Connect.",
             "",
             "Shows this Move's",
             "IP address and a",

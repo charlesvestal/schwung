@@ -39,7 +39,8 @@ const G = await import(R + "/src/shadow/shadow_ui_global_grid.mjs");
 const { planPages, PAGE_KNOBS, PAGE_MENU, KNOBS_PER_PAGE } =
     await import(R + "/src/shared/param_pages/page_plan.mjs");
 const { validateContract } = await import(R + "/src/shared/param_pages/validate_contract.mjs");
-const { buildMetaIndex } = await import(R + "/src/shared/param_pages/param_meta.mjs");
+const { buildMetaIndex, isTrigger, isTurnable } =
+    await import(R + "/src/shared/param_pages/param_meta.mjs");
 
 /* ---- 1. purity ----------------------------------------------------------
  *
@@ -129,45 +130,63 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     }
   }
   /*
-   * SEVEN PAGES FROM SIX SECTIONS, and the extra one is the System menu.
+   * SIX SECTIONS, SIX PAGES. ONE SECTION, ONE PAGE.
    *
-   * "One section, one page" was never about the COUNT -- it was about a
-   * section long enough to PAGINATE, which puts a jog step in the middle of a
-   * scrolling list, arrives silently and is chosen by nobody. That property is
-   * asserted per level below, by the param counts.
+   * That property is what makes sections-as-levels work: a section that split
+   * would put a jog step in the middle of a scrolling list, arriving silently
+   * and chosen by nobody. It held for every section except System, which for
+   * one round carried a `menu` alongside its knobs and therefore planned TWO
+   * pages -- the planner emits a level menu as a page of its own
+   * (page_plan.mjs, "Menu LAST"), and there is no branch anywhere that merges
+   * menu entries into a knobs page.
    *
-   * A menu is a different thing: a second page of a KIND the grid cannot hold,
-   * authored, named, and visible in the section picker as its own row. That is
-   * how [Help...] stopped being the last line of a page called "Updates" and
-   * became something a user can find. So the count is pinned as the exact page
-   * LIST rather than as a number, which says what changed when it changes.
+   * [Connect...] and [Help...] are write-only PARAMS now, so they are rows on
+   * the System page and the menu is gone. Pinned as the exact page LIST rather
+   * than a count, because a bare six could not say whether a section had been
+   * removed or a menu had been folded in.
    */
   const names = plan.pages.map((p) => p.name);
-  const WANT_PAGES = ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts",
-                      "System", "Connect"];
+  const WANT_PAGES = ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts", "System"];
   if (names.join(" | ") !== WANT_PAGES.join(" | ")) {
     fail("the page list should be [" + WANT_PAGES.join(", ") + "], got [" + names.join(", ") + "]");
   }
+  if (plan.pages.some((p) => p.kind === PAGE_MENU)) {
+    fail("Global Settings publishes no menu: a level carrying one plans a SECOND page, " +
+         "which is the split every other assertion here exists to prevent");
+  }
+}
 
-  /* The menu page belongs to the SYSTEM level and carries both entries. A
-   * one-entry actions menu is the shape the Master FX contract already records
-   * as a mistake ("a menu page you have to enter to press a single button"),
-   * which is why removing [Check Updates] and [Module Store] had to leave
-   * [Help...] with company rather than alone. */
-  const menuPages = plan.pages.filter((p) => p.kind === PAGE_MENU);
-  if (menuPages.length !== 1) {
-    fail("expected exactly one menu page, got " + menuPages.length);
-  } else {
-    const m = menuPages[0];
-    if (m.level !== "system") fail("the menu page belongs to level " + m.level + ", want system");
-    const labels = (m.entries || []).map((e) => e.label);
-    if (labels.join(",") !== "[Connect...],[Help...]") {
-      fail("the System menu should offer [Connect...] then [Help...], got " + labels.join(","));
+/* ---- 3b. the two doors are TRIGGERS, not settings -----------------------
+ *
+ * `access: "write"` is the entire mechanism that lets Connect and Help sit on
+ * the same page as a toggle. Get it wrong and they become editable enums: the
+ * knob turns them, a click focuses instead of firing, and the row shows a
+ * state that means nothing. None of that throws.
+ */
+{
+  const meta = buildMetaIndex(contract);
+  for (const key of ["connect", "help"]) {
+    const m = meta.getOrGuess(key);
+    if (m.guessed) { fail(key + " has no metadata in the contract"); continue; }
+    if (!isTrigger(m)) fail(key + " must be a trigger (access write), or a knob will edit it");
+    if (isTurnable(m)) fail(key + " must not be turnable");
+    if (m.divable) fail(key + " must not be divable -- a door opens, it does not have a picker");
+    /* Both options the same word: a door has no state, and the row draws its
+     * value unconditionally. The SECOND is what fireTrigger speaks. */
+    if (!Array.isArray(m.options) || m.options.length !== 2 || m.options[0] !== m.options[1]) {
+      fail(key + " should declare the same word twice, got " + JSON.stringify(m.options));
     }
-    const actions = (m.entries || []).map((e) => e.action);
-    if (actions.join(",") !== "connect,help") {
-      fail("the System menu actions should be connect,help -- got " + actions.join(",") +
-           " (runGlobalActionFromGrid dispatches on these strings)");
+    if (/^[^A-Za-z]*$/.test(String(m.options[1] || ""))) {
+      fail(key + " announces " + JSON.stringify(m.options[1]) + " when fired; the screen reader " +
+           "needs a WORD (this was three dots once, which sounds like nothing)");
+    }
+    /* Served a read, even with no state: an unserved key announces "not read
+     * yet" every time the cursor lands on it. */
+    const io2 = { readParam: () => "0", writeParam: () => {}, runAction: () => {} };
+    const answered = G.createGlobalGridIo(io2).getParam(key);
+    if (answered === "" || answered === null || answered === undefined) {
+      fail(key + " is not served a read (" + JSON.stringify(answered) + "), so landing on the " +
+           "row announces a not-read-yet fault on a control that works");
     }
   }
 }
@@ -197,7 +216,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * a jog step in the middle of a list — and that is what the seven-page
    * assertion above and these per-section counts catch together.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 1 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -404,6 +423,11 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
        same tree at :7700/files. Analytics is the whole of the System grid
        page now. */
     analytics_enabled: "Analytics",
+    /* Two DOORS, not settings — see the trigger assertions above. They are
+       rows on the System page rather than a menu page of their own, which is
+       what a level carrying a `menu` alongside its knobs would have cost. */
+    connect: "Connect",
+    help: "Help",
   };
   let seen = 0;
   for (const p of chainParams) {
@@ -653,9 +677,9 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — six levels (7/9/6/1/4/1 params, System also " +
-            "carrying the Connect menu), no section SPLIT and no length limit (Audio " +
-            "holds nine), every enum listable with a " +
+console.log("PASS: global settings contract — six levels (7/9/6/1/4/3 params, Connect and Help " +
+            "among them as write-only triggers), ONE section one page and no menu, no " +
+            "length limit (Audio holds nine), every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
             "saveMasterFxChainConfig keys persisting and four others provably not, and " +

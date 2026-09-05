@@ -85,24 +85,24 @@ ever dropped.
 
 Three consequences worth knowing:
 
-- **`[Help...]` lives on the SYSTEM menu, beside `[Connect...]`.** It used to
-  be a peer of the sections (a page of its own, which sections-as-levels
-  forbids), then the last row of a three-row menu page called "Updates". When
-  `[Check Updates]` and `[Module Store]` were removed it could not simply be
-  left there alone: a one-entry actions menu is the shape Master FX already
-  records as a mistake. `[Connect...]` is its company and the replacement for
-  both — the Module Store pointer printed `move.local:7700`, and Connect gives
-  the device's real IP with a QR code. See `SYSTEM_ACTIONS`.
+- **Help and Connect are write-only PARAMS on the System page, not a menu.**
+  Help has been in three places: an action on `root` (which plans to no page,
+  so it had no surface anywhere), then a row on a menu page — and a `menu` on a
+  level costs that section a SECOND page. The planner emits a level's menu
+  after its grids ("Menu LAST", `page_plan.mjs`) and **nothing anywhere merges
+  menu entries into a knobs page**, so one section meant two jog steps and a
+  second page name to invent, for three rows that fit one screen.
 
-  **Six sections now plan SEVEN pages, and that is not a violation of "one
-  section, one page".** That rule is about a section long enough to PAGINATE,
-  which puts a jog step in the middle of a scrolling list, arrives silently and
-  is chosen by nobody — and it is still pinned per level, by the param counts.
-  A menu is a second page of a KIND the grid cannot hold, authored and named
-  (`menu_label`), and visible in the section picker as its own row, which is
-  what made `[Help...]` findable. The contract test pins the exact page LIST
-  rather than a count, because a bare number could not say which of those two
-  facts had changed.
+  `access: "write"` collapses them: a two-option enum becomes a momentary
+  (`isTrigger`, not turnable, not divable), `page_controller.onClick` routes a
+  list row for it straight to `fireTrigger`, and the write is what the io turns
+  back into an action. Two details that are not obvious and are both pinned —
+  **both options are the same WORD** ("Open"), because a list row draws its
+  value unconditionally and a door has no state, and the second is what
+  `fireTrigger` speaks (it was "..." for one round, which sounds like nothing);
+  and the keys are **served a read** despite having none, because an unserved
+  key makes `announceTouch` say "not read yet" every time the cursor lands on
+  it. See `SYSTEM_PARAMS`.
 - **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
   list, the in-section list, the four `globalSettings*` state vars and the three
   switch arms that drove them are gone. `runGlobalActionFromGrid` /

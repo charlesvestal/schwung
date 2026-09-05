@@ -2947,7 +2947,7 @@ For native code, shared headers are in `src/host/`:
 
 ## Help Content (help.json)
 
-Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → System → Connect → `[Help...]`). Add a `help.json` file to your module's source directory.
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → System → Help). Add a `help.json` file to your module's source directory.
 
 ### File Location
 
@@ -3724,7 +3724,7 @@ The built-in MIDI Controller module (`src/modules/controller/`) demonstrates ove
 
 ## Publishing to the Module Catalog
 
-External modules are distributed through the module catalog. Users browse, install, update and remove modules in **Schwung Manager**, the web interface the Move serves on port 7700 — the single install/update path. (The on-device store was retired: its privileged writes silently no-opped for devices without a current shim. On the Move itself, **Global Settings → System → Connect → `[Connect...]`** shows the device's IP and a QR code for reaching the manager.)
+External modules are distributed through the module catalog. Users browse, install, update and remove modules in **Schwung Manager**, the web interface the Move serves on port 7700 — the single install/update path. (The on-device store was retired: its privileged writes silently no-opped for devices without a current shim. On the Move itself, **Global Settings → System → Connect** shows the device's IP and a QR code for reaching the manager.)
 
 ### Requirements
 

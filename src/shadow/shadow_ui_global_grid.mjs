@@ -162,6 +162,8 @@ export const GLOBAL_ENUM_VALUES = {
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
  *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
+ *   connect                | (write-only trigger)    | runAction("connect")      | -       | -                      | -
+ *   help                   | (write-only trigger)    | runAction("help")         | -       | -                      | -
  *
  * Three kinds of persistence, and conflating them is how a write goes missing:
  *
@@ -229,6 +231,22 @@ export const GLOBAL_ROUTING = {
     recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
+
+    /*
+     * TRIGGERS, whose "backend" is an ACTION.
+     *
+     * They are in this table because writeGlobalParam refuses any key that is
+     * not — an unrouted key is silently dropped, which for a door means a row
+     * you can press that does nothing.
+     *
+     * The read is `js.stateless`: a constant "0", so the row shows option 0 and
+     * the cursor landing on it announces the name and that word. Leaving it
+     * unserved is NOT the same and was the first cut: "" makes announceTouch
+     * say "not read yet" every time you land on the row, which is a fault
+     * report on a control that is working.
+     */
+    connect:                { read: "js.stateless",           write: "action.connect",           persist: null,   cache: null,                     modal: null },
+    help:                   { read: "js.stateless",           write: "action.help",              persist: null,   cache: null,                     modal: null },
 };
 
 /**
@@ -588,21 +606,65 @@ export const SHORTCUTS_PARAMS = [
 export const SYSTEM_PARAMS = [
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
+    /*
+     * TWO DOORS AS TRIGGERS, ON THE SAME PAGE AS THE TOGGLE ABOVE.
+     *
+     * These were a menu page of their own, which is what the planner does with
+     * a level's `menu`: a level carrying knobs AND a menu plans TWO pages, grid
+     * then menu (page_plan.mjs, "Menu LAST"), and there is no branch anywhere
+     * that merges menu entries into a knobs page. So one section meant two jog
+     * steps to reach three rows, and a second page name to invent and truncate.
+     *
+     * `access: "write"` is the mechanism that collapses them. It makes a
+     * two-option enum a MOMENTARY — `isTrigger`, `WIDGET_BUTTON` on a grid, a
+     * plain row in a list — which is not turnable and not divable, so a click
+     * fires it and nothing else can happen to it. page_controller.onClick
+     * routes a list row for a write-only param straight to fireTrigger, which
+     * writes option index 1; that write is what the io turns back into an
+     * action.
+     *
+     * BOTH OPTIONS ARE "Open", AND THE REPETITION IS THE POINT.
+     *
+     * A list row draws `name` and `value` unconditionally (knobListEntries), so
+     * a trigger shows whatever its current option is — "Help / Idle" would read
+     * as a state the user is meant to change. A door has no state, so both
+     * sides of the write say the same word and the row reads "Help  Open"
+     * before, during and after.
+     *
+     * It was "..." for one round, which looks right and SOUNDS like nothing:
+     * fireTrigger announces `${label}, ${options[1]}` and landing on a row
+     * announces the value too, so the screen reader — a flagship feature on
+     * this device — said "Connect, dot dot dot". The word is chosen for the
+     * ear; the eye is happy with either.
+     *
+     * These keys must still be SERVED a read, even though they have no state:
+     * an unserved key announces "not read yet" every time the cursor lands on
+     * it (announceTouch), which is a fault report on a row that is working
+     * perfectly. `globalGridIoFor` answers "0" for both.
+     *
+     * The keys are `connect` and `help` and the io maps them to the SAME action
+     * strings the menu used, so runGlobalActionFromGrid, handleGlobalSettingsAction
+     * and their dispatch are untouched.
+     */
+    { key: "connect", name: "Connect", type: "enum", options: ["Open", "Open"],
+      short_options: ["OPN", "OPN"], access: "write", default: 0 },
+    { key: "help", name: "Help", type: "enum", options: ["Open", "Open"],
+      short_options: ["OPN", "OPN"], access: "write", default: 0 },
 ];
 
 /* ------------------------------------------------------------------- system */
 
 /*
- * WHAT WENT, AND WHY THE SECTION IS NOT CALLED "UPDATES" ANY MORE.
+ * WHAT WENT, AND WHY THERE IS NO "UPDATES" SECTION ANY MORE.
  *
- * This menu used to be three rows: [Check Updates], [Module Store] and
- * [Help...]. The first two are gone, and neither was removed for tidiness:
+ * This section was a menu page of three rows: [Check Updates], [Module Store]
+ * and [Help...]. None of the three was removed for tidiness:
  *
  *   [Module Store] had ALREADY been reduced to a screen that printed
  *   "move.local:7700" and nothing else -- the on-device store was retired when
  *   the install paths stopped working for anyone without a current shim, and
- *   what was left was a signpost wearing a shop's name. It is now the Connect
- *   screen, which answers the same question ("where do I get modules") with an
+ *   what was left was a signpost wearing a shop's name. It is the Connect row
+ *   now, which answers the same question ("where do I get modules") with an
  *   address the user can actually reach and a QR that opens it.
  *
  *   [Check Updates] scanned the catalog over the network and listed what was
@@ -611,40 +673,14 @@ export const SYSTEM_PARAMS = [
  *   copy on a 128x64 screen that cannot act is a report you have to go
  *   somewhere else to use.
  *
- * [Help...] stays, and it is joined by [Connect...] rather than left alone --
- * a ONE ENTRY actions menu is the shape the Master FX contract already records
- * as a mistake ("a menu page you have to enter to press a single button").
+ *   [Help...] stayed, and it is a ROW rather than a menu entry now.
  *
- * The section is "System": it holds the one remaining service toggle
- * (Analytics) on its grid page and these two doors on its menu page. That is
- * TWO pages for one section, which is a deliberate split and not the silent
- * kind -- see the note on GLOBAL_SECTIONS.
+ * The section is "System" and it is ONE PAGE: Analytics, Connect, Help. It was
+ * briefly a grid page plus a menu page -- which is what a level carrying both
+ * plans -- and that was two jog steps and a second page name to invent, for
+ * three rows that fit on one screen with room to spare. See SYSTEM_PARAMS for
+ * how the two doors became rows.
  */
-/*
- * THE PAGE IS CALLED "CONNECT", NOT "HELP & CONNECT", AND THAT IS A MEASURED
- * DECISION RATHER THAN A PREFERENCE.
- *
- * The header's right-hand side has about 60px beside "SETTINGS": "CONNECT" is
- * 42px and fits, "HELP" is 24px and fits, "HELP & CONNECT" is 84px and is
- * silently cut to "HELP & CONN" -- rendered and looked at, not guessed. So one
- * of the two names the page.
- *
- * It is Connect, because HELP HAS A SECOND DOOR AND CONNECT WOULD HAVE NONE.
- * The same viewer is reachable from Master FX -> Settings -> Help
- * (handleMasterFxSettingsAction), so a user who cannot find it here has
- * somewhere else to go. The Connect screen's only other entrance is a
- * `[Get more...]` row inside a module picker, which is not somewhere you look
- * for your own IP address.
- *
- * [Connect...] is FIRST for the same reason it names the page: with the screen
- * reader on, landing on row 0 of a page called Connect and hearing "Connect"
- * is the version of this screen that explains itself. [Help...] is the row
- * below and both are on screen at once -- it is a two-row menu.
- */
-export const SYSTEM_ACTIONS = [
-    { label: "[Connect...]", action: "connect" },
-    { label: "[Help...]", action: "help" },
-];
 
 /* --------------------------------------------------------------- assembly */
 
@@ -673,8 +709,7 @@ export const GLOBAL_SECTIONS = [
     { id: "accessibility", label: "Screen Reader", params: ACCESSIBILITY_PARAMS },
     { id: "set_pages", label: "Set Pages", params: SET_PAGES_PARAMS },
     { id: "shortcuts", label: "Shortcuts", params: SHORTCUTS_PARAMS },
-    { id: "system", label: "System", params: SYSTEM_PARAMS, menu: SYSTEM_ACTIONS,
-      menu_label: "Connect" },
+    { id: "system", label: "System", params: SYSTEM_PARAMS },
 ];
 
 /** Every declared param, across every section. */
@@ -692,10 +727,12 @@ export function allGlobalParams() {
  * each page: planPages prefers a nav entry's label over the level's own, which
  * is the label users already see.
  *
- * [Help...] is NOT an entry here. It used to be an action on root, which reads
- * well and does nothing: root plans to no page, the planner walks past an entry
- * with no `key` and no `level`, and the section picker enumerates pages — so it
- * had no surface anywhere. It lives on the System menu; see SYSTEM_ACTIONS.
+ * HELP IS NOT AN ENTRY HERE, and it was, twice, in two different wrong ways.
+ * First as an action on ROOT, which reads well and does nothing: root plans to
+ * no page, the planner walks past an entry with no `key` and no `level`, and
+ * the section picker enumerates pages — so it had no surface anywhere. Then as
+ * a `menu` on the System level, which works and costs that section a second
+ * page. It is a write-only PARAM on System now; see SYSTEM_PARAMS.
  *
  * @param {object} [io]  unused by the declaration; accepted so the call shape
  *   matches createSlotGridIo's and so a future runtime-shaped section (one

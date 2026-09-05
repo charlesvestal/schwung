@@ -12182,6 +12182,14 @@ function globalGridIoFor() {
                 return String(saveStemsValue);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+
+            /* The two doors have no state to report. They are answered anyway,
+             * with option 0: an UNSERVED key makes the row announce "not read
+             * yet" every time the cursor lands on it, which is a fault report
+             * on a control that works. See GLOBAL_ROUTING's `js.stateless`. */
+            case "connect":
+            case "help":
+                return "0";
             }
             return "";
         },
@@ -12316,6 +12324,28 @@ function globalGridIoFor() {
             case "analytics_enabled":
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
                 return;
+
+            /*
+             * THE TWO DOORS ARE WRITES, and they must go through
+             * runGlobalActionFromGrid rather than handleGlobalSettingsAction.
+             *
+             * A menu entry reached the action runner (shadow_ui_param_pages
+             * calls controllerIo.runAction for `todo.action === "menu"`); a
+             * TRIGGER does not — page_controller.fireTrigger just calls
+             * setParam and lands here. So the hand-off that the menu path got
+             * for free has to be done explicitly: exitParamPages, set
+             * globalModalFromGrid so the reconciler brings the page back, and
+             * ask gridActionOpenedSomething whether anything actually opened
+             * rather than assuming it did.
+             *
+             * Without this the click would open Connect underneath a knob-grid
+             * view that is still on screen — the screen would not change, and
+             * the row would read as broken.
+             */
+            case "connect":
+            case "help":
+                runGlobalActionFromGrid(key);
+                return;
             }
         },
 
@@ -12323,9 +12353,17 @@ function globalGridIoFor() {
          * GLOBAL_ROUTING marks `persist: "save"`. */
         persist: () => saveMasterFxChainConfig(),
 
-        /* The Updates menu page's entries, plus [Help...]. Own runner rather
-         * than the host's generic one for the same reason Master FX has one:
-         * the generic runner takes the IPC slot and would run a SLOT action. */
+        /*
+         * Kept even though Global Settings publishes no `menu` any more.
+         *
+         * The contract's two doors are write-only PARAMS now, so they arrive
+         * through writeParam above and this is unreached today. It stays
+         * because the io shape is shared with the slot and Master FX
+         * contracts, whose levels do publish menus, and because a Global
+         * Settings action that has to be a menu entry again (one with a
+         * confirm, say) would otherwise silently take the host's generic
+         * runner — which takes the IPC SLOT and would run a slot action.
+         */
         runAction: (action) => runGlobalActionFromGrid(action),
     };
 
