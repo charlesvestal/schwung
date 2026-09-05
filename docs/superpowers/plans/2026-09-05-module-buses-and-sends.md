@@ -1840,6 +1840,20 @@ every other stem."
 
 ---
 
+> **Two fixes owed in `src/schwung_shim.c` from Task 7's review**, deferred only
+> because Task 8 was running concurrently in the same file:
+>
+> 1. **The send return level is read TWICE.** The stem tap snapshots
+>    `shadow_send_return_level[sb]` into `lvl`, then `bus_mix_send` re-reads the
+>    `volatile` original one statement later. A param write landing between them
+>    scales the stem block differently from the block that reached the master —
+>    exactly the guarantee the comment above it makes. One line: pass `lvl` to
+>    `bus_mix_send`. The neighbouring A->B block reads
+>    `shadow_send_return_level[0]` on its own, same pattern.
+> 2. **Two stale counts in the Move-stem comment** — "the five files still sum
+>    to the master" and "a sixth file repeating them would double every
+>    instrument". Equivalent prose was updated everywhere else.
+
 ## Task 8: Persistence and the param surface
 
 **Goal:** Buses, voice assignments and send levels round-trip through the slot file; send chains, return levels and A->B round-trip per set; send presets are one store shared by A and B.
@@ -2202,6 +2216,11 @@ git commit -m "grid: a Bus Sends page, so send levels can be ridden"
 - [ ] PR #121 and legsmechanical are credited in `docs/CHAIN.md` and in the commit trailer
 - [ ] `manual.html` documents the down-gesture and the FX-bus picker (a gesture changed, so this is required, not optional)
 - [ ] `bash tests/host/test_builtin_help_content.sh` green
+- [ ] **Stem-count drift found by Task 7's review:** `CLAUDE.md:663` and
+      `docs/SHADOW_UI.md:921,969` still say five stems and "Five rolling buffers
+      … ~265 MB". Seven stems at the 60 s cap is 70.6 MB of Skipback rings and
+      ~2.4 MB resident — and the four-slot stems no longer sum to the master
+      once a send carries signal.
 
 **Verify:** `for t in tests/host/*.sh; do bash "$t" || echo "FAILED: $t"; done` -> no failures
 
