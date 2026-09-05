@@ -176,6 +176,52 @@ static const bs_led_t bs_all_leds[] = {
     {1,58},{1,60},{1,62},{1,63},{1,88},{1,119},
 };
 
+/* ── XMOS init SysEx bisect rig ───────────────────────────────────────────
+ * Captured from MoveOriginal's second frame after boot (xmos_sysex.txt,
+ * 2026-09-05): a device inquiry plus five Ableton-header commands, one of
+ * which ends the XMOS's autonomous power-on LED show (the channel-2
+ * anim-none blast below does NOT — verified on hardware). When
+ * $BOOT_TARGETS_DIR/.sysex-test exists, the picker appends one row per
+ * message; selecting a row sends it and stays in the picker, so the row
+ * that freezes the LEDs is the one. */
+typedef struct { const char *name; const uint8_t *bytes; int len; } bs_sysex_t;
+static const uint8_t bs_sx_inquiry[] = {0xF0,0x7E,0x01,0x06,0x01,0xF7};
+static const uint8_t bs_sx_42[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x42,0x00,0xF7};
+static const uint8_t bs_sx_25[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x25,0xF7};
+static const uint8_t bs_sx_3a[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x3A,0xF7};
+static const uint8_t bs_sx_1e[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x1E,0x01,0xF7};
+static const uint8_t bs_sx_47[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x47,0xF7};
+static const bs_sysex_t bs_sysex_tests[] = {
+    {"SysEx inquiry 7E", bs_sx_inquiry, sizeof(bs_sx_inquiry)},
+    {"SysEx 42 00",      bs_sx_42,      sizeof(bs_sx_42)},
+    {"SysEx 25",         bs_sx_25,      sizeof(bs_sx_25)},
+    {"SysEx 3A",         bs_sx_3a,      sizeof(bs_sx_3a)},
+    {"SysEx 1E 01",      bs_sx_1e,      sizeof(bs_sx_1e)},
+    {"SysEx 47",         bs_sx_47,      sizeof(bs_sx_47)},
+};
+#define BS_SYSEX_TEST_COUNT ((int)(sizeof(bs_sysex_tests) / sizeof(bs_sysex_tests[0])))
+
+/* Encode one SysEx message as cable-0 USB-MIDI packets into MIDI_OUT and
+ * pump a frame. Messages here are <= 9 bytes = 3 packets, well inside the
+ * 20-slot frame. CIN: 0x4 start/continue, 0x5/0x6/0x7 end with 1/2/3 bytes. */
+static void bs_send_sysex(int fd, uint8_t *map, const uint8_t *msg, int len) {
+    int slot = 0;
+    for (int off = 0; off < len && slot < 20; off += 3, slot++) {
+        int rem = len - off;
+        uint8_t *p = map + slot * 4;
+        if (rem > 3) {
+            p[0] = 0x04; p[1] = msg[off]; p[2] = msg[off + 1]; p[3] = msg[off + 2];
+        } else {
+            p[0] = (uint8_t)(rem == 3 ? 0x07 : (rem == 2 ? 0x06 : 0x05));
+            p[1] = msg[off];
+            p[2] = (rem >= 2) ? msg[off + 1] : 0;
+            p[3] = (rem == 3) ? msg[off + 2] : 0;
+        }
+    }
+    bs_pump_frame(fd);
+    memset(map, 0, 20 * 4);
+}
+
 /* MIDI_OUT is 20 x 4-byte slots at TX offset 0, consumed per transfer.
  * Emit anim-none on channel 2 (0-indexed 1) for every LED, 20 per frame. */
 static void bs_cancel_led_anims(int fd, uint8_t *map) {
@@ -352,6 +398,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* SysEx bisect rig (see bs_sysex_tests): rows appended after stock when
+     * the flag file exists. Selecting one SENDS, never boots. */
+    int test_row_start = -1;
+    {
+        char flag[600];
+        snprintf(flag, sizeof(flag), "%s/.sysex-test", targets_dir);
+        if (access(flag, F_OK) == 0 && nrows + BS_SYSEX_TEST_COUNT <= BS_MAX_ROWS) {
+            alarm(600);   /* a bisect session outlives the 60s wedge backstop */
+            test_row_start = nrows;
+            for (int i = 0; i < BS_SYSEX_TEST_COUNT; i++) {
+                snprintf(rows[nrows].id, sizeof(rows[nrows].id), "test:%d", i);
+                snprintf(rows[nrows].name, sizeof(rows[nrows].name), "%s",
+                         bs_sysex_tests[i].name);
+                nrows++;
+            }
+        }
+    }
+
     int fd = open(SCHWUNG_SPI_DEVICE, O_RDWR);
     if (fd == -1)
         bs_die("open");
@@ -434,6 +498,21 @@ int main(int argc, char **argv) {
                 jog_accum = 0;
             if (cursor == 0 && jog_accum < 0)
                 jog_accum = 0;
+        }
+
+        if (ev.click_pressed && test_row_start >= 0 && cursor >= test_row_start) {
+            /* Bisect row: send the message, mark the row, stay in the picker. */
+            int t = cursor - test_row_start;
+            bs_send_sysex(fd, map, bs_sysex_tests[t].bytes, bs_sysex_tests[t].len);
+            size_t nl = strlen(rows[cursor].name);
+            if (nl + 2 < sizeof(rows[cursor].name)) {
+                rows[cursor].name[nl] = ' ';
+                rows[cursor].name[nl + 1] = '*';
+                rows[cursor].name[nl + 2] = '\0';
+            }
+            bs_draw_picker(banner1, banner2, rows, nrows, cursor, &scroll);
+            bs_repaint();
+            continue;
         }
 
         if (ev.click_pressed) {
