@@ -755,6 +755,26 @@ slot 0 and wrote a garbage param key into a different running module."
 
 **Verify:** `bash tests/host/test_split_voices_parse.sh` -> `PASS`
 
+> **Amended after code review.** Three corrections to the code below, which is
+> now the pre-review draft; the committed source is the authority.
+>
+> 1. **A skipped id is a HOLE, never a compaction.** The draft dropped an
+>    unstorable id and kept counting, so one over-long id re-pointed every
+>    voice behind it — kick's distortion landing on the snare with nothing
+>    looking wrong. The table index IS the `voice_out[]` index, so an
+>    unstorable entry now gets an empty string AT ITS OWN INDEX and is still
+>    counted. The original test could not see this because its over-long id was
+>    LAST, where both behaviours agree.
+> 2. **`synth:split_voices` clamps a negative plugin return to 0.** A module
+>    that does not implement the key returns `-1`, which becomes `null` — "the
+>    read did not complete" — when it reaches JS. But it WAS served; that is
+>    the `""` answer. Propagating `-1` would make every module in the fleet
+>    read as a failed read, and Tasks 9/10 would retry forever.
+> 3. **`synth_split_read_failed` is deleted.** It was unreachable: the parser
+>    returns `SPLIT_VOICES_READ_FAILED` only for a NULL buffer, and the call
+>    site always passes a stack buffer. The genuine tri-state lives one layer
+>    up on the SHM param channel, not on an in-process call.
+
 **Steps:**
 
 - [ ] **Step 1: Add the storage**
@@ -1116,6 +1136,11 @@ plus the `synth_bypassed` memset) with:
                 memset(bus_bufs[b], 0, frames * 2 * sizeof(int16_t));
         }
 
+        /* The count includes HOLES — an id the module published that we could
+         * not store is an empty string at its own index, because the index is
+         * the buffer index and compacting it would re-point every voice
+         * behind it. A hole simply never matches a bus assignment, so its
+         * entry resolves to main like any unassigned voice. */
         int16_t *voice_out[SPLIT_VOICES_MAX];
         bus_mix_build_table(voice_out, inst->synth_split_voice_count,
                             inst->voice_bus, out_interleaved_lr,

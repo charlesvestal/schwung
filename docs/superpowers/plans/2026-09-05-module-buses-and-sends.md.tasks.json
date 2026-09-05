@@ -19,7 +19,7 @@
     {
       "id": 2,
       "subject": "Task 3: The `split_voices` contract in the chain host",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** The chain reads the synth's flat `split_voices` list at load, holds the ids, and answers `synth:split_voices` for the UI.\n\n**Files:**\n- Modify: `src/modules/chain/dsp/chain_internal.h` (voice table on `chain_instance_t`)\n- Modify: `src/modules/chain/dsp/chain_host.c` (read at load, clear at unload, expose)\n- Create: `tests/host/test_split_voices_parse.c`\n- Create: `tests/host/test_split_voices_parse.sh`\n- Modify: `tests/host/Makefile`\n\n**Acceptance Criteria:**\n- [ ] A synth publishing `split_voices` has its ids parsed into a flat ordered table; index in the JSON is index in the table\n- [ ] A synth publishing no `split_voices` leaves the table empty and `split_voice_count` 0\n- [ ] The table is cleared on instance create AND on every synth load, so an id from the previous module can never name a voice in a list that no longer exists\n- [ ] A `null` answer (read failed) and an `\"\"` answer (key unserved) are told apart: neither produces a table, and the failed read is retried rather than latched as \"this module cannot split\"\n- [ ] Ids longer than the buffer are rejected, not truncated \u2014 a truncated id would compare unequal and orphan the bus silently\n- [ ] Parsing is bounded: at most `SPLIT_VOICES_MAX` entries\n\n**Verify:** `bash tests/host/test_split_voices_parse.sh` -> `PASS`\n\n**Steps:**\n- Step 1: Add the storage\n- Step 2: Write the failing test\n- Step 3: Run to verify it fails\n- Step 4: Write the parser\n- Step 5: Wire it into the chain host\n- Step 6: Expose it to the UI\n- Step 7: Shell wrapper + Makefile target\n- Step 8: Run to verify it passes\n- Step 9: Commit\n\n```json:metadata\n{\"files\": [\"src/modules/chain/dsp/chain_host.c\", \"src/modules/chain/dsp/chain_internal.h\", \"tests/host/Makefile\", \"tests/host/test_split_voices_parse.c\", \"tests/host/test_split_voices_parse.sh\"], \"verifyCommand\": \"bash tests/host/test_split_voices_parse.sh\", \"acceptanceCriteria\": [\"A synth publishing `split_voices` has its ids parsed into a flat ordered table; index in the JSON is index in the table\", \"A synth publishing no `split_voices` leaves the table empty and `split_voice_count` 0\", \"The table is cleared on instance create AND on every synth load, so an id from the previous module can never name a voice in a list that no longer exists\", \"A `null` answer (read failed) and an `\\\"\\\"` answer (key unserved) are told apart: neither produces a table, and the failed read is retried rather than latched as \\\"this module cannot split\\\"\", \"Ids longer than the buffer are rejected, not truncated \\u2014 a truncated id would compare unequal and orphan the bus silently\", \"Parsing is bounded: at most `SPLIT_VOICES_MAX` entries\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         0
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T21:23:12.500015"
+  "lastUpdated": "2026-09-05T21:49:14.889413"
 }
