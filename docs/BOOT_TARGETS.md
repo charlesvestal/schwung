@@ -73,6 +73,12 @@ main binary. Rules:
   but if your platform inherits or acquires realtime priority, children must
   be SCHED_OTHER — see `docs/REALTIME_SAFETY.md` for why FIFO-70 children
   starve Move's own audio threads.
+- **Exit on SIGTERM.** `/etc/init.d/move stop` TERMs the service pid — which,
+  through the exec chain, is your platform. A target that ignores TERM
+  survives the stop, keeps `/dev/ablspi0.0` open, and the next start finds
+  the device busy: the user sees a black screen that even a service restart
+  cannot clear (observed on hardware with a TERM-deaf binary; only `kill -9`
+  freed it). Handle TERM and exit promptly.
 - **Never write to `/tmp` on the device.** The root FS is ~463 MB and usually
   full. Use `/data/UserData/`.
 - **Do not modify** `/opt/move/Move`, `/opt/move/MoveOriginal`,
