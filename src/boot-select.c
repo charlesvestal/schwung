@@ -184,40 +184,25 @@ static const bs_led_t bs_all_leds[] = {
  * $BOOT_TARGETS_DIR/.sysex-test exists, the picker appends one row per
  * message; selecting a row sends it and stays in the picker, so the row
  * that freezes the LEDs is the one. */
-typedef struct { const char *name; const uint8_t *bytes; int len; } bs_sysex_t;
-static const uint8_t bs_sx_inquiry[] = {0xF0,0x7E,0x01,0x06,0x01,0xF7};
-static const uint8_t bs_sx_42[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x42,0x00,0xF7};
-static const uint8_t bs_sx_25[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x25,0xF7};
-static const uint8_t bs_sx_3a[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x3A,0xF7};
-static const uint8_t bs_sx_1e[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x1E,0x01,0xF7};
-static const uint8_t bs_sx_47[] = {0xF0,0x00,0x21,0x1D,0x01,0x01,0x47,0xF7};
+/* Round 2 candidates, from the widened all-slots capture: the six boot
+ * SysEx messages were each replayed on hardware and none stops the show.
+ * What the SysEx filter had hidden: a cable-15 (SPI protocol cable) CC
+ * pair in Move's FIRST frame, a MIDI system reset, and a lone CC0=0x7E.
+ * Raw USB-MIDI packets, sent verbatim. */
+typedef struct { const char *name; uint8_t pkts[4][4]; int npkts; } bs_sysex_t;
 static const bs_sysex_t bs_sysex_tests[] = {
-    {"SysEx inquiry 7E", bs_sx_inquiry, sizeof(bs_sx_inquiry)},
-    {"SysEx 42 00",      bs_sx_42,      sizeof(bs_sx_42)},
-    {"SysEx 25",         bs_sx_25,      sizeof(bs_sx_25)},
-    {"SysEx 3A",         bs_sx_3a,      sizeof(bs_sx_3a)},
-    {"SysEx 1E 01",      bs_sx_1e,      sizeof(bs_sx_1e)},
-    {"SysEx 47",         bs_sx_47,      sizeof(bs_sx_47)},
+    {"C15 pair 00=02 01=40", {{0xFB,0xB0,0x00,0x02},{0xFB,0xB0,0x01,0x40}}, 2},
+    {"C15 00=02 only",       {{0xFB,0xB0,0x00,0x02}}, 1},
+    {"C15 01=40 only",       {{0xFB,0xB0,0x01,0x40}}, 1},
+    {"MIDI reset FF",        {{0x0F,0xFF,0x00,0x00}}, 1},
+    {"CC0 = 7E",             {{0x0B,0xB0,0x00,0x7E}}, 1},
 };
 #define BS_SYSEX_TEST_COUNT ((int)(sizeof(bs_sysex_tests) / sizeof(bs_sysex_tests[0])))
 
-/* Encode one SysEx message as cable-0 USB-MIDI packets into MIDI_OUT and
- * pump a frame. Messages here are <= 9 bytes = 3 packets, well inside the
- * 20-slot frame. CIN: 0x4 start/continue, 0x5/0x6/0x7 end with 1/2/3 bytes. */
-static void bs_send_sysex(int fd, uint8_t *map, const uint8_t *msg, int len) {
-    int slot = 0;
-    for (int off = 0; off < len && slot < 20; off += 3, slot++) {
-        int rem = len - off;
-        uint8_t *p = map + slot * 4;
-        if (rem > 3) {
-            p[0] = 0x04; p[1] = msg[off]; p[2] = msg[off + 1]; p[3] = msg[off + 2];
-        } else {
-            p[0] = (uint8_t)(rem == 3 ? 0x07 : (rem == 2 ? 0x06 : 0x05));
-            p[1] = msg[off];
-            p[2] = (rem >= 2) ? msg[off + 1] : 0;
-            p[3] = (rem == 3) ? msg[off + 2] : 0;
-        }
-    }
+/* Copy the probe packets into MIDI_OUT slots verbatim and pump one frame. */
+static void bs_send_sysex(int fd, uint8_t *map, const bs_sysex_t *probe) {
+    for (int i = 0; i < probe->npkts && i < 20; i++)
+        memcpy(map + i * 4, probe->pkts[i], 4);
     bs_pump_frame(fd);
     memset(map, 0, 20 * 4);
 }
@@ -514,7 +499,7 @@ int main(int argc, char **argv) {
         if (ev.click_pressed && test_row_start >= 0 && cursor >= test_row_start) {
             /* Bisect row: send the message, mark the row, stay in the picker. */
             int t = cursor - test_row_start;
-            bs_send_sysex(fd, map, bs_sysex_tests[t].bytes, bs_sysex_tests[t].len);
+            bs_send_sysex(fd, map, &bs_sysex_tests[t]);
             size_t nl = strlen(rows[cursor].name);
             if (nl + 2 < sizeof(rows[cursor].name)) {
                 rows[cursor].name[nl] = ' ';
