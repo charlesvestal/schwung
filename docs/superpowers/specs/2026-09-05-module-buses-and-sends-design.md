@@ -8,6 +8,47 @@ send levels, without the chain host learning anything about that module. Worked
 example: mrdrums with distortion on the kick, chorus→phaser on the hats, and a
 delay and a reverb on two device-wide sends.
 
+## Prior art: PR #121 (legsmechanical)
+
+The global-send half of this design was already built, and independently
+arrived at the same shape. **PR #121** — "Send FX + Move FX buses + generic
+FX-bus picker", folding closed PRs #115 and #117 — implements two post-fader
+send buses hosted as `master_fx_slot_t` arrays with a `send_accum[bus]` in the
+shim, device-verified on hardware, documented in its own `docs/SEND_FX.md`.
+
+**It is not mergeable.** Its merge-base is 2026-03-04; `main` is 1696 commits
+ahead and the branch carries 864 of its own, so its 563-file diff is mostly
+divergence. It predates Save Stems, the param-pages rewrite, module draw
+surfaces and the Link Audio ring resize. We therefore re-implement on current
+`main` and **credit the design to that PR.**
+
+Harvested from it, as validated decisions rather than re-derived ones:
+
+- **Sends are post-fader**, not merely post-insert: bus inserts, then the slot
+  volume, then the send level. Turning a track down pulls it out of the send,
+  which is what a console does and what people expect.
+- **Per-bus return level** — how much of the effected bus comes back.
+- **Send A -> Send B**, feedback-safe (B cannot bleed into A): a delay whose
+  repeats wash through a reverb.
+- **Send presets are shared between A and B** — one store, loadable onto either.
+- **Per-set persistence** for the chains, the return levels, the A->B amount and
+  every send level.
+- **A generic FX-bus picker** on Shift+Vol+Menu listing Master FX and Send A/B,
+  rather than the "siblings of the Master FX screen" handwave this spec
+  originally carried. Master FX becomes one bus the picker can open.
+
+Deliberately NOT harvested: its **Move FX** half (four per-Move-track insert
+buses with a `Move>SchwFX` peel). That is a separate feature about Move's own
+tracks, orthogonal to module buses, and folding it in is what made #121 too
+large to land.
+
+What #121 does **not** have, and what this spec is actually for: a `git grep`
+for `split_voices`, `render_split`, `voice_out` or per-voice anything across
+its `src/` returns nothing. Its sends are fed **per slot**; its Move buses are
+per Move **track**. Nothing in it lets a module declare that it can render its
+voices apart, so distortion on the kick and chorus into phaser on the hats is
+out of reach for it by construction.
+
 ## The unifying principle
 
 **Every chain in Schwung is 8 positions.** Main, each bus, Send A, Send B and
@@ -21,7 +62,7 @@ adds no second cap and no second editor.
 |---|---|---|---|
 | **Splittable voice** | module | a voice the module can render into its own buffer | the module's own |
 | **Bus** | slot | a user-made set of voices + an 8-position insert chain + a level to each send | up to 4 per slot, **plus Main** |
-| **Global send** | device | an 8-position chain fed by every bus in every slot, returning pre-Master-FX | 2 |
+| **Global send** | device | an 8-position chain fed by every bus in every slot, with a return level, returning pre-Master-FX | 2 (A -> B routable) |
 
 **Main is bus 0** — implicit, never created or deleted, holding every voice not
 assigned elsewhere. Its insert chain *is* the slot's existing main chain, and it
@@ -105,9 +146,15 @@ Inside `v2_render_block`, replacing the single synth render:
                                 external_fx_mode)
 ```
 
-Send levels are **post-insert**: the kick's distortion is in what reaches the
-reverb. Pre/post is not a per-send option; wanting a different send level for a
+Send levels are **post-insert and post-fader**: the kick's distortion is in what
+reaches the reverb, and pulling the slot's volume down pulls it out of the sends
+too. Pre/post is not a per-send option; wanting a different send level for a
 voice is what making a second bus is for.
+
+**This subsumes #121's per-slot sends rather than competing with them.** A module
+that cannot split has exactly one bus — Main — so "the slot's send level" and
+"bus 0's send level" are the same control, reached the same way, behaving
+exactly as #121 specified. Splitting only adds more buses beside it.
 
 `send_accum[]` is **shim-owned and shared by all four slots** — that is what
 "global" means here. Steps 1–6 are internal to the slot and its stereo output is
@@ -119,11 +166,17 @@ Move→Schwung path where the shim runs the main 8 separately) need no change.
 ```
 per frame:  four slots render, accumulating into send_accum[0..1]
             Send A: 8 FX on send_accum[0]
+            send_accum[1] += send_A_out * a_to_b * return_level[A]
             Send B: 8 FX on send_accum[1]
-            shadow mix += both returns
+            shadow mix += send_A_out * return_level[A]
+                        + send_B_out * return_level[B]
             Master FX on the mix
             master volume -> DAC
 ```
+
+A -> B is applied **after** A's chain and **before** B's, which is what makes it
+feedback-safe by construction: there is no point in the ordering at which B's
+output can reach A. Nothing needs to detect or break a loop.
 
 Sends live in `shadow_chain_mgmt.c` beside `master_fx`, with cap-derived key
 routing mirroring `master_fx_key.h`, and the shim stays the authority for
@@ -173,15 +226,22 @@ ordinary chain editor.
 - Actions on the list: create, rename, delete, assign voices (multi-select over
   `split_voices`), set send levels.
 - Send levels are also reachable as a knob-grid page, so they can be ridden.
-- Send A and Send B are siblings of the Master FX screen — the same screen, three
-  instances.
+- Shift+Vol+Menu opens the **FX-bus picker** (harvested from #121): Master FX,
+  Send A, Send B. Master FX becomes one bus among them rather than the screen
+  the others hang off. Each opens the same 8-position editor.
+- A send's editor additionally carries its return level, and Send A's carries
+  the -> Send B amount. Sends have no LFOs; Master keeps them.
 - A slot whose synth publishes no `split_voices` shows no bus affordance at all.
 
 ## Persistence
 
 - Per slot, in `slot_N.json`: `buses: [{name, voices:[id], fx:[...], sends:[a,b]}]`.
   Main's send levels are stored alongside as bus 0.
-- Device-wide: `send_fx_N.json`, shim-authoritative, beside `master_fx_N.json`.
+- Device-wide: `send_fx_N.json`, shim-authoritative, beside `master_fx_N.json`,
+  holding both chains, both return levels and the A->B amount. Per set, as
+  #121 established.
+- Send chain presets are one store shared by A and B, so a preset saved from A
+  loads onto B.
 - A bus whose voice ids no longer exist in a swapped-in module keeps its chain
   and reports the orphaned ids rather than silently re-pointing — the
   snapshot/recall rule, where a partial restore that reports nothing is
