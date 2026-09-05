@@ -2977,10 +2977,17 @@ skip_la_rebuild:
          * Note this is NOT native_bridge_me_component, which is snapshotted
          * further up, before fx_target exists -- a send return read from there
          * would be silence in every file. */
+        /* ONE read of the volatile level, shared by the stem tap and the
+         * master add below. Reading it twice lets a param write land between
+         * them and scale the stem block differently from the block that
+         * reached the master -- which is precisely the exactness the comment
+         * above promises. */
+        int send_lvl = shadow_send_return_level[sb];
+        if (send_lvl < 0) send_lvl = 0;
+        if (send_lvl > BUS_MIX_SEND_LEVEL_MAX) send_lvl = BUS_MIX_SEND_LEVEL_MAX;
+
         if (shadow_stems_wanted) {
-            int lvl = shadow_send_return_level[sb];
-            if (lvl < 0) lvl = 0;
-            if (lvl > BUS_MIX_SEND_LEVEL_MAX) lvl = BUS_MIX_SEND_LEVEL_MAX;
+            int lvl = send_lvl;
             int16_t send_ret[FRAMES_PER_BLOCK * 2];
             for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
                 send_ret[i] = (int16_t)(((int32_t)send_out[sb][i] * (int32_t)lvl) /
@@ -2988,8 +2995,7 @@ skip_la_rebuild:
             shadow_stem_store(SAMPLER_STEM_SEND_A + sb, send_ret, 1.0f);
         }
 
-        bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2,
-                     shadow_send_return_level[sb]);
+        bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2, send_lvl);
     }
 
     /* The A->B block above names send 1 by index. Raising SEND_BUSES turns that
@@ -3106,10 +3112,11 @@ skip_la_rebuild:
          * Without Link Audio routing there is no per-track split to be had:
          * Move hands us one mixed mailbox. Un-scaling it by the same smoothed
          * mv the unity_view above uses puts it at unity with the slot stems,
-         * so the five files still sum to the master.
+         * so it sums with the slot stems to the master (plus SendA/SendB,
+         * which carry what no slot can own).
          *
          * Under rebuild_from_la this is left INVALID on purpose. Move's tracks
-         * are inside the four slot stems there, and a sixth file repeating
+         * are inside the four slot stems there, and a Move file repeating
          * them would double every instrument in a stem sum. */
         shadow_stem_store(SAMPLER_STEM_MOVE, native_bridge_move_component, inv_mv);
     }
