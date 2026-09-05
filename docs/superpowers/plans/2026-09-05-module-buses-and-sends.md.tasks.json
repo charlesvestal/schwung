@@ -84,7 +84,7 @@
     {
       "id": 9,
       "subject": "Task 10: The bus list and the down-gesture",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Down on the synth box opens the slot's bus list; down on a bus row opens that bus's 8-position chain in the ordinary editor.\n\n**Files:**\n- Create: `src/shadow/shadow_ui_buses.mjs`\n- Modify: `src/shadow/shadow_ui.js` (gesture, view, wiring)\n\n**Acceptance Criteria:**\n- [ ] Down on the synth box in `VIEWS.CHAIN_EDIT` opens the bus list; down elsewhere in that view is unchanged\n- [ ] A slot whose synth publishes no `split_voices` shows NO bus affordance \u2014 no row, no hint, no empty screen\n- [ ] The list shows Main plus each bus, with its insert summary and both send levels\n- [ ] Create / rename / delete / assign-voices are reachable, and the footer names the verb of the row under the CURSOR\n- [ ] Voice assignment is a multi-select over `split_voices` labels, showing which bus each voice is currently on\n- [ ] Down on a bus row opens the existing chain editor against `bus<N>:`\n- [ ] The path writes NO pad LEDs \u2014 Move owns the pads while the shadow UI is up\n- [ ] A `null` read of `split_voices` shows a waiting state and retries; it never empties the list or latches\n\n**Verify:** render every screen through the PNG harness and look; `for t in tests/host/*.sh; do bash \"$t\"; done` green\n\n**Steps:**\n- Step 1: Write the module\n- Step 2: Wire the gesture\n- Step 3: Guard the tri-state read\n- Step 4: Render and look\n- Step 5: Commit\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"src/shadow/shadow_ui_buses.mjs\"], \"verifyCommand\": \"DUMP_PNG=/tmp/schwung-png bash tests/host/test_chain_editor_snapshot.sh && for t in tests/host/*.sh; do bash \\\"$t\\\" || echo \\\"FAILED: $t\\\"; done\", \"acceptanceCriteria\": [\"Down on the synth box in `VIEWS.CHAIN_EDIT` opens the bus list; down elsewhere in that view is unchanged\", \"A slot whose synth publishes no `split_voices` shows NO bus affordance \\u2014 no row, no hint, no empty screen\", \"The list shows Main plus each bus, with its insert summary and both send levels\", \"Create / rename / delete / assign-voices are reachable, and the footer names the verb of the row under the CURSOR\", \"Voice assignment is a multi-select over `split_voices` labels, showing which bus each voice is currently on\", \"Down on a bus row opens the existing chain editor against `bus<N>:`\", \"The path writes NO pad LEDs \\u2014 Move owns the pads while the shadow UI is up\", \"A `null` read of `split_voices` shows a waiting state and retries; it never empties the list or latches\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         7
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-06T00:34:45.356057"
+  "lastUpdated": "2026-09-06T01:29:36.459233"
 }
