@@ -433,6 +433,14 @@ declared wins because two live sources would disagree the moment a module moved
 its focus without a note — a preset load, mrdrums' auto-select — and the
 disagreement would latch.
 
+The grid does report one thing about what is PLAYED — a physical press. While
+the component declares `child_press_param` (or `focus_press_param`) the shim
+forwards hardware pad notes to the UI passively (`pad_observe`, reconciled in
+`tickParamPages`, dropped on exit and by the shim on display close) and
+`handleParamPagesMidi` writes `"1"` to that param on each note-on. It is a
+vouch, never a pad id, and the module still owns the index — see *Live
+presses* in `docs/MODULES.md`.
+
 A `<prefix>:last_note` fallback used to sit at the end of that list. It is
 deleted: **a sequencer plays notes**, so a running pattern changed the page on
 every hit in the bar, and a pad press could not be told from a clip because

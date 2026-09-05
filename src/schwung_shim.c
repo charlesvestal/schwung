@@ -7144,6 +7144,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         prev_overtake_mode = overtake_mode;
     }
 
+    /* Drop pad observation when the shadow display goes away. It only means
+     * anything while the knob grid is on screen, and a shadow_ui that exited
+     * (or crashed) before reconciling it to 0 would otherwise keep every pad
+     * press streaming into a UI ring nobody drains. Same reasoning as the
+     * runtime-claim drops on overtake exit above: this edge covers EVERY exit
+     * path, so it runs unconditionally rather than inside the display branch. */
+    {
+        static int prev_display_mode_observe = 0;
+        if (prev_display_mode_observe && !shadow_display_mode && shadow_control) {
+            shadow_control->pad_observe = 0;
+        }
+        prev_display_mode_observe = shadow_display_mode;
+    }
+
     /* Boot jack-state re-assert: worker arms shim_inject_boot_jack ~5 s after
      * start (Move firmware is up by then). Inject a CC 115 into Move's MIDI_IN
      * via the safe MPSC inject ring so Move's speaker enhancer corrects when
@@ -8641,6 +8655,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                     continue;  /* Skip DSP routing for blocked pads */
+                }
+
+                /* Forward pad notes (68-99) to the shadow UI while it is OBSERVING
+                 * pads (shadow_control->pad_observe). ADDITIONAL and passive: no
+                 * `continue`, so the routing below is untouched and the pad plays
+                 * exactly as before -- the UI merely also learns a finger hit it.
+                 *
+                 * That distinction exists only here. Move turns a press into an
+                 * ordinary note, so by the time one reaches a module its status,
+                 * channel, note and source are identical to a sequenced note
+                 * (measured on device). This is the raw pad number, which a
+                 * sequencer cannot produce. */
+                if (shadow_control && shadow_control->pad_observe &&
+                    d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 
                 /* Check capture rules for focused slot.

@@ -30,9 +30,9 @@
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
-         childName } from "./child_key.mjs";
+         childName, childPressParam } from "./child_key.mjs";
 import { focusParamOf, voicesOf, voiceIndexFromLevel,
-         voiceIndexFromWire, padLayoutOf, focusToken } from "./voices.mjs";
+         voiceIndexFromWire, padLayoutOf, focusToken, focusPressParamOf } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
 } from "./param_meta.mjs";
 import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page.mjs";
@@ -1682,6 +1682,48 @@ export function createController(io = {}) {
             s.voiceCache = s.hierarchy ? voicesOf(s.hierarchy) : [];
         }
         return s.voiceCache;
+    }
+
+    /**
+     * The param a LIVE pad press is reported through, or null -- the first
+     * child level declaring `child_press_param`, else the hierarchy's
+     * `focus_press_param` (child_key.mjs / voices.mjs). Memoised against the
+     * hierarchy OBJECT like voiceList: the host asks every tick to decide
+     * whether the shim should be forwarding pads at all.
+     *
+     * Not scoped to the CURRENT page on purpose. The grid follows the module's
+     * focus from any page (syncVoiceFromModule), so a hit while you are on the
+     * reverb page should still land you on the drum you hit -- which is what
+     * the module will do with the vouch. A level that declares it is the
+     * module saying "tell me about presses"; the page you happen to be on is
+     * not part of that request.
+     */
+    function livePressParam() {
+        if (s.livePressCacheFor !== s.hierarchy) {
+            s.livePressCacheFor = s.hierarchy;
+            let k = null;
+            const levels = (s.hierarchy && s.hierarchy.levels) || {};
+            for (const name of Object.keys(levels)) {
+                k = childPressParam(levels[name]);
+                if (k) break;
+            }
+            s.livePressCache = k || focusPressParamOf(s.hierarchy);
+        }
+        return s.livePressCache;
+    }
+
+    /**
+     * A FINGER hit a pad: say so. One write per press, note-on only -- the
+     * value is the vouch itself, and WHICH pad is the module's to pair with the
+     * note it receives (the pad-to-note map is Move's, not ours). Returns
+     * whether anything was written, so the caller can leave the event to the
+     * next handler when nothing asked for it.
+     */
+    function vouchLivePress() {
+        const k = livePressParam();
+        if (!k) return false;
+        setParam(`${s.prefix}:${k}`, "1");
+        return true;
     }
 
     /**
@@ -4488,6 +4530,11 @@ export function createController(io = {}) {
          *  hand-off needs it: without it the editor re-asks which child,
          *  when the grid already knows. */
         childIndexOf: (level) => childIndexFor(level),
+        /** The declared live-press param, or null -- the host forwards pads
+         *  to the grid only while this is non-null. */
+        livePressParam,
+        /** Report a physical pad press to the module. See livePressParam. */
+        vouchLivePress,
         get metaIndex() { return s.metaIndex; },
         /** True while `<prefix>:ui_hierarchy` could not be READ. The page set,
          *  if any, is the previous one — nothing here was planned from the

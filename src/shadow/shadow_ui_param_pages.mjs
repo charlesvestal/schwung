@@ -64,6 +64,22 @@ import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs'
 /* The live controller, or null when the view is not open. One at a time: the
  * grid always shows a single component, and rebuilding on entry is cheap. */
 let controller = null;
+
+/*
+ * Whether the shim is forwarding hardware pad notes to us. Reconciled every
+ * tick from the controller's livePressParam() and dropped on exit, so it can
+ * never be left on by a path that forgot; the shim also drops it on its own
+ * when the shadow display closes. Passive -- pads keep playing -- so the only
+ * cost of being on is one UI ring event per press.
+ */
+let padObserveOn = false;
+function reconcilePadObserve(want) {
+    if (typeof host_pad_observe !== 'function') return;
+    want = !!want;
+    if (want === padObserveOn) return;
+    padObserveOn = want;
+    host_pad_observe(want ? 1 : 0);
+}
 /* Which param accessors the live controller closes over, so switching between
  * a module and a synthesised contract (slot settings) rebuilds it instead of
  * silently keeping the old ones. */
@@ -351,6 +367,7 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
 }
 
 export function exitParamPages() {
+    reconcilePadObserve(false);
     /*
      * GIVE THE RINGS BACK, DO NOT JUST TURN THEM OFF.
      *
@@ -453,6 +470,11 @@ export function paramPagesChildIndex(level) {
  */
 export function tickParamPages() {
     if (!controller) return;
+
+    /* Pads reach the grid only while the component on screen asked to hear
+     * about presses (child_press_param / focus_press_param). Memoised in the
+     * controller against the hierarchy, so this is a field read per tick. */
+    reconcilePadObserve(!!controller.livePressParam());
 
     /* Only re-plan on the loading->ready edge; re-planning every frame would
      * reset values and the cursor continuously.
@@ -1127,6 +1149,23 @@ let _midiWindowStart = 0, _midiCount = 0, _knobTurnCount = 0;
  */
 export function handleParamPagesMidi(data) {
     if (!controller) return false;
+
+    /*
+     * A HARDWARE pad press -- its raw pad note (68-99), forwarded only while
+     * pad_observe is set. decodeInput returns null for pads on purpose; this is
+     * the one thing the grid does with one: tell a module that declared
+     * child_press_param / focus_press_param that a FINGER did it. Note-on
+     * only -- the release carries nothing the module asked for -- and never
+     * WHICH pad: the pad-to-note map is Move's, the module pairs the vouch
+     * with the note it receives. Not consumed when nothing asked, so the event
+     * falls through to whatever else may want it, exactly as before.
+     */
+    if (data && data.length >= 3) {
+        const st = data[0] & 0xf0, d1 = data[1], d2 = data[2];
+        if (st === 0x90 && d2 > 0 && d1 >= 68 && d1 <= 99) {
+            return controller.vouchLivePress();
+        }
+    }
 
     const nowMsProbe = Date.now();
     _midiCount++;
