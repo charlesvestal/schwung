@@ -144,7 +144,7 @@ src/shadow/
   shadow_ui_patches.mjs     <- Patch browser, patch management
   shadow_ui_master_fx.mjs   <- Master FX chain view
   shadow_ui_tools.mjs       <- Tools menu, file browser, wav player
-  shadow_ui_store.mjs       <- Module store views
+  shadow_ui_notice.mjs      <- One-shot message screen (Schwung Repair banner)
   shadow_ui_settings.mjs    <- Host settings, global settings
   shadow_ui_overtake.mjs    <- Overtake module loading/lifecycle
 ```
@@ -285,5 +285,4 @@ diff <(grep -E '^\$\{CROSS_PREFIX\}g' move-anything-my-version/scripts/build.sh)
 | display-server crash | Missing `unified_log.c` linkage in build.sh |
 | Link subscriber build fails | Missing `unified_log.o` or `-Isrc -Isrc/host` flags |
 | Tools crash or missing | WAV Player DSP not compiled, tools dir missing |
-| Module Store can't install category | Missing category in store_utils.mjs or install.sh |
 | New menu features not working | drawMenuList parameters dropped during merge |

@@ -225,16 +225,5 @@
         ]
       }
     ]
-  },
-  {
-    "id": "services",
-    "label": "Services",
-    "items": [
-      {
-        "key": "filebrowser_enabled",
-        "label": "File Browser",
-        "type": "bool"
-      }
-    ]
   }
 ]

@@ -172,13 +172,24 @@ import {
     visibleLinesFor
 } from '/data/UserData/schwung/shared/scrollable_text.mjs';
 
+/*
+ * ONE SYMBOL, and that is the whole of what the shadow UI still wants from the
+ * store utilities: the version string, for the splash and the help title.
+ *
+ * Everything else here served [Check Updates] -- fetchCatalog, getModuleStatus,
+ * scanInstalledModules, isNewerVersion -- and two more (sharedRemoveModule,
+ * fetchReleaseJsonQuick) were imported and never referenced at all. The
+ * detection they powered has moved to Schwung Manager, which shows the same
+ * list beside the button that acts on it; a second copy on a 128x64 screen
+ * that cannot install anything is a report you have to go somewhere else to
+ * use. store_utils.mjs itself stays -- the standalone host still builds the
+ * store module from it.
+ */
+import { getHostVersion } from '/data/UserData/schwung/shared/store_utils.mjs';
+
 import {
-    fetchCatalog, getModuleStatus,
-    removeModule as sharedRemoveModule,
-    scanInstalledModules, getHostVersion, isNewerVersion,
-    fetchReleaseJsonQuick,
-    CATEGORIES
-} from '/data/UserData/schwung/shared/store_utils.mjs';
+    drawConnectBody
+} from '/data/UserData/schwung/shared/connect_screen.mjs';
 
 import {
     openTextEntry,
@@ -280,7 +291,8 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
-    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue
+    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue,
+    paramPagesPageName
 } from './shadow_ui_param_pages.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
@@ -310,8 +322,8 @@ import {
     drawToolSetPicker as _drawToolSetPicker
 } from './shadow_ui_tools.mjs';
 import {
-    drawStorePickerResult as _drawStorePickerResult
-} from './shadow_ui_store.mjs';
+    drawNotice as _drawNotice
+} from './shadow_ui_notice.mjs';
 import {
     drawChainSettings as _drawChainSettings,
     drawGlobalSettings as _drawGlobalSettings
@@ -444,7 +456,16 @@ const VIEWS = {
     KNOB_EDITOR: "knobedit",  // Edit knob assignments for a slot
     KNOB_PARAM_PICKER: "knobpick", // Pick parameter for a knob assignment
     DYNAMIC_PARAM_PICKER: "dynamicpick", // Dedicated picker UI for module_picker/parameter_picker
-    STORE_PICKER_RESULT: "storepickerresult",  // Store: success/error message
+    /*
+     * A title, a few lines, and a click that dismisses. It was
+     * STORE_PICKER_RESULT and it was the store browser's result card; the
+     * browser is gone and this is what outlived it, so it is named for what it
+     * does. Its remaining users are the boot-time Schwung Repair banner and
+     * nothing else -- pointer screens go to CONNECT, which can give a real
+     * address instead of a sentence about one.
+     */
+    NOTICE: "notice",         // One-shot message screen: title, lines, dismiss
+    CONNECT: "connect",       // Device address + QR for Schwung Manager
     OVERTAKE_MENU: "overtakemenu",   // Overtake module selection menu
     OVERTAKE_MODULE: "overtakemodule", // Running an overtake module
     GLOBAL_SETTINGS: "globalsettings",  // Global settings menu (display, audio, etc.)
@@ -1100,20 +1121,21 @@ const TOOLS_DOUBLE_TAP_MS = 500;
 const ANALYTICS_PROMPTED_PATH = "/data/UserData/schwung/analytics-prompted";
 let analyticsPromptSelection = 0;  // 0 = Yes (default), 1 = No
 
-/* Auto-update state.
+/*
+ * NO UPDATE STATE AT ALL, WHICH IS THE END OF A LONG RETREAT.
  *
- * There is no auto-update CHECK and there never was. `autoUpdateCheckEnabled`
- * lived here, was persisted, and had a Services row -- but nothing consulted
- * it: checkForUpdatesInBackground() has exactly one caller,
- * showUpdatesAvailableScreen(), which runs only when the user picks
- * [Check Updates] themselves. A flag with no reader is a promise the UI cannot
- * keep, so the flag is gone and the manual path is stated instead.
+ * First `autoUpdateCheckEnabled` went: it was persisted and had a Services row
+ * and nothing consulted it. Then the on-device INSTALL went, when it turned
+ * out to fail silently for anyone without a current shim. What was left was
+ * detection -- scan the catalog over the network, list what is outdated, then
+ * tell the user to open the web manager to act on it -- and that is gone now
+ * too. `pendingUpdates`, `pendingUpdateIndex`, `storeCatalog` and
+ * `storeHostVersion` went with it.
  *
  * shadow_config.json on an existing device still carries `auto_update_check`.
  * That is harmless: every saver here read-modify-writes the whole object, so
  * the stale key is carried along untouched and simply never read.
  */
-let pendingUpdates = [];              // Updates found by [Check Updates]
 
 /* Bootstrap-needed banner state. The self-heal mechanism (schwung-heal
  * setuid + entrypoint that invokes it at boot) requires one-time root
@@ -1123,7 +1145,6 @@ let pendingUpdates = [];              // Updates found by [Check Updates]
  * banner that points the user at the web manager / GUI installer. */
 let shimBootstrapNeeded = false;
 let shimBootstrapPromptShown = false;
-let pendingUpdateIndex = 0;           // Selected update in prompt
 
 /* Host-side tracking for Shift+Vol+Jog escape (redundant with shim, but ensures escape always works) */
 let hostVolumeKnobTouched = false;
@@ -3956,8 +3977,6 @@ function loadParamViewConfig() {
 let toolsMenuIndex = 0;
 let toolModules = [];           // Populated by scanForToolModules()
 
-/* Filebrowser state */
-let filebrowserEnabled = false;    // Off by default, toggle in Settings > Services
 
 /* MIDI channel indicator state. Backed by shadow_control->midi_indicator_enabled
  * (read by the SPI callback path) and persisted in features.json via the
@@ -4177,7 +4196,6 @@ let helpDetailScrollState = null;
 
 
 /* Return-view trackers for sub-flows */
-let storeReturnView = null;   /* View to return to from store/update flows */
 let helpReturnView = null;    /* View to return to from help viewer */
 
 /* SLOT_SETTINGS imported from shadow_ui_slots.mjs */
@@ -4208,71 +4226,21 @@ let selectingModule = false;   // True when in module selection for a component
 let availableModules = [];     // Modules available for selected component type
 let selectedModuleIndex = 0;   // Index in availableModules
 
-/* Store picker state */
-let storeCatalog = null;               // Cached catalog from store_utils
-let storeInstalledModules = {};        // {moduleId: version} map
-let storeHostVersion = '1.0.0';        // Current host version
-let storePickerCategory = null;        // Category ID being browsed (sound_generator, audio_fx, midi_fx)
-let storePickerModules = [];           // Modules available for download in current category
-let storePickerCurrentModule = null;   // Module being viewed in detail
-let storePickerActionIndex = 0;        // Selected action in detail view (0=Install/Update, 1=Remove)
-let storePickerMessage = '';           // Result/error message
-let storePickerResultTitle = '';       // Result screen header (empty = 'Module Store')
-let storePickerFromOvertake = false;   // True if entered from overtake menu
-let storePickerFromMasterFx = false;  // True if entered from master FX module select
-let storePickerFromSettings = false;  // True if entered from MFX settings (full store)
-
-/* Run detection + show a result screen listing what's outdated, with the
- * web-manager pointer. No install actions — those only happen via the
- * web manager. checkForUpdatesInBackground populates pendingUpdates as
- * a side effect; we read length, then never touch the install flow. */
-function showUpdatesAvailableScreen() {
-    announce("Checking for updates");
-    checkForUpdatesInBackground();
-
-    /* Distinguish host pointer from module updates so the user knows
-     * what's actually outdated. checkForUpdatesInBackground pushes a
-     * single _hostPointer entry to the queue when the catalog has a
-     * newer host; everything else is a module update. */
-    let hostNewer = '';
-    let moduleCount = 0;
-    for (let i = 0; i < pendingUpdates.length; i++) {
-        const upd = pendingUpdates[i];
-        if (upd._hostPointer) {
-            hostNewer = upd.to || '';
-        } else {
-            moduleCount++;
-        }
-    }
-
-    /* Reset detection state so a second visit starts clean.
-     * here a second time without clearing state. */
-    pendingUpdates = [];
-    pendingUpdateIndex = 0;
-    /* Route the result-screen click back to GLOBAL_SETTINGS (not the
-     * old store browser fallback). */
-    storePickerFromSettings = false;
-    storeReturnView = VIEWS.GLOBAL_SETTINGS;
-
-    storePickerResultTitle = 'Updates';
-    if (!hostNewer && moduleCount === 0) {
-        storePickerMessage = buildNoUpdatesMessage();
-    } else {
-        const lines = [];
-        if (hostNewer) {
-            lines.push('Schwung ' + hostNewer + ' available');
-        }
-        if (moduleCount > 0) {
-            lines.push(moduleCount + ' module update' + (moduleCount === 1 ? '' : 's'));
-        }
-        lines.push('Update at');
-        lines.push('http://move.local:7700');
-        storePickerMessage = lines.join('\n');
-    }
-    view = VIEWS.STORE_PICKER_RESULT;
-    needsRedraw = true;
-    announce(storePickerMessage);
-}
+/*
+ * NOTICE SCREEN STATE — a title, a message, and where a click goes.
+ *
+ * This is what is left of the store picker: eleven module-level variables
+ * (`storeCatalog`, `storePickerCategory`, `storePickerModules`,
+ * `storePickerCurrentModule`, `storePickerActionIndex`, `storePickerFrom*`, …)
+ * of which three were only ever assigned and never read, serving a browser
+ * that had already been reduced to a screen printing "move.local:7700".
+ *
+ * The ONE surviving caller is the boot-time Schwung Repair banner, which has a
+ * real sentence to say and nothing to point at. Everything that used to end
+ * here to give the user an address now goes to the Connect view instead.
+ */
+let noticeTitle = '';
+let noticeMessage = '';
 
 /* Detect whether the live entrypoint at /opt/move/Move includes the
  * boot-time `schwung-heal` invocation. If not, the self-heal mechanism
@@ -4293,109 +4261,75 @@ function detectShimBootstrapNeeded() {
     }
 }
 
-/* Pointer to the web manager — same routing semantics as the updates
- * screen: result-click returns to GLOBAL_SETTINGS via storeReturnView. */
-function showModuleStorePointer() {
-    storePickerFromSettings = false;
-    storeReturnView = VIEWS.GLOBAL_SETTINGS;
-    storePickerResultTitle = 'Module Store';
-    storePickerMessage = 'Module store available at\nhttp://move.local:7700';
-    view = VIEWS.STORE_PICKER_RESULT;
-    needsRedraw = true;
-    announce(storePickerMessage);
-}
+/*
+ * CONNECT — where the device tells you its own address.
+ *
+ * Reached from Global Settings -> System -> [Connect...], and from every
+ * `[Get more...]` row in the module pickers, which used to open a store
+ * browser, then a screen naming `move.local:7700`, and now arrive somewhere
+ * that can give a number a phone can actually reach.
+ *
+ * THE IP IS CACHED, AND THE CACHE IS THE POINT. host_get_device_ip() walks
+ * getifaddrs, and this screen redraws every tick like every other; re-reading
+ * it sixty times a second to answer a question whose answer changes with the
+ * DHCP lease is the same mistake as encoding the QR on the draw path. Two
+ * seconds is short enough that joining a network while looking at the screen
+ * updates it, and long enough to be free.
+ */
+const CONNECT_IP_TTL_MS = 2000;
+let connectReturnView = null;
+let connectIp = '';
+let connectIpReadAt = 0;
 
-/* Return a no-updates message that surfaces "host updates live in the
- * web manager" when the catalog says a newer host is available. Hiding
- * the on-device action without telling users where to update otherwise
- * leaves them silently stuck on old versions. */
-function buildNoUpdatesMessage() {
+function connectDeviceIp(force) {
+    const now = Date.now();
+    /* connectIpReadAt, not connectIp, is the freshness test: "" is a real
+     * answer (the device is off the network) and treating it as "not read yet"
+     * would walk getifaddrs on every frame of exactly the screen that has the
+     * least to draw. */
+    if (!force && connectIpReadAt !== 0 && (now - connectIpReadAt) < CONNECT_IP_TTL_MS) return connectIp;
+    connectIpReadAt = now;
     try {
-        if (storeCatalog && storeCatalog.host && storeCatalog.host.latest_version) {
-            const cur = storeHostVersion || getHostVersion();
-            if (isNewerVersion(storeCatalog.host.latest_version, cur)) {
-                return 'Schwung ' + storeCatalog.host.latest_version + ' available\n' +
-                       'Update Schwung at\n' +
-                       'http://move.local:7700';
-            }
-        }
-    } catch (_e) { /* fall through */ }
-    return 'No updates available';
+        connectIp = (typeof host_get_device_ip === 'function') ? (host_get_device_ip() || '') : '';
+    } catch (_e) {
+        connectIp = '';
+    }
+    return connectIp;
 }
 
-/* Check for core and module updates (manual, called from Settings → Check Updates) */
-function checkForUpdatesInBackground() {
-    debugLog("checkForUpdatesInBackground: starting");
-    const updates = [];
+/**
+ * Open the Connect screen, remembering where Back should land.
+ *
+ * @param {string} returnView  the view to restore on dismiss. Passed in rather
+ *   than captured from `view`, because two of the three callers are mid-flow in
+ *   a picker and want to come back to the PICKER, not to whatever the module
+ *   list happened to be drawn over.
+ */
+function enterConnect(returnView) {
+    connectReturnView = returnView || VIEWS.SLOTS;
+    connectDeviceIp(true);
+    setView(VIEWS.CONNECT);
+    needsRedraw = true;
+    announce(connectIp
+        ? ('Connect. Schwung Manager at ' + connectIp + ' port 7700')
+        : 'Connect. No network. Join WiFi and reopen this page.');
+}
 
-    clear_screen();
-    drawStatusOverlay('Updates', 'Checking...');
-    host_flush_display();
-
-    /* Refresh host version (still needed for module compatibility checks).
-     * Core updates are no longer offered on-device — users update via the
-     * web manager (move.local:7700). The check is suppressed so the
-     * "Update All" flow doesn't try to perform a core upgrade that the
-     * JS layer can't complete with the right privileges. */
-    storeHostVersion = getHostVersion();
-    debugLog("checkForUpdatesInBackground: hostVersion=" + storeHostVersion);
-
-    /* Check module updates */
-    clear_screen();
-    drawStatusOverlay('Updates', 'Checking modules...');
-    host_flush_display();
-
-    debugLog("checkForUpdatesInBackground: checking modules");
-    const installed = scanInstalledModules();
-    const catalogResult = fetchCatalog((title, name, idx, total) => {
-        drawStatusOverlay('Checking', idx + '/' + total + ': ' + name);
-        host_flush_display();
-    });
-    debugLog("checkForUpdatesInBackground: catalog success=" + catalogResult.success);
-    if (catalogResult.success) {
-        /* Cache catalog so buildNoUpdatesMessage can read host.latest_version
-         * when there are no module updates — otherwise users hitting Check
-         * for Updates have no signal that a host upgrade is available. */
-        storeCatalog = catalogResult.catalog;
-        /* Surface a non-actionable "Schwung X.Y.Z available" pointer at the
-         * top of the update prompt when the catalog has a newer host. We
-         * can't perform host upgrades on-device (privileged paths blocked
-         * for ableton), so this is informational — selecting it shows the
-         * web manager pointer message and Update All skips it entirely. */
-        const cat = catalogResult.catalog;
-        if (cat && cat.host && cat.host.latest_version &&
-            isNewerVersion(cat.host.latest_version, storeHostVersion)) {
-            updates.push({
-                id: '__host_pointer__',
-                name: 'Schwung ' + cat.host.latest_version,
-                from: storeHostVersion,
-                to: cat.host.latest_version,
-                _hostPointer: true
-            });
-        }
-        for (const mod of catalogResult.catalog.modules || []) {
-            const status = getModuleStatus(mod, installed);
-            if (status.installed && status.hasUpdate) {
-                updates.push({
-                    name: mod.name,
-                    from: status.installedVersion,
-                    to: mod.latest_version,
-                    ...mod
-                });
-            }
-        }
-    }
-
-    debugLog("checkForUpdatesInBackground: found " + updates.length + " updates");
-    if (updates.length > 0) {
-        /* Detection only — the caller summarizes; installs happen in the
-         * web manager (the single install/update path). */
-        pendingUpdates = updates;
-        pendingUpdateIndex = 0;
-        needsRedraw = true;
-    } else {
-        needsRedraw = true;
-    }
+function exitConnect() {
+    const back = connectReturnView || VIEWS.SLOTS;
+    connectReturnView = null;
+    /*
+     * GLOBAL_SETTINGS is re-ENTERED, not just set.
+     *
+     * That view stopped drawing a settings list when the knob grid took over;
+     * it is the help viewer's host now, so setting it with an empty help stack
+     * shows a blank frame until the draw-path reconciler notices and repairs
+     * it. Calling enterGlobalSettings() lands on the page directly, which is
+     * what the removed store screens did for exactly the same reason.
+     */
+    if (back === VIEWS.GLOBAL_SETTINGS) { enterGlobalSettings(); return; }
+    setView(back);
+    needsRedraw = true;
 }
 
 /* Chain settings (shown when Settings component is selected) */
@@ -9455,12 +9389,6 @@ function handleMasterFxSettingsAction(key) {
         masterOverwriteTargetIndex = -1;  /* Force create new */
         announceSavePreview(masterPendingSaveName, masterNamePreviewIndex);
         needsRedraw = true;
-    } else if (key === "check_updates") {
-        /* Detection only — no install actions on-device. */
-        showUpdatesAvailableScreen();
-    } else if (key === "module_store") {
-        /* Browsing on-device is disabled — point at the web manager. */
-        showModuleStorePointer();
     } else if (key === "delete") {
         /* Delete - confirm */
         masterConfirmingDelete = true;
@@ -10436,8 +10364,20 @@ function enterGlobalSettingsGrid(restorePageName) {
     needsRedraw = true;
 }
 
+/*
+ * Back to Global Settings, ON THE PAGE IT WAS LEFT FROM.
+ *
+ * `globalGridReturnPage` is set by runGlobalActionFromGrid and CONSUMED here,
+ * so it only ever steers a return from a door the user opened. A fresh entry
+ * (Shift+Vol+Step 2) still lands on Display: the remembered page is a property
+ * of one round trip, not a cursor the screen keeps.
+ */
+let globalGridReturnPage = null;
+
 function enterGlobalSettings() {
-    enterGlobalSettingsGrid(null);
+    const page = globalGridReturnPage;
+    globalGridReturnPage = null;
+    enterGlobalSettingsGrid(page);
 }
 
 /*
@@ -10474,13 +10414,8 @@ function handleGlobalSettingsAction(key) {
         handleMasterFxSettingsAction("help");
         return;
     }
-    if (key === "check_updates") {
-        storeReturnView = VIEWS.GLOBAL_SETTINGS;
-        showUpdatesAvailableScreen();
-        return;
-    }
-    if (key === "module_store") {
-        showModuleStorePointer();
+    if (key === "connect") {
+        enterConnect(VIEWS.GLOBAL_SETTINGS);
         return;
     }
 }
@@ -10757,9 +10692,18 @@ function applyMasterFxModuleSelection() {
     const selected = masterFxPickerItems[selectedMasterFxModuleIndex];
 
     if (selected && selected.id === "__get_more__") {
-        /* Open store picker for audio FX modules */
-        selectingMasterFxModule = false;
-        enterStorePicker('master_fx');
+        /*
+         * "Where do I get more of these" is answered by the address of the
+         * machine that installs them, and Back comes straight back to THIS
+         * PICKER -- `selectingMasterFxModule` is deliberately left true.
+         *
+         * The store browser had to clear it and rebuild the picker on the way
+         * back (scanForAudioFxModules + enterMasterFxModuleSelect), because it
+         * took the screen over and left nothing to return to. Connect touches
+         * no picker state at all, so the list, the cursor and the list filter
+         * are all still exactly where they were.
+         */
+        enterConnect(VIEWS.MASTER_FX);
         return;
     }
 
@@ -11068,35 +11012,35 @@ function loadBrowserPreviewConfig() {
     } catch (e) {}
 }
 
-function saveFilebrowserConfig() {
+/*
+ * RETIRE THE STANDALONE FILE BROWSER, ONCE, ON ANY DEVICE THAT HAS IT.
+ *
+ * Global Settings -> Services -> File Browser started a bundled third-party
+ * `filebrowser` binary on :404, serving all of /data/UserData with --noauth.
+ * Schwung Manager has served the same tree at :7700/files for a while now, with
+ * keyboard and screen-reader access the standalone one never had, so the toggle
+ * was a second unauthenticated web server for a job already done.
+ *
+ * REMOVING THE TOGGLE IS NOT ENOUGH, and this is the whole reason this function
+ * exists rather than the load path simply being deleted. The service is started
+ * from a FLAG FILE by shim-entrypoint.sh, so a device where somebody switched it
+ * on once would go on serving :404 at every boot with no surface left to turn it
+ * off -- a setting removed into permanently-on. The flag goes here, and the
+ * running process with it.
+ *
+ * `filebrowser_enabled` is left in shadow_config.json untouched: every saver
+ * read-modify-writes the whole object, so a stale key costs nothing and
+ * rewriting the file to delete one is a write that can fail.
+ */
+function retireFilebrowserService() {
     try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        let config = {};
-        try {
-            const content = host_read_file(configPath);
-            if (content) config = JSON.parse(content);
-        } catch (e) {}
-        config.filebrowser_enabled = filebrowserEnabled;
-        host_write_file(configPath, JSON.stringify(config, null, 2));
-    } catch (e) {}
-}
-
-function loadFilebrowserConfig() {
-    try {
-        const configPath = "/data/UserData/schwung/shadow_config.json";
-        const content = host_read_file(configPath);
-        if (!content) return;
-        const config = JSON.parse(content);
-        if (config.filebrowser_enabled !== undefined) {
-            filebrowserEnabled = config.filebrowser_enabled;
-            /* Sync flag file with config */
-            const flagPath = "/data/UserData/schwung/filebrowser_enabled";
-            if (filebrowserEnabled) {
-                host_write_file(flagPath, "1");
-            } else {
-                host_remove_dir(flagPath);
-            }
+        const flagPath = "/data/UserData/schwung/filebrowser_enabled";
+        if (!host_file_exists(flagPath)) return;
+        host_remove_dir(flagPath);
+        if (typeof host_system_cmd === "function") {
+            host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
         }
+        debugLog("retired the standalone :404 file browser; use Schwung Manager at :7700/files");
     } catch (e) {}
 }
 
@@ -11170,9 +11114,6 @@ function syncJsOnlySettings() {
         }
         if (c.browser_preview !== undefined && c.browser_preview !== previewEnabled) {
             previewEnabled = c.browser_preview;
-        }
-        if (c.filebrowser_enabled !== undefined && c.filebrowser_enabled !== filebrowserEnabled) {
-            filebrowserEnabled = c.filebrowser_enabled;
         }
     } catch (e) {
         /* Ignore errors — file may be mid-write */
@@ -11435,108 +11376,24 @@ function scanModulesForType(componentType) {
     return [noneItem, ...modules, { id: "__get_more__", name: "[Get more...]" }];
 }
 
-/* Map component key to catalog category ID */
-function componentKeyToCategoryId(componentKey) {
-    switch (componentKey) {
-        case 'synth': return 'sound_generator';
-        case 'master_fx': return 'audio_fx';
-        case 'midiFx': return 'midi_fx';
-        case 'overtake': return 'overtake';
-        default: {
-            /* Any FX position — "fx1", "fx2", ... */
-            const at = parseChainId(componentKey);
-            return at && at.section === "fx" ? 'audio_fx' : null;
-        }
-    }
-}
-
-/* Enter the store picker for a specific component type — disabled.
+/*
+ * DISMISSING THE NOTICE SCREEN.
  *
- * Was the gateway from "[Get more...]" entries in the overtake / master FX
- * / chain component module pickers into the on-device store browser. The
- * browser flow ended in installs/updates that silently failed for users
- * without root, so we redirect every "Get more" tap straight at the web
- * manager pointer screen — same destination as Settings → Module Store.
+ * Everything that used to route through here -- componentKeyToCategoryId,
+ * enterStorePicker, and a fifty-line handleStorePickerResultSelect that fanned
+ * out to four entry contexts through five module-level flags -- existed because
+ * the store browser could be entered from four places and had to get back to
+ * each of them. The flags are gone with the browser; `[Get more...]` now calls
+ * enterConnect() with the view it wants back, which is one parameter doing the
+ * job of five pieces of remembered state.
  *
- * Preserves the entry-context flags (storePickerFromOvertake /
- * storePickerFromMasterFx / storePickerCategory) so the result-screen
- * jog-click can return to wherever the user came from instead of dumping
- * them on Global Settings. */
-function enterStorePicker(componentKey) {
-    const categoryId = componentKeyToCategoryId(componentKey);
-    if (!categoryId) return;
-
-    storePickerCategory = categoryId;
-    storePickerCurrentModule = null;
-    storePickerFromOvertake = (componentKey === 'overtake');
-    storePickerFromMasterFx = (componentKey === 'master_fx');
-    storePickerFromSettings = false;
-
-    storePickerResultTitle = 'Module Store';
-    storePickerMessage = 'Module store available at\nhttp://move.local:7700';
-    setView(VIEWS.STORE_PICKER_RESULT);
-    needsRedraw = true;
-    announce(storePickerMessage);
-}
-
-/* Handle selection in store picker result */
-function handleStorePickerResultSelect() {
-    /* Honor the entry-context flags so dismissing the pointer screen
-     * sends the user back to wherever they came from. These mirror
-     * handleStorePickerBack — the only
-     * reason the back-button and click-dismiss diverged historically
-     * is that the result screen used to terminate install flows that
-     * could only sensibly return to the module list. With the install
-     * paths gone, every result screen is informational, and dismiss
-     * should round-trip to the entry context. */
-    storePickerCurrentModule = null;
-
-    if (storeReturnView === VIEWS.GLOBAL_SETTINGS) {
-        storeReturnView = null;
-        enterGlobalSettings();
-        return;
-    }
-    if (storePickerFromOvertake) {
-        overtakeModules = scanForOvertakeModules();
-        setView(VIEWS.OVERTAKE_MENU);
-        storePickerFromOvertake = false;
-        storeCatalog = null;
-        storePickerCategory = null;
-        storePickerModules = [];
-        return;
-    }
-    if (storePickerFromMasterFx) {
-        MASTER_FX_OPTIONS = scanForAudioFxModules();
-        enterMasterFxModuleSelect(selectedMasterFxComponent);
-        setView(VIEWS.MASTER_FX);
-        storePickerFromMasterFx = false;
-        storeCatalog = null;
-        storePickerCategory = null;
-        storePickerModules = [];
-        return;
-    }
-    if (storePickerCategory) {
-        /* Came from the chain component picker. Rebuilt through
-         * enterComponentSelect rather than by re-scanning here: a bare scan
-         * has no Move rows, no list-filter row and no resolved cursor, so
-         * coming back from the store landed on a picker one row out of step
-         * with the one that was left. */
-        enterComponentSelect(selectedSlot, selectedChainComponent);
-        setView(VIEWS.COMPONENT_SELECT);
-        storeCatalog = null;
-        storePickerCategory = null;
-        storePickerModules = [];
-        return;
-    }
-    /* Last-resort fallback (legacy callers): back to the slots view. */
+ * What is left is the Schwung Repair banner, which is raised at boot, points at
+ * nothing, and is dismissed to wherever the UI was going anyway.
+ */
+function dismissNotice() {
+    noticeTitle = '';
+    noticeMessage = '';
     setView(VIEWS.SLOTS);
-    needsRedraw = true;
-}
-
-/* Handle back in store picker result — the only store view left. Back
- * and click-dismiss route identically to the entry context. */
-function handleStorePickerBack() {
-    handleStorePickerResultSelect();
     needsRedraw = true;
 }
 
@@ -11745,9 +11602,10 @@ function applyComponentSelection() {
      * because applying it fills the very hole this recognises. */
     const pending = pendingChainInsertFor(slotChainTarget(selectedSlot), comp.key);
 
-    /* Check if user selected "[Get more...]" - enter store picker */
+    /* "[Get more...]" — the Connect screen, and Back comes straight back to
+     * this picker rather than to Global Settings. */
     if (selected && selected.id === "__get_more__") {
-        enterStorePicker(comp.key);
+        enterConnect(VIEWS.COMPONENT_SELECT);
         return;
     }
 
@@ -12335,9 +12193,16 @@ function globalGridIoFor() {
                 return String(metronomeLevel);
             case "save_stems":
                 return String(saveStemsValue);
-            case "filebrowser_enabled": return bit(filebrowserEnabled);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+
+            /* The two doors have no state to report. They are answered anyway,
+             * with option 0: an UNSERVED key makes the row announce "not read
+             * yet" every time the cursor lands on it, which is a fault report
+             * on a control that works. See GLOBAL_ROUTING's `js.stateless`. */
+            case "connect":
+            case "help":
+                return "0";
             }
             return "";
         },
@@ -12469,18 +12334,14 @@ function globalGridIoFor() {
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
                 return;
-            case "filebrowser_enabled":
-                filebrowserEnabled = on;
-                setFilebrowserRunning(on);
-                saveFilebrowserConfig();
-                /* The URL is the entire point of the setting and there is
-                 * nowhere else on the device it is written down. */
-                showWarning("File Browser",
-                            on ? "On. Access at http://move.local:404" : "Off.");
-                return;
             case "analytics_enabled":
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
                 return;
+
+            /* connect / help never arrive here: their routing names an ACTION,
+             * so createGlobalGridIo queues them and the param-pages host drains
+             * the queue after applyInput returns. Acting from inside a write is
+             * what broke the screen — see the note beside `pendingAction`. */
             }
         },
 
@@ -12488,37 +12349,21 @@ function globalGridIoFor() {
          * GLOBAL_ROUTING marks `persist: "save"`. */
         persist: () => saveMasterFxChainConfig(),
 
-        /* The Updates menu page's entries, plus [Help...]. Own runner rather
-         * than the host's generic one for the same reason Master FX has one:
-         * the generic runner takes the IPC slot and would run a SLOT action. */
+        /*
+         * Kept even though Global Settings publishes no `menu` any more.
+         *
+         * The contract's two doors are write-only PARAMS now, so they arrive
+         * through writeParam above and this is unreached today. It stays
+         * because the io shape is shared with the slot and Master FX
+         * contracts, whose levels do publish menus, and because a Global
+         * Settings action that has to be a menu entry again (one with a
+         * confirm, say) would otherwise silently take the host's generic
+         * runner — which takes the IPC SLOT and would run a slot action.
+         */
         runAction: (action) => runGlobalActionFromGrid(action),
     };
 
     return createGlobalGridIo(io);
-}
-
-/*
- * Start or stop the file browser to match the flag.
- *
- * Named rather than inlined into the write, because the flag file and the
- * process must move together: a flag written without the process started reads
- * as On with nothing listening on :404. The old adjustMasterFxSetting branch
- * still inlines its own copy; it goes when that path does (Task 9), and until
- * then this is the only caller.
- */
-function setFilebrowserRunning(on) {
-    const flagPath = "/data/UserData/schwung/filebrowser_enabled";
-    if (on) {
-        host_write_file(flagPath, "1");
-        if (typeof host_system_cmd === "function") {
-            host_system_cmd("sh -c '/data/UserData/schwung/bin/filebrowser --noauth --address 0.0.0.0 --port 404 --root /data/UserData --database /data/UserData/schwung/filebrowser.db --disableThumbnails --disablePreviewResize --disableExec --disableTypeDetectionByHeader >/dev/null 2>&1 &'");
-        }
-    } else {
-        host_remove_dir(flagPath);
-        if (typeof host_system_cmd === "function") {
-            host_system_cmd("sh -c 'killall filebrowser 2>/dev/null'");
-        }
-    }
 }
 
 /*
@@ -12576,16 +12421,24 @@ function maybeReturnToMasterGrid() {
  * two properties that make those work are kept:
  *
  * It asks WHETHER SOMETHING ELSE IS NOW ON SCREEN rather than listing which
- * actions leave. All three of today's actions do leave — Help pushes the help
- * stack, [Check Updates] and [Module Store] set a view of their own — so a test
- * on the key would be right today and silently wrong for the fourth action.
+ * actions leave. Both of today's actions do leave — Help pushes the help stack,
+ * [Connect...] sets a view of its own — so a test on the key would be right
+ * today and silently wrong for the third action.
  *
- * The two store screens set their own view and route back through
- * storeReturnView; Help does not, so this is also where VIEWS.GLOBAL_SETTINGS
- * gets set for it. That view no longer draws a settings list — it is the help
- * viewer's host and nothing else.
+ * Connect sets its own view and remembers its own way back; Help does not, so
+ * this is also where VIEWS.GLOBAL_SETTINGS gets set for it. That view no longer
+ * draws a settings list — it is the help viewer's host and nothing else.
  */
 function runGlobalActionFromGrid(action) {
+    /*
+     * CAPTURED FIRST, while the grid is still up.
+     *
+     * The engine restores a page by NAME, and the name is only readable from a
+     * live controller — so this has to happen before the action navigates and
+     * before exitParamPages below. Without it every return from Help or Connect
+     * landed on Display, page 1 of 6, which is not where the user was standing.
+     */
+    globalGridReturnPage = paramPagesPageName();
     handleGlobalSettingsAction(action);
     const opened = gridActionOpenedSomething(
         helpNavStack.length > 0, !!helpDetailScrollState, view !== VIEWS.PARAM_PAGES);
@@ -12605,9 +12458,9 @@ function runGlobalActionFromGrid(action) {
  * detail and then the frame, and the detail's own "Back" action row) and only
  * one of them is a single obvious site.
  *
- * The store screens are NOT reconciled here: they leave VIEWS.GLOBAL_SETTINGS
- * entirely and come back through storeReturnView -> enterGlobalSettings(),
- * which clears the flag itself. */
+ * Connect is NOT reconciled here: it leaves VIEWS.GLOBAL_SETTINGS entirely and
+ * comes back through exitConnect() -> enterGlobalSettings(), which clears the
+ * flag itself. */
 function maybeReturnToGlobalGrid() {
     if (!globalModalFromGrid) return false;
     if (helpNavStack.length > 0 || helpDetailScrollState) return false;
@@ -18560,8 +18413,11 @@ function handleSelect() {
             moduleListsEnsureLoaded();
             moduleListsSelectAction();
             break;
-        case VIEWS.STORE_PICKER_RESULT:
-            handleStorePickerResultSelect();
+        case VIEWS.NOTICE:
+            dismissNotice();
+            break;
+        case VIEWS.CONNECT:
+            exitConnect();
             break;
         case VIEWS.CHAIN_SETTINGS:
             {
@@ -18970,9 +18826,9 @@ function handleSelect() {
             if (overtakeModules.length > 0 && selectedOvertakeModule < overtakeModules.length) {
                 const selected = overtakeModules[selectedOvertakeModule];
                 if (selected.id === "__get_more__") {
-                    /* Open store picker for overtake modules */
-                    /* Stay in overtake menu mode (1) so store picker receives input */
-                    enterStorePicker('overtake');
+                    /* Stay in overtake menu mode (1) so the Connect screen
+                     * receives input; Back returns to this menu. */
+                    enterConnect(VIEWS.OVERTAKE_MENU);
                 } else {
                     announce(`Loading ${selected.name || selected.id}`);
                     loadOvertakeModule(selected);
@@ -19288,8 +19144,11 @@ function handleBack() {
         case VIEWS.MODULE_LISTS_ACTIONS:
             moduleListsActionsBack();
             break;
-        case VIEWS.STORE_PICKER_RESULT:
-            handleStorePickerBack();
+        case VIEWS.NOTICE:
+            dismissNotice();
+            break;
+        case VIEWS.CONNECT:
+            exitConnect();
             break;
         case VIEWS.CHAIN_SETTINGS:
             if (showingNamePreview) {
@@ -19935,7 +19794,7 @@ function drawComponentSelect() {
 
 
 
-/* drawStorePickerResult() -> shadow_ui_store.mjs */
+/* drawNotice() -> shadow_ui_notice.mjs */
 
 /* Draw analytics opt-out prompt (shown on first run) */
 function drawAnalyticsPrompt() {
@@ -20505,30 +20364,21 @@ function drawHelpDetail() {
     _ctx.menuLayoutDefaults = menuLayoutDefaults;
     _ctx.debugLog = debugLog;
 
-    /* Store state */
-    Object.defineProperty(_ctx, 'storePickerCategory', {
-        get() { return storePickerCategory; }, enumerable: true
+    /*
+     * Notice + Connect state.
+     *
+     * Seven store getters used to live here and FOUR of them had no consumer at
+     * all -- storePickerModules and storePickerCurrentModule were only ever
+     * assigned empty, storeInstalledModules was never written, and CATEGORIES
+     * and getModuleStatus were exported for a browser that had already been
+     * deleted. What the drawing modules actually read is a title and a message.
+     */
+    Object.defineProperty(_ctx, 'noticeTitle', {
+        get() { return noticeTitle; }, enumerable: true
     });
-    Object.defineProperty(_ctx, 'storePickerModules', {
-        get() { return storePickerModules; }, enumerable: true
+    Object.defineProperty(_ctx, 'noticeMessage', {
+        get() { return noticeMessage; }, enumerable: true
     });
-    Object.defineProperty(_ctx, 'storePickerCurrentModule', {
-        get() { return storePickerCurrentModule; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storeInstalledModules', {
-        get() { return storeInstalledModules; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storeHostVersion', {
-        get() { return storeHostVersion; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storePickerResultTitle', {
-        get() { return storePickerResultTitle; }, enumerable: true
-    });
-    Object.defineProperty(_ctx, 'storePickerMessage', {
-        get() { return storePickerMessage; }, enumerable: true
-    });
-    _ctx.getModuleStatus = (...args) => getModuleStatus(...args);
-    _ctx.CATEGORIES = CATEGORIES;
     /* Let a view opt out of REDRAW_INTERVAL for the frames it cares about.
      *
      * The global gate draws every other tick unless `needsRedraw` is set, and
@@ -20798,7 +20648,28 @@ function drawToolProcessing() { _drawToolProcessing(); }
 function drawToolResult() { _drawToolResult(); }
 function drawToolStemReview() { _drawToolStemReview(); }
 function drawToolSetPicker() { _drawToolSetPicker(); }
-function drawStorePickerResult() { _drawStorePickerResult(); }
+function drawNotice() { _drawNotice(); }
+
+/*
+ * The Connect screen: the QR plate on the left, the address on the right, and
+ * the ordinary hint footer.
+ *
+ * NO HEADER, and connect_screen.mjs says why in full: the plate is 58px, the
+ * body between a header and the footer is 46, and the symbol is the feature.
+ * The IP is re-read through the two-second cache so joining a network while
+ * this screen is open updates it without the draw path walking getifaddrs
+ * sixty times a second.
+ */
+function drawConnect() {
+    clear_screen();
+    /* fillRect / print / textWidth is the whole contract connect_screen asks
+     * for -- the same three the frame context hands a module widget, and the
+     * reason that file tests headlessly against the harness framebuffer. */
+    drawConnectBody({ fillRect: fill_rect, print, textWidth: text_width },
+                    { x: 0, y: 0, w: 128, h: 64 },
+                    { ip: connectDeviceIp(false) });
+    drawFooter(["Back: exit"]);
+}
 function drawChainSettings() { _drawChainSettings(); }
 function drawGlobalSettings() { _drawGlobalSettings(); }
 
@@ -21470,7 +21341,7 @@ globalThis.init = function() {
     loadPadTypingConfig();
     loadTextPreviewConfig();
     loadParamViewConfig();
-    loadFilebrowserConfig();
+    retireFilebrowserService();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
     const savedMasterFx = loadMasterFxFromConfig();
@@ -21479,8 +21350,6 @@ globalThis.init = function() {
         masterFxConfig.fx1.module = savedMasterFx.id;
     }
     /* Note: Jump-to-slot check moved to first tick() to avoid race condition */
-
-    /* Auto-update check is manual only (Settings → Updates → Check Updates) */
 
     /* Detect whether the self-heal entrypoint is installed. If not, the
      * device is in the "needs bootstrap" state — first tick will surface
@@ -21751,7 +21620,8 @@ function dispatchCoRunDraw() {
         case VIEWS.LFO_TARGET_COMPONENT: drawLfoTargetComponent(); break;
         case VIEWS.LFO_TARGET_GROUP:     drawLfoTargetGroup(); break;
         case VIEWS.LFO_TARGET_PARAM:     drawLfoTargetParam(); break;
-        case VIEWS.STORE_PICKER_RESULT:  drawStorePickerResult(); break;
+        case VIEWS.NOTICE:               drawNotice(); break;
+        case VIEWS.CONNECT:              drawConnect(); break;
         case VIEWS.FILEPATH_BROWSER:     drawFilepathBrowser(); break;
         default:
             /* Unknown view in co-run — render slot list as a recoverable
@@ -21865,14 +21735,12 @@ globalThis.tick = function() {
                  * pointer screen once per boot so the user is unmistakeably
                  * informed instead of staring at a silently-stale install. */
                 shimBootstrapPromptShown = true;
-                storePickerResultTitle = 'Schwung Repair';
-                storePickerMessage = 'Repair needed. visit\n' +
-                                     'http://move.local:7700\n' +
-                                     'or rerun GUI installer';
-                storePickerFromSettings = false;
-                storeReturnView = null;
-                view = VIEWS.STORE_PICKER_RESULT;
-                announce(storePickerMessage);
+                noticeTitle = 'Schwung Repair';
+                noticeMessage = 'Repair needed. Visit\n' +
+                                'Schwung Manager, or\n' +
+                                'rerun the GUI installer.';
+                view = VIEWS.NOTICE;
+                announce(noticeMessage);
             } else {
                 /* Dismiss shadow display mode — return to Move's native UI */
                 if (typeof shadow_request_exit === "function") {
@@ -22977,8 +22845,11 @@ globalThis.tick = function() {
         case VIEWS.DYNAMIC_PARAM_PICKER:
             drawDynamicParamPicker();
             break;
-        case VIEWS.STORE_PICKER_RESULT:
-            drawStorePickerResult();
+        case VIEWS.NOTICE:
+            drawNotice();
+            break;
+        case VIEWS.CONNECT:
+            drawConnect();
             break;
         case VIEWS.OVERTAKE_MENU:
             drawOvertakeMenu();

@@ -2224,7 +2224,6 @@ var settingsToShadowConfig = map[string]string{
 	"text_preview":           "text_preview",
 	"browser_preview":        "browser_preview",
 	"auto_update_check":      "auto_update_check",
-	"filebrowser_enabled":    "filebrowser_enabled",
 	"screen_reader_enabled":  "screen_reader_enabled",
 	"screen_reader_engine":   "screen_reader_engine",
 	"screen_reader_speed":    "screen_reader_speed",
@@ -2464,15 +2463,6 @@ func (app *App) handleConfigSetSetting(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Sync filebrowser flag file (checked by shim-entrypoint.sh at boot).
-		if key == "filebrowser_enabled" {
-			flagPath := filepath.Join(app.basePath, "filebrowser_enabled")
-			if value == "true" {
-				os.WriteFile(flagPath, []byte("1"), 0644)
-			} else {
-				os.Remove(flagPath)
-			}
-		}
 	}
 
 	app.logger.Info("config setting updated", "key", key, "value", value)

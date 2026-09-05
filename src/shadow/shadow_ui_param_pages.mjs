@@ -1187,6 +1187,27 @@ export function handleParamPagesMidi(data) {
     const todo = traced("js.grid.input",
         () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
 
+    /*
+     * A TRIGGER THAT ASKED FOR AN ACTION, run here and nowhere else.
+     *
+     * A momentary writes through setParam, which the controller calls from
+     * inside applyInput — so a contract whose write NAVIGATES cannot act there
+     * without tearing the controller down mid-input. It queues instead, and
+     * this is the drain: the same point, and for the same reason, that a menu
+     * entry's action is run twenty lines below.
+     *
+     * Before `if (!todo)`, because a trigger returns no intent: the click was
+     * the whole interaction. Whatever the action opened is now on screen, so
+     * there is nothing left for this input to do either way.
+     */
+    if (controllerIo && typeof controllerIo.takePendingAction === 'function') {
+        const queued = controllerIo.takePendingAction();
+        if (queued) {
+            controllerIo.runAction(queued);
+            return true;
+        }
+    }
+
     if (!todo) return true;
 
     if (todo.action === 'exit') {
@@ -1289,6 +1310,19 @@ export function clearParamPagesTouch() {
 }
 
 /** The section picker, for anything that wants to drive it from outside. */
+/**
+ * The name of the page the grid is standing on, or null when it is not up.
+ *
+ * For a caller that has to LEAVE the grid and wants to come back to the same
+ * page: the engine restores by NAME (restorePageName; a page's identity
+ * survives a replan, its index does not).
+ */
+export function paramPagesPageName() {
+    if (!controller || typeof controller.pageLabel !== 'function') return null;
+    const label = controller.pageLabel();
+    return label ? String(label) : null;
+}
+
 export function paramPagesJumpIndex() {
     return controller ? controller.groupIndex() : [];
 }

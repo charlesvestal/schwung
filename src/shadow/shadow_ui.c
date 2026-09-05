@@ -21,6 +21,10 @@
 #include <limits.h>
 #include <time.h>
 #include <dirent.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include "quickjs.h"
 #include "quickjs-libc.h"
@@ -1886,6 +1890,74 @@ static JSValue js_host_track_event(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
+/*
+ * host_get_device_ip() -> "192.168.1.42" | ""
+ *
+ * The address the Connect page turns into a QR code, so a phone on the same
+ * network can open Schwung Manager without anyone typing an octet.
+ *
+ * READ FROM getifaddrs, NOT FROM A SHELL. host_system_cmd would do it -- it
+ * allows `sh ` -- but every call is a fork from a process the shim started at
+ * SCHED_FIFO 70, and the answer would have to come back through a temporary
+ * file. This is a handful of syscalls and no child.
+ *
+ * WHAT IS SKIPPED, AND WHY EACH ONE IS WRONG TO RETURN:
+ *   - loopback: 127.0.0.1 is the one address that is useless to a phone, and
+ *     it is the address that is always up, so returning it means the QR always
+ *     works and never works.
+ *   - interfaces that are down or have no carrier (IFF_RUNNING).
+ *   - 169.254/16 link-local: an address the device gave itself because DHCP
+ *     failed. It is a real address on a real interface and it means "there is
+ *     no network here".
+ *   - Move's USB-C gadget, which is an NCM ethernet interface (usb*). It has a
+ *     perfectly good address that is reachable ONLY from the one computer
+ *     holding the cable -- so it is right for that computer and wrong for the
+ *     phone the QR exists for, and it cannot be told apart at the screen.
+ *
+ * WIRELESS FIRST, then anything else that survives those rules. Ordering
+ * matters because a device can hold several at once, and the answer has to be
+ * the one the phone can reach; a bare "first interface enumerated" is stable in
+ * testing and arbitrary in the field.
+ *
+ * Returns "" when nothing qualifies, which the caller must render as its own
+ * sentence rather than as an address. An empty string is the honest answer to
+ * "what should I point my phone at" when the device is off the network.
+ */
+static JSValue js_host_get_device_ip(JSContext *ctx, JSValueConst this_val,
+                                      int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+
+    struct ifaddrs *ifs = NULL;
+    if (getifaddrs(&ifs) != 0) return JS_NewString(ctx, "");
+
+    char best[INET_ADDRSTRLEN] = "";
+    int best_rank = -1;
+
+    for (struct ifaddrs *ifa = ifs; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+        if (!(ifa->ifa_flags & IFF_UP) || !(ifa->ifa_flags & IFF_RUNNING)) continue;
+
+        const struct sockaddr_in *sin = (const struct sockaddr_in *)ifa->ifa_addr;
+        uint32_t host_order = ntohl(sin->sin_addr.s_addr);
+        if ((host_order & 0xffff0000u) == 0xa9fe0000u) continue;   /* 169.254/16 */
+
+        const char *name = ifa->ifa_name ? ifa->ifa_name : "";
+        if (strncmp(name, "usb", 3) == 0) continue;                /* USB-C gadget */
+
+        int rank = (strncmp(name, "wlan", 4) == 0) ? 2 : 1;
+        if (rank <= best_rank) continue;
+
+        char buf[INET_ADDRSTRLEN];
+        if (!inet_ntop(AF_INET, &sin->sin_addr, buf, sizeof(buf))) continue;
+        snprintf(best, sizeof(best), "%s", buf);
+        best_rank = rank;
+    }
+
+    freeifaddrs(ifs);
+    return JS_NewString(ctx, best);
+}
+
 /* host_get_setting / host_set_setting for analytics_enabled */
 static JSValue js_host_get_analytics_enabled(JSContext *ctx, JSValueConst this_val,
                                               int argc, JSValueConst *argv) {
@@ -3085,6 +3157,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "host_list_modules", JS_NewCFunction(ctx, js_host_list_modules, "host_list_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_rescan_modules", JS_NewCFunction(ctx, js_host_rescan_modules, "host_rescan_modules", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_track_event", JS_NewCFunction(ctx, js_host_track_event, "host_track_event", 2));
+    JS_SetPropertyStr(ctx, global_obj, "host_get_device_ip", JS_NewCFunction(ctx, js_host_get_device_ip, "host_get_device_ip", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_get_analytics_enabled", JS_NewCFunction(ctx, js_host_get_analytics_enabled, "host_get_analytics_enabled", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_set_analytics_enabled", JS_NewCFunction(ctx, js_host_set_analytics_enabled, "host_set_analytics_enabled", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_flush_display", JS_NewCFunction(ctx, js_host_flush_display, "host_flush_display", 0));
