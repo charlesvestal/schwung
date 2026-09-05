@@ -108,14 +108,13 @@ typedef struct {
      * different place — so do not "simplify" it back to an inline array
      * without first moving the permutation off the audio thread.
      *
-     * shadow_send_fx_slots[][] uses this SAME struct but does NOT get this
-     * storage: every entry is BSS-zeroed, so chain_params_cache is NULL there
-     * until Task 9 (send FX loading) calls its own ensure — 2 MB for two
-     * buses' worth of mirrored 64 KB caches is not worth spending on a feature
-     * that cannot load anything yet. Anything written against this struct
-     * that dereferences chain_params_cache MUST null-check when it might be
-     * touching a send slot, or it is a NULL deref on the SPI callback the
-     * first time it runs against sends.
+     * shadow_send_fx_slots[][] uses this SAME struct and gets the same
+     * guarantee, from shadow_send_fx_storage_ensure() rather than from
+     * shadow_master_fx_storage_ensure(). It costs 1 MB, not 2: a send has no
+     * LFOs, so it needs no second mirrored runtime cache. Both ensures run at
+     * shim startup, and both loaders refuse a position whose buffer is
+     * missing, so no reader can reach a NULL one — which is the only reason
+     * the readers below may dereference it unguarded.
      *
      * Vacating a position must ROTATE this pointer (hand it the buffer
      * displaced off the end of the shift) and clear its CONTENTS. Nulling it
@@ -213,14 +212,16 @@ extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
  * named directly, with no array parameter, by
  * shadow_master_fx_slot_load_with_config, shadow_master_fx_slot_unload,
  * mfx_fx_count_effective, shadow_master_fx_lfo_tick, the fx:insert/:remove/
- * :move shape verbs, and the positional master_fx:modules GET. None of those
- * operate on shadow_send_fx_slots — "anything that learns to edit a Master FX
- * position edits a send position by pointing at a different array" is not
- * true of the code as it stands. The send param handler is a fresh ~140-line
- * copy, with its own loader, no LFOs, no chain_params caching (see
- * chain_params_cache above) and no presets. A future unification would need
- * to thread an array parameter through every one of those call sites; nothing
- * here does that yet.
+ * :move shape verbs. None of those operate on shadow_send_fx_slots.
+ *
+ * What IS shared as code, since send FX became loadable: the middle of the
+ * loader and the whole of the unload (fx_slot_load_impl / fx_slot_unload_impl
+ * in the .c). Master FX keeps the LFO runtime caches and mfx_fx_count on its
+ * side of that line, a send keeps nothing on its own — which is why the two
+ * are separate entry points rather than one function with an array parameter.
+ * Sends still have no LFOs, no shape verbs (insert/remove/move) and no
+ * presets; a send position is emptied by loading "" into it, exactly as a
+ * Master FX position is emptied by picking None.
  *
  * Levels are 0..BUS_MIX_SEND_LEVEL_MAX (127) so they survive a CC round trip
  * and need no float in the audio path — see bus_mix_send(), which is the only
@@ -240,6 +241,28 @@ extern volatile int shadow_send_a_to_b;                    /* 0..127 */
 extern void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
                                         int n_sends, int frames,
                                         int slot_volume_0_127);
+
+/* --- Send bus FX: storage, load and unload -------------------------------
+ *
+ * The Master FX pair with the two Master-FX-only halves removed. Sends have no
+ * LFOs, so no runtime param cache; sends publish no length, so no fx_count.
+ * The dlopen / v2 handshake / create_instance / module.json parse in the
+ * middle is literally shared code (fx_slot_load_impl in the .c), which is what
+ * makes a send position mean the same thing a Master FX position does — the
+ * comment on shadow_send_fx_slots above described that sharing as aspirational
+ * and this is the part of it that is now real.
+ *
+ * shadow_send_fx_storage_ensure() gives every send position the owned
+ * chain_params buffer master_fx_slot_t's comment describes — 1 MB across both
+ * buses, allocated at shim startup because the only other trigger would be the
+ * load itself, which runs on the SPI callback. While it returns 0 the loader
+ * refuses, so no reader can reach a NULL buffer. */
+int shadow_send_fx_storage_ensure(void);
+void shadow_send_fx_slot_unload(int send, int pos);
+void shadow_send_fx_unload_all(void);
+int shadow_send_fx_slot_load(int send, int pos, const char *dsp_path);
+int shadow_send_fx_slot_load_with_config(int send, int pos, const char *dsp_path,
+                                         const char *config_json);
 
 /* Is there anything for send bus `sb` to do this frame? False means the shim
  * skips it entirely — no memcpy, no process_block. A send with nothing loaded

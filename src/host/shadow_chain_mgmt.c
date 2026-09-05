@@ -199,6 +199,10 @@ void chain_mgmt_init(const chain_mgmt_host_t *h) {
      * Master FX position gets its owned param caches here, before anything can
      * load a module or read one. */
     (void)shadow_master_fx_storage_ensure();
+    /* And every send position's, for the same reason and at the same moment:
+     * the only other point a send buffer could be allocated is its load, which
+     * runs on the SPI callback. */
+    (void)shadow_send_fx_storage_ensure();
     chain_mgmt_initialized = 1;
 }
 
@@ -571,6 +575,26 @@ void shadow_chain_defaults(void) {
         }
     }
     mfx_fx_count = 0;
+
+    /* The send buses reset with the rest of the chain state: both chains
+     * vacated, both returns down, no A->B. That resting state is what
+     * shadow_send_bus_active() reads to keep an unused send out of the mix
+     * path entirely. */
+    if (!shadow_send_fx_storage_ensure()) {
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "Send FX: no param cache storage; send positions stay unloadable");
+    }
+    shadow_send_fx_unload_all();
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        shadow_send_return_level[sb] = 0;
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            shadow_send_fx_slots[sb][i].chain_params_cached = 0;
+            if (shadow_send_fx_slots[sb][i].chain_params_cache) {
+                shadow_send_fx_slots[sb][i].chain_params_cache[0] = '\0';
+            }
+        }
+    }
+    shadow_send_a_to_b = 0;
 }
 
 void shadow_chain_load_config(void) {
@@ -784,10 +808,21 @@ void shadow_toggle_solo(int slot) {
  * Master FX
  * ============================================================================ */
 
-void shadow_master_fx_slot_unload(int slot) {
-    if (slot < 0 || slot >= MASTER_FX_SLOTS) return;
-    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
-
+/* The vacate, in a form that names no array.
+ *
+ * Everything here is a property of the POSITION and means the same thing
+ * whichever chain it sits in — destroy the instance, dlclose, forget the
+ * identity and the capture rules. That is what the shared master_fx_slot_t
+ * type buys, and this is the first thing to actually collect on it.
+ *
+ * What deliberately stays with the callers: the LFO runtime caches and
+ * mfx_fx_count, both of which are Master FX's alone. A send bus has no LFOs
+ * and publishes no length.
+ *
+ * It does NOT clear chain_params_cached or the buffer's contents, matching
+ * what this code did before the split: the loader clears them, and
+ * shadow_chain_defaults() clears them explicitly after unloading. */
+static void fx_slot_unload_impl(master_fx_slot_t *s) {
     if (s->instance && s->api && s->api->destroy_instance) {
         s->api->destroy_instance(s->instance);
     }
@@ -802,6 +837,11 @@ void shadow_master_fx_slot_unload(int slot) {
     s->module_id[0] = '\0';
     s->bypassed = 0;
     capture_clear(&s->capture);
+}
+
+void shadow_master_fx_slot_unload(int slot) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return;
+    fx_slot_unload_impl(&shadow_master_fx_slots[slot]);
     mfx_runtime_chain_params_cached[slot] = 0;
     /* Clear the CONTENTS, keep the buffer. The pointer belongs to the position
      * for the life of the process; a permutation rotates it. */
@@ -997,39 +1037,32 @@ int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
     return shadow_master_fx_slot_load_with_config(slot, dsp_path, NULL);
 }
 
-int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json) {
-    if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
-    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
-
-    if (!dsp_path || !dsp_path[0]) {
-        shadow_master_fx_slot_unload(slot);
-        return 0;
-    }
-
-    /* This runs on the SPI callback, so it cannot allocate. If startup failed
-     * to give this position its owned caches, refuse rather than load a module
-     * whose param readers would then dereference NULL on the audio thread.
-     * Cheap pointer test, not a retry. */
-    if (!s->chain_params_cache || !mfx_runtime_chain_params_cache[slot]) {
-        return -1;
-    }
-
-    /* Already loaded? (skip check if config_json provided) */
-    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
-        return 0;
-    }
-
-    shadow_master_fx_slot_unload(slot);
-
+/* The load, in a form that names no array — the same split as
+ * fx_slot_unload_impl above, and for the same reason.
+ *
+ * The caller has already vacated the position and checked that its owned
+ * chain_params buffer exists. What is left is the dlopen, the v2 handshake,
+ * create_instance and the module.json parse, none of which has an opinion
+ * about which chain the position belongs to.
+ *
+ * `what` and `idx` name the caller in the diagnostics only, so a send-bus
+ * failure does not report itself as a Master FX one. Returns 0 or -1.
+ *
+ * Runs on the SPI callback and does file I/O (module.json), exactly as it did
+ * before the split. That is a pre-existing realtime violation on the load
+ * path; moving it is not in this change's scope and nothing here makes it
+ * better or worse. */
+static int fx_slot_load_impl(master_fx_slot_t *s, const char *what, int idx,
+                             const char *dsp_path, const char *config_json) {
     s->handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
     if (!s->handle) {
-        fprintf(stderr, "Shadow master FX[%d]: failed to load %s: %s\n", slot, dsp_path, dlerror());
+        fprintf(stderr, "Shadow %s[%d]: failed to load %s: %s\n", what, idx, dsp_path, dlerror());
         return -1;
     }
 
     audio_fx_init_v2_fn init_fn = (audio_fx_init_v2_fn)dlsym(s->handle, AUDIO_FX_INIT_V2_SYMBOL);
     if (!init_fn) {
-        fprintf(stderr, "Shadow master FX[%d]: %s not found in %s\n", slot, AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
+        fprintf(stderr, "Shadow %s[%d]: %s not found in %s\n", what, idx, AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
         dlclose(s->handle);
         s->handle = NULL;
         return -1;
@@ -1037,7 +1070,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
 
     s->api = init_fn(&shadow_host_api);
     if (!s->api || !s->api->create_instance) {
-        fprintf(stderr, "Shadow master FX[%d]: init failed for %s\n", slot, dsp_path);
+        fprintf(stderr, "Shadow %s[%d]: init failed for %s\n", what, idx, dsp_path);
         dlclose(s->handle);
         s->handle = NULL;
         s->api = NULL;
@@ -1055,7 +1088,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
 
     s->instance = s->api->create_instance(module_dir, config_json);
     if (!s->instance) {
-        fprintf(stderr, "Shadow master FX[%d]: create_instance failed for %s\n", slot, dsp_path);
+        fprintf(stderr, "Shadow %s[%d]: create_instance failed for %s\n", what, idx, dsp_path);
         dlclose(s->handle);
         s->handle = NULL;
         s->api = NULL;
@@ -1079,9 +1112,6 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
     snprintf(module_json_path, sizeof(module_json_path), "%s/module.json", module_dir);
     s->chain_params_cached = 0;
     s->chain_params_cache[0] = '\0';
-    mfx_runtime_chain_params_cached[slot] = 0;
-    mfx_runtime_chain_params_cache[slot][0] = '\0';
-    mfx_runtime_chain_params_last_fetch_ms[slot] = 0;
     FILE *f = fopen(module_json_path, "r");
     if (f) {
         fseek(f, 0, SEEK_END);
@@ -1154,6 +1184,44 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
         s->on_midi = (fx_on_midi_fn)dlsym(s->handle, "move_audio_fx_on_midi");
     }
 
+
+    return 0;
+}
+
+int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
+    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
+
+    if (!dsp_path || !dsp_path[0]) {
+        shadow_master_fx_slot_unload(slot);
+        return 0;
+    }
+
+    /* This runs on the SPI callback, so it cannot allocate. If startup failed
+     * to give this position its owned caches, refuse rather than load a module
+     * whose param readers would then dereference NULL on the audio thread.
+     * Cheap pointer test, not a retry. */
+    if (!s->chain_params_cache || !mfx_runtime_chain_params_cache[slot]) {
+        return -1;
+    }
+
+    /* Already loaded? (skip check if config_json provided) */
+    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+        return 0;
+    }
+
+    shadow_master_fx_slot_unload(slot);
+    /* The LFO runtime cache is Master FX's alone, so it is reset here rather
+     * than inside the shared loader. Redundant with the unload above, and kept
+     * as the belt to its braces — the LFO refresh parses a param table through
+     * these buffers. */
+    mfx_runtime_chain_params_cached[slot] = 0;
+    mfx_runtime_chain_params_cache[slot][0] = '\0';
+    mfx_runtime_chain_params_last_fetch_ms[slot] = 0;
+
+    int rc = fx_slot_load_impl(s, "master FX", slot, dsp_path, config_json);
+    if (rc != 0) return rc;
+
     /* A load can extend the chain, and two paths get here without a shape edit
      * to set the length: boot restore and a patch/config load. Raising the
      * count here is what stops a running module being invisible to an editor
@@ -1162,6 +1230,99 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
 
     fprintf(stderr, "Shadow master FX[%d]: loaded %s\n", slot, dsp_path);
     return 0;
+}
+
+/* --- Global send bus FX positions ----------------------------------------
+ *
+ * The same two operations against shadow_send_fx_slots[][]. Separate entry
+ * points rather than an array parameter on the Master FX pair, because the two
+ * chains differ in what they carry EITHER SIDE of the shared middle: Master FX
+ * has the LFO runtime caches and a published fx_count, a send has neither.
+ * Threading both through as nullable parameters would put that difference at
+ * every call site instead of in these two short functions. */
+
+/* Every send position's owned module.json chain_params buffer.
+ *
+ * SEND_BUSES * SEND_FX_SLOTS * 64 KB = 1 MB, allocated once at shim startup
+ * and never freed, exactly like the Master FX pair. Eagerly, even though most
+ * devices will load nothing into a send: the only moment that could trigger a
+ * lazy allocation is the load itself, and that runs on the SPI callback where
+ * a failed malloc has nowhere to go. So it is allocated off the callback or
+ * not at all.
+ *
+ * There is deliberately no send equivalent of mfx_runtime_chain_params_cache.
+ * That second buffer exists to serve the LFO base-value refresh, and a send
+ * has no LFOs — so sends cost 1 MB, not the 2 MB the plan quoted for the
+ * mirrored pair.
+ *
+ * Idempotent and gap-filling, same contract as shadow_master_fx_storage_ensure. */
+int shadow_send_fx_storage_ensure(void) {
+    int all_present = 1;
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            master_fx_slot_t *s = &shadow_send_fx_slots[sb][i];
+            if (!s->chain_params_cache) {
+                s->chain_params_cache = calloc(1, MASTER_FX_CHAIN_PARAMS_MAX);
+            }
+            if (!s->chain_params_cache) all_present = 0;
+        }
+    }
+    if (!all_present) {
+        /* Not fatal and not rolled back: whatever was allocated stays, a later
+         * call fills the gaps, and shadow_send_fx_slot_load_with_config refuses
+         * to bring a position up meanwhile — so no reader can reach a missing
+         * buffer. */
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "Send FX: chain_params cache allocation failed; sends stay unloadable");
+    }
+    return all_present;
+}
+
+void shadow_send_fx_slot_unload(int send, int pos) {
+    if (send < 0 || send >= SEND_BUSES) return;
+    if (pos < 0 || pos >= SEND_FX_SLOTS) return;
+    fx_slot_unload_impl(&shadow_send_fx_slots[send][pos]);
+}
+
+int shadow_send_fx_slot_load_with_config(int send, int pos, const char *dsp_path,
+                                         const char *config_json) {
+    if (send < 0 || send >= SEND_BUSES) return -1;
+    if (pos < 0 || pos >= SEND_FX_SLOTS) return -1;
+    master_fx_slot_t *s = &shadow_send_fx_slots[send][pos];
+
+    if (!dsp_path || !dsp_path[0]) {
+        shadow_send_fx_slot_unload(send, pos);
+        return 0;
+    }
+
+    /* Same refusal as Master FX: no owned buffer, no load. Without it the
+     * module.json parse inside the shared loader would write through a NULL
+     * chain_params_cache on the SPI callback — which is the whole reason
+     * shadow_send_fx_storage_ensure exists. */
+    if (!s->chain_params_cache) return -1;
+
+    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+        return 0;
+    }
+
+    shadow_send_fx_slot_unload(send, pos);
+
+    int rc = fx_slot_load_impl(s, "send FX", send * SEND_FX_SLOTS + pos,
+                               dsp_path, config_json);
+    if (rc != 0) return rc;
+
+    fprintf(stderr, "Shadow send FX[%d][%d]: loaded %s\n", send, pos, dsp_path);
+    return 0;
+}
+
+int shadow_send_fx_slot_load(int send, int pos, const char *dsp_path) {
+    return shadow_send_fx_slot_load_with_config(send, pos, dsp_path, NULL);
+}
+
+void shadow_send_fx_unload_all(void) {
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) shadow_send_fx_slot_unload(sb, i);
+    }
 }
 
 int shadow_master_fx_load(const char *dsp_path) {
@@ -1347,6 +1508,245 @@ static void shadow_slot_apply_boot_feedback_hold(int i) {
         snprintf(msg, sizeof(msg),
                  "Shadow boot: slot %d consumes line-in — bypassed pending feedback check", i);
         shadow_log(msg);
+    }
+}
+
+/* ---- Per-position FX state files, restored at boot -----------------------
+ *
+ * Master FX and the two send buses write the SAME file shape — the JS saver is
+ * one function parameterised by bus — so they are restored by one function
+ * parameterised the same way. Two copies of this JSON scraping is how the
+ * sends would end up restoring `state` and not `params`, or the other way
+ * round, with nothing to compare against.
+ *
+ * `send` is -1 for Master FX, else the bus index. `what` names the chain in
+ * the log lines only. */
+typedef struct { int send; int pos; } fx_boot_target_t;
+
+static int fx_boot_load(const fx_boot_target_t *t, const char *dsp_path,
+                        const char *config_json) {
+    return (t->send < 0)
+        ? shadow_master_fx_slot_load_with_config(t->pos, dsp_path, config_json)
+        : shadow_send_fx_slot_load_with_config(t->send, t->pos, dsp_path, config_json);
+}
+
+static master_fx_slot_t *fx_boot_slot(const fx_boot_target_t *t) {
+    return (t->send < 0) ? &shadow_master_fx_slots[t->pos]
+                         : &shadow_send_fx_slots[t->send][t->pos];
+}
+
+static void fx_boot_restore_one(const char *state_path, const fx_boot_target_t *t,
+                                const char *what) {
+    FILE *mf = fopen(state_path, "r");
+    if (!mf) return;
+
+    fseek(mf, 0, SEEK_END);
+    long msize = ftell(mf);
+    fseek(mf, 0, SEEK_SET);
+
+    if (msize <= 10) {
+        fclose(mf);
+        return;
+    }
+
+    char *mjson = malloc(msize + 1);
+    if (!mjson) { fclose(mf); return; }
+    size_t mnread = fread(mjson, 1, msize, mf);
+    mjson[mnread] = '\0';
+    fclose(mf);
+
+    /* Extract module_path */
+    char dsp_path[256] = "";
+    {
+        char *mp = strstr(mjson, "\"module_path\":");
+        if (mp) {
+            mp = strchr(mp, ':');
+            if (mp) {
+                mp++;
+                while (*mp == ' ' || *mp == '"') mp++;
+                char *end = mp;
+                while (*end && *end != '"') end++;
+                int len = end - mp;
+                if (len > 0 && len < (int)sizeof(dsp_path) - 1) {
+                    strncpy(dsp_path, mp, len);
+                    dsp_path[len] = '\0';
+                }
+            }
+        }
+    }
+
+    if (!dsp_path[0]) {
+        free(mjson);
+        return;
+    }
+
+    /* Extract plugin_id from params */
+    char config_json_buf[512] = "";
+    char *params_start = strstr(mjson, "\"params\":");
+    if (params_start) {
+        char *pid_key = strstr(params_start, "\"plugin_id\"");
+        if (pid_key) {
+            char *pc = strchr(pid_key + 11, ':');
+            if (pc) {
+                pc++;
+                while (*pc == ' ') pc++;
+                if (*pc == '"') {
+                    pc++;
+                    char *pe = strchr(pc, '"');
+                    if (pe) {
+                        int plen = pe - pc;
+                        if (plen > 0 && plen < 256) {
+                            char pid_val[256];
+                            strncpy(pid_val, pc, plen);
+                            pid_val[plen] = '\0';
+                            snprintf(config_json_buf, sizeof(config_json_buf),
+                                     "{\"plugin_id\":\"%s\"}", pid_val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    int load_result = fx_boot_load(t, dsp_path,
+        config_json_buf[0] ? config_json_buf : NULL);
+    if (load_result != 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s boot: failed to load %s", what, dsp_path);
+        shadow_log(msg);
+        free(mjson);
+        return;
+    }
+
+    master_fx_slot_t *s = fx_boot_slot(t);
+
+    /* Restore structured or opaque-string state. The saved file can be no
+     * larger than msize, so one bounded buffer covers either representation. */
+    int state_restored = 0;
+    if (s->api && s->instance && s->api->set_param) {
+        char *state_buf = malloc((size_t)msize + 1);
+        if (state_buf) {
+            int state_len = master_fx_saved_state_copy(
+                mjson, state_buf, (size_t)msize + 1);
+            if (state_len > 0) {
+                s->api->set_param(s->instance, "state", state_buf);
+                state_restored = 1;
+            }
+            free(state_buf);
+        }
+    }
+    if (!state_restored && params_start && s->api && s->instance && s->api->set_param) {
+        /* Fall back to individual params */
+        char *obj_start = strchr(params_start, '{');
+        if (obj_start) {
+            int depth = 1;
+            char *obj_end = obj_start + 1;
+            while (*obj_end && depth > 0) {
+                if (*obj_end == '{') depth++;
+                else if (*obj_end == '}') depth--;
+                obj_end++;
+            }
+            char *p = obj_start + 1;
+            while (p < obj_end - 1) {
+                char *kstart = strchr(p, '"');
+                if (!kstart || kstart >= obj_end) break;
+                kstart++;
+                char *kend = strchr(kstart, '"');
+                if (!kend || kend >= obj_end) break;
+
+                char param_key[128];
+                int klen = kend - kstart;
+                if (klen >= (int)sizeof(param_key)) { p = kend + 1; continue; }
+                strncpy(param_key, kstart, klen);
+                param_key[klen] = '\0';
+
+                char *colon = strchr(kend, ':');
+                if (!colon || colon >= obj_end) break;
+                colon++;
+                while (*colon == ' ') colon++;
+
+                char param_val[256];
+                if (*colon == '"') {
+                    colon++;
+                    char *vend = strchr(colon, '"');
+                    if (!vend || vend >= obj_end) break;
+                    int vlen = vend - colon;
+                    if (vlen >= (int)sizeof(param_val)) { p = vend + 1; continue; }
+                    strncpy(param_val, colon, vlen);
+                    param_val[vlen] = '\0';
+                    p = vend + 1;
+                } else {
+                    char *vend = colon;
+                    while (*vend && *vend != ',' && *vend != '}' && *vend != '\n') vend++;
+                    int vlen = vend - colon;
+                    if (vlen >= (int)sizeof(param_val)) { p = vend; continue; }
+                    strncpy(param_val, colon, vlen);
+                    param_val[vlen] = '\0';
+                    while (vlen > 0 && (param_val[vlen-1] == ' ' || param_val[vlen-1] == '\r')) {
+                        param_val[--vlen] = '\0';
+                    }
+                    p = vend;
+                }
+
+                if (strcmp(param_key, "plugin_id") != 0) {
+                    s->api->set_param(s->instance, param_key, param_val);
+                }
+            }
+        }
+    }
+
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s boot: loaded %s%s",
+                 what, s->module_id,
+                 state_restored ? " (with state)" : (params_start ? " (with params)" : ""));
+        shadow_log(msg);
+    }
+    free(mjson);
+}
+
+/* The two return levels and the A->B amount.
+ *
+ * They live in their own file rather than in a position's, because they belong
+ * to the BUS and not to any position in it — filing them under position 0 (the
+ * way the Master FX LFO snapshot is filed under fx1) would lose them the moment
+ * that position is emptied, and an empty send with a return level up is a
+ * perfectly ordinary state.
+ *
+ * Absent file, unparseable file and absent key all leave the BSS zero standing.
+ * That is the only safe reading: a level this function invented would be a
+ * level nobody set, on a bus that may have a reverb in it. */
+static void shadow_send_levels_restore(const char *state_dir) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/send_levels.json", state_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        char key[32];
+        snprintf(key, sizeof(key), "\"send%d_return\"", sb + 1);
+        const char *k = strstr(buf, key);
+        if (!k) continue;
+        const char *c = strchr(k, ':');
+        if (!c) continue;
+        int v = atoi(c + 1);
+        if (v < 0) v = 0;
+        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+        shadow_send_return_level[sb] = v;
+    }
+    {
+        const char *k = strstr(buf, "\"send1_to_send2\"");
+        const char *c = k ? strchr(k, ':') : NULL;
+        if (c) {
+            int v = atoi(c + 1);
+            if (v < 0) v = 0;
+            if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+            shadow_send_a_to_b = v;
+        }
     }
 }
 
@@ -1566,177 +1966,33 @@ int shadow_inprocess_load_chain(void) {
         }
     }
 
-    /* Load master FX slots from state files */
+    /* Restore Master FX and both send buses from their per-position state
+     * files. One function serves all three chains — see fx_boot_restore_one. */
     for (int mfx = 0; mfx < MASTER_FX_SLOTS; mfx++) {
-        char mfx_path[256];
-        snprintf(mfx_path, sizeof(mfx_path), "%s/master_fx_%d.json", boot_state_dir, mfx);
-        FILE *mf = fopen(mfx_path, "r");
-        if (!mf) continue;
-
-        fseek(mf, 0, SEEK_END);
-        long msize = ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-
-        if (msize <= 10) {
-            fclose(mf);
-            continue;
-        }
-
-        char *mjson = malloc(msize + 1);
-        if (!mjson) { fclose(mf); continue; }
-        size_t mnread = fread(mjson, 1, msize, mf);
-        mjson[mnread] = '\0';
-        fclose(mf);
-
-        /* Extract module_path */
-        char dsp_path[256] = "";
-        {
-            char *mp = strstr(mjson, "\"module_path\":");
-            if (mp) {
-                mp = strchr(mp, ':');
-                if (mp) {
-                    mp++;
-                    while (*mp == ' ' || *mp == '"') mp++;
-                    char *end = mp;
-                    while (*end && *end != '"') end++;
-                    int len = end - mp;
-                    if (len > 0 && len < (int)sizeof(dsp_path) - 1) {
-                        strncpy(dsp_path, mp, len);
-                        dsp_path[len] = '\0';
-                    }
-                }
-            }
-        }
-
-        if (!dsp_path[0]) {
-            free(mjson);
-            continue;
-        }
-
-        /* Extract plugin_id from params */
-        char config_json_buf[512] = "";
-        char *params_start = strstr(mjson, "\"params\":");
-        if (params_start) {
-            char *pid_key = strstr(params_start, "\"plugin_id\"");
-            if (pid_key) {
-                char *pc = strchr(pid_key + 11, ':');
-                if (pc) {
-                    pc++;
-                    while (*pc == ' ') pc++;
-                    if (*pc == '"') {
-                        pc++;
-                        char *pe = strchr(pc, '"');
-                        if (pe) {
-                            int plen = pe - pc;
-                            if (plen > 0 && plen < 256) {
-                                char pid_val[256];
-                                strncpy(pid_val, pc, plen);
-                                pid_val[plen] = '\0';
-                                snprintf(config_json_buf, sizeof(config_json_buf),
-                                         "{\"plugin_id\":\"%s\"}", pid_val);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        int load_result = shadow_master_fx_slot_load_with_config(mfx, dsp_path,
-            config_json_buf[0] ? config_json_buf : NULL);
-        if (load_result != 0) {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "MFX boot: slot %d failed to load %s", mfx, dsp_path);
-            shadow_log(msg);
-            free(mjson);
-            continue;
-        }
-
-        master_fx_slot_t *s = &shadow_master_fx_slots[mfx];
-
-        /* Restore structured or opaque-string state. The saved file can be no
-         * larger than msize, so one bounded buffer covers either representation. */
-        int state_restored = 0;
-        if (s->api && s->instance && s->api->set_param) {
-            char *state_buf = malloc((size_t)msize + 1);
-            if (state_buf) {
-                int state_len = master_fx_saved_state_copy(
-                    mjson, state_buf, (size_t)msize + 1);
-                if (state_len > 0) {
-                    s->api->set_param(s->instance, "state", state_buf);
-                    state_restored = 1;
-                }
-                free(state_buf);
-            }
-        }
-        if (!state_restored && params_start && s->api && s->instance && s->api->set_param) {
-            /* Fall back to individual params */
-            char *obj_start = strchr(params_start, '{');
-            if (obj_start) {
-                int depth = 1;
-                char *obj_end = obj_start + 1;
-                while (*obj_end && depth > 0) {
-                    if (*obj_end == '{') depth++;
-                    else if (*obj_end == '}') depth--;
-                    obj_end++;
-                }
-                char *p = obj_start + 1;
-                while (p < obj_end - 1) {
-                    char *kstart = strchr(p, '"');
-                    if (!kstart || kstart >= obj_end) break;
-                    kstart++;
-                    char *kend = strchr(kstart, '"');
-                    if (!kend || kend >= obj_end) break;
-
-                    char param_key[128];
-                    int klen = kend - kstart;
-                    if (klen >= (int)sizeof(param_key)) { p = kend + 1; continue; }
-                    strncpy(param_key, kstart, klen);
-                    param_key[klen] = '\0';
-
-                    char *colon = strchr(kend, ':');
-                    if (!colon || colon >= obj_end) break;
-                    colon++;
-                    while (*colon == ' ') colon++;
-
-                    char param_val[256];
-                    if (*colon == '"') {
-                        colon++;
-                        char *vend = strchr(colon, '"');
-                        if (!vend || vend >= obj_end) break;
-                        int vlen = vend - colon;
-                        if (vlen >= (int)sizeof(param_val)) { p = vend + 1; continue; }
-                        strncpy(param_val, colon, vlen);
-                        param_val[vlen] = '\0';
-                        p = vend + 1;
-                    } else {
-                        char *vend = colon;
-                        while (*vend && *vend != ',' && *vend != '}' && *vend != '\n') vend++;
-                        int vlen = vend - colon;
-                        if (vlen >= (int)sizeof(param_val)) { p = vend; continue; }
-                        strncpy(param_val, colon, vlen);
-                        param_val[vlen] = '\0';
-                        while (vlen > 0 && (param_val[vlen-1] == ' ' || param_val[vlen-1] == '\r')) {
-                            param_val[--vlen] = '\0';
-                        }
-                        p = vend;
-                    }
-
-                    if (strcmp(param_key, "plugin_id") != 0) {
-                        s->api->set_param(s->instance, param_key, param_val);
-                    }
-                }
-            }
-        }
-
-        {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "MFX boot: slot %d loaded %s%s",
-                     mfx, s->module_id,
-                     state_restored ? " (with state)" : (params_start ? " (with params)" : ""));
-            shadow_log(msg);
-        }
-        free(mjson);
+        char path[256];
+        snprintf(path, sizeof(path), "%s/master_fx_%d.json", boot_state_dir, mfx);
+        fx_boot_target_t t = { -1, mfx };
+        fx_boot_restore_one(path, &t, "MFX");
     }
+
+    /* The send chains, and then the three scalars that make them audible.
+     *
+     * Levels LAST, deliberately: shadow_send_bus_active() is what keeps an
+     * unused send out of the mix path, and it answers true on a level alone.
+     * Raising a return before its chain exists would put one frame of dry
+     * accumulator through the master bus. */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/send_fx_%d_%d.json", boot_state_dir, sb, i);
+            char what[24];
+            snprintf(what, sizeof(what), "Send%c[%d]", (char)('A' + sb), i);
+            fx_boot_target_t t = { sb, i };
+            fx_boot_restore_one(path, &t, what);
+        }
+    }
+    shadow_send_levels_restore(boot_state_dir);
+
 
     shadow_ui_state_refresh();
 
@@ -2899,13 +3155,14 @@ void shadow_inprocess_handle_param_request(void) {
      * and is why an out-of-range "fx5:cutoff" used to be written into a
      * different running module under a garbage key.
      *
-     * SHAPE IS NOT HANDLED HERE. `send<N>:fx<M>:module` is refused rather than
-     * silently dropped: loading a module into a send position needs the Master
-     * FX loader in a form that takes an array other than shadow_master_fx_slots
-     * (it and its owned param caches are indexed by position today), and that
-     * refactor belongs with the editor that will drive it. What this serves is
-     * STATE — return levels, the A->B feed, bypass, and the loaded position's
-     * own params. */
+     * SHAPE: `send<N>:fx<M>:module` loads and unloads a position, through the
+     * same fx_slot_load_impl the Master FX loader uses. There are deliberately
+     * no insert / remove / move verbs: a send position is emptied by writing
+     * "" into it, exactly as a Master FX position is emptied by picking None,
+     * and until a send editor offers reordering there is no permutation to get
+     * wrong. `send<N>:fx<M>:name` stays read-only for the same reason
+     * `master_fx:fxN:name` is — the identity is a consequence of the module
+     * write, not a thing to assign. */
     {
         int send_idx = -1, send_fx = -1;
         const char *send_param = NULL;
@@ -2949,6 +3206,47 @@ void shadow_inprocess_handle_param_request(void) {
                         shadow_param->error = 0;
                         shadow_param->result_len = strlen(shadow_param->value);
                     }
+                } else if (strcmp(send_param, "modules") == 0) {
+                    /* The whole send chain's ids and paths in ONE answer, the
+                     * same shape and the same serializer as master_fx:modules.
+                     *
+                     * THE SHIM SAYS WHAT IS LOADED, and it says it once. The
+                     * Master FX in-file mirror never saw a write made straight
+                     * to the shim — an overtake tool, a Remote UI client — and
+                     * wrote {} over it, losing the whole master chain on the
+                     * next boot. A send chain is written to by exactly the same
+                     * routes, so it gets exactly the same answer.
+                     *
+                     * Positional and never compacted: entry i IS position i,
+                     * holes included. Read-only, because what is loaded is a
+                     * consequence of the module writes. */
+                    if (is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else {
+                        size_t len = 0;
+                        int ok = master_fx_snapshot_begin(shadow_param->value,
+                                                          SHADOW_PARAM_VALUE_LEN, &len);
+                        for (int i = 0; ok && i < SEND_FX_SLOTS; i++) {
+                            const master_fx_slot_t *s = &shadow_send_fx_slots[send_idx][i];
+                            ok = master_fx_snapshot_append(shadow_param->value,
+                                                           SHADOW_PARAM_VALUE_LEN, &len,
+                                                           i, s->module_id, s->module_path);
+                        }
+                        if (ok) ok = master_fx_snapshot_end(shadow_param->value,
+                                                            SHADOW_PARAM_VALUE_LEN, &len);
+                        if (ok) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = (int)len;
+                        } else {
+                            /* Refuse rather than truncate. A short array parses
+                             * fine and reads as "these positions are empty",
+                             * which is the erase this path exists to prevent. */
+                            shadow_param->value[0] = '\0';
+                            shadow_param->error = 12;
+                            shadow_param->result_len = -1;
+                        }
+                    }
                 } else {
                     handled = 0;
                 }
@@ -2972,12 +3270,20 @@ void shadow_inprocess_handle_param_request(void) {
                 } else if (strcmp(send_param, "module") == 0 ||
                            strcmp(send_param, "name") == 0) {
                     if (is_set) {
-                        /* Refused, not dropped: see the SHAPE note above. A
-                         * silent no-op here would look to the editor exactly
-                         * like a successful load of a module that then makes
-                         * no sound. */
-                        shadow_param->error = 14;
-                        shadow_param->result_len = -1;
+                        if (send_param[0] == 'm') {
+                            /* An empty value unloads, which is how the editor
+                             * spells None — see the loader. Error 7 matches
+                             * what master_fx:fxN:module answers on a failed
+                             * load, so one shared emitter reports one thing. */
+                            int r = shadow_send_fx_slot_load_with_config(
+                                send_idx, send_fx, shadow_param->value, NULL);
+                            shadow_param->error = (r == 0) ? 0 : 7;
+                            shadow_param->result_len = 0;
+                        } else {
+                            /* :name is READ-ONLY, as master_fx:fxN:name is. */
+                            shadow_param->error = 14;
+                            shadow_param->result_len = -1;
+                        }
                     } else {
                         const char *v = (send_param[0] == 'm') ? sfx->module_path
                                                                : sfx->module_id;
@@ -2985,6 +3291,45 @@ void shadow_inprocess_handle_param_request(void) {
                         shadow_param->error = 0;
                         shadow_param->result_len = strlen(shadow_param->value);
                     }
+                } else if (!is_set && strcmp(send_param, "chain_params") == 0) {
+                    /* The knob grid's param metadata, asked of the plugin first
+                     * and answered from the module.json snapshot when it has
+                     * none — the same order master_fx:fxN:chain_params uses,
+                     * because the editor is the same editor.
+                     *
+                     * chain_params_cache is dereferenced unguarded here for the
+                     * same reason it is on the Master FX path: no position can
+                     * be loaded while its buffer is missing (the loader refuses)
+                     * and chain_params_cached is only ever set by that loader. */
+                    if (sfx->api && sfx->instance && sfx->api->get_param) {
+                        int len = sfx->api->get_param(sfx->instance, "chain_params",
+                                                      shadow_param->value,
+                                                      SHADOW_PARAM_VALUE_LEN);
+                        if (len > 2) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = len;
+                            shadow_param_publish_response(req_id);
+                            return;
+                        }
+                    }
+                    if (sfx->chain_params_cached && sfx->chain_params_cache &&
+                        sfx->chain_params_cache[0]) {
+                        int len = (int)strlen(sfx->chain_params_cache);
+                        if (len < SHADOW_PARAM_VALUE_LEN - 1) {
+                            memcpy(shadow_param->value, sfx->chain_params_cache, len + 1);
+                            shadow_param->error = 0;
+                            shadow_param->result_len = len;
+                            shadow_param_publish_response(req_id);
+                            return;
+                        }
+                    }
+                    /* "[]" is SERVED-BUT-EMPTY, not a failed read — an empty
+                     * position has no params and that is a real answer. */
+                    shadow_param->value[0] = '[';
+                    shadow_param->value[1] = ']';
+                    shadow_param->value[2] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 2;
                 } else if (sfx->instance && sfx->api) {
                     if (is_set) {
                         if (sfx->api->set_param) {
