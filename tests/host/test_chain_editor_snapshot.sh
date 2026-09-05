@@ -526,10 +526,10 @@ function renderMasterPicker(c) {
     masterFxPickerItems: c.entries,
     selectedMasterFxModuleIndex: c.index,
     masterFxConfig: c.config,
-    /* The picker header names the bus. Master, here. */
-    fxBus: () => ({ id: "master", label: "Master FX", short: "MFX",
-                    prefix: "master_fx:", send: -1, hasLfos: true,
-                    hasPresets: true, busLevelKeys: [] }),
+    /* The picker header names the bus -- master unless the case says
+       otherwise. Every case before the sends existed left this unset and
+       keeps meaning "Master FX". */
+    fxBus: () => (c.bus ? FX_BUS_STUBS[c.bus] : FX_BUS_STUBS.master),
   }, drawChainPicker);
   draw();
   clearGlobals();
@@ -722,6 +722,74 @@ addSettings("settings/master/lfo2-sync", {
    no-preset case is a one-entry menu, and it must still draw a menu. */
 addSettings("settings/master/actions", { page: "Actions", presetName: "Glue Bus" });
 addSettings("settings/master/actions-nopreset", { page: "Actions" });
+
+/* ======================================================================== */
+/* THE SEND SETTINGS MENU                                                    */
+/* ======================================================================== */
+/*
+ * A send Settings box does NOT open the knob grid above -- getMasterFxSettingsItems
+ * takes the `!fxBusIsMaster()` branch and returns sendBusLevelItems(), which
+ * drawMasterFxSettingsMenu (shadow_ui_master_fx.mjs) still draws as the plain
+ * scrolling list: Return / -> Send B, "int" rows, click-to-edit in place. That
+ * function is ALSO one of the six fail-if-reached stubs renderMaster supplies
+ * (boom("drawMasterFxSettingsMenu")) -- so this screen, the one a send actually
+ * shows for its Settings box, had never been rendered here at all. The knob-grid
+ * cases above cover the master REPLACEMENT for this screen, not this screen.
+ *
+ * Driven through the REAL sendBusLevelItems / getMasterFxSettingValue, lifted
+ * from shadow_ui.js the same way FX_BUS_HINTS is lifted from the master file --
+ * so the row labels and the "--" for an unread level come from the actual
+ * source, not a hand-typed guess that could drift from it.
+ *
+ * getMasterFxSettingsItems itself is NOT lifted: its master branch touches
+ * currentMasterPresetName and MASTER_FX_SETTINGS_ITEMS_BASE, free identifiers
+ * this harness has no reason to supply for a screen that never takes that
+ * branch, and fxBusIsMaster is a one-line function liftFrom cannot isolate (no
+ * "\n}\n" of its own -- it would swallow everything up to the next one). The
+ * dispatch this file needs is the one line the send branch actually is:
+ * `return sendBusLevelItems();`, called directly.
+ */
+const mkSendBusLevelItems = lift("sendBusLevelItems", ["fxBus", "SEND_LEVEL_ROW_LABELS"]);
+const mkGetMasterFxSettingValue = lift("getMasterFxSettingValue", ["sendBusLevelRead"]);
+const mkSendSettingsMenu = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs",
+  "drawMasterFxSettingsMenu",
+  ["ctx", "drawHeader", "truncateText", "drawMenuList", "LIST_TOP_Y", "FOOTER_RULE_Y", "drawFooter"]);
+/* Mirrors SEND_LEVEL_ROW_LABELS in shadow_ui.js, the way FX_BUS_STUBS mirrors
+   FX_BUSES -- a label that changes in one and not the other is a picture that
+   stops meaning what its row name says. */
+const SEND_LEVEL_ROW_LABELS_STUB = { return: "Return", to_send2: "-> Send B" };
+
+const sendSettingsCases = [];
+const addSendSettings = (id, o) => sendSettingsCases.push({
+  id, bus: FX_BUS_STUBS[o.bus], sel: o.sel, levels: o.levels || null,
+});
+/* Send A: both rows, cursor on each in turn. */
+addSendSettings("settings/send1/sel-return",     { bus: "send1", sel: 0, levels: { return: 100, to_send2: 40 } });
+addSendSettings("settings/send1/sel-to-send2",   { bus: "send1", sel: 1, levels: { return: 100, to_send2: 40 } });
+/* Send B: one row only -- it has no -> Send C, so its list is shorter. */
+addSendSettings("settings/send2/sel-return",     { bus: "send2", sel: 0, levels: { return: 64 } });
+/* A level whose read did not complete prints "--", never a zero -- same rule
+   the settings BAND on the chain diagram follows for the same key. */
+addSendSettings("settings/send1/unread",         { bus: "send1", sel: 0, levels: null });
+
+function renderSendSettings(c) {
+  const fb = createFramebuffer();
+  installGlobals(fb, () => "");
+  const fxBusFn = () => c.bus;
+  const sendBusLevelReadStub = (k) => (c.levels && (k in c.levels)) ? c.levels[k] : null;
+  const menuCtx = {
+    currentMasterPresetName: "",
+    selectedMasterFxSetting: c.sel,
+    getMasterFxSettingsItems: mkSendBusLevelItems(fxBusFn, SEND_LEVEL_ROW_LABELS_STUB),
+    getMasterFxSettingValue: mkGetMasterFxSettingValue(sendBusLevelReadStub),
+    fxBus: fxBusFn,
+  };
+  const draw = mkSendSettingsMenu(menuCtx, drawMenuHeader, truncateText, drawMenuList,
+                                   LIST_TOP_Y, FOOTER_RULE_Y, drawMenuFooter);
+  draw();
+  clearGlobals();
+  return fb;
+}
 
 /* ======================================================================== */
 /* THE CASE MATRIX                                                           */
@@ -1044,7 +1112,12 @@ const addPicker = (id, o) => {
   const entries = o.entries !== undefined ? o.entries
     : pickerEntries(w.chainConfigs[0], o.selKey, o.options || PICKER_OPTIONS, loadedId);
   pickerCases.push({ id, selKey: o.selKey, state, config, entries,
-                     index: o.index === undefined ? 0 : o.index });
+                     index: o.index === undefined ? 0 : o.index,
+                     /* Which bus renderMasterPicker draws the header for.
+                        Absent means the master bus, so every case above keeps
+                        its meaning. renderChainPicker ignores it -- the slot
+                        picker has no bus concept. */
+                     bus: o.bus || null });
 };
 
 /* Nothing installed at all -- the one branch that draws no list, and the one
@@ -1066,6 +1139,15 @@ addPicker("picker/long-name", { modules: ["cloudseed"], selKey: "fx1", index: 1,
 /* More rows than fit, so the window scrolls and the selection centres. */
 addPicker("picker/scrolled", { modules: ["freeverb"], selKey: "fx1", index: 8,
   options: Array.from({ length: 12 }, (_, i) => ({ id: "m" + i, name: "Module " + i })) });
+/* The header names the bus: "SNDA > FX 3" here, against "MFX > FX 3" for the
+   same payload above. renderMasterPicker hardcoded the master bus for every
+   case until now, so a send picker header -- new copy this task added -- had
+   never been rendered here. Only run through renderMasterPicker: the slot
+   picker (renderChainPicker) has no bus concept, and this payload does not
+   collide with the six slot payloads above so it still gets its own render
+   under "picker/slot/...". */
+addPicker("picker/send-header", { modules: ["freeverb", "cloudseed", "tapescam"],
+  selKey: "fx3", index: 2, bus: "send1" });
 
 /* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
@@ -1168,6 +1250,7 @@ run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/slot/" + c.id.slic
 run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/master/" + c.id.slice(7) })),
     renderMasterPicker, "picker");
 run(settingsCases, renderSettings, "settings");
+run(sendSettingsCases, renderSendSettings, "picker");
 run(busPickerCases, renderBusPicker, "picker");
 
 const ids = Object.keys(current);
@@ -1295,8 +1378,8 @@ if (failures) process.exit(1);
 console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain, " +
             masterCases.length + " FX-bus (master and send), " +
             (pickerCases.length * 2) + " module-picker, " + busPickerCases.length +
-            " FX-bus-picker and " + settingsCases.length +
-            " Master FX settings renders match the baseline, " +
+            " FX-bus-picker, " + settingsCases.length + " Master FX settings and " +
+            sendSettingsCases.length + " send settings-menu renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");
 '

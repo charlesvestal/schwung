@@ -124,12 +124,14 @@ picker/master/long-name 716bfee01f5aa9fb3ebb1180fd4fc1f436acbb38
 picker/master/moves-both 5bb075a61566dec5ff59438657a65cd87d36cbbd
 picker/master/moves-right f02c760fe1a4e894e3d281200326b4f5279901c2
 picker/master/scrolled 3c4ef7fb906486124166e3a9c497678cd830eefa
+picker/master/send-header fa209fb20c87d27b04ed6eddf602f74e2aad8e54
 picker/slot/empty 97fcf5e2cebd9a5f4aab60bb3653636f08ee5da9
 picker/slot/loaded-last 6bb5370fb70c44018a44c0c2a5a87b94b2f1f4d5
 picker/slot/long-name 7c0b5dc674dfca00acdd2d0066fd4279ce7a138d
 picker/slot/moves-both 3584e1c2e6a61d97cd5acfec136a56b0b91ea4b6
 picker/slot/moves-right 49fa2843fdb72a0d5911fde8d76c6f12595b22ac
 picker/slot/scrolled 7bbbcee17492d5ffc668e58040390fd1725d7bc4
+picker/slot/send-header 6922185df8dde57cd1f14b04827eb8488daef572
 send/a/len0/sel-add-fx bd24af317a84951d3ee0982e482fae371e6b32fb
 send/a/len2/bypassed-no-lfo e329633768ffd30f84f6416c73f090cadc4ee585
 send/a/len2/sel-fx1 4e4236fa69de7a95f306f220d77be398bdd4dfd5
@@ -145,3 +147,7 @@ settings/master/lfo1-free 1ca97f188d7cb3d0bb2fc2007ea2bdfd258752b3
 settings/master/lfo2-sync a75c29f62e026915f937c4c52c4f87146c993f7c
 settings/master/main-all b35018c7d75091e4f1050c94815acff69c415744
 settings/master/main-ch10 a54ed9fc14076d01d3be216c3c07411057820759
+settings/send1/sel-return f0047eb3ae8c654f7b550c9c20eeecc06bf8ab31
+settings/send1/sel-to-send2 d835eb7b81d908ecaa6a0bdc74986f4bad660222
+settings/send1/unread f9a92aac78f1789f6d4c8ac457011f72296a2da4
+settings/send2/sel-return dd8286804f682d07ee32add3dddf4c2a883b9703

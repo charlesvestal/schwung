@@ -41,6 +41,21 @@ check "clearMasterFx no longer scopes itself to the master bus" \
 check "the slot list's Master FX row no longer scopes itself to the master bus" \
       '_ctx\.getMasterFxDisplayName = \(\) => withFxBus\(0,'
 
+# The slot list's Master FX row has a LABEL half (above) and an ACTION half.
+# currentFxBusIndex is module-level and survives a dismiss, so the row's
+# select handler must enter bus 0 explicitly — the same way
+# CORUN_ENTRIES.master_fx does — or clicking it opens whichever bus the editor
+# last pointed at.
+check "the slot list's Master FX row no longer enters bus 0 explicitly on select" \
+      '_ctx\.enterMasterFxSettings = \(\.\.\.args\) => enterFxBus\(0\)'
+
+# The 1 Hz display_name poll (tick(), any screen) is a sixth master-bus reader
+# and must be pinned to master the same way.
+if ! rg -q -U 'withFxBus\(0, \(\) => \{[\s\S]{0,80}?for \(const \{ key \} of masterFxChainComponents\(\)\) \{[\s\S]{0,400}?master_fx:\$\{key\}:display_name' "$ui"; then
+  echo "FAIL: the display_name poll no longer scopes itself to the master bus"
+  fail=1
+fi
+
 # withFxBus must restore in a finally: a throw inside fn would otherwise leave
 # the editor pointing at a bus the user is not looking at, and every subsequent
 # key would carry the wrong prefix.

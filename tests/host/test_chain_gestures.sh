@@ -638,7 +638,7 @@ const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
   const FULL2 = { kind: "module", module: "cloudseed" };
   const EMPTY2 = { kind: "add", section: "fx", label: "+" };
   const rest = shown(false, FULL2);
-  /* BUSES, not EXIT: Back on an FX bus returns to the bus picker one level up,
+  /* BUS, not EXIT: Back on an FX bus returns to the bus picker one level up,
      so the word names where it actually goes. The other two pairs are the slot
      editor pairs, verbatim, from the shared chrome. */
   if (flat(rest) !== "JOG SEL / CLK OPEN / BACK BUS")

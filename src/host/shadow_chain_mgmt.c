@@ -1971,8 +1971,10 @@ int shadow_inprocess_load_chain(void) {
     for (int mfx = 0; mfx < MASTER_FX_SLOTS; mfx++) {
         char path[256];
         snprintf(path, sizeof(path), "%s/master_fx_%d.json", boot_state_dir, mfx);
+        char what[24];
+        snprintf(what, sizeof(what), "MFX[%d]", mfx);
         fx_boot_target_t t = { -1, mfx };
-        fx_boot_restore_one(path, &t, "MFX");
+        fx_boot_restore_one(path, &t, what);
     }
 
     /* The send chains, and then the three scalars that make them audible.
@@ -3297,10 +3299,12 @@ void shadow_inprocess_handle_param_request(void) {
                      * none — the same order master_fx:fxN:chain_params uses,
                      * because the editor is the same editor.
                      *
-                     * chain_params_cache is dereferenced unguarded here for the
-                     * same reason it is on the Master FX path: no position can
-                     * be loaded while its buffer is missing (the loader refuses)
-                     * and chain_params_cached is only ever set by that loader. */
+                     * chain_params_cache IS guarded here (chain_params_cached &&
+                     * chain_params_cache && chain_params_cache[0]) for the same
+                     * reason it is on the Master FX path: no position can be
+                     * loaded while its buffer is missing (the loader refuses)
+                     * and chain_params_cached is only ever set by that loader —
+                     * so the guard is defensive, not load-bearing, but it stays. */
                     if (sfx->api && sfx->instance && sfx->api->get_param) {
                         int len = sfx->api->get_param(sfx->instance, "chain_params",
                                                       shadow_param->value,

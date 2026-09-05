@@ -3319,8 +3319,11 @@ function withFxBus(index, fn) {
 }
 
 /* A one-line summary of what a bus holds, for the picker's value column. It
- * reads the MIRROR for the bus you are in and asks the shim for the others —
- * three positional GETs at most, once per picker entry, never per frame. */
+ * always asks the SHIM (never the masterFxConfig mirror, even for the bus you
+ * are in) — one positional GET per bus, once per picker entry, never per
+ * frame — because the mirror only reflects a bus that has actually been
+ * entered this session; a never-opened send would read as Empty from the
+ * mirror even with a chain loaded from a previous session. */
 function fxBusSummary(index) {
     const bus = FX_BUSES[index];
     if (typeof shadow_get_param !== "function") return "";
@@ -11322,9 +11325,19 @@ function saveSendFxChainConfig() {
 
     /* The three scalars, in their own file — they belong to the BUS and not to
      * any position in it, so filing them under position 0 would lose them the
-     * moment that position was emptied. Each is skipped on a failed read rather
-     * than written as 0, which would silence a send on the next boot. */
+     * moment that position was emptied. This file is a MERGE onto whatever is
+     * already on disk, never a fresh object: a failed read is skipped rather
+     * than written as 0, and skipping a key from a WHOLE-FILE rewrite is
+     * writing 0 for it on the next boot (loadSendFxChainConfigForSet treats an
+     * absent field as 0). So a failed read for Send A must not erase Send B's
+     * last-known-good value just because this pass rewrote the file — start
+     * from the existing file and only overwrite the keys that read
+     * successfully this pass. */
     const levels = {};
+    try {
+        const raw = host_read_file(activeSlotStateDir + "/send_levels.json");
+        if (raw) Object.assign(levels, JSON.parse(raw) || {});
+    } catch (e) {}
     for (const bus of FX_BUSES) {
         if (bus.send < 0) continue;
         for (const k of bus.busLevelKeys) {
@@ -21028,7 +21041,11 @@ function drawHelpDetail() {
     /* View transitions - bound lazily since some may be defined after this block */
     _ctx.enterChainEdit = (...args) => enterChainEdit(...args);
     _ctx.enterPatchBrowser = (...args) => _enterPatchBrowser(...args);
-    _ctx.enterMasterFxSettings = (...args) => enterMasterFxSettings(...args);
+    /* The slot list's Master FX row (handleSlotsSelect). Bound to bus 0
+     * explicitly, the same way CORUN_ENTRIES.master_fx is: currentFxBusIndex
+     * is module-level and survives a dismiss, so a bare enterMasterFxSettings()
+     * would open whichever bus the editor last pointed at, not the master. */
+    _ctx.enterMasterFxSettings = (...args) => enterFxBus(0);
     _ctx.enterSlotSettings = (...args) => _enterSlotSettings(...args);
 })();
 
@@ -23029,21 +23046,29 @@ globalThis.tick = function() {
                 }
             }
         }
-        /* Master FX */
-        for (const { key } of masterFxChainComponents()) {
-            if (key === "settings") continue;
-            if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
-            const cacheKey = `master:${key}`;
-            const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
-            if (name && name !== fxDisplayNameCache[cacheKey]) {
-                const prev = fxDisplayNameCache[cacheKey];
-                fxDisplayNameCache[cacheKey] = name;
-                if (prev) {
-                    announce(name);
-                    needsRedraw = true;
+        /* Master FX. Wrapped for the same reason the other master-bus readers
+         * are: masterFxConfig follows the EDITOR, and this poll runs from
+         * tick() on any screen. Without withFxBus(0, ...), a send bus left
+         * open would have this poll master_fx:<key>:display_name gated on
+         * masterFxConfig — i.e. the SEND's positions — so it would poll
+         * whatever master slots the send happens to occupy and skip whatever
+         * master slots the send leaves empty. */
+        withFxBus(0, () => {
+            for (const { key } of masterFxChainComponents()) {
+                if (key === "settings") continue;
+                if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
+                const cacheKey = `master:${key}`;
+                const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
+                if (name && name !== fxDisplayNameCache[cacheKey]) {
+                    const prev = fxDisplayNameCache[cacheKey];
+                    fxDisplayNameCache[cacheKey] = name;
+                    if (prev) {
+                        announce(name);
+                        needsRedraw = true;
+                    }
                 }
             }
-        }
+        });
     }
 
     let currentTargetSlot = 0;
