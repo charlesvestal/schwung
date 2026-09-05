@@ -72,6 +72,28 @@ static void test_active_mask_agrees_with_build_table(void) {
     printf("  active mask agrees with build_table: ok\n");
 }
 
+static void test_bus_past_the_mask_width_is_excluded(void) {
+    /* The mask is a uint32_t. A caller claiming more buses than it can name
+     * must not shift past the word — that is UB, not a wrong answer — so a
+     * bus at or past BUS_MIX_MAX_BUSES is excluded exactly as an unallocated
+     * one is. Unreachable from today's SLOT_BUSES; pinned so it stays that
+     * way if the cap is ever raised. */
+    int16_t main_buf[N], far_buf[N];
+    int16_t *bus_buf[40] = { 0 };
+    bus_buf[33] = far_buf;
+    int8_t voice_bus[1] = { 33 };
+    int16_t *voice_out[1];
+    uint32_t mask = 0;
+
+    bus_mix_build_table(voice_out, 1, voice_bus, main_buf, bus_buf, 40);
+    int n = bus_mix_active_mask(voice_bus, 1, 40, bus_buf, &mask);
+
+    assert(voice_out[0] == main_buf);
+    assert(mask == 0);
+    assert(n == 0);
+    printf("  past mask width excluded: ok\n");
+}
+
 static void test_accumulate_saturates(void) {
     int16_t dst[4] = { 32000,  -32000, 0,  100 };
     int16_t src[4] = {  2000,   -2000, 0, -100 };
@@ -143,6 +165,7 @@ int main(void) {
     test_unassigned_and_unallocated_fall_to_main();
     test_active_mask_names_the_clear_set();
     test_active_mask_agrees_with_build_table();
+    test_bus_past_the_mask_width_is_excluded();
     test_accumulate_saturates();
     test_send_level_endpoints();
     test_bus_sum_equals_voice_sum();

@@ -28,10 +28,13 @@
  * need no float in the audio path. 127 is exactly unity, not 127/128. */
 #define BUS_MIX_SEND_LEVEL_MAX 127
 
-/* The mask returned by bus_mix_active_mask is a uint32_t, so it can name 32
- * buses however many a caller actually claims. Truncating the bus index here
- * beats undefined behaviour in the shift below (n_buses is a runtime int, not
- * something a compile-time assert on SLOT_BUSES can guard). */
+/* The mask returned by bus_mix_active_mask is a uint32_t, so it can name at
+ * most 32 buses no matter how many a caller claims. A bus at or past this
+ * index is EXCLUDED, not truncated onto another: its voices fall back to
+ * main_buf and its bit stays clear, which is the same answer the NULL-buffer
+ * case gives. Excluding beats undefined behaviour in the shift below, and
+ * n_buses is a runtime int, so no compile-time assert on SLOT_BUSES can
+ * guard it. */
 #define BUS_MIX_MAX_BUSES 32
 
 /*
