@@ -116,18 +116,31 @@ static int bs_write_default(const char *dir, const char *id) {
     return 1;
 }
 
-static void bs_flush_display(int fd, uint8_t *map) {
-    static uint8_t packed[SCHWUNG_DISPLAY_SIZE];
-    js_display_pack(packed);
-    for (int s = 0; s < 6; s++) {
-        int len = (s == 5) ? 164 : SCHWUNG_OUT_DISP_CHUNK_LEN;
-        map[SCHWUNG_OFF_OUT_DISP_STAT] = (uint8_t)(s + 1);
-        memcpy(map + SCHWUNG_OFF_OUT_DISP_DATA, packed + s * SCHWUNG_OUT_DISP_CHUNK_LEN, len);
-        ioctl(fd, _IOC(_IOC_NONE, 0, SCHWUNG_IOCTL_WAIT_SEND_SIZE, 0), 0x300);
-        struct timespec ts = {0, 3000000};
-        nanosleep(&ts, NULL);
-    }
-    map[SCHWUNG_OFF_OUT_DISP_STAT] = 0;
+/* Current frame, in the 1024-byte packed form the SPI protocol carries.
+ * Draw into js_display's buffer, then bs_repaint() to publish it here. */
+static uint8_t g_packed[SCHWUNG_DISPLAY_SIZE];
+
+static void bs_repaint(void) {
+    js_display_pack(g_packed);
+}
+
+/* The display is a PULL protocol (docs/SPI_PROTOCOL.md, "Index handshake"):
+ * the XMOS requests slice N by putting N in the RX display status word, and
+ * the writer echoes N in the TX status word alongside that chunk. Unsolicited
+ * pushes are ignored — a blind 6-slice push drew nothing at cold boot, which
+ * is how the boot window shipped invisible; it only ever appeared to work
+ * after a running MoveOriginal had the handshake mid-cycle. The staged TX
+ * response goes out with the NEXT transfer, so call this every frame right
+ * after the pump and the request is answered one frame later. */
+static void bs_serve_display(uint8_t *map) {
+    uint32_t idx;
+    memcpy(&idx, map + SCHWUNG_OFF_IN_DISP_STAT, sizeof(idx));
+    if (idx < 1 || idx > 6)
+        return;
+    int off = (int)(idx - 1) * SCHWUNG_OUT_DISP_CHUNK_LEN;
+    int len = (idx == 6) ? (SCHWUNG_DISPLAY_SIZE - off) : SCHWUNG_OUT_DISP_CHUNK_LEN;
+    memcpy(map + SCHWUNG_OFF_OUT_DISP_STAT, &idx, sizeof(idx));
+    memcpy(map + SCHWUNG_OFF_OUT_DISP_DATA, g_packed + off, len);
 }
 
 /* Pumps one SPI frame: blocks until the ~2.9ms transfer IRQ, so the input
@@ -195,6 +208,7 @@ static void bs_draw_picker(const char *banner, const bs_row_t *rows, int nrows,
 static int bs_run_window(int fd, uint8_t *map, bs_input_state_t *st) {
     for (int i = 0; i < BS_WINDOW_FRAMES; i++) {
         bs_pump_frame(fd);
+        bs_serve_display(map);
         bs_input_events_t ev;
         bs_scan_input(map, st, &ev);
         if (ev.back_pressed)
@@ -215,8 +229,16 @@ static void bs_finish(int fd, uint8_t *map, const char *id) {
     printf("%s\n", id);
     fflush(stdout);
 
+    /* Blank the screen through the same pull handshake (a push is ignored):
+     * serve zeros for ~2 full request cycles so Move does not inherit stale
+     * pixels, then stop responding. */
     js_display_clear();
-    bs_flush_display(fd, map);
+    bs_repaint();
+    for (int i = 0; i < 16; i++) {
+        bs_pump_frame(fd);
+        bs_serve_display(map);
+    }
+    memset(map + SCHWUNG_OFF_OUT_DISP_STAT, 0, 4);
 
     munmap(map, SCHWUNG_PAGE_SIZE);
     close(fd);
@@ -289,7 +311,7 @@ int main(int argc, char **argv) {
 
     if (!forced) {
         bs_draw_window(incoming_name);
-        bs_flush_display(fd, map);
+        bs_repaint();
 
         int back_pressed = bs_run_window(fd, map, &input_state);
         if (!back_pressed)
@@ -305,11 +327,12 @@ int main(int argc, char **argv) {
 
     int scroll = 0;
     bs_draw_picker(banner, rows, nrows, cursor, &scroll);
-    bs_flush_display(fd, map);
+    bs_repaint();
 
     int jog_accum = 0;
     for (;;) {
         bs_pump_frame(fd);
+        bs_serve_display(map);
         bs_input_events_t ev;
         bs_scan_input(map, &input_state, &ev);
 
@@ -350,7 +373,7 @@ int main(int argc, char **argv) {
 
         if (dirty) {
             bs_draw_picker(banner, rows, nrows, cursor, &scroll);
-            bs_flush_display(fd, map);
+            bs_repaint();
         }
     }
 
