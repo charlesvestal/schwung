@@ -47,7 +47,7 @@
     {
       "id": 5,
       "subject": "Task 6: Global send buses in the shim",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Two device-wide send buses hosted exactly like Master FX, fed by every bus in every slot, with return levels and a feedback-safe A->B.\n\n**Files:**\n- Create: `src/host/send_fx_key.h`\n- Create: `tests/host/test_send_fx_key.c`, `tests/host/test_send_fx_key.sh`\n- Modify: `tests/host/Makefile`\n- Modify: `src/host/shadow_chain_mgmt.h` (`SEND_BUSES`, `SEND_FX_SLOTS`, storage)\n- Modify: `src/host/shadow_chain_mgmt.c` (hosting, param routing)\n- Modify: `src/schwung_shim.c` (`send_accum`, chains, returns, A->B)\n\n**Acceptance Criteria:**\n- [ ] `send1:fx3:cutoff` routes to send 0, slot 2, param `cutoff`; `send1:return` routes to send 0 with slot -1\n- [ ] `send<SEND_BUSES+1>:` and `send1:fx<SEND_FX_SLOTS+1>:` are both rejected, out-params untouched\n- [ ] Send chains are `master_fx_slot_t` arrays \u2014 Master FX's hosting, bypass and preset machinery is reused, not duplicated\n- [ ] A->B is applied after A's chain and before B's, so B can never reach A\n- [ ] A send with no FX loaded and no level costs no `process_block` calls\n- [ ] Returns sum into the shadow mix BEFORE Master FX\n\n**Verify:** `bash tests/host/test_send_fx_key.sh` -> `PASS`; `./scripts/build.sh` succeeds\n\n**Steps:**\n- Step 1: Declare the caps\n- Step 2: Write the failing test\n- Step 3: Run to verify it fails\n- Step 4: Write the header\n- Step 5: Wrapper and Makefile target\n- Step 6: Add the storage\n- Step 7: Add the mix path\n- Step 8: Feed the accumulators from the chain\n- Step 9: Run everything\n- Step 10: Commit\n\n```json:metadata\n{\"files\": [\"src/host/send_fx_key.h\", \"src/host/shadow_chain_mgmt.c\", \"src/host/shadow_chain_mgmt.h\", \"src/schwung_shim.c\", \"tests/host/Makefile\", \"tests/host/test_send_fx_key.c\", \"tests/host/test_send_fx_key.sh\"], \"verifyCommand\": \"bash tests/host/test_send_fx_key.sh\", \"acceptanceCriteria\": [\"`send1:fx3:cutoff` routes to send 0, slot 2, param `cutoff`; `send1:return` routes to send 0 with slot -1\", \"`send<SEND_BUSES+1>:` and `send1:fx<SEND_FX_SLOTS+1>:` are both rejected, out-params untouched\", \"Send chains are `master_fx_slot_t` arrays \\u2014 Master FX's hosting, bypass and preset machinery is reused, not duplicated\", \"A->B is applied after A's chain and before B's, so B can never reach A\", \"A send with no FX loaded and no level costs no `process_block` calls\", \"Returns sum into the shadow mix BEFORE Master FX\"], \"modelTier\": \"deep\"}\n```",
       "blockedBy": [
         0
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T22:22:26.171762"
+  "lastUpdated": "2026-09-05T22:39:32.098748"
 }

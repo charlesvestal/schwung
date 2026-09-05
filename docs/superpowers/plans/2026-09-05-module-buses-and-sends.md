@@ -1753,7 +1753,14 @@ sum before Master FX so the master chain processes the wet signal."
 
 **Acceptance Criteria:**
 - [ ] `SAMPLER_STEM_COUNT` is 7; `sampler_stem_names` gains `"SendA"`, `"SendB"` in index order
-- [ ] The send stems capture the returns POST-send-chain and PRE-Master-FX, matching every other stem
+- [ ] The send stems capture the returns POST-send-chain and PRE-Master-FX,
+      matching every other stem. **Check `native_bridge_me_component` first:**
+      Task 6 found the returns are absent from it, because it is snapshotted
+      before `fx_target` — exactly as Master FX is, so the omission is
+      consistent rather than a bug. But if the stem dispatch reads that
+      snapshot, the send stems will be SILENT and the stem sum will not
+      reconstruct the master. Read where `shadow_stem_dispatch` actually
+      sources its pointers before wiring `send_out[]` in.
 - [ ] Stems 1-4 + 6 + 7 sum to the master bit-exactly with no Master FX loaded
 - [ ] A send with no audio leaves no file (the existing delete-at-finalize rule covers it unchanged)
 - [ ] The Skipback stem cap still applies to the new stems (60 s), so the ring budget does not grow unbounded
@@ -1838,6 +1845,11 @@ every other stem."
       own `v2_load_audio_fx_slot` does exactly the forbidden thing today, so the
       surrounding code is not a guide here.
 - [ ] `bus<N>:create`, `:delete`, `:name`, `:voices`, `:send<M>`, `:fx<K>:module`, `:fx<K>:<param>`, `:fx<K>:bypassed` all route through `bus_route.h`
+- [ ] **`bus<N>:send<M>` must actually WRITE `slot_bus_t::send_level`.** Task 6
+      built the whole shim-side send path and it is INERT today: nothing writes
+      that field, so the accumulators receive silence and no send is audible.
+      This task is what switches it on — and it is the first point at which any
+      of this is testable by ear.
 - [ ] `chain_bus_request_alloc()` (landed in Task 5, currently callerless) is
       what `bus<N>:create` calls — do not allocate inline
 - [ ] **Bus FX fields need their OWN release/acquire gate.** Task 5's gate
@@ -1964,6 +1976,15 @@ chains are read from the shim in one positional GET, as Master FX is."
 - Modify: `src/shadow/shadow_ui_master_fx.mjs` (parameterize by bus)
 
 **Acceptance Criteria:**
+- [ ] **Send FX shape loading (`send<N>:fx<M>:module`) lands HERE.** Task 6
+      deliberately refused it (returns error 14) rather than half-wiring it:
+      the Master FX loader and its owned 64 KB param caches are indexed by
+      POSITION, and giving sends their own would pre-allocate ~1 MB more, so
+      the refactor belongs with the editor that drives it — this task. Until
+      it lands you cannot load a reverb into Send A at all, so the picker is a
+      screen onto two permanently empty chains. Everything that is *state*
+      (return levels, A->B, bypass, a loaded position's params) is already
+      served by Task 6.
 - [ ] Shift+Vol+Menu and hold-Menu both open the picker rather than Master FX directly
 - [ ] Choosing Master FX gives the screen that exists today, unchanged
 - [ ] Choosing Send A or Send B gives the same 8-position editor against that send's chain
