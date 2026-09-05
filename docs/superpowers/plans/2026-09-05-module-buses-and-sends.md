@@ -2222,6 +2222,17 @@ git commit -m "grid: a Bus Sends page, so send levels can be ridden"
 **Acceptance Criteria:**
 - [ ] `CLAUDE.md` gains a bullet under the CHAIN and SHADOW_UI hooks, not paragraphs — it is an INDEX, and adding prose inline is how it reached 151 KB
 - [ ] The `render_split` accumulate-and-alias contract appears in `plugin_api_v1.h`, `docs/MODULES.md` and `docs/CHAIN.md`, and the three are consistent
+- [ ] **The threading contract's qualification must land in ALL THREE copies.**
+      CLAUDE.md states the contract lives in `src/host/plugin_api_v1.h`,
+      `docs/MODULES.md` and rule 4 of `docs/REALTIME_SAFETY.md`, and says to
+      keep all three in sync. Task 8's fix qualified only `plugin_api_v1.h`.
+      The fact to propagate: **bus FX positions `dlopen` and `create_instance`
+      on the bus worker, not the audio callback** — so "there is no control
+      thread" is now true-with-one-exception, and a module with process-global
+      init state can be entered from two threads at once when the same FX sits
+      in a slot and a bus. Also note the `_dl_load_lock` inversion: a FIFO-70
+      `dlopen` on the callback can wait behind the SCHED_OTHER worker's, with
+      no priority inheritance.
 - [ ] PR #121 and legsmechanical are credited in `docs/CHAIN.md` and in the commit trailer
 - [ ] `manual.html` documents the down-gesture and the FX-bus picker (a gesture changed, so this is required, not optional)
 - [ ] `bash tests/host/test_builtin_help_content.sh` green
