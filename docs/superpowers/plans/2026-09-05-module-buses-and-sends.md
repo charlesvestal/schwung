@@ -1840,6 +1840,21 @@ every other stem."
 - [ ] `bus<N>:create`, `:delete`, `:name`, `:voices`, `:send<M>`, `:fx<K>:module`, `:fx<K>:<param>`, `:fx<K>:bypassed` all route through `bus_route.h`
 - [ ] `chain_bus_request_alloc()` (landed in Task 5, currently callerless) is
       what `bus<N>:create` calls — do not allocate inline
+- [ ] **Bus FX fields need their OWN release/acquire gate.** Task 5's gate
+      covers `buf` and nothing else, and the render path reads `fx_count`,
+      `fx_bypassed[]`, `fx_plugins_v2[]` and `fx_instances[]` with PLAIN loads —
+      sound only while the RT thread is their sole writer. Loading bus FX on the
+      worker breaks that, and those writes happen AFTER `buf` is published, so
+      `buf`'s acquire will not order them. Store an `fx_ready` flag RELEASE
+      after the pointers, load it ACQUIRE before the insert loop.
+- [ ] **The teardown join's bound expires with this task.** `v2_destroy_instance`
+      blocks on `pthread_join` while the worker's whole body is a 512-byte
+      `calloc`. Once `dlopen` and ~9.1 MB move into it, the join can land
+      mid-`dlopen` (holding the loader lock) — and `pthread_join` is a futex
+      wait with NO priority inheritance, so a FIFO-70 thread waits on a
+      SCHED_OTHER one that cores 0-2 can deschedule for a full quantum. Add a
+      stop flag the worker checks BETWEEN units of work, so the join waits out
+      one bus rather than the whole queue.
 - [ ] A bus whose stored voice ids no longer exist keeps its chain and REPORTS the orphaned ids; it does not silently re-point to whatever is at that index now
 - [ ] Restored state writes STATE, never SHAPE — restoring a bus does not reinstantiate a running FX whose module is unchanged
 - [ ] The shim is authoritative for send chains: `send<N>:modules` is one GET returning the whole chain, positional, never compacted
