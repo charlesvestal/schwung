@@ -2181,7 +2181,21 @@ A sibling .mjs rather than more of shadow_ui.js, which is already ~14k lines."
 
 ---
 
-## Task 11: Send levels on the knob grid
+## Task 11: The knob grid for buses and sends
+
+> **Scope widened after Task 10's review.** A bus insert's parameters cannot be
+> edited AT ALL today. In `VIEWS.CHAIN_EDIT`, Click on a populated position
+> calls `enterComponentEdit(...)` — the knob grid, the chain editor's primary
+> action. In `VIEWS.BUS_CHAIN`, `handleSelect` is unconditionally
+> `enterBusModuleSelect()`, there is no Shift+Click branch, and
+> `buildKnobContextForKnob` has no `BUS_CHAIN` case, so the encoders return
+> `null` too. Load CloudSeed on Bus 1 and you get its defaults, permanently.
+>
+> The DSP surface already supports it — `chain_bus.c` serves
+> `bus<N>:fx<K>:<param>` live writes and `:state`. This is not deferred work,
+> it was simply missing, and it is more consequential than the two gaps Task 10
+> *did* declare (bypass, chrome). It belongs here because it is the same
+> knob-grid machinery as the send levels.
 
 **Goal:** Send levels are rideable on the encoders, not only settable in a list.
 
@@ -2190,6 +2204,9 @@ A sibling .mjs rather than more of shadow_ui.js, which is already ~14k lines."
 - Modify: `src/shadow/shadow_ui_param_pages.mjs` (page registration)
 
 **Acceptance Criteria:**
+- [ ] **A bus insert's parameters are editable** — Click on a populated
+      `BUS_CHAIN` position reaches the knob grid against `bus<N>:fx<K>:`, and
+      the encoders resolve a `BUS_CHAIN` context instead of returning `null`
 - [ ] A "Bus Sends" page exposes each bus's A and B level on an encoder
 - [ ] The page is handed `paginate: false` if it is one authored grouping, per the Global Settings rule — one section, one page, however long
 - [ ] Values arrive on touch-down / on the rotation / in the entry warm, NEVER on the draw path (an IPC read is ~2.8 ms; a whole page render is 1.68 ms)
