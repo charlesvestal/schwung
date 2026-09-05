@@ -188,8 +188,7 @@ import {
 import { getHostVersion } from '/data/UserData/schwung/shared/store_utils.mjs';
 
 import {
-    drawConnectBody,
-    managerUrl as connectManagerUrl
+    drawConnectBody
 } from '/data/UserData/schwung/shared/connect_screen.mjs';
 
 import {
