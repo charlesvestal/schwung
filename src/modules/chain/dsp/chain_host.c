@@ -2508,6 +2508,23 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     }
     if (inst->synth_bypassed) {
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        /* Main is silenced above, but bus_rendered_mask and inst->buses[b].buf
+         * still hold this frame's post-insert audio — chain_drain_sends reads
+         * both and does not know about synth_bypassed, so a bypassed slot's
+         * voices would still reach the send buses at full level. Clear the
+         * mask, not the buffers: the per-bus insert FX just above already ran
+         * this frame (unconditionally, same discipline as the main chain), so
+         * their delay lines and reverb tails already advanced — zeroing the
+         * mask only stops THIS frame's drain from reading them, it does not
+         * touch whether they ran. That matters because the shim's silence
+         * detector watches the (correctly zeroed) main output and skips
+         * render_block after DSP_IDLE_THRESHOLD, except for a 1-in-172 probe
+         * frame — without this, that rare frame is the one where the buses
+         * still had content and bus_rendered_mask was still set, so a
+         * bypassed synth's audio dropped into the reverb roughly every 4
+         * seconds: a burst, not a steady leak, which is what made it read as
+         * a hardware fault rather than a bypass bug. */
+        inst->bus_rendered_mask = 0;
     }
 
     /* In external_fx_mode, output raw synth only — skip inject and FX.
@@ -2666,6 +2683,12 @@ void chain_drain_sends(void *instance, int16_t *const *accum, int n_sends,
 
     for (int b = 0; b < SLOT_BUSES; b++) {
         if (!(inst->bus_rendered_mask & (1u << b))) continue;
+        /* Plain load, not the __ATOMIC_ACQUIRE v2_render_block uses for the
+         * same field: sound here only because bus_rendered_mask names this
+         * bus for THIS frame, and that bit is only set after v2_render_block's
+         * own acquire load of `buf` returned non-NULL, on this same thread,
+         * earlier in the same frame. Anyone hoisting this pattern elsewhere
+         * needs that same same-thread-same-frame ordering, or the acquire. */
         int16_t *buf = inst->buses[b].buf;
         if (!buf) continue;   /* the mask should preclude this; cheap and total */
         for (int sd = 0; sd < ns; sd++) {

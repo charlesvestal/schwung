@@ -97,15 +97,25 @@ typedef struct {
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
     /* Cached chain_params to avoid file I/O in the audio thread.
      *
-     * OWNED BUFFER, NEVER NULL. MASTER_FX_CHAIN_PARAMS_MAX bytes, allocated
-     * once per position by shadow_master_fx_storage_ensure() and never freed.
-     * It is a pointer rather than an inline array because Master FX is
-     * becoming a list with insert/remove/move, and that reordering is a
-     * PERMUTATION executed on the SPI callback (~900 us of budget after the
-     * transfer). Rotating a pointer is free; memmoving 64 KB per position is
-     * not. Nothing about this is a memory saving — the allocation is the same
-     * bytes in a different place — so do not "simplify" it back to an inline
-     * array without first moving the permutation off the audio thread.
+     * OWNED BUFFER, NEVER NULL — but only for shadow_master_fx_slots[].
+     * MASTER_FX_CHAIN_PARAMS_MAX bytes, allocated once per position by
+     * shadow_master_fx_storage_ensure() and never freed. It is a pointer
+     * rather than an inline array because Master FX is becoming a list with
+     * insert/remove/move, and that reordering is a PERMUTATION executed on
+     * the SPI callback (~900 us of budget after the transfer). Rotating a
+     * pointer is free; memmoving 64 KB per position is not. Nothing about
+     * this is a memory saving — the allocation is the same bytes in a
+     * different place — so do not "simplify" it back to an inline array
+     * without first moving the permutation off the audio thread.
+     *
+     * shadow_send_fx_slots[][] uses this SAME struct but does NOT get this
+     * storage: every entry is BSS-zeroed, so chain_params_cache is NULL there
+     * until Task 9 (send FX loading) calls its own ensure — 2 MB for two
+     * buses' worth of mirrored 64 KB caches is not worth spending on a feature
+     * that cannot load anything yet. Anything written against this struct
+     * that dereferences chain_params_cache MUST null-check when it might be
+     * touching a send slot, or it is a NULL deref on the SPI callback the
+     * first time it runs against sends.
      *
      * Vacating a position must ROTATE this pointer (hand it the buffer
      * displaced off the end of the shift) and clear its CONTENTS. Nulling it
@@ -192,10 +202,25 @@ extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 
 /* --- Global send buses ---------------------------------------------------
  *
- * A send chain is a master_fx_slot_t array, so Master FX's hosting, bypass
- * discipline and capture rules are REUSED rather than duplicated: the mix loop
- * in the shim is the same loop, and anything that learns to edit a Master FX
- * position edits a send position by pointing at a different array.
+ * A send chain is a master_fx_slot_t array, so what is REUSED from Master FX
+ * is the struct TYPE, the bypass discipline (process-then-restore-dry, so
+ * tails advance even bypassed) and the mix-loop IDIOM the shim's audio
+ * callback follows for both arrays. That is genuinely shared and worth
+ * naming, because it is the reason a send slot's fields mean the same thing
+ * a Master FX slot's do.
+ *
+ * What is NOT shared, despite the common type: shadow_master_fx_slots is
+ * named directly, with no array parameter, by
+ * shadow_master_fx_slot_load_with_config, shadow_master_fx_slot_unload,
+ * mfx_fx_count_effective, shadow_master_fx_lfo_tick, the fx:insert/:remove/
+ * :move shape verbs, and the positional master_fx:modules GET. None of those
+ * operate on shadow_send_fx_slots — "anything that learns to edit a Master FX
+ * position edits a send position by pointing at a different array" is not
+ * true of the code as it stands. The send param handler is a fresh ~140-line
+ * copy, with its own loader, no LFOs, no chain_params caching (see
+ * chain_params_cache above) and no presets. A future unification would need
+ * to thread an array parameter through every one of those call sites; nothing
+ * here does that yet.
  *
  * Levels are 0..BUS_MIX_SEND_LEVEL_MAX (127) so they survive a CC round trip
  * and need no float in the audio path — see bus_mix_send(), which is the only
