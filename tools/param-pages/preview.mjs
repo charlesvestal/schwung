@@ -35,6 +35,13 @@
  *
  * Values are synthesised (mid-range, deterministic per key) since there is no
  * device to read them from — enough to judge layout, not to judge a patch.
+ *
+ * --widgets <dir> loads that module directory's canvas.js and registers its
+ * custom widgets, so a module shipping its own art is drawn WITH it. Without
+ * the flag every `custom:` kind falls through to a built-in, which is a correct
+ * page and the wrong picture — and it is the reason a module author cannot see
+ * their own widget here. Point it at the module directory (the one holding
+ * canvas.js), not at the file.
  */
 
 import fs from "node:fs";
@@ -47,6 +54,8 @@ import { renderPage, LAYOUT_DIAL, LAYOUT_BAR } from "../../src/shared/param_page
 import { renderPageMovy, LAYOUT_MOVY } from "../../src/shared/param_pages/render_page_movy.mjs";
 import { createController, LAYOUT_LIST } from "../../src/shared/param_pages/page_controller.mjs";
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
+import { registerOverlayWidgets, clearWidgets }
+  from "../../src/shared/param_pages/widget_registry.mjs";
 import { createFakeDevice } from "./fake_device.mjs";
 import { makeRecord, presetRowValue } from "../../src/shared/param_pages/current_preset.mjs";
 import { fakeValue } from "./fake_values.mjs";
@@ -71,6 +80,34 @@ const flag = (name, dflt = null) => {
 const positional = argv.filter((a, i) => !a.startsWith("--") && (i === 0 || !argv[i - 1].startsWith("--") || argv[i - 1] === "--all"));
 
 const fx = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
+
+/*
+ * Register a module's own widgets, the way shadow_ui does on the device.
+ *
+ * Loaded as a SCRIPT over a bare object, not imported: canvas.js is a UI module
+ * that assigns to globalThis, and importing it would need it to be an ES
+ * module, which on device it is not.
+ */
+function loadModuleWidgets(dir) {
+    const file = path.join(path.resolve(dir), "canvas.js");
+    if (!fs.existsSync(file)) {
+        console.error(`--widgets: no canvas.js in ${dir}`);
+        process.exit(2);
+    }
+    const g = {};
+    new Function("globalThis", fs.readFileSync(file, "utf8"))(g);
+    clearWidgets();
+    const { registered, skipped } = registerOverlayWidgets(g.canvas_overlay);
+    for (const s2 of skipped) console.error(`--widgets: ${s2.kind} skipped (${s2.why})`);
+    if (!registered.length) {
+        console.error(`--widgets: ${file} registered nothing`);
+        process.exit(2);
+    }
+    console.error(`--widgets: registered ${registered.join(", ")}`);
+}
+
+const widgetsDir = flag("widgets");
+if (typeof widgetsDir === "string") loadModuleWidgets(widgetsDir);
 
 if (flag("list")) {
     const rows = fx.modules.map((m) => {

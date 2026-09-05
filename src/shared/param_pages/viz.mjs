@@ -253,7 +253,7 @@ function collectDeclared(keys, metaIndex, invalid) {
              * abandoned at once.
              */
             if (isCustomKind(v.kind) && !isWidgetAvailable(v.kind)) return;
-            singles.push({ kind: v.kind, key, slot });
+            singles.push({ kind: v.kind, key, slot, extraKeys: declaredExtraKeys(v) });
         }
     });
 
@@ -280,19 +280,60 @@ function collectDeclared(keys, metaIndex, invalid) {
             invalid.push({ group: g.groupId, kind, reason: "roles not adjacent on one row" });
             continue;
         }
-        out.push({
+        const built = {
             kind, group: g.groupId, roles: mapRoles(g.roles),
             keys: spanning.map((r) => r.key),
             ...span(slots), source: VIZ_SOURCE_DECLARED,
-        });
+        };
+        /* A group's kind may be declared on any member, so its extra keys may
+         * be too — take the first member that names some. */
+        for (const r of Object.values(g.roles)) {
+            const ek = declaredExtraKeys(r.viz);
+            if (ek) { built.extraKeys = ek; break; }
+        }
+        out.push(built);
     }
     for (const s of singles) {
-        out.push({
+        const g2 = {
             kind: s.kind, group: null, roles: { value: s.key }, keys: [s.key],
             slotStart: s.slot, slotSpan: 1, source: VIZ_SOURCE_DECLARED,
-        });
+        };
+        if (s.extraKeys && s.extraKeys.length) g2.extraKeys = s.extraKeys;
+        out.push(g2);
     }
     return { groups: out, excluded };
+}
+
+/*
+ * Off-page keys a MODULE says its widget needs.
+ *
+ * `extraKeys` already existed for exactly this shape, but only detectSample
+ * could set it, for an off-page filepath. The general problem is the same one:
+ * a widget's picture can depend on a value that has no cell on this page. Keys
+ * claim cells; a key with no cell cannot be a key; so it rides here and the
+ * controller adds it to the value rotation as one extra stop.
+ *
+ * Without it the only way to get a fact to a widget was to give it a knob --
+ * which is how a module ended up with a read-only cell existing purely to carry
+ * a value to the cell beside it, occupying one of eight slots on a 128x64
+ * screen to draw something nobody needed to see.
+ *
+ * ONE READ PER STOP, so this is not free: declare what the picture needs and
+ * nothing else. Capped, because a module asking for twenty keys would spend the
+ * page's whole read budget on one cell and starve every other value on screen.
+ */
+const MAX_DECLARED_EXTRA_KEYS = 4;
+
+function declaredExtraKeys(v) {
+    const raw = v && (v.extra_keys || v.extraKeys);
+    if (!Array.isArray(raw)) return null;
+    const out = [];
+    for (const k of raw) {
+        if (typeof k !== "string" || !k) continue;
+        if (out.indexOf(k) < 0) out.push(k);
+        if (out.length >= MAX_DECLARED_EXTRA_KEYS) break;
+    }
+    return out.length ? out : null;
 }
 
 function mapRoles(roleMap) {
