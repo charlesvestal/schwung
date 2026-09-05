@@ -91,13 +91,22 @@ static inline int bus_route_target(char *out, size_t out_len, int bus_1based)
 static inline int bus_voice_index(const char *const *ids, int n_ids, const char *id)
 {
     /* !ids guards a caller holding a stale n_ids over a list that is gone --
-     * the same orphan situation described above, one level up. The per-element
-     * ids[i] check guards a partially populated list: split_voices_parse (the
-     * next task) SKIPS an id too long for its buffer rather than truncating
-     * it, so a hole is a state the producer can legitimately emit. */
+     * the same orphan situation described above, one level up.
+     *
+     * A hole from split_voices_parse is an EMPTY STRING at the entry's own
+     * index, never a compacted-away slot -- the index is the render-buffer
+     * index, so a rejected id (too long, or empty) still consumes its slot.
+     * The chain host stores the table as char[N][32], whose entries can
+     * never BE NULL; the ids[i] NULL check below additionally tolerates a
+     * caller that built its own pointer array with gaps, which is a
+     * different producer than split_voices_parse.
+     *
+     * An empty stored id must never match: skip it explicitly so a caller
+     * asking for "" (however that could arise) cannot resolve to the first
+     * hole -- strcmp("", "") would otherwise match. */
     if (!ids || !id) return -1;
     for (int i = 0; i < n_ids; i++)
-        if (ids[i] && strcmp(ids[i], id) == 0) return i;
+        if (ids[i] && ids[i][0] != '\0' && strcmp(ids[i], id) == 0) return i;
     return -1;
 }
 

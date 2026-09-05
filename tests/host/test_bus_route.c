@@ -85,11 +85,19 @@ static void test_voice_index_lookup(void) {
      * list that is gone is the case that would actually dereference. */
     assert(bus_voice_index(NULL, 4, "kick") == -1);
 
-    /* A hole in the list: split_voices_parse skips an over-long id rather
-     * than truncating it, so the producer can emit one. */
+    /* A hole in the list built by a caller with its own pointer array --
+     * distinct from split_voices_parse's holes, which are empty strings,
+     * not NULLs (the chain host's table is char[N][32] and can never hold a
+     * NULL entry). */
     const char *holed[4] = { "kick", NULL, "chh", NULL };
     assert(bus_voice_index(holed, 4, "chh")  == 2);
     assert(bus_voice_index(holed, 4, "ride") == -1);
+
+    /* The real hole shape: split_voices_parse stores an empty string at its
+     * own index, never compacted away. It must never match a lookup. */
+    const char *empty_holed[3] = { "kick", "", "chh" };
+    assert(bus_voice_index(empty_holed, 3, "chh") == 2);
+    assert(bus_voice_index(empty_holed, 3, "")    == -1);
     printf("  voice lookup: ok\n");
 }
 

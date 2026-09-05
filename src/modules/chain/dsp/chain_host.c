@@ -89,10 +89,10 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
      * a real note number (C-1) and would name a voice nobody selected. */
     inst->synth_last_note = -1;
 
-    /* No synth loaded yet, so no split voices — calloc already zeroed the
-     * table, but say so explicitly rather than relying on that. */
+    /* No synth loaded yet, so no split voices — zeroed explicitly rather than
+     * relying on calloc, matching v2_unload_synth / v2_load_synth below. */
+    memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
-    inst->synth_split_read_failed = 0;
 
     /* Set up host API for sub-plugins */
     if (g_host) {
@@ -183,7 +183,6 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_bypassed = 0;
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
-    inst->synth_split_read_failed = 0;
 }
 
 /* V2 unload all audio FX */
@@ -575,7 +574,6 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * synth_last_note = -1 above. */
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
-    inst->synth_split_read_failed = 0;
 
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
         char split_buf[4096];
@@ -585,10 +583,19 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         /* got <= 0 means the key was not served: the module has no split support.
          * That is a real answer, distinct from a read that did not complete. */
         if (got > 0) {
+            /* Defensive: nothing NUL-terminates split_buf after the plugin
+             * call. A module writing exactly buf_len bytes with no NUL would
+             * send split_voices_parse's strstr/strchr scan off the end of
+             * the stack frame. */
+            split_buf[sizeof(split_buf) - 1] = '\0';
+            /* This is a direct in-process call with a stack buffer that can
+             * never be NULL, so split_voices_parse can only return a count
+             * here, never SPLIT_VOICES_READ_FAILED — that answer exists for
+             * a caller reading through the SHM param channel, where a
+             * request can genuinely time out or be claimed by someone else. */
             int n = split_voices_parse(split_buf, inst->synth_split_voice_ids,
                                        SPLIT_VOICES_MAX, SPLIT_VOICE_ID_LEN);
-            if (n == SPLIT_VOICES_READ_FAILED) inst->synth_split_read_failed = 1;
-            else inst->synth_split_voice_count = n;
+            inst->synth_split_voice_count = n;
         }
     }
     {
@@ -1740,12 +1747,30 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
         /* Re-serve the module's own split_voices answer verbatim — the UI
          * needs the labels too, which we do not store; we only hold the flat
-         * id table for C-side bus resolution. */
+         * id table for C-side bus resolution.
+         *
+         * A plugin's get_param returns -1 for a key it does not implement
+         * (plugin_api_v1.h). That -1 is a fact about the PLUGIN CALL, not
+         * about the SHM param channel one layer up: js_shadow_get_param
+         * turns a negative result_len into `null`, meaning "the read did
+         * not complete" (claim refused / timed out / answered by someone
+         * else). But a module that simply has no split_voices key WAS
+         * served — that is the `""` answer, "produced nothing". Since no
+         * module in the fleet implements split_voices yet, propagating -1
+         * verbatim would make every slot read as a failed read, colliding
+         * the UI's "no bus affordance" and "retry a failed read" paths on
+         * 100% of modules and producing a permanent retry loop. Clamp a
+         * negative plugin return to 0 (served, empty) here. */
         if (strcmp(subkey, "split_voices") == 0) {
             if (!(inst->synth_plugin_v2 && inst->synth_instance &&
                   inst->synth_plugin_v2->get_param)) return 0;
-            return inst->synth_plugin_v2->get_param(inst->synth_instance,
+            int result = inst->synth_plugin_v2->get_param(inst->synth_instance,
                                                     "split_voices", buf, buf_len);
+            if (result < 0) {
+                if (buf_len > 0) buf[0] = '\0';
+                return 0;
+            }
+            return result;
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */

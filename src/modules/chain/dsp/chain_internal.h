@@ -304,9 +304,6 @@ typedef struct chain_instance {
 #define SPLIT_VOICE_ID_LEN 32
     char synth_split_voice_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
     int  synth_split_voice_count;
-    /* The read did not complete (claim refused / timed out), as opposed to
-     * completing with no voices. Never latch a plan on this — retry. */
-    int  synth_split_read_failed;
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
