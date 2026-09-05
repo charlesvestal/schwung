@@ -1840,8 +1840,8 @@ every other stem."
 
 ---
 
-> **Two fixes owed in `src/schwung_shim.c` from Task 7's review**, deferred only
-> because Task 8 was running concurrently in the same file:
+> **DONE (`ed0d99a1`).** Two fixes owed in `src/schwung_shim.c` from Task 7's
+> review, deferred only because Task 8 was running concurrently in that file:
 >
 > 1. **The send return level is read TWICE.** The stem tap snapshots
 >    `shadow_send_return_level[sb]` into `lvl`, then `bus_mix_send` re-reads the
@@ -2025,6 +2025,15 @@ chains are read from the shim in one positional GET, as Master FX is."
       SIGSEGV `v2_load_midi_fx_slot` already caused once. Deliberately NOT
       pre-allocated in Task 6 — ~2 MB of mirrored 64 KB caches for a feature
       that could not yet load anything.
+- [ ] **Send persistence, FOLDED IN FROM TASK 8.** Task 8 scoped this out
+      honestly — `shadow_chain_mgmt.c` was not in its Modify list — so the
+      shim-authoritative `send<N>:modules` GET, `send_fx_N.json` beside
+      `master_fx_N.json`, and the shared A/B preset store are all still owed.
+      They belong here, with the editor that drives them. **The shim is the
+      authority**: `master_fx:modules` is ONE positional GET returning the whole
+      chain, never compacted, because an in-file mirror that never saw a write
+      made straight to the shim (an overtake tool, a Remote UI client) wrote
+      `{}` over it and lost the entire master chain on the next boot.
 - [ ] **Send return levels and the A->B amount need persistence.** They are BSS
       today and reset on every restart, while Master FX survives via the
       shim-authoritative `master_fx:modules` GET and per-set autosave. Task 8's
