@@ -10,7 +10,7 @@
     {
       "id": 1,
       "subject": "Task 2: `bus_route.h` \u2014 key routing and voice resolution",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `bus<N>:` parameter routing and voice-id -> index resolution, with the cap passed in rather than restated.\n\n**Files:**\n- Create: `src/host/bus_route.h`\n- Create: `tests/host/test_bus_route.c`\n- Create: `tests/host/test_bus_route.sh`\n- Modify: `tests/host/Makefile`\n\n**Acceptance Criteria:**\n- [ ] `bus1:` .. `bus<cap>:` parse to 0-based indices; `bus<cap+1>:` is rejected\n- [ ] `bus0` and `bus01` are rejected (leading zeros are not an id we emit)\n- [ ] `bus12:x` parses as bus 12, not bus 1 \u2014 multi-digit indices are not read out of a single character\n- [ ] A key with no `:` after the digits is rejected rather than routed with a garbage param\n- [ ] An unmatched key returns 0 and leaves the out-params untouched \u2014 it must never fall through to bus 0\n- [ ] Voice-id lookup returns the index on a hit and -1 on a miss or a NULL list\n- [ ] The cap is a parameter; the header contains no copy of it\n\n**Verify:** `bash tests/host/test_bus_route.sh` -> `PASS`\n\n**Steps:**\n- Step 1: Write the failing test\n- Step 2: Run to verify it fails\n- Step 3: Write the implementation\n- Step 4: Write the shell wrapper\n- Step 5: Define the cap so the wrapper can read it\n- Step 6: Add the Makefile target\n- Step 7: Run to verify it passes\n- Step 8: Prove it can fail\n- Step 9: Commit\n\n```json:metadata\n{\"files\": [\"src/host/bus_route.h\", \"tests/host/Makefile\", \"tests/host/test_bus_route.c\", \"tests/host/test_bus_route.sh\"], \"verifyCommand\": \"bash tests/host/test_bus_route.sh\", \"acceptanceCriteria\": [\"`bus1:` .. `bus<cap>:` parse to 0-based indices; `bus<cap+1>:` is rejected\", \"`bus0` and `bus01` are rejected (leading zeros are not an id we emit)\", \"`bus12:x` parses as bus 12, not bus 1 \\u2014 multi-digit indices are not read out of a single character\", \"A key with no `:` after the digits is rejected rather than routed with a garbage param\", \"An unmatched key returns 0 and leaves the out-params untouched \\u2014 it must never fall through to bus 0\", \"Voice-id lookup returns the index on a hit and -1 on a miss or a NULL list\", \"The cap is a parameter; the header contains no copy of it\"], \"modelTier\": \"mechanical\"}\n```",
       "blockedBy": [
         0
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T21:15:26.916135"
+  "lastUpdated": "2026-09-05T21:23:12.500015"
 }
