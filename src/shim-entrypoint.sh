@@ -83,7 +83,14 @@ fi
 BT_LIB="$SCHWUNG_DIR/host/boot_target_lib.sh"
 BOOT_SELECT="$SCHWUNG_DIR/bin/boot-select"
 
+# Lib missing (partial payload, downgrade): prefer the full Schwung entry —
+# it carries the sidecar services and LD_LIBRARY_PATH the bare LD_PRELOAD
+# exec here would lose (a dead port 7700 is the documented worst failure
+# shape). The bare exec remains the last resort.
 if [ ! -f "$BT_LIB" ]; then
+    if [ -x "$SCHWUNG_DIR/schwung-entry.sh" ]; then
+        exec "$SCHWUNG_DIR/schwung-entry.sh"
+    fi
     exec env LD_PRELOAD=schwung-shim.so /opt/move/MoveOriginal
 fi
 . "$BT_LIB"
@@ -95,7 +102,7 @@ printf '{\n  "name": "Schwung",\n  "exec": "%s"\n}\n' \
     "$SCHWUNG_DIR/schwung-entry.sh" > "$BOOT_TARGETS_DIR/schwung/boot.json"
 
 target=$(bt_resolve_default)
-attempt=$(bt_watchdog_enter "$target")
+bt_watchdog_enter "$target" >/dev/null
 
 # boot-select: window + picker. Prints the chosen id on stdout; a selection
 # rewrites $BOOT_TARGETS_DIR/default itself. Missing or failing binary ->
@@ -108,7 +115,7 @@ if [ -x "$BOOT_SELECT" ]; then
     fi
     if [ -n "$chosen" ] && [ "$chosen" != "$target" ]; then
         target="$chosen"
-        attempt=$(bt_watchdog_enter "$target")
+        bt_watchdog_enter "$target" >/dev/null
     fi
 fi
 
