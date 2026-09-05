@@ -130,11 +130,13 @@ if [ -z "$entry" ] || [ ! -x "$entry" ]; then
 fi
 
 # Liveness watcher: exec preserves the pid, so checking our own pid after
-# 30 s checks the target. A target that forks-and-exits is not covered —
+# 15 s checks the target. A crash-loop dies in seconds; the original 30 s
+# horizon made ordinary human power cycles read as failures three times in
+# one day of field use. A target that forks-and-exits is not covered —
 # that is what the healthy touch-file is for (see docs/BOOT_TARGETS.md).
 self=$$
 (
-    sleep 30
+    sleep 15
     if kill -0 "$self" 2>/dev/null; then
         BOOT_TARGETS_DIR="$BOOT_TARGETS_DIR" . "$BT_LIB" && bt_watchdog_clear
     fi

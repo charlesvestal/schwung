@@ -124,7 +124,7 @@ re-enters the selector. Protocol:
      historical boot-loop case the watchdog exists for).
   2. **Liveness fallback**: the entrypoint detaches a small watcher before
      exec (background subshell; must reset to SCHED_OTHER like every other
-     child) that sleeps ~30 s, confirms the target process is alive, and
+     child) that sleeps ~15 s, confirms the target process is alive, and
      clears the stamp. Zero cooperation needed — a convention-ignorant binary
      participates by simply staying alive.
 - Two un-cleared attempts → `boot-select` opens the picker unconditionally

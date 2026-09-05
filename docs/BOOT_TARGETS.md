@@ -102,7 +102,7 @@ platform can never boot-loop the device.
 Two ways your boot counts as good — pick either:
 
 1. **Do nothing.** A detached watcher clears the stamp if your process is
-   still alive ~30 seconds after exec. Staying alive is participation.
+   still alive ~15 seconds after exec. Staying alive is participation.
 2. **Opt in (better):** touch `/data/UserData/boot-targets/<id>/healthy` once
    your platform has actually reached working state (Schwung's own shim
    touches it after ~30 seconds of continuously clocked SPI frames). This
