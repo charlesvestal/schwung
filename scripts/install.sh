@@ -979,6 +979,15 @@ if [ "$use_reenable" = true ]; then
   if ! $ssh_ableton "test -f /data/UserData/schwung/shim-entrypoint.sh" 2>/dev/null; then
     fail "Entrypoint not found on data partition. Run a full install instead."
   fi
+  if ! $ssh_ableton "test -f /data/UserData/schwung/schwung-entry.sh" 2>/dev/null; then
+    fail "schwung-entry.sh not found on data partition. Run a full install instead."
+  fi
+  if ! $ssh_ableton "test -f /data/UserData/schwung/host/boot_target_lib.sh" 2>/dev/null; then
+    fail "host/boot_target_lib.sh not found on data partition. Run a full install instead."
+  fi
+  if ! $ssh_ableton "test -f /data/UserData/schwung/bin/boot-select" 2>/dev/null; then
+    fail "bin/boot-select not found on data partition. Run a full install instead."
+  fi
 
   # Clean stale ld.so.preload entries
   ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
@@ -1003,6 +1012,7 @@ if [ "$use_reenable" = true ]; then
 
   # Ensure entrypoint is executable
   ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+  ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
 
   # Install schwung-heal as setuid root (re-enable path mirror of full
   # install). Without this the entrypoint's boot-time heal silently
@@ -1116,6 +1126,9 @@ fi
 # Verify expected payload exists before making system changes
 ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-shim.so" || fail "Payload missing: schwung-shim.so"
 ssh_ableton_with_retry "test -f /data/UserData/schwung/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-entry.sh" || fail "Payload missing: schwung-entry.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/host/boot_target_lib.sh" || fail "Payload missing: host/boot_target_lib.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/boot-select" || fail "Payload missing: bin/boot-select"
 
 # Verify modules directory exists
 if ssh_ableton_with_retry "test -d /data/UserData/schwung/modules"; then
@@ -1200,6 +1213,7 @@ fi
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
 
 # Install schwung-heal as setuid root. This is the only privileged code
 # path on the device for ableton-context callers (entrypoint, schwung-
