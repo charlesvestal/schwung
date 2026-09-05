@@ -38,7 +38,7 @@
     {
       "id": 4,
       "subject": "Task 5: On-demand bus allocation, off the RT thread",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** A bus's chain and mix buffer are allocated when the bus is created, on a SCHED_OTHER worker, and published to the audio path by pointer.\n\n**Files:**\n- Modify: `src/modules/chain/dsp/chain_host.c` (creation path + worker)\n- Modify: `src/modules/chain/dsp/chain_internal.h` (request state)\n\n**Acceptance Criteria:**\n- [ ] No bus allocation happens on the SPI callback\n- [ ] The worker demotes itself to SCHED_OTHER and pins to cores 0-2 as its FIRST action\n- [ ] A bus with no buffer yet renders through Main (Task 1 already proves the fallback) rather than dropping audio\n- [ ] Slot memory is unchanged from today until a bus exists\n- [ ] Destroying an instance frees every bus buffer and chain\n\n**Verify:** `./scripts/build.sh`; on device, create a bus and confirm `tests/host/test_spi_path_rt_hygiene.sh`-style grep finds no `calloc`/`malloc` reachable from the bus creation call on the callback\n\n**Steps:**\n- Step 1: Add the request state\n- Step 2: Write the worker\n- Step 3: Request from the RT side\n- Step 4: Free on destroy\n- Step 5: Build and check RT hygiene\n- Step 6: Commit\n\n```json:metadata\n{\"files\": [\"src/modules/chain/dsp/chain_host.c\", \"src/modules/chain/dsp/chain_internal.h\"], \"verifyCommand\": \"./scripts/build.sh\", \"acceptanceCriteria\": [\"No bus allocation happens on the SPI callback\", \"The worker demotes itself to SCHED_OTHER and pins to cores 0-2 as its FIRST action\", \"A bus with no buffer yet renders through Main (Task 1 already proves the fallback) rather than dropping audio\", \"Slot memory is unchanged from today until a bus exists\", \"Destroying an instance frees every bus buffer and chain\"], \"modelTier\": \"deep\"}\n```",
       "blockedBy": [
         3
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T22:09:32.944373"
+  "lastUpdated": "2026-09-05T22:15:24.813574"
 }

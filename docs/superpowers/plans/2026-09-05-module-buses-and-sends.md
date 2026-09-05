@@ -1826,7 +1826,20 @@ every other stem."
 - Modify: `src/host/shadow_chain_mgmt.c` (`send_fx_N.json`, shared preset store)
 
 **Acceptance Criteria:**
+- [ ] **The expensive half of loading a bus FX happens on the WORKER, not the
+      callback.** Task 5 moved bus allocation off the RT thread, but today it
+      allocates only 512 bytes, because `slot_bus_t` carries no per-position
+      metadata yet. This task is what adds it — `chain_param_info_t` is ~1.07 MB
+      per position and the cached `ui_hierarchy` another 64 KB, plus the
+      `dlopen` and `create_instance` for each bus FX. Put ALL of that inside
+      `chain_bus_worker_fn` and publish by pointer, or Task 5's entire purpose
+      is undone and ~9.1 MB of allocation plus a `dlopen` lands straight back on
+      the SPI callback. **Nothing in the code enforces this** — the main chain's
+      own `v2_load_audio_fx_slot` does exactly the forbidden thing today, so the
+      surrounding code is not a guide here.
 - [ ] `bus<N>:create`, `:delete`, `:name`, `:voices`, `:send<M>`, `:fx<K>:module`, `:fx<K>:<param>`, `:fx<K>:bypassed` all route through `bus_route.h`
+- [ ] `chain_bus_request_alloc()` (landed in Task 5, currently callerless) is
+      what `bus<N>:create` calls — do not allocate inline
 - [ ] A bus whose stored voice ids no longer exist keeps its chain and REPORTS the orphaned ids; it does not silently re-point to whatever is at that index now
 - [ ] Restored state writes STATE, never SHAPE — restoring a bus does not reinstantiate a running FX whose module is unchanged
 - [ ] The shim is authoritative for send chains: `send<N>:modules` is one GET returning the whole chain, positional, never compacted
