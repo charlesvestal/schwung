@@ -416,6 +416,9 @@ function world() {
        free identifier under the lift, and a typeof guard would make the footer
        block unreachable. A noop is right here -- it reads no params. */
     "shiftHintsFor", "CHAIN_HINTS_AT_REST",
+    /* The knob-card / diagram primitive set, extracted to its own top-level
+       function. A free identifier under the lift, same as the rest. */
+    "movyPrimitives",
   ];
   const mk = lift("drawChainEdit", drawDeps);
   const makeDraw = (diagram, cardState) => mk(noop, {}, 0, () => false, [{ name: "s" }], truncateText,
@@ -427,7 +430,8 @@ function world() {
     () => (cardState === undefined ? null : cardState),
     () => { w.cardDraws++; },
     slotChainTarget, chainLfoTargetMap, chainComponentBypassed, noop,
-    () => [], []);
+    () => [], [],
+    () => ({ fillRect: noop, print: noop, textWidth: () => 10, setPixel: noop }));
   w.cardDraws = 0;
   w.draw = makeDraw(recording);
   w.drawReal = makeDraw(drawChainDiagram);

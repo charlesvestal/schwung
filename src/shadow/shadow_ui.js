@@ -3410,6 +3410,15 @@ let busSlot = -1;              /* which slot's buses are open */
  * assigned from a resolved parse. */
 let busConfig = null;
 let busVoices = null;          /* {unresolved, voices[]} — same rule */
+/* True whenever the LAST attempt to read config/voices did not answer —
+ * distinct from busConfig/busVoices being null, which is also true before the
+ * first attempt. `!busConfig` alone stops asking again forever the moment one
+ * read has ever succeeded: busCreate/busDelete/writeBusSend/busPickModule all
+ * call refreshBusConfig() and ignore its return, so a stall on any of those
+ * calls (after an earlier success) would never retry. Set to true at
+ * declaration because there has been no successful read yet either. */
+let busConfigStale = true;
+let busVoicesStale = true;
 let busListIndex = 0;
 let busActionsRow = -1;        /* index into busListRows(), not a bus index:
                                 * Main is a row and is not a bus */
@@ -3432,10 +3441,13 @@ let busPickerIndex = 0;
 const BUS_RETRY_INTERVAL = 20;
 let _busRetryTickCounter = 0;
 
-/* The primitive set the chain diagram and its bands draw through — the same
- * object drawChainEdit builds. Probed, because the harness and older host
- * builds do not have every one of them. */
-function busMovyCtx() {
+/* The primitive set the chain diagram and its bands draw through — the SAME
+ * object drawChainEdit builds, now the one place that builds it. Probed,
+ * because the harness and older host builds do not have every one of them.
+ * (This was a verbatim third copy of the literal below, comment included —
+ * extracted once both sites in this file are shown to want the identical
+ * object.) */
+function movyPrimitives() {
     return {
         fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
         line: typeof draw_line === "function" ? draw_line : undefined,
@@ -3450,16 +3462,18 @@ function busMovyCtx() {
 function refreshBusConfig() {
     if (busSlot < 0) return false;
     const parsed = BusModel.parseBusesConfig(getSlotParam(busSlot, "buses:config"));
-    if (parsed.unresolved) return false;
+    if (parsed.unresolved) { busConfigStale = true; return false; }
     busConfig = parsed;
+    busConfigStale = false;
     return true;
 }
 
 function refreshBusVoices() {
     if (busSlot < 0) return false;
     const parsed = BusModel.parseSplitVoices(getSlotParam(busSlot, "synth:split_voices"));
-    if (parsed.unresolved) return false;
+    if (parsed.unresolved) { busVoicesStale = true; return false; }
     busVoices = parsed;
+    busVoicesStale = false;
     return true;
 }
 
@@ -3486,7 +3500,7 @@ function busRowsNow() {
 function enterBusList(slot, voices) {
     if (busSlot !== slot) { busConfig = null; busVoices = null; busListIndex = 0; }
     busSlot = slot;
-    if (voices && !voices.unresolved) busVoices = voices;
+    if (voices && !voices.unresolved) { busVoices = voices; busVoicesStale = false; }
     else refreshBusVoices();
     refreshBusConfig();
     const rows = busRowsNow();
@@ -20580,13 +20594,7 @@ function drawChainEdit() {
      * draw_arc is there and a slow JS fallback when it is not. Each is probed
      * because the harness and the older host builds do not have all of them.
      */
-    const movy = {
-        fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
-        line: typeof draw_line === "function" ? draw_line : undefined,
-        fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
-        drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
-        drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
-    };
+    const movy = movyPrimitives();
 
     /* The chain config, reloaded from the DSP only when something has made it
      * stale — see chainConfigFresh. This was an unconditional reload per frame,
@@ -21251,9 +21259,13 @@ function drawHelpDetail() {
      * draw the state the UI had when it started. */
     _ctx.clearScreen = () => clear_screen();
     _ctx.print = (...args) => print(...args);
-    _ctx.movyCtx = () => busMovyCtx();
+    _ctx.movyCtx = () => movyPrimitives();
     _ctx.getModuleAbbrev = (m) => getModuleAbbrev(m);
-    _ctx.slotLabel = () => `S${selectedSlot + 1}`;
+    /* busSlot, not selectedSlot: Track buttons stay live on the bus screens
+     * and move selectedSlot without leaving the list (they jump the OTHER
+     * chain editor's slot for when Back eventually lands there), so the
+     * header must follow the slot whose buses are actually on screen. */
+    _ctx.slotLabel = () => `S${busSlot + 1}`;
     /* Read-only, and spelled out one by one: a loop over names would have to
      * reach these module-scoped `let`s through `new Function`, which evaluates
      * in GLOBAL scope and would see none of them. The module draws, this file
@@ -22869,6 +22881,16 @@ globalThis.tick = function() {
      * waiting screen up until the user backed out and came in again. It costs
      * nothing once the reads have answered, and nothing at all off these
      * screens.
+     *
+     * Gated on busConfigStale/busVoicesStale — the LAST attempt's outcome —
+     * not on `!busConfig || !busVoices`. Every write path
+     * (busCreate/busDelete/writeBusSend/busPickModule, the voice-toggle
+     * writer) calls refreshBusConfig() and drops the return value, trusting
+     * it to leave the previous config in place on a failed read. That part is
+     * right, but `!busConfig` alone is true only until the FIRST read ever
+     * succeeds — after that, a stall on any of those calls announced its
+     * write ("Bus created") and then asked nothing ever again, in this
+     * function or on re-entry.
      */
     /* Every tick, and unthrottled: the claim follows the CURSOR, so a throttle
      * would leave the arrow with the wrong owner for the frames right after a
@@ -22879,7 +22901,7 @@ globalThis.tick = function() {
 
     if (view === VIEWS.BUS_LIST || view === VIEWS.BUS_ACTIONS ||
         view === VIEWS.BUS_VOICES || view === VIEWS.BUS_CHAIN) {
-        if (!busConfig || !busVoices) {
+        if (busConfigStale || busVoicesStale) {
             if (++_busRetryTickCounter >= BUS_RETRY_INTERVAL) {
                 _busRetryTickCounter = 0;
                 try { if (refreshBuses()) needsRedraw = true; }
@@ -24688,7 +24710,7 @@ globalThis.onMidiMessageInternal = function(data) {
          * either screen it does nothing, which is what leaves Move's own use of
          * the arrow untouched everywhere Schwung has no answer for it.
          *
-         * The shim only forwards CC 54 while `nav_claim` is up, and it is up
+         * The shim only forwards CC 54 while `nav_down_claim` is up, and it is up
          * only for the frames one of these two screens can act on it — see
          * reconcileNavClaim.
          */

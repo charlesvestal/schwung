@@ -7070,6 +7070,35 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     /* Root span for the post-ioctl half of the SPI frame. */
     TRACE_SCOPE("spi.post");
 
+    /*
+     * nav_down_swallow must not outlive the shadow session that armed it.
+     *
+     * Both loops that maintain the latch (the filter loop below and the
+     * forward loop further down) are gated on `shadow_display_mode`, but the
+     * latch itself is a bare file-scope static -- so a dismiss between a
+     * Down PRESS (swallow=1) and its RELEASE takes the release-clearing code
+     * off the schedule entirely: the whole gated block goes quiet, the
+     * release is never seen, and the latch is stuck at 1. It does no harm
+     * while the shadow UI stays down (the gated block is dead code then),
+     * but the NEXT time the shadow UI reopens and nav_down_claimed is *not*
+     * held for that particular Down press, the press falls through
+     * (filter=0, Move sees it) while the stale latch swallows the release
+     * anyway (filter=1) -- Move gets a press with no matching release, i.e.
+     * a stuck octave-down. Checked here, once per frame, unconditionally
+     * and before every mode gate below, because `shadow_display_mode` can
+     * drop in shim_pre_transfer (already run for this frame) or partway
+     * through last frame's post-transfer body (Shift+Track / Menu-tap /
+     * long-press dismiss, all deep inside the gated block) -- there is no
+     * single dismiss call site to patch, only every frame's entry to this
+     * function. Contrast `snapshot_gesture_swallow` above: that latch's
+     * maintaining loop is UNGATED, so it can never reach this state.
+     */
+    static uint8_t nav_down_swallow_prev_display_mode = 0;
+    if (nav_down_swallow_prev_display_mode && !shadow_display_mode) {
+        nav_down_swallow = 0;
+    }
+    nav_down_swallow_prev_display_mode = shadow_display_mode;
+
     /* SPI frame telemetry from the kernel's own counters. One aligned 8-byte
      * load of the transfer time ablspi already stamped at the end of the page
      * (see spi_tally.h) — no syscall, no /proc, nothing added to the wire.

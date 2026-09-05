@@ -113,10 +113,22 @@ export function drawBusActions() {
         valueAlignRight: true,
         editMode: busActionsEditing,
     });
+    /* The verb of the row under the CURSOR — branching on `type === "int"`
+     * alone left every OTHER row (Voices, Inserts, Rename, Delete) reading
+     * "Clk: open", which is wrong for three of the four and actively
+     * misleading on Delete/Rename. One verb per id, matching what Click
+     * actually does (see handleSelect's VIEWS.BUS_ACTIONS case). */
     const item = items[busActionsIndex];
+    let verb = "open";
+    if (item) {
+        if (item.type === "int") verb = "edit";
+        else if (item.id === "voices") verb = "edit";
+        else if (item.id === "chain") verb = "fx";
+        else if (item.id === "rename") verb = "rename";
+        else if (item.id === "delete") verb = "delete";
+    }
     if (busActionsEditing) drawFooter(["Jog: level", "Clk: done"]);
-    else if (item && item.type === "int") drawFooter(["Clk: edit", "Back: out"]);
-    else drawFooter(["Clk: open", "Back: out"]);
+    else drawFooter([`Clk: ${verb}`, "Back: out"]);
 }
 
 export function drawBusVoices() {

@@ -300,6 +300,11 @@ const CHAIN_DRAW_DEPS = [
      a noop here would empty three of the four bands the content floor checks,
      which is the whole point of checking them. */
   "drawChainEditorBands",
+  /* The knob-card / diagram primitive set, extracted to its own top-level
+     function so the bus screens (shadow_ui_buses.mjs, via ctx.movyCtx) and
+     drawChainEdit stopped carrying two copies of the same literal. A free
+     identifier under the lift, same as every other dep here. */
+  "movyPrimitives",
 ];
 const mkChainDraw = lift("drawChainEdit", CHAIN_DRAW_DEPS);
 
@@ -321,7 +326,8 @@ function renderChain(c) {
     () => (c.card || null), drawKnobCard,
     w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
     w.chainSynthSplits, CHAIN_HINTS_SYNTH_BUS,
-    drawChainEditorBands);
+    drawChainEditorBands,
+    () => ({ fillRect: g.fill_rect, print: g.print, textWidth: g.text_width, setPixel: g.set_pixel }));
   draw();
   clearGlobals();
   return fb;

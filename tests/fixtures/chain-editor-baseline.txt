@@ -42,12 +42,12 @@
 # Regenerate with:
 #     UPDATE_CHAIN_EDITOR_BASELINE=1 bash tests/host/test_chain_editor_snapshot.sh
 bus/actions/confirm b93b44f77314a76cc91262e7427d7c37d8e541e4
-bus/actions/delete-row 4d9acd1837bfceb5097d90da061dde70d908fcd5
+bus/actions/delete-row 070b8d7b8860a7f6a6509bf70115d2c235967521
 bus/actions/editing 0a888a7ea14b72bc1618ca09c33d20dfd45c512a
 bus/actions/main 28ffdafffa6e37955d3269e07eb79553e11ed776
-bus/actions/orphans d30aaaa5566bc6ba2a37aba718e25a0f01c527b4
+bus/actions/orphans df1ae1b7580239875a423dc7323bb3055eb241ff
 bus/actions/send-a 2144f658801b87208275475c66ba469fdc1f479e
-bus/actions/voices 9b444f86dc2435ee6624d82a0c7c2e7399db28a7
+bus/actions/voices 55bccef27b7bb0d1330f8e3a58eff2af1a207340
 bus/chain/0 ae1b86b3ea19a7db79372be735130de31e5c57dd
 bus/chain/1 11ea92d99079b727965cae47c3590b223d6dac6f
 bus/chain/1-add 82e989e501e20da02c1083317934cb4c1b394c0d

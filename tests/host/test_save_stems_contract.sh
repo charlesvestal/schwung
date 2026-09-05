@@ -126,8 +126,15 @@ check(moveIdx === slots,
          * was APPENDED — that nothing was inserted ahead of the field
          * schwung-manager reads at a raw offset. "Last" said that too until
          * somebody appended the next field (nav_down_claim), which is the
-         * sanctioned move and made this fail for doing the right thing. What
-         * must never happen is a field appearing BEFORE stay_in_shadow. */
+         * sanctioned move and made this fail for doing the right thing.
+         *
+         * This check is purely relative (atStems > atStay) and would still
+         * pass if something were inserted ahead of stay_in_shadow itself —
+         * it only pins save_stems' position relative to it, not
+         * stay_in_shadow's own offset. That guarantee is enforced separately,
+         * by test_stay_in_shadow.sh, which compiles an offsetof() probe
+         * against shadow_constants.h and compares it to the raw offset
+         * hardcoded in schwung-manager/shmconfig.go. */
         const atStay = fields.indexOf("stay_in_shadow");
         const atStems = fields.indexOf("save_stems");
         check(atStay >= 0, "stay_in_shadow is gone from shadow_control_t");
