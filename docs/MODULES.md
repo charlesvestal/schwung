@@ -2899,7 +2899,7 @@ Import path from modules: `../../shared/<file>.mjs`
 | `screen_reader.mjs` | Screen reader announce/announceMenuItem/announceView helpers |
 | `sampler_overlay.mjs` | Quantized sampler UI overlay |
 | `text_entry.mjs` | On-screen keyboard for text input |
-| `store_utils.mjs` | Module Store catalog fetching and install/remove functions |
+| `store_utils.mjs` | Catalog fetching and install/remove functions (the standalone host; the shadow UI uses only `getHostVersion`) |
 | `scrollable_text.mjs` | Scrollable text component |
 | `sound_generator_ui.mjs` | Sound generator UI helpers |
 | `chain_param_utils.mjs` | Chain parameter handling utilities |
@@ -2947,7 +2947,7 @@ For native code, shared headers are in `src/host/`:
 
 ## Help Content (help.json)
 
-Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → Updates → `[Help...]`). Add a `help.json` file to your module's source directory.
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → System → Help). Add a `help.json` file to your module's source directory.
 
 ### File Location
 
@@ -3120,8 +3120,8 @@ The Signal Chain module allows combining MIDI sources, MIDI effects, sound gener
 |------|------------|
 | MIDI Sources | Sequencers or other modules referenced via `midi_source` |
 | Sound Generators | Line In, SF2, Dexed, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `minijv`) |
-| MIDI Effects | Chord (15 chord types with inversions, voicings, strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync), Velocity Scale (min/max velocity mapping), plus external MIDI FX via Module Store |
-| Audio Effects | Freeverb (reverb), CLAP effects, plus external audio FX via Module Store (CloudSeed, PSXVerb, Tapescam, etc.) |
+| MIDI Effects | Chord (15 chord types with inversions, voicings, strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync), Velocity Scale (min/max velocity mapping), plus external MIDI FX from the catalog |
+| Audio Effects | Freeverb (reverb), CLAP effects, plus external audio FX from the catalog (CloudSeed, PSXVerb, Tapescam, etc.) |
 
 ### CLAP Host Module
 
@@ -3370,7 +3370,7 @@ Shadow Mode runs custom signal chains alongside stock Ableton Move. Your modules
 
 ### How It Works
 
-Shadow mode loads the chain module and patches. When you install a module via Module Store (or manually copy it to the modules directory), it becomes available in Shadow Mode.
+Shadow mode loads the chain module and patches. When you install a module via Schwung Manager (or manually copy it to the modules directory), it becomes available in Shadow Mode.
 
 Modules and patches are read from:
 - Modules: `/data/UserData/schwung/modules/`
@@ -3722,9 +3722,9 @@ The built-in MIDI Controller module (`src/modules/controller/`) demonstrates ove
 - Progressive LED initialization
 - Dynamic C note highlighting based on octave
 
-## Publishing to Module Store
+## Publishing to the Module Catalog
 
-External modules can be distributed via the built-in Module Store. Users can browse, install, update, and remove modules directly from their Move device.
+External modules are distributed through the module catalog. Users browse, install, update and remove modules in **Schwung Manager**, the web interface the Move serves on port 7700 — the single install/update path. (The on-device store was retired: its privileged writes silently no-opped for devices without a current shim. On the Move itself, **Global Settings → System → Web Manager** shows the device's IP and a QR code for reaching the manager.)
 
 ### Requirements
 
@@ -3881,7 +3881,7 @@ Each module in `module-catalog.json`:
 
 ### release.json
 
-Each module repo must have a `release.json` on its main branch. The Module Store fetches this file (not the GitHub releases API) to determine the latest version and download URL.
+Each module repo must have a `release.json` on its main branch. Schwung Manager fetches this file (not the GitHub releases API) to determine the latest version and download URL.
 
 ```json
 {
@@ -3917,7 +3917,7 @@ Optional fields: `install_path`, `name`, `description`, `requires`, `post_instal
 
 The release workflow should auto-update `release.json` on each tagged release (see the workflow template above for an example).
 
-### How the Module Store Works
+### How installation works
 
 1. Fetches `module-catalog.json` from the main branch
 2. For each module, fetches `release.json` from the module's GitHub repo (on `default_branch`)
@@ -3937,7 +3937,7 @@ The release workflow should auto-update `release.json` on each tagged release (s
 
 ## Host Updates
 
-The Schwung host can also be updated via the Module Store. When an update is available, "Update Host" appears at the top of the Module Store category list.
+The Schwung host is updated through Schwung Manager, the same place modules are. There is no on-device update surface: `[Check Updates]` used to scan the catalog and list what was outdated, then send you to the manager to install any of it — and the manager shows that same list beside the button that acts on it.
 
 ### Releasing a Host Update
 
@@ -3978,7 +3978,7 @@ The Schwung host can also be updated via the Module Store. When an update is ava
 
 ### How Host Updates Work
 
-1. Module Store fetches `module-catalog.json` from the main branch
+1. Schwung Manager fetches `module-catalog.json` from the main branch
 2. Fetches `release.json` from the host repo for the latest version and download URL
 3. Compares to installed version in `/data/UserData/schwung/host/version.txt`
 4. If different, shows "Update Host" option with version numbers
@@ -3987,7 +3987,7 @@ The Schwung host can also be updated via the Module Store. When an update is ava
 
 ### Catalog Location
 
-The Module Store fetches the catalog from:
+The catalog is fetched from:
 ```
 https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json
 ```

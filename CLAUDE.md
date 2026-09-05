@@ -715,8 +715,15 @@ component load gate, and the input-dispatch order. Read it before editing
   and the *correct* read milliseconds later is what made it permanent, by matching.
 - **A component editor WAITS; it does not decide from one read.** Everything that
   knows how to wait sits behind the entry, and the fallback is irreversible.
-- Global Settings is seven sections = seven PAGES. **One section, one page** is
+- Global Settings is six sections = six PAGES. **One section, one page** is
   load-bearing — but the rule is "never SPLIT", not "never exceed eight".
+  **A `menu` on a level costs that section a SECOND page**: the planner emits
+  it after the level's grids and nothing merges menu entries into a knobs
+  page. That is why Connect and Help are write-only PARAMS on System rather
+  than a menu — `access: "write"` makes a two-option enum a trigger, so a
+  click fires it and a knob cannot edit it, and three rows fit one screen.
+  The contract test pins the exact page LIST, so folding a menu back in fails
+  with the shape rather than with a count.
   **Eight is the number of physical KNOBS**, and this screen is pinned to the
   LIST (`layout: LAYOUT_LIST`), which draws five rows and scrolls the rest.
   The planner was chunking it as a grid anyway, so a ninth param silently
@@ -730,6 +737,20 @@ component load gate, and the input-dispatch order. Read it before editing
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
   branches on that. **A child level lists TEMPLATES** — resolve them through
   `child_key.mjs` or a drum module files 200+ keys under "Other".
+- **`[Check Updates]`, `[Module Store]` and Services → File Browser are GONE,
+  and one of the three could not simply be deleted.** Detection listed what
+  was outdated and then sent you to the manager to install it — which shows
+  that list beside the button that acts on it. The store pointer printed
+  `move.local:7700`. Both are replaced by **Connect** (Global Settings →
+  System → **Web Manager**, a row beside Analytics and Help, and every
+  `[Get more...]` row),
+  which draws the device's own IP and a QR of `http://<ip>:7700` —
+  `src/shared/{qr,connect_screen}.mjs`, `host_get_device_ip()`. The File
+  Browser toggle started a bundled binary serving all of `/data/UserData`
+  with `--noauth` on :404 **from a flag file read by `shim-entrypoint.sh`**,
+  so removing the toggle alone would have left a device that had it switched
+  on serving :404 at every boot with nothing left to turn it off:
+  `retireFilebrowserService()` deletes the flag and kills the process, once.
 - **A Track tap switches SLOT (`Keep Schwung`, default ON — a reversal); off it
   dismisses** — enforced in the SHIM, on the PRESS, *outside* the long-press block
   (that block is gated on the trigger mode, so a jump inside it works on
@@ -1032,10 +1053,11 @@ Reference: `src/modules/controller/ui.js`.
 
 **schwung-manager (web UI at `http://move.local:7700`) is the single
 install/update path** for the host and all modules. On-device, the shadow UI
-keeps exactly two store surfaces: update *detection* (Settings → Updates →
-Check Updates shows what's outdated and points at the web manager) and
-pointer screens ([Get more...] / [Module Store]). The old on-device store
-module is retired (source kept for the standalone/sim host; not shipped).
+keeps NO store surface at all: browsing went first, then the pointer screens,
+then update detection. `[Get more...]` and Global Settings → System →
+`[Connect...]` open the **Connect** screen instead, which draws this device's
+IP and a QR of `http://<ip>:7700`. The old on-device store module is retired
+(source kept for the standalone/sim host; not shipped).
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
