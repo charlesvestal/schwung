@@ -208,6 +208,17 @@ static void bs_draw_picker(const char *banner1, const char *banner2,
         js_display_print(0, 20 + i * 9, line, 1);
     }
 
+    /* House rule: every scrolling list draws a scrollbar (and no arrows). */
+    if (nrows > BS_VISIBLE_ROWS) {
+        int track_y = 20, track_h = BS_VISIBLE_ROWS * 9 - 2;
+        int thumb_h = track_h * BS_VISIBLE_ROWS / nrows;
+        if (thumb_h < 4)
+            thumb_h = 4;
+        int thumb_y = track_y + (track_h - thumb_h) * *scroll / (nrows - BS_VISIBLE_ROWS);
+        js_display_draw_line(126, track_y, 126, track_y + track_h, 1);
+        js_display_fill_rect(125, thumb_y, 3, thumb_h, 1);
+    }
+
     js_display_print(0, 56, "Click: boot   Back: cancel", 1);
 }
 
