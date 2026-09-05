@@ -2456,7 +2456,6 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
              * same reasoning that keeps a `+` box's own "None" pick from
              * raising a second confirmation. IS applyChainComponentPick's
              * None path, not a copy of it. */
-            setUserPresetRecord(slotIndex, prefix, null);
             applyChainComponentPick(slotIndex, componentKey, "", null);
             result = true;
             break;
@@ -11888,6 +11887,35 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
      * the module write below fills it — hence `insert` falling through rather
      * than returning.
      */
+    /*
+     * THE LOADED-PRESET RECORD IS NOT OURS ONCE THE POSITION CHANGES HANDS.
+     *
+     * currentUserPresets is keyed by slot+prefix rather than by module, so the
+     * entry outlives a swap and the incoming module opens its My Presets page
+     * reading the name that belonged to the outgoing one. Reported from
+     * hardware. Nothing is written to the wrong folder — enterPresetSaveAs and
+     * overwriteUserPreset both resolve presetDir from the module actually
+     * loaded, and userPresetHeaderMark short-circuits on a null record before
+     * it reads the live blob — so this is a wrong name on the one row that
+     * says which preset you are on.
+     *
+     * HERE rather than in applyChainComponentPick, for the same reason
+     * clearLfoRoutingForComponent lives here: this is the side where the pick
+     * actually happened. The feedback gate can still decline one, and its
+     * decline path reloads the chain without restoring this record, so
+     * clearing before the gate threw away the record of the component that
+     * STAYED — the same wrong-name-on-the-row bug, inverted.
+     *
+     * pickerReplacedModule is the existing answer to "did this pick replace
+     * something", case-insensitive on purpose because ids arrive from both the
+     * picker and the DSP and the DSP answers lowercase. It answers false for a
+     * removal by design, so the removal is asked separately rather than by
+     * loosening it — and asking it here means this and the LFO clear cannot
+     * drift apart.
+     */
+    if (!moduleId || pickerReplacedModule(choice ? choice.replaced : null, moduleId))
+        setUserPresetRecord(slotIndex, getComponentParamPrefix(comp.key), null);
+
     const shape = choice && choice.shape;
     if (shape) writeChainShape(slotChainTarget(slotIndex), shape);
     if (shape && shape.kind === "remove") {

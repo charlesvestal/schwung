@@ -598,13 +598,18 @@ console.log("  ok  module_help: exits the grid, seeds one help frame of the modu
             "topics on VIEWS.GLOBAL_SETTINGS, and records its own return pair rather than " +
             "componentModalFromGrid");
 
-// remove_module must clear the record BEFORE the removal write, not after —
-// only remove_module calls setUserPresetRecord in this harness (the other
-// five reach it only through onUserPresetSaved/Loaded/Deleted, which are
-// stubbed to markers above, not to the real setter), so ONE call across all
-// six iterations, with a null record, is exactly what a correct clear looks
-// like. Evidence gathered above and asserted here, not left to sit unread.
-const wantSetRecordCalls = [[1, "synth", null]];
+// remove_module no longer clears the record ITSELF: it delegates to
+// applyChainComponentPick(slot, key, ""), and the clear now lives on that
+// path, in applyComponentSelectionConfirmed, beside the sibling LFO-routing
+// clear. One clear site rather than two, and the same line covers every way a
+// position changes hands rather than only the None row.
+//
+// This harness STUBS applyChainComponentPick (see the stub above, which just
+// records "remove"), so the subsumed clear is not observable here — the calls
+// list proving the delegation is what this file can honestly assert. The
+// behaviour itself is covered on the real path by B4 in
+// test_chain_edit_read_budget.sh, which asserts a None pick drops the record.
+const wantSetRecordCalls = [];
 if (JSON.stringify(r.setRecordCalls) !== JSON.stringify(wantSetRecordCalls)) {
     fail("remove_module must clear the grid record with setUserPresetRecord(slot, prefix, null) " +
          "before the removal write -- expected " + JSON.stringify(wantSetRecordCalls) +

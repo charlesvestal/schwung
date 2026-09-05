@@ -235,16 +235,26 @@ function world() {
   const pickerReplacedModule = lift("pickerReplacedModule", [])();
   const clearLfoRoutingForComponent = lift("clearLfoRoutingForComponent",
     ["getSlotParam", "setSlotParam"])(getSlotParam, setSlotParam);
+  /* The loaded-preset record the pick clears when the module actually
+     changes. Recorded rather than discarded so the assertions below can say
+     WHICH position was cleared, not merely that nothing threw. */
+  w.presetRecordClears = [];
+  const recordingSetUserPresetRecord = (slot, prefix, rec) => {
+    w.presetRecordCalls = (w.presetRecordCalls || 0) + 1;
+    if (rec === null) w.presetRecordClears.push(slot + ":" + prefix);
+  };
   const applyComponentSelectionConfirmed = lift("applyComponentSelectionConfirmed",
     ["writeChainShape", "slotChainTarget", "host_log", "setSlotParam", "print", "host_track_event",
      "loadChainConfigFromSlot", "lastSlotModuleSignatures", "getSlotModuleSignature",
      "invalidateKnobContextCache", "selectedSlot", "slotChainComponents",
      "selectedChainComponent", "lastChainComponent", "setView", "VIEWS", "needsRedraw",
-     "pickerReplacedModule", "clearLfoRoutingForComponent", "getComponentParamPrefix"])(
+     "pickerReplacedModule", "clearLfoRoutingForComponent", "getComponentParamPrefix",
+     "setUserPresetRecord"])(
     writeChainShape, slotChainTarget, undefined, setSlotParam, noop, undefined,
     loadChainConfigFromSlot, [], getSlotModuleSignature,
     noop, 0, slotChainComponents, 0, w.lastChainComponent, noop, VIEWS, false,
-    pickerReplacedModule, clearLfoRoutingForComponent, getComponentParamPrefix);
+    pickerReplacedModule, clearLfoRoutingForComponent, getComponentParamPrefix,
+    recordingSetUserPresetRecord);
 
   const pend = liftBlock("let pendingChainInsert = null;", "withPendingChainInsert",
     ["chainEditorKeyAt", "getChainComponentModule", "announce", "chainInsertAt"],
@@ -276,12 +286,17 @@ function world() {
     ["slotChainComponentIndex", "slotChainComponents", "chainConfigs", "createEmptyChainConfig",
      "withPendingChainInsert", "applyPickerChoiceToChain", "invalidateChainConfig",
      "slotUserCleared", "chainHasAnyModule", "resetLfoTargetLabels", "chainComponentParamKey",
+     /* Not called here any more -- the clear lives on the confirmed side. Bound
+        anyway so moving it back before the feedback gate shows up as B3d
+        failing on behaviour, rather than as a ReferenceError. */
+     "setUserPresetRecord", "getComponentParamPrefix",
      "host_get_module_metadata", "host_log", "maybeConfirmForModule",
      "applyComponentSelectionConfirmed", "loadChainConfigFromSlot", "setView", "VIEWS",
      "needsRedraw"])(
     slotChainComponentIndex, slotChainComponents, w.chainConfigs, createEmptyChainConfig,
     pend.withPendingChainInsert, applyPickerChoiceToChain, invalidateChainConfig,
     w.slotUserCleared, chainHasAnyModule, countedResetLfoTargetLabels, chainComponentParamKey,
+    recordingSetUserPresetRecord, getComponentParamPrefix,
     undefined, undefined,
     (meta, cb) => { if (w.gate.auto) cb(true); else w.gate.pending = cb; },
     applyComponentSelectionConfirmed, loadChainConfigFromSlot, noop, VIEWS, false);
@@ -575,6 +590,98 @@ function loadSlot(w, opts) {
     fail("B3: the editor still draws the module that was swapped OUT: " + w.screen());
 }
 
+/* B3c. A swap to a DIFFERENT module drops the loaded-preset record for that
+        position, and a swap to the SAME module keeps it.
+
+        currentUserPresets is keyed by slot+prefix, not by module, so the entry
+        outlives a swap: the incoming module opened its My Presets page reading
+        the preset name belonging to the OUTGOING one. Reported from hardware — a CW-78 in
+        a slot that had held 9W9 showed "* 9w9aa". Only remove_module (the None pick)
+        cleared it, and that is the one case which already worked.
+
+        Asserted on the recorded clears rather than on "nothing threw",
+        because the dependency list above can drift and turn the call into a
+        silent no-op — the same trap chainComponentPickEntries guards. */
+{
+  const w = world();
+  loadSlot(w, { fx: ["freeverb"] });
+  if (w.screen() !== "sf2,freeverb") fail("B3c setup: " + w.screen());
+  w.picker.availableModules.length = 0;
+  w.picker.availableModules.push({ id: "cloudseed", name: "CloudSeed" });
+  w.picker.selectedModuleIndex = 0;
+  w.picker.selectedChainComponent = w.slotChainComponents(0).findIndex((c) => c.key === "fx1");
+  w.presetRecordClears.length = 0;
+  w.applyComponentSelection();
+  if (!w.presetRecordClears.includes("0:fx1"))
+    fail("B3c: swapping freeverb -> cloudseed left the loaded-preset record on fx1: clears=" +
+         JSON.stringify(w.presetRecordClears) + " calls=" + (w.presetRecordCalls || 0) +
+         " entries=" + w.chainComponentPickEntries);
+
+  /* Same module again: nothing to forget, so the record stays put. */
+  const w2 = world();
+  loadSlot(w2, { fx: ["freeverb"] });
+  if (w2.screen() !== "sf2,freeverb") fail("B3c same-module setup: " + w2.screen());
+  w2.picker.availableModules.length = 0;
+  w2.picker.availableModules.push({ id: "freeverb", name: "Freeverb" });
+  w2.picker.selectedModuleIndex = 0;
+  w2.picker.selectedChainComponent = w2.slotChainComponents(0).findIndex((c) => c.key === "fx1");
+  w2.presetRecordClears.length = 0;
+  w2.applyComponentSelection();
+  if (w2.chainComponentPickEntries === 0)
+    fail("B3c same-module: applyChainComponentPick never ran, so this asserts nothing");
+  if (w2.presetRecordClears.length !== 0)
+    fail("B3c: re-picking the SAME module threw the preset away: " +
+         JSON.stringify(w2.presetRecordClears));
+}
+
+/* B3d. DECLINING the feedback gate keeps the record of the component that
+        STAYS.
+
+        The clear lives in applyComponentSelectionConfirmed, not in
+        applyChainComponentPick, precisely because of this path: the gate can
+        refuse a pick, and its decline branch reloads the chain without
+        restoring the record. Cleared before the gate, backing out of
+        "Speaker Feedback Risk" left the component you KEPT reading (none) --
+        the same wrong-name-on-the-row defect, inverted.
+
+        B3c cannot see this: it runs with the gate auto-approving. */
+{
+  const w = world();
+  loadSlot(w, { fx: ["freeverb"] });
+  if (w.screen() !== "sf2,freeverb") fail("B3d setup: " + w.screen());
+  w.gate.auto = false;
+  w.picker.availableModules.length = 0;
+  w.picker.availableModules.push({ id: "cloudseed", name: "CloudSeed" });
+  w.picker.selectedModuleIndex = 0;
+  w.picker.selectedChainComponent = w.slotChainComponents(0).findIndex((c) => c.key === "fx1");
+  w.presetRecordClears.length = 0;
+  w.applyComponentSelection();
+  if (!w.gate.pending) fail("B3d setup: the feedback gate did not park the pick");
+  if (w.presetRecordClears.length !== 0)
+    fail("B3d: the record was cleared before the gate answered: " +
+         JSON.stringify(w.presetRecordClears));
+  w.gate.pending(false);                       // the user backs out
+  if (w.presetRecordClears.length !== 0)
+    fail("B3d: declining the gate still threw away the record of the component " +
+         "that stayed: " + JSON.stringify(w.presetRecordClears));
+  /* And approving it on a fresh world does clear -- so the assertion above is
+     about the DECLINE, not about the clear having quietly stopped working. */
+  const w2 = world();
+  loadSlot(w2, { fx: ["freeverb"] });
+  if (w2.screen() !== "sf2,freeverb") fail("B3d approve setup: " + w2.screen());
+  w2.gate.auto = false;
+  w2.picker.availableModules.length = 0;
+  w2.picker.availableModules.push({ id: "cloudseed", name: "CloudSeed" });
+  w2.picker.selectedModuleIndex = 0;
+  w2.picker.selectedChainComponent = w2.slotChainComponents(0).findIndex((c) => c.key === "fx1");
+  w2.presetRecordClears.length = 0;
+  w2.applyComponentSelection();
+  w2.gate.pending(true);
+  if (!w2.presetRecordClears.includes("0:fx1"))
+    fail("B3d: approving the gate did not clear the record: " +
+         JSON.stringify(w2.presetRecordClears));
+}
+
 /* B3b. And the invalidation is what makes the editor HONEST while the feedback
         modal is up: the pick is in the model but nothing has been loaded yet,
         so the boxes must still show what is actually running. Left marked
@@ -608,9 +715,18 @@ function loadSlot(w, opts) {
   w.picker.availableModules.push({ id: "", name: "None" });
   w.picker.selectedModuleIndex = 0;
   w.picker.selectedChainComponent = w.slotChainComponents(0).findIndex((c) => c.key === "fx1");
+  w.presetRecordClears.length = 0;
   w.applyComponentSelection();
   if (w.screen() !== "sf2,cloudseed")
     fail("B4: removing fx1 left the editor drawing it: " + w.screen());
+  /* A removal has to drop the record too, and pickerReplacedModule answers
+     false for one by design (replaced === null), so the condition asks about
+     the removal separately. This is also what makes the explicit clear that
+     used to sit in runComponentActionFromGrid remove_module redundant: that
+     row reaches here through applyChainComponentPick(slot, key, ""). */
+  if (!w.presetRecordClears.includes("0:fx1"))
+    fail("B4: removing fx1 kept its loaded-preset record: " +
+         JSON.stringify(w.presetRecordClears));
 }
 
 /* B5. The `+` box materialises a trailing empty position in the MODEL only,
