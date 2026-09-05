@@ -47,15 +47,28 @@ ok(/from\s+.\/data\/UserData\/schwung\/shared\/param_pages\/widget_registry\.mjs
    "widget_registry is imported by its absolute device path");
 ok(!/from\s+.[.][.]?\/shared\/param_pages\/widget_registry\.mjs./.test(src),
    "widget_registry is NOT imported by a relative path (fatal on device)");
-for (const fn of ["registerWidget", "clearWidgets", "setWidgetLogger"]) {
+for (const fn of ["registerOverlayWidgets", "clearWidgets", "setWidgetLogger"]) {
   ok(new RegExp("\\b" + fn + "\\b").test(src), `shadow_ui imports ${fn}`);
 }
 
-/* Registration is guarded on BOTH the hook and the kind. */
-ok(/typeof\s+\w+\.drawCell\s*===\s*"function"/.test(src),
+/*
+ * Registration is guarded on BOTH the hook and the kind -- but the guards no
+ * longer live HERE.
+ *
+ * They moved into widget_registry.registerOverlayWidgets when a module gained
+ * the ability to declare several widgets, because the rule got big enough that
+ * a copy of it in shadow_ui.js would be a second place to get it wrong. What
+ * this file still owns is that shadow_ui does not hand-roll its own version.
+ * The guards themselves are exercised behaviourally, on the real function, by
+ * test_widget_multiple_kinds.sh.
+ */
+const reg = readFileSync("./src/shared/param_pages/widget_registry.mjs", "utf8");
+ok(/typeof\s+draw\s*!==\s*"function"/.test(reg),
    "a non-function drawCell is ignored rather than registered");
-ok(/typeof\s+\w+\.widgetKind\s*===\s*"string"/.test(src),
-   "an overlay with no widgetKind string is ignored");
+ok(/isCustomKind\(kind\)/.test(reg),
+   "a kind outside the custom: namespace is ignored");
+ok(!/registerWidget\(ov\.widgetKind/.test(src),
+   "shadow_ui does not keep its own copy of the registration rule");
 
 /* WIDGET LIFETIME IS THE COMPONENTS, NOT THE CANVAS VIEWS.
  *
@@ -80,7 +93,7 @@ ok(ecwStart > 0, "ensureComponentWidgets exists");
 const ecwBody = code(src.slice(ecwStart, src.indexOf("\nfunction ", ecwStart + 1)));
 ok(/clearWidgets\s*\(\s*\)/.test(ecwBody),
    "ensureComponentWidgets owns the clear");
-ok(/registerWidget\s*\(/.test(ecwBody),
+ok(/registerOverlayWidgets\s*\(/.test(ecwBody),
    "ensureComponentWidgets owns the registration");
 ok(/widgetModuleLoaded/.test(ecwBody),
    "it is a no-op when the module has not changed, so it is safe on a hot path");

@@ -1,14 +1,14 @@
 {
   "title": "Widget Test",
-  "summary": "Reference module for the three module-supplied draw surfaces: an in-grid widget, a card that floats while the knob turns, and a fullscreen canvas view.",
+  "summary": "Reference module for the three module-supplied draw surfaces: in-grid widgets (two of them, from one module), a card that floats while the knob turns, and a fullscreen canvas view.",
   "sections": [
     {
       "heading": "What it shows",
-      "body": "The Level knob draws as a segmented meter supplied by the module rather than a built-in dial. Turn it and a card floats over the page with the reading and a bar. Click Detail for the module's own fullscreen view. All three come from files beside the module."
+      "body": "The Level knob draws as a segmented meter supplied by the module rather than a built-in dial, and Mode draws as a different widget from the SAME module. Turn Level and a card floats over the page with the reading, a bar, and the name of what the blend is between - which is a fact about Mode, read off the page rather than off Level. Click Detail for the module's own fullscreen view. All of it comes from files beside the module."
     },
     {
       "heading": "For module authors",
-      "body": "In grid: viz: { kind: \"custom:<name>\" } plus widgetKind and drawCell in canvas.js. On a turn: card_script: \"cards.js#export\" plus card_w and card_h. Fullscreen: type \"canvas\". Coordinates are frame-local everywhere: (0,0) is your own box and ctx.width/ctx.height are its size."
+      "body": "In grid: viz: { kind: \"custom:<name>\" } plus drawCell in canvas.js, named by widgetKind for one widget or widgetKinds for several (an array shares one drawer, an object gives each its own). On a turn: card_script: \"cards.js#export\" plus card_w and card_h; the drawer gets values and nowMs as well as raw, so it can read a sibling parameter. Fullscreen: type \"canvas\". Coordinates are frame-local everywhere: (0,0) is your own box and ctx.width/ctx.height are its size."
     },
     {
       "heading": "No reads on any of them",

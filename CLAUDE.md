@@ -533,6 +533,21 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   was pixel-identical to a control.
 - A momentary fires from the knob too, **latched per gesture** — a rate limit
   still fires eight times across a two-second spin.
+- **A module may declare SEVERAL widgets, and for a long time exactly one
+  registered.** The registry was always a Map; the single call site read
+  `ov.widgetKind`, one *string*, so a second declared kind was dropped — and a
+  dropped kind is not an error, it falls through to a built-in dial. Correct
+  page, no log line. `widgetKinds` takes an ARRAY (several names, one
+  `drawCell`, told apart by `group.keys[0]`) or an OBJECT (a drawer and a
+  nominal each); the rule lives in `registerOverlayWidgets`, beside the
+  registry, so `tests/host/` can run it, and an unusable declaration is LOGGED
+  rather than dropped.
+- **A card is handed the PAGE's values, not only its own.** The payload is
+  `{w, h, name, value, raw, values, nowMs}`. A card whose meaning depends on a
+  sibling — the vowel of *which* character — otherwise had no route to it at
+  all: no `getParam` on that path, and the card script is its own closure, so it
+  cannot see what the module's `drawCell` set. The first module to need it used
+  `globalThis` and a staleness stamp, which worked and was a side channel.
 - **A module's OTHER draw surface is a CARD, and it FLOATS.** `drawCell` gives it
   one cell; `card_script` gives it the page — a bordered picture raised while a
   knob is held, gone on release. It is centred in the page's **FRAME**, not on

@@ -2012,6 +2012,37 @@ globalThis.canvas_overlay = {
 };
 ```
 
+##### Declaring more than one widget
+
+A module may supply several widgets. `widgetKind` is the single-widget spelling
+and is unchanged; `widgetKinds` is the plural, in either of two forms:
+
+```javascript
+globalThis.canvas_overlay = {
+    /* several names, ONE drawer -- right when they are one drawing at two
+     * crops, told apart by group.keys[0] */
+    widgetKinds: ["custom:face", "custom:mouth"],
+    drawCell(ctx, { values, group }) { /* branch on group.keys[0] */ },
+};
+```
+
+```javascript
+globalThis.canvas_overlay = {
+    /* a drawer EACH -- right when the widgets are unrelated, and the only form
+     * that lets each carry its own nominal */
+    widgetKinds: {
+        "custom:meter": (ctx, o) => { /* ... */ },
+        "custom:mode":  { draw(ctx, o) { /* ... */ }, nominal: { w: 17, h: 15 } },
+    },
+};
+```
+
+Both forms may be combined with `widgetKind`. A kind that cannot be registered —
+no drawer, or a name outside the `custom:` namespace — is **named in
+`debug.log`** rather than dropped: a declared widget that never registers falls
+through to a built-in, which looks completely correct, so the log line is the
+only way to find out the picture is not yours.
+
 **What you can draw with.** The frame context carries `fillRect`, `print`,
 `textWidth`, `setPixel`, `line`, `fillCircle`, `drawCircle` and `drawArc`. All of
 them are always present — they are implemented on the frame's own clipped
@@ -2079,10 +2110,12 @@ eight knob boxes: per-pixel blitting would cost ~1 ms of the 1.68 ms page render
 ##### The reference module
 
 `src/modules/audio_fx/widget-test/` is a working example of **all three**
-module-supplied surfaces on one parameter: `canvas.js` supplies the `drawCell`
-segmented meter and the fullscreen `draw`, `cards.js` supplies the card that
-floats while the knob turns, and a passthrough DSP makes it a real, loadable
-chain FX.
+module-supplied surfaces: `canvas.js` supplies the `drawCell` segmented meter on
+`level`, a SECOND widget kind on `mode` (through `widgetKinds`, to show that one
+module may declare several), and the fullscreen `draw`; `cards.js` supplies the
+card that floats while `level` turns — and that card reads `mode` out of
+`o.values`, which is the worked example of a card whose meaning lives on another
+parameter. A passthrough DSP makes it a real, loadable chain FX.
 
 Its card is also the reference for the null contract: `raw` may be null, and the
 drawer prints `--` with **no bar** rather than a bar at zero, because a bar at
@@ -2154,6 +2187,19 @@ the wire value — **and `o.raw` may be `null`**, meaning the module did not ans
 that read. Draw a word and stop when it does; a read that did not answer must
 never become a picture. There is no `getParam` on this path (~2.8 ms, against a
 1.68 ms whole-page render).
+
+**You also get the rest of the page.** `o.values` is the page's value map — the
+same object a cell widget is handed — for a card whose meaning depends on a
+sibling: the vowel of *which* character, a ratio against *which* base, a time in
+*whose* clock division. `o.nowMs` is a wall clock, for a card that animates
+during the gesture that raised it. The null rules are identical: a sibling may
+be missing or `null`, and an absent one must not become a picture either.
+
+Without `o.values` such a card had no route to that fact at all — no `getParam`
+here, and the card script is loaded into its own closure, so it cannot see a
+variable the module's own `drawCell` set. The first module to need it went
+through `globalThis` with a staleness timestamp, which worked and was a hidden
+side channel between two files the contract said were unrelated.
 
 **One strike.** A drawer that throws is retired for the session, the card is
 left as an empty frame rather than a hole, and the parameter goes back to

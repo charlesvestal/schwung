@@ -1457,11 +1457,46 @@ shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
 calling `registerWidget()` directly. Every other widget test registers directly,
 and that is exactly why none of them saw this.
 
+### A module may declare SEVERAL widgets, and one call site said otherwise
+
+The registry has always been a `Map`, and `registerWidget` has always taken a
+kind. Nothing in the design limited a module to one widget — but the single call
+site in `shadow_ui.js` read `ov.widgetKind`, one **string**, so a module naming
+two kinds got the first registered and the second dropped.
+
+Dropped is not an error here, and that is the whole problem. An unregistered
+kind does not claim its key, so the key stays in the detector pool and a
+built-in dial draws — which is the same fall-through that makes a typo, a failed
+load and an older host all degrade safely. Correct-looking page, no log line,
+nothing to search for. The fixture's own author hit it: two reasonable names,
+one silent dial.
+
+`registerOverlayWidgets` in `widget_registry.mjs` owns the rule now, so the
+resolution lives beside the registry rather than in a UI file, and
+`tests/host/` can run it. `widgetKind` is unchanged; `widgetKinds` takes either
+an **array** of names sharing one `drawCell` (they are one drawing at two crops,
+told apart by `group.keys[0]`) or an **object** giving each kind its own drawer
+and its own nominal. Anything unusable is returned as a reason and logged
+against the module, because "declared a widget and did not get one" is precisely
+what an author cannot otherwise see.
+
 ### A module's OTHER draw surface is a CARD, and it floats
 
 `drawCell` gives a module one cell. `card_script` gives it the page: a bordered
 picture, centred, raised while a knob is held or has just been turned, and gone
 on release. `param_card.mjs` owns the frame and the module owns the inside.
+
+**A card sees the PAGE, not only its own value.** The payload is `{ w, h, name,
+value, raw, values, nowMs }`. `values` is the page's value map — the same object
+`drawCell` is handed — and it exists because a card whose meaning depends on a
+sibling had no route to that fact at all: there is no `getParam` here, and the
+card script is loaded into its own closure, so it cannot even see a variable the
+module's own `drawCell` set. The first module to need it (which character's
+vowel is this?) went through `globalThis` plus a staleness timestamp. That
+worked, and it was a hidden side channel between two files this contract said
+were unrelated — which is a thing to remove, not to document. The null rules
+carry over unchanged: a sibling may be missing or `null`, and an absent one must
+not become a picture any more than an absent `raw` may.
 
 **Why a second surface rather than a bigger cell.** A cell is 17×15 and the
 grid's business is eight values at once. A card answers a different question —

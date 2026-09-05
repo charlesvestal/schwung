@@ -4164,6 +4164,13 @@ export function createController(io = {}) {
              * strip above it would be a second formatter by another name. */
             value: knobRowValue(key),
             raw: s.values[key] === undefined ? null : s.values[key],
+            /* The whole page's values, so a card can read a sibling the way a
+             * cell widget always could -- see param_card's note. Passed by
+             * reference deliberately: drawCell is already handed this exact
+             * object, and copying it per frame to give the card a weaker
+             * guarantee than the cell has would be the odd choice. */
+            values: s.values,
+            nowMs: now(),
             /*
              * ONE STRIKE. A drawer that threw is retired for the session rather
              * than re-entered up to sixty times a second, and the parameter

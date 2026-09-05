@@ -110,7 +110,7 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
  * absolute path, and ./shadow_ui_param_pages.mjs above relies on exactly that),
  * so the prefix here is convention rather than necessity — do not diverge from
  * it in one import. */
-import { registerWidget, clearWidgets, setWidgetLogger }
+import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
 /* Which user preset a component is currently on, and whether the live state
@@ -16688,16 +16688,25 @@ function ensureComponentWidgets(moduleId, chainParams) {
 
     const loaded = loadCanvasOverlayScript(`${dir}/canvas.js`, "");
     const ov = loaded && loaded.overlay;
-    if (ov && typeof ov.drawCell === "function" && typeof ov.widgetKind === "string") {
-        registerWidget(ov.widgetKind, {
-            draw: ov.drawCell.bind(ov),
-            nominal: ov.widgetNominal || null,
-        });
-    } else {
-        /* Declared a custom kind and we could not load a widget for it. Not
-         * fatal: the kind stays unregistered, so resolveViz leaves those keys to
-         * the detector and the built-in draws. But say so, because otherwise the
-         * author sees a reasonable picture and no reason it is not theirs. */
+    /* A module may declare MORE THAN ONE widget -- see registerOverlayWidgets,
+     * which owns the shapes. This used to read a single `widgetKind` string,
+     * which meant a second declared kind was never registered and its cell
+     * silently drew a built-in dial instead. */
+    const { registered, skipped } = registerOverlayWidgets(ov);
+    if (registered.length) {
+        debugLog(`widgets: ${id} registered ${registered.join(", ")}`);
+    }
+    /* Declared a custom kind and we could not load a widget for it. Not fatal:
+     * the kind stays unregistered, so resolveViz leaves those keys to the
+     * detector and the built-in draws. But say so, because otherwise the author
+     * sees a reasonable picture and no reason it is not theirs. Each skipped
+     * kind names ITSELF and why -- a module registering one of two widgets used
+     * to log nothing at all, because the old branch only spoke when it got
+     * nothing. */
+    for (const s2 of skipped) {
+        debugLog(`widgets: ${id} declared ${s2.kind} but ${s2.why}`);
+    }
+    if (!registered.length && !skipped.length) {
         debugLog(`widgets: ${id} declares a custom viz kind but no usable drawCell` +
                  (loaded && loaded.error ? ` (${loaded.error})` : ""));
     }
