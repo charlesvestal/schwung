@@ -679,6 +679,164 @@ static const char *json_object_end(const char *obj_start) {
     return (end && *end == '}') ? end : NULL;
 }
 
+
+/* ============================================================================
+ * Bus section
+ * ============================================================================
+ *
+ * POSITIONAL AND NEVER COMPACTED: entry i of "buses" is bus i. An entry the
+ * file leaves empty (or marks "present": 0) is a bus that does not exist, and
+ * compacting those away would renumber every bus behind it — the defect the
+ * Master FX chain shipped with. Voices are stored as IDS; see bus_voice_apply.h.
+ */
+
+/* Find "key" inside [start, end) and answer the first byte of its VALUE, past
+ * the colon and any whitespace. NULL if the key is not in that span. */
+static const char *bus_field(const char *start, const char *end, const char *key)
+{
+    char quoted[40];
+    snprintf(quoted, sizeof(quoted), "\"%s\"", key);
+    const char *k = bounded_strstr(start, end, quoted);
+    if (!k) return NULL;
+    const char *colon = k + strlen(quoted);
+    while (colon < end && (*colon == ' ' || *colon == '\t' || *colon == '\n' || *colon == '\r'))
+        colon++;
+    if (colon >= end || *colon != ':') return NULL;
+    colon++;
+    while (colon < end && (*colon == ' ' || *colon == '\t' || *colon == '\n' || *colon == '\r'))
+        colon++;
+    return (colon < end) ? colon : NULL;
+}
+
+static int bus_field_int(const char *start, const char *end, const char *key, int fallback)
+{
+    const char *v = bus_field(start, end, key);
+    if (!v) return fallback;
+    if (*v == 't') return 1;          /* JSON true/false, which the UI may emit */
+    if (*v == 'f') return 0;
+    return atoi(v);
+}
+
+static void bus_field_string(const char *start, const char *end, const char *key,
+                             char *out, int out_len)
+{
+    out[0] = '\0';
+    const char *v = bus_field(start, end, key);
+    if (v && *v == '"') json_decode_quoted_string(v, end, out, out_len);
+}
+
+/* Read a bounded array of ints into out[0..n). Missing entries keep their
+ * current value, so a shorter array than BUS_MIX_SENDS is a partial answer
+ * rather than a reset to zero. */
+static void bus_field_int_array(const char *start, const char *end, const char *key,
+                                int *out, int n)
+{
+    const char *v = bus_field(start, end, key);
+    if (!v || *v != '[') return;
+    const char *arr_end = json_span_end(v);
+    if (!arr_end || arr_end > end || *arr_end != ']') return;
+    const char *p = v + 1;
+    for (int i = 0; i < n && p < arr_end; i++) {
+        while (p < arr_end && (*p == ' ' || *p == ',' || *p == '\n' || *p == '\t' || *p == '\r')) p++;
+        if (p >= arr_end) break;
+        out[i] = atoi(p);
+        while (p < arr_end && *p != ',') p++;
+    }
+}
+
+static void bus_parse_one(const char *obj_start, const char *obj_end, bus_config_t *cfg)
+{
+    memset(cfg, 0, sizeof(*cfg));
+    /* An object with no "present" field is a bus that exists — the field is
+     * only ever written to say NO. */
+    if (!bus_field_int(obj_start, obj_end, "present", 1)) return;
+    cfg->present = 1;
+
+    bus_field_string(obj_start, obj_end, "name", cfg->name, MAX_NAME_LEN);
+    bus_field_int_array(obj_start, obj_end, "sends", cfg->sends, BUS_MIX_SENDS);
+
+    /* voices: an array of id strings. */
+    {
+        const char *v = bus_field(obj_start, obj_end, "voices");
+        const char *arr_end = (v && *v == '[') ? json_span_end(v) : NULL;
+        if (v && arr_end && *arr_end == ']' && arr_end <= obj_end) {
+            const char *p = v + 1;
+            while (cfg->voice_id_count < SPLIT_VOICES_MAX && p < arr_end) {
+                const char *q = memchr(p, '"', (size_t)(arr_end - p));
+                if (!q) break;
+                char id[SPLIT_VOICE_ID_LEN];
+                if (json_decode_quoted_string(q, arr_end, id, sizeof(id)) > 0 && id[0]) {
+                    strncpy(cfg->voice_ids[cfg->voice_id_count], id, SPLIT_VOICE_ID_LEN - 1);
+                    cfg->voice_ids[cfg->voice_id_count][SPLIT_VOICE_ID_LEN - 1] = '\0';
+                    cfg->voice_id_count++;
+                }
+                /* Step past this string's closing quote, honouring escapes so a
+                 * backslash-quote inside an id cannot end the scan early. */
+                q++;
+                while (q < arr_end && *q != '"') { if (*q == '\\' && q + 1 < arr_end) q++; q++; }
+                p = (q < arr_end) ? q + 1 : arr_end;
+            }
+        }
+    }
+
+    /* fx: positional array of {module, bypassed, state}. */
+    {
+        const char *v = bus_field(obj_start, obj_end, "fx");
+        const char *arr_end = (v && *v == '[') ? json_span_end(v) : NULL;
+        if (v && arr_end && *arr_end == ']' && arr_end <= obj_end) {
+            const char *p = v + 1;
+            while (cfg->fx_count < MAX_AUDIO_FX) {
+                const char *fo = memchr(p, '{', (size_t)(arr_end - p));
+                if (!fo || fo >= arr_end) break;
+                const char *fe = json_span_end(fo);
+                if (!fe || *fe != '}' || fe > arr_end) break;
+
+                bus_fx_config_t *fx = &cfg->fx[cfg->fx_count];
+                bus_field_string(fo, fe, "module", fx->module, MAX_NAME_LEN);
+                fx->bypassed = bus_field_int(fo, fe, "bypassed", 0) ? 1 : 0;
+                const char *sv = bus_field(fo, fe, "state");
+                if (sv && *sv == '{') {
+                    /* COMPACTED, never the raw pretty-printed file slice:
+                     * modules parse what they emitted, and a `"key":"` matcher
+                     * silently misses the stored `"key": "` form. A state too
+                     * large for MAX_BUS_FX_STATE_LEN is left ABSENT rather than
+                     * truncated — half a state is worse than none. */
+                    if (json_object_compact_copy(fx->state, sizeof(fx->state), sv) < 0)
+                        fx->state[0] = '\0';
+                } else if (sv && *sv == '"') {
+                    json_decode_quoted_string(sv, fe, fx->state, sizeof(fx->state));
+                }
+                cfg->fx_count++;
+                p = fe + 1;
+            }
+        }
+    }
+}
+
+static void bus_parse_section(const char *json, patch_info_t *patch)
+{
+    bus_field_int_array(json, json + strlen(json), "main_sends",
+                        patch->main_sends, BUS_MIX_SENDS);
+
+    const char *pos = strstr(json, "\"buses\"");
+    if (!pos) return;
+    const char *bracket = strchr(pos, '[');
+    const char *arr_end = bracket ? json_array_end(bracket) : NULL;
+    /* No trustworthy end means we parse NOTHING, matching the audio_fx scan
+     * above: refusing nonsense beats inventing buses from it. */
+    if (!bracket || !arr_end) return;
+
+    const char *p = bracket + 1;
+    for (int b = 0; b < SLOT_BUSES && p < arr_end; b++) {
+        const char *obj = memchr(p, '{', (size_t)(arr_end - p));
+        if (!obj || obj >= arr_end) break;
+        const char *obj_end = json_span_end(obj);
+        if (!obj_end || *obj_end != '}' || obj_end > arr_end) break;
+        bus_parse_one(obj, obj_end, &patch->buses[b]);
+        p = obj_end + 1;
+    }
+}
+
 /* V2 parse patch file - simplified version */
 int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *patch) {
     (void)inst;
@@ -1358,6 +1516,8 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
         }
     }
 
+    bus_parse_section(json, patch);
+
     free(json);
     return 0;
 }
@@ -1574,6 +1734,26 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
         /* Reset phase for synced LFOs on patch load */
         if (inst->lfos[i].sync) {
             inst->lfos[i].phase = 0.0;
+        }
+    }
+
+    /*
+     * Buses LAST, because a voice id resolves against the module that is
+     * loaded NOW and the synth was only loaded a few lines above.
+     *
+     * The orphan count is LOGGED, not swallowed: a partial restore that
+     * reports nothing is indistinguishable from a working one. The ids
+     * themselves stay in the config, so a bus whose module came back finds its
+     * voices again on the next rebuild.
+     */
+    {
+        int orphans = chain_bus_apply_patch(inst, patch);
+        if (orphans > 0) {
+            snprintf(msg, sizeof(msg),
+                     "Bus restore: %d voice id(s) no longer exist in %s; "
+                     "kept, not re-pointed", orphans,
+                     patch->synth_module[0] ? patch->synth_module : "(no synth)");
+            v2_chain_log(inst, msg);
         }
     }
 

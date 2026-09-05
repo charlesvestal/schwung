@@ -73,6 +73,14 @@ _Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= BUS_MIX_MAX_BUSES,
 #define MAX_PATH_LEN 256
 #define MAX_NAME_LEN 64
 
+/* Voices a module can declare, and how long an id may be. Hoisted this far up
+ * because BOTH bus_config_t (the patch-file form) and slot_bus_t (the runtime
+ * form) store the ids of the voices assigned to a bus. They describe
+ * chain_instance_t::synth_split_voice_ids, which is where the meaning of the
+ * index is documented. */
+#define SPLIT_VOICES_MAX 32
+#define SPLIT_VOICE_ID_LEN 32
+
 /* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
 #define CHAIN_DEBUG_FLAG_PATH "/data/UserData/schwung/chain_debug_on"
 #define CHAIN_DEBUG_LOG_PATH "/data/UserData/schwung/chain_debug.log"
@@ -192,6 +200,22 @@ typedef struct {
 /* State storage size for FX plugins */
 #define MAX_FX_STATE_LEN 8192
 
+/*
+ * State storage for a BUS FX position, deliberately an eighth of the above.
+ *
+ * A patch_info_t is a STACK local in v2_set_param's "load_file" route — i.e.
+ * on the SPI callback's stack — and already ~160 KB. Buses add
+ * SLOT_BUSES * MAX_AUDIO_FX more state buffers, which at MAX_FX_STATE_LEN
+ * would be another 280 KB on that stack. 1 KB keeps the addition to ~35 KB.
+ *
+ * It is not a truncation: v2_parse_patch_file drops a state that does not fit
+ * (json_object_compact_copy answers -1 and the field is left empty), so an
+ * over-long bus FX state comes back at the plugin's defaults rather than as a
+ * half-parsed string. The whole patch file is capped at 65536 bytes anyway,
+ * so a full-size state per bus position could never have been stored.
+ */
+#define MAX_BUS_FX_STATE_LEN 1024
+
 
 /* MIDI FX configuration (module + params + state) */
 typedef struct {
@@ -208,6 +232,33 @@ typedef struct {
     int param_count;
     char state[MAX_FX_STATE_LEN];  /* JSON state for audio FX plugin */
 } audio_fx_config_t;
+
+/* One bus FX position as it is stored in a patch file. */
+typedef struct {
+    char module[MAX_NAME_LEN];
+    int  bypassed;
+    char state[MAX_BUS_FX_STATE_LEN];
+} bus_fx_config_t;
+
+/*
+ * One bus as it is stored in a patch file.
+ *
+ * `present` is not redundant with a name or an FX count: an EMPTY bus that the
+ * user created is a different thing from a bus the file never mentioned, and
+ * only the first should be re-created (and re-allocated) on load.
+ *
+ * Voices are stored as IDS. See bus_voice_apply.h for why, and for what
+ * happens to one that no longer resolves.
+ */
+typedef struct {
+    int  present;
+    char name[MAX_NAME_LEN];
+    char voice_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
+    int  voice_id_count;
+    int  sends[BUS_MIX_SENDS];
+    bus_fx_config_t fx[MAX_AUDIO_FX];
+    int  fx_count;
+} bus_config_t;
 
 /* Synth state storage size - Surge XT needs ~8KB+ when pretty-printed with indent */
 #define MAX_SYNTH_STATE_LEN 16384
@@ -235,6 +286,8 @@ typedef struct {
     int knob_cc_out;       /* 0 = off (default), 1 = echo chain-knob changes out
                             * as CC 102-109 on the slot's recv channel */
     lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
+    bus_config_t buses[SLOT_BUSES];
+    int main_sends[BUS_MIX_SENDS];
 } patch_info_t;
 
 /* ============================================================================
@@ -304,9 +357,82 @@ typedef struct {
     void *fx_handles[MAX_AUDIO_FX];
     audio_fx_api_v2_t *fx_plugins_v2[MAX_AUDIO_FX];
     void *fx_instances[MAX_AUDIO_FX];
+    /* RT-OWNED. The worker never writes these, so the render path and
+     * get_param read them with no gate at all. */
     int   fx_bypassed[MAX_AUDIO_FX];
+
+    /* WORKER-OWNED, PUBLISHED UNDER fx_ready. Everything from here to
+     * current_fx_modules is written by chain_bus_worker_fn and must only be
+     * read after an ACQUIRE load of fx_ready returns non-zero — see the gate's
+     * own comment below. */
     int   fx_count;
     char  current_fx_modules[MAX_AUDIO_FX][MAX_NAME_LEN];
+    /*
+     * Per-position metadata, allocated PER OCCUPIED POSITION and only by the
+     * worker.
+     *
+     * Not eagerly for all MAX_AUDIO_FX positions the way the main chain's are
+     * (chain_alloc_position_storage): one chain_param_info_t table is ~1.1 MB
+     * and one ui_hierarchy cache 64 KB, so eager allocation would cost
+     * ~9.1 MB per bus, ~36 MB per slot and ~145 MB across four slots — for
+     * positions that are almost always empty. A bus therefore costs metadata
+     * only for the FX it actually holds.
+     */
+    chain_param_info_t *fx_params[MAX_AUDIO_FX];
+    int   fx_param_counts[MAX_AUDIO_FX];
+    char *fx_ui_hierarchy[MAX_AUDIO_FX];          /* CHAIN_UI_HIERARCHY_LEN each */
+    /*
+     * THE SECOND GATE, and it is not optional.
+     *
+     * `buf`'s RELEASE/ACQUIRE pair covers `buf` AND NOTHING ELSE: the fields
+     * above are written by the worker AFTER buf is published, so buf's acquire
+     * cannot order them. Non-zero means "the worker is done and these fields
+     * are stable"; the render path and every get_param that touches an FX
+     * instance load it __ATOMIC_ACQUIRE first and skip the bus's inserts
+     * entirely when it reads 0.
+     *
+     * Cleared by the RT thread BEFORE it hands work to the worker. That store
+     * needs no release of its own: set_param and render_block are the SAME
+     * thread (the SPI callback), so once set_param has cleared it, no later
+     * render can run these FX and no earlier one is still running.
+     */
+    int   fx_ready;
+    /*
+     * Bumped by the RT thread before every post, read by the worker.
+     *
+     * The worker publishes fx_ready only when the seq it started from still
+     * matches — otherwise a request the RT thread made mid-reconcile would be
+     * published as finished. On a mismatch it leaves fx_ready at 0 and runs
+     * again on the post that accompanied the bump, so it converges without the
+     * RT side ever waiting.
+     */
+    unsigned fx_req_seq;
+
+    /* --- RT-OWNED REQUEST SIDE. The SHAPE the user asked for, which is also
+     * what get_param and serialization answer from: it is never written by the
+     * worker, so reading it needs no gate and cannot tear. --- */
+    char  fx_request[MAX_AUDIO_FX][MAX_NAME_LEN];
+    /* Opaque plugin state staged for the worker to apply after it creates an
+     * instance. Set only by a patch load; a live edit goes straight to the
+     * plugin. Consumed (and cleared) by the worker. */
+    char  fx_state_request[MAX_AUDIO_FX][MAX_BUS_FX_STATE_LEN];
+    int   fx_state_pending[MAX_AUDIO_FX];
+    /* Buffer the RT thread has unpublished (stored NULL over `buf`) and handed
+     * to the worker to free. Freeing on the RT thread is the alternative and it
+     * is a free() on the SPI callback. */
+    int16_t *buf_retired;
+
+    /* --- Voice assignment, RT-owned. --- *
+     *
+     * The IDS are the configuration; chain_instance_t::voice_bus is a derived
+     * cache rebuilt from them. An id that does not resolve STAYS HERE — it is
+     * counted in orphan_count and left out of the map, never dropped and never
+     * re-pointed, so it comes back if the module that declares it does.
+     */
+    char  voice_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
+    int   voice_id_count;
+    int   orphan_count;
+
     int   send_level[BUS_MIX_SENDS];              /* 0..BUS_MIX_SEND_LEVEL_MAX */
 } slot_bus_t;
 
@@ -348,8 +474,6 @@ typedef struct chain_instance {
      *
      * Reset on create and on every synth load: an id left over from the previous
      * module must not name a voice in a list that no longer exists. */
-#define SPLIT_VOICES_MAX 32
-#define SPLIT_VOICE_ID_LEN 32
     char synth_split_voice_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
     int  synth_split_voice_count;
 
@@ -730,11 +854,65 @@ CHAIN_INTERNAL void v2_unload_synth(chain_instance_t *inst);
  * use — a slot with no buses starts no thread. It allocates nothing itself.
  * Task 8's "bus<N>:create" dispatch is its caller. */
 CHAIN_INTERNAL void chain_bus_request_alloc(chain_instance_t *inst, int bus);
+/* The half of the above that does NOT claim the bus: flag it pending, start the
+ * worker if this is the first use, post the semaphore. chain_bus.c uses it for
+ * every change that is not a creation — including a DELETE, which must reach
+ * the worker without setting in_use back to 1. RT-safe. */
+CHAIN_INTERNAL void chain_bus_post_work(chain_instance_t *inst, int bus);
 /* Stops and JOINS the worker; must be called before chain_bus_release_all. */
 CHAIN_INTERNAL void chain_bus_worker_stop(chain_instance_t *inst);
 /* Frees every bus's buffer, destroys its FX instances and dlcloses their
  * handles. Only safe once the worker is joined. */
 CHAIN_INTERNAL void chain_bus_release_all(chain_instance_t *inst);
+
+/* chain_bus.c — the "bus<N>:" parameter surface, the voice map and the
+ * worker's reconcile step. Split out of chain_host.c for the same reason
+ * chain_patch.c and chain_reorder.c were. */
+
+/* RT side. Both return -1 for a key this file does not own, so the caller can
+ * fall through to its existing ladders; chain_bus_set_param returns 0 when it
+ * handled the key. */
+CHAIN_INTERNAL int chain_bus_set_param(chain_instance_t *inst, int bus,
+                                       const char *sub, const char *val);
+CHAIN_INTERNAL int chain_bus_get_param(chain_instance_t *inst, int bus,
+                                       const char *sub, char *buf, int buf_len);
+
+/* Rebuild chain_instance_t::voice_bus from every bus's stored ids, refreshing
+ * each bus's orphan_count. Call after any change to the assignments OR to the
+ * synth's declared voice list — an id resolves against whatever module is
+ * loaded NOW. RT-safe: a scan, no allocation. */
+CHAIN_INTERNAL void chain_bus_rebuild_voice_map(chain_instance_t *inst);
+
+/* Worker side: reconcile one bus's buffer and FX chain to the RT thread's
+ * request. Runs on chain_bus_worker_fn (SCHED_OTHER) and is the ONLY place
+ * bus FX are dlopen'd, instantiated and given their metadata.
+ *
+ * `stop` is polled between units of work — see chain_bus_worker_fn. It returns
+ * as soon as it reads non-zero, leaving whatever it has already stored for
+ * chain_bus_release_all to clean up. */
+CHAIN_INTERNAL void chain_bus_worker_reconcile(chain_instance_t *inst, int bus,
+                                               const int *stop);
+
+/* Free a bus's per-position metadata. Called from chain_bus_release_all and
+ * from the worker when a position empties. */
+CHAIN_INTERNAL void chain_bus_free_fx_meta(slot_bus_t *bus, int pos);
+
+/* Apply a parsed patch's bus section. RT side: shape and state are staged for
+ * the worker, the voice map is rebuilt here. Answers the total number of
+ * orphaned voice ids across every bus, which the caller reports. */
+CHAIN_INTERNAL int chain_bus_apply_patch(chain_instance_t *inst, const patch_info_t *patch);
+
+/* The slot-level bus keys ("buses:config", "buses:main_send<M>"), which name no
+ * single bus and so cannot go through bus_route.h. Same return convention as
+ * the indexed pair above. */
+CHAIN_INTERNAL int chain_bus_slot_set_param(chain_instance_t *inst, const char *sub, const char *val);
+CHAIN_INTERNAL int chain_bus_slot_get_param(chain_instance_t *inst, const char *sub, char *buf, int buf_len);
+
+/* Drop every bus back to its resting state: no voices, no sends, no FX, buffer
+ * retired. Used by "clear" and before a patch load, for the same reason the
+ * LFOs and knob mappings are cleared there — bus config is per-SLOT state and
+ * would otherwise outlive the set that defined it. */
+CHAIN_INTERNAL void chain_bus_clear_all(chain_instance_t *inst);
 
 /* chain_json.c */
 CHAIN_INTERNAL const char *bounded_strstr(const char *start, const char *end, const char *needle);
@@ -766,6 +944,13 @@ CHAIN_INTERNAL void knob_emit_cc_out(chain_instance_t *inst, int idx);
 /* Echo every mapped chain knob. Used after a patch load or knob remap, where
  * values change without any per-knob event for the controller to have seen. */
 CHAIN_INTERNAL void knob_emit_cc_out_all(chain_instance_t *inst);
+/* Render a parsed chain_param_info_t table as the chain_params JSON array the
+ * shadow UI reads. Extracted for chain_bus.c, which would otherwise be a FOURTH
+ * hand-written copy of this loop; the three existing copies in chain_host.c's
+ * synth / fx / midi_fx get_param routes are deliberately left alone here, as
+ * folding them in is a change to three live read paths and not this task's. */
+CHAIN_INTERNAL int chain_params_emit_json(const chain_param_info_t *params, int count,
+                                          char *buf, int buf_len);
 CHAIN_INTERNAL int parse_chain_params(const char *module_path, chain_param_info_t *params, int *count);
 CHAIN_INTERNAL int parse_chain_params_array_json(const char *json_array, chain_param_info_t *params, int max_params);
 CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, int out_len);

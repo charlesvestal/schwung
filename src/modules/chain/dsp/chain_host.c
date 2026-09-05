@@ -159,51 +159,29 @@ static void *chain_bus_worker_fn(void *arg) {
         if (!__atomic_load_n(&inst->bus_worker_started, __ATOMIC_ACQUIRE)) break;
 
         for (int b = 0; b < SLOT_BUSES; b++) {
+            /* The stop flag, checked BETWEEN buses as well as inside the
+             * reconcile: v2_destroy_instance joins this thread from the SPI
+             * callback, so the queue must be abandonable at every unit
+             * boundary rather than run to completion. */
+            if (!__atomic_load_n(&inst->bus_worker_started, __ATOMIC_ACQUIRE)) break;
             if (!__atomic_load_n(&inst->bus_alloc_pending[b], __ATOMIC_ACQUIRE)) continue;
             /* Clear BEFORE attempting, not after. Clearing afterwards
-             * clobbers a request the RT thread made WHILE we were allocating:
+             * clobbers a request the RT thread made WHILE we were working:
              * it would set pending=1, we would store 0 over it, and the bus
-             * would sit on Main until some later create. Clearing first turns
-             * that race into a harmless duplicate pass, which the !buf test
-             * below already makes free. Matters once Task 8 puts a
-             * multi-megabyte allocation here and a failure becomes plausible. */
+             * would sit unreconciled until some later change. Clearing first
+             * turns that race into a harmless duplicate pass — and the
+             * reconcile is idempotent, which is what makes a duplicate free. */
             __atomic_store_n(&inst->bus_alloc_pending[b], 0, __ATOMIC_RELEASE);
-            slot_bus_t *bus = &inst->buses[b];
-            if (!__atomic_load_n(&bus->buf, __ATOMIC_RELAXED)) {
-                /* BUS_BUF_SAMPLES, never a restated FRAMES_PER_BLOCK * 2. The
-                 * render path sizes its memset/memcpy/fx_dry off that same
-                 * name with no bounds check of its own, so a second spelling
-                 * here is a silent heap overflow on the SPI callback the
-                 * moment the two disagree. */
-                int16_t *buf = (int16_t *)calloc(BUS_BUF_SAMPLES, sizeof(int16_t));
-                if (buf) {
-                    /* Publish LAST, with RELEASE: the RT side reads buf and,
-                     * seeing it non-NULL, immediately starts routing voices
-                     * into it, so everything it will touch must already be
-                     * visible.
-                     *
-                     * THE READER MUST PAIR THIS WITH AN ACQUIRE. A release
-                     * store against a plain load orders nothing — core 3 could
-                     * observe the pointer before calloc's zeroes, render into
-                     * memory it then reads as garbage. v2_render_block's
-                     * snapshot loop uses __ATOMIC_ACQUIRE for exactly this;
-                     * change one and you must change both.
-                     *
-                     * THIS GATE COVERS `buf` AND NOTHING ELSE. The render
-                     * path reads fx_count, fx_bypassed[], fx_plugins_v2[] and
-                     * fx_instances[] with PLAIN loads. That is sound only
-                     * while the RT thread is their sole writer. Task 8 moves
-                     * bus FX loading onto this worker, and those writes
-                     * happen AFTER buf is already published — so this acquire
-                     * will not order them. They need their own gate: store an
-                     * `fx_ready` flag RELEASE after the pointers, load it
-                     * ACQUIRE before the insert loop. */
-                    __atomic_store_n(&bus->buf, buf, __ATOMIC_RELEASE);
-                }
-                /* A failed calloc is not an error state to latch: buf stays
-                 * NULL, bus_mix_target keeps routing the bus's voices through
-                 * Main, and the next request retries. */
-            }
+            /*
+             * EVERYTHING EXPENSIVE LIVES IN HERE, and that is the entire point
+             * of this thread: the buffer calloc, the dlopen and
+             * create_instance for each bus FX, and the ~1.1 MB of parameter
+             * metadata plus 64 KB ui_hierarchy cache each of those needs. See
+             * chain_bus.c for the ownership split and for the two
+             * release/acquire gates (`buf` and `fx_ready`) that join the two
+             * threads.
+             */
+            chain_bus_worker_reconcile(inst, b, &inst->bus_worker_started);
         }
     }
     return NULL;
@@ -226,8 +204,15 @@ static void *chain_bus_worker_fn(void *arg) {
  */
 void chain_bus_request_alloc(chain_instance_t *inst, int bus) {
     if (!inst || bus < 0 || bus >= SLOT_BUSES) return;
-
     inst->buses[bus].in_use = 1;
+    chain_bus_post_work(inst, bus);
+}
+
+/* The same handover without the claim — see the header. A delete must reach the
+ * worker too, and must not resurrect in_use on its way there. */
+void chain_bus_post_work(chain_instance_t *inst, int bus) {
+    if (!inst || bus < 0 || bus >= SLOT_BUSES) return;
+
     __atomic_store_n(&inst->bus_alloc_pending[bus], 1, __ATOMIC_RELEASE);
 
     if (!inst->bus_worker_started) {
@@ -288,10 +273,18 @@ void chain_bus_release_all(chain_instance_t *inst) {
             }
             bus->fx_bypassed[i] = 0;
             bus->current_fx_modules[i][0] = '\0';
+            /* The per-position metadata the worker allocated. Missing it is a
+             * ~1.1 MB leak per occupied position, which four slots of buses
+             * makes large enough to matter. */
+            chain_bus_free_fx_meta(bus, i);
         }
         bus->fx_count = 0;
+        bus->fx_ready = 0;
         free(bus->buf);
         bus->buf = NULL;
+        /* A buffer the RT side unpublished and the worker never got to. */
+        free(bus->buf_retired);
+        bus->buf_retired = NULL;
         bus->in_use = 0;
     }
 }
@@ -314,20 +307,24 @@ static void v2_destroy_instance(void *instance) {
      *
      * The join BLOCKS the SPI callback. That is deliberate: pthread_detach is
      * a use-after-free here, because the worker dereferences `inst` and we
-     * free it two lines below. What bounds the stall TODAY is that the
-     * worker's entire body is one 512-byte calloc, and it is parked on the
-     * semaphore so it wakes on the post rather than after a sleep.
+     * free it two lines below. It is parked on the semaphore, so it wakes on
+     * the post rather than after a sleep.
      *
-     * THAT BOUND EXPIRES WITH TASK 8. Once dlopen, create_instance and ~9.1 MB
-     * of per-position metadata move into the worker, this join can land while
-     * it holds the loader lock or is mid-multi-megabyte calloc — and
-     * pthread_join is a futex wait with NO priority inheritance, so a FIFO-70
-     * thread ends up waiting on a SCHED_OTHER one that anything on cores 0-2
-     * can deschedule for a full quantum. This is a different hazard from
-     * "destroy_instance already frees 19 MB here": that work is bounded by
-     * THIS thread's progress, the join by ANOTHER thread's scheduling. The fix
-     * when it comes is a stop flag the worker checks BETWEEN units of work, so
-     * the join waits out one bus rather than the whole queue. */
+     * The worker now also dlopens, instantiates and allocates ~1.1 MB of
+     * metadata per bus FX position, so what bounds this join is no longer the
+     * body being trivial: it is that the worker polls bus_worker_started
+     * BETWEEN units of work — between buses in chain_bus_worker_fn and between
+     * FX positions in chain_bus_worker_reconcile — and returns as soon as it
+     * reads 0. The join therefore waits out at most ONE position's dlopen plus
+     * create_instance, never the whole queue.
+     *
+     * That is a bound and not a guarantee. pthread_join is a futex wait with NO
+     * priority inheritance, so a FIFO-70 thread is waiting on a SCHED_OTHER one
+     * that anything on cores 0-2 can deschedule; a single dlopen holding the
+     * loader lock across a full quantum is still a stall on the audio thread.
+     * The remaining ways to shorten it (detaching, or moving destroy off the
+     * callback) both need the instance to outlive this function, which it does
+     * not — it is freed two lines below. */
     chain_bus_worker_stop(inst);
     chain_bus_release_all(inst);
 
@@ -854,6 +851,12 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
             inst->synth_split_voice_count = n;
         }
     }
+    /* A voice id resolves against whatever module is loaded NOW, so the derived
+     * map has to be rebuilt here as well as on every assignment change. The
+     * buses' stored ids survive the swap untouched: one that the new module
+     * does not declare becomes an orphan and comes back if the old module
+     * does. */
+    chain_bus_rebuild_voice_map(inst);
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -1063,6 +1066,29 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
 
     /*
+     * ---- "bus<N>:" and "buses:" ------------------------------------------
+     *
+     * Ahead of the ladders below because a bus key must never be seen by the
+     * fx<N>: route: "bus1:fx2:mix" contains "fx2:" and a later prefix match
+     * would hand it to the SLOT's second FX. Routing goes through bus_route.h
+     * with SLOT_BUSES passed in, so an out-of-range index falls through here
+     * rather than landing on bus 0 — the defect master_fx_key.h exists to
+     * prevent.
+     */
+    {
+        int b = -1;
+        const char *rest = NULL;
+        if (bus_route_param_key(key, SLOT_BUSES, &b, &rest)) {
+            chain_bus_set_param(inst, b, rest, val);
+            return;
+        }
+        if (strncmp(key, "buses:", 6) == 0) {
+            chain_bus_slot_set_param(inst, key + 6, val);
+            return;
+        }
+    }
+
+    /*
      * ---- Section reorder verbs -------------------------------------------
      *
      * "fx:insert" / "fx:remove" / "fx:move", and the midi_fx spellings.
@@ -1240,6 +1266,14 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
          */
         memset(inst->knob_mappings, 0, sizeof(inst->knob_mappings));
         inst->knob_mapping_count = 0;
+        /*
+         * The buses go too, for the identical reason the LFOs and knob
+         * mappings do: bus config is per-SLOT state, not per-module, so a
+         * set switch that clears every slot would otherwise leave a bus
+         * assigned to voices of a module that is no longer there, still
+         * feeding a send.
+         */
+        chain_bus_clear_all(inst);
         inst->current_patch = -1;
         inst->dirty = 0;
         malloc_trim(0);
@@ -1651,6 +1685,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
 static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return -1;
+
+    /* "bus<N>:" / "buses:", ahead of everything for the same reason as the
+     * set_param side: "bus1:fx2:mix" must not reach the slot's fx2 route. */
+    {
+        int b = -1;
+        const char *rest = NULL;
+        if (bus_route_param_key(key, SLOT_BUSES, &b, &rest))
+            return chain_bus_get_param(inst, b, rest, buf, buf_len);
+        if (strncmp(key, "buses:", 6) == 0)
+            return chain_bus_slot_get_param(inst, key + 6, buf, buf_len);
+    }
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
      * so we return our cached flag instead of forwarding to the sub-plugin. */
@@ -2471,6 +2516,19 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         for (int b = 0; b < SLOT_BUSES; b++) {
             if (!(active_bus_mask & (1u << b)) || !bus_bufs[b]) continue;
             slot_bus_t *bus = &inst->buses[b];
+            /*
+             * THE SECOND GATE. `buf`'s acquire above orders `buf` and nothing
+             * else, and every field read below is written by the bus worker
+             * AFTER buf is published. Without this load those would be plain
+             * reads of another thread's in-flight stores: a half-written
+             * fx_instances[] entry called through, or an fx_count that names a
+             * position whose plugin pointer is not visible yet.
+             *
+             * 0 means the worker is reconciling this bus, and the bus plays DRY
+             * for those frames rather than through a chain that is being
+             * rebuilt underneath it.
+             */
+            if (!__atomic_load_n(&bus->fx_ready, __ATOMIC_ACQUIRE)) continue;
             for (int i = 0; i < bus->fx_count && i < MAX_AUDIO_FX; i++) {
                 int bypassed = bus->fx_bypassed[i];
                 /* Sized off the bus buffer's own capacity name, not a second

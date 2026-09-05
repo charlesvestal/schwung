@@ -1196,3 +1196,50 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
 
 /* V2 get_param handler */
 
+
+/*
+ * Render a parsed parameter table as the chain_params JSON array.
+ *
+ * Same shape the synth / fx / midi_fx routes in chain_host.c emit inline. It
+ * exists so chain_bus.c does not become a fourth copy; the existing three are
+ * left as they are, because folding them in would edit three live read paths
+ * for no behaviour change.
+ *
+ * Bounded by buf_len with the same 100-byte headroom those loops use, so a
+ * table too large for the caller's buffer is TRUNCATED AT AN ENTRY BOUNDARY and
+ * still closes its bracket, rather than emitting JSON that will not parse.
+ * Answers the number of bytes written.
+ */
+int chain_params_emit_json(const chain_param_info_t *params, int count,
+                           char *buf, int buf_len)
+{
+    if (!params || !buf || buf_len < 3 || count <= 0) return -1;
+    int offset = 0;
+    offset += snprintf(buf + offset, buf_len - offset, "[");
+    for (int i = 0; i < count && offset < buf_len - 100; i++) {
+        const chain_param_info_t *p = &params[i];
+        if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+        const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
+                               (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
+        offset += snprintf(buf + offset, buf_len - offset,
+            "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
+            p->key, p->name[0] ? p->name : p->key, type_str, p->min_val, p->max_val);
+        if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
+            offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
+            for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS &&
+                            offset < buf_len - 100; j++) {
+                if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+                offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
+            }
+            offset += snprintf(buf + offset, buf_len - offset, "]");
+        }
+        if (p->unit[0])
+            offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+        if (p->display_format[0])
+            offset += snprintf(buf + offset, buf_len - offset,
+                               ",\"display_format\":\"%s\"", p->display_format);
+        offset += snprintf(buf + offset, buf_len - offset, "}");
+    }
+    offset += snprintf(buf + offset, buf_len - offset, "]");
+    return offset;
+}
