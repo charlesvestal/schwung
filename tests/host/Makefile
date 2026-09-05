@@ -40,6 +40,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
 	$(BUILD_DIR)/test_master_fx_saved_state \
+	$(BUILD_DIR)/test_json_compact \
 	$(BUILD_DIR)/test_master_fx_snapshot \
 	$(BUILD_DIR)/test_spi_tally \
 	$(BUILD_DIR)/test_align_capture \
