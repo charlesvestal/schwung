@@ -36,6 +36,7 @@
  * chain-specific, and a second copy is precisely the bug class that made
  * fx3..fx8 silent. Reached the same way as plugin_api_v1.h below. */
 #include "host/chain_key_index.h"
+#include "host/json_compact.h"
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"

@@ -43,6 +43,20 @@ int main(void)
                  "{\"state\":\"line1\\nline2\\t\\\"quoted\\\"\\\\tail\"}",
                  "line1\nline2\t\"quoted\"\\tail");
 
+    /* The file is written by JSON.stringify(w, null, 2); the extracted object
+     * must come back COMPACT so a module parser matching `"key":"` (the form
+     * it emitted) still finds its fields. The raw pretty slice cost minijv
+     * every working-patch edit on set reload. */
+    expect_state("pretty file yields compact state",
+                 "{\n"
+                 "  \"module\": \"cloudseed\",\n"
+                 "  \"state\": {\n"
+                 "    \"preset\": 3,\n"
+                 "    \"blob\": \"AB CD\"\n"
+                 "  }\n"
+                 "}",
+                 "{\"preset\":3,\"blob\":\"AB CD\"}");
+
     expect_rejected("no state", "{\"module_id\":\"palette\"}");
     expect_rejected("unterminated string", "{\"state\":\"oops}");
     expect_rejected("unsupported state type", "{\"state\":42}");

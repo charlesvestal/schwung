@@ -16,6 +16,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "json_compact.h"
+
 static inline const char *master_fx_state_skip_ws(const char *p)
 {
     while (p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
@@ -35,27 +37,10 @@ static inline int master_fx_saved_state_copy(const char *json, char *out, size_t
     if (!value) return -1;
 
     if (*value == '{') {
-        int depth = 0;
-        int in_string = 0;
-        int escaped = 0;
-        const char *end = NULL;
-        for (const char *p = value; *p; p++) {
-            if (in_string) {
-                if (escaped) escaped = 0;
-                else if (*p == '\\') escaped = 1;
-                else if (*p == '"') in_string = 0;
-                continue;
-            }
-            if (*p == '"') in_string = 1;
-            else if (*p == '{') depth++;
-            else if (*p == '}' && --depth == 0) { end = p + 1; break; }
-        }
-        if (!end) return -1;
-        size_t len = (size_t)(end - value);
-        if (len >= out_len) return -1;
-        memcpy(out, value, len);
-        out[len] = '\0';
-        return (int)len;
+        /* Compacted, never the raw pretty file slice: the file is written by
+         * JSON.stringify(w, null, 2) and modules parse what they emitted
+         * (compact) — see json_compact.h. */
+        return json_object_compact_copy(out, out_len, value);
     }
 
     if (*value != '"') return -1;

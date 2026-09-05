@@ -741,14 +741,16 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                     const char *sv = state_colon + 1;
                     while (*sv == ' ' || *sv == '\t' || *sv == '\n') sv++;
                     if (*sv == '{') {
-                        /* Extract state as JSON object (string-aware span). */
-                        const char *end = json_object_end(sv);
-                        if (end) {
-                            int len = end - sv + 1;
-                            if (len > 0 && len < MAX_SYNTH_STATE_LEN) {
-                                strncpy(patch->synth_state, sv, len);
-                                patch->synth_state[len] = '\0';
-                            }
+                        /* Extract the state object COMPACTED, never as the
+                         * raw pretty-printed file slice: modules parse what
+                         * they emitted (compact), and a `"key":"` matcher
+                         * silently misses the stored `"key": "` form — see
+                         * json_compact.h. -1 keeps state absent, as the old
+                         * over-length guard did. */
+                        if (json_object_compact_copy(patch->synth_state,
+                                                     sizeof(patch->synth_state),
+                                                     sv) < 0) {
+                            patch->synth_state[0] = '\0';
                         }
                     } else if (*sv == '"') {
                         /* JSON.stringify escapes opaque module state. Decode
@@ -854,15 +856,16 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                 const char *sv = state_colon + 1;
                                 while (sv < params_end && (*sv == ' ' || *sv == '\t' || *sv == '\n')) sv++;
                                 if (*sv == '{') {
-                                    /* Extract entire state object */
-                                    const char *state_start = sv;
                                     const char *se = json_object_end(sv);
                                     if (se && se <= params_end) {
-                                        int slen = se - state_start + 1;
-                                        if (slen > 0 && slen < MAX_FX_STATE_LEN) {
-                                            strncpy(cfg->state, state_start, slen);
-                                            cfg->state[slen] = '\0';
+                                        /* Compacted, never the raw pretty
+                                         * file slice — see json_compact.h. */
+                                        if (json_object_compact_copy(cfg->state,
+                                                                     sizeof(cfg->state),
+                                                                     sv) >= 0) {
                                             parse_debug_log("[parse] Extracted audio_fx state object");
+                                        } else {
+                                            cfg->state[0] = '\0';
                                         }
                                     }
                                 } else if (*sv == '"') {
@@ -1058,14 +1061,16 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                                     const char *sv = state_colon + 1;
                                     while (sv < params_end && (*sv == ' ' || *sv == '\t' || *sv == '\n')) sv++;
                                     if (*sv == '{') {
-                                        const char *state_start = sv;
                                         const char *se = json_object_end(sv);
                                         if (se && se <= params_end) {
-                                            int slen = se - state_start + 1;
-                                            if (slen > 0 && slen < MAX_FX_STATE_LEN) {
-                                                strncpy(cfg->state, state_start, slen);
-                                                cfg->state[slen] = '\0';
+                                            /* Compacted, never the raw pretty
+                                             * file slice — see json_compact.h. */
+                                            if (json_object_compact_copy(cfg->state,
+                                                                         sizeof(cfg->state),
+                                                                         sv) >= 0) {
                                                 parse_debug_log("[parse] Extracted midi_fx state object");
+                                            } else {
+                                                cfg->state[0] = '\0';
                                             }
                                         }
                                     } else if (*sv == '"') {

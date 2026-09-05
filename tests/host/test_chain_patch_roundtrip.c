@@ -406,8 +406,13 @@ static void test_midi_fx_state_forms(chain_instance_t *inst, patch_info_t *patch
     CHECK(strcmp(patch->midi_fx[0].state, "mode=a;b=2;") == 0,
           "opaque MIDI FX state came back as [%s], want [mode=a;b=2;]",
           patch->midi_fx[0].state);
-    /* Object form must be untouched by the new branch. */
-    CHECK(strcmp(patch->midi_fx[1].state, "{\"steps\": 4}") == 0,
+    /* Object form comes back COMPACT, never as the raw file slice: the file
+     * is pretty-printed and modules parse what they emitted — a `"key":"`
+     * matcher misses the stored `"key": "` form (json_compact.h). The
+     * fixture's space is deliberate: it is what JSON.stringify(w, null, 2)
+     * puts on disk, and asserting it back verbatim is what let the pretty
+     * slice reach every module. */
+    CHECK(strcmp(patch->midi_fx[1].state, "{\"steps\":4}") == 0,
           "object MIDI FX state came back as [%s]", patch->midi_fx[1].state);
     /* No state key at all stays empty -- an empty string must not be invented. */
     CHECK(patch->midi_fx[2].state[0] == '\0',
@@ -417,7 +422,7 @@ static void test_midi_fx_state_forms(chain_instance_t *inst, patch_info_t *patch
     CHECK(v2_load_from_patch_info(inst, patch) == 0, "midi_fx state load failed");
     CHECK(strstr(fake_midi_fx[0].log, "state=mode=a;b=2;;") != NULL,
           "opaque state did not reach MIDI FX slot 0 [%s]", fake_midi_fx[0].log);
-    CHECK(strstr(fake_midi_fx[1].log, "state={\"steps\": 4};") != NULL,
+    CHECK(strstr(fake_midi_fx[1].log, "state={\"steps\":4};") != NULL,
           "object state did not reach MIDI FX slot 1 [%s]", fake_midi_fx[1].log);
     CHECK(strstr(fake_midi_fx[2].log, "state=") == NULL,
           "a state was sent to the MIDI FX that had none [%s]", fake_midi_fx[2].log);
