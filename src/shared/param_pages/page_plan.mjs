@@ -434,6 +434,9 @@ function canvasPageParams(chainParams) {
         if (!(p.as_page === true || p.asPage === true)) continue;
         out.set(p.key, {
             key: p.key,
+            /* `preset_browser` merges this page WITH the level's preset browser
+             * instead of adding a second one -- see the emission below. */
+            presetBrowser: p.preset_browser === true || p.presetBrowser === true,
             script: typeof p.canvas_script === "string" ? p.canvas_script : "canvas.js",
             overlay: typeof p.canvas_overlay === "string" ? p.canvas_overlay
                    : (typeof p.overlay === "string" ? p.overlay : ""),
@@ -769,14 +772,48 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
          * 13 nav entries and the preset triple), and a knob is the wrong control
          * for minijv's 2427 or surge's 675 presets. */
         if (lvl.list_param && lvl.count_param) {
+            /*
+             * A MODULE MAY DRAW ITS OWN BROWSER.
+             *
+             * A canvas page declaring `preset_browser` becomes THIS page rather
+             * than a second one beside it: same jog, same enter/exit, same
+             * announcements, but the module paints the body. A synth with a
+             * face per preset is a better picker than a row of text, and two
+             * pages -- one showing the character, one naming it -- would be two
+             * doors onto the same choice.
+             *
+             * It carries the level's knobs too, so the sound is still editable
+             * while you browse. See pageHasKnobs in page_controller.
+             */
+            let browserCanvas = null;
+            for (const key of paramKeys(lvl)) {
+                const cp2 = canvasPages.get(key);
+                if (cp2 && cp2.presetBrowser && !isHiddenParam(lvl, key, isVisible)) {
+                    browserCanvas = cp2;
+                    emitted.add(key);
+                    break;
+                }
+            }
             pages.push({
                 /* "Presets", not the level's name — the preset browser is a
-                 * different thing from the knob page that shares its level. */
+                 * different thing from the knob page that shares its level.
+                 * A module-drawn one takes the param's name instead, because
+                 * it IS that screen. */
                 kind: PAGE_PRESET,
-                name: claimName(declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets"),
+                name: claimName(browserCanvas ? browserCanvas.name
+                     : (declaredName(levelKey, lvl) && !isRoot ? nameOf(levelKey, lvl) : "Presets")),
                 level: levelKey,
                 listParam: lvl.list_param, countParam: lvl.count_param,
                 nameParam: lvl.name_param || "preset_name",
+                ...(browserCanvas ? {
+                    canvas: { key: browserCanvas.key, script: browserCanvas.script,
+                              overlay: browserCanvas.overlay },
+                    keys: knobKeys(lvl).filter(
+                        (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k))
+                        .slice(0, perPage === Infinity ? undefined : perPage),
+                    childLevel: hasChildren(lvl) ? lvl : null,
+                    shortNames: levelShortNames(lvl),
+                } : {}),
             });
         }
 
@@ -1014,6 +1051,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
             const cp = canvasPages.get(key);
             if (!cp) continue;
             if (isHiddenParam(lvl, key, isVisible)) continue;
+            /* Already merged into the level's preset browser above. */
+            if (cp.presetBrowser && lvl.list_param && lvl.count_param) continue;
             emitted.add(key);
             pages.push({
                 kind: PAGE_KNOBS,

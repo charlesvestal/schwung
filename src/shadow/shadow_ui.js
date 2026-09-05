@@ -16995,8 +16995,12 @@ function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
         fn(fctx, {
             key: canvas.key,
             values: payload && payload.values ? payload.values : {},
+            base: payload && payload.base ? payload.base : {},
             keys: payload && payload.keys ? payload.keys : [],
             touched: payload && typeof payload.touched === "number" ? payload.touched : -1,
+            /* Browser state, for a module drawing its own preset picker. Null
+             * on an ordinary custom page. */
+            preset: (payload && payload.preset) || null,
             nowMs: payload && typeof payload.nowMs === "number" ? payload.nowMs : Date.now(),
             width: band.w, height: band.h,
         });

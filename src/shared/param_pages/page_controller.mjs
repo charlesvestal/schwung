@@ -494,6 +494,26 @@ const TRIGGER_BURST_MAX = 4;
  */
 const TRIGGER_KNOB_GESTURE_GAP_MS = 270;
 
+/*
+ * A page whose eight encoders address parameters.
+ *
+ * Normally that is exactly PAGE_KNOBS. A CUSTOM UI PAGE may also be a browser
+ * -- a module drawing its own preset picker, where jog steps presets and the
+ * knobs still edit the sound -- and that page has to be PAGE_PRESET for the
+ * jog, the enter/exit gesture and the announcements to work. It carries `keys`
+ * as well, and this is what lets those keys be turned.
+ *
+ * Deliberately narrow: it asks whether the page HAS keys, not what kind it is,
+ * so a preset or items page that carries none behaves exactly as before. That
+ * is the property that made this safe to relax at all -- twenty-two places
+ * branch on PAGE_KNOBS and only the three that mean "can this be turned or
+ * read" use this.
+ */
+function pageHasKnobs(p) {
+    return !!(p && Array.isArray(p.keys) && p.keys.length &&
+              (p.kind === PAGE_KNOBS || p.canvas));
+}
+
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
@@ -840,7 +860,7 @@ export function createController(io = {}) {
     }
     const keyAt = (slot) => {
         const p = page();
-        return p && p.kind === PAGE_KNOBS ? (p.keys[slot] || null) : null;
+        return pageHasKnobs(p) ? (p.keys[slot] || null) : null;
     };
     const metaAt = (slot) => {
         const k = keyAt(slot);
@@ -1988,9 +2008,24 @@ export function createController(io = {}) {
         }
 
         const p = page();
-        if (p && p.kind === PAGE_PRESET) { tickPreset(p); return null; }
+        /*
+         * A MODULE-DRAWN BROWSER ticks BOTH lanes.
+         *
+         * An ordinary preset page has no knobs, so the preset lane is all there
+         * is and returning here is right. One that carries knobs must also run
+         * the value lane below, or its picture is drawn from values nobody ever
+         * fetched -- which showed as a face page reading the vowel it happened
+         * to inherit from a neighbouring page rather than the live one.
+         *
+         * Two reads per tick on that page instead of one. That is the cost of a
+         * screen that is a browser and a knob page at once, and it is bounded:
+         * only this page, only while it is up.
+         */
+        if (p && p.kind === PAGE_PRESET) { tickPreset(p); if (!p.canvas) return null; }
         if (p && p.kind === PAGE_ITEMS) { tickItems(p); return null; }
-        if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
+        /* Reads AND live values: a custom browser page carrying knobs needs
+         * both, or its picture is drawn from values nobody ever fetched. */
+        if (!pageHasKnobs(p)) return null;
 
         refreshModulatedValues(p);
 
@@ -3958,10 +3993,24 @@ export function createController(io = {}) {
                 const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
                                 w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
                 const pst = presetState(mp) || {};
-                drawPresetBody(ctx, prect, {
-                    name: pst.name, index: pst.index, count: pst.count,
-                    entered: menuEntered(),
-                });
+                /*
+                 * A MODULE-DRAWN BROWSER paints the body itself. It is handed
+                 * the preset state as well as the values, because the thing it
+                 * is browsing is not a parameter and no read would find it --
+                 * "Fish, 2 of 12" lives in the controller, not on the wire.
+                 */
+                if (mp.canvas) {
+                    drawCanvasPageBody(ctx, prect, mp.canvas, {
+                        touched: s.touched,
+                        preset: { name: pst.name, index: pst.index,
+                                  count: pst.count, entered: menuEntered() },
+                    });
+                } else {
+                    drawPresetBody(ctx, prect, {
+                        name: pst.name, index: pst.index, count: pst.count,
+                        entered: menuEntered(),
+                    });
+                }
                 /* Inert: it wears the same brackets a divable cell and an
                  * un-entered menu wear, because it is the same offer. */
                 if (!menuEntered()) {
@@ -4057,16 +4106,34 @@ export function createController(io = {}) {
      * used), so the header, the touch strip and the footer are the host's own
      * and a module cannot paint over them.
      */
+    /*
+     * Draw a custom page's body, if the host can.
+     *
+     * The band comes from the caller (render_page's cell area, or the preset
+     * page's own frame), so the header, the touch strip and the footer are the
+     * host's own and a module cannot paint over them.
+     */
     function drawCanvasPageBody(ctx, band, canvas, extra) {
         if (typeof io.drawCanvasPage !== "function") return;
         io.drawCanvasPage(ctx, band, canvas, {
-            values: s.values,
-            /* Effective values for anything declared `live` — a custom page is
-             * redrawn every tick precisely so it can show them move. */
-            effective: s.modValues,
+            /*
+             * MERGED, like a graphic gets — a custom page is redrawn every tick
+             * precisely so it can show a live value move, and handing it the
+             * base would make that impossible by construction.
+             */
+            values: liveValues(),
+            /* The knob positions, for a page that wants to show both what is
+             * set and what is sounding. Same split as a widget's baseValues. */
+            base: s.values,
             metaIndex: s.metaIndex,
             keys: (page() || {}).keys || [],
             touched: extra && typeof extra.touched === "number" ? extra.touched : -1,
+            /*
+             * Browser state, when this page IS the level's preset browser.
+             * Handed over because it is not a parameter: "Fish, 2 of 12" lives
+             * in the controller and no read would find it. Null otherwise.
+             */
+            preset: (extra && extra.preset) || null,
             nowMs: now(),
         });
     }
@@ -4267,7 +4334,7 @@ export function createController(io = {}) {
     let vizCache = null;
     function vizGroups() {
         const p = page();
-        if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
+        if (!pageHasKnobs(p) || !s.metaIndex) return [];
         /*
          * THE FOCUSED CHILD IS PART OF THE KEY.
          *

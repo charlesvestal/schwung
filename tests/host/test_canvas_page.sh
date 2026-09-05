@@ -162,6 +162,98 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
   ok(threw, "render_page does not swallow the throw itself -- the HOST retires the drawer");
 }
 
+/* ---- preset_browser: the module DRAWS the level browser ---- */
+{
+  const HB = { levels: { root: { label: "Main", knobs: ["a", "b", "c"],
+    list_param: "preset", count_param: "preset_count", name_param: "preset_name",
+    params: [{ key: "a" }, { key: "b" }, { key: "c" }, { key: "face" }] } } };
+  const CB = CP.map((p) => (p.key === "face" ? { ...p, preset_browser: true } : p));
+  const plan3 = planPages({ hierarchy: HB, chainParams: CB });
+
+  const browsers = plan3.pages.filter((p) => p.listParam);
+  ok(browsers.length === 1,
+     "ONE browser page, not the modules page plus a text one beside it");
+  const b = browsers[0];
+  ok(!!b.canvas, "the browser carries the modules drawer");
+  ok(b.name === "Face", "and takes the params name, because it IS that screen");
+  ok(JSON.stringify(b.keys) === JSON.stringify(["a", "b", "c"]),
+     "it carries the levels knobs, so the sound stays editable while browsing");
+  ok(plan3.pages.indexOf(b) === 0,
+     "and it is FIRST, so it is what you land on");
+  ok(!plan3.pages.some((p) => p !== b && p.canvas),
+     "the canvas param does not also produce a standalone page");
+
+  /* Without preset_browser the two stay separate -- the old behaviour. */
+  const plan4 = planPages({ hierarchy: HB, chainParams: CP });
+  ok(plan4.pages.filter((p) => p.listParam).length === 1 &&
+     !plan4.pages.find((p) => p.listParam).canvas,
+     "without preset_browser the text browser is untouched");
+  ok(plan4.pages.some((p) => p.canvas && !p.listParam),
+     "and the custom page is a page of its own");
+}
+
+/* ---- a browser page with knobs must READ and be TURNABLE ---- */
+{
+  const HB = { levels: { root: { label: "Main", knobs: ["a", "b"],
+    list_param: "preset", count_param: "preset_count", name_param: "preset_name",
+    params: [{ key: "a" }, { key: "b" }, { key: "face" }] } } };
+  const CB = [
+    { key: "a", name: "A", type: "float", min: 0, max: 1, step: 0.01 },
+    { key: "b", name: "B", type: "float", min: 0, max: 1, step: 0.01 },
+    { key: "face", name: "Face", type: "canvas", canvas_script: "canvas.js",
+      as_page: true, preset_browser: true },
+  ];
+  const store = { ui_hierarchy: JSON.stringify(HB), chain_params: JSON.stringify(CB),
+                  preset: "1", preset_count: "12", preset_name: "Fish",
+                  a: "0.25", b: "0.75" };
+  const writes = [];
+  const reads = [];
+  let t = 0, payload = null;
+  const ctrl = createController({
+    getParam: (k) => { const bb = String(k).replace(/^synth:/, "");
+                       reads.push(bb);
+                       return store[bb] === undefined ? null : store[bb]; },
+    setParam: (k, v) => { writes.push([String(k).replace(/^synth:/, ""), v]); return true; },
+    announce: () => {}, now: () => (t += 16),
+    drawCanvasPage: (ctx2, band, canvas, pl) => { payload = pl; },
+  });
+  ctrl.load({ prefix: "synth" });
+  ctrl.setLayout(LAYOUT_MOVY);
+  ctrl.goToPage(0, { remember: false });
+  for (let i = 0; i < 60; i++) ctrl.tick();
+
+  const fb2 = createFramebuffer(128, 64);
+  ctrl.render(drawContext(fb2), { title: "M", footer: null });
+
+  ok(payload !== null, "the browser page calls the modules drawer");
+
+  /*
+   * THE VALUE LANE MUST RUN ON THIS PAGE.
+   *
+   * An ordinary preset page has no knobs and returns early from the tick; one
+   * carrying knobs has to read them too, or its picture is drawn from values
+   * nobody fetched.
+   *
+   * Asserted by watching for reads WHILE ON THIS PAGE, not by looking at the
+   * values. The first version checked `values.a` and passed even with the lane
+   * disabled, because the level browser shares its keys with the levels grid
+   * and they were already cached from there -- a probe that cannot fail is
+   * worse than no probe.
+   */
+  reads.length = 0;
+  for (let i = 0; i < 40; i++) ctrl.tick();
+  ok(reads.some((k) => k === "a" || k === "b"),
+     "its knob values are re-read while the browser page is up");
+  ok(payload && payload.values && payload.values.a === "0.25",
+     "and reach the drawer");
+  ok(payload && payload.preset && payload.preset.count === 12,
+     "and it is handed the browser state, which is not a param anyone could read");
+
+  ctrl.onKnobTurn(0, 1);
+  ok(writes.some((w) => w[0] === "a"),
+     "an encoder on the browser page still edits the sound");
+}
+
 if (fails) { console.error(fails + " failure(s)"); process.exit(1); }
 console.log("PASS: a module can own a page, keep the hosts chrome, and still be turned");
 '
