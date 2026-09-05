@@ -56,7 +56,7 @@
     {
       "id": 6,
       "subject": "Task 7: Stems 6 and 7",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** The two send returns are captured as their own stems, restoring the exact-sum property that a shared return would otherwise break.\n\n**Files:**\n- Modify: `src/host/shadow_sampler.h` (`SAMPLER_STEM_COUNT` 5 -> 7, indices)\n- Modify: `src/host/shadow_sampler.c` (`sampler_stem_names`)\n- Modify: `src/schwung_shim.c` (`shadow_stem_dispatch`)\n\n**Acceptance Criteria:**\n- [ ] `SAMPLER_STEM_COUNT` is 7; `sampler_stem_names` gains `\"SendA\"`, `\"SendB\"` in index order\n- [ ] The send stems capture the returns POST-send-chain and PRE-Master-FX, matching every other stem\n- [ ] Stems 1-4 + 6 + 7 sum to the master bit-exactly with no Master FX loaded\n- [ ] A send with no audio leaves no file (the existing delete-at-finalize rule covers it unchanged)\n- [ ] The Skipback stem cap still applies to the new stems (60 s), so the ring budget does not grow unbounded\n\n**Verify:** `make -C tests/host test` green; on device, record a take with a send loaded and confirm `sox` shows master == sum of stems\n\n**Steps:**\n- Step 1: Widen the count\n- Step 2: Dispatch the new stems\n- Step 3: Verify the sum property\n- Step 4: Commit\n\n```json:metadata\n{\"files\": [\"src/host/shadow_sampler.c\", \"src/host/shadow_sampler.h\", \"src/schwung_shim.c\"], \"verifyCommand\": \"make -C tests/host test\", \"acceptanceCriteria\": [\"`SAMPLER_STEM_COUNT` is 7; `sampler_stem_names` gains `\\\"SendA\\\"`, `\\\"SendB\\\"` in index order\", \"The send stems capture the returns POST-send-chain and PRE-Master-FX, matching every other stem\", \"Stems 1-4 + 6 + 7 sum to the master bit-exactly with no Master FX loaded\", \"A send with no audio leaves no file (the existing delete-at-finalize rule covers it unchanged)\", \"The Skipback stem cap still applies to the new stems (60 s), so the ring budget does not grow unbounded\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         5
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T22:51:47.326177"
+  "lastUpdated": "2026-09-05T22:57:58.460898"
 }

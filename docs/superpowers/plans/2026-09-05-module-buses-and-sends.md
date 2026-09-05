@@ -1763,7 +1763,24 @@ sum before Master FX so the master chain processes the wet signal."
       sources its pointers before wiring `send_out[]` in.
 - [ ] Stems 1-4 + 6 + 7 sum to the master bit-exactly with no Master FX loaded
 - [ ] A send with no audio leaves no file (the existing delete-at-finalize rule covers it unchanged)
-- [ ] The Skipback stem cap still applies to the new stems (60 s), so the ring budget does not grow unbounded
+- [ ] The Skipback stem cap still applies to the new stems (60 s), so the ring
+      budget does not grow unbounded.
+
+> **Decision taken during Task 7 (coordinator, not the user).** Seven stems at
+> the 60 s cap is **70.6 MB**, up from 53 MB, which breaks the anchor
+> `shadow_sampler.h` gave for choosing 60 s ("the same as one master buffer at
+> its maximum") and overran `test_save_stems_contract.sh`'s hard 64 MB ceiling.
+>
+> **Kept 60 s; raised the test ceiling to 80 MB.** The alternative — a 40 s cap,
+> 47 MB, restoring the old anchor — would silently truncate the stems of anyone
+> already running a 60 s skipback, which is a behaviour regression to reclaim
+> 23 MB on a device with ~1020 MB free. The rings are `calloc`'d only while Save
+> Stems is asking for stems (all-or-nothing, freed when it stops), Save Stems is
+> off by default, and the default skipback is 30 s → 35 MB. Both the header and
+> the test now state the trade rather than implying the old anchor still holds.
+>
+> Reversible in one constant (`SKIPBACK_STEM_MAX_SECONDS`) if the memory turns
+> out to matter more than the truncation on real hardware.
 
 **Verify:** `make -C tests/host test` green; on device, record a take with a send loaded and confirm `sox` shows master == sum of stems
 
