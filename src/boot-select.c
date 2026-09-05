@@ -104,7 +104,12 @@ static int bs_write_default(const char *dir, const char *id) {
         fclose(f);
         return 0;
     }
-    fclose(f);
+    if (fsync(fileno(f)) != 0) {
+        fclose(f);
+        return 0;
+    }
+    if (fclose(f) != 0)
+        return 0;
 
     if (rename(tmp_path, final_path) != 0)
         return 0;
@@ -129,6 +134,17 @@ static void bs_flush_display(int fd, uint8_t *map) {
  * loops below need no extra sleep of their own. */
 static void bs_pump_frame(int fd) {
     ioctl(fd, _IOC(_IOC_NONE, 0, SCHWUNG_IOCTL_WAIT_SEND_SIZE, 0), 0x300);
+}
+
+/* MIDI_IN events persist in the RX mailbox across frames until overwritten
+ * (the shim keeps dedup rings for exactly this reason). boot-select is the
+ * device's exclusive owner here, so the simplest fix is to scan once, then
+ * zero the scanned region ourselves — otherwise a jog detent or a press
+ * read on frame N is replayed and double-counted on frame N+1. */
+static void bs_scan_input(uint8_t *map, bs_input_state_t *st,
+                           bs_input_events_t *ev) {
+    bs_input_scan(st, map + SCHWUNG_OFF_IN_MIDI, ev);
+    memset(map + SCHWUNG_OFF_IN_MIDI, 0, BS_MIDI_IN_BYTES);
 }
 
 static void bs_print_centered(int y, const char *s) {
@@ -180,7 +196,7 @@ static int bs_run_window(int fd, uint8_t *map, bs_input_state_t *st) {
     for (int i = 0; i < BS_WINDOW_FRAMES; i++) {
         bs_pump_frame(fd);
         bs_input_events_t ev;
-        bs_input_scan(st, map + SCHWUNG_OFF_IN_MIDI, &ev);
+        bs_scan_input(map, st, &ev);
         if (ev.back_pressed)
             return 1;
     }
@@ -190,14 +206,20 @@ static int bs_run_window(int fd, uint8_t *map, bs_input_state_t *st) {
 /* Single exit path for every success outcome: print `id`, blank the screen
  * (so Move doesn't inherit stale pixels), unmap, close, flush stdout, exit 0. */
 static void bs_finish(int fd, uint8_t *map, const char *id) {
+    /* Disarm the SIGALRM wedge backstop FIRST: it fires by writing the
+     * incoming id straight to stdout, and a signal landing after our own
+     * printf below (but before we've disarmed) would put a second line on
+     * stdout — the caller reads exactly one and boots garbage. */
+    alarm(0);
+
     printf("%s\n", id);
+    fflush(stdout);
 
     js_display_clear();
     bs_flush_display(fd, map);
 
     munmap(map, SCHWUNG_PAGE_SIZE);
     close(fd);
-    fflush(stdout);
     exit(0);
 }
 
@@ -289,7 +311,7 @@ int main(int argc, char **argv) {
     for (;;) {
         bs_pump_frame(fd);
         bs_input_events_t ev;
-        bs_input_scan(&input_state, map + SCHWUNG_OFF_IN_MIDI, &ev);
+        bs_scan_input(map, &input_state, &ev);
 
         if (ev.back_pressed)
             bs_finish(fd, map, incoming_id); /* cancel: leave the id unchanged */
