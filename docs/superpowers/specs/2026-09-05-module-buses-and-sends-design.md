@@ -20,7 +20,7 @@ adds no second cap and no second editor.
 | | Scope | What it is | Count |
 |---|---|---|---|
 | **Splittable voice** | module | a voice the module can render into its own buffer | the module's own |
-| **Bus** | slot | a user-made set of voices + an 8-position insert chain + a level to each send | up to 4 per slot |
+| **Bus** | slot | a user-made set of voices + an 8-position insert chain + a level to each send | up to 4 per slot, **plus Main** |
 | **Global send** | device | an 8-position chain fed by every bus in every slot, returning pre-Master-FX | 2 |
 
 **Main is bus 0** — implicit, never created or deleted, holding every voice not
@@ -57,9 +57,12 @@ a stylistic choice. The bus→voice map has to be resolved in C on the SPI
 callback, and `chain_json.c`'s helpers are flat key scans that cannot walk
 `ui_hierarchy`'s `levels` in order — the same constraint that makes
 `synth:last_note` report a note rather than a voice index. C handles only
-indices; the JS UI resolves ids to labels for display, and stores **ids** (not
-indices) in the bus config so that a module adding a voice does not silently
-re-point every existing bus.
+indices; the JS UI resolves ids to labels for display.
+
+The bus config stores **ids**, not indices, so that a module adding a voice in a
+later version does not silently re-point every existing bus. Ids are resolved to
+indices once, when the synth loads — a bounded string compare over the voice
+list, not per frame.
 
 ### `move_plugin_render_split` — a dlsym'd symbol, not a struct field
 
