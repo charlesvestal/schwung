@@ -79,16 +79,30 @@ change) plan it the same way the first plan did. Default `true`: every other
 caller keeps the grid's chunking.
 
 The contract test plans with `paginate: false`, the way the screen does, and
-pins the per-section counts (7/9/6/1/4/2) plus "Audio is longer than a grid page
+pins the per-section counts (7/9/6/1/4/1) plus "Audio is longer than a grid page
 and is still one page" — which is the assertion that fails if the hand-off is
 ever dropped.
 
 Three consequences worth knowing:
 
-- **`[Help...]` lives on the Updates page**, one row under `[Module Store]`. It
-  used to be a peer of the sections; it cannot be a page of its own (that is an
-  eighth page, pinned against twice) and a one-entry menu page is the shape
-  Master FX already records as a mistake. See `UPDATES_ACTIONS`.
+- **`[Help...]` lives on the SYSTEM menu, beside `[Connect...]`.** It used to
+  be a peer of the sections (a page of its own, which sections-as-levels
+  forbids), then the last row of a three-row menu page called "Updates". When
+  `[Check Updates]` and `[Module Store]` were removed it could not simply be
+  left there alone: a one-entry actions menu is the shape Master FX already
+  records as a mistake. `[Connect...]` is its company and the replacement for
+  both — the Module Store pointer printed `move.local:7700`, and Connect gives
+  the device's real IP with a QR code. See `SYSTEM_ACTIONS`.
+
+  **Six sections now plan SEVEN pages, and that is not a violation of "one
+  section, one page".** That rule is about a section long enough to PAGINATE,
+  which puts a jog step in the middle of a scrolling list, arrives silently and
+  is chosen by nobody — and it is still pinned per level, by the param counts.
+  A menu is a second page of a KIND the grid cannot hold, authored and named
+  (`menu_label`), and visible in the section picker as its own row, which is
+  what made `[Help...]` findable. The contract test pins the exact page LIST
+  rather than a count, because a bare number could not say which of those two
+  facts had changed.
 - **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
   list, the in-section list, the four `globalSettings*` state vars and the three
   switch arms that drove them are gone. `runGlobalActionFromGrid` /
