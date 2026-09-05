@@ -12,6 +12,8 @@
 #define _GNU_SOURCE
 #endif
 #include <link.h>
+#include <sched.h>
+#include <errno.h>
 #include "chain_internal.h"
 #include "host/split_voices_parse.h"
 
@@ -116,6 +118,150 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     return inst;
 }
 
+/* ============================================================================
+ * Bus allocation, off the realtime thread
+ * ============================================================================ */
+
+/*
+ * Bus allocation worker. SCHED_OTHER on cores 0-2.
+ *
+ * THREADS INHERIT THE CALLBACK'S PRIORITY. pthread_create is called from a
+ * module entry point, i.e. from the SPI callback, so this thread starts at
+ * SCHED_FIFO 70 — above Move's own `Link Main` at FIFO 35, which it would then
+ * starve, producing exactly the dropouts going off-thread was meant to avoid.
+ * Demoting is therefore the FIRST thing here, before the instance pointer is
+ * even dereferenced.
+ */
+static void *chain_bus_worker_fn(void *arg) {
+    struct sched_param sp = { .sched_priority = 0 };
+    sched_setscheduler(0, SCHED_OTHER, &sp);
+    cpu_set_t set; CPU_ZERO(&set);
+    CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);   /* core 3 is SPI's */
+    sched_setaffinity(0, sizeof(set), &set);
+
+    chain_instance_t *inst = (chain_instance_t *)arg;
+
+    for (;;) {
+        /* Parked, not polling: the wake comes from chain_bus_request_alloc or
+         * from the stop below. sem_wait is restartable, so EINTR is a retry and
+         * not an exit — exiting on a stray signal would leave later requests
+         * unserved with nothing to report it. */
+        while (sem_wait(&inst->bus_worker_sem) != 0 && errno == EINTR) { }
+
+        if (!__atomic_load_n(&inst->bus_worker_started, __ATOMIC_ACQUIRE)) break;
+
+        for (int b = 0; b < SLOT_BUSES; b++) {
+            if (!__atomic_load_n(&inst->bus_alloc_pending[b], __ATOMIC_ACQUIRE)) continue;
+            slot_bus_t *bus = &inst->buses[b];
+            if (!__atomic_load_n(&bus->buf, __ATOMIC_RELAXED)) {
+                /* BUS_BUF_SAMPLES, never a restated FRAMES_PER_BLOCK * 2. The
+                 * render path sizes its memset/memcpy/fx_dry off that same
+                 * name with no bounds check of its own, so a second spelling
+                 * here is a silent heap overflow on the SPI callback the
+                 * moment the two disagree. */
+                int16_t *buf = (int16_t *)calloc(BUS_BUF_SAMPLES, sizeof(int16_t));
+                if (buf) {
+                    /* Publish LAST, with RELEASE: the RT side reads buf and,
+                     * seeing it non-NULL, immediately starts routing voices
+                     * into it, so everything it will touch must already be
+                     * visible.
+                     *
+                     * THE READER MUST PAIR THIS WITH AN ACQUIRE. A release
+                     * store against a plain load orders nothing — core 3 could
+                     * observe the pointer before calloc's zeroes, render into
+                     * memory it then reads as garbage. v2_render_block's
+                     * snapshot loop uses __ATOMIC_ACQUIRE for exactly this;
+                     * change one and you must change both. */
+                    __atomic_store_n(&bus->buf, buf, __ATOMIC_RELEASE);
+                }
+                /* A failed calloc is not an error state to latch: buf stays
+                 * NULL, bus_mix_target keeps routing the bus's voices through
+                 * Main, and the next request retries. */
+            }
+            __atomic_store_n(&inst->bus_alloc_pending[b], 0, __ATOMIC_RELEASE);
+        }
+    }
+    return NULL;
+}
+
+/*
+ * RT side: mark and return. Nothing is allocated here.
+ *
+ * The worker is started LAZILY, on the first bus a slot ever creates, so the
+ * common case — a slot with no buses — costs no thread at all.
+ */
+void chain_bus_request_alloc(chain_instance_t *inst, int bus) {
+    if (!inst || bus < 0 || bus >= SLOT_BUSES) return;
+
+    inst->buses[bus].in_use = 1;
+    __atomic_store_n(&inst->bus_alloc_pending[bus], 1, __ATOMIC_RELEASE);
+
+    if (!inst->bus_worker_started) {
+        if (!inst->bus_worker_sem_ok) {
+            /* sem_init writes the struct in place — no allocation, no lock. */
+            if (sem_init(&inst->bus_worker_sem, 0, 0) != 0) return;
+            inst->bus_worker_sem_ok = 1;
+        }
+        __atomic_store_n(&inst->bus_worker_started, 1, __ATOMIC_RELEASE);
+        if (pthread_create(&inst->bus_worker, NULL, chain_bus_worker_fn, inst) != 0) {
+            /* No worker, no allocation, no crash: the bus keeps playing
+             * through Main and a later request tries again. */
+            __atomic_store_n(&inst->bus_worker_started, 0, __ATOMIC_RELEASE);
+            return;
+        }
+    }
+    sem_post(&inst->bus_worker_sem);
+}
+
+/* Stop and JOIN the worker. Runs on the callback (destroy_instance does), and
+ * the join is why the wake is a semaphore rather than a sleep: the worker is
+ * parked, so it observes the cleared flag as soon as it is posted instead of
+ * sitting out the rest of a poll period with the audio thread waiting on it. */
+void chain_bus_worker_stop(chain_instance_t *inst) {
+    if (!inst) return;
+    if (inst->bus_worker_started) {
+        __atomic_store_n(&inst->bus_worker_started, 0, __ATOMIC_RELEASE);
+        sem_post(&inst->bus_worker_sem);
+        pthread_join(inst->bus_worker, NULL);
+    }
+    if (inst->bus_worker_sem_ok) {
+        sem_destroy(&inst->bus_worker_sem);
+        inst->bus_worker_sem_ok = 0;
+    }
+}
+
+/*
+ * Release everything a bus owns, in the reverse order it was acquired: the FX
+ * instances, then their dlopen handles, then the buffer. Missing any one is a
+ * leak plus a dangling handle the render path cannot detect.
+ *
+ * Only safe after chain_bus_worker_stop — the worker writes buses[].buf.
+ */
+void chain_bus_release_all(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int b = 0; b < SLOT_BUSES; b++) {
+        slot_bus_t *bus = &inst->buses[b];
+        for (int i = 0; i < MAX_AUDIO_FX; i++) {
+            if (bus->fx_plugins_v2[i] && bus->fx_instances[i] &&
+                bus->fx_plugins_v2[i]->destroy_instance) {
+                bus->fx_plugins_v2[i]->destroy_instance(bus->fx_instances[i]);
+            }
+            bus->fx_instances[i] = NULL;
+            bus->fx_plugins_v2[i] = NULL;
+            if (bus->fx_handles[i]) {
+                dlclose(bus->fx_handles[i]);
+                bus->fx_handles[i] = NULL;
+            }
+            bus->fx_bypassed[i] = 0;
+            bus->current_fx_modules[i][0] = '\0';
+        }
+        bus->fx_count = 0;
+        free(bus->buf);
+        bus->buf = NULL;
+        bus->in_use = 0;
+    }
+}
+
 /* Destroy a chain instance */
 static void v2_destroy_instance(void *instance) {
     chain_instance_t *inst = (chain_instance_t *)instance;
@@ -129,13 +275,14 @@ static void v2_destroy_instance(void *instance) {
     v2_unload_all_midi_fx(inst);
     v2_unload_synth(inst);
 
-    /* TODO(Task 5): nothing here releases inst->buses[]. Each in-use bus needs
-     * its fx instances destroyed (fx_plugins_v2[i]->destroy_instance on
-     * fx_instances[i]) and fx_handles[i] dlclose'd, same discipline as
-     * v2_unload_all_audio_fx above, plus free(buses[b].buf). Zero impact today
-     * because every bus field is still permanently zero/NULL — this becomes a
-     * real leak plus a dangling dlopen handle the moment Task 5's allocator
-     * lands. */
+    /* Stop the allocator BEFORE releasing what it writes: the worker publishes
+     * buses[].buf, so freeing first would race a store into freed memory. The
+     * join blocks the SPI callback, which is deliberate and bounded — the
+     * worker is parked on the semaphore, so it wakes on the post rather than
+     * after a sleep, and destroy_instance already dlcloses plugins and frees
+     * ~19 MB on this thread. */
+    chain_bus_worker_stop(inst);
+    chain_bus_release_all(inst);
 
     chain_free_position_storage(inst);
     free(inst);
@@ -197,12 +344,19 @@ void v2_unload_synth(chain_instance_t *inst) {
      * function pointer into a dlclose'd mapping. */
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
-    /* TODO(Task 5): a synth swap does not currently tear down inst->buses[] —
-     * they are keyed to the SLOT, not to which synth is loaded, so whether
-     * they should survive a synth reload (probably) or get released here is a
-     * decision Task 5 must make explicitly, not by omission. Whichever it
-     * picks, the release itself is: destroy_instance on each bus's
-     * fx_instances[i], dlclose each fx_handles[i], free(buses[b].buf). */
+    /* BUSES SURVIVE A SYNTH SWAP, deliberately. They are keyed to the SLOT:
+     * a bus's name, insert chain and send levels are the user's routing for
+     * this slot, not a property of whichever synth is loaded into it, and
+     * tearing them down here would silently discard that configuration on
+     * every module change — including the reload a preset load performs.
+     *
+     * What does NOT survive is the voice->bus map, and it must not:
+     * chain_reset_voice_bus above puts every voice back on Main, because the
+     * new module's voice list is different and an index left over from the old
+     * one would name the wrong voice. So after a swap the buses are allocated
+     * and idle (bus_mix_active_mask names none of them, nothing is cleared or
+     * mixed per frame) until voices are assigned again. Release happens only
+     * in chain_bus_release_all, from v2_destroy_instance. */
 }
 
 /* V2 unload all audio FX */
@@ -2219,7 +2373,12 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     int nv = inst->synth_split_voice_count;
     if (nv > SPLIT_VOICES_MAX) nv = SPLIT_VOICES_MAX;
     if (inst->synth_render_split && inst->synth_instance && nv > 0) {
-        for (int b = 0; b < SLOT_BUSES; b++) bus_bufs[b] = inst->buses[b].buf;
+        /* ACQUIRE, pairing with the worker's RELEASE store in
+         * chain_bus_worker_fn. A plain load would order nothing: this thread
+         * could see a non-NULL pointer whose calloc'd zeroes are not yet
+         * visible and render into memory it then reads as garbage. */
+        for (int b = 0; b < SLOT_BUSES; b++)
+            bus_bufs[b] = __atomic_load_n(&inst->buses[b].buf, __ATOMIC_ACQUIRE);
         n_active = bus_mix_active_mask(inst->voice_bus,
                                        nv,
                                        SLOT_BUSES, bus_bufs, &active_bus_mask);

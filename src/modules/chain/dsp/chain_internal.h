@@ -20,6 +20,7 @@
 #include <limits.h>
 #include <time.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
@@ -288,9 +289,12 @@ typedef struct {
      * derived size — the render path in v2_render_block sizes every
      * memset/memcpy through it against that same name, on the SPI callback,
      * with no bounds check of its own. A mismatch is a silent heap overflow
-     * on the realtime thread. TODO(Task 5): allocate `buf` (BUS_BUF_SAMPLES
-     * samples) and, on teardown, free it — see the TODO(Task 5) comments in
-     * v2_destroy_instance / v2_unload_synth. */
+     * on the realtime thread.
+     *
+     * Allocated by chain_bus_worker_fn (chain_host.c) and published here with
+     * an __ATOMIC_RELEASE store; v2_render_block's snapshot loop reads it with
+     * a matching __ATOMIC_ACQUIRE load. Freed in chain_bus_release_all, after
+     * the worker has been joined. */
     int16_t *buf;
     void *fx_handles[MAX_AUDIO_FX];
     audio_fx_api_v2_t *fx_plugins_v2[MAX_AUDIO_FX];
@@ -370,6 +374,44 @@ typedef struct chain_instance {
      * it is this instance's own out buffer and its existing fx[] chain. */
     slot_bus_t buses[SLOT_BUSES];
     int main_send_level[BUS_MIX_SENDS];  /* Main sends like any bus */
+
+    /*
+     * Bus allocation is a REQUEST, not an action.
+     *
+     * create_instance, set_param and every other module entry point run on the
+     * SPI callback (SCHED_FIFO, core 3, ~2370 us for the whole device), so the
+     * allocation a bus needs cannot happen where it is asked for. Today that is
+     * only the 512-byte mix buffer, but the shape is chosen for what a bus will
+     * cost once it carries its own per-position metadata: 8 positions of
+     * chain_param_info_t (~1.07 MB) plus 8 x 64 KB of cached ui_hierarchy,
+     * ~9.1 MB — a multi-megabyte calloc inside the audio thread.
+     *
+     * So the RT side sets bus_alloc_pending[b], posts the semaphore and
+     * returns; the worker (SCHED_OTHER, cores 0-2) allocates and publishes buf
+     * by pointer; the RT side sees it appear on a later frame. Until it does,
+     * bus_mix_target resolves the bus to NULL and its voices are heard through
+     * Main, so nothing is ever dropped waiting for memory.
+     */
+    volatile int bus_alloc_pending[SLOT_BUSES];
+    pthread_t bus_worker;
+    /* 1 between pthread_create and the join in chain_bus_worker_stop. Doubles
+     * as the worker's run flag: clearing it and posting the semaphore is the
+     * whole shutdown protocol. */
+    int bus_worker_started;
+    /*
+     * A SEMAPHORE, not a condvar, and not a poll.
+     *
+     * The signaller is the SPI callback. A condvar needs its mutex held to
+     * signal safely, and that mutex is also held by a SCHED_OTHER worker — a
+     * FIFO 70 thread blocking on a lock owned by a SCHED_OTHER one is textbook
+     * priority inversion on the audio thread. sem_post takes no lock: an
+     * atomic increment and, only when someone is actually parked, a FUTEX_WAKE.
+     * It is also what makes the join at teardown prompt (see
+     * chain_bus_worker_stop) — a usleep poll loop would make every destroy wait
+     * out its period on the callback.
+     */
+    sem_t bus_worker_sem;
+    int bus_worker_sem_ok;   /* sem_init succeeded; guards sem_destroy */
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
@@ -658,6 +700,17 @@ CHAIN_INTERNAL int chain_reorder_insert(chain_instance_t *inst, int is_midi, int
 CHAIN_INTERNAL int chain_reorder_remove(chain_instance_t *inst, int is_midi, int at);
 CHAIN_INTERNAL int chain_reorder_move(chain_instance_t *inst, int is_midi, int from, int to);
 CHAIN_INTERNAL void v2_unload_synth(chain_instance_t *inst);
+
+/* Bus allocation (chain_host.c). chain_bus_request_alloc is the RT-side half:
+ * it marks the bus in use, flags it pending and starts the worker on first
+ * use — a slot with no buses starts no thread. It allocates nothing itself.
+ * Task 8's "bus<N>:create" dispatch is its caller. */
+CHAIN_INTERNAL void chain_bus_request_alloc(chain_instance_t *inst, int bus);
+/* Stops and JOINS the worker; must be called before chain_bus_release_all. */
+CHAIN_INTERNAL void chain_bus_worker_stop(chain_instance_t *inst);
+/* Frees every bus's buffer, destroys its FX instances and dlcloses their
+ * handles. Only safe once the worker is joined. */
+CHAIN_INTERNAL void chain_bus_release_all(chain_instance_t *inst);
 
 /* chain_json.c */
 CHAIN_INTERNAL const char *bounded_strstr(const char *start, const char *end, const char *needle);
