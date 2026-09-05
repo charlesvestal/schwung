@@ -470,6 +470,16 @@ int main(int argc, char **argv) {
 
         if (ev.click_pressed) {
             const char *chosen_id = rows[cursor].id;
+            /* Any explicit choice from the FORCED picker dismisses the
+             * accusation, same as Back: without this, re-picking a target
+             * that has no healthy file (it certifies boots only by staying
+             * alive 30s) re-forced the picker after every quick power
+             * cycle — hit in the field within the hour of the Back fix. */
+            if (forced) {
+                char stamp[600];
+                snprintf(stamp, sizeof(stamp), "%s/.boot-attempt", targets_dir);
+                unlink(stamp);
+            }
             if (!bs_write_default(targets_dir, chosen_id)) {
                 fprintf(stderr, "boot-select: failed to write %s/default: %s\n",
                         targets_dir, strerror(errno));
