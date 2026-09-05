@@ -263,6 +263,8 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_led_queue.h src/host/shadow_state.h \
     src/host/plugin_api_v1.h src/host/unified_log.h src/host/tts_engine.h \
     src/host/schwung_trace.h \
+    src/host/audio_fx_api_v2.h src/host/lfo_common.h src/host/fx_midi_filter.h \
+    src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
     src/host/link_audio.h src/host/shadow_shm_util.h; then
     echo "Building shim..."
     "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \

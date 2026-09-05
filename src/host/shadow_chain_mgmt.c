@@ -67,7 +67,18 @@ void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) 
 void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 int (*shadow_chain_fx_requires_continuous)(void *instance) = NULL;
+void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
+                                 int n_sends, int frames,
+                                 int slot_volume_0_127) = NULL;
 host_api_v1_t shadow_host_api;
+
+/* Global send buses. Zero-initialised BSS: every position empty, both returns
+ * down, no A->B. That resting state is what makes shadow_send_bus_active()
+ * false for both buses until something is actually configured, which is what
+ * keeps an unused send free in the mix path. */
+master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
+volatile int shadow_send_return_level[SEND_BUSES];
+volatile int shadow_send_a_to_b;
 
 /* Look up the slot owning a chain plugin instance and return its live
  * receive channel. Used by chain MIDI FX in Pre mode to address Move
@@ -1396,6 +1407,10 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_process_fx");
     shadow_chain_fx_requires_continuous = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_fx_requires_continuous");
+    /* Optional, and NULL on any chain built before the send buses landed: the
+     * shim null-checks it and the sends simply receive nothing. */
+    shadow_chain_drain_sends = (void (*)(void *, int16_t *const *, int, int, int))
+        dlsym(shadow_dsp_handle, "chain_drain_sends");
 
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d keep_alive=%p",
             (void*)shadow_chain_set_inject_audio,
@@ -1403,6 +1418,8 @@ int shadow_inprocess_load_chain(void) {
             (void*)shadow_chain_process_fx,
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous);
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p",
+            (void*)shadow_chain_drain_sends);
 
     /* Set pages: read persisted page on boot */
     set_page_current = set_page_read_persisted();
@@ -2867,6 +2884,146 @@ void shadow_inprocess_handle_param_request(void) {
             strcmp(key, "suspend_overtake") == 0 ||
             strcmp(key, "passthrough") == 0) {
             if (host.handle_param_special(req_type, req_id)) {
+                shadow_param_publish_response(req_id);
+                return;
+            }
+        }
+    }
+
+    /* ---- Global send buses: "send<N>:fx<M>:<param>" and "send<N>:<param>" --
+     *
+     * Routed through send_fx_key.h with both caps passed in, so this handler
+     * holds no copy of either and raising one widens it automatically. An
+     * unmatched key falls THROUGH to the handlers below with nothing written —
+     * the opposite of the master_fx block's else-branch, which assigns slot 0
+     * and is why an out-of-range "fx5:cutoff" used to be written into a
+     * different running module under a garbage key.
+     *
+     * SHAPE IS NOT HANDLED HERE. `send<N>:fx<M>:module` is refused rather than
+     * silently dropped: loading a module into a send position needs the Master
+     * FX loader in a form that takes an array other than shadow_master_fx_slots
+     * (it and its owned param caches are indexed by position today), and that
+     * refactor belongs with the editor that will drive it. What this serves is
+     * STATE — return levels, the A->B feed, bypass, and the loaded position's
+     * own params. */
+    {
+        int send_idx = -1, send_fx = -1;
+        const char *send_param = NULL;
+        if (send_fx_route(shadow_param->key, SEND_BUSES, SEND_FX_SLOTS,
+                          &send_idx, &send_fx, &send_param)) {
+            int is_set = (req_type == 1);
+            int handled = 1;
+
+            if (send_fx < 0) {
+                /* Bus-level keys. */
+                if (strcmp(send_param, "return") == 0) {
+                    if (is_set) {
+                        int v = atoi(shadow_param->value);
+                        if (v < 0) v = 0;
+                        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+                        shadow_send_return_level[send_idx] = v;
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 0;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 shadow_send_return_level[send_idx]);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (send_idx == 0 && strcmp(send_param, "to_send2") == 0) {
+                    /* The A->B feed, named from its SOURCE end because that is
+                     * where it is taken — post send A's chain, at A's return
+                     * level. The _Static_assert beside the mix-path special
+                     * case is what stops this key quietly meaning something
+                     * else if SEND_BUSES is ever raised past two. */
+                    if (is_set) {
+                        int v = atoi(shadow_param->value);
+                        if (v < 0) v = 0;
+                        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+                        shadow_send_a_to_b = v;
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 0;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 shadow_send_a_to_b);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else {
+                    handled = 0;
+                }
+            } else {
+                master_fx_slot_t *sfx = &shadow_send_fx_slots[send_idx][send_fx];
+
+                if (strcmp(send_param, "bypassed") == 0) {
+                    /* Host-side at the render loop, exactly as Master FX does
+                     * it, so the key never reaches the sub-plugin. */
+                    if (is_set) {
+                        sfx->bypassed = (shadow_param->value[0] &&
+                                         atoi(shadow_param->value)) ? 1 : 0;
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 0;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 sfx->bypassed ? 1 : 0);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (strcmp(send_param, "module") == 0 ||
+                           strcmp(send_param, "name") == 0) {
+                    if (is_set) {
+                        /* Refused, not dropped: see the SHAPE note above. A
+                         * silent no-op here would look to the editor exactly
+                         * like a successful load of a module that then makes
+                         * no sound. */
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else {
+                        const char *v = (send_param[0] == 'm') ? sfx->module_path
+                                                               : sfx->module_id;
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%s", v);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (sfx->instance && sfx->api) {
+                    if (is_set) {
+                        if (sfx->api->set_param) {
+                            sfx->api->set_param(sfx->instance, send_param,
+                                                shadow_param->value);
+                            shadow_param->error = 0;
+                            shadow_param->result_len = 0;
+                        } else {
+                            shadow_param->error = 14;
+                            shadow_param->result_len = -1;
+                        }
+                    } else {
+                        int n = sfx->api->get_param
+                              ? sfx->api->get_param(sfx->instance, send_param,
+                                                    shadow_param->value,
+                                                    SHADOW_PARAM_VALUE_LEN)
+                              : -1;
+                        if (n >= 0) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = (int)strlen(shadow_param->value);
+                        } else {
+                            /* Served, produced nothing. "" is a real answer and
+                             * must not be confused with a read that never
+                             * completed — see the three-answer rule. */
+                            shadow_param->value[0] = '\0';
+                            shadow_param->error = 0;
+                            shadow_param->result_len = 0;
+                        }
+                    }
+                } else {
+                    /* An empty position. Answer emptily rather than reach into
+                     * a NULL instance. */
+                    shadow_param->value[0] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                }
+            }
+
+            if (handled) {
                 shadow_param_publish_response(req_id);
                 return;
             }

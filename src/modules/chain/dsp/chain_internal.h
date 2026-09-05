@@ -380,6 +380,17 @@ typedef struct chain_instance {
     slot_bus_t buses[SLOT_BUSES];
     int main_send_level[BUS_MIX_SENDS];  /* Main sends like any bus */
 
+    /* Which buses v2_render_block actually rendered into on the LAST frame.
+     * Written by the render, read by chain_drain_sends, both on the SPI
+     * callback, so no synchronisation is involved.
+     *
+     * It exists because "has a buffer" is not "was rendered this frame": a bus
+     * whose last voice was reassigned to Main keeps its allocated buffer, and
+     * the render clears only the buses the mask names. Draining on buf != NULL
+     * would therefore go on sending that bus's final 128 frames forever — a
+     * drone with no note behind it. */
+    uint32_t bus_rendered_mask;
+
     /*
      * Bus allocation is a REQUEST, not an action.
      *

@@ -14,6 +14,8 @@
 #include "audio_fx_api_v2.h"
 #include "lfo_common.h"
 #include "master_fx_key.h"
+#include "send_fx_key.h"
+#include "bus_mix.h"          /* BUS_MIX_SENDS, the one name both sides share */
 #include "fx_midi_filter.h"   /* FX_MIDI_CHANNEL_ALL, for master_fx_midi_channel below */
 
 /* ============================================================================
@@ -34,6 +36,34 @@
  * than discover it at slot 10000. */
 _Static_assert(MASTER_FX_SLOTS > 0 && MASTER_FX_SLOTS <= 9999,
                "MASTER_FX_SLOTS must fit \"fx%d\" in MASTER_FX_TARGET_KEY_LEN");
+
+/* Global send buses, and the depth of each one's FX chain.
+ *
+ * Eight positions, the same as Master FX, and deliberately the same TYPE: every
+ * chain in Schwung is 8 positions, so Master, Send A and Send B are one piece
+ * of machinery and one editor rather than three. Raising either cap should be
+ * a one-line change — all "send<N>:fx<M>:" routing goes through send_fx_key.h
+ * with these passed in, and every loop is bounded by these names.
+ *
+ * Design credit: PR #121 (legsmechanical), which established the send topology,
+ * the post-fader rule, the return levels and the feedback-safe A->B, and
+ * device-verified all of it. Re-implemented here rather than merged because
+ * that branch's merge-base is 2026-03-04, ~1700 commits behind main. */
+#define SEND_BUSES BUS_MIX_SENDS
+#define SEND_FX_SLOTS MASTER_FX_SLOTS
+
+/* The chain sizes its per-bus send-level arrays from BUS_MIX_SENDS and CANNOT
+ * include this header — it is a dlopen'd module, and a module reaching into a
+ * shim header is the coupling that produced breakbeat's ABI drift. So the two
+ * names must not drift: one number, one definition, a build failure otherwise. */
+_Static_assert(SEND_BUSES == BUS_MIX_SENDS,
+               "SEND_BUSES must equal BUS_MIX_SENDS -- the chain sizes from bus_mix.h");
+
+/* "send%d" keys are formatted into SEND_TARGET_KEY_LEN buffers; same digit
+ * budget as MASTER_FX_SLOTS above, for the same reason. */
+_Static_assert(SEND_BUSES > 0 && SEND_BUSES <= 9999,
+               "SEND_BUSES must fit \"send%d\" in SEND_TARGET_KEY_LEN");
+
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
@@ -159,6 +189,45 @@ extern int shadow_inprocess_ready;
 
 /* Master FX slots */
 extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
+
+/* --- Global send buses ---------------------------------------------------
+ *
+ * A send chain is a master_fx_slot_t array, so Master FX's hosting, bypass
+ * discipline and capture rules are REUSED rather than duplicated: the mix loop
+ * in the shim is the same loop, and anything that learns to edit a Master FX
+ * position edits a send position by pointing at a different array.
+ *
+ * Levels are 0..BUS_MIX_SEND_LEVEL_MAX (127) so they survive a CC round trip
+ * and need no float in the audio path — see bus_mix_send(), which is the only
+ * thing that scales by them.
+ *
+ * shadow_send_a_to_b is the A->B feed. It is applied in the shim AFTER send A's
+ * chain and BEFORE send B's, which is what makes it feedback-safe by
+ * construction: there is no point in the ordering at which B's output can reach
+ * A, so no loop detection exists or is needed. */
+extern master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
+extern volatile int shadow_send_return_level[SEND_BUSES];  /* 0..127 */
+extern volatile int shadow_send_a_to_b;                    /* 0..127 */
+
+/* Drain each slot's per-bus send contributions into the shim's accumulators.
+ * NULL until a chain DSP that exports chain_drain_sends is loaded, so every
+ * caller must null-check — an older chain simply feeds nothing to the sends. */
+extern void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
+                                        int n_sends, int frames,
+                                        int slot_volume_0_127);
+
+/* Is there anything for send bus `sb` to do this frame? False means the shim
+ * skips it entirely — no memcpy, no process_block. A send with nothing loaded
+ * and no return level costs one pointer scan per frame and nothing else. */
+static inline int shadow_send_bus_active(int sb) {
+    if (sb < 0 || sb >= SEND_BUSES) return 0;
+    if (shadow_send_return_level[sb] > 0) return 1;
+    for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+        const master_fx_slot_t *s = &shadow_send_fx_slots[sb][fx];
+        if (s->instance && s->api && s->api->process_block) return 1;
+    }
+    return 0;
+}
 
 /* Master FX LFOs */
 #define MASTER_FX_LFO_COUNT 2

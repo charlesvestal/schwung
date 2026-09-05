@@ -57,6 +57,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
+	$(BUILD_DIR)/test_send_fx_key \
 	$(BUILD_DIR)/test_split_voices_parse
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
@@ -74,6 +75,23 @@ endif
 PERF_MFX_SLOTS := $(shell awk '/^\#define PERF_MASTER_FX_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
 ifneq ($(strip $(PERF_MFX_SLOTS)),$(strip $(MASTER_FX_SLOTS)))
 $(error PERF_MASTER_FX_SLOTS ($(PERF_MFX_SLOTS)) != MASTER_FX_SLOTS ($(MASTER_FX_SLOTS)) - update src/host/perf_snapshot.h)
+endif
+
+# The send caps, same reasoning again — but these are DEFINED FROM other names
+# (SEND_BUSES from BUS_MIX_SENDS, SEND_FX_SLOTS from MASTER_FX_SLOTS), which is
+# the point: one number, one definition. So resolve one hop rather than assume a
+# literal, and fail the build if the value is not a number afterwards, instead
+# of compiling the test with an empty -D and covering nothing.
+SEND_BUSES_RAW := $(shell awk '/^\#define SEND_BUSES /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
+SEND_SLOTS_RAW := $(shell awk '/^\#define SEND_FX_SLOTS /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
+BUS_MIX_SENDS := $(shell awk '/^\#define BUS_MIX_SENDS /{print $$3}' ../../src/host/bus_mix.h)
+SEND_BUSES := $(if $(filter BUS_MIX_SENDS,$(SEND_BUSES_RAW)),$(BUS_MIX_SENDS),$(SEND_BUSES_RAW))
+SEND_FX_SLOTS := $(if $(filter MASTER_FX_SLOTS,$(SEND_SLOTS_RAW)),$(MASTER_FX_SLOTS),$(SEND_SLOTS_RAW))
+ifeq ($(shell echo $(SEND_BUSES) | grep -c '^[0-9][0-9]*$$'),0)
+$(error could not resolve SEND_BUSES to a number (raw "$(SEND_BUSES_RAW)"))
+endif
+ifeq ($(shell echo $(SEND_FX_SLOTS) | grep -c '^[0-9][0-9]*$$'),0)
+$(error could not resolve SEND_FX_SLOTS to a number (raw "$(SEND_SLOTS_RAW)"))
 endif
 
 # Same reasoning as MASTER_FX_SLOTS above, for the bus cap: bus_route.h takes
@@ -151,6 +169,9 @@ $(BUILD_DIR)/test_relative_cc: test_relative_cc.c ../../src/modules/chain/dsp/re
 
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_send_fx_key: test_send_fx_key.c ../../src/host/send_fx_key.h ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h ../../src/host/bus_mix.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SEND_BUSES=$(SEND_BUSES) -DTEST_SEND_FX_SLOTS=$(SEND_FX_SLOTS) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)

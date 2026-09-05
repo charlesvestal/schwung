@@ -48,15 +48,19 @@ for f in chain_host.c chain_json.c chain_params.c chain_mod.c chain_midi.c chain
   fi
 done
 
-# 5. Exported-symbol invariant: dsp.so must export exactly the pre-split set
-#    (5 chain entry points + 6 unified_log fns). Cross-TU internals must be
+# 5. Exported-symbol invariant: dsp.so must export exactly the intended set
+#    (6 chain entry points + 6 unified_log fns). Cross-TU internals must be
 #    hidden-visibility so dlopen'd sub-plugins can't collide with them.
+#
+#    A new name here is a deliberate widening of the chain's ABI and belongs in
+#    this list with the change that adds it — chain_drain_sends is the global
+#    send buses' drain, dlsym'd by shadow_chain_mgmt.c.
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
   want=$(printf '%s\n' \
-    chain_fx_requires_continuous chain_process_fx chain_set_external_fx_mode \
-    chain_set_inject_audio move_plugin_init_v2 \
+    chain_drain_sends chain_fx_requires_continuous chain_process_fx \
+    chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then

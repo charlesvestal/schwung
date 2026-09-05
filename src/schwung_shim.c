@@ -494,6 +494,23 @@ static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 static int16_t shadow_slot_fx_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 static int shadow_slot_fx_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
+/* Global send accumulators — ONE pair for the whole device, not one per slot.
+ * That is what makes the sends global: a single reverb every slot can feed,
+ * rather than four copies of it.
+ *
+ * They live on the same clock as shadow_slot_deferred above: cleared and filled
+ * during the post-ioctl render, consumed by the pre-ioctl mix of the following
+ * frame. Anything that changes that phase relationship for the slot buffers has
+ * to move these with it, or a send arrives a frame away from the audio it was
+ * taken from.
+ *
+ * send_out is the working copy the send FX chains process in place, kept
+ * separate so send_accum still holds exactly what the slots contributed —
+ * the A->B feed reads a chain's OUTPUT and must not be able to read a
+ * half-processed accumulator. */
+static int16_t send_accum[SEND_BUSES][FRAMES_PER_BLOCK * 2];
+static int16_t send_out[SEND_BUSES][FRAMES_PER_BLOCK * 2];
+
 /* ---- Preview player: lightweight WAV playback for file browser ---- */
 #define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 #define PREVIEW_WAV_FORMAT_PCM   1
@@ -1893,6 +1910,14 @@ static void shadow_inprocess_render_to_buffer(void) {
         shadow_slot_fx_deferred_valid[s] = 0;
     }
 
+    /* Clear the global send accumulators here, with the per-slot buffers they
+     * are filled from, so the two can never disagree about which frame they
+     * belong to. The pre-ioctl mix has already consumed last frame's contents
+     * by the time this runs. */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        memset(send_accum[sb], 0, sizeof(send_accum[sb]));
+    }
+
     /* Same-frame FX: render synth only into per-slot buffers.
      * FX + Link Audio inject are processed in mix_from_buffer (same frame as mailbox)
      * so the inject/subtract cancellation is sample-accurate. */
@@ -1996,6 +2021,37 @@ static void shadow_inprocess_render_to_buffer(void) {
                     shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
                     if (i & 1) shadow_fade_advance(s);
                 }
+            }
+
+            /* Drain this slot's per-bus send contributions into the global
+             * accumulators, immediately after the render that filled the bus
+             * buffers.
+             *
+             * POST-INSERT and POST-FADER: the bus buffers already carry their
+             * own insert chains, and the slot's volume is passed in, so pulling
+             * a track down pulls it out of the sends the way a console does.
+             * Mute and solo live inside shadow_effective_volume, so a muted
+             * slot feeds the sends nothing.
+             *
+             * The level is quantised to 0..127 (what the whole send path works
+             * in — see bus_mix_send) and applied PER BLOCK. It does not follow
+             * the per-sample fade ramp the main mix applies, so a slot fade is
+             * a step of at most one block here rather than a ramp.
+             *
+             * This sits above slot_run_deferred_fx on purpose. The idle gate's
+             * `goto` skips it, and must: the bus buffers are cleared and
+             * refilled inside render_block, so a skipped render would otherwise
+             * re-send whatever the last probe frame left in them. */
+            if (shadow_chain_drain_sends) {
+                int16_t *send_targets[SEND_BUSES];
+                for (int sb = 0; sb < SEND_BUSES; sb++) send_targets[sb] = send_accum[sb];
+                float send_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                int send_vol127 = (int)lroundf(send_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+                if (send_vol127 < 0) send_vol127 = 0;
+                if (send_vol127 > BUS_MIX_SEND_LEVEL_MAX) send_vol127 = BUS_MIX_SEND_LEVEL_MAX;
+                shadow_chain_drain_sends(shadow_chain_slots[s].instance,
+                                         send_targets, SEND_BUSES,
+                                         MOVE_FRAMES_PER_BLOCK, send_vol127);
             }
 
             /* Check if synth render output is silent */
@@ -2843,6 +2899,71 @@ skip_la_rebuild:
             if (of_us > spi_overtake_fx_max) spi_overtake_fx_max = of_us;
         }
     }
+
+    /* ---- Global send buses -------------------------------------------------
+     *
+     * Each is hosted exactly like Master FX — the same master_fx_slot_t array,
+     * the same "always process, restore the dry" bypass discipline — so there
+     * is one piece of chain machinery here, not three.
+     *
+     * The returns sum into fx_target, which is the bus Master FX is about to
+     * process, so the master chain sees the wet signal too. That ordering is
+     * the whole reason this block sits immediately above the MFX loop rather
+     * than below it.
+     *
+     * An inactive send costs one pointer scan: no memcpy, no process_block. */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        if (!shadow_send_bus_active(sb)) continue;
+
+        memcpy(send_out[sb], send_accum[sb], sizeof(send_out[sb]));
+
+        /* A -> B, applied AFTER A's chain and BEFORE B's. That ordering is what
+         * makes it feedback-safe BY CONSTRUCTION: there is no point at which
+         * B's output can reach A, so there is no loop to detect and no loop
+         * detection here to go wrong. It works because A is processed on an
+         * earlier iteration of this same loop — sb == 1 reads a send_out[0]
+         * that is already final for this frame.
+         *
+         * Scaled by A's return level as well as the feed level, because a send
+         * from A is post-A's-fader like every other send in this design: pull
+         * A's return down and it leaves B with it.
+         *
+         * The bus_active(0) test is not redundant with that scaling, even
+         * though an inactive A implies a zero return level today. It is what
+         * says out loud that send_out[0] is only THIS frame's audio when the
+         * sb == 0 iteration actually ran — a skipped bus leaves the buffer
+         * holding whatever the last active frame put there. */
+        if (sb == 1 && shadow_send_a_to_b > 0 && shadow_send_bus_active(0)) {
+            int lvl = (shadow_send_a_to_b * shadow_send_return_level[0]) /
+                      BUS_MIX_SEND_LEVEL_MAX;
+            bus_mix_send(send_out[1], send_out[0], FRAMES_PER_BLOCK * 2, lvl);
+        }
+
+        for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+            master_fx_slot_t *sfx = &shadow_send_fx_slots[sb][fx];
+            if (!(sfx->instance && sfx->api && sfx->api->process_block)) continue;
+            int16_t sfx_dry[FRAMES_PER_BLOCK * 2];
+            /* Process even when bypassed, then restore the dry: a bypassed
+             * reverb keeps its tail advancing, so un-bypassing resumes cleanly
+             * instead of bursting. Same rule as the MFX loop below. */
+            if (sfx->bypassed) {
+                memcpy(sfx_dry, send_out[sb], sizeof(sfx_dry));
+            }
+            sfx->api->process_block(sfx->instance, send_out[sb], FRAMES_PER_BLOCK);
+            if (sfx->bypassed) {
+                memcpy(send_out[sb], sfx_dry, sizeof(sfx_dry));
+            }
+        }
+
+        bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2,
+                     shadow_send_return_level[sb]);
+    }
+
+    /* The A->B block above names send 1 by index. Raising SEND_BUSES turns that
+     * from "the second of two" into "one arbitrary bus", which needs a routing
+     * matrix rather than a special case — so fail the build here instead of
+     * mis-routing quietly. */
+    _Static_assert(SEND_BUSES == 2, "the A->B special case assumes exactly two sends");
 
     /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
      * rebuild_from_la, mailbox contains reconstructed ME tracks and MFX

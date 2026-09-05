@@ -2413,6 +2413,11 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     int16_t *bus_bufs[SLOT_BUSES] = {0};
     uint32_t active_bus_mask = 0;
     int n_active = 0;
+    /* Cleared before the decision, not after it: every path out of this
+     * function below (the non-split render, the no-synth memset, the
+     * external_fx_mode early return) must leave chain_drain_sends looking at
+     * this frame's answer rather than the previous frame's. */
+    inst->bus_rendered_mask = 0;
     /* voice_out[] below is a SPLIT_VOICES_MAX stack array on the SPI callback,
      * and synth_split_voice_count's bound (n < max_ids) lives in another file
      * (split_voices_parse.h). Clamp locally so a bad count from that path is a
@@ -2429,6 +2434,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         n_active = bus_mix_active_mask(inst->voice_bus,
                                        nv,
                                        SLOT_BUSES, bus_bufs, &active_bus_mask);
+        inst->bus_rendered_mask = active_bus_mask;
     }
 
     /* Always render so synth state advances (envelopes, LFOs, phases).
@@ -2615,6 +2621,64 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
  * capabilities.requires_continuous_processing in its module.json. Read by the
  * shim per SPI frame to keep stateful FX (loopers, modulated delays) running
  * during silence. */
+/*
+ * Exported: drain this slot's per-bus send contributions into the caller's
+ * global accumulators. Called by the shim once per slot per frame, immediately
+ * after render_block, and only when render_block actually ran.
+ *
+ * POST-INSERT AND POST-FADER. The bus buffers already carry their own insert
+ * chains at this point (v2_render_block runs them before summing into main and
+ * leaves them intact), and the caller passes the slot's volume, so pulling a
+ * track down pulls it out of the sends the way a console does.
+ *
+ * `accum[i]` must hold at least `frames * 2` int16 samples and is ACCUMULATED
+ * into, never overwritten — the caller clears them once per frame, before any
+ * slot drains.
+ *
+ * MAIN IS NOT DRAINED HERE, and inst->main_send_level therefore still has no
+ * reader. Main's post-insert audio does not exist at this point: under the
+ * same-frame-FX mode the device always runs in, render_block returns the raw
+ * synth and the slot's own FX chain runs later, into a different buffer. Taking
+ * Main's send here would send a pre-FX signal while every bus sends a
+ * post-insert one — two different meanings behind one control. Doing it
+ * properly needs a second drain point after chain_process_fx, and under
+ * rebuild_from_la that point moves again; it belongs with the task that owns
+ * that mix path.
+ *
+ * Runs on the SPI callback: no allocation, no I/O, no locks.
+ */
+void chain_drain_sends(void *instance, int16_t *const *accum, int n_sends,
+                       int frames, int slot_volume_0_127) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || !accum || n_sends <= 0 || frames <= 0) return;
+    /* Same clamp v2_render_block applies, for the same reason: the bus buffers
+     * hold BUS_BUF_SAMPLES and nothing below bounds-checks against `frames`. */
+    if (frames > FRAMES_PER_BLOCK) frames = FRAMES_PER_BLOCK;
+    /* A closed fader sends nothing. This is the post-fader rule, not an
+     * optimisation — a muted or soloed-out slot arrives here as volume 0. */
+    if (slot_volume_0_127 <= 0) return;
+    if (slot_volume_0_127 > BUS_MIX_SEND_LEVEL_MAX)
+        slot_volume_0_127 = BUS_MIX_SEND_LEVEL_MAX;
+    /* The caller's count wins when it is SMALLER; our arrays cap it when it is
+     * larger. An older shim asking for fewer sends than we carry gets the ones
+     * it asked for rather than a write past the end of its table. */
+    int ns = (n_sends < BUS_MIX_SENDS) ? n_sends : BUS_MIX_SENDS;
+
+    for (int b = 0; b < SLOT_BUSES; b++) {
+        if (!(inst->bus_rendered_mask & (1u << b))) continue;
+        int16_t *buf = inst->buses[b].buf;
+        if (!buf) continue;   /* the mask should preclude this; cheap and total */
+        for (int sd = 0; sd < ns; sd++) {
+            if (!accum[sd]) continue;
+            int lvl = (inst->buses[b].send_level[sd] * slot_volume_0_127) /
+                      BUS_MIX_SEND_LEVEL_MAX;
+            /* bus_mix_send returns immediately on a level <= 0, so a bus with
+             * no send costs one multiply and a compare. */
+            bus_mix_send(accum[sd], buf, frames * 2, lvl);
+        }
+    }
+}
+
 int chain_fx_requires_continuous(void *instance) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return 0;
