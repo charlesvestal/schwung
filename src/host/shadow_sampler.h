@@ -107,9 +107,23 @@ typedef struct {
  * under Move->Schwung, by construction, for the same reason the slot stems
  * are complete there.
  *
+ * The last two stems are the GLOBAL SEND RETURNS, and they exist for the same
+ * reason the Move stem does: a shared return belongs to no slot. A slot feeds
+ * a send pre- or post-fader and the wet signal comes back on a device-wide
+ * bus, so without these two the reverb tail would be in the master file and in
+ * none of the stems -- the exact-sum property above would break the moment
+ * anybody used a send, silently, with every file present and plausible.
+ * Captured post-send-chain and scaled by the return level, i.e. the identical
+ * signal bus_mix_send() adds to the master bus, so slots 1-4 + SendA + SendB
+ * still sum to the master exactly. An unloaded send writes silence and its
+ * file is deleted at finalize like any other.
+ *
  * Stems are PRE-MASTER-FX and pre-master-volume. Master FX processes the
  * mixed bus, so there is no per-stem version of it to capture; a stem sum will
  * differ from the master file by exactly whatever the Master FX chain does.
+ * The send returns are captured BEFORE Master FX for the same reason, which is
+ * also where they sit in the signal path: the send block runs immediately
+ * above the MFX loop so the master chain sees the wet signal.
  *
  * Every stem file is opened eagerly and DELETED AT FINALIZE if it never saw a
  * non-zero sample, so an unloaded slot leaves no file. Opening them lazily on
@@ -117,8 +131,10 @@ typedef struct {
  * start at the first sound rather than at t=0, and the stems would no longer
  * line up with each other or with the master.
  */
-#define SAMPLER_STEM_COUNT 5
-#define SAMPLER_STEM_MOVE  4   /* index of the Move stem; 0-3 are the slots */
+#define SAMPLER_STEM_COUNT 7
+#define SAMPLER_STEM_MOVE   4  /* index of the Move stem; 0-3 are the slots */
+#define SAMPLER_STEM_SEND_A 5  /* the two global send returns, in bus order */
+#define SAMPLER_STEM_SEND_B 6
 
 /* File-name suffixes, parallel to the stem indices. */
 extern const char *const sampler_stem_names[SAMPLER_STEM_COUNT];
@@ -129,11 +145,17 @@ extern const char *const sampler_stem_names[SAMPLER_STEM_COUNT];
 /*
  * Stem rolling buffers are capped well below SKIPBACK_MAX_SECONDS.
  *
- * The master buffer is one stereo ring of up to 5 minutes (53 MB). Five of
- * those is ~265 MB, which is not a budget this device has to spend on a
- * feature that is off by default. 60 s x 5 is 53 MB -- the same as one master
- * buffer at its maximum -- and it is the length that actually gets used: the
- * default skipback length is 30 s and both fit under the cap untouched.
+ * The master buffer is one stereo ring of up to 5 minutes (53 MB). Seven of
+ * those is ~370 MB, which is not a budget this device has to spend on a
+ * feature that is off by default. 60 s x 7 is 71 MB, and it is the cap rather
+ * than the usual cost: the default skipback length is 30 s (35 MB), and the
+ * rings are allocated only while Save Stems is actually asking for stems.
+ *
+ * The original anchor here was "60 s x 5 is 53 MB -- the same as one master
+ * buffer at its maximum". The two send-return stems broke that arithmetic, and
+ * the cap was left at 60 s deliberately rather than shortened to restore it:
+ * shrinking it would silently truncate the stems of anyone already running a
+ * 60 s skipback, which is a worse failure than the 18 MB.
  *
  * When the master is longer than this, the stems are a SUFFIX of it. Both end
  * at the same instant (the save), so the stem files line up with the tail of
@@ -306,8 +328,8 @@ void sampler_capture_stems(const int16_t *const *stems, int count);
 void skipback_capture_stems(const int16_t *const *stems, int count);
 
 /* Seconds actually allocated for the skipback STEM buffers, which is capped
- * below the master's length (SKIPBACK_STEM_MAX_SECONDS) -- five rolling
- * buffers at the master's 5-minute maximum would be ~265 MB. 0 when stems are
+ * below the master's length (SKIPBACK_STEM_MAX_SECONDS) -- seven rolling
+ * buffers at the master's 5-minute maximum would be ~370 MB. 0 when stems are
  * off or allocation failed. The stems are a SUFFIX of the master: both end at
  * the same instant. */
 int skipback_stems_get_seconds(void);

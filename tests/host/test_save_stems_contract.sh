@@ -27,8 +27,11 @@ const UIC   = "src/shadow/shadow_ui.c";
 const UIJS  = "src/shadow/shadow_ui.js";
 const GRID  = "src/shadow/shadow_ui_global_grid.mjs";
 
+const CHMH  = "src/host/shadow_chain_mgmt.h";
+const BUSH  = "src/host/bus_mix.h";
+
 const src = {};
-for (const [k, p] of Object.entries({ CONST, SMPH, SMPC, SHIM, UIC, UIJS, GRID }))
+for (const [k, p] of Object.entries({ CONST, SMPH, SMPC, SHIM, UIC, UIJS, GRID, CHMH, BUSH }))
     src[k] = fs.readFileSync(p, "utf8");
 
 const fails = [];
@@ -55,13 +58,45 @@ check(names.length === count,
     " entries — the extra stem would be written to a file named from garbage, " +
     "or the last one would have no name at all");
 
-/* ---- 2. the Move stem is the LAST index, after the four slots ---------- */
+/* ---- 2. the index order: four slots, Move, then the two send returns --- */
 
 const moveM = src.SMPH.match(/^#define SAMPLER_STEM_MOVE\s+(\d+)/m);
 check(!!moveM, "SAMPLER_STEM_MOVE is gone from " + SMPH);
 const moveIdx = moveM ? parseInt(moveM[1], 10) : -1;
-check(moveIdx === count - 1,
-    "SAMPLER_STEM_MOVE is " + moveIdx + ", not the last index (" + (count - 1) + ")");
+
+/* The shim taps the send returns as SAMPLER_STEM_SEND_A + sb inside the send
+ * loop, so they must be contiguous and last. A send bus added without a stem
+ * would write over whatever index followed. (The shim pins the same thing with
+ * _Static_asserts; this catches the header drifting on its own.) */
+const sendAM = src.SMPH.match(/^#define SAMPLER_STEM_SEND_A\s+(\d+)/m);
+const sendBM = src.SMPH.match(/^#define SAMPLER_STEM_SEND_B\s+(\d+)/m);
+check(!!sendAM && !!sendBM, "the SAMPLER_STEM_SEND_* indices are gone from " + SMPH);
+const sendA = sendAM ? parseInt(sendAM[1], 10) : -1;
+const sendB = sendBM ? parseInt(sendBM[1], 10) : -1;
+check(sendA === moveIdx + 1,
+    "SAMPLER_STEM_SEND_A is " + sendA + ", not immediately after the Move stem");
+check(sendB === sendA + 1, "the send stems are not contiguous");
+check(sendB === count - 1,
+    "SAMPLER_STEM_SEND_B is " + sendB + ", not the last index (" + (count - 1) + ")");
+
+/* The send buses and their stems are not independent either: one bus without a
+ * stem records SILENCE for its return, which is exactly the failure the send
+ * stems were added to prevent. */
+const sendBusM = src.CHMH.match(/^#define BUS_MIX_SENDS\s+(\d+)/m) ||
+                 src.BUSH.match(/^#define BUS_MIX_SENDS\s+(\d+)/m);
+check(!!sendBusM, "BUS_MIX_SENDS is gone");
+if (sendBusM) {
+    const buses = parseInt(sendBusM[1], 10);
+    check(count === sendA + buses,
+        "there are " + buses + " send buses but " + (count - sendA) + " send stems — " +
+        "a bus without a stem leaves its return in the master and in no stem file");
+}
+
+/* The names are the FILE SUFFIXES for those indices, so the order matters as
+ * much as the count: swapping them mislabels every take. */
+check(names[moveIdx] === '"Move"', "index " + moveIdx + " is not named Move");
+check(names[sendA] === '"SendA"', "index " + sendA + " is not named SendA");
+check(names[sendB] === '"SendB"', "index " + sendB + " is not named SendB");
 
 /* Indices 0..3 are addressed directly as chain slots by the shim's taps
  * (shadow_stem_store(s, ...) inside the per-slot loop), so the slot count and
@@ -196,9 +231,16 @@ for (const [name, want] of [["SAVE_STEMS_MASTER", 0], ["SAVE_STEMS_STEMS", 1], [
 
 /* ---- 7. skipback stem buffers are bounded ----------------------------- */
 
-/* Five rolling buffers at the master's maximum would be ~265 MB. The cap is
+/* Seven rolling buffers at the master's maximum would be ~370 MB. The cap is
  * what keeps the feature from being an out-of-memory condition you discover by
- * turning a setting on. */
+ * turning a setting on.
+ *
+ * The budget was 64 MB when there were five stems (53 MB at the cap). The two
+ * send-return stems put the cap at 71 MB; it is raised rather than the cap
+ * shortened, because shortening SKIPBACK_STEM_MAX_SECONDS would silently
+ * truncate the stems of anyone already running a 60 s skipback. The number
+ * still has to be a CEILING somebody chose, not whatever the constants
+ * currently multiply out to -- so it keeps the same headroom it had. */
 {
     const maxM   = src.SMPH.match(/^#define SKIPBACK_MAX_SECONDS\s+(\d+)/m);
     const stemM  = src.SMPH.match(/^#define SKIPBACK_STEM_MAX_SECONDS\s+(\d+)/m);
@@ -208,7 +250,7 @@ for (const [name, want] of [["SAVE_STEMS_MASTER", 0], ["SAVE_STEMS_STEMS", 1], [
         check(stemSec <= parseInt(maxM[1], 10),
             "SKIPBACK_STEM_MAX_SECONDS (" + stemSec + ") exceeds SKIPBACK_MAX_SECONDS");
         const bytes = stemSec * 44100 * 2 * 2 * count;
-        const BUDGET = 64 * 1024 * 1024;
+        const BUDGET = 80 * 1024 * 1024;
         check(bytes <= BUDGET,
             "the skipback stem buffers would take " + (bytes / 1048576).toFixed(1) +
             " MB (" + count + " x " + stemSec + "s) — over the " +
@@ -279,8 +321,8 @@ if (fails.length) {
     process.exit(1);
 }
 console.log("PASS: save stems contract — " + count + " stems (" +
-    names.map(s => s.replace(/"/g, "")).join(", ") + ") with Move last and one per " +
-    "chain slot, save_stems appended at the end of shadow_control_t, Both wanting " +
+    names.map(s => s.replace(/"/g, "")).join(", ") + ") -- one per chain slot, Move, " +
+    "then one per send bus, save_stems appended at the end of shadow_control_t, Both wanting " +
     "master AND stems, stems captured before the master, the capture gate opened on " +
     "the RT arm, skipback stem buffers bounded, and the setting declared in Audio, " +
     "routed, persisted to features.json and pushed back down at startup");

@@ -143,10 +143,14 @@ static char sampler_pending_path[256] = "";
 #define SAMPLER_CMD_PATH_FILE "/data/UserData/schwung/sampler_cmd_path.txt"
 
 /* ---------------------------------------------------------------- stems ---
- * See shadow_sampler.h for what a stem IS and why there are five of them. */
+ * See shadow_sampler.h for what a stem IS and why there are seven of them.
+ *
+ * Order is load-bearing: the shim taps slots 0-3 by slot index, the Move stem
+ * at SAMPLER_STEM_MOVE and the two send returns at SAMPLER_STEM_SEND_A/_B, and
+ * these names are the file suffixes those indices are written under. */
 
 const char *const sampler_stem_names[SAMPLER_STEM_COUNT] = {
-    "Slot1", "Slot2", "Slot3", "Slot4", "Move"
+    "Slot1", "Slot2", "Slot3", "Slot4", "Move", "SendA", "SendB"
 };
 
 typedef struct {
@@ -220,7 +224,7 @@ void sampler_init(const sampler_host_t *host, float *sampler_set_tempo_ptr) {
             s_host.log("Sampler: ring buffer allocation failed — recording disabled");
         }
     }
-    /* The five stem rings, allocated up front for the same reason: the RT
+    /* The stem rings, allocated up front for the same reason: the RT
      * half of a recording start only resets positions. ~1.7 MB, resident
      * whether or not stems are ever switched on — the alternative is a
      * malloc on the path that arms a take, and a failure there would have to
@@ -240,7 +244,7 @@ void sampler_init(const sampler_host_t *host, float *sampler_set_tempo_ptr) {
     sem_init(&sampler_ring_sem, 0, 0);
 }
 
-/* Every stem ring present? Stems are all-or-nothing: four of five files is a
+/* Every stem ring present? Stems are all-or-nothing: a missing file is a
  * worse outcome than the master alone, because the missing one is silent
  * rather than absent and nothing says which. */
 static int sampler_stem_rings_ready(void) {
@@ -476,7 +480,7 @@ static size_t sampler_ring_available_read(void) {
 }
 
 /* Drain one stem ring into its file. Same shape as the master drain below;
- * factored out only because it runs five times. A NULL file still advances
+ * factored out only because it runs once per stem. A NULL file still advances
  * read_pos — a stem whose fopen failed must not back its ring up and stall
  * the RT producer for the rest of the take. */
 static void sampler_stem_drain(sampler_stem_t *st) {
@@ -519,8 +523,8 @@ static void *sampler_writer_thread_func(void *arg) {
          *
          * Keyed on the MASTER ring even when the master file is not being
          * kept: every ring advances in lockstep (one block per SPI frame,
-         * from the same capture call), so it is the same measurement five
-         * times over. */
+         * from the same capture call), so measuring one of them measures
+         * every one of them. */
         if (!should_exit && sampler_ring_available_read() < write_chunk) {
             continue;
         }
@@ -886,7 +890,7 @@ static int sampler_worker_build_auto_path(void) {
     return 0;
 }
 
-/* Open the five stem files beside the master and write their headers.
+/* Open the stem files beside the master and write their headers.
  * Returns the number opened. A stem that fails to open is logged and left
  * NULL: its ring still drains (see sampler_stem_drain), so one bad file
  * cannot stall the take. */
@@ -1050,7 +1054,7 @@ void sampler_worker_prepare(void) {
         if (stems_opened == 0 && !SAVE_STEMS_WANTS_MASTER(sampler_take_stem_mode)) {
             /* Stems-only, and not one stem file opened: there is nowhere for
              * this take to go. Failing here is better than recording into
-             * five NULL files and announcing a save. */
+             * a set of NULL files and announcing a save. */
             sampler_worker_abort_start("Sampler: no stem file could be opened");
             return;
         }
@@ -1238,7 +1242,7 @@ void sampler_worker_finalize(void) {
 
     /* Stems. Each is trimmed by the SAME preroll frame count as the master —
      * they were captured from the same block, in the same call, so a
-     * per-stem count would be the same number computed five more times. */
+     * per-stem count would be the same number computed once more per stem. */
     int stems_kept = 0;
     if (SAVE_STEMS_WANTS_STEMS(sampler_take_stem_mode)) {
         for (int i = 0; i < SAMPLER_STEM_COUNT; i++)
@@ -1616,7 +1620,7 @@ static void skipback_stems_reconcile(void) {
     for (int i = 0; i < SAMPLER_STEM_COUNT; i++) {
         skipback_stem_buffer[i] = (int16_t *)calloc(samples, sizeof(int16_t));
         if (!skipback_stem_buffer[i]) {
-            /* All-or-nothing: four of five buffers means one stem is silently
+            /* All-or-nothing: six of seven buffers means one stem is silently
              * absent from the save with nothing to say which. */
             skipback_stems_free();
             s_host.log("Skipback: stem buffer allocation failed — stems disabled");
@@ -1650,7 +1654,7 @@ void skipback_capture_stems(const int16_t *const *stems, int count) {
         wp = start;
         for (size_t j = 0; j < block_samples; j++) {
             /* Silence for an absent stem, not a skip: one shared write_pos
-             * keeps all five sample-aligned, and a short one would slide. */
+             * keeps them all sample-aligned, and a short one would slide. */
             skipback_stem_buffer[i][wp] = src ? src[j] : 0;
             wp = (wp + 1) % total_samples;
         }
@@ -1788,7 +1792,7 @@ void skipback_resize(int new_seconds) {
 
     /* Stems follow the master's length (clamped by SKIPBACK_STEM_MAX_SECONDS).
      * Their contents are DISCARDED on a resize rather than carried across:
-     * unlike the master they are five rings sharing one write position, and
+     * unlike the master they are several rings sharing one write position, and
      * the honest cheap option is to start them again together. */
     skipback_stems_reconcile();
 

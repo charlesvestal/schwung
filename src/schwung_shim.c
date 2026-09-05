@@ -2274,7 +2274,7 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
  *
  * One block of per-stem audio, rebuilt every frame for the Quantized Sampler
  * and Skipback. Indices match sampler_stem_names[]: 0-3 are the chain slots,
- * 4 is Move.
+ * 4 is Move, 5 and 6 are the two global send returns.
  *
  * A slot stem is that slot's output AFTER its FX chain and AT its slot volume
  * — the same signal shadow_slot_capture[] publishes to Link Audio, tapped at
@@ -2282,6 +2282,13 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
  * deferred and inline halves of the non-rebuild branch). Under Move->Schwung
  * that already contains Move's track N, because the shim summed it in BEFORE
  * running the slot FX and there is no undoing that — see shadow_sampler.h.
+ *
+ * A send stem is that bus's return post-send-chain and at its return level —
+ * the exact block bus_mix_send() adds to the master bus — so the four slot
+ * stems plus the two sends still sum to the master. It is tapped in the send
+ * loop, NOT from native_bridge_me_component: that snapshot is taken before
+ * fx_target exists, so it does not contain the returns (nor Master FX, for the
+ * same reason).
  *
  * `valid` is per frame, not per slot lifetime: an unwritten stem captures
  * SILENCE rather than repeating last frame's block. A stale block is the
@@ -2955,6 +2962,32 @@ skip_la_rebuild:
             }
         }
 
+        /* THE SEND STEM, tapped here and nowhere else.
+         *
+         * It has to be the return EXACTLY as the master bus receives it, or
+         * the stem sum stops reconstructing the master -- which is the whole
+         * reason these two stems exist. So this recomputes bus_mix_send()'s
+         * own integer scaling rather than handing shadow_stem_store() a float
+         * gain: the float path rounds (lroundf) where bus_mix_send truncates,
+         * and the two disagree by one LSB on roughly half of all samples.
+         *
+         * Post-send-chain and pre-Master-FX, like every other stem: the MFX
+         * loop is immediately below.
+         *
+         * Note this is NOT native_bridge_me_component, which is snapshotted
+         * further up, before fx_target exists -- a send return read from there
+         * would be silence in every file. */
+        if (shadow_stems_wanted) {
+            int lvl = shadow_send_return_level[sb];
+            if (lvl < 0) lvl = 0;
+            if (lvl > BUS_MIX_SEND_LEVEL_MAX) lvl = BUS_MIX_SEND_LEVEL_MAX;
+            int16_t send_ret[FRAMES_PER_BLOCK * 2];
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+                send_ret[i] = (int16_t)(((int32_t)send_out[sb][i] * (int32_t)lvl) /
+                                        BUS_MIX_SEND_LEVEL_MAX);
+            shadow_stem_store(SAMPLER_STEM_SEND_A + sb, send_ret, 1.0f);
+        }
+
         bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2,
                      shadow_send_return_level[sb]);
     }
@@ -2964,6 +2997,16 @@ skip_la_rebuild:
      * matrix rather than a special case — so fail the build here instead of
      * mis-routing quietly. */
     _Static_assert(SEND_BUSES == 2, "the A->B special case assumes exactly two sends");
+
+    /* The tap above indexes the stem table as SAMPLER_STEM_SEND_A + sb, so the
+     * send stems must be contiguous and must be the LAST ones. A send bus added
+     * without a stem to put it in would write over whatever followed. */
+    _Static_assert(SAMPLER_STEM_SEND_B == SAMPLER_STEM_SEND_A + 1,
+                   "the send stems must be contiguous");
+    _Static_assert(SAMPLER_STEM_COUNT == SAMPLER_STEM_SEND_A + SEND_BUSES,
+                   "every send bus needs a stem, and the sends are the last stems");
+    _Static_assert(SAMPLER_STEM_MOVE == SHADOW_CHAIN_INSTANCES,
+                   "the Move stem sits immediately after the four slot stems");
 
     /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
      * rebuild_from_la, mailbox contains reconstructed ME tracks and MFX
