@@ -64,6 +64,13 @@ static void test_target_key_roundtrip(void) {
         assert(bus_route_parse_index(out, &end) == n);
         assert(*end == '\0');
     }
+
+    /* A buffer too small must be REFUSED, not filled with a prefix. The whole
+     * point of BUS_TARGET_KEY_LEN is that a truncated target compares unequal
+     * and silently un-modulates, so this is the one failure the function
+     * exists to make loud. */
+    char small[4];
+    assert(bus_route_target(small, sizeof(small), 12) == 0);
     printf("  target roundtrip: ok\n");
 }
 
@@ -74,6 +81,15 @@ static void test_voice_index_lookup(void) {
     assert(bus_voice_index(ids, 4, "ride") == -1);   /* orphan: module changed */
     assert(bus_voice_index(ids, 4, NULL)   == -1);
     assert(bus_voice_index(NULL, 0, "kick") == -1);
+    /* n_ids 0 returns through the LOOP, not the guard. A stale count over a
+     * list that is gone is the case that would actually dereference. */
+    assert(bus_voice_index(NULL, 4, "kick") == -1);
+
+    /* A hole in the list: split_voices_parse skips an over-long id rather
+     * than truncating it, so the producer can emit one. */
+    const char *holed[4] = { "kick", NULL, "chh", NULL };
+    assert(bus_voice_index(holed, 4, "chh")  == 2);
+    assert(bus_voice_index(holed, 4, "ride") == -1);
     printf("  voice lookup: ok\n");
 }
 

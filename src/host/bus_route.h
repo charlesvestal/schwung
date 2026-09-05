@@ -11,7 +11,11 @@
  * The cap is a PARAMETER (bus_count). SLOT_BUSES is named once, in
  * chain_internal.h, and this file holds no copy of it.
  *
- * Pure: no allocation, no I/O, no locks. Called on the SPI callback.
+ * Pure: no allocation, no I/O, no locks. The PARSERS are the ones called on
+ * the SPI callback. bus_route_target is control-path only -- it is the one
+ * function here that pulls in <stdio.h>, and while snprintf into a stack
+ * buffer allocates nothing, takes no FILE lock and makes no syscall, an RT
+ * audit that greps for stdio should not have to re-derive that.
  */
 #ifndef BUS_ROUTE_H
 #define BUS_ROUTE_H
@@ -66,7 +70,9 @@ static inline int bus_route_param_key(const char *key, int bus_count,
 }
 
 /* Format the "bus%d" LFO target for a 1-based index. Returns 1 on success, 0
- * if it would not fit — never a truncated key. */
+ * if it would not fit — never a truncated key, because a truncated target
+ * compares unequal to the one the LFO holds and silently stops modulating
+ * rather than erroring. See BUS_TARGET_KEY_LEN above. */
 static inline int bus_route_target(char *out, size_t out_len, int bus_1based)
 {
     if (!out || out_len == 0 || bus_1based < 1) return 0;
@@ -84,6 +90,11 @@ static inline int bus_route_target(char *out, size_t out_len, int bus_1based)
  */
 static inline int bus_voice_index(const char *const *ids, int n_ids, const char *id)
 {
+    /* !ids guards a caller holding a stale n_ids over a list that is gone --
+     * the same orphan situation described above, one level up. The per-element
+     * ids[i] check guards a partially populated list: split_voices_parse (the
+     * next task) SKIPS an id too long for its buffer rather than truncating
+     * it, so a hole is a state the producer can legitimately emit. */
     if (!ids || !id) return -1;
     for (int i = 0; i < n_ids; i++)
         if (ids[i] && strcmp(ids[i], id) == 0) return i;

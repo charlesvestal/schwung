@@ -62,6 +62,11 @@
 #define SLOT_BUSES 4
 _Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= 32,
                "SLOT_BUSES must fit bus_mix_active_mask's uint32_t");
+/* The 32 above is a copy of BUS_MIX_MAX_BUSES (src/host/bus_mix.h), which is
+ * the thing this header family otherwise exists to prevent. It is tolerated
+ * here only because chain_internal.h does not include bus_mix.h and 32 is a
+ * hard uint32_t ceiling that cannot move. If that include ever appears, use
+ * the name. */
 
 #define MAX_MIDI_FX 8       /* Max native MIDI FX modules per chain */
 #define CHAIN_PRE_DELAY_MAX 32  /* Pre-mode inject-delay buffer: one clock's output */
