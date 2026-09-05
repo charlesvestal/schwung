@@ -261,6 +261,15 @@ typedef struct {
  * V2 Instance-Based API
  * ============================================================================ */
 
+/* Capacity of a bus buffer, in int16_t samples (stereo interleaved). This is
+ * the ONE name both sides of the allocation gap must read: the render path
+ * below sizes every memset/memcpy through bus buffers off this macro, and
+ * Task 5's allocator (not yet written — see the TODO on `buf` below) MUST
+ * allocate exactly this many samples per bus. Changing FRAMES_PER_BLOCK
+ * changes this too, automatically, so the two can never drift apart the way
+ * a repeated comment could. */
+#define BUS_BUF_SAMPLES (FRAMES_PER_BLOCK * 2)
+
 /*
  * One of a slot's SLOT_BUSES sub-mixes: a buffer the synth renders a subset of
  * its voices into, plus that bus's own insert chain.
@@ -273,7 +282,16 @@ typedef struct {
 typedef struct {
     int   in_use;
     char  name[MAX_NAME_LEN];
-    int16_t *buf;                                 /* FRAMES_PER_BLOCK * 2 samples */
+    /* BUS_BUF_SAMPLES int16_t's (stereo interleaved) when non-NULL. The
+     * allocator (Task 5, not yet written) MUST size this buffer with the
+     * BUS_BUF_SAMPLES macro above, not a repeated literal or a voice-count-
+     * derived size — the render path in v2_render_block sizes every
+     * memset/memcpy through it against that same name, on the SPI callback,
+     * with no bounds check of its own. A mismatch is a silent heap overflow
+     * on the realtime thread. TODO(Task 5): allocate `buf` (BUS_BUF_SAMPLES
+     * samples) and, on teardown, free it — see the TODO(Task 5) comments in
+     * v2_destroy_instance / v2_unload_synth. */
+    int16_t *buf;
     void *fx_handles[MAX_AUDIO_FX];
     audio_fx_api_v2_t *fx_plugins_v2[MAX_AUDIO_FX];
     void *fx_instances[MAX_AUDIO_FX];

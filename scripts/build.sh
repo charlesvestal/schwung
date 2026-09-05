@@ -528,7 +528,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h \
-    src/host/split_voices_parse.h; then
+    src/host/split_voices_parse.h src/host/bus_mix.h src/host/bus_route.h; then
     echo "Building chain DSP..."
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/chain/dsp/chain_host.c \

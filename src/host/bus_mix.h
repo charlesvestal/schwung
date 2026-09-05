@@ -14,6 +14,18 @@
  *
  * Every function here runs on the SCHED_FIFO SPI callback: no allocation, no
  * I/O, no locks.
+ *
+ * THE MODULE CONTRACT FOR move_plugin_render_split (a dlsym'd symbol, not a
+ * field on plugin_api_v2_t — see chain_host.c's v2_load_synth): a module
+ * offering per-voice render is switched between it and render_block AT
+ * RUNTIME, PER FRAME, by whether the slot's synth currently has any voice
+ * assigned to a bus. Assigning a single voice on the shadow UI flips the
+ * module's active entry point mid-stream with no reload, so both must be
+ * state-compatible — same voice allocator, same envelope/LFO/phase state.
+ * render_split ACCUMULATES into voice_out[] (the caller clears destinations
+ * first), the opposite of render_block's overwrite, and must never write more
+ * than the `frames` argument's worth of samples into any voice_out[] entry —
+ * those pointers alias the shared bus buffers.
  */
 #ifndef BUS_MIX_H
 #define BUS_MIX_H

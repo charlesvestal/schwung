@@ -129,6 +129,14 @@ static void v2_destroy_instance(void *instance) {
     v2_unload_all_midi_fx(inst);
     v2_unload_synth(inst);
 
+    /* TODO(Task 5): nothing here releases inst->buses[]. Each in-use bus needs
+     * its fx instances destroyed (fx_plugins_v2[i]->destroy_instance on
+     * fx_instances[i]) and fx_handles[i] dlclose'd, same discipline as
+     * v2_unload_all_audio_fx above, plus free(buses[b].buf). Zero impact today
+     * because every bus field is still permanently zero/NULL — this becomes a
+     * real leak plus a dangling dlopen handle the moment Task 5's allocator
+     * lands. */
+
     chain_free_position_storage(inst);
     free(inst);
 }
@@ -189,6 +197,12 @@ void v2_unload_synth(chain_instance_t *inst) {
      * function pointer into a dlclose'd mapping. */
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
+    /* TODO(Task 5): a synth swap does not currently tear down inst->buses[] —
+     * they are keyed to the SLOT, not to which synth is loaded, so whether
+     * they should survive a synth reload (probably) or get released here is a
+     * decision Task 5 must make explicitly, not by omission. Whichever it
+     * picks, the release itself is: destroy_instance on each bus's
+     * fx_instances[i], dlclose each fx_handles[i], free(buses[b].buf). */
 }
 
 /* V2 unload all audio FX */
@@ -500,7 +514,26 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * Held in a LOCAL until the load commits. Several exits below dlclose this
      * handle and return -1 with the PREVIOUS synth still loaded and running —
      * writing the pointer here would leave that synth calling into an unmapped
-     * library on the next audio frame. */
+     * library on the next audio frame.
+     *
+     * THE MODULE CONTRACT, undeclared anywhere else a module author would see
+     * it: whether this synth is called through render_block or through this
+     * symbol is decided PER FRAME, at runtime, by whether the user currently
+     * has any voice assigned to a bus (see bus_mix.h and v2_render_block's
+     * n_active check) — assigning one voice on the shadow UI flips the
+     * module's active render entry point mid-stream, with no reload. Both
+     * paths therefore MUST be state-compatible: same voice allocator, same
+     * envelope/LFO/phase state, or a module that gets this right in one path
+     * and not the other manifests as an intermittent synthesis bug that only
+     * appears once a bus is used, not as a load-time failure.
+     *
+     * This entry point ACCUMULATES into voice_out[] (v2_render_block clears
+     * the destinations first) — the opposite of render_block, which
+     * overwrites. It may be called on some frames and render_block on others
+     * for the very same instance. It must never write more than the `frames`
+     * argument's worth of samples into any voice_out[] entry — those pointers
+     * alias the shared bus buffers, sized to BUS_BUF_SAMPLES
+     * (chain_internal.h), not to n_voices. */
     void (*render_split_fn)(void *, int16_t *const *, int, int) =
         (void (*)(void *, int16_t *const *, int, int))
             dlsym(handle, "move_plugin_render_split");
@@ -2115,6 +2148,14 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
 
 /* V2 render_block handler */
 static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int frames) {
+    /* ONE guard for the whole function: every fixed-size scratch buffer sized
+     * off FRAMES_PER_BLOCK (the bus fx_dry copies, and the pre-existing main
+     * FX ones) overflows if a caller ever hands us more than a block. Clamp
+     * rather than bail — a truncated block still advances synth/FX state and
+     * fills the tail with silence, which is a far safer failure on the SPI
+     * callback than skipping the caller's buffer and leaving it uninitialised. */
+    if (frames > FRAMES_PER_BLOCK) frames = FRAMES_PER_BLOCK;
+
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) {
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
@@ -2171,11 +2212,16 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     int16_t *bus_bufs[SLOT_BUSES] = {0};
     uint32_t active_bus_mask = 0;
     int n_active = 0;
-    if (inst->synth_render_split && inst->synth_instance &&
-        inst->synth_split_voice_count > 0) {
+    /* voice_out[] below is a SPLIT_VOICES_MAX stack array on the SPI callback,
+     * and synth_split_voice_count's bound (n < max_ids) lives in another file
+     * (split_voices_parse.h). Clamp locally so a bad count from that path is a
+     * dropped voice here, never a stack overflow. */
+    int nv = inst->synth_split_voice_count;
+    if (nv > SPLIT_VOICES_MAX) nv = SPLIT_VOICES_MAX;
+    if (inst->synth_render_split && inst->synth_instance && nv > 0) {
         for (int b = 0; b < SLOT_BUSES; b++) bus_bufs[b] = inst->buses[b].buf;
         n_active = bus_mix_active_mask(inst->voice_bus,
-                                       inst->synth_split_voice_count,
+                                       nv,
                                        SLOT_BUSES, bus_bufs, &active_bus_mask);
     }
 
@@ -2189,6 +2235,10 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
          * allocated-but-unrouted bus is never touched. */
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
         for (int b = 0; b < SLOT_BUSES; b++) {
+            /* Clearing only `frames` samples of a BUS_BUF_SAMPLES-capacity
+             * buffer, never the reverse — frames is clamped <= FRAMES_PER_BLOCK
+             * above, so this can never exceed what the allocator (Task 5) owes
+             * `buf`, named the same way. */
             if ((active_bus_mask & (1u << b)) && bus_bufs[b])
                 memset(bus_bufs[b], 0, frames * 2 * sizeof(int16_t));
         }
@@ -2196,12 +2246,12 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         /* Entries alias deliberately: voices sharing a bus get the same
          * pointer, so their sum happens inside the module's own render. */
         int16_t *voice_out[SPLIT_VOICES_MAX];
-        bus_mix_build_table(voice_out, inst->synth_split_voice_count,
+        bus_mix_build_table(voice_out, nv,
                             inst->voice_bus, out_interleaved_lr,
                             bus_bufs, SLOT_BUSES);
 
         inst->synth_render_split(inst->synth_instance, voice_out,
-                                 inst->synth_split_voice_count, frames);
+                                 nv, frames);
 
         /* Per-bus inserts, in series, with the main chain's bypass discipline:
          * always process so delay lines and reverb tails keep advancing, and
@@ -2211,7 +2261,9 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
             slot_bus_t *bus = &inst->buses[b];
             for (int i = 0; i < bus->fx_count && i < MAX_AUDIO_FX; i++) {
                 int bypassed = bus->fx_bypassed[i];
-                int16_t fx_dry[FRAMES_PER_BLOCK * 2];
+                /* Sized off the bus buffer's own capacity name, not a second
+                 * FRAMES_PER_BLOCK*2 literal that could drift from it. */
+                int16_t fx_dry[BUS_BUF_SAMPLES];
                 if (bypassed) {
                     memcpy(fx_dry, bus_bufs[b], frames * 2 * sizeof(int16_t));
                 }
