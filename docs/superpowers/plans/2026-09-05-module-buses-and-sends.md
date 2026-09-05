@@ -82,6 +82,14 @@ dev machine):
 
 **Verify:** `bash tests/host/test_bus_mix.sh` -> prints `PASS` and exits 0
 
+> **Amended after code review.** `bus_mix_active_mask` takes `bus_buf` as a
+> parameter and both it and `bus_mix_build_table` resolve a voice's target
+> through one shared `bus_mix_target()` helper. Without that they disagreed:
+> the mask named a bus whose buffer was NULL while that bus's voices had
+> fallen back to main, so a caller doing what the doc comment said — memset
+> everything the mask names — would NULL-deref on the SPI callback. The
+> committed header is the authority; the code below is the pre-review draft.
+
 **Steps:**
 
 - [ ] **Step 1: Write the failing test**
@@ -1080,22 +1088,31 @@ plus the `synth_bypassed` memset) with:
      * routed. Both conditions matter: with no bus routed, every voice_out[]
      * entry would be main_buf and the split render is the plain render with
      * extra steps. */
+    /* Snapshot the buffers FIRST: the mask depends on them. A bus whose buffer
+     * has not been allocated yet is not "active", because its voices fall back
+     * to main — bus_mix_target is the single resolve both answers come from,
+     * so the mask can never name a buffer nobody rendered into. */
+    int16_t *bus_bufs[SLOT_BUSES];
+    for (int b = 0; b < SLOT_BUSES; b++)
+        bus_bufs[b] = inst->buses[b].buf;
+
     uint32_t active_bus_mask = 0;
     int n_active = 0;
     if (inst->synth_render_split && inst->synth_split_voice_count > 0) {
         n_active = bus_mix_active_mask(inst->voice_bus,
                                        inst->synth_split_voice_count,
-                                       SLOT_BUSES, &active_bus_mask);
+                                       SLOT_BUSES, bus_bufs, &active_bus_mask);
     }
 
     if (n_active > 0) {
-        /* Clear the main buffer and ONLY the distinct bus buffers. An
-         * allocated-but-unrouted bus is never touched. */
+        /* Clear the main buffer and ONLY the buses the mask names. An
+         * allocated-but-unrouted bus is never touched. Every bit in the mask
+         * has a non-NULL buffer by construction, so no NULL check is needed
+         * here — but do not add one back "defensively": it would hide a mask
+         * that had started lying. */
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
-        int16_t *bus_bufs[SLOT_BUSES];
         for (int b = 0; b < SLOT_BUSES; b++) {
-            bus_bufs[b] = inst->buses[b].buf;
-            if ((active_bus_mask & (1u << b)) && bus_bufs[b])
+            if (active_bus_mask & (1u << b))
                 memset(bus_bufs[b], 0, frames * 2 * sizeof(int16_t));
         }
 
@@ -1112,7 +1129,7 @@ plus the `synth_bypassed` memset) with:
          * main chain: always process so delay lines and reverb tails advance,
          * restore the dry on a bypassed position so unbypass resumes cleanly. */
         for (int b = 0; b < SLOT_BUSES; b++) {
-            if (!(active_bus_mask & (1u << b)) || !bus_bufs[b]) continue;
+            if (!(active_bus_mask & (1u << b))) continue;
             slot_bus_t *bus = &inst->buses[b];
             for (int i = 0; i < bus->fx_count && i < MAX_AUDIO_FX; i++) {
                 int bypassed = bus->fx_bypassed[i];
@@ -1133,7 +1150,7 @@ plus the `synth_bypassed` memset) with:
          * compressor sees the whole kit. Sends are taken in Task 6, from the
          * post-insert bus buffers, which are still intact here. */
         for (int b = 0; b < SLOT_BUSES; b++) {
-            if (!(active_bus_mask & (1u << b)) || !bus_bufs[b]) continue;
+            if (!(active_bus_mask & (1u << b))) continue;
             bus_mix_accumulate(out_interleaved_lr, bus_bufs[b], frames * 2);
         }
     } else if (inst->synth_plugin_v2 && inst->synth_instance &&
