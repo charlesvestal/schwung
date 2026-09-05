@@ -56,6 +56,7 @@ import { createController, LAYOUT_LIST } from "../../src/shared/param_pages/page
 import { resolveViz } from "../../src/shared/param_pages/viz.mjs";
 import { registerOverlayWidgets, clearWidgets }
   from "../../src/shared/param_pages/widget_registry.mjs";
+import { frameCtx } from "../../src/shared/param_pages/frame_ctx.mjs";
 import { createFakeDevice } from "./fake_device.mjs";
 import { makeRecord, presetRowValue } from "../../src/shared/param_pages/current_preset.mjs";
 import { fakeValue } from "./fake_values.mjs";
@@ -88,6 +89,27 @@ const fx = JSON.parse(fs.readFileSync(FIXTURE, "utf8"));
  * that assigns to globalThis, and importing it would need it to be an ES
  * module, which on device it is not.
  */
+let moduleOverlay = null;
+
+/*
+ * A CUSTOM UI PAGE's body, drawn the way the device draws it: frame-scoped to
+ * the band render_page hands over, so the header and footer in the picture are
+ * the hosts own and the module cannot have painted them.
+ */
+function previewCanvasPage(ctx, band, canvas, extra) {
+    if (!moduleOverlay || typeof moduleOverlay.drawPage !== "function") return;
+    try {
+        moduleOverlay.drawPage(frameCtx(ctx, band), {
+            key: canvas.key,
+            values: (extra && extra.values) || {},
+            nowMs: 0,
+            width: band.w, height: band.h,
+        });
+    } catch (e) {
+        console.error(`--widgets: drawPage threw: ${e}`);
+    }
+}
+
 function loadModuleWidgets(dir) {
     const file = path.join(path.resolve(dir), "canvas.js");
     if (!fs.existsSync(file)) {
@@ -96,6 +118,7 @@ function loadModuleWidgets(dir) {
     }
     const g = {};
     new Function("globalThis", fs.readFileSync(file, "utf8"))(g);
+    moduleOverlay = g.canvas_overlay || null;
     clearWidgets();
     const { registered, skipped } = registerOverlayWidgets(g.canvas_overlay);
     for (const s2 of skipped) console.error(`--widgets: ${s2.kind} skipped (${s2.why})`);
@@ -197,6 +220,24 @@ for (const { p, i } of chosen) {
     const fb = createFramebuffer();
     const values = {};
     for (const k of (p.keys || [])) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
+    /*
+     * Off-page values a widget declared it needs (viz extra_keys), and the key
+     * a custom page is built from. On the device the read lane fetches these;
+     * without them here every such widget draws its "no answer" state, which
+     * looks like a broken widget rather than a missing fake.
+     */
+    for (const g of resolveViz({ keys: p.keys || [], metaIndex }).groups) {
+        for (const k of (g.extraKeys || [])) {
+            if (values[k] === undefined) values[k] = fakeValue(k, metaIndex.getOrGuess(k));
+        }
+    }
+    if (p.canvas) {
+        for (const k of Object.keys(metaIndex.byKey || {})) {
+            if (values[k] === undefined && /^(face|face_id)$/.test(k)) {
+                values[k] = fakeValue(k, metaIndex.getOrGuess(k));
+            }
+        }
+    }
 
     if (layout === LAYOUT_LIST || p.kind !== PAGE_KNOBS) {
         /* Drive the REAL controller against a fake device serving this module's
@@ -228,6 +269,7 @@ for (const { p, i } of chosen) {
     } else if (layout === LAYOUT_MOVY) {
         const { groups } = resolveViz({ keys: p.keys || [], metaIndex });
         renderPageMovy(drawContext(fb), {
+            drawCanvasPage: previewCanvasPage,
             page: p, metaIndex, values, title,
             pageIndex: i, pageCount: pages.length, touched, viz: groups,
             /* Representative hints so previews show the real vertical budget.
@@ -238,6 +280,7 @@ for (const { p, i } of chosen) {
         });
     } else {
         renderPage(drawContext(fb), {
+            drawCanvasPage: previewCanvasPage,
             page: p, metaIndex, values, title,
             pageIndex: i, pageCount: pages.length, touched, layout, revealValues,
         });

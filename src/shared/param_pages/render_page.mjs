@@ -614,7 +614,32 @@ export function renderPage(ctx, o) {
         drawTouchStrip(ctx, rect, m, v, dec && dec.locked);
     }
 
+    /*
+     * A CUSTOM UI PAGE: the module draws the body, the host draws the chrome.
+     *
+     * It is an ordinary PAGE_KNOBS page that happens to carry a drawer, which
+     * is the whole design. Making it a new page KIND would have meant auditing
+     * twenty-two places in the controller that branch on PAGE_KNOBS -- reads,
+     * knob turns, touch, announce, the list layout, dive targets -- and getting
+     * one wrong means a page that looks right and does not respond. As a knobs
+     * page it inherits every one of those behaviours untouched, and only the
+     * picture changes.
+     *
+     * So the header above (including the touch strip that replaces it while a
+     * knob is held) and the footer the caller draws underneath are the SAME
+     * ones every other page gets. The module is handed the band the eight cells
+     * would have occupied and nothing else -- it cannot paint chrome, and it
+     * does not have to draw any.
+     */
     const geo = geometry(rect, layout);
+    if (page.canvas && typeof o.drawCanvasPage === "function") {
+        const top = geo.gridTop;
+        const band = { x: rect.x, y: top, w: rect.w, h: Math.max(0, rect.y + rect.h - top) };
+        /* ctx is passed through: the module's body must be frame-scoped to the
+         * band, and only the host knows how to build that context. */
+        if (band.h > 0) o.drawCanvasPage(ctx, band, page.canvas, { touched });
+        return;
+    }
     if (geo.rowH < 6) return;   /* nothing meaningful fits */
     const cellW = Math.floor(rect.w / COLS);
     /* Labels are resolved for the whole page at once so cells can be

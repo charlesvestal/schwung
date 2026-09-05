@@ -3813,6 +3813,11 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                /* A custom UI page's body drawer — inert for every ordinary
+                 * page. This layout is the one the device uses, so a page that
+                 * drew correctly under the dial renderer and not here would be
+                 * a page that works everywhere except on hardware. */
+                drawCanvasPage: drawCanvasPageBody,
                 /* Both undefined for the device's own full-screen draw, which
                  * is what keeps that path byte-identical. */
                 rect, bands,
@@ -3991,6 +3996,7 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: -1, layout: s.layout, rect,
+                drawCanvasPage: drawCanvasPageBody,
             });
             renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
             return;
@@ -4013,7 +4019,38 @@ export function createController(io = {}) {
              * which of them is locked, so graphics stand down while
              * decorations are active. */
             viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
+            /*
+             * A CUSTOM UI PAGE's body drawer. Only a page carrying `canvas`
+             * uses it, so this is inert for every ordinary page — and absent
+             * when the host offers none, which is what makes a module's custom
+             * page degrade to an empty body rather than to a broken screen.
+             */
+            drawCanvasPage: drawCanvasPageBody,
         });
+    }
+
+    /*
+     * Draw a custom page's body, if the host can.
+     *
+     * The band comes from render_page (the area the eight cells would have
+     * used), so the header, the touch strip and the footer are the host's own
+     * and a module cannot paint over them.
+     */
+    function drawCanvasPageBody(ctx, band, canvas, extra) {
+        if (typeof io.drawCanvasPage !== "function") return;
+        io.drawCanvasPage(ctx, band, canvas, {
+            values: s.values,
+            metaIndex: s.metaIndex,
+            keys: (page() || {}).keys || [],
+            touched: extra && typeof extra.touched === "number" ? extra.touched : -1,
+            nowMs: now(),
+        });
+    }
+
+    /** True when the page on screen is drawn by the module. */
+    function onCanvasPage() {
+        const p = page();
+        return !!(p && p.canvas);
     }
 
     /*
@@ -4438,6 +4475,9 @@ export function createController(io = {}) {
     }
 
     return {
+        /* True when the module draws this page's body — the host redraws
+         * every tick while it is up, so a custom page can animate. */
+        onCanvasPage,
         load, reloadIfChanged, tick, refreshTrailing, revalue,
         describePage,
         /* For a selection made OUTSIDE the controller — the list editor drives

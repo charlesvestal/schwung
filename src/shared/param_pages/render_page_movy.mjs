@@ -3209,6 +3209,28 @@ export function renderPageMovy(ctx, o) {
 
     if (!page || !page.keys) return;
     if (!L.rows.length) { drawFooterBand(); return; }
+
+    /*
+     * A CUSTOM UI PAGE: the module draws the body, this draws the chrome.
+     *
+     * IT HAS TO BE HERE AS WELL AS IN render_page.mjs. This is the layout the
+     * device actually uses -- "Knobs" in Param View -- and putting the branch
+     * only in the dial/bar renderer produced a Face page whose header said FACE
+     * and whose body was eight knobs, which is precisely what the first attempt
+     * shipped to hardware.
+     *
+     * The band is the two knob ROWS and nothing else, so the header, the bank
+     * bar and the footer above and below it are the host's own.
+     */
+    if (page.canvas && typeof o.drawCanvasPage === "function") {
+        const top = L.rows[0].rowY;
+        const bottom = L.footer !== null ? L.footer : (L.rows[1].lblY + FOOTER_Y);
+        const band = { x: L.x, y: top, w: L.cellW * 4, h: Math.max(0, bottom - top) };
+        if (band.h > 0) o.drawCanvasPage(ctx, band, page.canvas, { touched: o.touched, values: o.values });
+        drawFooterBand();
+        return;
+    }
+
     const hasParams = page.keys.some(Boolean);
     if (!hasParams) {
         tzPrint(ctx, L.x + 2, L.rows[0].rowY + 4, caps("No params"), 1);
