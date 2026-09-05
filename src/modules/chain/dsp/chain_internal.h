@@ -208,6 +208,14 @@ typedef struct {
  * SLOT_BUSES * MAX_AUDIO_FX more state buffers, which at MAX_FX_STATE_LEN
  * would be another 280 KB on that stack. 1 KB keeps the addition to ~35 KB.
  *
+ * THE STACK IS THE SMALLER HALF OF THE COST. chain_instance_t embeds
+ * patch_info_t patches[MAX_PATCHES], so every byte bus_config_t grows is
+ * multiplied by 32 and lives on the heap for the life of the slot: ~39 KB of
+ * bus config per patch is ~1.26 MB per chain instance and ~5 MB across four
+ * slots, on top of what patches[] already costs. At MAX_FX_STATE_LEN it would
+ * have been ~8 MB per slot. Anyone raising this number must re-check that
+ * multiplier, not only the stack frame.
+ *
  * It is not a truncation: v2_parse_patch_file drops a state that does not fit
  * (json_object_compact_copy answers -1 and the field is left empty), so an
  * over-long bus FX state comes back at the plugin's defaults rather than as a
@@ -386,25 +394,39 @@ typedef struct {
      *
      * `buf`'s RELEASE/ACQUIRE pair covers `buf` AND NOTHING ELSE: the fields
      * above are written by the worker AFTER buf is published, so buf's acquire
-     * cannot order them. Non-zero means "the worker is done and these fields
-     * are stable"; the render path and every get_param that touches an FX
-     * instance load it __ATOMIC_ACQUIRE first and skip the bus's inserts
-     * entirely when it reads 0.
+     * cannot order them. This one covers them, and it is READ THROUGH
+     * bus_fx_ready() — never as a boolean.
      *
-     * Cleared by the RT thread BEFORE it hands work to the worker. That store
-     * needs no release of its own: set_param and render_block are the SAME
-     * thread (the SPI callback), so once set_param has cleared it, no later
-     * render can run these FX and no earlier one is still running.
+     * IT HOLDS A SEQUENCE NUMBER, NOT A FLAG: the value the worker publishes is
+     * the fx_req_seq it started that pass from, and the gate is open only while
+     * that equals the seq the RT thread is currently asking for. 0 is "nothing
+     * has ever been published" and is never a valid seq (see bus_request_work).
+     *
+     * A BOOLEAN WAS WRONG, and not subtly. It made the RT side's "close the
+     * gate" a store to THIS field and the worker's "open it" a store to it
+     * guarded by a separate load of fx_req_seq — a check-then-act across two
+     * atomics, on a SCHED_OTHER thread that can be preempted between them for a
+     * full quantum. A worker that had passed the check, then lost the CPU while
+     * the RT thread cleared the flag and bumped the seq, resurrected the
+     * cleared gate on resume. The render path then read "ready" for a chain the
+     * worker was about to rebuild, and called process_block() on an instance
+     * bus_unload_fx was destroy_instance()-ing and dlclose()-ing: a
+     * use-after-free plus a call into an unmapped text segment, on the SPI
+     * callback.
+     *
+     * Publishing the SEQUENCE removes the two-step. A stale publish writes an
+     * OLD number, which cannot equal the outstanding one, so the gate stays
+     * shut without the two threads having to agree about a boolean — and the RT
+     * side closes it by bumping fx_req_seq alone, writing nothing here at all.
      */
-    int   fx_ready;
+    unsigned fx_ready;
     /*
-     * Bumped by the RT thread before every post, read by the worker.
+     * Bumped by the RT thread before every post; read by the worker at the
+     * start of a pass and published back into fx_ready at the end of it.
      *
-     * The worker publishes fx_ready only when the seq it started from still
-     * matches — otherwise a request the RT thread made mid-reconcile would be
-     * published as finished. On a mismatch it leaves fx_ready at 0 and runs
-     * again on the post that accompanied the bump, so it converges without the
-     * RT side ever waiting.
+     * The RT thread is its only writer, and it is the same thread as the render
+     * path, so between a bump and a read of the gate no bump can have been
+     * lost. Skips 0 on wrap so that value keeps meaning "never published".
      */
     unsigned fx_req_seq;
 
@@ -412,9 +434,20 @@ typedef struct {
      * what get_param and serialization answer from: it is never written by the
      * worker, so reading it needs no gate and cannot tear. --- */
     char  fx_request[MAX_AUDIO_FX][MAX_NAME_LEN];
-    /* Opaque plugin state staged for the worker to apply after it creates an
+    /*
+     * Opaque plugin state staged for the worker to apply after it creates an
      * instance. Set only by a patch load; a live edit goes straight to the
-     * plugin. Consumed (and cleared) by the worker. */
+     * plugin. Consumed (and cleared) by the worker.
+     *
+     * WHAT KEEPS A TORN READ FROM BEING A CRASH is not the seq bump — that only
+     * stops a torn value being PUBLISHED READY, it does not stop the worker
+     * being handed one. It is that fx_state_request[k][MAX_BUS_FX_STATE_LEN-1]
+     * is zero at construction and is NEVER WRITTEN NON-ZERO: every strncpy into
+     * this array is bounded to N-1 and every path re-writes that last byte to
+     * '\0'. So a read racing a write is always NUL-terminated within bounds.
+     * The plugin gets garbage JSON and falls back to its defaults; it cannot
+     * over-read. Any future writer here must preserve that invariant.
+     */
     char  fx_state_request[MAX_AUDIO_FX][MAX_BUS_FX_STATE_LEN];
     int   fx_state_pending[MAX_AUDIO_FX];
     /* Buffer the RT thread has unpublished (stored NULL over `buf`) and handed
@@ -435,6 +468,26 @@ typedef struct {
 
     int   send_level[BUS_MIX_SENDS];              /* 0..BUS_MIX_SEND_LEVEL_MAX */
 } slot_bus_t;
+
+/*
+ * THE FX GATE. The only sanctioned way to read slot_bus_t::fx_ready.
+ *
+ * Open means: the worker finished a reconcile of exactly the request that is
+ * outstanding now, so fx_count, fx_plugins_v2[], fx_instances[], fx_params[]
+ * and fx_ui_hierarchy[] are stable and ours to read. The ACQUIRE on fx_ready is
+ * what orders those; the fx_req_seq load only decides whether the published
+ * number is the current one, and a mismatch in EITHER direction fails closed.
+ *
+ * Do not open-code this as `if (bus->fx_ready)`. A boolean gate is what let a
+ * preempted worker resurrect a gate the RT thread had just cleared — see
+ * slot_bus_t::fx_ready for the use-after-free that produced.
+ */
+static inline int bus_fx_ready(const slot_bus_t *bus)
+{
+    unsigned ready = __atomic_load_n(&bus->fx_ready, __ATOMIC_ACQUIRE);
+    return ready != 0u &&
+           ready == __atomic_load_n(&bus->fx_req_seq, __ATOMIC_RELAXED);
+}
 
 /* Chain instance state - contains all per-instance data for v2 API */
 typedef struct chain_instance {
@@ -869,9 +922,15 @@ CHAIN_INTERNAL void chain_bus_release_all(chain_instance_t *inst);
  * worker's reconcile step. Split out of chain_host.c for the same reason
  * chain_patch.c and chain_reorder.c were. */
 
-/* RT side. Both return -1 for a key this file does not own, so the caller can
- * fall through to its existing ladders; chain_bus_set_param returns 0 when it
- * handled the key. */
+/* RT side. -1 means "not a key this file owns"; chain_bus_set_param returns 0
+ * when it handled one.
+ *
+ * NOTE THAT NEITHER CALLER FALLS THROUGH ON -1. Both are reached only after
+ * bus_route_param_key has already matched a "bus<N>:" prefix, so the whole
+ * prefix belongs to this file: v2_set_param calls and returns, v2_get_param
+ * returns the -1 straight to the param channel as "the read did not complete".
+ * Adding a "bus"-prefixed key to one of chain_host.c's ladders will therefore
+ * NOT work — put it here. */
 CHAIN_INTERNAL int chain_bus_set_param(chain_instance_t *inst, int bus,
                                        const char *sub, const char *val);
 CHAIN_INTERNAL int chain_bus_get_param(chain_instance_t *inst, int bus,

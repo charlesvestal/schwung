@@ -324,7 +324,28 @@ static void v2_destroy_instance(void *instance) {
      * loader lock across a full quantum is still a stall on the audio thread.
      * The remaining ways to shorten it (detaching, or moving destroy off the
      * callback) both need the instance to outlive this function, which it does
-     * not — it is freed two lines below. */
+     * not — it is freed two lines below.
+     *
+     * TWO INVERSIONS SHARE THAT SHAPE, and the join is only the documented one.
+     *
+     * 1. dlopen NOW RUNS ON TWO THREADS. bus_load_fx dlopens from the
+     *    SCHED_OTHER worker while v2_load_audio_fx_slot and v2_load_synth still
+     *    dlopen from this callback. glibc serialises both on _dl_load_lock,
+     *    which has no priority inheritance either — so a FIFO-70 load can wait
+     *    behind a SCHED_OTHER one for as long as anything on cores 0-2 keeps
+     *    the worker off the CPU. It is the same hazard as the join, on a path
+     *    with no join in it. Serialising the two (or moving the main chain's
+     *    loads to the worker as well) is a real design change and is
+     *    deliberately not attempted here; this comment is the record that the
+     *    inversion exists.
+     *
+     * 2. create_instance IS NOW CALLED OFF THE CALLBACK for bus FX positions.
+     *    plugin_api_v1.h tells module authors every entry point runs on the
+     *    audio callback, and for a bus FX that is no longer true. A module with
+     *    process-global init state can therefore be entered from two threads at
+     *    once when the same FX is loaded into a slot and into a bus. The header
+     *    now qualifies its "there is no control thread" statement rather than
+     *    letting it go quietly false; keep the two in sync. */
     chain_bus_worker_stop(inst);
     chain_bus_release_all(inst);
 
@@ -2524,11 +2545,16 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
              * fx_instances[] entry called through, or an fx_count that names a
              * position whose plugin pointer is not visible yet.
              *
-             * 0 means the worker is reconciling this bus, and the bus plays DRY
-             * for those frames rather than through a chain that is being
-             * rebuilt underneath it.
+             * Shut means the worker is reconciling this bus, and the bus plays
+             * DRY for those frames rather than through a chain that is being
+             * rebuilt underneath it. bus_fx_ready() compares the seq the worker
+             * published against the one the RT thread is asking for, so a
+             * publish that lost a race carries an old number and cannot open
+             * it — the boolean this replaced could be resurrected by a
+             * preempted worker, putting the process_block below in a race with
+             * the next reconcile's destroy_instance and dlclose.
              */
-            if (!__atomic_load_n(&bus->fx_ready, __ATOMIC_ACQUIRE)) continue;
+            if (!bus_fx_ready(bus)) continue;
             for (int i = 0; i < bus->fx_count && i < MAX_AUDIO_FX; i++) {
                 int bypassed = bus->fx_bypassed[i];
                 /* Sized off the bus buffer's own capacity name, not a second

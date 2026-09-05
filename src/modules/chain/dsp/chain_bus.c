@@ -29,10 +29,15 @@
  * above). See slot_bus_t's own comments — the second gate exists because the
  * first orders `buf` and nothing else.
  *
- * set_param and render_block are the SAME thread, which is what makes the RT
- * side's plain `fx_ready = 0` sufficient: once set_param has cleared it, no
- * later render can enter the bus's insert loop, and no earlier one is still
- * inside it.
+ * THE SECOND GATE IS A SEQUENCE NUMBER, NOT A FLAG, and every read of it goes
+ * through bus_fx_ready(). The RT side closes it by bumping fx_req_seq alone;
+ * the worker opens it by publishing the seq it started its pass from. That is
+ * one atomic on each side, so there is no window in which the worker can
+ * observe the gate as "still mine to open" and then open it after the RT thread
+ * has closed it. The earlier boolean form had exactly that window — the worker
+ * compared fx_req_seq, was preempted, and stored a bare 1 over a clear the RT
+ * thread had made in between, which put process_block() on the audio thread in
+ * a race with the destroy_instance() and dlclose() of the very next reconcile.
  */
 #include "chain_internal.h"
 #include "host/bus_voice_apply.h"
@@ -80,19 +85,24 @@ static int bus_suffix_index(const char *sub, const char *prefix, int max)
 /*
  * Hand a bus to the worker.
  *
- * Clearing fx_ready FIRST is what makes the handover safe: the render path
- * stops entering this bus's insert chain from the very next frame, and this is
- * the same thread the render runs on, so there is no in-flight reader to wait
- * for. The seq bump is what stops the worker publishing a stale "done" — see
- * slot_bus_t::fx_req_seq.
+ * THE BUMP IS THE CLOSE. Advancing fx_req_seq makes bus_fx_ready() false from
+ * the very next frame, because whatever the worker last published no longer
+ * equals it — and this is the same thread the render runs on, so there is no
+ * in-flight reader to wait for. Nothing writes fx_ready here: a single store
+ * that only the worker makes, carrying the seq it answered, is what stops a
+ * preempted worker re-opening a gate this call closed.
  *
- * RT-safe: two stores and a sem_post.
+ * 0 is skipped on wrap so it keeps meaning "the worker has published nothing",
+ * which is what makes a freshly constructed (calloc'd) bus read as NOT ready.
+ *
+ * RT-safe: one store and a sem_post.
  */
 static void bus_request_work(chain_instance_t *inst, int b)
 {
     slot_bus_t *bus = &inst->buses[b];
-    __atomic_store_n(&bus->fx_ready, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&bus->fx_req_seq, bus->fx_req_seq + 1, __ATOMIC_RELEASE);
+    unsigned next = bus->fx_req_seq + 1u;
+    if (next == 0u) next = 1u;
+    __atomic_store_n(&bus->fx_req_seq, next, __ATOMIC_RELEASE);
     /*
      * A slot with no buses must still cost NO THREAD. chain_bus_post_work
      * starts the worker lazily, so posting from here unconditionally would
@@ -198,8 +208,16 @@ static void bus_reset(chain_instance_t *inst, int b)
         int16_t *prev = __atomic_exchange_n(&bus->buf_retired, old, __ATOMIC_ACQ_REL);
         /* prev is non-NULL only if two resets raced the worker, which needs two
          * deletes inside one worker wake. Freeing it here is RT-unsafe but the
-         * alternative is a leak; it cannot happen while the render path is the
-         * only other reader, because `buf` was already NULL for prev. */
+         * alternative is a leak.
+         *
+         * WHY IT CANNOT HAPPEN, precisely: the worker DRAINS buf_retired at the
+         * top of a reconcile, BEFORE it allocates, and it allocates only while
+         * in_use — so a second non-NULL `buf` cannot come into existence until
+         * the retired one has been taken. Reaching this free needs two
+         * non-NULL bufs, i.e. an allocation the drain did not precede. (The
+         * weaker "buf was already NULL for prev" is true but would not survive
+         * reordering the reconcile's drain and its calloc, which is exactly
+         * when someone will re-read this.) */
         if (prev) free(prev);
     }
     bus_request_work(inst, b);
@@ -234,6 +252,15 @@ int chain_bus_set_param(chain_instance_t *inst, int b, const char *sub, const ch
              * thread. chain_bus_request_alloc also starts the worker lazily,
              * so a slot with no buses costs no thread. */
             chain_bus_request_alloc(inst, b);
+        } else if (!__atomic_load_n(&bus->buf, __ATOMIC_RELAXED)) {
+            /* IN USE BUT UNALLOCATED: the worker's calloc failed. The reconcile
+             * says a failed calloc "is not latched — the next request retries",
+             * and this is what makes that true: without a post here the retry
+             * had to wait for some unrelated verb, so a bus that lost its
+             * buffer once played through Main until the user happened to change
+             * something else. post_work, not request_work — nothing about the
+             * FX chain changed, so the FX gate must not be closed. */
+            chain_bus_post_work(inst, b);
         }
         return 0;
     }
@@ -312,7 +339,7 @@ int chain_bus_set_param(chain_instance_t *inst, int b, const char *sub, const ch
              * A write during a reconcile is dropped rather than queued: the UI
              * re-sends on the next detent, and a queue here would be a second
              * source of truth for a value the plugin already owns. */
-            if (__atomic_load_n(&bus->fx_ready, __ATOMIC_ACQUIRE) &&
+            if (bus_fx_ready(bus) &&
                 bus->fx_plugins_v2[k] && bus->fx_instances[k] &&
                 bus->fx_plugins_v2[k]->set_param) {
                 bus->fx_plugins_v2[k]->set_param(bus->fx_instances[k], fxsub, v);
@@ -447,7 +474,7 @@ int chain_bus_get_param(chain_instance_t *inst, int b, const char *sub,
              * gate; a read that arrives mid-reconcile answers -1, which the
              * param channel presents as "the read did not complete" — the
              * caller retries rather than caching a verdict. */
-            if (!__atomic_load_n(&bus->fx_ready, __ATOMIC_ACQUIRE)) return -1;
+            if (!bus_fx_ready(bus)) return -1;
             if (strcmp(fxsub, "ui_hierarchy") == 0) {
                 if (bus->fx_ui_hierarchy[k] && bus->fx_ui_hierarchy[k][0]) {
                     int len = (int)strlen(bus->fx_ui_hierarchy[k]);
@@ -526,6 +553,12 @@ int chain_bus_apply_patch(chain_instance_t *inst, const patch_info_t *patch)
 
         for (int i = 0; i < MAX_AUDIO_FX; i++) {
             const bus_fx_config_t *fx = &cfg->fx[i];
+            /* CLEAR FIRST, UNCONDITIONALLY. A state staged by an earlier load
+             * that the worker has not consumed yet is not ours to keep: this
+             * patch may point the position at a DIFFERENT module, and the
+             * worker would then hand the new plugin the old one's blob. The
+             * new patch is the authority for both halves or for neither. */
+            __atomic_store_n(&bus->fx_state_pending[i], 0, __ATOMIC_RELAXED);
             const char *want = (i < cfg->fx_count) ? fx->module : "";
             if (want[0] && !bus_valid_module_name(want)) want = "";
             strncpy(bus->fx_request[i], want, MAX_NAME_LEN - 1);
@@ -693,11 +726,14 @@ void chain_bus_worker_reconcile(chain_instance_t *inst, int b, const int *run_fl
     bus->fx_count = last + 1;
 
     /*
-     * Publish only if the request has not moved under us. Otherwise leave
-     * fx_ready at 0 and let the post that accompanied the newer seq bring us
-     * back — the RT side never waits, and a half-reconciled chain is never
-     * announced as ready.
+     * Publish WHICH REQUEST we answered, not that we answered one.
+     *
+     * Unconditional on purpose: this store IS the check. If the RT thread moved
+     * the request while we worked, `seq` is now stale, bus_fx_ready() compares
+     * it against the newer fx_req_seq and stays shut, and the post that
+     * accompanied that bump brings us back for another pass. There is no
+     * load-then-store here to be preempted in the middle of, which is the whole
+     * reason this is a number and not a 1.
      */
-    if (__atomic_load_n(&bus->fx_req_seq, __ATOMIC_ACQUIRE) == seq)
-        __atomic_store_n(&bus->fx_ready, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&bus->fx_ready, seq, __ATOMIC_RELEASE);
 }

@@ -105,6 +105,38 @@ int main(void) {
         check(m2[0] == BUS_MIX_MAIN && m2[1] == BUS_MIX_MAIN, "short map untouched");
     }
 
+    /* --- The two argument guards, which survived deletion until this ran. ---
+     *
+     * Both are called on the SPI callback with data that came off disk, so
+     * neither is a formality: without the first, a non-zero n_stored with a
+     * NULL list dereferences NULL; without the second, a bus index that does
+     * not fit an int8_t is truncated INTO the map, silently pointing voices at
+     * some other bus. Deleting either line must fail this file.
+     */
+    {
+        reset(map, 4);
+        /* A count without a list, and a list without a map. */
+        check(bus_voice_apply(ids, 4, NULL, 2, 0, map, 4) == 0,
+              "a NULL stored list with a non-zero count is refused, not walked");
+        const char *stored[] = { "kick" };
+        check(bus_voice_apply(ids, 4, stored, 1, 0, NULL, 4) == 0,
+              "a NULL map is refused before anything is written through it");
+        check(map[0] == BUS_MIX_MAIN, "and neither call touched the map");
+    }
+    {
+        const char *stored[] = { "kick" };
+        reset(map, 4);
+        /* 200 does not fit an int8_t: unguarded it lands as -56, which is a
+         * DIFFERENT bus as far as bus_mix_target is concerned. */
+        check(bus_voice_apply(ids, 4, stored, 1, 200, map, 4) == 0,
+              "a bus index too large for the map's int8_t is refused");
+        check(map[0] == BUS_MIX_MAIN, "and nothing was written truncated");
+        reset(map, 4);
+        check(bus_voice_apply(ids, 4, stored, 1, -1, map, 4) == 0,
+              "a negative bus index is refused");
+        check(map[0] == BUS_MIX_MAIN, "and BUS_MIX_MAIN is not re-derived by accident");
+    }
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("PASS: bus_voice_apply\n");
     return 0;

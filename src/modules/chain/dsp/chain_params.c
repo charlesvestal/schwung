@@ -1205,41 +1205,65 @@ chain_param_info_t* find_param_by_key(chain_instance_t *inst, const char *target
  * left as they are, because folding them in would edit three live read paths
  * for no behaviour change.
  *
- * Bounded by buf_len with the same 100-byte headroom those loops use, so a
- * table too large for the caller's buffer is TRUNCATED AT AN ENTRY BOUNDARY and
- * still closes its bracket, rather than emitting JSON that will not parse.
+ * TRUNCATES AT AN ENTRY BOUNDARY and still closes its bracket, so an
+ * over-large table produces a short array rather than JSON that will not parse.
  * Answers the number of bytes written.
+ *
+ * That is enforced, not hoped for. snprintf answers the length it WOULD have
+ * written, so accumulating its return unchecked walks `offset` past buf_len —
+ * and the closing "]" then passes a negative int as a size_t and a pointer past
+ * the end of the buffer. One entry can be large enough to do it on its own
+ * (63-byte key + 63-byte name + MAX_ENUM_OPTIONS * 32 of options + unit +
+ * display_format), so a per-entry headroom check cannot stand in for it. Each
+ * write is therefore checked, and an entry that does not fit ROLLS THE OFFSET
+ * BACK to where that entry began — which is what makes "at an entry boundary"
+ * a fact rather than a hope.
+ *
+ * The three copies named above still have the old unchecked shape and the same
+ * latent underflow. Fix them WITH this pattern if you ever touch them.
  */
 int chain_params_emit_json(const chain_param_info_t *params, int count,
                            char *buf, int buf_len)
 {
     if (!params || !buf || buf_len < 3 || count <= 0) return -1;
     int offset = 0;
-    offset += snprintf(buf + offset, buf_len - offset, "[");
-    for (int i = 0; i < count && offset < buf_len - 100; i++) {
+    int entry_start = 0;
+
+    /* Reserve one byte for the closing "]": every EMIT below must leave room
+     * for it, so the close needs no bounds check of its own. */
+#define EMIT(...) do { \
+        int n_ = snprintf(buf + offset, (size_t)(buf_len - offset), __VA_ARGS__); \
+        if (n_ < 0 || n_ >= buf_len - offset - 1) { offset = entry_start; goto close; } \
+        offset += n_; \
+    } while (0)
+
+    EMIT("[");
+    for (int i = 0; i < count; i++) {
         const chain_param_info_t *p = &params[i];
-        if (i > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
+        entry_start = offset;
+        if (i > 0) EMIT(",");
         const char *type_str = (p->type == KNOB_TYPE_INT) ? "int" :
                                (p->type == KNOB_TYPE_ENUM) ? "enum" : "float";
-        offset += snprintf(buf + offset, buf_len - offset,
-            "{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
-            p->key, p->name[0] ? p->name : p->key, type_str, p->min_val, p->max_val);
+        EMIT("{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"min\":%g,\"max\":%g",
+             p->key, p->name[0] ? p->name : p->key, type_str, p->min_val, p->max_val);
         if (p->type == KNOB_TYPE_ENUM && p->option_count > 0) {
-            offset += snprintf(buf + offset, buf_len - offset, ",\"options\":[");
-            for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS &&
-                            offset < buf_len - 100; j++) {
-                if (j > 0) offset += snprintf(buf + offset, buf_len - offset, ",");
-                offset += snprintf(buf + offset, buf_len - offset, "\"%s\"", p->options[j]);
+            EMIT(",\"options\":[");
+            for (int j = 0; j < p->option_count && j < MAX_ENUM_OPTIONS; j++) {
+                if (j > 0) EMIT(",");
+                EMIT("\"%s\"", p->options[j]);
             }
-            offset += snprintf(buf + offset, buf_len - offset, "]");
+            EMIT("]");
         }
         if (p->unit[0])
-            offset += snprintf(buf + offset, buf_len - offset, ",\"unit\":\"%s\"", p->unit);
+            EMIT(",\"unit\":\"%s\"", p->unit);
         if (p->display_format[0])
-            offset += snprintf(buf + offset, buf_len - offset,
-                               ",\"display_format\":\"%s\"", p->display_format);
-        offset += snprintf(buf + offset, buf_len - offset, "}");
+            EMIT(",\"display_format\":\"%s\"", p->display_format);
+        EMIT("}");
     }
-    offset += snprintf(buf + offset, buf_len - offset, "]");
+close:
+    /* offset <= buf_len - 2 on every path, by EMIT's reserved byte. */
+    buf[offset++] = ']';
+    buf[offset] = '\0';
     return offset;
+#undef EMIT
 }

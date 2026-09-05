@@ -70,6 +70,25 @@
  * If you must do work at create time, prefer doing it lazily on the worker and
  * rendering silence until it lands.
  *
+ * ONE QUALIFICATION, and it does not weaken any rule above. An audio FX loaded
+ * into a chain SLOT is created, configured and processed on the callback, as
+ * described. An audio FX loaded into a chain BUS insert position is loaded by
+ * the chain's bus worker (SCHED_OTHER, cores 0-2): its dlopen, create_instance,
+ * destroy_instance and the set_param that restores its saved state run THERE,
+ * while process_block, on_midi and every live set_param/get_param still run on
+ * the callback. So:
+ *
+ *   - You still may not do any of the forbidden things above at create time.
+ *     You have no way to know which of the two you were loaded as, and the slot
+ *     case — the common one — is the callback.
+ *   - Process-global initialisation must be thread-safe. The same module can be
+ *     constructed on the worker for a bus and on the callback for a slot AT THE
+ *     SAME TIME. Per-instance state is unaffected; a shared static table, a
+ *     lazily-built wavetable or a library init that is not reentrant is not.
+ *
+ * "There is no control thread" remains the rule to write code against. This is
+ * the one place the host does not hold still, and it buys you nothing.
+ *
  * See docs/REALTIME_SAFETY.md for the measurements behind all of this.
  * ===========================================================================
  */
