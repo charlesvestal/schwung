@@ -288,6 +288,26 @@ typedef struct chain_instance {
     int synth_last_note;
     int synth_wants_sysex;  /* capabilities.wants_sysex on the synth */      /* 1 = pulls line-in/mic (feedback risk on boot) */
 
+    /* Voices this synth can render into separate buffers, in the module's own
+     * declared order — the index here IS the voice_out[] index handed to
+     * move_plugin_render_split.
+     *
+     * FLAT AND ORDERED ON PURPOSE. The bus->voice map has to be resolved in C on
+     * the SPI callback, and chain_json.c's helpers are flat key scans that cannot
+     * walk ui_hierarchy's `levels` in order — the same constraint that makes
+     * synth:last_note report a note rather than a voice index. So the module
+     * publishes a flat array and we never try to walk its hierarchy here.
+     *
+     * Reset on create and on every synth load: an id left over from the previous
+     * module must not name a voice in a list that no longer exists. */
+#define SPLIT_VOICES_MAX 32
+#define SPLIT_VOICE_ID_LEN 32
+    char synth_split_voice_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
+    int  synth_split_voice_count;
+    /* The read did not complete (claim refused / timed out), as opposed to
+     * completing with no voices. Never latch a plan on this — retry. */
+    int  synth_split_read_failed;
+
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
     audio_fx_api_v2_t *fx_plugins_v2[MAX_AUDIO_FX];

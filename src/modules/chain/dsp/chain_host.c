@@ -13,6 +13,7 @@
 #endif
 #include <link.h>
 #include "chain_internal.h"
+#include "host/split_voices_parse.h"
 
 
 /* ============================================================================
@@ -87,6 +88,11 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     /* No note has been played into the synth yet. calloc would say 0, which is
      * a real note number (C-1) and would name a voice nobody selected. */
     inst->synth_last_note = -1;
+
+    /* No synth loaded yet, so no split voices — calloc already zeroed the
+     * table, but say so explicitly rather than relying on that. */
+    inst->synth_split_voice_count = 0;
+    inst->synth_split_read_failed = 0;
 
     /* Set up host API for sub-plugins */
     if (g_host) {
@@ -175,6 +181,9 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_default_forward_channel = -1;
     inst->synth_last_note = -1;
     inst->synth_bypassed = 0;
+    memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
+    inst->synth_split_voice_count = 0;
+    inst->synth_split_read_failed = 0;
 }
 
 /* V2 unload all audio FX */
@@ -560,6 +569,28 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * voice in a list that no longer exists. */
     inst->synth_last_note = -1;
     inst->synth_wants_sysex = 0;               /* Default: no raw SysEx */
+
+    /* Reset FIRST, unconditionally: an id from the previous module must never
+     * name a voice in a list that no longer exists — the same rule as
+     * synth_last_note = -1 above. */
+    memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
+    inst->synth_split_voice_count = 0;
+    inst->synth_split_read_failed = 0;
+
+    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
+        char split_buf[4096];
+        split_buf[0] = '\0';
+        int got = inst->synth_plugin_v2->get_param(inst->synth_instance,
+                                                   "split_voices", split_buf, sizeof(split_buf));
+        /* got <= 0 means the key was not served: the module has no split support.
+         * That is a real answer, distinct from a read that did not complete. */
+        if (got > 0) {
+            int n = split_voices_parse(split_buf, inst->synth_split_voice_ids,
+                                       SPLIT_VOICES_MAX, SPLIT_VOICE_ID_LEN);
+            if (n == SPLIT_VOICES_READ_FAILED) inst->synth_split_read_failed = 1;
+            else inst->synth_split_voice_count = n;
+        }
+    }
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -1705,6 +1736,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
          * module's declared voices by whoever holds that list. */
         if (strcmp(subkey, "last_note") == 0) {
             return snprintf(buf, buf_len, "%d", inst->synth_last_note);
+        }
+
+        /* Re-serve the module's own split_voices answer verbatim — the UI
+         * needs the labels too, which we do not store; we only hold the flat
+         * id table for C-side bus resolution. */
+        if (strcmp(subkey, "split_voices") == 0) {
+            if (!(inst->synth_plugin_v2 && inst->synth_instance &&
+                  inst->synth_plugin_v2->get_param)) return 0;
+            return inst->synth_plugin_v2->get_param(inst->synth_instance,
+                                                    "split_voices", buf, buf_len);
         }
 
         /* For chain_params: try plugin first, fall back to parsed module.json data */

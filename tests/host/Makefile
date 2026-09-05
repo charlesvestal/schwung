@@ -56,7 +56,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
 	$(BUILD_DIR)/test_bus_mix \
-	$(BUILD_DIR)/test_bus_route
+	$(BUILD_DIR)/test_bus_route \
+	$(BUILD_DIR)/test_split_voices_parse
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -156,6 +157,9 @@ $(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR
 
 $(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../src/modules/chain/dsp/chain_internal.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SLOT_BUSES=$(SLOT_BUSES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/split_voices_parse.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \
