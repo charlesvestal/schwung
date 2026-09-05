@@ -517,6 +517,15 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   the peek was tracked on each detent, `applyInput` swallowed the Back that
   dismissed it, and it was painted nowhere. CW-78 and 6W6 both shipped that
   way.
+- **A LIST never peeks, and the peek must OUTLIVE the turn claim.** The enum
+  peek exists because a 30px grid CELL cannot show a word; a list row prints
+  the option in full, so the panel covered a legible answer with the same
+  answer and hid four rows doing it — worst on Global Settings, which is pinned
+  to the list (`Skipback` blanking the screen to spell `Cap / Vol+Cap`). And
+  `ENUM_PEEK_MS` was 700 against `TURN_CLAIM_MS` 1200 — matched to the chain
+  card's decay, a constant that never shares a screen with it — so the list
+  went while the header was still claiming the cell. 1500 now, pinned as an
+  ORDERING between the two.
 - **Two-option enums: the GRID flips on click, a LIST focuses instead** — and on
   the KNOB they split BY WIDGET, not by semantics: a **switch** has a track, so
   its form names a direction and it is direction-absolute (clockwise on,

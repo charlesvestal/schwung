@@ -364,12 +364,20 @@ export const TURN_CLAIM_MS = 1200;
  * a knob can be moved without the capacitive touch ever registering, which is
  * the same reason TURN_CLAIM_MS exists just above.
  *
- * 700 matches the chain editor card's KNOB_CARD_DECAY_MS. Deliberately NOT the
- * same variable: that card lives in the chain editor and this list on the knob
- * grid, so they never coexist, and one constant shared across two screens is a
- * coupling that reads as intent and is not.
+ * It must OUTLIVE TURN_CLAIM_MS (1200). The two are raised by the same detent
+ * and describe the same parameter -- the header names it, the list shows what
+ * is either side of it -- so a shorter peek takes the option list down while
+ * the header is still claiming the cell, and the screen answers half a
+ * question. Reported from the device as simply "the peek disappears too
+ * quickly".
+ *
+ * It USED to be 700, chosen to match the chain editor card's
+ * KNOB_CARD_DECAY_MS. That was a coincidence of two numbers rather than a
+ * shared rule -- the card lives in the chain editor and this list on the knob
+ * grid, so they never coexist -- and matching it bought nothing while costing
+ * the read. Still deliberately NOT the same variable, for that reason.
  */
-export const ENUM_PEEK_MS = 700;
+export const ENUM_PEEK_MS = 1500;
 
 /** How many times a page will re-read the contract waiting for late metadata. */
 export const META_RETRY_LIMIT = 8;
@@ -3210,7 +3218,28 @@ export function createController(io = {}) {
          * panel would replace something legible with something no more
          * informative, while hiding the rest of the row.
          */
-        if (meta.divable && meta.kind === KIND_ENUM
+        /*
+         * ...AND A LIST DOES NOT PEEK AT ALL.
+         *
+         * Same rule as drawnWide one paragraph down, applied to the whole
+         * layout instead of to one graphic: the peek exists because a 30px
+         * GRID CELL cannot show a word. A list row already prints the option
+         * in full, right-aligned beside its label, so the panel covers a
+         * legible answer with the same answer -- and takes the four rows
+         * around it with it.
+         *
+         * It is worst exactly where it is least needed. Global Settings is
+         * pinned to the list, and `skipback_shortcut` is two options: turning
+         * it blanked the screen to spell "Cap / Vol+Cap" over a row already
+         * reading "Skipback: Vol+Cap". Reported from the device as a menu that
+         * should not be there.
+         *
+         * Gated on s.layout rather than on knobsAsList(): the turn has already
+         * established that this is a knobs page with a key under the cursor,
+         * and the question here is only what the layout can SHOW.
+         */
+        if (s.layout !== LAYOUT_LIST
+            && meta.divable && meta.kind === KIND_ENUM
             && !drawnWide(key) && !drawnAsSwitch(key)
             && Array.isArray(meta.options) && meta.options.length >= 2) {
             const pi = Math.round(Number(value));

@@ -32,7 +32,7 @@ fi
 
 node --input-type=module -e '
 import { readFileSync, readdirSync } from "node:fs";
-import { createController, ENUM_PEEK_MS }
+import { createController, ENUM_PEEK_MS, LAYOUT_LIST, TURN_CLAIM_MS }
   from "./src/shared/param_pages/page_controller.mjs";
 import { applyInput } from "./src/shared/param_pages/page_input.mjs";
 import { createFramebuffer, drawContext } from "./tools/param-pages/harness.mjs";
@@ -56,7 +56,7 @@ const HIER = { modes: null, levels: { root: { label: "T",
   params: CHAIN_PARAMS.map((p) => ({ key: p.key })) } } };
 
 let clock = 1000;
-function mk() {
+function mk(opts) {
   clock = 1000;
   const store = { shape: "0", onoff: "0", solo: "0", chorusout: "0", bare: "0", gain: "0.5" };
   const reads = [];
@@ -72,6 +72,7 @@ function mk() {
     announce: () => {},
     now: () => clock,
   });
+  if (opts && opts.layout) ctl.setLayout(opts.layout);
   ctl.load({ prefix: "synth" });
   /* Settle the value cursor the way a live page does, so the reads counted
      below are the turn path only and not first-touch seeding. */
@@ -118,6 +119,24 @@ const spin = (ctl, slot, n) => {
   ok(ctl.enumPeek() === null, "the peek is gone just outside the window");
   spin(ctl, s, 2);
   ok(ctl.enumPeek() !== null, "a further detent re-arms it");
+}
+
+/* ==================================================================== 2b ==
+ * ...AND IT OUTLIVES THE TURN CLAIM.
+ *
+ * The same detent raises both: the header claims the cell and names the
+ * parameter, the peek shows what is either side of the value. A peek shorter
+ * than TURN_CLAIM_MS takes the list down while the header is still claiming,
+ * so the screen is left answering half a question -- reported from the device
+ * as "the peek disappears too quickly".
+ *
+ * Asserted as an ORDERING between the two constants rather than as a number,
+ * so tuning either one cannot silently re-cross them.
+ */
+{
+  ok(ENUM_PEEK_MS > TURN_CLAIM_MS,
+     "ENUM_PEEK_MS (" + ENUM_PEEK_MS + ") must outlive TURN_CLAIM_MS ("
+     + TURN_CLAIM_MS + ")");
 }
 
 /* ===================================================================== 3 ==
@@ -179,6 +198,41 @@ const spin = (ctl, slot, n) => {
     spin(ctl, slotOf("shape"), 6);
     ok(ctl.enumPeek() !== null,
        "a five-option enum still peeks -- its graphic shows one value, not the list");
+  }
+}
+
+/* ===================================================================== 3b =
+ * A LIST DOES NOT PEEK AT ALL.
+ *
+ * The peek exists because a 30px GRID CELL cannot show a word. A list row
+ * prints the option in FULL beside its label, so the panel covers a legible
+ * answer with the same answer and hides the four rows around it as well.
+ *
+ * Reported from Global Settings, which is pinned to the list: turning
+ * Skipback (Cap / Vol+Cap) blanked the screen to spell two words over a row
+ * already reading "Skipback: Vol+Cap".
+ *
+ * Both halves are here on purpose. Asserting only the suppression would pass
+ * just as well if the peek were deleted outright, and the grid is where it
+ * earns its place -- a 47-model list you cannot see the end of.
+ */
+{
+  {
+    const { ctl, slotOf } = mk({ layout: LAYOUT_LIST });
+    spin(ctl, slotOf("chorusout"), 6);
+    ok(ctl.enumPeek() === null,
+       "a two-option CHOICE does not peek in the LIST -- the row spells it out");
+    spin(ctl, slotOf("shape"), 6);
+    ok(ctl.enumPeek() === null,
+       "nor does a five-option enum: the list row shows the value it landed on");
+  }
+  {
+    /* The same two keys, same fixture, GRID layout: unchanged. */
+    const { ctl, slotOf } = mk();
+    spin(ctl, slotOf("chorusout"), 6);
+    ok(ctl.enumPeek() !== null, "the grid still peeks on a two-option choice");
+    spin(ctl, slotOf("shape"), 6);
+    ok(ctl.enumPeek() !== null, "the grid still peeks on a five-option enum");
   }
 }
 

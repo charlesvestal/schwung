@@ -581,7 +581,7 @@ those pages drawable.
 
 ### A turn PEEKS the list; a cell that is already big does not
 
-Turning a divable enum raises its option list over the grid for ~700ms
+Turning a divable enum raises its option list over the grid for 1500ms
 (`ENUM_PEEK_MS`), header `TURNING`, footer `TURN SET`. It is the same screen
 the picker draws (`enum_list.mjs`) with the opposite commit semantics: the
 detent has ALREADY written, so there is nothing to confirm and nothing to
@@ -623,6 +623,31 @@ obligation had to become a FUNCTION rather than a paragraph.
 the rows go through `menu_layout` (global `print`) while the header is a pixel
 font that never calls `print` at all — a recording `print()` reports a
 headerless screen as complete.
+
+**It must OUTLIVE `TURN_CLAIM_MS`** (1200), and for a year it did not: 700 was
+picked to match the chain editor card's `KNOB_CARD_DECAY_MS`, two numbers that
+never appear on the same screen. The same detent raises both — the header
+claims the cell and names the parameter, the peek shows what is either side of
+the value — so the shorter one took the list down while the header was still
+claiming, leaving the screen answering half a question. Reported from the
+device as simply "the peek disappears too quickly".
+`tests/host/test_enum_peek.sh` asserts the ORDER of the two constants rather
+than either number, so tuning one cannot silently re-cross them.
+
+**A LIST does not peek AT ALL** — the whole layout, not one graphic. The peek
+exists because a 30px GRID CELL cannot show a word; a list row prints the
+option in full, right-aligned beside its label, so the panel covers a legible
+answer with the same answer and hides the four rows around it as well.
+
+It was worst exactly where it was least needed. Global Settings is pinned to
+the list, and `skipback_shortcut` is two options: turning it blanked the screen
+to spell `Cap / Vol+Cap` over a row already reading `Skipback: Vol+Cap`.
+Reported from the device as a menu that should not be there — and it is not a
+two-option problem, a 47-model list is the same occlusion for the same reason.
+
+Gated on `s.layout`, not on `knobsAsList()`: by the time the turn is being
+handled the page is known to be a knobs page with a key under the cursor, and
+the remaining question is only what the layout can SHOW.
 
 **A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
 The peek exists because a 30px cell cannot show a list; once the picture has
