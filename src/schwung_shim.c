@@ -5758,10 +5758,19 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         shim_init_subsystems();
     }
 
-    static int boot_healthy_posted = 0;   /* RT path: post only, no file I/O */
-    if (!boot_healthy_posted) {
-        boot_healthy_posted = 1;
-        shim_worker_post(SHIM_EVT_BOOT_HEALTHY);
+    /* Boot-healthy: post only after ~30 s of continuously clocked SPI frames.
+     * Posting on the FIRST frame would defeat the boot watchdog: a restored
+     * module that crashes seconds into the session (the historical
+     * boot-loop case) would still mark every boot healthy. 30 s matches the
+     * selector's liveness-watcher horizon. ~344 SPI frames/s (2.90 ms each).
+     * RT path: counting and one post only, no file I/O. */
+    #define SHIM_BOOT_HEALTHY_FRAMES (30 * 345)
+    static int boot_healthy_frames = 0;
+    if (boot_healthy_frames <= SHIM_BOOT_HEALTHY_FRAMES) {
+        boot_healthy_frames++;
+        if (boot_healthy_frames == SHIM_BOOT_HEALTHY_FRAMES) {
+            shim_worker_post(SHIM_EVT_BOOT_HEALTHY);
+        }
     }
 
     /* Timing and overrun statics are at file scope (shared between pre/post callbacks) */

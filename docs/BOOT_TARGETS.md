@@ -86,8 +86,12 @@ Two ways your boot counts as good — pick either:
    still alive ~30 seconds after exec. Staying alive is participation.
 2. **Opt in (better):** touch `/data/UserData/boot-targets/<id>/healthy` once
    your platform has actually reached working state (Schwung touches it after
-   its first successful SPI transfer). This catches "alive but wedged", which
-   the liveness fallback cannot.
+   ~30 seconds of healthy audio). This catches "alive but wedged", which
+   the liveness fallback cannot. Touch it once your platform has been in
+   working state for tens of seconds, not merely started — a first-frame or
+   first-callback touch defeats the watchdog entirely: a build that crashes
+   seconds into the session would still mark every boot healthy, and the
+   attempt count could never reach two.
 
 ## Installing / uninstalling your platform
 

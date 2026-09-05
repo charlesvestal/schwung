@@ -79,6 +79,24 @@ else
         || fail "file I/O found within +/-5 lines of the RT-path shim_worker_post(SHIM_EVT_BOOT_HEALTHY) call at line $post_line -- that call site is the SPI callback and must stay RT-safe"
 fi
 
+# (e) the post is gated by a frame counter, not a first-frame one-shot --
+# SHIM_BOOT_HEALTHY_FRAMES must exist and must appear in the +/-8 line window
+# around the shim_worker_post(SHIM_EVT_BOOT_HEALTHY) call. A first-frame post
+# would defeat the boot watchdog: a restored module that crashes seconds into
+# the session (the historical boot-loop case) would still mark every boot
+# healthy.
+grep -q 'SHIM_BOOT_HEALTHY_FRAMES' "$SHIM" \
+    || fail "SHIM_BOOT_HEALTHY_FRAMES is not defined in $SHIM -- the boot-healthy post must be gated by a frame counter, not a first-frame one-shot"
+
+if [ -n "${post_line:-}" ]; then
+    lo8=$((post_line - 8))
+    [ "$lo8" -lt 1 ] && lo8=1
+    hi8=$((post_line + 8))
+    window8=$(sed -n "${lo8},${hi8}p" "$SHIM")
+    printf '%s\n' "$window8" | grep -q 'SHIM_BOOT_HEALTHY_FRAMES' \
+        || fail "SHIM_BOOT_HEALTHY_FRAMES does not appear within +/-8 lines of the shim_worker_post(SHIM_EVT_BOOT_HEALTHY) call at line $post_line"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed" >&2
     exit 1

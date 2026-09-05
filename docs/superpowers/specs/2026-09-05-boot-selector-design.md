@@ -111,7 +111,9 @@ re-enters the selector. Protocol:
   1. **Opt-in health file**: the target touches
      `/data/UserData/boot-targets/<id>/healthy`; the next selector entry treats
      that as a good boot and clears the stamp. Schwung's shim touches it after
-     its first successful SPI transfer.
+     ~30 s of continuously clocked SPI frames (a first-frame touch would mark
+     a boot healthy even when a restored module crashes seconds later — the
+     historical boot-loop case the watchdog exists for).
   2. **Liveness fallback**: the entrypoint detaches a small watcher before
      exec (background subshell; must reset to SCHED_OTHER like every other
      child) that sleeps ~30 s, confirms the target process is alive, and
@@ -134,7 +136,10 @@ reboot + Back, which always works because the window shows on every boot.
    the `schwung` target, create the registry, migrate existing installs
    (default = `schwung`).
 4. `uninstall.sh`: restore stock `/opt/move/Move`, remove the registry.
-5. Shim: touch `healthy` after first successful SPI transfer.
+5. Shim: touch `healthy` after ~30 s of continuously clocked SPI frames (a
+   first-frame touch would mark a boot healthy even when a restored module
+   crashes seconds later — the historical boot-loop case the watchdog exists
+   for).
 6. `docs/BOOT_TARGETS.md` — the target-author doc (written alongside this
    spec; the .md djhardrich asked for).
 
