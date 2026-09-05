@@ -642,11 +642,22 @@ export const SYSTEM_PARAMS = [
      * it (announceTouch), which is a fault report on a row that is working
      * perfectly. `globalGridIoFor` answers "0" for both.
      *
-     * The keys are `connect` and `help` and the io maps them to the SAME action
-     * strings the menu used, so runGlobalActionFromGrid, handleGlobalSettingsAction
-     * and their dispatch are untouched.
+     * The KEYS stay `connect` and `help`, whatever the rows are called: they
+     * are the action strings runGlobalActionFromGrid and
+     * handleGlobalSettingsAction dispatch on, and renaming a key to match a
+     * label would be a rename of the dispatch for the sake of a word on
+     * screen.
      */
-    { key: "connect", name: "Connect", type: "enum", options: ["Open", "Open"],
+    /*
+     * "Web Manager", NOT "Connect". The row names the DESTINATION.
+     *
+     * "Connect" names what you are doing and leaves what you get to guesswork —
+     * connect to what? Every other row on this screen is named for the thing it
+     * governs. 66px of the ~90px a list row has for a name, so it fits beside
+     * its value with room to spare; the screen it opens keeps the wider
+     * explanation ("Schwung Manager", the address, the QR).
+     */
+    { key: "connect", name: "Web Manager", type: "enum", options: ["Open", "Open"],
       short_options: ["OPN", "OPN"], access: "write", default: 0 },
     { key: "help", name: "Help", type: "enum", options: ["Open", "Open"],
       short_options: ["OPN", "OPN"], access: "write", default: 0 },
@@ -836,6 +847,34 @@ export function createGlobalGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
     const contract = buildGlobalSettingsContract(io);
 
+    /*
+     * ⚠ A TRIGGER'S WRITE IS QUEUED, NOT PERFORMED, AND THAT IS NOT A STYLE
+     * CHOICE — IT IS THE DIFFERENCE BETWEEN WORKING AND CORRUPTING THE SCREEN.
+     *
+     * `setParam` is called from INSIDE the page controller: onClick ->
+     * fireTrigger -> setParam, all within one applyInput. The two actions here
+     * navigate — they exit the knob grid and open another view — and running
+     * that from here tears the controller down (exitParamPages sets
+     * `controller = null`) while applyInput is still executing on it. Reported
+     * from the device: Back came out on the wrong page and every setting read
+     * zero.
+     *
+     * The menu path never had this problem and that is what shows the shape of
+     * the fix: shadow_ui_param_pages runs a menu entry's action from the INTENT
+     * applyInput returns, after the controller has finished. So a trigger whose
+     * routing names an action queues it, and the same host drains it at the
+     * same point. `takePendingAction` is the seam.
+     *
+     * One slot deep on purpose: two doors cannot be pressed in one frame, and a
+     * queue that could hold two would silently open the second one behind the
+     * first.
+     */
+    let pendingAction = null;
+    const actionOf = (route) => {
+        const w = route && typeof route.write === "string" ? route.write : "";
+        return w.startsWith("action.") ? w.slice("action.".length) : null;
+    };
+
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
@@ -847,8 +886,24 @@ export function createGlobalGridIo(io) {
 
         setParam(fullKey, value) {
             const k = bare(fullKey);
-            if (!GLOBAL_ROUTING[k]) return;
+            const route = GLOBAL_ROUTING[k];
+            if (!route) return;
+            const action = actionOf(route);
+            if (action) { pendingAction = action; return; }
             writeGlobalParam(io, k, value);
+        },
+
+        /**
+         * The action a trigger asked for, taken once.
+         *
+         * Named "take" rather than "get" because reading it CLEARS it: the
+         * caller is committing to run it, and an action left in the slot would
+         * fire again on the next input the grid saw.
+         */
+        takePendingAction() {
+            const a = pendingAction;
+            pendingAction = null;
+            return a;
         },
 
         /* Not a modulation target and not an LFO target — answered flatly

@@ -291,7 +291,8 @@ import {
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
     paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
-    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue
+    paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue,
+    paramPagesPageName
 } from './shadow_ui_param_pages.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
@@ -10363,8 +10364,20 @@ function enterGlobalSettingsGrid(restorePageName) {
     needsRedraw = true;
 }
 
+/*
+ * Back to Global Settings, ON THE PAGE IT WAS LEFT FROM.
+ *
+ * `globalGridReturnPage` is set by runGlobalActionFromGrid and CONSUMED here,
+ * so it only ever steers a return from a door the user opened. A fresh entry
+ * (Shift+Vol+Step 2) still lands on Display: the remembered page is a property
+ * of one round trip, not a cursor the screen keeps.
+ */
+let globalGridReturnPage = null;
+
 function enterGlobalSettings() {
-    enterGlobalSettingsGrid(null);
+    const page = globalGridReturnPage;
+    globalGridReturnPage = null;
+    enterGlobalSettingsGrid(page);
 }
 
 /*
@@ -12325,27 +12338,10 @@ function globalGridIoFor() {
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
                 return;
 
-            /*
-             * THE TWO DOORS ARE WRITES, and they must go through
-             * runGlobalActionFromGrid rather than handleGlobalSettingsAction.
-             *
-             * A menu entry reached the action runner (shadow_ui_param_pages
-             * calls controllerIo.runAction for `todo.action === "menu"`); a
-             * TRIGGER does not — page_controller.fireTrigger just calls
-             * setParam and lands here. So the hand-off that the menu path got
-             * for free has to be done explicitly: exitParamPages, set
-             * globalModalFromGrid so the reconciler brings the page back, and
-             * ask gridActionOpenedSomething whether anything actually opened
-             * rather than assuming it did.
-             *
-             * Without this the click would open Connect underneath a knob-grid
-             * view that is still on screen — the screen would not change, and
-             * the row would read as broken.
-             */
-            case "connect":
-            case "help":
-                runGlobalActionFromGrid(key);
-                return;
+            /* connect / help never arrive here: their routing names an ACTION,
+             * so createGlobalGridIo queues them and the param-pages host drains
+             * the queue after applyInput returns. Acting from inside a write is
+             * what broke the screen — see the note beside `pendingAction`. */
             }
         },
 
@@ -12434,6 +12430,15 @@ function maybeReturnToMasterGrid() {
  * draws a settings list — it is the help viewer's host and nothing else.
  */
 function runGlobalActionFromGrid(action) {
+    /*
+     * CAPTURED FIRST, while the grid is still up.
+     *
+     * The engine restores a page by NAME, and the name is only readable from a
+     * live controller — so this has to happen before the action navigates and
+     * before exitParamPages below. Without it every return from Help or Connect
+     * landed on Display, page 1 of 6, which is not where the user was standing.
+     */
+    globalGridReturnPage = paramPagesPageName();
     handleGlobalSettingsAction(action);
     const opened = gridActionOpenedSomething(
         helpNavStack.length > 0, !!helpDetailScrollState, view !== VIEWS.PARAM_PAGES);

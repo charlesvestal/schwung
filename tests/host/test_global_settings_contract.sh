@@ -426,7 +426,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     /* Two DOORS, not settings — see the trigger assertions above. They are
        rows on the System page rather than a menu page of their own, which is
        what a level carrying a `menu` alongside its knobs would have cost. */
-    connect: "Connect",
+    connect: "Web Manager",
     help: "Help",
   };
   let seen = 0;

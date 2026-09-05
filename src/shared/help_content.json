@@ -119,8 +119,8 @@
             "",
             "System holds three",
             "rows: Analytics,",
-            "then Connect and",
-            "Help, which open",
+            "then Web Manager",
+            "and Help, which open",
             "rather than change."
           ]
         },
@@ -736,7 +736,7 @@
             " http://<ip>:7700",
             "",
             "Global Settings >",
-            "System > Connect.",
+            "System > Web Manager.",
             "shows the address",
             "and a QR code.",
             "",
@@ -831,10 +831,11 @@
           ]
         },
         {
-          "title": "Connect",
+          "title": "Web Manager (device)",
           "lines": [
             "Global Settings >",
-            "System > Connect.",
+            "System > Web",
+            "Manager.",
             "",
             "Shows this Move's",
             "IP address and a",
