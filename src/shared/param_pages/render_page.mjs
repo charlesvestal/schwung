@@ -631,6 +631,22 @@ export function renderPage(ctx, o) {
      * would have occupied and nothing else -- it cannot paint chrome, and it
      * does not have to draw any.
      */
+    /*
+     * GRAPHICS SEE THE LIVE VALUE, exactly as they do under the movy layout.
+     *
+     * A key that is modulated -- or that a module declared `live` -- has its
+     * effective value refreshed every tick into modValues, while `values` stays
+     * the base the knob edits. render_page_movy has always merged the two for
+     * its graphics; this renderer did not, so the same widget animated on one
+     * layout and sat frozen on the other. That class of split already shipped
+     * once today (a custom page drew under the dial renderer and not under the
+     * one the device uses), which is reason enough to keep them in step.
+     */
+    let vizValues = o.values;
+    if (o.modValues) {
+        for (const _k in o.modValues) { vizValues = Object.assign({}, o.values, o.modValues); break; }
+    }
+
     const geo = geometry(rect, layout);
     if (page.canvas && typeof o.drawCanvasPage === "function") {
         const top = geo.gridTop;
@@ -695,7 +711,7 @@ export function renderPage(ctx, o) {
                 y: geo.gridTop + row * geo.rowH,
                 w: cellW * Math.min(g.slotSpan, COLS - col),
                 h: geo.rowH,
-            }, g, o.values, o.metaIndex);
+            }, g, vizValues, o.metaIndex);
             continue;
         }
         if (vizCovered[slot]) continue;   /* drawn by this group's anchor cell */

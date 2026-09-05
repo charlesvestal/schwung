@@ -2136,7 +2136,25 @@ export function createController(io = {}) {
          *
          * On the cursor it costs one read per tick and the whole page is
          * current within `stops` ticks — under 0.2s, for a tick mark. */
-        s.modCache[key] = !!isModulated(fullKey(key));
+        /*
+         * A MODULE MAY DECLARE A PARAM LIVE, and that is not the same question
+         * as "is something routed to it".
+         *
+         * `isModulated` asks the chain's modulation system, which knows about
+         * LFOs and macros. It cannot know that a synth drives its own vowel
+         * from pad pressure, or that a value moves for any other reason inside
+         * the module -- so a picture of that value sat frozen at whatever the
+         * knob last said while the sound changed underneath it.
+         *
+         * `"live": true` on the param says so. It costs what any modulated key
+         * costs: the effective value is refreshed EVERY TICK
+         * (refreshModulatedValues, MOD_FAST_READS_PER_TICK) rather than waiting
+         * for the value rotation, which is the whole point -- a rotation stop
+         * on an eight-knob page lands about four times a second, and an
+         * animation drawn from that is a slideshow.
+         */
+        const _lm = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
+        s.modCache[key] = !!isModulated(fullKey(key)) || !!(_lm && _lm.live === true);
 
         /* The pointer wants the base — what the user set — so ask for it
          * directly. (Since #276 the plain key also answers with the base for
@@ -4011,6 +4029,9 @@ export function createController(io = {}) {
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
             modulated: (key) => !!s.modCache[key],
+            /* The live values, so a module-supplied widget can draw what the
+             * param is ACTUALLY doing rather than where its knob was left. */
+            modValues: s.modValues,
             /* Section ids for the page rule, so it groups the way Shift+jog
              * navigates. Cached — it only changes when the page set does. */
             pageGroups: pageGroups(),
@@ -4040,6 +4061,9 @@ export function createController(io = {}) {
         if (typeof io.drawCanvasPage !== "function") return;
         io.drawCanvasPage(ctx, band, canvas, {
             values: s.values,
+            /* Effective values for anything declared `live` — a custom page is
+             * redrawn every tick precisely so it can show them move. */
+            effective: s.modValues,
             metaIndex: s.metaIndex,
             keys: (page() || {}).keys || [],
             touched: extra && typeof extra.touched === "number" ? extra.touched : -1,
