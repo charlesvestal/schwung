@@ -74,14 +74,15 @@ if (!contract) { console.error("FAIL: no contract to test"); process.exit(1); }
 
 const { hierarchy, chainParams } = contract;
 
-/* ---- 2. the seven levels ------------------------------------------------ */
-const WANT = ["display", "audio", "accessibility", "set_pages", "shortcuts", "services", "updates"];
+/* ---- 2. the six levels -------------------------------------------------- */
+const WANT = ["display", "audio", "accessibility", "set_pages", "shortcuts", "system"];
 {
   for (const lv of WANT) {
     if (!hierarchy.levels[lv]) fail("missing level: " + lv);
   }
-  /* Seven and only seven, plus root. An eighth level is a page nobody asked
-   * for, and [Help...] becoming one is the specific way that happens. */
+  /* Six and only six, plus root. A seventh LEVEL is a section nobody asked
+   * for, and [Help...] becoming one is the specific way that happens -- it
+   * belongs on the System menu, which is a page, not a level of its own. */
   const got = Object.keys(hierarchy.levels).filter((k) => k !== "root").sort();
   if (got.join(",") !== WANT.slice().sort().join(",")) {
     fail("levels should be exactly " + WANT.join(",") + " (plus root), got " + got.join(","));
@@ -116,29 +117,58 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
   }
 }
 {
+  /* A LIST of kinds per level, not one kind: System plans a grid page AND a
+   * menu page, and a plain assignment let the second silently overwrite the
+   * first -- which reads as "System is a menu" and hides the grid entirely. */
   const byLevel = {};
-  for (const p of plan.pages) byLevel[p.level || p.name] = p.kind;
+  for (const p of plan.pages) (byLevel[p.level || p.name] ||= []).push(p.kind);
 
-  if (byLevel["updates"] !== PAGE_MENU) {
-    fail("updates must plan to PAGE_MENU (two actions, nothing to show), got " +
-         JSON.stringify(byLevel["updates"]));
-  }
-  for (const lv of WANT.filter((x) => x !== "updates")) {
-    if (byLevel[lv] !== PAGE_KNOBS) {
-      fail(lv + " must plan to PAGE_KNOBS, got " + JSON.stringify(byLevel[lv]));
+  for (const lv of WANT) {
+    if (!(byLevel[lv] || []).includes(PAGE_KNOBS)) {
+      fail(lv + " must plan a PAGE_KNOBS page, got " + JSON.stringify(byLevel[lv]));
     }
   }
-  /* Exactly seven pages. One per section is the property that makes
-   * sections-as-levels work without the bank bar papering over a split, and it
-   * is the thing a ninth param in any section silently destroys. */
-  if (plan.pages.length !== 7) {
-    fail("expected exactly 7 pages, one per section, got " + plan.pages.length + ": " +
-         plan.pages.map((p) => p.name + "/" + p.kind).join(", "));
+  /*
+   * SEVEN PAGES FROM SIX SECTIONS, and the extra one is the System menu.
+   *
+   * "One section, one page" was never about the COUNT -- it was about a
+   * section long enough to PAGINATE, which puts a jog step in the middle of a
+   * scrolling list, arrives silently and is chosen by nobody. That property is
+   * asserted per level below, by the param counts.
+   *
+   * A menu is a different thing: a second page of a KIND the grid cannot hold,
+   * authored, named, and visible in the section picker as its own row. That is
+   * how [Help...] stopped being the last line of a page called "Updates" and
+   * became something a user can find. So the count is pinned as the exact page
+   * LIST rather than as a number, which says what changed when it changes.
+   */
+  const names = plan.pages.map((p) => p.name);
+  const WANT_PAGES = ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts",
+                      "System", "Help & Connect"];
+  if (names.join(" | ") !== WANT_PAGES.join(" | ")) {
+    fail("the page list should be [" + WANT_PAGES.join(", ") + "], got [" + names.join(", ") + "]");
   }
-  /* [Help...] is a navigation entry into the existing help stack. It must not
-   * become an eighth page. */
-  if (plan.pages.some((p) => /help/i.test(String(p.name)))) {
-    fail("[Help...] must not plan to a page: " + plan.pages.map((p) => p.name).join(", "));
+
+  /* The menu page belongs to the SYSTEM level and carries both entries. A
+   * one-entry actions menu is the shape the Master FX contract already records
+   * as a mistake ("a menu page you have to enter to press a single button"),
+   * which is why removing [Check Updates] and [Module Store] had to leave
+   * [Help...] with company rather than alone. */
+  const menuPages = plan.pages.filter((p) => p.kind === PAGE_MENU);
+  if (menuPages.length !== 1) {
+    fail("expected exactly one menu page, got " + menuPages.length);
+  } else {
+    const m = menuPages[0];
+    if (m.level !== "system") fail("the menu page belongs to level " + m.level + ", want system");
+    const labels = (m.entries || []).map((e) => e.label);
+    if (labels.join(",") !== "[Help...],[Connect...]") {
+      fail("the System menu should offer [Help...] and [Connect...], got " + labels.join(","));
+    }
+    const actions = (m.entries || []).map((e) => e.action);
+    if (actions.join(",") !== "help,connect") {
+      fail("the System menu actions should be help,connect -- got " + actions.join(",") +
+           " (runGlobalActionFromGrid dispatches on these strings)");
+    }
   }
 }
 
@@ -167,7 +197,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * a jog step in the middle of a list — and that is what the seven-page
    * assertion above and these per-section counts catch together.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, services: 2 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 1 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -369,7 +399,10 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     /* One word, because it names the whole question the three options answer
        ("Master / Stems / Both") and the options are right beside it. */
     save_stems: "Save",
-    filebrowser_enabled: "File Browser",
+    /* File Browser is GONE: it started a bundled binary serving all of
+       /data/UserData with --noauth on :404, and Schwung Manager serves the
+       same tree at :7700/files. Analytics is the whole of the System grid
+       page now. */
     analytics_enabled: "Analytics",
   };
   let seen = 0;
@@ -482,10 +515,15 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 
   /* NOT VACUOUS. If every key persisted, the loop above would pass no matter
    * what writeGlobalParam did with the set. These four cover all three of the
-   * other persistence kinds: an own saver (pad_typing, filebrowser_enabled),
-   * a self-persisting backend (screen_reader_speed) and a feature flag
-   * (analytics_enabled). None may reach the shared sink. */
-  for (const k of ["pad_typing", "filebrowser_enabled", "screen_reader_speed", "analytics_enabled"]) {
+   * other persistence kinds: an own saver (pad_typing, text_preview), a
+   * self-persisting backend (screen_reader_speed) and a feature flag
+   * (analytics_enabled). None may reach the shared sink.
+   *
+   * `text_preview` replaced `filebrowser_enabled` as the second own-saver case
+   * when that setting was removed -- deleting it outright would have left
+   * pad_typing covering the kind alone, which is how a non-vacuity check
+   * quietly becomes a single example. */
+  for (const k of ["pad_typing", "text_preview", "screen_reader_speed", "analytics_enabled"]) {
     if (G.PERSISTING_KEYS.has(k)) {
       fail(k + " does not call saveMasterFxChainConfig in the code being replaced — " +
            "including it makes the persistence assertion vacuous");
@@ -615,8 +653,9 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (7/9/6/1/4/2 params + Updates as a " +
-            "menu), every section ONE page with no length limit (Audio holds nine), every enum listable with a " +
+console.log("PASS: global settings contract — six levels (7/9/6/1/4/1 params, System also " +
+            "carrying the Help & Connect menu), no section SPLIT and no length limit (Audio " +
+            "holds nine), every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
             "saveMasterFxChainConfig keys persisting and four others provably not, and " +
