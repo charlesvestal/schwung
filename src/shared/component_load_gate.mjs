@@ -80,10 +80,31 @@ export function holdProbeIntervalTicks(attempts) {
  *
  * Returns { action, hierarchy?, reason }.
  */
-export function decideComponentEntry(read, parse) {
+/*
+ * How many failed hierarchy reads a NAMED, NOT-LOADING module gets before the
+ * gate concludes the read is not going to complete because the module does not
+ * serve the key at all.
+ *
+ * A module that draws its own pages (ui_chain.js) may answer `ui_hierarchy`
+ * with an ERROR rather than "" -- from the shadow side that is the same null
+ * as a timed-out read, and holding for it is holding forever: a swap into such
+ * a module sat on "Loading..." until the user backed out (reported from
+ * hardware for 9W9). Once the chain host has named the module and it reports
+ * not loading, a read that STILL fails three probes running (~1.5 s on the
+ * fast cadence) is refused, not late. Fall back, exactly as a served "" would.
+ */
+export const HOLD_UNSERVED_READ_LIMIT = 3;
+
+export function decideComponentEntry(read, parse, attempts = 0) {
     const rawHierarchy = read.hierarchy();
 
     if (rawHierarchy === null || rawHierarchy === undefined) {
+        if (attempts >= HOLD_UNSERVED_READ_LIMIT) {
+            const named = read.module();
+            if (named && read.isLoading() !== "1") {
+                return { action: ENTRY_FALLBACK, reason: "hierarchy-not-served" };
+            }
+        }
         return { action: ENTRY_HOLD, reason: "hierarchy-read-failed" };
     }
 

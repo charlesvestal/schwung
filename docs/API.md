@@ -320,6 +320,77 @@ midpoint algorithm produces a closed ring that a difference-of-fills does not.
 `host_load_ui_module` returns a boolean and loads the file as an ES module without invoking `globalThis.init`.
 `host_exit_module` is dynamically created for tool modules only — it is not available in the main host context.
 
+### Trailing pages for a module-owned param grid
+
+A module that ships `ui_chain.js` draws its own param pages, so it does not get
+the **My Presets** and **Module** pages the shadow UI appends to every component
+it paginates itself. These two bindings hand them across; both are installed
+with the slot and component already applied, like `host_swap_module`.
+
+```javascript
+shadow_component_trailing_menus()        // [{name, entries}] — feed to the
+                                         // controller as io.trailingMenus
+shadow_component_run_action(action)      // perform a row's action;
+                                         // returns true if it opened a screen
+```
+
+Wire them into the controller you create:
+
+```javascript
+const controller = createController({
+    getParam, setParam, announce,
+    trailingMenus: () => (typeof shadow_component_trailing_menus === "function"
+        ? shadow_component_trailing_menus() : []),
+});
+
+// A row activation comes back from applyInput as { action: "menu", entry }:
+// "menu" is the intent's kind, and the ENTRY carries the action key.
+if (todo && todo.action === "menu") {
+    const act = todo.entry && todo.entry.action;
+    if (act && typeof shadow_component_run_action === "function")
+        shadow_component_run_action(act);      // true = a screen opened over you
+    return;
+}
+```
+
+The host consumes the Back button and calls your `handleBack()` first, so
+climb the same ladder the stock grid does, one rung per press — otherwise Back
+from inside My Presets leaves the module and skips the page bar:
+
+```javascript
+function handleBack() {
+    // the rungs page_input.mjs's own `case "back"` climbs, in its order
+    if (controller.dismissHint && controller.dismissHint()) return true;
+    if (controller.dismissPeek && controller.dismissPeek()) return true;
+    if (controller.pickerOpen) { controller.closePicker(); return true; }
+    if (controller.exitMenu && controller.exitMenu()) return true;   // out of the menu, not the module
+    return false;                                                    // the host exits the editor
+}
+```
+
+Guard on the functions existing: they are absent on an older host, and absent
+for a Master FX position, which has no component preset record.
+
+A row's action may leave your grid — Load, Delete, Swap and Remove hand off to
+host screens — and the host brings you back by reloading your `ui_chain.js`
+(your `init()` runs again). Save and Save As stay put, with the keyboard drawn
+over your grid; declare an optional hook so your "My Presets" row updates:
+
+```javascript
+globalThis.chain_ui = {
+    init, tick, onMidiMessageInternal, handleBack,
+    onPresetsChanged: () => { if (controller) controller.refreshTrailing(); },
+    // the host reloads you after Load/Delete/Swap/Help; land where you left from
+    restorePage: (name, opts) => { if (controller) controller.restorePage(name, opts || {}); },
+};
+```
+
+**Swap Module.** After a completed swap the position holds a different module, so the host does not restore anything: it unloads the old module UI (if one was up) and opens the new module through its normal editor door (`openComponentEditor`), which waits for the new module's contract and then shows its hierarchy editor or its own UI on page 1. A module needs no hook for this.
+
+The pages arrive as `PAGE_MENU`, which the param_pages library draws itself —
+so a chain UI whose render guard only admits `PAGE_KNOBS` will paint its
+unsupported-page fallback over them. Admit `PAGE_MENU` too.
+
 ### Jack state and module metadata
 
 `host_speaker_active()` — returns `true` when built-in speakers are active (no headphones plugged), `false` otherwise. Reflects XMOS CC 115 line-out detect, observed at SPI frame ~180ms after boot.

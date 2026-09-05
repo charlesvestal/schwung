@@ -2163,6 +2163,7 @@ let moduleListsCorrupt = false;     /* true = never write */
 let moduleListsSlot = -1;           /* the component this session is filing */
 let moduleListsKey = "";
 let moduleListsModuleId = "";
+let moduleListsReturnModuleUi = false;   /* see componentGridReturnModuleUi */
 let moduleListsMemberIndex = 0;     /* cursor on the membership screen */
 let moduleListsEditIndex = 0;       /* cursor on the Edit Lists screen */
 let moduleListsActionIndex = 0;     /* cursor on the per-list actions screen */
@@ -2324,6 +2325,15 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
     const moduleId = loaded && loaded.module;
     const record = getUserPresetRecord(slotIndex, prefix);
     let result;
+    /* The view this action was asked FROM. Two grids can ask: the shadow UI's
+     * own param pages (VIEWS.PARAM_PAGES) and a module-owned chain UI
+     * (VIEWS.COMPONENT_EDIT). "Did the action open a screen?" is answered by
+     * comparing against THIS, not against PARAM_PAGES — testing against
+     * PARAM_PAGES was only right when the caller was PARAM_PAGES, and from a
+     * module grid it made every action, Save As included, look like a
+     * hand-off. That armed a return to a grid the module cannot host, which
+     * the device showed as an editor spinning on synth:ui_hierarchy reads. */
+    const viewBefore = view;
 
     switch (action) {
         case "up_load":
@@ -2383,6 +2393,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             exitParamPages();
             componentHelpReturnSlot = slotIndex;
             componentHelpReturnKey = componentKey;
+            componentHelpReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
             helpDetailScrollState = null;
             helpNavStack = [{ items: children, selectedIndex: 0,
                               title: getModuleDisplayName(moduleId) }];
@@ -2407,6 +2418,7 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             moduleListsSlot = slotIndex;
             moduleListsKey = componentKey;
             moduleListsModuleId = moduleId;
+            moduleListsReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
             moduleListsMemberIndex = 0;
             /* The same reset exitModuleLists() does, done again HERE because
              * this site is unconditional and that one is not. Back is the only
@@ -2465,16 +2477,19 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
             result = false;
     }
 
-    /* view !== VIEWS.PARAM_PAGES is the ONE test that is true for exactly the
-     * four remaining cases above that hand off to a real screen (Load, Delete, Swap,
-     * Remove — the last via applyChainComponentPick, which always ends in
-     * setView(VIEWS.CHAIN_EDIT)) and false for Save/Save As/an unhandled key,
-     * which never move `view` at all. Asking the screen rather than the key
-     * is what keeps a future action from being silently wrong here too. */
-    if (gridActionOpenedSomething(view !== VIEWS.PARAM_PAGES)) {
+    /* view !== viewBefore is the ONE test that is true for exactly the cases
+     * above that hand off to a real screen (Load, Delete, Swap, Remove — the
+     * last via applyChainComponentPick, which always ends in
+     * setView(VIEWS.CHAIN_EDIT)) and false for Save / Save As / an unhandled
+     * key, which never move `view` at all — from EITHER grid. Asking the
+     * screen rather than the key is what keeps a future action from being
+     * silently wrong here too. */
+    if (gridActionOpenedSomething(view !== viewBefore)) {
         componentModalFromGrid = true;
         componentGridReturnSlot = slotIndex;
         componentGridReturnKey = componentKey;
+        componentGridReturnModuleUi = (viewBefore === VIEWS.COMPONENT_EDIT);
+        componentGridReturnModule = moduleId || "";
     }
     return result;
 }
@@ -2540,13 +2555,55 @@ function maybeReturnToComponentGrid() {
      */
     const matchesReturnSlot = selectedSlot === componentGridReturnSlot;
     componentModalFromGrid = false;
+    const fromModuleUi = componentGridReturnModuleUi;
+    componentGridReturnModuleUi = false;
+    const moduleBefore = componentGridReturnModule;
+    componentGridReturnModule = "";
     const slotIndex = componentGridReturnSlot;
     const componentKey = componentGridReturnKey;
     componentGridReturnSlot = -1;
     componentGridReturnKey = "";
     if (!matchesReturnSlot) return false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    if (!stillLoaded || !stillLoaded.module) return false;
+    if (!stillLoaded || !stillLoaded.module) {
+        /* A module UI left loaded for a position that no longer holds a
+         * module would be drawn for nobody the next time COMPONENT_EDIT came
+         * round. Its own Back would have unloaded it; the hand-off went
+         * round Back, so unload it here. */
+        if (fromModuleUi) unloadModuleUi();
+        return false;
+    }
+    /* A SWAP left a different module in the position. Nothing about the old
+     * grid applies to it: not the page to restore, not which editor drew it,
+     * not whether its contract is even in yet. Go through the one door the
+     * host opens every editor with: it waits for the new module's contract,
+     * then picks its hierarchy editor or its own UI, on page 1. Reported from
+     * hardware both ways: module-UI -> stock re-entered the module door for a
+     * module that has a hierarchy and was still loading (nothing to draw);
+     * stock -> module-UI called enterParamPages for a module with no host
+     * hierarchy (a contract read nobody answers, drawn as Loading...). */
+    if (moduleBefore && stillLoaded.module !== moduleBefore) {
+        componentGridReturnEnter = true;
+        if (fromModuleUi) unloadModuleUi();
+        openComponentEditor(slotIndex, componentKey, -1);
+        needsRedraw = true;
+        return true;
+    }
+    if (fromModuleUi) {
+        /* Back to the MODULE's grid, through the same door the host opens it
+         * with. The module publishes no ui_hierarchy (that is why it draws
+         * its own pages), so enterParamPages below would be a contract read
+         * with nobody to answer it. Reload rather than resume: the module's
+         * init() rebuilds its controller and re-asks for the trailing menus,
+         * so a preset saved or loaded on the way round is what it shows. */
+        const moduleEnter = componentGridReturnEnter;
+        componentGridReturnEnter = true;    /* back to the nothing-happened default */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("My Presets", moduleEnter);
+        needsRedraw = true;
+        return true;
+    }
     /* "My Presets", not the first page: every hand-off this reconciler serves
      * (a committed Load, a completed Delete, backing out of Swap) is either
      * about that page or leaves it just as good a landing spot as any other.
@@ -2595,8 +2652,22 @@ function maybeReturnToComponentHelp() {
     const componentKey = componentHelpReturnKey;
     componentHelpReturnSlot = -1;
     componentHelpReturnKey = "";
+    const fromModuleUi = componentHelpReturnModuleUi;
+    componentHelpReturnModuleUi = false;
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    if (!stillLoaded || !stillLoaded.module) return false;
+    if (!stillLoaded || !stillLoaded.module) {
+        if (fromModuleUi) unloadModuleUi();
+        return false;
+    }
+    if (fromModuleUi) {
+        /* See maybeReturnToComponentGrid: a module-owned grid is re-entered
+         * through the module, never through enterParamPages. */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("Module", true);
+        needsRedraw = true;
+        return true;
+    }
     enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), "Module",
                     componentParamPagesIo(slotIndex, componentKey), paramPagesChromeFor(componentKey),
                     { enter: true });
@@ -2766,11 +2837,23 @@ function exitModuleLists() {
     moduleListsPendingName = null;
     if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
+    const fromModuleUi = moduleListsReturnModuleUi;
+    moduleListsReturnModuleUi = false;
     if (!stillLoaded || !stillLoaded.module) {
+        if (fromModuleUi) unloadModuleUi();
         /* Same guard maybeReturnToComponentGrid needs: a component editor
          * entered for an empty position is a contract read with nobody to
          * answer it, which the device draws as a permanent "Loading...". */
         setView(VIEWS.CHAIN_EDIT);
+        needsRedraw = true;
+        return;
+    }
+    if (fromModuleUi) {
+        /* See maybeReturnToComponentGrid: a module-owned grid is re-entered
+         * through the module, never through enterParamPages. */
+        unloadModuleUi();
+        enterComponentEditFallback(slotIndex, componentKey);
+        restoreModuleUiPage("Module", true);
         needsRedraw = true;
         return;
     }
@@ -3041,11 +3124,41 @@ function moduleListsActionsBack() {
  */
 let componentGridReturnEnter = true;
 
+/*
+ * A module-owned chain UI has its own controller, so paramPagesRefreshTrailing
+ * (the host's) is a no-op for it and its "My Presets" row would go on reading
+ * "(none)" after a Save. Tell the module instead; it refreshes its own
+ * trailing pages. Optional — a chain UI that does not declare it is left alone.
+ */
+/*
+ * Land a reloaded module UI on the page the hand-off left from. The host's
+ * own grid restores by NAME on the way back (enterParamPages's
+ * restorePageName); a module-owned grid is reloaded from scratch and knows
+ * nothing, so it landed on page 1 — reported from hardware as "Swap, Back,
+ * and I am on Main instead of the Module page". Optional hook; the module
+ * hands the name to its own controller.restorePage, which stays armed until
+ * its pages arrive, exactly as the host's does.
+ */
+function restoreModuleUiPage(name, enter) {
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.restorePage === "function") {
+        loadedModuleUi.restorePage(name, { enter: !!enter });
+    }
+}
+
+function notifyModuleUiPresetsChanged() {
+    if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
+        typeof loadedModuleUi.onPresetsChanged === "function") {
+        loadedModuleUi.onPresetsChanged();
+    }
+}
+
 function recordUserPresetFromDevice(slot, prefix, name) {
     const live = getSlotStateWithRetry(slot, prefix + ":state");
     userPresetLiveBlobCache[userPresetKey(slot, prefix)] = live;
     setUserPresetRecord(slot, prefix, makeRecord(name, live));
     paramPagesRefreshTrailing();
+    notifyModuleUiPresetsChanged();
     needsRedraw = true;
 }
 function onUserPresetSaved(slot, prefix, name, stateJson) {
@@ -3063,6 +3176,7 @@ function onUserPresetDeleted(slot, prefix, name) {
     const rec = getUserPresetRecord(slot, prefix);
     if (rec && rec.name === name) setUserPresetRecord(slot, prefix, null);
     paramPagesRefreshTrailing();
+    notifyModuleUiPresetsChanged();
     needsRedraw = true;
 }
 
@@ -3926,6 +4040,15 @@ let globalModalFromGrid = false;
 let componentModalFromGrid = false;
 let componentGridReturnSlot = -1;
 let componentGridReturnKey = "";
+/* Whether the grid that raised the hand-off was a MODULE-OWNED chain UI
+ * (VIEWS.COMPONENT_EDIT) rather than the shadow UI's own param pages. The
+ * return path has to go back to the same kind of grid: a module that draws
+ * its own pages publishes no ui_hierarchy, so re-entering it through
+ * enterParamPages is a contract read with nobody to answer it. */
+let componentGridReturnModuleUi = false;
+/* ...and WHICH module held the position when it was raised. A swap leaves a
+ * different one there, and nothing about the old grid applies to it. */
+let componentGridReturnModule = "";
 
 /* ...and the one component action that does NOT converge on VIEWS.CHAIN_EDIT:
  * "Module Help". The help viewer has no view of its own -- it is drawn by
@@ -3936,6 +4059,7 @@ let componentGridReturnKey = "";
  * must never be spent by another. See maybeReturnToComponentHelp. */
 let componentHelpReturnSlot = -1;
 let componentHelpReturnKey = "";
+let componentHelpReturnModuleUi = false;   /* see componentGridReturnModuleUi */
 
 function saveParamViewConfig() {
     try {
@@ -5385,6 +5509,37 @@ function setupModuleParamShims(slot, componentKey) {
         }
     };
 
+    /*
+     * The two trailing pages, for a module that draws its own param pages.
+     *
+     * Every component the SHADOW UI paginates gets "My Presets" and "Module"
+     * appended, because enterParamPages hands componentParamPagesIo to the
+     * controller and the controller appends whatever io.trailingMenus returns.
+     * A module shipping ui_chain.js builds its own controller, so it got
+     * neither — a drum machine with a pad-select editor could not save a
+     * preset, while a synth using the stock editor could. The pages are not a
+     * property of who drew the grid.
+     *
+     * Both halves have to cross: the MENUS (what to draw) and the ACTIONS
+     * (what a row does). Reimplementing either module-side is not an option —
+     * the actions reach the user preset store, the preset browser, the
+     * component picker and the help screen, none of which a module can address
+     * — so they are bound here with the slot and component already applied,
+     * exactly as host_swap_module above is.
+     *
+     * `runAction` returns whether the action opened a screen, which is the
+     * caller's cue to stop drawing; ui_chain.js should return from its input
+     * handler when it sees true.
+     */
+    globalThis.shadow_component_trailing_menus = function() {
+        return componentTrailingMenus(slot, componentKey, prefix) || [];
+    };
+
+    globalThis.shadow_component_run_action = function(action) {
+        if (!action) return false;
+        return !!runComponentActionFromGrid(slot, componentKey, action);
+    };
+
     globalThis.host_open_file_in_tool = function(filePath, toolId) {
         if (!filePath || !toolId) return false;
         if (!toolModules || !toolModules.length) {
@@ -5418,6 +5573,8 @@ function clearModuleParamShims() {
     delete globalThis.host_module_set_param_blocking;
     delete globalThis.host_exit_module;
     delete globalThis.host_suspend_overtake;
+    delete globalThis.shadow_component_trailing_menus;
+    delete globalThis.shadow_component_run_action;
     delete globalThis.host_swap_module;
     delete globalThis.host_open_file_in_tool;
 }
@@ -13574,7 +13731,8 @@ function componentEntryReader(slotIndex, componentKey, mfxIndex) {
 function openComponentEditor(slotIndex, componentKey, mfxIndex) {
     const decision = decideComponentEntry(
         componentEntryReader(slotIndex, componentKey, mfxIndex),
-        (json) => { try { return JSON.parse(json); } catch (e) { return null; } });
+        (json) => { try { return JSON.parse(json); } catch (e) { return null; } },
+        holdAttemptsFor(slotIndex, componentKey, mfxIndex));
 
     if (decision.action === ENTRY_HOLD) {
         holdForComponentLoad(slotIndex, componentKey, mfxIndex, decision.reason);
@@ -13594,6 +13752,15 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
      * module selection is still available". */
     if (mfxIndex >= 0) return;
     enterComponentEditFallback(slotIndex, componentKey);
+}
+
+/* How many probes the CURRENT hold has already made for this position -- 0 on
+ * a fresh entry or for any other position. What lets the gate tell "not yet"
+ * from "never" (HOLD_UNSERVED_READ_LIMIT). */
+function holdAttemptsFor(slotIndex, componentKey, mfxIndex) {
+    const h = componentLoadHold;
+    return (h && h.slot === slotIndex && h.componentKey === componentKey && h.mfxIndex === mfxIndex)
+        ? h.attempts : 0;
 }
 
 function componentLoadHoldLabel() {
