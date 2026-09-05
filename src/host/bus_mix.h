@@ -28,6 +28,12 @@
  * need no float in the audio path. 127 is exactly unity, not 127/128. */
 #define BUS_MIX_SEND_LEVEL_MAX 127
 
+/* The mask returned by bus_mix_active_mask is a uint32_t, so it can name 32
+ * buses however many a caller actually claims. Truncating the bus index here
+ * beats undefined behaviour in the shift below (n_buses is a runtime int, not
+ * something a compile-time assert on SLOT_BUSES can guard). */
+#define BUS_MIX_MAX_BUSES 32
+
 /*
  * How many global send buses a slot can feed.
  *
@@ -35,10 +41,25 @@
  * only one of them may include that header: the chain is a MODULE, dlopen'd
  * through plugin_api_v2, and a module reaching into a shim header is exactly
  * the coupling that produced breakbeat's ABI drift. bus_mix.h is the one
- * header both the chain and the shim include. shadow_chain_mgmt.h defines
- * SEND_BUSES from this and static-asserts they agree, so there is one number
- * with one definition and a build failure if that stops being true. */
+ * header both the chain and the shim include. shadow_chain_mgmt.h will define
+ * SEND_BUSES from this and static-assert they agree; until that lands, this
+ * constant has no consumer and nothing enforces the agreement. */
 #define BUS_MIX_SENDS 2
+
+/*
+ * The one resolve. bus_mix_build_table and bus_mix_active_mask must agree on
+ * what a voice's target IS, or the clear set names a buffer nobody rendered
+ * into — and a caller that trusts the mask memsets a NULL on the SPI
+ * callback. Returns bus_buf[b] only when b is in range (and below
+ * BUS_MIX_MAX_BUSES, so the mask's shift stays defined) and the bus has
+ * actually been allocated; NULL otherwise, meaning "the voice's audio went
+ * to main_buf".
+ */
+static inline int16_t *bus_mix_target(int b, int n_buses, int16_t *const *bus_buf)
+{
+    return (b >= 0 && b < n_buses && b < BUS_MIX_MAX_BUSES && bus_buf && bus_buf[b])
+         ? bus_buf[b] : NULL;
+}
 
 /*
  * Build the per-voice output table.
@@ -55,26 +76,31 @@ static inline void bus_mix_build_table(int16_t **voice_out, int n_voices,
 {
     for (int i = 0; i < n_voices; i++) {
         int b = voice_bus ? voice_bus[i] : BUS_MIX_MAIN;
-        voice_out[i] = (b >= 0 && b < n_buses && bus_buf && bus_buf[b])
-                     ? bus_buf[b] : main_buf;
+        int16_t *t = bus_mix_target(b, n_buses, bus_buf);
+        voice_out[i] = t ? t : main_buf;
     }
 }
 
 /*
- * Bitmask of the buses at least one voice targets — the set that must be
- * cleared before an accumulating render. Returns how many bits are set.
+ * Bitmask of the buses at least one voice actually renders into (i.e. those
+ * bus_mix_target resolves non-NULL for) — the set that must be cleared before
+ * an accumulating render. A voice on an unallocated or out-of-range bus does
+ * NOT set that bus's bit, because bus_mix_build_table sent its audio to
+ * main_buf instead; clearing an unrendered buffer here would be a NULL
+ * dereference in the caller. Returns how many bits are set.
  *
  * Clearing by this mask rather than clearing all n_buses is what keeps an
  * unused bus free: an allocated-but-unrouted bus is never touched per frame.
  */
 static inline int bus_mix_active_mask(const int8_t *voice_bus, int n_voices,
-                                      int n_buses, uint32_t *out_mask)
+                                      int n_buses, int16_t *const *bus_buf,
+                                      uint32_t *out_mask)
 {
     uint32_t m = 0;
     int n = 0;
     for (int i = 0; i < n_voices; i++) {
         int b = voice_bus ? voice_bus[i] : BUS_MIX_MAIN;
-        if (b >= 0 && b < n_buses && !(m & (1u << b))) {
+        if (bus_mix_target(b, n_buses, bus_buf) && !(m & (1u << b))) {
             m |= 1u << b;
             n++;
         }
@@ -100,8 +126,10 @@ static inline void bus_mix_accumulate(int16_t *dst, const int16_t *src, int n)
 /*
  * dst += src * (level / BUS_MIX_SEND_LEVEL_MAX), saturating.
  *
- * Level 0 returns without touching dst — a send at zero must cost nothing,
- * because most buses feed most sends at zero.
+ * The <= 0 guard is not merely a performance shortcut for the common
+ * zero-send case — it is the only thing standing between a negative level
+ * and a phase-inverted send (dst -= src), which would read as a synthesis
+ * bug, not a mixing one, since nothing about it looks like a send.
  */
 static inline void bus_mix_send(int16_t *dst, const int16_t *src, int n, int level)
 {

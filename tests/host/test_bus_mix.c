@@ -41,12 +41,35 @@ static void test_unassigned_and_unallocated_fall_to_main(void) {
 }
 
 static void test_active_mask_names_the_clear_set(void) {
+    int16_t b0[N], b2[N];
+    int16_t *bus_buf[4] = { b0, NULL, b2, NULL };
     int8_t voice_bus[5] = { 0, 0, 2, BUS_MIX_MAIN, 2 };
     uint32_t mask = 0;
-    int n = bus_mix_active_mask(voice_bus, 5, 4, &mask);
+    int n = bus_mix_active_mask(voice_bus, 5, 4, bus_buf, &mask);
     assert(n == 2);
     assert(mask == ((1u << 0) | (1u << 2)));
     printf("  active mask: ok\n");
+}
+
+static void test_active_mask_agrees_with_build_table(void) {
+    /* bus 1 is a voice's target but has not been allocated yet. The mask
+     * must NOT claim it: build_table sent that voice's audio to main_buf,
+     * so a caller that memsets every masked buffer would NULL-deref bus 1
+     * on the SPI callback. */
+    int16_t main_buf[N], b0[N];
+    int16_t *bus_buf[2] = { b0, NULL };   /* bus 1 unallocated */
+    int8_t voice_bus[3] = { 0, 1, BUS_MIX_MAIN };
+    int16_t *voice_out[3];
+    uint32_t mask = 0;
+
+    bus_mix_build_table(voice_out, 3, voice_bus, main_buf, bus_buf, 2);
+    int n = bus_mix_active_mask(voice_bus, 3, 2, bus_buf, &mask);
+
+    assert(voice_out[1] == main_buf);     /* fell back: bus 1 not allocated */
+    assert(!(mask & (1u << 1)));          /* so the mask must not name it */
+    assert(mask == (1u << 0));
+    assert(n == 1);
+    printf("  active mask agrees with build_table: ok\n");
 }
 
 static void test_accumulate_saturates(void) {
@@ -75,6 +98,20 @@ static void test_send_level_endpoints(void) {
     int16_t dst3[3] = { 0, 0, 0 };
     bus_mix_send(dst3, src, 3, 64);
     assert(dst3[0] > 400 && dst3[0] < 600);            /* roughly half */
+
+    /* A negative level must be a no-op too, not a phase-inverted send —
+     * without the <= 0 guard this would SUBTRACT src from dst. */
+    int16_t dst4[3] = { 5, 6, 7 };
+    bus_mix_send(dst4, src, 3, -64);
+    assert(memcmp(dst4, before, sizeof(before)) == 0);
+
+    /* Above-max must clamp to unity, not scale past it. */
+    int16_t dstA[3] = { 0, 0, 0 };
+    int16_t dstB[3] = { 0, 0, 0 };
+    bus_mix_send(dstA, src, 3, 200);
+    bus_mix_send(dstB, src, 3, BUS_MIX_SEND_LEVEL_MAX);
+    assert(memcmp(dstA, dstB, sizeof(dstA)) == 0);
+
     printf("  send endpoints: ok\n");
 }
 
@@ -105,6 +142,7 @@ int main(void) {
     test_aliasing_is_the_summing_mechanism();
     test_unassigned_and_unallocated_fall_to_main();
     test_active_mask_names_the_clear_set();
+    test_active_mask_agrees_with_build_table();
     test_accumulate_saturates();
     test_send_level_endpoints();
     test_bus_sum_equals_voice_sum();
