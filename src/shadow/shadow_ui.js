@@ -110,9 +110,12 @@ import { resolveViz, isSprayMeta } from '/data/UserData/schwung/shared/param_pag
  * absolute path, and ./shadow_ui_param_pages.mjs above relies on exactly that),
  * so the prefix here is convention rather than necessity — do not diverge from
  * it in one import. */
-import { registerWidget, clearWidgets, setWidgetLogger }
+import { registerWidget, registerOverlayWidgets, clearWidgets, setWidgetLogger }
     from '/data/UserData/schwung/shared/param_pages/widget_registry.mjs';
 import { listKnobInit, listKnobStep } from '/data/UserData/schwung/shared/param_pages/list_knob.mjs';
+/* Frame-scoping for a custom UI page's body — the same clipped, origin-shifted
+ * context a widget and a card get, so a module author writes one thing. */
+import { frameCtx } from '/data/UserData/schwung/shared/param_pages/frame_ctx.mjs';
 /* Which user preset a component is currently on, and whether the live state
  * has moved away from it since — the "My Presets" trailing page's row 1
  * (see componentTrailingMenus below). Pure: the caller supplies the record and
@@ -16688,16 +16691,25 @@ function ensureComponentWidgets(moduleId, chainParams) {
 
     const loaded = loadCanvasOverlayScript(`${dir}/canvas.js`, "");
     const ov = loaded && loaded.overlay;
-    if (ov && typeof ov.drawCell === "function" && typeof ov.widgetKind === "string") {
-        registerWidget(ov.widgetKind, {
-            draw: ov.drawCell.bind(ov),
-            nominal: ov.widgetNominal || null,
-        });
-    } else {
-        /* Declared a custom kind and we could not load a widget for it. Not
-         * fatal: the kind stays unregistered, so resolveViz leaves those keys to
-         * the detector and the built-in draws. But say so, because otherwise the
-         * author sees a reasonable picture and no reason it is not theirs. */
+    /* A module may declare MORE THAN ONE widget -- see registerOverlayWidgets,
+     * which owns the shapes. This used to read a single `widgetKind` string,
+     * which meant a second declared kind was never registered and its cell
+     * silently drew a built-in dial instead. */
+    const { registered, skipped } = registerOverlayWidgets(ov);
+    if (registered.length) {
+        debugLog(`widgets: ${id} registered ${registered.join(", ")}`);
+    }
+    /* Declared a custom kind and we could not load a widget for it. Not fatal:
+     * the kind stays unregistered, so resolveViz leaves those keys to the
+     * detector and the built-in draws. But say so, because otherwise the author
+     * sees a reasonable picture and no reason it is not theirs. Each skipped
+     * kind names ITSELF and why -- a module registering one of two widgets used
+     * to log nothing at all, because the old branch only spoke when it got
+     * nothing. */
+    for (const s2 of skipped) {
+        debugLog(`widgets: ${id} declared ${s2.kind} but ${s2.why}`);
+    }
+    if (!registered.length && !skipped.length) {
         debugLog(`widgets: ${id} declares a custom viz kind but no usable drawCell` +
                  (loaded && loaded.error ? ` (${loaded.error})` : ""));
     }
@@ -16925,6 +16937,77 @@ function resolveCardScriptPath(slot, component, scriptRef) {
     if (!moduleDir) return "";
     const scriptPath = `${moduleDir}/${scriptRef}`;
     return moduleFileExists(scriptPath) ? scriptPath : "";
+}
+
+
+/*
+ * CUSTOM UI PAGES — a module draws a whole page's body.
+ *
+ * Loaded and cached exactly like a card drawer, and for the same reason:
+ * nothing module-side is resident while the grid is up and the host loader has
+ * no cache of its own, so loading on the draw path would evaluate the script on
+ * every frame. Here that matters more than for a card, because a custom page is
+ * redrawn CONTINUOUSLY so it can animate.
+ *
+ * A null result is cached, so a missing file or a bad export costs one attempt
+ * for the session rather than one per frame.
+ *
+ * ONE STRIKE, like every other module-supplied drawer: a thrower is retired for
+ * the session and the page falls back to an empty body under the host's normal
+ * header and footer. A module cannot take the shadow UI down by shipping a bad
+ * page.
+ */
+const canvasPageDrawers = {};      /* "moduleDir|script|overlay" -> fn | null */
+const canvasPageDisabled = {};
+
+function canvasPageDrawer(slot, component, canvas) {
+    if (!canvas || !canvas.script) return null;
+    const path = resolveCardScriptPath(slot, component, canvas.script);
+    if (!path) return null;
+    const ref = canvas.overlay || "";
+    const cacheKey = `${path}|${ref}`;
+    if (canvasPageDisabled[cacheKey]) return null;
+    if (Object.prototype.hasOwnProperty.call(canvasPageDrawers, cacheKey))
+        return canvasPageDrawers[cacheKey];
+
+    /* The overlay object is resolved the same way the fullscreen canvas view
+     * resolves one, so a module uses the SAME object for both if it wants. */
+    const loaded = loadCanvasOverlayScript(path, ref);
+    const ov = loaded && loaded.overlay;
+    const fn = ov && typeof ov.drawPage === "function" ? ov.drawPage.bind(ov) : null;
+    if (!fn) {
+        debugLog(`canvas page: ${path} exposes no drawPage${loaded && loaded.error ? ` (${loaded.error})` : ""}`);
+    }
+    canvasPageDrawers[cacheKey] = fn;
+    return fn;
+}
+
+function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
+    const fn = canvasPageDrawer(slot, component, canvas);
+    if (!fn) return;
+    const path = resolveCardScriptPath(slot, component, canvas.script);
+    const cacheKey = `${path}|${canvas.overlay || ""}`;
+    /* Frame-scoped, so (0,0) is the top-left of the BAND and nothing the module
+     * draws can reach the header or the footer. Same contract as a widget and a
+     * card; a module author already knows it. */
+    const fctx = frameCtx(drawCtx, band);
+    try {
+        fn(fctx, {
+            key: canvas.key,
+            values: payload && payload.values ? payload.values : {},
+            base: payload && payload.base ? payload.base : {},
+            keys: payload && payload.keys ? payload.keys : [],
+            touched: payload && typeof payload.touched === "number" ? payload.touched : -1,
+            /* Browser state, for a module drawing its own preset picker. Null
+             * on an ordinary custom page. */
+            preset: (payload && payload.preset) || null,
+            nowMs: payload && typeof payload.nowMs === "number" ? payload.nowMs : Date.now(),
+            width: band.w, height: band.h,
+        });
+    } catch (e) {
+        canvasPageDisabled[cacheKey] = true;
+        debugLog(`canvas page ${cacheKey} disabled after throw: ${e}`);
+    }
 }
 
 function loadCanvasOverlayScript(scriptPath, overlayRef) {
@@ -20546,6 +20629,8 @@ function drawHelpDetail() {
         return loadCardDrawer(
             resolveCardScriptPath(slot, component, scriptPath), exportRef);
     };
+    _ctx.drawCanvasPageBody = (slot, component, drawCtx, band, canvas, payload) =>
+        drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload);
     _ctx.isMuteHeld = () => hostMuteHeld;
 
     /* Overtake session state (for tools menu "Resume" indicator) */

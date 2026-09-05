@@ -494,6 +494,26 @@ const TRIGGER_BURST_MAX = 4;
  */
 const TRIGGER_KNOB_GESTURE_GAP_MS = 270;
 
+/*
+ * A page whose eight encoders address parameters.
+ *
+ * Normally that is exactly PAGE_KNOBS. A CUSTOM UI PAGE may also be a browser
+ * -- a module drawing its own preset picker, where jog steps presets and the
+ * knobs still edit the sound -- and that page has to be PAGE_PRESET for the
+ * jog, the enter/exit gesture and the announcements to work. It carries `keys`
+ * as well, and this is what lets those keys be turned.
+ *
+ * Deliberately narrow: it asks whether the page HAS keys, not what kind it is,
+ * so a preset or items page that carries none behaves exactly as before. That
+ * is the property that made this safe to relax at all -- twenty-two places
+ * branch on PAGE_KNOBS and only the three that mean "can this be turned or
+ * read" use this.
+ */
+function pageHasKnobs(p) {
+    return !!(p && Array.isArray(p.keys) && p.keys.length &&
+              (p.kind === PAGE_KNOBS || p.canvas));
+}
+
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
@@ -840,7 +860,7 @@ export function createController(io = {}) {
     }
     const keyAt = (slot) => {
         const p = page();
-        return p && p.kind === PAGE_KNOBS ? (p.keys[slot] || null) : null;
+        return pageHasKnobs(p) ? (p.keys[slot] || null) : null;
     };
     const metaAt = (slot) => {
         const k = keyAt(slot);
@@ -1988,9 +2008,24 @@ export function createController(io = {}) {
         }
 
         const p = page();
-        if (p && p.kind === PAGE_PRESET) { tickPreset(p); return null; }
+        /*
+         * A MODULE-DRAWN BROWSER ticks BOTH lanes.
+         *
+         * An ordinary preset page has no knobs, so the preset lane is all there
+         * is and returning here is right. One that carries knobs must also run
+         * the value lane below, or its picture is drawn from values nobody ever
+         * fetched -- which showed as a face page reading the vowel it happened
+         * to inherit from a neighbouring page rather than the live one.
+         *
+         * Two reads per tick on that page instead of one. That is the cost of a
+         * screen that is a browser and a knob page at once, and it is bounded:
+         * only this page, only while it is up.
+         */
+        if (p && p.kind === PAGE_PRESET) { tickPreset(p); if (!p.canvas) return null; }
         if (p && p.kind === PAGE_ITEMS) { tickItems(p); return null; }
-        if (!p || p.kind !== PAGE_KNOBS || p.keys.length === 0) return null;
+        /* Reads AND live values: a custom browser page carrying knobs needs
+         * both, or its picture is drawn from values nobody ever fetched. */
+        if (!pageHasKnobs(p)) return null;
 
         refreshModulatedValues(p);
 
@@ -2136,7 +2171,25 @@ export function createController(io = {}) {
          *
          * On the cursor it costs one read per tick and the whole page is
          * current within `stops` ticks — under 0.2s, for a tick mark. */
-        s.modCache[key] = !!isModulated(fullKey(key));
+        /*
+         * A MODULE MAY DECLARE A PARAM LIVE, and that is not the same question
+         * as "is something routed to it".
+         *
+         * `isModulated` asks the chain's modulation system, which knows about
+         * LFOs and macros. It cannot know that a synth drives its own vowel
+         * from pad pressure, or that a value moves for any other reason inside
+         * the module -- so a picture of that value sat frozen at whatever the
+         * knob last said while the sound changed underneath it.
+         *
+         * `"live": true` on the param says so. It costs what any modulated key
+         * costs: the effective value is refreshed EVERY TICK
+         * (refreshModulatedValues, MOD_FAST_READS_PER_TICK) rather than waiting
+         * for the value rotation, which is the whole point -- a rotation stop
+         * on an eight-knob page lands about four times a second, and an
+         * animation drawn from that is a slideshow.
+         */
+        const _lm = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
+        s.modCache[key] = !!isModulated(fullKey(key)) || !!(_lm && _lm.live === true);
 
         /* The pointer wants the base — what the user set — so ask for it
          * directly. (Since #276 the plain key also answers with the base for
@@ -3813,6 +3866,11 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
+                /* A custom UI page's body drawer — inert for every ordinary
+                 * page. This layout is the one the device uses, so a page that
+                 * drew correctly under the dial renderer and not here would be
+                 * a page that works everywhere except on hardware. */
+                drawCanvasPage: drawCanvasPageBody,
                 /* Both undefined for the device's own full-screen draw, which
                  * is what keeps that path byte-identical. */
                 rect, bands,
@@ -3935,10 +3993,24 @@ export function createController(io = {}) {
                 const prect = { x: MENU_FRAME_X, y: MENU_FRAME_Y,
                                 w: MENU_FRAME_W, h: pbottom - MENU_FRAME_Y - MENU_FRAME_BOTTOM_INSET };
                 const pst = presetState(mp) || {};
-                drawPresetBody(ctx, prect, {
-                    name: pst.name, index: pst.index, count: pst.count,
-                    entered: menuEntered(),
-                });
+                /*
+                 * A MODULE-DRAWN BROWSER paints the body itself. It is handed
+                 * the preset state as well as the values, because the thing it
+                 * is browsing is not a parameter and no read would find it --
+                 * "Fish, 2 of 12" lives in the controller, not on the wire.
+                 */
+                if (mp.canvas) {
+                    drawCanvasPageBody(ctx, prect, mp.canvas, {
+                        touched: s.touched,
+                        preset: { name: pst.name, index: pst.index,
+                                  count: pst.count, entered: menuEntered() },
+                    });
+                } else {
+                    drawPresetBody(ctx, prect, {
+                        name: pst.name, index: pst.index, count: pst.count,
+                        entered: menuEntered(),
+                    });
+                }
                 /* Inert: it wears the same brackets a divable cell and an
                  * un-entered menu wear, because it is the same offer. */
                 if (!menuEntered()) {
@@ -3991,6 +4063,7 @@ export function createController(io = {}) {
                 page: page(), metaIndex: s.metaIndex, values: s.values,
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: -1, layout: s.layout, rect,
+                drawCanvasPage: drawCanvasPageBody,
             });
             renderHint(ctx, { rect, lines: s.hintLines.lines, title: s.hintLines.title });
             return;
@@ -4005,6 +4078,9 @@ export function createController(io = {}) {
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
             modulated: (key) => !!s.modCache[key],
+            /* The live values, so a module-supplied widget can draw what the
+             * param is ACTUALLY doing rather than where its knob was left. */
+            modValues: s.modValues,
             /* Section ids for the page rule, so it groups the way Shift+jog
              * navigates. Cached — it only changes when the page set does. */
             pageGroups: pageGroups(),
@@ -4013,7 +4089,72 @@ export function createController(io = {}) {
              * which of them is locked, so graphics stand down while
              * decorations are active. */
             viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
+            /*
+             * A CUSTOM UI PAGE's body drawer. Only a page carrying `canvas`
+             * uses it, so this is inert for every ordinary page — and absent
+             * when the host offers none, which is what makes a module's custom
+             * page degrade to an empty body rather than to a broken screen.
+             */
+            drawCanvasPage: drawCanvasPageBody,
         });
+    }
+
+    /*
+     * Draw a custom page's body, if the host can.
+     *
+     * The band comes from render_page (the area the eight cells would have
+     * used), so the header, the touch strip and the footer are the host's own
+     * and a module cannot paint over them.
+     */
+    /*
+     * Draw a custom page's body, if the host can.
+     *
+     * The band comes from the caller (render_page's cell area, or the preset
+     * page's own frame), so the header, the touch strip and the footer are the
+     * host's own and a module cannot paint over them.
+     */
+    function drawCanvasPageBody(ctx, band, canvas, extra) {
+        if (typeof io.drawCanvasPage !== "function") return;
+        io.drawCanvasPage(ctx, band, canvas, {
+            /*
+             * MERGED, like a graphic gets — a custom page is redrawn every tick
+             * precisely so it can show a live value move, and handing it the
+             * base would make that impossible by construction.
+             */
+            values: liveValues(),
+            /* The knob positions, for a page that wants to show both what is
+             * set and what is sounding. Same split as a widget's baseValues. */
+            base: s.values,
+            metaIndex: s.metaIndex,
+            keys: (page() || {}).keys || [],
+            touched: extra && typeof extra.touched === "number" ? extra.touched : -1,
+            /*
+             * Browser state, when this page IS the level's preset browser.
+             * Handed over because it is not a parameter: "Fish, 2 of 12" lives
+             * in the controller and no read would find it. Null otherwise.
+             */
+            preset: (extra && extra.preset) || null,
+            nowMs: now(),
+        });
+    }
+
+    /*
+     * Base values with any live/modulated ones merged over them.
+     *
+     * The same merge render_page_movy does for graphics, in ONE place so the
+     * card and the renderers cannot disagree about what a value is. Returns the
+     * base object untouched when nothing is live, so the common case allocates
+     * nothing.
+     */
+    function liveValues() {
+        for (const _k in s.modValues) return Object.assign({}, s.values, s.modValues);
+        return s.values;
+    }
+
+    /** True when the page on screen is drawn by the module. */
+    function onCanvasPage() {
+        const p = page();
+        return !!(p && p.canvas);
     }
 
     /*
@@ -4165,6 +4306,18 @@ export function createController(io = {}) {
             value: knobRowValue(key),
             raw: s.values[key] === undefined ? null : s.values[key],
             /*
+             * The whole page's values, so a card can read a sibling the way a
+             * cell widget always could -- see param_card's note.
+             *
+             * LIVE VALUES MERGED OVER THE BASE, exactly as a graphic gets them.
+             * A card is a picture of what a parameter MEANS, and for a param
+             * something else is driving, what it means is what it is DOING --
+             * not where its knob was left. `raw` stays the base, because that
+             * is the number the turn is editing.
+             */
+            values: liveValues(),
+            nowMs: now(),
+            /*
              * ONE STRIKE. A drawer that threw is retired for the session rather
              * than re-entered up to sixty times a second, and the parameter
              * falls back to the ordinary page -- which is what a host too old
@@ -4181,7 +4334,7 @@ export function createController(io = {}) {
     let vizCache = null;
     function vizGroups() {
         const p = page();
-        if (!p || p.kind !== PAGE_KNOBS || !s.metaIndex) return [];
+        if (!pageHasKnobs(p) || !s.metaIndex) return [];
         /*
          * THE FOCUSED CHILD IS PART OF THE KEY.
          *
@@ -4431,6 +4584,9 @@ export function createController(io = {}) {
     }
 
     return {
+        /* True when the module draws this page's body — the host redraws
+         * every tick while it is up, so a custom page can animate. */
+        onCanvasPage,
         load, reloadIfChanged, tick, refreshTrailing, revalue,
         describePage,
         /* For a selection made OUTSIDE the controller — the list editor drives
