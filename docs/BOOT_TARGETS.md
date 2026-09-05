@@ -73,6 +73,12 @@ main binary. Rules:
   but if your platform inherits or acquires realtime priority, children must
   be SCHED_OTHER — see `docs/REALTIME_SAFETY.md` for why FIFO-70 children
   starve Move's own audio threads.
+- **The LED surface arrives still, but unpainted.** The XMOS plays Move's
+  power-on LED show autonomously until a MIDI system reset arrives; the
+  selector sends that reset at handover (bisected from Move's own boot
+  traffic — color writes and per-LED animation cancels do NOT stop it), so
+  your target starts on a dark, quiet surface. Paint your own LED state at
+  startup; do not expect the show to be stoppable later by ordinary writes.
 - **Exit on SIGTERM.** `/etc/init.d/move stop` TERMs the service pid — which,
   through the exec chain, is your platform. A target that ignores TERM
   survives the stop, keeps `/dev/ablspi0.0` open, and the next start finds
