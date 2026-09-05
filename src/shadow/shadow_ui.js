@@ -32,6 +32,7 @@ import {
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
+    MoveDown,          // CC 54 - down arrow, claimed for the bus screens
     MidiNoteOn, MidiNoteOff
 } from '/data/UserData/schwung/shared/constants.mjs';
 
@@ -324,6 +325,13 @@ import {
 import {
     drawNotice as _drawNotice
 } from './shadow_ui_notice.mjs';
+/* The slot buses, in two halves. The MODEL is shared/ and pure — every parser
+ * and row rule lives there so tests/host can run it under node — and the VIEWS
+ * are a sibling shadow module, which cannot be imported there because it
+ * resolves its own imports from /data/UserData/schwung. Two namespaces on
+ * purpose: the call site says which half it is using. */
+import * as BusModel from '/data/UserData/schwung/shared/bus_model.mjs';
+import * as BusViews from './shadow_ui_buses.mjs';
 import {
     drawChainSettings as _drawChainSettings,
     drawGlobalSettings as _drawGlobalSettings
@@ -487,7 +495,14 @@ const VIEWS = {
     COMPONENT_LOADING: "comploading",         // "Loading..." while a component's contract arrives
     MODULE_LISTS: "modulelists",             // Checkbox screen: which lists hold this module
     MODULE_LISTS_EDIT: "modulelistsedit",    // The list of lists, for management
-    MODULE_LISTS_ACTIONS: "modulelistsact"   // Rename / Delete / Clear for one list
+    MODULE_LISTS_ACTIONS: "modulelistsact",  // Rename / Delete / Clear for one list
+    /* The slot buses, which hang BELOW the synth box rather than along the
+     * chain row. BUS_CHAIN hosts its own module picker (selectingBusModule)
+     * the way MASTER_FX does, rather than taking a view of its own. */
+    BUS_LIST: "buslist",                     // This slot's buses, Main and New Bus
+    BUS_ACTIONS: "busactions",               // One bus: voices, inserts, sends, rename, delete
+    BUS_VOICES: "busvoices",                 // Multi-select over the synth's split_voices
+    BUS_CHAIN: "buschain"                    // One bus's 8-position insert chain
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -3371,6 +3386,328 @@ function drawFxBusPicker() {
      * drops a pair that does not fit along with every pair after it, so the
      * primary action goes FIRST. */
     drawFooter(["Click: open", "Back: exit"]);
+}
+
+/* ==========================================================================
+ * SLOT BUSES — the screens that hang BELOW the synth box
+ *
+ * Down on the synth box opens this slot's bus list; Down on a bus row opens
+ * that bus's 8-position insert chain. Everything drawn lives in
+ * shadow_ui_buses.mjs; what lives here is the state, the reads and the
+ * gestures — the same split every other view module in this directory has.
+ *
+ * THE AFFORDANCE IS A READ, and the read has three answers. A slot whose synth
+ * publishes no `split_voices` offers NOTHING: no footer hint (the cached read
+ * below is what the chain editor asks) and no screen (handleChainEditDown
+ * returns without changing the view). A read that did not COMPLETE is not that
+ * answer — it opens the list in its waiting state and retries, because a
+ * failed read is not news about the module.
+ * ========================================================================== */
+
+let busSlot = -1;              /* which slot's buses are open */
+/* null until a read has ANSWERED. A failed read leaves the previous value in
+ * place — it empties nothing and latches nothing — so this is only ever
+ * assigned from a resolved parse. */
+let busConfig = null;
+let busVoices = null;          /* {unresolved, voices[]} — same rule */
+let busListIndex = 0;
+let busActionsRow = -1;        /* index into busListRows(), not a bus index:
+                                * Main is a row and is not a bus */
+let busActionsIndex = 0;
+let busActionsEditing = false;
+let busConfirmingDelete = false;
+let busConfirmIndex = 0;
+let busVoicesBus = -1;
+let busVoicesIndex = 0;
+let busChainBus = -1;
+let busChainPos = 0;
+let selectingBusModule = false;
+let busPickerItems = [];
+let busPickerIndex = 0;
+
+/* Ticks between retries while a bus read has not answered. The bus screens are
+ * not the knob grid — nothing here reads per frame — so this is the only thing
+ * that keeps asking, and it must keep asking or a stalled channel would leave
+ * the waiting screen up for good. */
+const BUS_RETRY_INTERVAL = 20;
+let _busRetryTickCounter = 0;
+
+/* The primitive set the chain diagram and its bands draw through — the same
+ * object drawChainEdit builds. Probed, because the harness and older host
+ * builds do not have every one of them. */
+function busMovyCtx() {
+    return {
+        fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
+        line: typeof draw_line === "function" ? draw_line : undefined,
+        fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
+        drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+        drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+    };
+}
+
+/* One GET for the whole slot: every bus, positional, plus Main's send levels.
+ * Returns true when it ANSWERED. */
+function refreshBusConfig() {
+    if (busSlot < 0) return false;
+    const parsed = BusModel.parseBusesConfig(getSlotParam(busSlot, "buses:config"));
+    if (parsed.unresolved) return false;
+    busConfig = parsed;
+    return true;
+}
+
+function refreshBusVoices() {
+    if (busSlot < 0) return false;
+    const parsed = BusModel.parseSplitVoices(getSlotParam(busSlot, "synth:split_voices"));
+    if (parsed.unresolved) return false;
+    busVoices = parsed;
+    return true;
+}
+
+/* Both reads, for the retry tick and after a write. Kept as one call so a
+ * screen can never be redrawn from a config that has moved on without the
+ * voice list that resolves its ids. */
+function refreshBuses() {
+    const a = refreshBusConfig();
+    const b = refreshBusVoices();
+    return a && b;
+}
+
+function busRowsNow() {
+    return BusModel.busListRows(busConfig, getModuleAbbrev);
+}
+
+/*
+ * Open the bus list for `slot`.
+ *
+ * `voices` is the read the CALLER already made — the gesture reads it to decide
+ * whether there is an affordance at all, and re-reading it here would be a
+ * second ~2.8ms round trip for an answer we hold. Pass null and it is read.
+ */
+function enterBusList(slot, voices) {
+    if (busSlot !== slot) { busConfig = null; busVoices = null; busListIndex = 0; }
+    busSlot = slot;
+    if (voices && !voices.unresolved) busVoices = voices;
+    else refreshBusVoices();
+    refreshBusConfig();
+    const rows = busRowsNow();
+    busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex));
+    setView(VIEWS.BUS_LIST);
+    needsRedraw = true;
+    const row = rows[busListIndex];
+    if (!row) announce("Buses, reading");
+    else announceMenuItem(BusModel.busRowLabel(row), BusModel.busRowValue(row));
+}
+
+/*
+ * Does the synth in `slot` publish voices to split?
+ *
+ * CACHED (getSlotParamCached, keyed on the loaded module id) because both
+ * callers run per frame — the chain editor's footer and the arrow claim — and
+ * an uncached read there would be ~2.8ms every frame for an answer that cannot
+ * change without a module swap. A failed read is not cached and answers false
+ * HERE, which is the conservative half of the tri-state for a per-frame
+ * question: no hint and no claim for a frame, rather than a hint for a module
+ * that may not split. The DECISION, in handleChainEditDown, reads uncached.
+ */
+function chainSynthSplits(slot) {
+    const cfg = chainConfigs[slot];
+    const mid = cfg && cfg.synth && cfg.synth.module;
+    if (!mid) return false;
+    const sv = BusModel.parseSplitVoices(getSlotParamCached(slot, "synth:split_voices", mid));
+    return !sv.unresolved && sv.voices.length > 0;
+}
+
+/*
+ * Whether the DOWN arrow should be taken from Move THIS FRAME.
+ *
+ * Up and down are Move's octave shift, so the claim is as narrow as the
+ * gesture: the chain editor with the cursor on a splittable synth, and the bus
+ * list with the cursor on a bus. Everywhere else the arrow stays Move's — which
+ * is also what makes criterion "a module that cannot split shows no bus
+ * affordance" true of the ARROW and not only of the screen.
+ */
+function navDownWanted() {
+    if (view === VIEWS.BUS_LIST) {
+        const row = busRowsNow()[busListIndex];
+        return !!(row && row.kind === "bus");
+    }
+    if (view !== VIEWS.CHAIN_EDIT) return false;
+    const comps = slotChainComponents(selectedSlot);
+    const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
+    if (!comp || comp.kind !== "synth") return false;
+    return chainSynthSplits(selectedSlot);
+}
+
+/* The chain editor's resting footer with its third pair replaced. Declared
+ * beside the rule that uses it, not in chain_editor_chrome.mjs: Master FX draws
+ * from that file too and has no buses to descend into. */
+const CHAIN_HINTS_SYNTH_BUS = Object.freeze(
+    [["JOG", "SEL"], ["CLK", "OPEN"], ["DN", "BUS"]]);
+
+let _navDownClaimed = 0;
+
+/* Push the claim down to the shim, on CHANGE only: the byte is read every SPI
+ * frame, so re-writing the same value would be a pointless call per tick. */
+function reconcileNavClaim() {
+    let want = 0;
+    try { want = navDownWanted() ? 1 : 0; } catch (e) { want = 0; }
+    if (want === _navDownClaimed) return;
+    _navDownClaimed = want;
+    if (typeof host_nav_down_claim === "function") host_nav_down_claim(want);
+}
+
+/* Down on the chain editor's synth box. The ONE decision point for whether
+ * this slot has buses at all — see the block comment above. */
+function handleChainEditDown() {
+    const comps = slotChainComponents(selectedSlot);
+    const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
+    if (!comp || comp.kind !== "synth") return false;
+    const sv = BusModel.parseSplitVoices(getSlotParam(selectedSlot, "synth:split_voices"));
+    /* SERVED AND EMPTY: this module cannot split. No row, no hint, no screen. */
+    if (!sv.unresolved && sv.voices.length === 0) return false;
+    enterBusList(selectedSlot, sv);
+    return true;
+}
+
+/* Down on a bus row of the list, and Inserts from the bus menu: the bus's own
+ * 8 positions. */
+function enterBusChain(busIndex) {
+    busChainBus = busIndex;
+    busChainPos = 0;
+    selectingBusModule = false;
+    setView(VIEWS.BUS_CHAIN);
+    needsRedraw = true;
+    const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busIndex] : null;
+    announce(bus ? `${bus.name} inserts` : "Inserts");
+}
+
+function enterBusVoices(busIndex) {
+    busVoicesBus = busIndex;
+    busVoicesIndex = 0;
+    refreshBuses();
+    setView(VIEWS.BUS_VOICES);
+    needsRedraw = true;
+    announce("Voices");
+}
+
+function enterBusActions(rowIndex) {
+    busActionsRow = rowIndex;
+    busActionsIndex = 0;
+    busActionsEditing = false;
+    busConfirmingDelete = false;
+    setView(VIEWS.BUS_ACTIONS);
+    needsRedraw = true;
+    const row = busRowsNow()[rowIndex];
+    announce(row ? row.name : "Bus");
+}
+
+/* The key a row's send level is written to. Main's levels are the SLOT's, under
+ * "buses:main_sendN"; a bus's are its own. One place, because the two spellings
+ * differing at four call sites is how a level silently edits the wrong bus. */
+function busSendKey(row, which) {
+    const n = which === "send2" ? 2 : 1;
+    if (!row || row.kind === "main") return `buses:main_send${n}`;
+    return `bus${row.index + 1}:send${n}`;
+}
+
+function writeBusSend(row, which, value) {
+    const v = Math.max(0, Math.min(BusModel.SEND_LEVEL_MAX, Math.round(value)));
+    setSlotParam(busSlot, busSendKey(row, which), String(v));
+    /* The config is the model AND the display, so re-read rather than patch it
+     * locally: the DSP clamps, and a screen showing a value the DSP refused is
+     * the same lie as a cached failed read. */
+    refreshBusConfig();
+    needsRedraw = true;
+    return v;
+}
+
+function busCreate() {
+    const free = BusModel.firstFreeBus(busConfig);
+    if (free < 0) { announce("No free bus"); return; }
+    setSlotParam(busSlot, `bus${free + 1}:create`, "1");
+    refreshBusConfig();
+    const rows = busRowsNow();
+    const at = rows.findIndex((r) => r.kind === "bus" && r.index === free);
+    if (at >= 0) busListIndex = at;
+    needsRedraw = true;
+    announce("Bus created");
+}
+
+function busDelete(busIndex) {
+    setSlotParam(busSlot, `bus${busIndex + 1}:delete`, "1");
+    refreshBusConfig();
+    const rows = busRowsNow();
+    busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex));
+    setView(VIEWS.BUS_LIST);
+    needsRedraw = true;
+    announce("Bus deleted");
+}
+
+/*
+ * Toggle one voice's membership of `busVoicesBus`.
+ *
+ * A voice renders into exactly ONE buffer, so adding it here also removes it
+ * from whichever other bus held it — two writes rather than one, and the other
+ * bus is written FIRST so there is no frame in which the id is listed twice.
+ */
+function busToggleVoice(row) {
+    if (!row || busVoicesBus < 0) return;
+    const adding = !row.mine;
+    /* BLOCKING, because this is a discrete multi-field commit: under co-run
+     * shadow_set_param is fire-and-forget over ONE shared SHM slot, so the
+     * second write clobbers the first before the host drains it — and the two
+     * halves of a move are exactly a pair that must both land, or the voice is
+     * listed on two buses or on none. Same reason the LFO target/param pair
+     * uses it. */
+    if (adding) {
+        for (const w of BusModel.voiceMoveWrites(busConfig, busVoicesBus, row.id))
+            shadowSetParamBlocking(busSlot, `bus${w.bus + 1}:voices`, w.ids.join(","));
+    }
+    const ids = BusModel.toggledVoiceIds(busConfig, busVoicesBus, row.id);
+    shadowSetParamBlocking(busSlot, `bus${busVoicesBus + 1}:voices`, ids.join(","));
+    refreshBusConfig();
+    needsRedraw = true;
+    announceMenuItem(row.label, adding ? "added" : "removed");
+}
+
+function enterBusModuleSelect() {
+    /* The audio-FX scan the slot chain and Master FX both use. No Move Left /
+     * Move Right rows: the chain host serves no bus insert/remove/move verb, so
+     * offering them would be a row that answers a click by doing nothing. */
+    busPickerItems = scanModulesForType("fx1");
+    const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
+    const comps = BusModel.busChainComponents(bus ? bus.fx : []);
+    const comp = comps[busChainPos];
+    const loadedId = comp && comp.module;
+    const at = loadedId ? busPickerItems.findIndex((m) => m.id === loadedId) : -1;
+    busPickerIndex = at >= 0 ? at : 0;
+    selectingBusModule = true;
+    needsRedraw = true;
+    announce("Select module");
+}
+
+function busChainPositionIndex() {
+    const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
+    const comps = BusModel.busChainComponents(bus ? bus.fx : []);
+    const comp = comps[busChainPos];
+    if (!comp) return -1;
+    /* The `+` box IS the next free position — it has no index of its own, so it
+     * is resolved to one here rather than materialised in a model the DSP has
+     * never heard of. */
+    if (comp.kind === "add") return comps.length - 1;
+    return comp.index;
+}
+
+function busPickModule() {
+    const k = busChainPositionIndex();
+    if (k < 0 || k >= BusModel.BUS_FX_SLOTS) { selectingBusModule = false; return; }
+    const item = busPickerItems[busPickerIndex];
+    if (!item) { selectingBusModule = false; return; }
+    setSlotParam(busSlot, `bus${busChainBus + 1}:fx${k + 1}:module`, item.id || "none");
+    selectingBusModule = false;
+    refreshBusConfig();
+    needsRedraw = true;
+    announceMenuItem("Module", item.name || item.id || "None");
 }
 
 /* The FX bus chain the editor is pointing at. One section, no synth, addressed
@@ -18249,6 +18586,65 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.PRESET_DETAIL:
             handlePresetDetailJog(delta);
             break;
+        case VIEWS.BUS_LIST: {
+            const rows = busRowsNow();
+            busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex + delta));
+            const row = rows[busListIndex];
+            if (row) announceMenuItem(BusModel.busRowLabel(row), BusModel.busRowValue(row));
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.BUS_ACTIONS: {
+            const row = busRowsNow()[busActionsRow];
+            const items = BusModel.busActionItems(row);
+            if (busConfirmingDelete) {
+                /* WHATEVER IS DRAWN LAST IS FED FIRST: the confirm is painted
+                 * over this menu, so it takes the jog before the menu sees it. */
+                busConfirmIndex = busConfirmIndex === 0 ? 1 : 0;
+                announce(busConfirmIndex === 0 ? "No" : "Yes");
+                needsRedraw = true;
+            } else if (busActionsEditing) {
+                /* A level, not a cursor. Four per detent — 127 detents for a
+                 * full sweep is a control nobody rides. */
+                const item = items[busActionsIndex];
+                if (item && item.type === "int") {
+                    const now = BusModel.busSendValue(row, item.id);
+                    const next = writeBusSend(row, item.id, now + delta * BusModel.SEND_LEVEL_STEP);
+                    announceParameter(item.label, String(next));
+                }
+            } else {
+                busActionsIndex = Math.max(0, Math.min(items.length - 1, busActionsIndex + delta));
+                const item = items[busActionsIndex];
+                if (item) announceMenuItem(item.label,
+                    item.type === "int" ? String(BusModel.busSendValue(row, item.id)) : "");
+            }
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.BUS_VOICES: {
+            const rows = BusModel.voiceRows(busConfig, busVoices ? busVoices.voices : [], busVoicesBus);
+            busVoicesIndex = Math.max(0, Math.min(rows.length - 1, busVoicesIndex + delta));
+            const row = rows[busVoicesIndex];
+            if (row) announceMenuItem(row.label, BusModel.voiceRowValue(row, busConfig));
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.BUS_CHAIN: {
+            if (selectingBusModule) {
+                busPickerIndex = Math.max(0, Math.min(busPickerItems.length - 1,
+                                                      busPickerIndex + delta));
+                const m = busPickerItems[busPickerIndex];
+                if (m) announceMenuItem("Module", m.name || m.id || "None");
+            } else {
+                const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
+                const comps = BusModel.busChainComponents(bus ? bus.fx : []);
+                busChainPos = Math.max(0, Math.min(comps.length - 1, busChainPos + delta));
+                const comp = comps[busChainPos];
+                if (comp) announceMenuItem(comp.label, comp.module || "Empty");
+            }
+            needsRedraw = true;
+            break;
+        }
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
             {
@@ -18555,6 +18951,57 @@ function handleSelect() {
             break;
         case VIEWS.FX_BUS_PICKER:
             enterFxBus(selectedFxBusRow);
+            break;
+        case VIEWS.BUS_LIST: {
+            const rows = busRowsNow();
+            const row = rows[busListIndex];
+            if (!row) break;
+            if (row.kind === "new") busCreate();
+            else enterBusActions(busListIndex);
+            break;
+        }
+        case VIEWS.BUS_ACTIONS: {
+            const row = busRowsNow()[busActionsRow];
+            const items = BusModel.busActionItems(row);
+            /* The confirm is fed FIRST, before the row under it is even looked
+             * up — it is what the screen is showing. */
+            if (busConfirmingDelete) {
+                if (busConfirmIndex === 1 && row && row.kind === "bus") busDelete(row.index);
+                else { busConfirmingDelete = false; needsRedraw = true; }
+                break;
+            }
+            const item = items[busActionsIndex];
+            if (!item) break;
+            if (item.type === "int") { busActionsEditing = !busActionsEditing; needsRedraw = true; }
+            else if (item.id === "voices") enterBusVoices(row.index);
+            else if (item.id === "chain") enterBusChain(row.index);
+            else if (item.id === "rename") {
+                openTextEntry({
+                    title: "Bus Name",
+                    initialText: row.name,
+                    onAnnounce: announce,
+                    onConfirm: (name) => {
+                        setSlotParam(busSlot, `bus${row.index + 1}:name`, String(name || ""));
+                        refreshBusConfig();
+                        needsRedraw = true;
+                    }
+                });
+            } else if (item.id === "delete") {
+                busConfirmingDelete = true;
+                busConfirmIndex = 0;
+                needsRedraw = true;
+                announce("Delete bus?");
+            }
+            break;
+        }
+        case VIEWS.BUS_VOICES: {
+            const rows = BusModel.voiceRows(busConfig, busVoices ? busVoices.voices : [], busVoicesBus);
+            busToggleVoice(rows[busVoicesIndex]);
+            break;
+        }
+        case VIEWS.BUS_CHAIN:
+            if (selectingBusModule) busPickModule();
+            else enterBusModuleSelect();
             break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
@@ -19623,6 +20070,35 @@ function handleBack() {
                 shadow_request_exit();
             }
             break;
+        case VIEWS.BUS_LIST:
+            /* Back up to the chain editor the Down came from — the level
+             * above, as every other list here does. */
+            setView(VIEWS.CHAIN_EDIT);
+            needsRedraw = true;
+            announce("Chain Editor");
+            break;
+        case VIEWS.BUS_ACTIONS:
+            if (busConfirmingDelete) { busConfirmingDelete = false; needsRedraw = true; break; }
+            if (busActionsEditing) { busActionsEditing = false; needsRedraw = true; break; }
+            setView(VIEWS.BUS_LIST);
+            needsRedraw = true;
+            announce("Buses");
+            break;
+        case VIEWS.BUS_VOICES:
+            setView(VIEWS.BUS_ACTIONS);
+            needsRedraw = true;
+            announce("Bus");
+            break;
+        case VIEWS.BUS_CHAIN:
+            if (selectingBusModule) { selectingBusModule = false; needsRedraw = true; break; }
+            /* A bus chain opened from the LIST (Down on a row) and one opened
+             * from the bus menu both return to where they came from, and the
+             * menu row is what says which: busActionsRow is only set by
+             * enterBusActions. */
+            setView(busActionsRow >= 0 ? VIEWS.BUS_ACTIONS : VIEWS.BUS_LIST);
+            needsRedraw = true;
+            announce(busActionsRow >= 0 ? "Bus" : "Buses");
+            break;
         case VIEWS.COMPONENT_SELECT:
             /* Return to chain edit. A picker opened from a `+` box leaves with
              * the position it materialised — and with the RECORD of it, which
@@ -20246,8 +20722,20 @@ function drawChainEdit() {
         headerRight,
         label,
         info: infoLine,
+        /*
+         * The third pair NAMES THE BUS DESCENT when the cursor is on a synth
+         * that can split, because Down is otherwise an undiscoverable gesture.
+         * It REPLACES Back rather than being added: three pairs is what fits,
+         * drawFooter drops a fourth silently, and Back means the same thing on
+         * every screen while this is news about the cell under the cursor.
+         *
+         * A synth that cannot split is byte-identical to before — which is what
+         * makes "no bus affordance at all" checkable as a pixel hash rather
+         * than as a claim.
+         */
         hints: isShiftHeld() ? shiftHintsFor(selectedComp)
-                             : CHAIN_HINTS_AT_REST,
+             : (selectedComp && selectedComp.kind === "synth" && chainSynthSplits(selectedSlot)
+                ? CHAIN_HINTS_SYNTH_BUS : CHAIN_HINTS_AT_REST),
     });
 
     /*
@@ -20756,6 +21244,37 @@ function drawHelpDetail() {
      * view module draws its diagram markers from the SAME code the slot chain
      * editor does, so an LFO marker or a bypass "B" cannot appear on one
      * screen and not the other. */
+    /* ---- SLOT BUSES ----------------------------------------------------
+     * Everything shadow_ui_buses.mjs draws from. Getters rather than a
+     * snapshot, for the same reason MASTER_FX_CHAIN_COMPONENTS is one: every
+     * one of these changes under a gesture, and a value captured at init would
+     * draw the state the UI had when it started. */
+    _ctx.clearScreen = () => clear_screen();
+    _ctx.print = (...args) => print(...args);
+    _ctx.movyCtx = () => busMovyCtx();
+    _ctx.getModuleAbbrev = (m) => getModuleAbbrev(m);
+    _ctx.slotLabel = () => `S${selectedSlot + 1}`;
+    /* Read-only, and spelled out one by one: a loop over names would have to
+     * reach these module-scoped `let`s through `new Function`, which evaluates
+     * in GLOBAL scope and would see none of them. The module draws, this file
+     * decides — a setter here would be a second place a gesture can change the
+     * state, which is what the view-module split exists to prevent. */
+    Object.defineProperty(_ctx, 'busConfig', { get() { return busConfig; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busVoices', { get() { return busVoices; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busListIndex', { get() { return busListIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busActionsRow', { get() { return busActionsRow; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busActionsIndex', { get() { return busActionsIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busActionsEditing', { get() { return busActionsEditing; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busConfirmingDelete', { get() { return busConfirmingDelete; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busConfirmIndex', { get() { return busConfirmIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busVoicesBus', { get() { return busVoicesBus; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busVoicesIndex', { get() { return busVoicesIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busChainBus', { get() { return busChainBus; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busChainPos', { get() { return busChainPos; }, enumerable: true });
+    Object.defineProperty(_ctx, 'selectingBusModule', { get() { return selectingBusModule; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busPickerItems', { get() { return busPickerItems; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busPickerIndex', { get() { return busPickerIndex; }, enumerable: true });
+
     _ctx.MASTER_CHAIN_TARGET = MASTER_CHAIN_TARGET;
     _ctx.chainLfoTargetMap = (...args) => chainLfoTargetMap(...args);
     _ctx.chainComponentBypassed = (...args) => chainComponentBypassed(...args);
@@ -22102,6 +22621,10 @@ function dispatchCoRunDraw() {
         case VIEWS.SLOTS:                drawSlots(); break;
         case VIEWS.MASTER_FX:            drawMasterFx(); break;
         case VIEWS.FX_BUS_PICKER:        drawFxBusPicker(); break;
+        case VIEWS.BUS_LIST:             BusViews.drawBusList(); break;
+        case VIEWS.BUS_ACTIONS:          BusViews.drawBusActions(); break;
+        case VIEWS.BUS_VOICES:           BusViews.drawBusVoices(); break;
+        case VIEWS.BUS_CHAIN:            BusViews.drawBusChain(); break;
         case VIEWS.GLOBAL_SETTINGS:      drawGlobalSettings(); break;
         case VIEWS.CHAIN_EDIT:           drawChainEdit(); break;
         case VIEWS.PATCHES:              drawPatches(); break;
@@ -22337,6 +22860,32 @@ globalThis.tick = function() {
     if (++_voiceFollowTickCounter >= VOICE_FOLLOW_CHECK_INTERVAL) {
         _voiceFollowTickCounter = 0;
         try { syncHierEditorVoice(); } catch (e) { debugLog("syncHierEditorVoice error: " + e); }
+    }
+
+    /*
+     * A bus read that did not COMPLETE is asked again. This is the only thing
+     * that keeps asking — the bus screens read on entry and after a write, not
+     * per frame — so without it a single stalled channel would leave the
+     * waiting screen up until the user backed out and came in again. It costs
+     * nothing once the reads have answered, and nothing at all off these
+     * screens.
+     */
+    /* Every tick, and unthrottled: the claim follows the CURSOR, so a throttle
+     * would leave the arrow with the wrong owner for the frames right after a
+     * jog — which is exactly when Down is pressed. It costs one cached param
+     * read (TTL 500 ms) on the chain editor's synth box and nothing anywhere
+     * else, and only calls into the shim when the answer CHANGES. */
+    reconcileNavClaim();
+
+    if (view === VIEWS.BUS_LIST || view === VIEWS.BUS_ACTIONS ||
+        view === VIEWS.BUS_VOICES || view === VIEWS.BUS_CHAIN) {
+        if (!busConfig || !busVoices) {
+            if (++_busRetryTickCounter >= BUS_RETRY_INTERVAL) {
+                _busRetryTickCounter = 0;
+                try { if (refreshBuses()) needsRedraw = true; }
+                catch (e) { debugLog("refreshBuses error: " + e); }
+            }
+        }
     }
 
     /* Draw upgrade overlay if active (takes priority over normal UI) */
@@ -23340,6 +23889,18 @@ globalThis.tick = function() {
         case VIEWS.FX_BUS_PICKER:
             drawFxBusPicker();
             break;
+        case VIEWS.BUS_LIST:
+            BusViews.drawBusList();
+            break;
+        case VIEWS.BUS_ACTIONS:
+            BusViews.drawBusActions();
+            break;
+        case VIEWS.BUS_VOICES:
+            BusViews.drawBusVoices();
+            break;
+        case VIEWS.BUS_CHAIN:
+            BusViews.drawBusChain();
+            break;
         case VIEWS.CHAIN_EDIT:
             drawChainEdit();
             break;
@@ -24115,6 +24676,35 @@ globalThis.onMidiMessageInternal = function(data) {
         }
         if (d1 === MoveBack && d2 > 0) {
             handleBack();
+            return;
+        }
+
+        /*
+         * DOWN — the one gesture that reaches sideways out of the chain row.
+         *
+         * The chain row is horizontal and a slot's buses hang below its synth,
+         * so Down is what descends into them: on the synth box it opens the bus
+         * list, on a bus row it opens that bus's inserts. Anywhere else in
+         * either screen it does nothing, which is what leaves Move's own use of
+         * the arrow untouched everywhere Schwung has no answer for it.
+         *
+         * The shim only forwards CC 54 while `nav_claim` is up, and it is up
+         * only for the frames one of these two screens can act on it — see
+         * reconcileNavClaim.
+         */
+        if (d1 === MoveDown && d2 > 0) {
+            if (view === VIEWS.CHAIN_EDIT) { handleChainEditDown(); return; }
+            if (view === VIEWS.BUS_LIST) {
+                const rows = busRowsNow();
+                const row = rows[busListIndex];
+                if (row && row.kind === "bus") {
+                    /* Opened from the LIST, so Back comes back to the list —
+                     * busActionsRow is what drawBusChain's Back branches on. */
+                    busActionsRow = -1;
+                    enterBusChain(row.index);
+                }
+                return;
+            }
             return;
         }
 

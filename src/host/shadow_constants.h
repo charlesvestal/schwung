@@ -420,6 +420,27 @@ typedef struct shadow_control_t {
      * writes features.json and JS pushes it back down at startup.
      */
     volatile uint8_t save_stems;
+
+    /*
+     * 1 = the shadow UI wants the DOWN arrow (CC 54) for itself this frame.
+     *
+     * The arrow is Move's octave shift and is deliberately let through while
+     * the shadow UI is up ("let up/down through for octave" — the non-overtake
+     * filter branch in schwung_shim.c). A slot's buses hang below the synth box
+     * and Down is what descends into them, so exactly two screens need it: the
+     * chain editor with the cursor on a splittable synth, and the bus list with
+     * the cursor on a bus. This byte is raised for those and lowered otherwise,
+     * so Move keeps the octave shift everywhere else.
+     *
+     * A CLAIM rather than a mode: the decision is the cursor's, it changes on
+     * a jog, and the shim cannot see either. `pad_block` is the same shape for
+     * the same reason.
+     *
+     * APPENDED, like everything above it since stay_in_shadow: sizeof is a
+     * contract between two binaries and schwung-manager reads stay_in_shadow at
+     * a RAW offset (shmconfig.go). Appending is free; inserting is not.
+     */
+    volatile uint8_t nav_down_claim;
 } shadow_control_t;
 
 /* Values for shadow_control_t.save_stems. */

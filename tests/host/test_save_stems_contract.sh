@@ -122,11 +122,20 @@ check(moveIdx === slots,
         const fields = [...body[1].matchAll(/volatile\s+\w+\s+(\w+)\s*(\[[^\]]*\])?\s*;/g)]
             .map(m => m[1]);
         check(fields.includes("save_stems"), "save_stems is not a field of shadow_control_t");
-        check(fields[fields.length - 1] === "save_stems",
-            "save_stems is not the LAST field of shadow_control_t (last is " +
-            JSON.stringify(fields[fields.length - 1]) + ") — appending is free, " +
-            "inserting moves every field behind it and schwung-manager reads one " +
-            "at a raw offset");
+        /* AFTER stay_in_shadow, not LAST. The claim this pins is that save_stems
+         * was APPENDED — that nothing was inserted ahead of the field
+         * schwung-manager reads at a raw offset. "Last" said that too until
+         * somebody appended the next field (nav_down_claim), which is the
+         * sanctioned move and made this fail for doing the right thing. What
+         * must never happen is a field appearing BEFORE stay_in_shadow. */
+        const atStay = fields.indexOf("stay_in_shadow");
+        const atStems = fields.indexOf("save_stems");
+        check(atStay >= 0, "stay_in_shadow is gone from shadow_control_t");
+        check(atStems > atStay,
+            "save_stems is at " + atStems + " and stay_in_shadow at " + atStay +
+            " — save_stems must sit AFTER it: appending is free, inserting moves " +
+            "every field behind it and schwung-manager reads stay_in_shadow at a " +
+            "raw offset");
     }
 }
 

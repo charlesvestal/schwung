@@ -3985,6 +3985,15 @@ static void shadow_check_screenreader(void)
 static int snapshot_gesture_swallow[2] = {0, 0};
 
 /*
+ * The same latch for the DOWN arrow, which the shadow UI claims for the bus
+ * screens (shadow_control->nav_down_claim). Set when a press is swallowed from
+ * Move, consumed by the matching release — because the claim is often lowered
+ * BY that press (the UI changes screen) and a release re-tested against it
+ * would reach Move as a button-up for a key Move never saw go down.
+ */
+static int nav_down_swallow = 0;
+
+/*
  * Recall Quantize, in MIDI clock pulses. 0 = Off.
  *
  * Read from shadow_control every time it is needed rather than cached, so a
@@ -7180,6 +7189,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     uint8_t *sh_midi = shadow + MIDI_IN_OFFSET;
     int overtake_mode = shadow_control ? shadow_control->overtake_mode : 0;
 
+    /*
+     * The shadow UI's claim on the DOWN arrow, sampled ONCE for the whole
+     * frame.
+     *
+     * Two sites read it — the filter loop that keeps the press from Move, and
+     * the forward loop that hands it to the shadow UI — and they are ~1300
+     * lines apart in this function. shadow_ui writes the byte from another
+     * process, so reading it twice lets the two disagree about the SAME press:
+     * lowered in between and the press is swallowed and delivered nowhere;
+     * raised in between and both Move and the UI act on it. One read makes the
+     * two decisions one decision.
+     */
+    const int nav_down_claimed = (shadow_control && shadow_control->nav_down_claim) ? 1 : 0;
+
     /* Detect overtake mode exit and inject button releases into Move's MIDI_IN.
      * During overtake, all cable-0 MIDI is filtered from reaching Move firmware,
      * so if the user released Shift or the volume knob touch while in overtake,
@@ -7484,6 +7507,32 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (cin == 0x0B && type == 0xB0) {
                         if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
                             filter = 1;
+                        }
+                        /*
+                         * DOWN, but only while the shadow UI has CLAIMED it.
+                         *
+                         * Up and down are Move's octave shift and stay Move's
+                         * by default -- the claim is raised for the two screens
+                         * that descend into a slot's buses and lowered again
+                         * the moment the cursor leaves them.
+                         *
+                         * BOTH EDGES, LATCHED. A press swallowed without its
+                         * release leaves Move a button-up for a key it never
+                         * saw go down, and Move acts on it. The latch is what
+                         * covers a claim lowered between the two edges (the UI
+                         * changes screen on the press), which a re-test of
+                         * nav_down_claim on the release would not.
+                         */
+                        if (d1 == CC_DOWN) {
+                            if (d2 > 0) {
+                                if (nav_down_claimed) {
+                                    nav_down_swallow = 1;
+                                    filter = 1;
+                                }
+                            } else if (nav_down_swallow) {
+                                filter = 1;
+                                nav_down_swallow = 0;
+                            }
                         }
                         /* Filter Menu unless long-press mode dismisses shadow on tap */
                         if (d1 == CC_MENU && !LONG_PRESS_ACTIVE()) {
@@ -8756,9 +8805,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - CC 40-43 (track buttons)
                  * - CC 71-78 (knobs)
                  * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass */
+                /* CC 54 (Down) only while the shadow UI has claimed it — the
+                 * same FRAME-SAMPLED value the swallow above used (see
+                 * nav_down_claimed), so the arrow cannot be taken from Move
+                 * without being delivered here, nor delivered here while Move
+                 * still acts on it. */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
                                          (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
-                                         d1 == 88);
+                                         d1 == 88 ||
+                                         (d1 == CC_DOWN && nav_down_claimed));
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);

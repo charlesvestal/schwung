@@ -993,6 +993,68 @@ persistence), `test_sampler_stem_path.c` (filename derivation),
 `test_global_settings_contract.sh` (the section counts, and that Audio stays one
 page while holding more than a grid page could).
 
+### The slot BUS screens, and the arrow they had to borrow
+
+Down on the chain editor's synth box opens the slot's bus list; Down on a bus
+row opens that bus's 8-position insert chain. `src/shared/bus_model.mjs` holds
+every rule (pure, run by `tests/host/test_bus_model.sh`);
+`src/shadow/shadow_ui_buses.mjs` draws them; `shadow_ui.js` owns the state and
+the gestures. Four screens: the list (buses, then Main, then New Bus), one bus's
+menu (Voices / Inserts / Send A / Send B / Rename / Delete — Main gets only the
+two sends, because it has no chain and no name), the voice multi-select, and the
+insert chain with its own module picker.
+
+**The DOWN arrow is Move's, and it is BORROWED one cursor position at a time.**
+Up and down shift Move's octave and the shim let them through on purpose ("let
+up/down through for octave"). Taking Down outright would cost that everywhere
+the shadow UI is up, and asymmetrically — Up would still work. So
+`shadow_control_t.nav_down_claim` is raised by the UI only while a screen can
+act on the arrow (the chain editor on a splittable synth cell, the bus list on a
+bus row) and lowered otherwise; the shim uses the SAME byte to decide both
+whether to forward CC 54 to the shadow UI and whether to swallow it from Move,
+and it is sampled ONCE per frame into a local (the two sites are ~1300 lines
+apart in `shim_post_transfer` and shadow_ui writes the byte from another
+process), so the arrow cannot be taken from Move without being delivered here,
+nor delivered here while Move still acts on it. `pad_block` is the same shape for
+the same reason: the decision is the cursor's, and the shim cannot see a cursor.
+The swallow is **latched across both edges** — the press usually changes the
+screen and therefore lowers the claim, so a release re-tested against it would
+reach Move as a button-up for a key Move never saw go down.
+
+**A slot whose synth publishes no `split_voices` shows NOTHING** — no footer
+hint, no claimed arrow, no screen. That is checkable rather than assertable:
+every pre-existing case in `tests/fixtures/chain-editor-baseline.txt` is
+byte-identical after this feature, because the harness's slot states leave the
+key unset and an unset key reads `""`. The footer hint that DOES appear on a
+splittable synth replaces `BACK EXIT` with `DN BUS` rather than adding a fourth
+pair, which `drawFooter` would drop silently.
+
+**`null` from `synth:split_voices` is not "cannot split".** `chain_host.c`
+clamps a plugin's -1 to `""` in its `split_voices` branch precisely so the two
+cannot collide, which makes a `null` here a real channel failure: the list opens
+in a waiting state and the tick retries. `busConfig` and `busVoices` are only
+ever assigned from a RESOLVED parse, so a failed read empties nothing and
+latches nothing.
+
+**Orphans are shown, in three places.** A bus stores voice IDS and retains the
+ones that no longer resolve (`bus<N>:orphans`, and `orphans` in
+`buses:config`). The list marks such a bus `Kick !`, the bus menu carries the
+count in its header, and the voice screen lists every unresolved id as its own
+row marked `!` — the only way to clear one. Every write to `bus<N>:voices` is a
+whole-list replace, so `toggledVoiceIds` CARRIES the orphans: a list rebuilt
+from the resolvable voices alone would erase exactly what the count reports.
+
+**A voice renders into one buffer**, so adding it to a bus removes it from
+whichever other bus holds it — two writes, and both through
+`shadowSetParamBlocking`, because under co-run a fire-and-forget pair shares one
+SHM slot and the second clobbers the first.
+
+**The list value column is ~11 characters and carries three facts.** Insert
+summary plus both send levels: past two inserts the summary becomes a COUNT
+(`3 FX`), because a third abbreviation pushed both levels off the row — seen in
+the render, not reasoned about. `valueX` is 52 rather than the default 92 for
+the same reason; the eight-character label floor still protects the bus name.
+
 ### Snapshot / recall: what it restores, and what it deliberately does not
 
 Shift+Copy snapshots all 4 slots plus all 8 Master FX positions; Shift+Delete

@@ -630,6 +630,23 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
+### Slot buses hang below the synth box — `docs/SHADOW_UI.md`
+
+Down on the synth opens the slot's bus list, Down on a bus row opens that bus's
+8-position insert chain (`src/shared/bus_model.mjs` + `shadow_ui_buses.mjs`).
+
+- **The DOWN arrow is Move's octave shift and is BORROWED one cursor position at
+  a time.** `shadow_control_t.nav_down_claim` gates BOTH the forward to the
+  shadow UI and the swallow from Move, so the arrow can never be taken without
+  being delivered — and the swallow is latched across both edges, because the
+  press is what lowers the claim.
+- **A synth that publishes no `split_voices` shows NOTHING**, and that is a
+  PIXEL fact: every pre-existing `chain-editor-baseline.txt` hash is unmoved.
+  `null` from that read is a channel failure, not "cannot split" — chain_host.c
+  clamps a plugin's -1 to `""` so the two cannot collide.
+- **Orphaned voice ids are shown and are the only thing that can clear them**;
+  every `bus<N>:voices` write is a whole-list replace, so the write CARRIES them.
+
 ### Recording / capture
 
 Audio capture is shim-side: the Quantized Sampler (Shift+Sample) and Skipback
