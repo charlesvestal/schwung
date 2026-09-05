@@ -4,7 +4,7 @@
     {
       "id": 0,
       "subject": "Task 1: `bus_mix.h` \u2014 the routing maths",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** A dependency-free header holding every arithmetic decision the bus render path makes, provable natively.\n\n**Files:**\n- Create: `src/host/bus_mix.h`\n- Create: `tests/host/test_bus_mix.c`\n- Create: `tests/host/test_bus_mix.sh`\n- Modify: `tests/host/Makefile` (add target)\n\n**Acceptance Criteria:**\n- [ ] Two voices assigned to one bus receive the SAME pointer (aliasing is the summing mechanism)\n- [ ] A voice assigned to no bus receives the main pointer\n- [ ] A voice assigned to a bus whose buffer is NULL (not yet allocated) receives the main pointer, not a crash\n- [ ] The active-bus mask names exactly the buses at least one voice targets\n- [ ] Accumulate saturates at +32767 / -32768 rather than wrapping\n- [ ] Send level 0 leaves the destination byte-identical; level 127 is exactly unity\n- [ ] No allocation, no I/O, no locks anywhere in the header\n\n**Verify:** `bash tests/host/test_bus_mix.sh` -> prints `PASS` and exits 0\n\n**Steps:**\n- Step 1: Write the failing test\n- Step 2: Run the test to verify it fails\n- Step 3: Write the implementation\n- Step 4: Write the shell wrapper\n- Step 5: Add the Makefile target\n- Step 6: Run to verify it passes\n- Step 7: Prove the test can fail\n- Step 8: Commit\n\n```json:metadata\n{\"files\": [\"src/host/bus_mix.h\", \"tests/host/Makefile\", \"tests/host/test_bus_mix.c\", \"tests/host/test_bus_mix.sh\"], \"verifyCommand\": \"bash tests/host/test_bus_mix.sh\", \"acceptanceCriteria\": [\"Two voices assigned to one bus receive the SAME pointer (aliasing is the summing mechanism)\", \"A voice assigned to no bus receives the main pointer\", \"A voice assigned to a bus whose buffer is NULL (not yet allocated) receives the main pointer, not a crash\", \"The active-bus mask names exactly the buses at least one voice targets\", \"Accumulate saturates at +32767 / -32768 rather than wrapping\", \"Send level 0 leaves the destination byte-identical; level 127 is exactly unity\", \"No allocation, no I/O, no locks anywhere in the header\"], \"modelTier\": \"mechanical\"}\n```"
     },
     {
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-05T20:55:25.080979"
+  "lastUpdated": "2026-09-05T21:15:26.916135"
 }
