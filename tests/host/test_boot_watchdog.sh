@@ -92,6 +92,78 @@ else
     pass "entering stock creates no boot-attempt stamp"
 fi
 
+# ---- 6. stamp names a DIFFERENT id at count 2 -> not forced for this id ---
+bt_watchdog_clear
+bt_watchdog_enter v > /dev/null
+bt_watchdog_enter v > /dev/null
+if bt_watchdog_forced schwung; then
+    fail "schwung reported forced by a stamp naming a different id (v)"
+else
+    pass "a stamp naming a different id does not force this id"
+fi
+
+# ---- 7. corrupted stamp with glob-metacharacters is survivable ------------
+# `set -- $(cat stamp)` word-splits AND glob-expands the stamp's content, so
+# a torn-write stamp reading "s* 9" with matching decoy filenames in cwd used
+# to make bt_watchdog_forced return true for an unrelated id. Prove it does
+# not depend on cwd content at all: run it from a directory stuffed with
+# names an unquoted "s*" would expand to.
+stamp="$(bt_stamp_file)"
+glob_dir="$fixture/globdir"
+mkdir -p "$glob_dir"
+touch "$glob_dir/s1" "$glob_dir/s2" "$glob_dir/s3"
+printf "s* 9\n" > "$stamp"
+(
+    cd "$glob_dir" || exit 2
+    bt_watchdog_forced schwung
+)
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    pass "corrupted stamp (glob metacharacters) does not force schwung"
+else
+    fail "corrupted stamp (glob metacharacters) forced schwung, rc=$rc"
+fi
+
+# ---- 8. corrupted stamp with a non-numeric count must not abort the shell -
+# `count=$((count + 1))` aborts dash/BusyBox ash outright on a non-numeric
+# operand. Source the library fresh under dash so an abort is visible as a
+# nonzero exit / killed script rather than taking this test process with it.
+printf "x 2x\n" > "$stamp"
+out=$(dash -c '
+    export BOOT_TARGETS_DIR="'"$BOOT_TARGETS_DIR"'"
+    . src/host/boot_target_lib.sh
+    bt_watchdog_enter schwung
+' 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "1" ]; then
+    pass "non-numeric stamp count does not abort the sourcing shell"
+else
+    fail "non-numeric stamp count gave rc=$rc out=[$out], expected rc=0 out=1"
+fi
+
+# ---- 9. empty stamp file -> enter echoes 1 (treated as no prior attempt) --
+: > "$stamp"
+got=$(bt_watchdog_enter schwung)
+[ "$got" = "1" ] && pass "empty stamp file: enter echoes 1" \
+    || fail "empty stamp file: enter echoed [$got], expected 1"
+
+# ---- 10. empty stamp under `set -u`: prev_id/prev_count must be BOUND -----
+# The read-based fix must leave both vars set (possibly empty), never
+# unbound, or a `set -u` sourcing script (this library's own real caller,
+# shim-entrypoint.sh) would abort on the first reference to them.
+: > "$stamp"
+out=$(bash -uc '
+    export BOOT_TARGETS_DIR="'"$BOOT_TARGETS_DIR"'"
+    . src/host/boot_target_lib.sh
+    bt_watchdog_enter schwung
+' 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "1" ]; then
+    pass "empty stamp under bash -u: no unbound variable, enter echoes 1"
+else
+    fail "empty stamp under bash -u gave rc=$rc out=[$out], expected rc=0 out=1"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "FAILED: $fails check(s) did not pass"
     exit 1

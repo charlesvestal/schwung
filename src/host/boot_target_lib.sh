@@ -106,12 +106,23 @@ bt_watchdog_enter() {
     stamp="$(bt_stamp_file)"
     count=0
     if [ -f "$stamp" ]; then
-        # `set --` clobbers positionals, so capture $1 into a named var
-        # (prev_id) before anything else touches them.
-        set -- $(cat "$stamp")
-        prev_id="$1"
-        prev_count="$2"
-        if [ "$prev_id" = "$id" ] && [ -n "$prev_count" ]; then
+        # `read` avoids `set -- $(cat ...)`, which is subject to pathname
+        # expansion and word splitting on the stamp's content (a corrupted
+        # or torn-write stamp must never glob-expand against files in the
+        # caller's cwd). The trailing `_` swallows any extra fields; a read
+        # failure (empty file) must not error under `set -e` callers, hence
+        # the `|| { ... }` fallback that still leaves both vars defined.
+        IFS=' ' read -r prev_id prev_count _ < "$stamp" 2>/dev/null || {
+            prev_id=""
+            prev_count=""
+        }
+        # A non-numeric or empty count must never reach arithmetic: dash and
+        # BusyBox ash abort the whole sourcing shell on `$((...))` with a
+        # non-numeric operand.
+        case "$prev_count" in
+            ''|*[!0-9]*) prev_count=0 ;;
+        esac
+        if [ "$prev_id" = "$id" ] && [ "$prev_count" -gt 0 ]; then
             count="$prev_count"
         fi
     fi
@@ -126,11 +137,18 @@ bt_watchdog_forced() {
     id="$1"
     stamp="$(bt_stamp_file)"
     [ -f "$stamp" ] || return 1
-    # Same `set --` caveat as bt_watchdog_enter: capture $1 (want_id) first.
-    set -- $(cat "$stamp")
-    want_id="$1"
-    want_count="$2"
+    # Same `set --` / glob-expansion hazard as bt_watchdog_enter: read
+    # instead of splitting via `set --`.
+    IFS=' ' read -r want_id want_count _ < "$stamp" 2>/dev/null || {
+        want_id=""
+        want_count=""
+    }
     [ "$want_id" = "$id" ] || return 1
-    [ -n "$want_count" ] || return 1
+    # Validate before arithmetic comparison (belt and braces even though the
+    # 2>/dev/null on `[ -ge ]` already guards a non-numeric operand from
+    # aborting the shell).
+    case "$want_count" in
+        ''|*[!0-9]*) want_count=0 ;;
+    esac
     [ "$want_count" -ge 2 ] 2>/dev/null
 }

@@ -100,6 +100,21 @@ else
     fail "bt_exec_path ghost returned rc=$rc out=[$got], expected rc!=0 and empty"
 fi
 
+# ---- 9. bt_exec_path on a boot.json with a name but no exec field --------
+mkdir -p "$fixture/noexec"
+cat > "$fixture/noexec/boot.json" <<'EOF'
+{
+  "name" : "No Exec Target"
+}
+EOF
+got=$(bt_exec_path noexec)
+rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$got" ]; then
+    pass "bt_exec_path noexec fails with no output"
+else
+    fail "bt_exec_path noexec returned rc=$rc out=[$got], expected rc!=0 and empty"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "FAILED: $fails check(s) did not pass"
     exit 1
