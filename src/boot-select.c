@@ -60,7 +60,7 @@ static inline unsigned bs_iocbuild(unsigned dir, unsigned type, unsigned nr, uns
 #define BS_MAX_ROWS       16
 #define BS_WINDOW_FRAMES  700   /* ~2s at ~2.9ms/frame */
 #define BS_ALARM_SECONDS  60
-#define BS_VISIBLE_ROWS   5
+#define BS_VISIBLE_ROWS   4   /* rows at y=20+9i; a 5th would collide with the footer */
 
 static char g_incoming_id[64];
 
@@ -176,7 +176,13 @@ static void bs_draw_window(const char *name) {
     bs_print_centered(40, "press Back to change");
 }
 
-static void bs_draw_picker(const char *banner, const bs_row_t *rows, int nrows,
+/* Two banner lines: a target name plus "failed to start" is wider than the
+ * 128px panel in this font (verified on hardware — it clipped mid-word), so
+ * the forced banner puts the name on line 1 and the verdict on line 2. The
+ * normal picker leaves line 2 empty. Rows keep their position either way so
+ * the two picker variants do not jump. */
+static void bs_draw_picker(const char *banner1, const char *banner2,
+                            const bs_row_t *rows, int nrows,
                             int cursor, int *scroll) {
     if (cursor < *scroll)
         *scroll = cursor;
@@ -186,7 +192,9 @@ static void bs_draw_picker(const char *banner, const bs_row_t *rows, int nrows,
         *scroll = 0;
 
     js_display_clear();
-    js_display_print(0, 0, banner, 1);
+    js_display_print(0, 0, banner1, 1);
+    if (banner2 && banner2[0])
+        js_display_print(0, 9, banner2, 1);
 
     int shown = nrows - *scroll;
     if (shown > BS_VISIBLE_ROWS)
@@ -197,7 +205,7 @@ static void bs_draw_picker(const char *banner, const bs_row_t *rows, int nrows,
         char line[72];
         snprintf(line, sizeof(line), "%s%s",
                  (row_idx == cursor) ? "> " : "  ", rows[row_idx].name);
-        js_display_print(0, 12 + i * 10, line, 1);
+        js_display_print(0, 20 + i * 9, line, 1);
     }
 
     js_display_print(0, 56, "Click: boot   Back: cancel", 1);
@@ -319,14 +327,18 @@ int main(int argc, char **argv) {
         /* fall through into the picker */
     }
 
-    char banner[96];
-    if (forced)
-        snprintf(banner, sizeof(banner), "%s failed to start", incoming_name);
-    else
-        snprintf(banner, sizeof(banner), "Select boot target");
+    char banner1[96];
+    const char *banner2;
+    if (forced) {
+        snprintf(banner1, sizeof(banner1), "%s", incoming_name);
+        banner2 = "failed to start";
+    } else {
+        snprintf(banner1, sizeof(banner1), "Select boot target");
+        banner2 = "";
+    }
 
     int scroll = 0;
-    bs_draw_picker(banner, rows, nrows, cursor, &scroll);
+    bs_draw_picker(banner1, banner2, rows, nrows, cursor, &scroll);
     bs_repaint();
 
     int jog_accum = 0;
@@ -372,7 +384,7 @@ int main(int argc, char **argv) {
         }
 
         if (dirty) {
-            bs_draw_picker(banner, rows, nrows, cursor, &scroll);
+            bs_draw_picker(banner1, banner2, rows, nrows, cursor, &scroll);
             bs_repaint();
         }
     }
