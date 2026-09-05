@@ -1985,6 +1985,20 @@ chains are read from the shim in one positional GET, as Master FX is."
       screen onto two permanently empty chains. Everything that is *state*
       (return levels, A->B, bypass, a loaded position's params) is already
       served by Task 6.
+- [ ] **Allocate the send positions' `chain_params_cache` when you make them
+      loadable.** `master_fx_slot_t`'s comment says that buffer is OWNED and
+      NEVER NULL, and `shadow_master_fx_storage_ensure()` walks the Master FX
+      array only — so all 16 send positions are BSS with a NULL cache. Nothing
+      dereferences it today, but the first Master-FX-shaped helper pointed at a
+      send array is a NULL deref on the SPI callback, which is precisely the
+      SIGSEGV `v2_load_midi_fx_slot` already caused once. Deliberately NOT
+      pre-allocated in Task 6 — ~2 MB of mirrored 64 KB caches for a feature
+      that could not yet load anything.
+- [ ] **Send return levels and the A->B amount need persistence.** They are BSS
+      today and reset on every restart, while Master FX survives via the
+      shim-authoritative `master_fx:modules` GET and per-set autosave. Task 8's
+      `send_fx_N.json` covers the chains; make sure these three scalars are in
+      it.
 - [ ] Shift+Vol+Menu and hold-Menu both open the picker rather than Master FX directly
 - [ ] Choosing Master FX gives the screen that exists today, unchanged
 - [ ] Choosing Send A or Send B gives the same 8-position editor against that send's chain
