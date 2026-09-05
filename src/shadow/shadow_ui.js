@@ -505,7 +505,10 @@ const VIEWS = {
 const CORUN_ENTRIES = {
     slots:           { enter: function() { view = VIEWS.SLOTS; } },
     chain_editor:    { enter: function(a) { enterChainEdit((a && a.slot) | 0); } },
-    master_fx:       { enter: function() { enterMasterFxSettings(); } },
+    /* The MASTER bus specifically. This is a published id an overtake tool
+       names by string, so it must keep meaning one screen; the FX-bus picker is
+       reached by the gesture, not by this. */
+    master_fx:       { enter: function() { enterFxBus(0); } },
     global_settings: { enter: function() { enterGlobalSettings(); } },
 };
 
@@ -3260,7 +3263,7 @@ let selectedFxBusRow = 0;
  * staler than that read, never fresher.
  */
 function enterFxBus(index) {
-    currentFxBusIndex = (index >= 0 && index < FX_BUSES.length) ? index : 0;
+    fxBusSwap((index >= 0 && index < FX_BUSES.length) ? index : 0);
     selectedFxBusRow = currentFxBusIndex;
     invalidateMasterFxConfig();
     masterFxChainLength = -1;
@@ -3274,6 +3277,45 @@ function enterFxBus(index) {
      * header band. */
     if (!fxBusIsMaster()) currentMasterPresetName = "";
     enterMasterFxSettings();
+}
+
+/*
+ * ONE mirror per bus, and the swap that keeps them apart.
+ *
+ * `masterFxConfig` follows the EDITOR — it is the mirror of whichever bus is
+ * open. Several master-bus writers run whatever screen is up, though: the
+ * periodic autosave, the slot list's "Master FX" row, Shift+Copy, boot restore,
+ * a set change. Without a per-bus mirror those would read Send A's positions
+ * while writing master_fx_N.json, and adopt the master chain's ids INTO Send
+ * A's mirror on the way — a screen showing the wrong modules and files written
+ * from the wrong chain, from one shared variable.
+ *
+ * A mirror is a cache of what the shim already knows, so a missing one is
+ * always recoverable: loadMasterFxChainConfig re-reads the bus on entry.
+ */
+const fxBusMirrors = [null, null, null];
+
+function fxBusSwap(index) {
+    fxBusMirrors[currentFxBusIndex] = masterFxConfig;
+    currentFxBusIndex = index;
+    masterFxConfig = fxBusMirrors[index] || makeEmptyMasterFxConfig();
+}
+
+/*
+ * Run `fn` as though the editor were on bus `index`, then put the editor back.
+ *
+ * This is what every master-bus writer that can run from another screen is
+ * wrapped in. It swaps BOTH halves — the index the key rule reads and the
+ * mirror the config reads — because swapping one without the other is exactly
+ * the mixture described above. `finally`, so a throw inside fn cannot leave the
+ * editor pointing at a bus the user is not looking at.
+ */
+function withFxBus(index, fn) {
+    const prev = currentFxBusIndex;
+    if (prev === index) return fn();
+    fxBusSwap(index);
+    try { return fn(); }
+    finally { fxBusSwap(prev); }
 }
 
 /* A one-line summary of what a bus holds, for the picker's value column. It
@@ -8725,8 +8767,12 @@ function snapshotLiveIds() {
         for (let k = 0; k < cfg.fx.length; k++)
             live[i + ":fx" + (k + 1)] = (cfg.fx[k] && cfg.fx[k].module) || "";
     }
-    for (let i = 1; i <= MASTER_FX_SLOTS; i++)
-        live["master_fx:fx" + i] = (masterFxConfig["fx" + i] || {}).module || "";
+    /* Wrapped for the same reason the display name is: masterFxConfig follows
+     * the editor, and Shift+Copy works from any screen. */
+    withFxBus(0, () => {
+        for (let i = 1; i <= MASTER_FX_SLOTS; i++)
+            live["master_fx:fx" + i] = (masterFxConfig["fx" + i] || {}).module || "";
+    });
     return live;
 }
 
@@ -9179,7 +9225,11 @@ function generateMasterPresetName() {
     return parts.length > 0 ? parts.join(" + ") : "Master FX";
 }
 
-function clearMasterFx() {
+/* Wrapped in withFxBus(0): this writes the MASTER bus and runs whatever screen
+ * is up, so it must not read or adopt into whichever bus the editor happens to
+ * be on. See withFxBus. */
+function clearMasterFx() { return withFxBus(0, clearMasterFxOnMaster); }
+function clearMasterFxOnMaster() {
     /* Clear every FX slot */
     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         setMasterFxSlotModule(i, "");
@@ -10941,7 +10991,11 @@ function applyMasterFxModuleSelection() {
 }
 
 /* Save master FX chain configuration */
-function saveMasterFxChainConfig() {
+/* Wrapped in withFxBus(0): this writes the MASTER bus and runs whatever screen
+ * is up, so it must not read or adopt into whichever bus the editor happens to
+ * be on. See withFxBus. */
+function saveMasterFxChainConfig() { return withFxBus(0, saveMasterFxChainConfigOnMaster); }
+function saveMasterFxChainConfigOnMaster() {
     /* The shim persists the state, but we also save to shadow config */
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -11498,7 +11552,11 @@ function loadTextPreviewConfig() {
  * The shim handles actual module loading + state restore from
  * slot_state/master_fx_N.json files at boot. This function just
  * syncs the JS-side masterFxConfig to reflect what the shim loaded. */
-function loadMasterFxChainFromConfig() {
+/* Wrapped in withFxBus(0): this writes the MASTER bus and runs whatever screen
+ * is up, so it must not read or adopt into whichever bus the editor happens to
+ * be on. See withFxBus. */
+function loadMasterFxChainFromConfig() { return withFxBus(0, loadMasterFxChainFromConfigOnMaster); }
+function loadMasterFxChainFromConfigOnMaster() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
@@ -20699,7 +20757,10 @@ function drawHelpDetail() {
     _ctx.getSlotParam = getSlotParam;
     _ctx.setSlotParam = setSlotParam;
     _ctx.updateFocusedSlot = updateFocusedSlot;
-    _ctx.getMasterFxDisplayName = () => getMasterFxDisplayName();
+    /* The slot list's Master FX row. Wrapped, because it reads the mirror and
+     * the mirror follows the editor: with Send A open it would label the master
+     * bus with Send A's modules. */
+    _ctx.getMasterFxDisplayName = () => withFxBus(0, () => getMasterFxDisplayName());
     _ctx.saveSlotsToConfig = (...args) => saveSlotsToConfig(...args);
     _ctx.fetchKnobMappings = (...args) => fetchKnobMappings(...args);
     _ctx.invalidateKnobContextCache = (...args) => invalidateKnobContextCache(...args);
@@ -22577,7 +22638,12 @@ globalThis.tick = function() {
              * overwrite the freshly-written slot files */
             autosaveSuppressUntil = 150; /* ~5 seconds at 30fps */
 
-            /* 7. Reload master FX modules from per-set state files */
+            /* 7. Reload master FX modules from per-set state files.
+             *
+             * On the MASTER bus explicitly: setMasterFxSlotModule addresses the
+             * chain through MASTER_CHAIN_TARGET, whose key rule is the current
+             * bus's prefix, and a set can be changed from any screen. */
+            withFxBus(0, () => {
             for (let mfxi = 0; mfxi < MASTER_FX_SLOTS; mfxi++) {
                 const mfxPath = activeSlotStateDir + "/master_fx_" + mfxi + ".json";
                 let mfxDspPath = "";
@@ -22628,6 +22694,7 @@ globalThis.tick = function() {
                 }
                 debugLog("SET_CHANGED: MFX " + mfxi + " -> " + (mfxModuleId || "(none)"));
             }
+            });
             /* 7b. And both send buses, from this set's own files. */
             loadSendFxChainConfigForSet();
             /* 8. Refresh slot names from new autosave files */
