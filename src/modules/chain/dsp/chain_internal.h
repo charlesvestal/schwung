@@ -281,6 +281,11 @@ typedef struct {
  * bus can be configured before it is allocated without ever dropping audio.
  */
 typedef struct {
+    /* RT-thread bookkeeping ONLY. The render path's "does this bus exist"
+     * test is `buf != NULL`, not this — buf is the one that fails safe, since
+     * a bus awaiting its buffer routes through Main. Do not start branching on
+     * in_use in the render path: it is written without a release and would
+     * become a second, unsynchronised cross-thread signal. */
     int   in_use;
     char  name[MAX_NAME_LEN];
     /* BUS_BUF_SAMPLES int16_t's (stereo interleaved) when non-NULL. The
@@ -392,7 +397,15 @@ typedef struct chain_instance {
      * bus_mix_target resolves the bus to NULL and its voices are heard through
      * Main, so nothing is ever dropped waiting for memory.
      */
-    volatile int bus_alloc_pending[SLOT_BUSES];
+    /* Accessed with __atomic_* from both threads, so the qualifier buys
+     * nothing — volatile orders nothing and implies plain access would do.
+     * Written RELEASE / read ACQUIRE at every site instead.
+     *
+     * bus_worker_started is stored RELEASE but read PLAIN on the RT side:
+     * sound only because the RT thread is its sole writer and reads its own
+     * stores. That single-writer rule is the whole justification; if a second
+     * writer ever appears, both reads need ACQUIRE. */
+    int bus_alloc_pending[SLOT_BUSES];
     pthread_t bus_worker;
     /* 1 between pthread_create and the join in chain_bus_worker_stop. Doubles
      * as the worker's run flag: clearing it and posting the semaphore is the

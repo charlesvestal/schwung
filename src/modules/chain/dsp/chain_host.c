@@ -146,12 +146,28 @@ static void *chain_bus_worker_fn(void *arg) {
          * from the stop below. sem_wait is restartable, so EINTR is a retry and
          * not an exit — exiting on a stray signal would leave later requests
          * unserved with nothing to report it. */
-        while (sem_wait(&inst->bus_worker_sem) != 0 && errno == EINTR) { }
+        while (sem_wait(&inst->bus_worker_sem) != 0) {
+            if (errno == EINTR) continue;
+            /* Anything else is unreachable (EINVAL needs a destroyed
+             * semaphore, and sem_destroy only runs after the join) — but
+             * falling through would spin this core forever, since the
+             * started flag is still set and the outer loop would re-enter
+             * immediately. Leave instead. */
+            return NULL;
+        }
 
         if (!__atomic_load_n(&inst->bus_worker_started, __ATOMIC_ACQUIRE)) break;
 
         for (int b = 0; b < SLOT_BUSES; b++) {
             if (!__atomic_load_n(&inst->bus_alloc_pending[b], __ATOMIC_ACQUIRE)) continue;
+            /* Clear BEFORE attempting, not after. Clearing afterwards
+             * clobbers a request the RT thread made WHILE we were allocating:
+             * it would set pending=1, we would store 0 over it, and the bus
+             * would sit on Main until some later create. Clearing first turns
+             * that race into a harmless duplicate pass, which the !buf test
+             * below already makes free. Matters once Task 8 puts a
+             * multi-megabyte allocation here and a failure becomes plausible. */
+            __atomic_store_n(&inst->bus_alloc_pending[b], 0, __ATOMIC_RELEASE);
             slot_bus_t *bus = &inst->buses[b];
             if (!__atomic_load_n(&bus->buf, __ATOMIC_RELAXED)) {
                 /* BUS_BUF_SAMPLES, never a restated FRAMES_PER_BLOCK * 2. The
@@ -171,21 +187,39 @@ static void *chain_bus_worker_fn(void *arg) {
                      * observe the pointer before calloc's zeroes, render into
                      * memory it then reads as garbage. v2_render_block's
                      * snapshot loop uses __ATOMIC_ACQUIRE for exactly this;
-                     * change one and you must change both. */
+                     * change one and you must change both.
+                     *
+                     * THIS GATE COVERS `buf` AND NOTHING ELSE. The render
+                     * path reads fx_count, fx_bypassed[], fx_plugins_v2[] and
+                     * fx_instances[] with PLAIN loads. That is sound only
+                     * while the RT thread is their sole writer. Task 8 moves
+                     * bus FX loading onto this worker, and those writes
+                     * happen AFTER buf is already published — so this acquire
+                     * will not order them. They need their own gate: store an
+                     * `fx_ready` flag RELEASE after the pointers, load it
+                     * ACQUIRE before the insert loop. */
                     __atomic_store_n(&bus->buf, buf, __ATOMIC_RELEASE);
                 }
                 /* A failed calloc is not an error state to latch: buf stays
                  * NULL, bus_mix_target keeps routing the bus's voices through
                  * Main, and the next request retries. */
             }
-            __atomic_store_n(&inst->bus_alloc_pending[b], 0, __ATOMIC_RELEASE);
         }
     }
     return NULL;
 }
 
 /*
- * RT side: mark and return. Nothing is allocated here.
+ * RT side: mark and return.
+ *
+ * No BUS memory is allocated here — that is the whole point of the worker.
+ * The one deliberate exception is the first call's pthread_create, which
+ * allocates the worker's stack and TLS and issues clone(2) on this callback.
+ * It is once per slot, on a user gesture, and there is nowhere earlier to put
+ * it without starting a thread for every slot that never makes a bus. Do not
+ * read "nothing is allocated here" into this function and add a second thing:
+ * a comment claiming a realtime guarantee the code does not give is a defect
+ * this branch has already shipped three times.
  *
  * The worker is started LAZILY, on the first bus a slot ever creates, so the
  * common case — a slot with no buses — costs no thread at all.
@@ -276,11 +310,24 @@ static void v2_destroy_instance(void *instance) {
     v2_unload_synth(inst);
 
     /* Stop the allocator BEFORE releasing what it writes: the worker publishes
-     * buses[].buf, so freeing first would race a store into freed memory. The
-     * join blocks the SPI callback, which is deliberate and bounded — the
-     * worker is parked on the semaphore, so it wakes on the post rather than
-     * after a sleep, and destroy_instance already dlcloses plugins and frees
-     * ~19 MB on this thread. */
+     * buses[].buf, so freeing first would race a store into freed memory.
+     *
+     * The join BLOCKS the SPI callback. That is deliberate: pthread_detach is
+     * a use-after-free here, because the worker dereferences `inst` and we
+     * free it two lines below. What bounds the stall TODAY is that the
+     * worker's entire body is one 512-byte calloc, and it is parked on the
+     * semaphore so it wakes on the post rather than after a sleep.
+     *
+     * THAT BOUND EXPIRES WITH TASK 8. Once dlopen, create_instance and ~9.1 MB
+     * of per-position metadata move into the worker, this join can land while
+     * it holds the loader lock or is mid-multi-megabyte calloc — and
+     * pthread_join is a futex wait with NO priority inheritance, so a FIFO-70
+     * thread ends up waiting on a SCHED_OTHER one that anything on cores 0-2
+     * can deschedule for a full quantum. This is a different hazard from
+     * "destroy_instance already frees 19 MB here": that work is bounded by
+     * THIS thread's progress, the join by ANOTHER thread's scheduling. The fix
+     * when it comes is a stop flag the worker checks BETWEEN units of work, so
+     * the join waits out one bus rather than the whole queue. */
     chain_bus_worker_stop(inst);
     chain_bus_release_all(inst);
 
