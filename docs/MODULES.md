@@ -48,7 +48,15 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 - `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "Dexed", "CLAP")
 - `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
 - Keep `module.json` reasonably small (the loader caps it at 8KB).
-- `dsp`: any filename inside the module directory. The host loads whatever path you specify here, so `dsp.so`, `<module-id>.so`, or anything else is fine for standalone modules. **Exception — `audio_fx` modules used inside Signal Chain:** the chain host loads the FX directly as `modules/audio_fx/<id>/<id>.so` (it does not consult the FX's `module.json`), so audio FX shared libraries **must** be named `<module-id>.so`. Sound generators and MIDI sources loaded by the chain are hardcoded to `dsp.so`.
+- `dsp`: any filename inside the module directory — **but only for the standalone/menu load**, which is the only path that reads this field (`module_manager.c`). **Inside Signal Chain the chain host builds the path itself and never consults `module.json`**, using a different rule per component type:
+
+  | `component_type` | What the chain host opens | Source |
+  |---|---|---|
+  | `sound_generator` | `modules/sound_generators/<id>/**dsp.so**` | `chain_host.c` |
+  | `midi_fx` | `modules/midi_fx/<id>/**dsp.so**` | `chain_midi.c` |
+  | `audio_fx` | `modules/audio_fx/<id>/**<module-id>.so**` | `chain_host.c` |
+
+  Get it wrong and the module does not load, with **no error on screen** — the only symptom is one line in `debug.log`: `dlopen failed: ... cannot open shared object file`. The failure mode is worth stating because the rules differ: copying an audio FX's build script to make a sound generator produces `<id>.so`, which is correct for the template and silently wrong for the copy. Set `dsp` to match whichever name your type requires, so the two agree.
 
 ### Capabilities
 
