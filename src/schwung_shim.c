@@ -5635,7 +5635,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             int any = 0;
             for (int i = 0; i < 80; i += 4) {
                 uint8_t cin = midi_out[i] & 0x0F;
-                if (cin >= 0x04 && cin <= 0x07) {
+                /* First ~17s after arming: log EVERY nonzero slot, not just
+                 * SysEx framing — hunting the XMOS boot-LED-show stop, which
+                 * the cin 4..7 filter proved not to be (all six captured
+                 * boot SysEx messages were replayed on hardware; none
+                 * stopped it). Same write path and size cap; reverts to
+                 * SysEx-only after frame 6000. */
+                int log_all = (xmos_frame < 6000) && midi_out[i] != 0;
+                if (log_all || (cin >= 0x04 && cin <= 0x07)) {
                     int n = snprintf(line, sizeof(line),
                         "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
                         xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
