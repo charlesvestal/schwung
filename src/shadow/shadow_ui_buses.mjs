@@ -81,6 +81,10 @@ export function drawBusList() {
      * pairs that do not fit, silently, so the longer word cost this row the
      * hint for its own second gesture. Measured in the render, not guessed. */
     else if (row && row.kind === "bus") drawFooter(["Clk: edit", "Dn: fx", "Back: out"]);
+    /* Main opens the send MIXER, not a menu — the verb names what the click
+     * does, and it is the same word whichever of the two screens Param View
+     * puts in front of it, because both edit the sends and nothing else. */
+    else if (row && row.kind === "main") drawFooter(["Clk: sends", "Back: out"]);
     else drawFooter(["Clk: edit", "Back: out"]);
 }
 
@@ -190,8 +194,13 @@ export function drawBusChain() {
         /* The verb of the box under the CURSOR: the `+` ADDS and a loaded
          * position SWAPS. One fixed pair said SWAP on both, which named a
          * different action than the one the click performs. */
+        /* CLK EDITS a loaded insert — the chain editor's primary action, which
+         * this screen did not have — and ADDS on a `+` or on a hole left by a
+         * removed one. Swap is Shift+Click, unhinted here exactly as it is in
+         * the slot chain editor: three pairs is what the band fits, and
+         * drawFooter drops the fourth silently. */
         hints: [["JOG", "SEL"],
-                ["CLK", comp && comp.kind === "add" ? "ADD" : "SWAP"],
+                ["CLK", comp && comp.kind === "module" && comp.module ? "EDIT" : "ADD"],
                 ["BACK", "OUT"]],
     });
 }

@@ -218,7 +218,13 @@ const body = [
     "let runActionCalls = 0;",
     "function runComponentActionFromGrid() { runActionCalls++; }",
     grab("componentParamPagesIo"),
+    // The bus-key test, from the REAL model: a bus insert is excluded here for
+    // the same reason Master FX is, and a stub that always answered null would
+    // pass the assertion below without the exclusion existing.
+    "const BusModel = { parseBusComponentKey: (k) => (/^bus[1-4]:fx[1-8]$/.test(k) ? {} : null) };",
     "const master = componentParamPagesIo(0, \"master_fx:fx2\");",
+    "const busInsert = componentParamPagesIo(1, \"bus1:fx2\");",
+    "if (busInsert !== null) throw new Error(\"expected null for a bus insert, got \" + JSON.stringify(busInsert));",
     "const slot = componentParamPagesIo(1, \"fx1\");",
     "if (master !== null) throw new Error(\"expected null for a Master FX target, got \" + JSON.stringify(master));",
     "if (!slot || typeof slot.trailingMenus !== \"function\" || typeof slot.runAction !== \"function\")",

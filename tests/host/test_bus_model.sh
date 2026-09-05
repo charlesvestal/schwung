@@ -209,9 +209,80 @@ eq("the bus does not free itself", M.voiceMoveWrites(VCFG, 0, "kick"), []);
   eq("the full chain is the cap", full.length, M.BUS_FX_SLOTS);
 }
 
+/* ---- the knob grid ----------------------------------------------------- */
+
+/* A bus insert component key IS its DSP prefix, which is what lets the knob
+   grid address one with no mapping of its own. Both directions, and both
+   bounds: an out-of-range key routed as a real position lands on whatever the
+   chain host does with an unmatched key. */
+eq("a bus insert key is its prefix", M.busComponentKey(0, 1), "bus1:fx2");
+eq("...and the last one", M.busComponentKey(3, 7), "bus4:fx8");
+eq("a bus past the cap has no key", M.busComponentKey(4, 0), null);
+eq("a position past the cap has no key", M.busComponentKey(0, 8), null);
+eq("the key parses back", M.parseBusComponentKey("bus1:fx2"), { bus: 0, fx: 1 });
+eq("a key past the cap does not parse", M.parseBusComponentKey("bus9:fx1"), null);
+eq("a slot chain key is not a bus key", M.parseBusComponentKey("fx2"), null);
+eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), null);
+{
+  const roundTrip = M.parseBusComponentKey(M.busComponentKey(2, 4));
+  eq("the two spellings agree", roundTrip, { bus: 2, fx: 4 });
+}
+
+/* THE SEND MIXER contract. The mapping to the two REAL spellings is the
+   whole of what its io does, and getting it wrong edits the wrong bus
+   silently -- the same hazard busSendKey exists to prevent on the list path. */
+{
+  const cfg = M.parseBusesConfig(JSON.stringify({
+    buses: [
+      { present: 1, name: "Kick", orphans: 0, voices: [], sends: [20, 0], fx: [] },
+      { present: 0, name: "Bus 2", orphans: 0, voices: [], sends: [0, 0], fx: [] },
+      { present: 1, name: "Hats", orphans: 0, voices: [], sends: [5, 9], fx: [] },
+      { present: 0, name: "Bus 4", orphans: 0, voices: [], sends: [0, 0], fx: [] }],
+    main_sends: [3, 4] }));
+  const params = M.busSendGridParams(cfg);
+  /* Present buses plus Main, times the two sends. A hole is not a row. */
+  eq("a send mixer has one cell per source per send", params.length, 6);
+  eq("Main is a row and the hole is not",
+     params.slice(0, 3).map((p) => p.name), ["Kick", "Hats", "Main"]);
+  eq("every cell is an int over the real range",
+     params.every((p) => p.type === "int" && p.min === 0 && p.max === M.SEND_LEVEL_MAX),
+     true);
+  /* THE HOLE DOES NOT RENUMBER: the second present bus is bus 3, and its key
+     must say 3. This is the one that edits the wrong bus when it is wrong. */
+  eq("a bus keeps its own number", M.busSendGridRealKey(params[1].key), "bus3:send1");
+  eq("Main is the slot own key", M.busSendGridRealKey(params[2].key), "buses:main_send1");
+  eq("send B is a different key", M.busSendGridRealKey(params[4].key), "bus3:send2");
+  eq("a key naming no send maps to nothing", M.busSendGridRealKey("volume"), null);
+  eq("a bus past the cap maps to nothing", M.busSendGridRealKey("bus9_send1"), null);
+  eq("a send past the cap maps to nothing", M.busSendGridRealKey("bus1_send3"), null);
+
+  const h = M.busSendGridHierarchy(cfg);
+  /* Root carries NO knobs: the planner names a walk root page "Main" whatever
+     it declares, and "Main / Send B" is not a mixer. */
+  eq("the root page is empty", h.levels.root.knobs.length, 0);
+  eq("one level per send", [h.levels.send_a.label, h.levels.send_b.label],
+     ["Send A", "Send B"]);
+  eq("each send page is one knob per source",
+     [h.levels.send_a.knobs.length, h.levels.send_b.knobs.length], [3, 3]);
+  /* Bounded BY CONSTRUCTION at five cells, which is why the page is handed
+     paginate:false rather than being allowed to split. */
+  const full = M.parseBusesConfig(JSON.stringify({
+    buses: [0, 1, 2, 3].map((i) => (
+      { present: 1, name: "B" + i, orphans: 0, voices: [], sends: [0, 0], fx: [] })),
+    main_sends: [0, 0] }));
+  eq("a full slot is five cells a page",
+     M.busSendGridHierarchy(full).levels.send_a.knobs.length, M.SLOT_BUSES + 1);
+}
+/* AND THE READ THAT DID NOT COMPLETE MAKES NO CONTRACT. An empty one would be
+   a claim -- "this slot has no buses" -- drawn as a mixer with only Main. */
+eq("an unresolved config declares no hierarchy",
+   M.busSendGridHierarchy({ unresolved: true }), null);
+eq("an unresolved config declares no params",
+   M.busSendGridParams({ unresolved: true }).length, 0);
+
 if (failures) process.exit(1);
 console.log("PASS: bus model — the tri-state read, positional buses, retained " +
-            "orphans and one-bus-per-voice");
+            "orphans, one-bus-per-voice, and the knob grid keys");
 '
 
 # THE CAPS ARE MIRRORS, and a mirror that drifts is worse than a duplicate: the

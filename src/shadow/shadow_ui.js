@@ -2071,6 +2071,25 @@ function masterFxIndexFromComponentKey(componentKey) {
  * the key prefix itself. See currentChrome there.
  */
 function paramPagesChromeFor(componentKey) {
+    /*
+     * A BUS INSERT names its chain "B1" and goes back to that bus's diagram.
+     *
+     * The module key is the colon form for the same reason Master FX's is: the
+     * slot chain's "<prefix>_module" underscore spelling is unserved here, and
+     * an unserved read comes back "" rather than erroring, so the header would
+     * silently lose the name. chain_bus.c answers "bus1:fx2:module" with the
+     * module ID (the request string), which is what getModuleDisplayName wants
+     * -- unlike the master bus, where ":module" is a filesystem path and ":name"
+     * is the id.
+     */
+    const busAt = BusModel.parseBusComponentKey(componentKey);
+    if (busAt) {
+        return {
+            label: busChainTarget(busAt.bus).label,
+            moduleKey: `${componentKey}:module`,
+            returnView: VIEWS.BUS_CHAIN,
+        };
+    }
     const mfx = masterFxIndexFromComponentKey(componentKey);
     if (mfx < 0) return null;
     return {
@@ -2114,6 +2133,12 @@ function paramPagesChromeFor(componentKey) {
  */
 function componentParamPagesIo(slotIndex, componentKey) {
     if (masterFxIndexFromComponentKey(componentKey) >= 0) return null;
+    /* A bus insert inherits the same gap, and for the same reason: every
+     * action on those pages is slot-chain shaped (Swap re-enters the slot
+     * chain's picker, the preset store is keyed off the slot chain's
+     * component). Excluded HERE so a future call site cannot opt it in by
+     * omission -- the property this helper exists for. */
+    if (BusModel.parseBusComponentKey(componentKey)) return null;
     const prefix = getComponentParamPrefix(componentKey);
     return {
         trailingMenus: () => componentTrailingMenus(slotIndex, componentKey, prefix),
@@ -3700,6 +3725,110 @@ function enterBusModuleSelect() {
     announce("Select module");
 }
 
+/*
+ * THE SEND MIXER, on the encoders.
+ *
+ * The component name is not a module and not a position: it names the
+ * SYNTHESISED contract, the way "slot" and "master_settings" do, so
+ * headerTitle and the hand-off refusal can tell it apart without asking which
+ * screen it came from.
+ */
+const BUS_SENDS_COMPONENT = "bus_sends";
+
+/*
+ * The accessors the grid drives the slot's sends through.
+ *
+ * The contract itself is in bus_model.mjs (pure, and therefore testable); this
+ * is only the wiring, exactly as slotGridIoFor is to shadow_ui_slot_grid.mjs.
+ * Reads go straight to the REAL key rather than through `buses:config`: one
+ * key per cell is what the controller's own read budget is built around, and
+ * re-reading the whole document per cell would be five copies of one answer.
+ */
+function busSendsGridIo() {
+    const slot = busSlot;
+    const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    return {
+        getParam(fullKey) {
+            const k = bare(fullKey);
+            if (k === "ui_hierarchy" || k === "chain_params") {
+                /*
+                 * NULL, not "[]" and not "null", while the config has not
+                 * answered. The controller treats a null contract as "the read
+                 * did not complete" — it plans nothing and retries — where an
+                 * empty answer is a CLAIM, and the claim it would make here is
+                 * "this slot has no buses": a mixer drawn with only Main on it.
+                 */
+                if (!busConfig || busConfig.unresolved) return null;
+                return JSON.stringify(k === "ui_hierarchy"
+                    ? BusModel.busSendGridHierarchy(busConfig)
+                    : BusModel.busSendGridParams(busConfig));
+            }
+            const real = BusModel.busSendGridRealKey(k);
+            /* The RAW answer, null included: it is the wire value, and only the
+             * caller that saw the wire can tell a stalled channel from a zero. */
+            return real ? getSlotParam(slot, real) : "";
+        },
+        setParam(fullKey, value) {
+            const real = BusModel.busSendGridRealKey(bare(fullKey));
+            if (!real) return false;
+            const ok = setSlotParam(slot, real, value);
+            /* The list behind this screen prints these same two numbers per
+             * row. Marked stale rather than re-read: a read per detent is
+             * ~2.8ms spent on a screen nobody is looking at, and the bus views'
+             * retry tick picks it up on the way back. */
+            busConfigStale = true;
+            return ok;
+        },
+        /* No send level is a modulation target — the chain host serves no
+         * bus LFO at all — so the generic oracle would spend up to three IPC
+         * round trips per tick to answer no. */
+        isModulated: () => false,
+    };
+}
+
+/*
+ * Open it. Falls back to the bus menu's list rows when the grid is not the
+ * user's Param View — which includes every screen-reader session, where a grid
+ * has nothing selected to read out. Same gate enterChainSettings uses.
+ */
+function enterBusSendsGrid(rowIndex) {
+    if (!paramPagesEnabled()) { enterBusActions(rowIndex); return; }
+    enterParamPages(busSlot, BUS_SENDS_COMPONENT, BUS_SENDS_COMPONENT, null,
+                    busSendsGridIo(), {
+        label: `S${busSlot + 1}`,
+        name: "Sends",
+        returnView: VIEWS.BUS_LIST,
+        /* ONE SECTION, ONE PAGE. Each page is Main plus the present buses — at
+         * most five cells — so this never has to split; the flag says the
+         * grouping is AUTHORED, so a fifth bus could not silently become
+         * "Send A - 2" either. */
+        paginate: false,
+    });
+    announce("Sends");
+}
+
+/*
+ * Open the KNOB GRID (or the list, per Param View) on the selected insert.
+ *
+ * Returns false when the position holds no module — the `+` box and a hole
+ * left by a removed insert — and the caller opens the picker instead. It is
+ * the only answer this can give: chain_bus.c serves `bus<N>:fx<K>:` off a
+ * loaded plugin, so there is nothing behind an empty position to edit.
+ */
+function enterBusComponentEdit() {
+    if (busSlot < 0 || busChainBus < 0) return false;
+    const target = busChainTarget(busChainBus);
+    const comp = target.components()[busChainPos];
+    if (!comp || comp.kind !== "module" || !comp.module) return false;
+    const componentKey = BusModel.busComponentKey(busChainBus, comp.index);
+    if (!componentKey) return false;
+    /* Through the same gate both chain editors enter by: a module that has not
+     * finished coming up must WAIT rather than have its absence turned into a
+     * verdict. */
+    openComponentEditor(busSlot, componentKey, -1);
+    return true;
+}
+
 function busChainPositionIndex() {
     const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
     const comps = BusModel.busChainComponents(bus ? bus.fx : []);
@@ -3722,6 +3851,62 @@ function busPickModule() {
     refreshBusConfig();
     needsRedraw = true;
     announceMenuItem("Module", item.name || item.id || "None");
+}
+
+/*
+ * ONE SLOT BUS's insert chain, as a chain target.
+ *
+ * A third chain, and it is a chain target rather than a screen of its own for
+ * the reason the two-editor note above gives at length: everything downstream
+ * of a target — the knob context, the merged parameter metadata, the entry
+ * gate — lands here by construction instead of one scope boundary at a time.
+ * The bus screens shipped without any of it, which is what this target is
+ * closing: a loaded insert kept its defaults for good.
+ *
+ * `slot` is `busSlot` — the real instrument slot, unlike Master FX's 0 — and
+ * `busIndex` is captured rather than read from busChainBus, so a target built
+ * for one bus keeps addressing that bus.
+ */
+function busChainTarget(busIndex, slotIndex) {
+    const slot = (slotIndex === undefined) ? busSlot : slotIndex;
+    const bus = () => (busConfig && !busConfig.unresolved ? busConfig.buses[busIndex] : null);
+    return {
+        kind: "bus",
+        /* Per bus AND per slot: the caches keyed by target.id would otherwise
+         * serve slot 2's Bus 1 from slot 1's entries. */
+        id: `slot${slot}bus${busIndex}`,
+        slot,
+        /* How this chain names itself in a knob title — "B1: CloudSeed Mix".
+         * The bus's own name is on the screen behind the card; this says which
+         * CHAIN, the way "S2" and "MFX" do. */
+        label: `B${busIndex + 1}`,
+        /*
+         * chain_bus.c serves exactly "bus<N>:fx<K>:<suffix>".
+         *
+         * `componentKey` is the BARE position id ("fx2"), as it is for Master
+         * FX — the prefixed form ("bus1:fx2") is what the hierarchy editor and
+         * the knob grid carry, and it is built by busComponentKey. The `+` box
+         * and anything outside the caps produce null, which is what stops a
+         * non-position costing an IPC round trip that can only answer "".
+         */
+        key: (componentKey, suffix) => {
+            const m = /^fx(\d+)$/.exec(String(componentKey || ""));
+            const full = m ? BusModel.busComponentKey(busIndex, Number(m[1]) - 1) : null;
+            return full ? `${full}:${suffix}` : null;
+        },
+        chainKey: (suffix) => `bus${busIndex + 1}:${suffix}`,
+        /* busChainComponents' entries carry `id`; the shared chain code reads
+         * `key`. Named here rather than in the model because `key` is the
+         * EDITOR's word for a position and bus_model draws no editor. */
+        components: () => BusModel.busChainComponents(bus() ? bus().fx : [])
+            .map((c) => Object.assign({ key: c.id }, c)),
+        /* A bus chain has no LFOs — the chain host serves no bus<N>:lfoN key —
+         * so a diagram of it must not spend two reads a frame asking. */
+        hasLfos: false,
+        hasSynth: false,
+        hasMidiFx: false,
+        cap: () => BusModel.BUS_FX_SLOTS,
+    };
 }
 
 /* The FX bus chain the editor is pointing at. One section, no synth, addressed
@@ -5216,6 +5401,16 @@ function getPhysKnobState(fullKey, currentValue) {
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0..MASTER_FX_SLOTS-1) we're editing
+/*
+ * Where Back goes, when it is neither of the two the flag above can name.
+ *
+ * A third chain arrived (a slot bus's inserts) and hierEditorIsMasterFx is a
+ * BOOLEAN — so without this the bus editor would eject into the slot chain
+ * editor, which is the same "identity lost, params still right" failure
+ * enterHierarchyEditor's Master FX note describes. Null means the flag decides,
+ * which is every pre-existing caller.
+ */
+let hierEditorReturnView = null;
 
 /* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
  * here because the grid handed off a non-grid page (preset browser, items
@@ -14177,6 +14372,24 @@ let componentLoadHold = null;
  * exactly the bug this gate exists to stop repeating — so it is not used here.
  */
 function componentEntryReader(slotIndex, componentKey, mfxIndex) {
+    /*
+     * A BUS INSERT, addressed under its own prefix at the instrument slot.
+     *
+     * First, because the key is self-describing: "bus1:fx2" parses, and
+     * nothing else here does. `is_loading` is not served by chain_bus.c and
+     * reads "" — which the gate treats as "not loading", the same answer it
+     * gets from the many modules that do not implement it.
+     */
+    const busAt = BusModel.parseBusComponentKey(componentKey);
+    if (busAt) {
+        const target = busChainTarget(busAt.bus, slotIndex);
+        const fxKey = `fx${busAt.fx + 1}`;
+        return {
+            hierarchy: () => chainTargetGetParam(target, fxKey, "ui_hierarchy"),
+            module: () => chainTargetGetParam(target, fxKey, "module"),
+            isLoading: () => chainTargetGetParam(target, fxKey, "is_loading"),
+        };
+    }
     if (mfxIndex >= 0) {
         const fxKey = masterFxComponentKey(mfxIndex);
         return {
@@ -14220,8 +14433,11 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
 
     componentLoadHold = null;
 
+    const busEntry = BusModel.parseBusComponentKey(componentKey);
+
     if (decision.action === ENTRY_ENTER) {
         if (mfxIndex >= 0) enterMasterFxHierarchyEditorWith(mfxIndex, decision.hierarchy);
+        else if (busEntry) enterBusHierarchyEditorWith(slotIndex, componentKey, decision.hierarchy);
         else enterHierarchyEditorWith(slotIndex, componentKey, decision.hierarchy);
         return;
     }
@@ -14230,6 +14446,22 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
      * behaviour for both editors, including Master FX's "do nothing, the
      * module selection is still available". */
     if (mfxIndex >= 0) return;
+    /*
+     * A bus insert takes Master FX's ending rather than the slot chain's.
+     *
+     * enterComponentEditFallback is slot-chain shaped throughout — it resolves
+     * the module through chainConfigs (which holds no buses), and the preset
+     * browser it lands in exits to VIEWS.CHAIN_EDIT. The announcement is what
+     * keeps the click from being silent, which is the one thing the Master FX
+     * ending gets wrong.
+     */
+    if (busEntry) {
+        announce("No parameters");
+        /* Reached from the hold, the loading screen is still up and nothing
+         * else would take it down. */
+        if (view === VIEWS.COMPONENT_LOADING) { setView(VIEWS.BUS_CHAIN); needsRedraw = true; }
+        return;
+    }
     enterComponentEditFallback(slotIndex, componentKey);
 }
 
@@ -14237,6 +14469,16 @@ function componentLoadHoldLabel() {
     if (!componentLoadHold) return "";
     const h = componentLoadHold;
     if (h.mfxIndex >= 0) return `MFX ${h.mfxIndex + 1}`;
+    /* A bus insert is not in chainConfigs — that model holds the slot chain
+     * only — so it is named from the bus config the screen behind is drawn
+     * from, and from no fresh read: the channel this screen is waiting on is
+     * the one that would have to serve it. */
+    const busAt = BusModel.parseBusComponentKey(h.componentKey);
+    if (busAt) {
+        const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busAt.bus] : null;
+        const entry = bus && bus.fx && bus.fx[busAt.fx];
+        return entry && entry.module ? getModuleAbbrev(entry.module) : `FX ${busAt.fx + 1}`;
+    }
     const cfg = chainConfigs[h.slot];
     const moduleData = cfg ? getChainComponentModule(cfg, h.componentKey) : null;
     /* From the in-memory config, never a fresh read: the channel this screen is
@@ -14283,8 +14525,11 @@ function serviceComponentLoadHold() {
  * been written, and nothing was loaded on the way in. */
 function cancelComponentLoadHold() {
     const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
+    const wasBus = !!(componentLoadHold &&
+                      BusModel.parseBusComponentKey(componentLoadHold.componentKey));
     componentLoadHold = null;
-    setView(wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+    setView(wasBus ? VIEWS.BUS_CHAIN
+                   : wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 }
 
@@ -14362,6 +14607,7 @@ function enterHierarchyEditorFromParamPages() {
      */
     if (componentKey === GLOBAL_SETTINGS_COMPONENT ||
         componentKey === MASTER_SETTINGS_COMPONENT ||
+        componentKey === BUS_SENDS_COMPONENT ||
         componentKey === "slot") {
         exitParamPages();
         return false;
@@ -14478,6 +14724,9 @@ function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx,
     resetHierarchyEditState();
     hierEditorIsMasterFx = isMasterFx;
     hierEditorMasterFxSlot = masterFxSlot;
+    /* Cleared on every entry, so a bus session cannot leave its destination
+     * behind for the next slot-chain one. The bus entry sets it AFTER this. */
+    hierEditorReturnView = null;
     resetDynamicParamPickerState();
 }
 
@@ -14621,6 +14870,64 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
 
     /* Announce menu title + initial selection */
     const moduleName = getMasterFxParam(fxSlot, "name") || `FX ${fxSlot + 1}`;
+    announceHierarchyEditorEntry(moduleName);
+}
+
+/*
+ * A BUS INSERT's editor — the third entry point, and the same two destinations.
+ *
+ * It is a copy of enterMasterFxHierarchyEditorWith's shape for the same reason
+ * that one is a copy of the slot's: the entry points differ in how they resolve
+ * the hierarchy and in nothing else, and a bus branch bolted into either of
+ * them would have to keep saying which chain it is on. What differs here is
+ * only the three things a chain has to say — the component key spelling, where
+ * chain_params comes from, and where Back goes.
+ *
+ * BOTH destinations are wired, not just the grid: paramPagesEnabled() is false
+ * whenever the screen reader is on, so a grid-only bus insert would be
+ * uneditable for exactly the users who cannot see the diagram behind it.
+ */
+function enterBusHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
+    const at = BusModel.parseBusComponentKey(componentKey);
+    if (!at || !hierarchy) return;
+
+    dismissOverlayForHierarchyEntry();
+
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        /* getComponentParamPrefix, not the bare key it happens to equal: the
+         * prefix is a mapping and this is the site that has to keep asking for
+         * it, so a component-site enterParamPages call is recognisable as one
+         * (test_trailing_pages_wiring.sh filters on exactly this). */
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), null,
+                        componentParamPagesIo(slotIndex, componentKey),
+                        paramPagesChromeFor(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
+
+    resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, false, -1);
+    /* Back goes to the bus's insert chain. exitHierarchyEditor's own branch
+     * knows two chains; this is the third and it says so rather than being
+     * inferred from the component key at the exit. */
+    hierEditorReturnView = VIEWS.BUS_CHAIN;
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
+
+    /* THROUGH THE BUS TARGET. getComponentChainParams asks slotChainTarget,
+     * whose key rule answers null for "bus1:fx2" — so it would hand back an
+     * empty list, and an empty list is exactly what makes the editor invent a
+     * float 0..1 knob for every parameter. */
+    hierEditorChainParams = chainTargetChainParams(
+        busChainTarget(at.bus, slotIndex), `fx${at.fx + 1}`);
+    ensureComponentWidgets(getHierarchyActiveModuleId(), hierEditorChainParams);
+
+    setupModuleParamShims(slotIndex, componentKey);
+    loadHierarchyLevel();
+
+    setView(VIEWS.HIERARCHY_EDITOR);
+    needsRedraw = true;
+
+    const moduleName = getSlotParam(slotIndex, `${componentKey}:module`) || `FX ${at.fx + 1}`;
     announceHierarchyEditorEntry(moduleName);
 }
 
@@ -14917,6 +15224,11 @@ function exitHierarchyEditor() {
 
     /* Determine return view based on whether we're editing Master FX */
     const returnToMasterFx = hierEditorIsMasterFx;
+    /* ...or an explicit one, for a chain the boolean cannot name. Read BEFORE
+     * the reset below, like every other piece of state this function carries
+     * across its own teardown. */
+    const returnView = hierEditorReturnView;
+    hierEditorReturnView = null;
 
     hierEditorSlot = -1;
     hierEditorComponent = "";
@@ -14941,7 +15253,7 @@ function exitHierarchyEditor() {
     filepathBrowserParamKey = "";
     resetDynamicParamPickerState();
 
-    view = returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
+    view = returnView || (returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
     needsRedraw = true;
 }
 
@@ -15731,6 +16043,26 @@ function buildKnobContextForKnob(knobIndex) {
         }
     }
 
+    /*
+     * A SLOT BUS's insert chain, with a position selected. Same builder again.
+     *
+     * Without this the eight encoders answered null on the bus screen, which is
+     * not "no mapping" — it is no context at all, so a knob did nothing and
+     * said nothing. Gated on the picker being down, because while it is up the
+     * selected position is behind a modal the knobs must not reach into.
+     */
+    if (view === VIEWS.BUS_CHAIN && !selectingBusModule && busChainBus >= 0) {
+        const target = busChainTarget(busChainBus);
+        const comp = target.components()[busChainPos];
+        if (comp && comp.kind === "module") {
+            /* chain_bus.c answers ":module" with the module ID, so this one
+             * read is both the identity and the display name. */
+            const pluginName = chainTargetGetParam(target, comp.key, "module") || "";
+            return buildChainKnobContext(target, comp, knobIndex,
+                                         pluginName, pluginName.length > 0);
+        }
+    }
+
     /* Default: no special context */
     return null;
 }
@@ -15756,6 +16088,11 @@ function rebuildKnobContextCache() {
  * Uses caching to avoid IPC calls on every CC message
  */
 let cachedKnobContextsMasterFxComp = -1;  /* Track Master FX component for cache */
+/* The bus screen's cursor, as one comparable value. BOTH halves: a cache keyed
+ * on the position alone would serve Bus 2's FX 1 from Bus 1's entries. "" when
+ * the bus screen is not up, which is what keeps every other view's cache
+ * comparison unchanged. */
+let cachedKnobContextsBusCell = "";
 
 function getKnobContext(knobIndex) {
     /* Check if cache is valid */
@@ -15764,6 +16101,8 @@ function getKnobContext(knobIndex) {
     const currentLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
     const currentChildIndex = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorChildIndex : -1;
     const currentMasterFxComp = (view === VIEWS.MASTER_FX) ? selectedMasterFxComponent : -1;
+    const currentBusCell = (view === VIEWS.BUS_CHAIN)
+        ? `${busChainBus}:${busChainPos}:${selectingBusModule ? 1 : 0}` : "";
 
     const cacheValid = (
         cachedKnobContexts.length === NUM_KNOBS &&
@@ -15772,12 +16111,14 @@ function getKnobContext(knobIndex) {
         cachedKnobContextsComp === currentComp &&
         cachedKnobContextsLevel === currentLevel &&
         cachedKnobContextsChildIndex === currentChildIndex &&
-        cachedKnobContextsMasterFxComp === currentMasterFxComp
+        cachedKnobContextsMasterFxComp === currentMasterFxComp &&
+        cachedKnobContextsBusCell === currentBusCell
     );
 
     if (!cacheValid) {
         rebuildKnobContextCache();
         cachedKnobContextsMasterFxComp = currentMasterFxComp;
+        cachedKnobContextsBusCell = currentBusCell;
     }
 
     return cachedKnobContexts[knobIndex] || null;
@@ -17162,6 +17503,13 @@ function getHierarchyActiveModuleId() {
     if (hierEditorSlot < 0 || !hierEditorComponent) return "";
     if (hierEditorIsMasterFx) {
         return getSlotParam(0, `${hierEditorComponent}:module`) || "";
+    }
+    /* A bus insert spells it the colon way too — chain_bus.c answers
+     * "bus1:fx2:module" with the module id. The underscore form below is the
+     * slot chain's alone and is unserved here, and an unserved read comes back
+     * "" rather than erroring, so the wrong spelling loses it silently. */
+    if (BusModel.parseBusComponentKey(hierEditorComponent)) {
+        return getSlotParam(hierEditorSlot, `${hierEditorComponent}:module`) || "";
     }
 
     const prefix = getComponentParamPrefix(hierEditorComponent);
@@ -18971,6 +19319,12 @@ function handleSelect() {
             const row = rows[busListIndex];
             if (!row) break;
             if (row.kind === "new") busCreate();
+            /* MAIN's menu is its two send levels and nothing else, so this row
+             * opens the whole send MIXER instead — every bus's A and B on an
+             * encoder, which is the thing a list row cannot be. A bus row still
+             * opens its own menu: it has voices, inserts, a name and a delete
+             * that the mixer says nothing about. */
+            else if (row.kind === "main") enterBusSendsGrid(busListIndex);
             else enterBusActions(busListIndex);
             break;
         }
@@ -19014,8 +19368,16 @@ function handleSelect() {
             break;
         }
         case VIEWS.BUS_CHAIN:
-            if (selectingBusModule) busPickModule();
-            else enterBusModuleSelect();
+            if (selectingBusModule) { busPickModule(); break; }
+            /*
+             * Click EDITS a loaded insert and ADDS on anything else — the
+             * chain editor's split, and the reason this screen now has it:
+             * Click was unconditionally the module picker, so a bus insert's
+             * parameters could not be reached at all and every CloudSeed on a
+             * bus kept its defaults. Swap moved to Shift+Click, which is where
+             * the slot chain has always kept it.
+             */
+            if (!enterBusComponentEdit()) enterBusModuleSelect();
             break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
@@ -24448,6 +24810,8 @@ globalThis.onMidiMessageInternal = function(data) {
                         handleShiftSelect();
                     } else if (hostShiftHeld && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                         enterMasterFxModuleSelect(selectedMasterFxComponent);
+                    } else if (hostShiftHeld && view === VIEWS.BUS_CHAIN && !selectingBusModule) {
+                        enterBusModuleSelect();
                     } else {
                         handleSelect();
                     }
@@ -24691,6 +25055,10 @@ globalThis.onMidiMessageInternal = function(data) {
             } else if (isShiftHeld() && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
                 enterMasterFxModuleSelect(selectedMasterFxComponent);
+            } else if (isShiftHeld() && view === VIEWS.BUS_CHAIN && !selectingBusModule) {
+                /* ...and on a bus insert, for the same reason: plain Click now
+                 * edits the module, so Shift is what swaps it. */
+                enterBusModuleSelect();
             } else {
                 handleSelect();
             }

@@ -131,12 +131,17 @@ if (/target\.kind\s*[!=]==?/.test(builder) || /isMasterFx/.test(builder))
 /* Both editors must reach it, or half the convergence is decorative. */
 const dispatch = decomment(slice(ui, "function buildKnobContextForKnob(",
                                  "buildKnobContextForKnob"));
+/* THREE chains now: the slot chain, the master bus, and a slot BUS insert chain.
+   The number is asserted rather than a floor because the failure this catches
+   is a chain that BUILDS ITS OWN context -- which shows up as a call MISSING,
+   and a >= would pass while one editor quietly went its own way again. */
 const calls = (dispatch.match(/buildChainKnobContext\(/g) || []).length;
-if (calls !== 2)
+if (calls !== 3)
   fail("buildKnobContextForKnob calls buildChainKnobContext " + calls +
-       " times, expected 2 -- one chain editor is not using it");
-if (dispatch.indexOf("MASTER_CHAIN_TARGET") < 0 || dispatch.indexOf("slotChainTarget") < 0)
-  fail("buildKnobContextForKnob does not pass both chain targets");
+       " times, expected 3 -- one chain editor is not using it");
+if (dispatch.indexOf("MASTER_CHAIN_TARGET") < 0 || dispatch.indexOf("slotChainTarget") < 0 ||
+    dispatch.indexOf("busChainTarget") < 0)
+  fail("buildKnobContextForKnob does not pass all three chain targets");
 
 /* ---- 5. ONE fallback rule, and it is the declared-row one -------------- */
 /*

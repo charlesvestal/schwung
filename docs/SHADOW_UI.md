@@ -1049,6 +1049,53 @@ whichever other bus holds it — two writes, and both through
 `shadowSetParamBlocking`, because under co-run a fire-and-forget pair shares one
 SHM slot and the second clobbers the first.
 
+**A bus insert is a THIRD CHAIN TARGET, and until it was one its parameters
+could not be reached at all.** Click on a populated `BUS_CHAIN` position went
+to the module picker unconditionally, there was no Shift+Click, and
+`buildKnobContextForKnob` had no `BUS_CHAIN` case — so a CloudSeed loaded on a
+bus kept its defaults for good and the eight encoders answered `null`, which is
+not "no mapping" but no feedback either. The DSP surface was already there
+(`chain_bus.c` serves `bus<N>:fx<K>:<param>`, `:chain_params`, `:ui_hierarchy`
+and `:state`); only the UI was missing. `busChainTarget(busIndex)` is that
+chain, so the knob context, the merged parameter metadata and the entry gate
+land on it by construction rather than one scope boundary at a time — the same
+argument the two chain editors' convergence note makes at length. Click now
+EDITS a loaded insert and ADDS on a `+` or a hole; Shift+Click swaps, which is
+where the slot chain has always kept it. The component key ("bus1:fx2") IS the
+DSP prefix, exactly as Master FX's is, which is what lets the existing grid
+address it with no mapping of its own. Three things needed saying separately
+though: the entry gate reads through the bus target (`slotChainTarget` answers
+`null` for a bus key, so the hierarchy read would never happen and the gate
+could only hold); `chain_params` comes from the bus target for the same reason,
+and an empty list is exactly what makes the grid invent a `float 0..1` knob for
+every parameter; and Back needed `hierEditorReturnView`, because
+`hierEditorIsMasterFx` is a BOOLEAN and a third chain cannot be named by it.
+Both destinations are wired, not just the grid — `paramPagesEnabled()` is false
+whenever the screen reader is on, so a grid-only bus insert would be uneditable
+for exactly the users who cannot see the diagram behind it. Trailing pages (My
+Presets / Module) are excluded, inside `componentParamPagesIo`, the way Master
+FX is: every action on them is slot-chain shaped.
+`tests/host/test_bus_insert_editable.sh` pins each leg, because not one of them
+is a pixel.
+
+**The send mixer is ONE PAGE PER SEND, not one per bus.** Main's row on the bus
+list opens a synthesised contract (`busSendGridHierarchy` in `bus_model.mjs`)
+whose two pages — Send A and Send B — carry every source's level on an encoder;
+the per-bus rows on that bus's own menu stay, because a level you have to click
+into, jog and click out of is not a level you can RIDE. Main is the row that
+opens it because Main's menu IS its two sends and nothing else. The grouping is
+bounded by construction at `SLOT_BUSES + 1` = five cells against eight knobs, so
+it is handed `paginate: false`: a mixer split across "Send A" and "Send A - 2"
+would put two faders on a page you cannot see while turning the others. The
+ROOT level carries no knobs, deliberately — the planner names a walk root's grid
+page "Main" whatever the level declares, and "Main / Send B" is not a mixer — so
+the pages are the two levels below it. The io maps a flat grid key onto the two
+real spellings (`buses:main_sendN` for the slot, `bus<N>:sendM` for a bus) in
+one place, and a HOLE does not renumber: the second present bus is bus 3 and its
+key says 3. An unresolved `buses:config` yields a `null` contract rather than an
+empty one, because an empty one is a claim — "this slot has no buses" — drawn as
+a mixer with only Main on it.
+
 **The list value column is ~11 characters and carries three facts.** Insert
 summary plus both send levels: past two inserts the summary becomes a COUNT
 (`3 FX`), because a third abbreviation pushed both levels off the row — seen in

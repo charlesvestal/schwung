@@ -335,3 +335,160 @@ export function busSendValue(row, id) {
     const at = id === "send2" ? 1 : 0;
     return (row && row.sends && row.sends[at] !== undefined) ? row.sends[at] : 0;
 }
+
+/* ==========================================================================
+ * THE KNOB GRID — a bus insert's key, and the send mixer's contract
+ *
+ * Two unrelated things live here for one reason: both are RULES, and this is
+ * the file tests/host can run. The screens that draw them cannot be imported
+ * at all (shadow_ui_buses.mjs resolves /data/UserData/schwung paths).
+ * ========================================================================== */
+
+/*
+ * The component key of one insert position — "bus1:fx2".
+ *
+ * It is the DSP key prefix and the editor's component key at the same time,
+ * which is what lets the existing knob grid address a bus insert with no
+ * mapping of its own: the grid asks for "<prefix>:<param>" and chain_bus.c
+ * serves exactly "bus<N>:fx<K>:<param>". Master FX plays the same trick with
+ * "master_fx:fx2" (see masterFxComponentKey in shadow_ui.js); this is the
+ * third chain to do it and the second to write the spelling down once.
+ *
+ * Null outside the caps, deliberately: an out-of-range "bus9:fx1" would
+ * otherwise be routed as a real position and land on whatever the chain host
+ * does with an unmatched key.
+ */
+export function busComponentKey(busIndex, fxIndex) {
+    if (!(busIndex >= 0 && busIndex < SLOT_BUSES)) return null;
+    if (!(fxIndex >= 0 && fxIndex < BUS_FX_SLOTS)) return null;
+    return `bus${busIndex + 1}:fx${fxIndex + 1}`;
+}
+
+/** The inverse: { bus, fx } 0-based, or null. Bounded the same way. */
+export function parseBusComponentKey(componentKey) {
+    const m = /^bus(\d+):fx(\d+)$/.exec(String(componentKey || ""));
+    if (!m) return null;
+    const bus = Number(m[1]) - 1;
+    const fx = Number(m[2]) - 1;
+    if (!(bus >= 0 && bus < SLOT_BUSES)) return null;
+    if (!(fx >= 0 && fx < BUS_FX_SLOTS)) return null;
+    return { bus, fx };
+}
+
+/*
+ * THE SEND MIXER, as a synthesised contract.
+ *
+ * A slot's sends are already editable — one int row per bus on that bus's own
+ * menu — and that is the thing this replaces: a level you have to click into,
+ * jog, and click out of is not a level you can RIDE. Every send is one
+ * encoder here.
+ *
+ * ONE PAGE PER SEND, not one page per bus. Both groupings are authored, and
+ * this one is bounded by construction: a page is Main plus the present buses,
+ * so at most SLOT_BUSES + 1 = 5 cells against the eight knobs, and the
+ * planner is handed `paginate: false` because a mixer split across "Send A"
+ * and "Send A - 2" would put two of its faders on a page you cannot see while
+ * turning the others. The per-bus grouping is 2 cells a page and ten pages.
+ *
+ * The rows are the SAME rows the list draws, in the same order (busListRows
+ * without New Bus), so the two screens cannot disagree about what a slot
+ * holds or what it is called.
+ */
+
+/* The grid key for one row's send. Flat — the mapping back to the two
+ * real spellings ("buses:main_send1" for the slot, "bus2:send1" for a bus)
+ * is busSendGridRealKey, and it is the only place that knows them. */
+function sendGridKey(row, send) {
+    return row.kind === "main" ? `main_send${send}` : `bus${row.index + 1}_send${send}`;
+}
+
+/**
+ * The real DSP key a grid key reads and writes, or null when it names no send.
+ *
+ * The two spellings differ because the levels belong to different owners: the
+ * unassigned voices' sends are the SLOT's, a bus's are its own. Same rule as
+ * busSendKey in shadow_ui.js, which the list path uses — and the reason both
+ * exist rather than one is that the list addresses a ROW object and the grid
+ * addresses a KEY. They must agree; test_bus_model.sh is where that is pinned.
+ */
+export function busSendGridRealKey(gridKey) {
+    const main = /^main_send(\d+)$/.exec(String(gridKey || ""));
+    if (main) {
+        const n = Number(main[1]);
+        return (n >= 1 && n <= BUS_SENDS) ? `buses:main_send${n}` : null;
+    }
+    const bus = /^bus(\d+)_send(\d+)$/.exec(String(gridKey || ""));
+    if (!bus) return null;
+    const b = Number(bus[1]);
+    const n = Number(bus[2]);
+    if (!(b >= 1 && b <= SLOT_BUSES)) return null;
+    if (!(n >= 1 && n <= BUS_SENDS)) return null;
+    return `bus${b}:send${n}`;
+}
+
+/**
+ * Every declared param of the send mixer — both pages' worth.
+ *
+ * `short_name` is the enum square's problem in another costume: a cell is
+ * ~30px and a bus name is whatever the user typed, so the cell gets a clipped
+ * name and the held-knob header gets the real one.
+ */
+export function busSendGridParams(config) {
+    const out = [];
+    if (!config || config.unresolved) return out;
+    const rows = busListRows(config).filter((r) => r.kind !== "new");
+    for (let send = 1; send <= BUS_SENDS; send++) {
+        for (const row of rows) {
+            out.push({
+                key: sendGridKey(row, send),
+                name: row.name,
+                short_name: String(row.name).slice(0, 4),
+                type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
+            });
+        }
+    }
+    return out;
+}
+
+/**
+ * The hierarchy: one level per send, and a root that CARRIES NO KNOBS.
+ *
+ * The planner names the walk root's grid page "Main" whatever the level
+ * declares — deliberately, so 16 modules do not each open on their own word
+ * for "where you land". That is the wrong name for half a mixer, and a root
+ * holding Send A would have paged "Main / Send B". A root with no keys emits
+ * no grid page at all, so the pages are the two levels below it and each is
+ * named for the send it is.
+ *
+ * Answers null for an unresolved config. A read that did not complete is not
+ * "this slot has no buses", and a contract built from one would draw a mixer
+ * with only Main on it — a picture of a claim nothing made.
+ */
+export function busSendGridHierarchy(config) {
+    if (!config || config.unresolved) return null;
+    const params = busSendGridParams(config);
+    const half = params.length / BUS_SENDS;
+    const keysA = params.slice(0, half).map((p) => p.key);
+    const keysB = params.slice(half).map((p) => p.key);
+    return {
+        modes: null,
+        levels: {
+            root: {
+                label: "Sends",
+                knobs: [],
+                params: [{ level: "send_a", label: "Send A" },
+                         { level: "send_b", label: "Send B" }],
+            },
+            send_a: {
+                label: "Send A",
+                knobs: keysA,
+                params: keysA.map((k) => ({ key: k })),
+            },
+            send_b: {
+                label: "Send B",
+                knobs: keysB,
+                params: keysB.map((k) => ({ key: k })),
+            },
+        },
+    };
+}

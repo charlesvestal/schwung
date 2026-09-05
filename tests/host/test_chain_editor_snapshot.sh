@@ -1443,11 +1443,96 @@ addBus("bus/chain/hole", { screen: "chain",
 addBus("bus/chain/bypassed", { screen: "chain",
   config: busesConfig({ buses: [{ name: "Hats", sends: [0, 15],
     fx: ["cloudseed", "psxverb"], bypassed: [1, 0] }] }), bus: 0, pos: 1 });
+/* THE HOLE UNDER THE CURSOR. Its footer must say ADD, not EDIT: an empty
+   position holds no plugin, so there is nothing behind it to open -- and the
+   verb is the only thing on screen that distinguishes it from the loaded box
+   beside it. */
+addBus("bus/chain/hole-selected", { screen: "chain",
+  config: busesConfig({ buses: [{ name: "Kick", sends: [20, 0],
+    fx: ["tapescam", "", "cloudseed"] }] }), bus: 0, pos: 1 });
 /* And the picker this screen opens on a position. */
 addBus("bus/chain/picker", { screen: "chain", picking: true,
   config: busesConfig({ buses: [KICK] }), bus: 0, pos: 0, pickIndex: 1,
   entries: [{ id: "", name: "None" }, { id: "cloudseed", name: "CloudSeed" },
             { id: "psxverb", name: "PSX Reverb" }] });
+
+/* ======================================================================== */
+/* THE BUS SEND MIXER, AS THE KNOB GRID                                      */
+/* ======================================================================== */
+/*
+ * Main`s row on the bus list opens a two-page grid -- Send A, Send B -- with
+ * every bus`s level on an encoder. Rendered here for the same reason the
+ * Master FX settings pages are: it is a synthesised contract driven through
+ * the REAL controller and the REAL bus_model.mjs, so a change to the contract
+ * (a row that stops appearing, a name that stops fitting) moves a picture.
+ *
+ * busSendsGridIo is LIFTED out of shadow_ui.js rather than restated: the
+ * mapping from a grid key to the two real spellings is the whole of what this
+ * io does, and a hand-typed copy of it would baseline a mapping nobody runs.
+ */
+const mkBusSendsIo = lift("busSendsGridIo",
+  ["busSlot", "busConfig", "BusModel", "getSlotParam", "setSlotParam", "busConfigStale"]);
+
+const busSendsCases = [];
+const addBusSends = (id, o) => busSendsCases.push(Object.assign({ id }, o));
+
+/* Two buses -- three cells, which is a page with room to spare -- and four,
+   which is FIVE cells and the widest this page can ever be (SLOT_BUSES is 4
+   and Main is one row). Both pages of each, because the two levels are built
+   from the same rows and a mapping that lost the send index would draw them
+   identically. */
+addBusSends("bus/sends/2-send-a", { page: "Send A",
+  buses: [KICK, HATS], mainSends: [5, 30] });
+addBusSends("bus/sends/2-send-b", { page: "Send B",
+  buses: [KICK, HATS], mainSends: [5, 30] });
+addBusSends("bus/sends/full-send-a", { page: "Send A",
+  buses: [KICK, HATS, SNARE, TOMS], mainSends: [5, 30] });
+/* A HOLE: bus 2 deleted. The rows are the LIST`s rows, so the page must show
+   two faders and no third -- and the one that is there must still be bus 3`s
+   own level, not the second row`s. */
+addBusSends("bus/sends/hole-send-a", { page: "Send A",
+  buses: [KICK, null, SNARE], mainSends: [5, 30] });
+
+function renderBusSends(c) {
+  const fb = createFramebuffer();
+  const cfg = BusModel.parseBusesConfig(busesConfig(
+    { buses: c.buses, mainSends: c.mainSends }));
+  /* The store, keyed by the REAL spellings -- "buses:main_sendN" for the slot
+     and "busN:sendM" for a bus. Seeded from the same config the rows come
+     from, so a case says its levels once. */
+  const store = { "buses:main_send1": String(c.mainSends[0]),
+                  "buses:main_send2": String(c.mainSends[1]) };
+  cfg.buses.forEach((b) => {
+    if (!b.present) return;
+    store[`bus${b.index + 1}:send1`] = String(b.sends[0]);
+    store[`bus${b.index + 1}:send2`] = String(b.sends[1]);
+  });
+  installGlobals(fb, (slot, key) => (store[key] !== undefined ? store[key] : ""));
+  const io = mkBusSendsIo(0, cfg, BusModel,
+    (slot, k) => (store[k] !== undefined ? store[k] : ""),
+    (slot, k, v) => { store[k] = String(v); return true; },
+    false)();
+  const ctl = createController(Object.assign({ announce: noop }, io));
+  ctl.load({ slot: 0, component: "bus_sends", prefix: "bus_sends",
+             /* One authored grouping per page -- the same flag the host hands
+                in through the chrome. */
+             paginate: false });
+  ctl.setLayout(LAYOUT_MOVY);
+  const names = ctl.pages.map((p) => p.name);
+  const at = names.indexOf(c.page);
+  if (at < 0) fail(c.id + " names a page that does not exist: " + c.page +
+                   " (pages: " + names.join(", ") + ")");
+  ctl.goToPage(at);
+  /* One read per tick, as on the device: wound forward until every cell has a
+     value, exactly as renderSettings does. */
+  for (let i = 0; i < 400; i++) ctl.tick();
+  ctl.render(drawContext(fb), {
+    title: "S1 > Sends",
+    footer: SETTINGS_FOOTER[ctl.page.kind] || SETTINGS_FOOTER.knobs,
+  });
+  clearGlobals();
+  return fb;
+}
 
 /* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
@@ -1557,6 +1642,9 @@ run(busPickerCases, renderBusPicker, "picker");
 run(busCases.filter((c) => c.screen !== "chain"), renderBusScreen, "picker");
 run(busCases.filter((c) => c.screen === "chain" && !c.picking), renderBusScreen, "chain");
 run(busCases.filter((c) => c.screen === "chain" && c.picking), renderBusScreen, "picker");
+/* The send mixer wears the knob grid`s three bands, like every other page the
+   controller draws. */
+run(busSendsCases, renderBusSends, "settings");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");

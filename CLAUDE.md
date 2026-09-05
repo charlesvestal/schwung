@@ -646,6 +646,16 @@ Down on the synth opens the slot's bus list, Down on a bus row opens that bus's
   clamps a plugin's -1 to `""` so the two cannot collide.
 - **Orphaned voice ids are shown and are the only thing that can clear them**;
   every `bus<N>:voices` write is a whole-list replace, so the write CARRIES them.
+- **A bus insert is a THIRD CHAIN TARGET.** Its parameters were unreachable —
+  Click was the picker unconditionally and the encoders answered `null` — while
+  the DSP had served `bus<N>:fx<K>:<param>` all along. Click EDITS now and
+  Shift+Click swaps. Read `chain_params` and the entry gate's hierarchy through
+  the BUS target: `slotChainTarget` answers null for "bus1:fx2", and an empty
+  `chain_params` is what invents a `float 0..1` knob for every parameter.
+- **The send mixer is ONE PAGE PER SEND** (Main's row on the bus list), bounded
+  at five cells by `SLOT_BUSES + 1` and handed `paginate: false`. Its ROOT level
+  carries no knobs on purpose — the planner names a walk root's page "Main"
+  whatever it declares, and "Main / Send B" is not a mixer.
 
 ### Recording / capture
 
