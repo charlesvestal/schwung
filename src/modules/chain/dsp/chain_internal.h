@@ -41,6 +41,8 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
 #include "host/lfo_common.h"
+#include "host/bus_mix.h"
+#include "host/bus_route.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -60,13 +62,10 @@
  * tests/host/test_bus_route.sh. The bitmask in bus_mix_active_mask is a
  * uint32_t, so 32 is the hard ceiling. */
 #define SLOT_BUSES 4
-_Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= 32,
+/* Named, not a repeated 32: bus_mix.h is included above now (the render path
+ * needs it), so the copy this header used to carry has no excuse left. */
+_Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= BUS_MIX_MAX_BUSES,
                "SLOT_BUSES must fit bus_mix_active_mask's uint32_t");
-/* The 32 above is a copy of BUS_MIX_MAX_BUSES (src/host/bus_mix.h), which is
- * the thing this header family otherwise exists to prevent. It is tolerated
- * here only because chain_internal.h does not include bus_mix.h and 32 is a
- * hard uint32_t ceiling that cannot move. If that include ever appears, use
- * the name. */
 
 #define MAX_MIDI_FX 8       /* Max native MIDI FX modules per chain */
 #define CHAIN_PRE_DELAY_MAX 32  /* Pre-mode inject-delay buffer: one clock's output */
@@ -262,6 +261,28 @@ typedef struct {
  * V2 Instance-Based API
  * ============================================================================ */
 
+/*
+ * One of a slot's SLOT_BUSES sub-mixes: a buffer the synth renders a subset of
+ * its voices into, plus that bus's own insert chain.
+ *
+ * `buf` is allocated ON DEMAND (off the RT thread) and is NULL until then, so
+ * a NULL buffer is the normal resting state and not an error — bus_mix_target
+ * routes the bus's voices to the main buffer while it is NULL, which is why a
+ * bus can be configured before it is allocated without ever dropping audio.
+ */
+typedef struct {
+    int   in_use;
+    char  name[MAX_NAME_LEN];
+    int16_t *buf;                                 /* FRAMES_PER_BLOCK * 2 samples */
+    void *fx_handles[MAX_AUDIO_FX];
+    audio_fx_api_v2_t *fx_plugins_v2[MAX_AUDIO_FX];
+    void *fx_instances[MAX_AUDIO_FX];
+    int   fx_bypassed[MAX_AUDIO_FX];
+    int   fx_count;
+    char  current_fx_modules[MAX_AUDIO_FX][MAX_NAME_LEN];
+    int   send_level[BUS_MIX_SENDS];              /* 0..BUS_MIX_SEND_LEVEL_MAX */
+} slot_bus_t;
+
 /* Chain instance state - contains all per-instance data for v2 API */
 typedef struct chain_instance {
     /* Module directory */
@@ -304,6 +325,33 @@ typedef struct chain_instance {
 #define SPLIT_VOICE_ID_LEN 32
     char synth_split_voice_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
     int  synth_split_voice_count;
+
+    /* Optional per-voice render, discovered by dlsym on the synth handle.
+     *
+     * A SEPARATE EXPORTED SYMBOL, NOT A FIELD ON plugin_api_v2_t. Appending to
+     * that struct is what boot-looped a device via breakbeat's header drift: a
+     * module cannot extend the ABI from its side, and a guarded read of a field
+     * we do not have tests memory belonging to somebody else. A dlsym'd symbol
+     * is absent-or-present with no offset to get wrong.
+     *
+     * It ACCUMULATES — the chain clears the buffers first — which is the
+     * opposite of render_block, and is what makes two voices sharing one bus
+     * cost no mixing pass at all. */
+    void (*synth_render_split)(void *instance, int16_t *const *voice_out,
+                               int n_voices, int frames);
+
+    /* voice index -> bus index, or BUS_MIX_MAIN. Indexed by the SAME index as
+     * synth_split_voice_ids, holes included: a hole never matches a bus
+     * assignment and so resolves to main like any unassigned voice.
+     *
+     * Initialised to BUS_MIX_MAIN, never left at calloc's 0 — 0 is a real bus
+     * index and would put every voice on bus 1 the moment buses allocate. */
+    int8_t voice_bus[SPLIT_VOICES_MAX];
+
+    /* Per-bus sub-mixes and their insert chains. Main is bus 0 and implicit:
+     * it is this instance's own out buffer and its existing fx[] chain. */
+    slot_bus_t buses[SLOT_BUSES];
+    int main_send_level[BUS_MIX_SENDS];  /* Main sends like any bus */
 
     /* Audio FX state */
     void *fx_handles[MAX_AUDIO_FX];
@@ -462,6 +510,20 @@ typedef struct chain_instance {
     /* Synth load error message */
     char synth_load_error[256];
 } chain_instance_t;
+
+/*
+ * voice_bus[] must start at BUS_MIX_MAIN, not at calloc's 0, which is bus 1's
+ * own index. A loop and not a memset: BUS_MIX_MAIN is -1, and a 0xFF byte-fill
+ * only reads back as -1 by two's-complement luck.
+ *
+ * Called at create and on every synth load/unload, for the same reason
+ * synth_split_voice_ids is cleared there — an assignment left over from the
+ * previous module names a voice in a list that no longer exists.
+ */
+static inline void chain_reset_voice_bus(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int i = 0; i < SPLIT_VOICES_MAX; i++) inst->voice_bus[i] = BUS_MIX_MAIN;
+}
 
 #define CHAIN_INTERNAL __attribute__((visibility("hidden")))
 

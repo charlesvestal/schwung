@@ -93,6 +93,8 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
      * relying on calloc, matching v2_unload_synth / v2_load_synth below. */
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
+    inst->synth_render_split = NULL;
+    chain_reset_voice_bus(inst);
 
     /* Set up host API for sub-plugins */
     if (g_host) {
@@ -183,6 +185,10 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_bypassed = 0;
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
+    /* Cleared with the handle it was resolved against: keeping it would leave a
+     * function pointer into a dlclose'd mapping. */
+    inst->synth_render_split = NULL;
+    chain_reset_voice_bus(inst);
 }
 
 /* V2 unload all audio FX */
@@ -487,6 +493,18 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         }
     }
 
+    /* Optional per-voice render. Discovered by dlsym exactly as fx_on_midi is,
+     * and for the same reason: NULL is the normal answer for a module that
+     * does not implement it, not an error.
+     *
+     * Held in a LOCAL until the load commits. Several exits below dlclose this
+     * handle and return -1 with the PREVIOUS synth still loaded and running —
+     * writing the pointer here would leave that synth calling into an unmapped
+     * library on the next audio frame. */
+    void (*render_split_fn)(void *, int16_t *const *, int, int) =
+        (void (*)(void *, int16_t *const *, int, int))
+            dlsym(handle, "move_plugin_render_split");
+
     /* V2 API required */
     move_plugin_init_v2_fn init_v2 = (move_plugin_init_v2_fn)dlsym(handle, MOVE_PLUGIN_INIT_V2_SYMBOL);
     if (!init_v2) {
@@ -535,6 +553,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
             inst->synth_handle = handle;
             inst->synth_plugin_v2 = api;
             inst->synth_instance = NULL;
+            inst->synth_render_split = render_split_fn;
             strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
             
             parse_chain_params(synth_path, inst->synth_params, &inst->synth_param_count);
@@ -546,6 +565,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     inst->synth_handle = handle;
     inst->synth_plugin_v2 = api;
     inst->synth_instance = synth_inst;
+    inst->synth_render_split = render_split_fn;
     strncpy(inst->current_synth_module, module_name, MAX_NAME_LEN - 1);
 
     /* Parse chain_params from module.json for type info */
@@ -556,6 +576,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
         inst->synth_handle = NULL;
         inst->synth_plugin_v2 = NULL;
         inst->synth_instance = NULL;
+        inst->synth_render_split = NULL;  /* resolved against the handle just closed */
         inst->current_synth_module[0] = '\0';
         return -1;
     }
@@ -574,6 +595,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * synth_last_note = -1 above. */
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
+    chain_reset_voice_bus(inst);
 
     if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
         char split_buf[4096];
@@ -2138,11 +2160,84 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     /* Process MIDI FX tick (for arpeggiator timing) */
     v2_tick_midi_fx(inst, frames);
 
+    /* Per-voice render, but ONLY when the module supports it AND a bus is
+     * actually routed. Both halves matter: with nothing routed, every
+     * voice_out[] entry resolves to out_interleaved_lr and the split render is
+     * the plain render with extra steps.
+     *
+     * The buffer snapshot comes BEFORE the mask because the mask depends on
+     * it — bus_mix_active_mask only names a bus that has a buffer, so the two
+     * must see the same table or the clear set could name a NULL. */
+    int16_t *bus_bufs[SLOT_BUSES] = {0};
+    uint32_t active_bus_mask = 0;
+    int n_active = 0;
+    if (inst->synth_render_split && inst->synth_instance &&
+        inst->synth_split_voice_count > 0) {
+        for (int b = 0; b < SLOT_BUSES; b++) bus_bufs[b] = inst->buses[b].buf;
+        n_active = bus_mix_active_mask(inst->voice_bus,
+                                       inst->synth_split_voice_count,
+                                       SLOT_BUSES, bus_bufs, &active_bus_mask);
+    }
+
     /* Always render so synth state advances (envelopes, LFOs, phases).
      * If bypassed, zero the buffer afterward — downstream FX still see
      * silence as input but the synth's internal time doesn't freeze, so
      * unbypass resumes cleanly without a burst. */
-    if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
+    if (n_active > 0) {
+        /* The split render ACCUMULATES, so the destinations must be cleared
+         * first — main, and ONLY the distinct bus buffers the mask names. An
+         * allocated-but-unrouted bus is never touched. */
+        memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        for (int b = 0; b < SLOT_BUSES; b++) {
+            if ((active_bus_mask & (1u << b)) && bus_bufs[b])
+                memset(bus_bufs[b], 0, frames * 2 * sizeof(int16_t));
+        }
+
+        /* Entries alias deliberately: voices sharing a bus get the same
+         * pointer, so their sum happens inside the module's own render. */
+        int16_t *voice_out[SPLIT_VOICES_MAX];
+        bus_mix_build_table(voice_out, inst->synth_split_voice_count,
+                            inst->voice_bus, out_interleaved_lr,
+                            bus_bufs, SLOT_BUSES);
+
+        inst->synth_render_split(inst->synth_instance, voice_out,
+                                 inst->synth_split_voice_count, frames);
+
+        /* Per-bus inserts, in series, with the main chain's bypass discipline:
+         * always process so delay lines and reverb tails keep advancing, and
+         * restore the dry on a bypassed position so unbypass resumes cleanly. */
+        for (int b = 0; b < SLOT_BUSES; b++) {
+            if (!(active_bus_mask & (1u << b)) || !bus_bufs[b]) continue;
+            slot_bus_t *bus = &inst->buses[b];
+            for (int i = 0; i < bus->fx_count && i < MAX_AUDIO_FX; i++) {
+                int bypassed = bus->fx_bypassed[i];
+                int16_t fx_dry[FRAMES_PER_BLOCK * 2];
+                if (bypassed) {
+                    memcpy(fx_dry, bus_bufs[b], frames * 2 * sizeof(int16_t));
+                }
+                if (bus->fx_plugins_v2[i] && bus->fx_instances[i] &&
+                    bus->fx_plugins_v2[i]->process_block) {
+                    bus->fx_plugins_v2[i]->process_block(bus->fx_instances[i],
+                                                         bus_bufs[b], frames);
+                }
+                if (bypassed) {
+                    memcpy(bus_bufs[b], fx_dry, frames * 2 * sizeof(int16_t));
+                }
+            }
+        }
+
+        /* Buses sum into main BEFORE the main chain's 8 FX, so a slot
+         * compressor sees the whole kit. It is also before the external_fx_mode
+         * return below: a bus's audio is part of the slot's synth output and
+         * would simply vanish from it otherwise, and the bus inserts have
+         * nowhere else they could run — the shim's chain_process_fx only ever
+         * sees the summed buffer. Sends (Task 6) are taken from the post-insert
+         * bus buffers, which are still intact at this point. */
+        for (int b = 0; b < SLOT_BUSES; b++) {
+            if (!(active_bus_mask & (1u << b)) || !bus_bufs[b]) continue;
+            bus_mix_accumulate(out_interleaved_lr, bus_bufs[b], frames * 2);
+        }
+    } else if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->render_block) {
         inst->synth_plugin_v2->render_block(inst->synth_instance, out_interleaved_lr, frames);
     } else {
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
