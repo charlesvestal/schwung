@@ -1480,6 +1480,63 @@ and its own nominal. Anything unusable is returned as a reason and logged
 against the module, because "declared a widget and did not get one" is precisely
 what an author cannot otherwise see.
 
+### A widget can name a value with NO CELL, and before it could not
+
+A widget cannot read — it is handed the page's value map. So a picture
+depending on a value that has no cell on this page had exactly one route: give
+that value a knob. A real module did, and shipped a read-only cell occupying one
+of eight slots on a 128x64 screen, drawing a 17x15 head nobody could interpret,
+whose only job was carrying a number to the cell beside it. Judged on hardware
+in three words: not useful.
+
+`extraKeys` already existed for this shape — `detectSample` sets it for an
+off-page filepath, and the controller already spends one rotation stop on each —
+but only an internal detector could produce one. `viz.extra_keys` lets a module
+declare them. Capped at four: one read per stop, and a cell asking for twenty
+would spend the page's whole read budget and starve every other value on screen.
+
+### A page the MODULE draws, and it is still a page
+
+`type: "canvas"` gives a cell you dive into. `as_page` gives a page in the
+level's jog rotation carrying that level's own knobs — reached by paging,
+turned by the encoders, redrawn every tick so it can animate, and wearing the
+host's own header and footer. `preset_browser` goes further and makes it the
+level's browser, so a face per character replaces a row of text.
+
+**IT IS A PAGE_KNOBS PAGE WITH A DRAWER, NOT A NEW KIND**, and that is the whole
+reason it works. Twenty-two places in `page_controller` branch on PAGE_KNOBS:
+reads, knob turns, touch, the touch strip, announce, dive targets, the list
+layout. A new kind would have to be threaded through every one, and missing one
+gives a page that looks right and does not respond. As a knobs page it inherits
+all of it and only the picture differs — which is also why the encoders work
+with no input code at all.
+
+Three gates asked "is this PAGE_KNOBS" when they meant "does this page have
+keys" (`pageHasKnobs`). A browser page also has to tick BOTH lanes: an ordinary
+preset page returns early after its own, which is right with no knobs and wrong
+the moment it has some.
+
+**THE BRANCH IS IN BOTH RENDERERS.** `render_page_movy` is the layout the device
+uses; putting it only in `render_page.mjs` produced a page whose header said
+FACE and whose body was eight knobs — correct everywhere except on hardware.
+
+### A module may declare a param LIVE, and the picture then follows the SOUND
+
+`isModulated` asks the chain's modulation system, which knows about LFOs and
+macros. It cannot know a synth drives its own vowel from pad pressure, so the
+widget drawing that vowel sat frozen at the knob while the sound moved.
+`"live": true` buys the treatment a modulated key already gets: `:effective`
+re-read EVERY TICK rather than on the rotation, which on an eight-knob page
+comes round about four times a second — an animation drawn from that is a
+slideshow.
+
+Two traps behind it, both found on hardware. The chain host OWNED `:effective`
+and, for a key it was not modulating, stripped the suffix and asked the plugin
+for the plain key — so a module serving its own effective value was never asked
+and the UI got the knob back. And **the shim skips `render_block` on a silent
+slot** (one probe frame in 172), so a module computing its effective value
+inside `render_block` appears frozen until something plays.
+
 ### A module's OTHER draw surface is a CARD, and it floats
 
 `drawCell` gives a module one cell. `card_script` gives it the page: a bordered

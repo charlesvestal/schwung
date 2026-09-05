@@ -2051,6 +2051,55 @@ no drawer, or a name outside the `custom:` namespace — is **named in
 through to a built-in, which looks completely correct, so the log line is the
 only way to find out the picture is not yours.
 
+##### A widget that needs a value with no cell on the page
+
+A widget is handed the page's value map and cannot read. So a picture that
+depends on a value with **no cell on this page** — the vowel of *which*
+character, a ratio against *which* base — has to name it:
+
+```json
+{ "key": "vowel", "type": "float", "min": 0, "max": 1,
+  "viz": { "kind": "custom:mouth", "extra_keys": ["face"] } }
+```
+
+The controller adds each to its value rotation as one extra stop and hands it
+over in `values`, exactly like a key that does have a cell.
+
+**One read per stop, so declare what the picture needs and nothing else.**
+Capped at four: a cell asking for twenty would spend the page's whole read
+budget and starve every other value on screen. An unavailable custom kind
+contributes none, since its group is abandoned whole.
+
+Without this the only way to get a fact to a widget was to give it a knob —
+which is how a module ended up shipping a read-only cell that existed purely to
+carry a number to the cell beside it.
+
+##### A parameter the module drives itself
+
+A knob is not always the only thing moving a parameter. A synth that sweeps its
+own vowel from pad pressure, a step sequencer walking its own position — the
+picture of that value should follow what it is *doing*, not where its knob was
+left.
+
+```json
+{ "key": "vowel", "type": "float", "min": 0, "max": 1, "live": true }
+```
+
+`live` buys the treatment a chain-modulated key already gets: the module is
+asked for `<key>:effective` **every tick**, rather than on the value rotation,
+and graphics are handed base-merged-with-effective. The rotation comes round
+about four times a second on an eight-knob page, and an animation drawn from
+that is a slideshow — the per-tick refresh is the entire point.
+
+Serve `<key>:effective` from your `get_param`, and `<key>:base` too if you want
+to save the host a fallback read. `values` stays the BASE everywhere a value is
+edited, because that is what a turn changes.
+
+**A silent slot is barely rendered.** The shim skips `render_block` on a slot
+making no sound — one probe frame in 172 — so an effective value computed inside
+`render_block` will appear frozen until something plays. Compute it from state
+your `set_param` already holds.
+
 **What you can draw with.** The frame context carries `fillRect`, `print`,
 `textWidth`, `setPixel`, `line`, `fillCircle`, `drawCircle` and `drawArc`. All of
 them are always present — they are implemented on the frame's own clipped
@@ -2145,6 +2194,65 @@ under `src/modules/`, so a fixture also has to be scrubbed from `build/` when
 the gate is off. A `module.json` shipped without its `.so` still appears in the
 FX picker, and a chain slot pointing at a module that cannot load is restored on
 every boot. `tests/host/test_test_fixtures_not_shipped.sh` pins both halves.
+
+#### Custom UI pages (`as_page`)
+
+A `type: "canvas"` param is a CELL you click to dive into a fullscreen view.
+Add `as_page` and it becomes a **page in the level's jog rotation** instead,
+carrying that level's own knobs:
+
+```json
+{ "key": "face", "name": "Face", "type": "canvas",
+  "canvas_script": "canvas.js", "as_page": true, "show_value": false }
+```
+
+```javascript
+globalThis.canvas_overlay = {
+    drawPage(ctx, { values, base, keys, touched, nowMs, preset }) {
+        /* ctx is frame-scoped to the BODY BAND. (0,0) is its top-left. */
+    },
+};
+```
+
+- **It is reached by paging, not by diving**, and the canvas key gets no cell of
+  its own — so it does not also appear as an orphan overflow page.
+- **The eight encoders work**, doing exactly what they do on that level's grid.
+  You write no input code: the page carries the same keys.
+- **It animates.** The host redraws every tick and the page's keys are already
+  in the read rotation, so `values` is fresh at no extra cost. `nowMs` is a wall
+  clock for anything driven by time.
+- **The chrome is the host's.** You are handed the band the eight cells would
+  have occupied — the header (including the touch strip while a knob is held),
+  the bank bar and the footer are drawn around you. You cannot paint over them
+  and you should not draw any of your own.
+- `values` carries live values merged over the base; `base` is the knob
+  positions, for a page that wants to show both.
+- **One strike**, as everywhere else: a `drawPage` that throws is retired for
+  the session and the body is left empty under a normal page.
+
+Internally a custom page is an ordinary knobs page carrying a drawer, not a new
+page kind — which is why every knobs-page behaviour (reads, turns, touch,
+announce) applies to it unchanged.
+
+##### A custom page as the level's preset browser
+
+If the level declares the preset triple (`list_param` / `count_param` /
+`name_param`), add `preset_browser` and the custom page **becomes** that browser
+rather than a second page beside it:
+
+```json
+{ "key": "face", "name": "Face", "type": "canvas", "canvas_script": "canvas.js",
+  "as_page": true, "preset_browser": true, "show_value": false }
+```
+
+Same jog, same enter/exit, same announcements — and it is emitted first, so it
+is what you land on. `drawPage` additionally receives
+`preset: { name, index, count, entered }`, because what is being browsed is not
+a parameter and no read would find it.
+
+Use it when a picture is a better picker than a row of text — a face per
+character, a waveform per sample. Two pages, one showing the thing and one
+naming it, are two doors onto the same choice.
 
 #### The parameter card (`card_script`)
 

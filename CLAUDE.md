@@ -533,6 +533,27 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   was pixel-identical to a control.
 - A momentary fires from the knob too, **latched per gesture** — a rate limit
   still fires eight times across a two-second spin.
+- **A widget can NAME a value that has no cell** — `viz.extra_keys`, capped at
+  four, one read stop each. Before it, the only way to get a fact to a widget
+  was to give it a knob, which is how a module shipped a read-only cell whose
+  whole job was carrying a number to the cell beside it.
+- **A module can own a PAGE (`as_page`), and it is a PAGE_KNOBS page with a
+  drawer, NOT a new kind.** That is what makes the encoders work with no input
+  code and the reads happen at all: 22 controller branches test PAGE_KNOBS, and
+  threading a new kind through every one is how you get a page that looks right
+  and does not respond. Three gates now ask `pageHasKnobs` — "does it have
+  keys" — instead. `preset_browser` makes such a page the level's BROWSER, so a
+  picture replaces a row of text; it must tick BOTH lanes, because a preset page
+  returns early after its own. **The branch belongs in BOTH renderers** —
+  `render_page_movy` is the one the device uses, and a version only in
+  `render_page.mjs` is correct everywhere except on hardware.
+- **`"live": true` says the MODULE drives this param**, so `:effective` is
+  re-read every tick instead of on the rotation (which comes round ~4x/sec — an
+  animation drawn from that is a slideshow). Two traps behind it: the chain host
+  OWNED `:effective` and, for a key it was not modulating, asked the plugin for
+  the PLAIN key, so a module serving its own driven value was never asked; and
+  **the shim skips `render_block` on a silent slot** (one probe frame in 172),
+  so an effective value computed there looks frozen until something plays.
 - **A module may declare SEVERAL widgets, and for a long time exactly one
   registered.** The registry was always a Map; the single call site read
   `ov.widgetKind`, one *string*, so a second declared kind was dropped — and a
