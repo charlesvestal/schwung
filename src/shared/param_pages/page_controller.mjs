@@ -4071,6 +4071,19 @@ export function createController(io = {}) {
         });
     }
 
+    /*
+     * Base values with any live/modulated ones merged over them.
+     *
+     * The same merge render_page_movy does for graphics, in ONE place so the
+     * card and the renderers cannot disagree about what a value is. Returns the
+     * base object untouched when nothing is live, so the common case allocates
+     * nothing.
+     */
+    function liveValues() {
+        for (const _k in s.modValues) return Object.assign({}, s.values, s.modValues);
+        return s.values;
+    }
+
     /** True when the page on screen is drawn by the module. */
     function onCanvasPage() {
         const p = page();
@@ -4225,12 +4238,17 @@ export function createController(io = {}) {
              * strip above it would be a second formatter by another name. */
             value: knobRowValue(key),
             raw: s.values[key] === undefined ? null : s.values[key],
-            /* The whole page's values, so a card can read a sibling the way a
-             * cell widget always could -- see param_card's note. Passed by
-             * reference deliberately: drawCell is already handed this exact
-             * object, and copying it per frame to give the card a weaker
-             * guarantee than the cell has would be the odd choice. */
-            values: s.values,
+            /*
+             * The whole page's values, so a card can read a sibling the way a
+             * cell widget always could -- see param_card's note.
+             *
+             * LIVE VALUES MERGED OVER THE BASE, exactly as a graphic gets them.
+             * A card is a picture of what a parameter MEANS, and for a param
+             * something else is driving, what it means is what it is DOING --
+             * not where its knob was left. `raw` stays the base, because that
+             * is the number the turn is editing.
+             */
+            values: liveValues(),
             nowMs: now(),
             /*
              * ONE STRIKE. A drawer that threw is retired for the session rather

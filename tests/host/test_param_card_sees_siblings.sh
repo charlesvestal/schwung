@@ -111,7 +111,15 @@ const surface = () => {
   const pc = readFileSync("./src/shared/param_pages/page_controller.mjs", "utf8");
   const call = pc.slice(pc.indexOf("function drawDeclaredCard"),
                         pc.indexOf("function drawDeclaredCard") + 2000);
-  ok(/values:\s*s\.values/.test(call), "page_controller passes its value map to the card");
+  /* `liveValues()`, not `s.values`: the card is handed the base with any
+   * live/modulated values merged over it, so a card picturing a parameter
+   * something else is driving shows what it is DOING rather than where its knob
+   * was left. Pinned on the helper rather than on the raw field, because the
+   * merge is the point. */
+  ok(/values:\s*liveValues\(\)/.test(call),
+     "page_controller passes its value map to the card");
+  ok(/function liveValues\(\)/.test(pc),
+     "and that map merges the live values over the base");
   ok(/nowMs:\s*now\(\)/.test(call), "page_controller passes a clock to the card");
 }
 
