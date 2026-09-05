@@ -161,14 +161,13 @@ export const GLOBAL_ENUM_VALUES = {
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
  *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
- *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *
  * Three kinds of persistence, and conflating them is how a write goes missing:
  *
  *   "save"  saveMasterFxChainConfig() — the SHARED sink. These are the keys
  *           writeGlobalParam persists via io.persist(), and only these.
- *   "own"   a key-specific writer (savePadTypingConfig, saveFilebrowserConfig,
+ *   "own"   a key-specific writer (savePadTypingConfig, savePadTypingConfig,
  *           …). It is inseparable from the write itself, so it lives in the
  *           host's writeParam beside the assignment it saves, not here — the
  *           generic persist() must not fire for these or every key would look
@@ -229,7 +228,6 @@ export const GLOBAL_ROUTING = {
      * writes lives in SHM and does not survive a reboot. */
     recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
-    filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
 };
 
@@ -587,51 +585,44 @@ export const SHORTCUTS_PARAMS = [
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
 ];
 
-export const SERVICES_PARAMS = [
-    bool("filebrowser_enabled", "File Browser", 0),
+export const SYSTEM_PARAMS = [
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
 ];
 
-/* ------------------------------------------------------------------ updates */
+/* ------------------------------------------------------------------- system */
 
 /*
- * Detection runs on-device (catalog scan + version compare) so users can see
- * what is outdated without opening a browser. The INSTALL always happens via
- * the web manager — the on-device install paths silently failed for users
- * without a current shim, so they were removed.
+ * WHAT WENT, AND WHY THE SECTION IS NOT CALLED "UPDATES" ANY MORE.
  *
- * Entries with a name and a consequence and nothing to show, which is the
- * definition of a menu page. There is no value to draw, so rendering them as
- * knob cells would spend the whole widget band on four words.
+ * This menu used to be three rows: [Check Updates], [Module Store] and
+ * [Help...]. The first two are gone, and neither was removed for tidiness:
  *
- * [HELP...] IS THE THIRD ONE, and it is here because there is nowhere else it
- * can be.
+ *   [Module Store] had ALREADY been reduced to a screen that printed
+ *   "move.local:7700" and nothing else -- the on-device store was retired when
+ *   the install paths stopped working for anyone without a current shim, and
+ *   what was left was a signpost wearing a shop's name. It is now the Connect
+ *   screen, which answers the same question ("where do I get modules") with an
+ *   address the user can actually reach and a QR that opens it.
  *
- * It was declared as an action entry on `root` on the theory that "the host
- * dispatches it" — but root is pure navigation and plans to NO page, so the
- * planner walked past it and nothing ever drew it. There was no affordance:
- * the section picker enumerates PAGES, and an entry on a level that is not a
- * page is invisible from every surface. A declaration nothing can reach is the
- * same as a deleted one, only harder to notice.
+ *   [Check Updates] scanned the catalog over the network and listed what was
+ *   outdated, then told you to go to the web manager to install any of it. The
+ *   manager shows that same list, next to the button that acts on it. A second
+ *   copy on a 128x64 screen that cannot act is a report you have to go
+ *   somewhere else to use.
  *
- * The two obvious repairs are both closed. A `help` LEVEL is an eighth page,
- * which sections-as-levels forbids and tests/host/test_global_settings_contract
- * .sh pins twice over (seven pages, and no page whose name matches /help/i). A
- * one-entry menu level is the shape the Master FX contract already records as a
- * mistake — "a ONE ENTRY actions menu, which the knob grid draws as a menu page
- * you have to enter to press a single button".
+ * [Help...] stays, and it is joined by [Connect...] rather than left alone --
+ * a ONE ENTRY actions menu is the shape the Master FX contract already records
+ * as a mistake ("a menu page you have to enter to press a single button").
  *
- * So it joins the only menu this contract has. That is a demotion from the peer
- * of a section it used to be, and it is stated rather than hidden: Help now
- * lives one row below [Module Store] on the last page. The section LABEL stays
- * "Updates" because the page-name check above forbids the honest "Updates &
- * Help" — worth revisiting if that check is ever relaxed.
+ * The section is "System": it holds the one remaining service toggle
+ * (Analytics) on its grid page and these two doors on its menu page. That is
+ * TWO pages for one section, which is a deliberate split and not the silent
+ * kind -- see the note on GLOBAL_SECTIONS.
  */
-export const UPDATES_ACTIONS = [
-    { label: "[Check Updates]", action: "check_updates" },
-    { label: "[Module Store]", action: "module_store" },
+export const SYSTEM_ACTIONS = [
     { label: "[Help...]", action: "help" },
+    { label: "[Connect...]", action: "connect" },
 ];
 
 /* --------------------------------------------------------------- assembly */
@@ -639,6 +630,21 @@ export const UPDATES_ACTIONS = [
 /**
  * The sections, in the order they are paged through. `id` is the level name,
  * `label` is what the header and the section picker show.
+ *
+ * SIX SECTIONS, SEVEN PAGES, and the one section that splits does it on
+ * purpose. "One section, one page" was the property that made sections-as-
+ * levels work: a section long enough to PAGINATE would put a jog step in the
+ * middle of a scrolling list, arriving silently, chosen by nobody. That rule is
+ * intact and is the one tests/host/test_global_settings_contract.sh enforces
+ * per level.
+ *
+ * A `menu` is a different thing entirely. It is a second page of a KIND that
+ * the grid cannot hold -- entries with a name and a consequence and no value to
+ * draw -- so it is authored, named, and visible in the section picker as its
+ * own row, which is how [Help...] became findable instead of being the last
+ * line of a page called "Updates". The planner has always emitted it that way
+ * (page_plan.mjs, "Menu LAST, after this level's grids"); what is new here is
+ * only that a Global Settings section now uses it alongside params.
  */
 export const GLOBAL_SECTIONS = [
     { id: "display", label: "Display", params: DISPLAY_PARAMS },
@@ -646,11 +652,11 @@ export const GLOBAL_SECTIONS = [
     { id: "accessibility", label: "Screen Reader", params: ACCESSIBILITY_PARAMS },
     { id: "set_pages", label: "Set Pages", params: SET_PAGES_PARAMS },
     { id: "shortcuts", label: "Shortcuts", params: SHORTCUTS_PARAMS },
-    { id: "services", label: "Services", params: SERVICES_PARAMS },
-    { id: "updates", label: "Updates", params: [], menu: UPDATES_ACTIONS },
+    { id: "system", label: "System", params: SYSTEM_PARAMS, menu: SYSTEM_ACTIONS,
+      menu_label: "Help & Connect" },
 ];
 
-/** Every declared param, across all six grid sections. */
+/** Every declared param, across every section. */
 export function allGlobalParams() {
     const out = [];
     for (const s of GLOBAL_SECTIONS) for (const p of s.params) out.push(p);
@@ -661,15 +667,14 @@ export function allGlobalParams() {
  * Global Settings as a ui_hierarchy plus chain_params.
  *
  * Root carries no params of its own — it is pure navigation, so it plans to no
- * page and the seven sections are the whole page set. Its nav entries are what
- * name each page: planPages prefers a nav entry's label over the level's own,
- * which is the label users already see.
+ * page and the sections are the whole page set. Its nav entries are what name
+ * each page: planPages prefers a nav entry's label over the level's own, which
+ * is the label users already see.
  *
- * [Help...] is NOT here. It used to be an action entry on root, which reads
+ * [Help...] is NOT an entry here. It used to be an action on root, which reads
  * well and does nothing: root plans to no page, the planner walks past an entry
  * with no `key` and no `level`, and the section picker enumerates pages — so it
- * had no surface anywhere. It is an entry on the Updates menu now; see
- * UPDATES_ACTIONS for why that is the only place left for it.
+ * had no surface anywhere. It lives on the System menu; see SYSTEM_ACTIONS.
  *
  * @param {object} [io]  unused by the declaration; accepted so the call shape
  *   matches createSlotGridIo's and so a future runtime-shaped section (one
@@ -694,7 +699,15 @@ export function buildGlobalSettingsContract(io) {
         };
         if (s.menu) {
             level.menu = s.menu.map((m) => ({ label: m.label, action: m.action }));
-            level.menu_label = s.label;
+            /*
+             * The menu page needs a name of its OWN once its level also has a
+             * grid page. `s.label` was right while a menu level had nothing
+             * else on it — the section WAS the menu — and would now name two
+             * pages "System", which planPages disambiguates by appending
+             * " - 2". A user looking for help would be scanning the section
+             * picker for a row called "System - 2".
+             */
+            level.menu_label = s.menu_label || s.label;
         }
         levels[s.id] = level;
     }
