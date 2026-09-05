@@ -846,6 +846,8 @@ fi
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
+cp ./src/schwung-entry.sh ./build/
+cp ./src/host/boot_target_lib.sh ./build/host/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/launch-standalone.sh ./build/ 2>/dev/null || true
 
