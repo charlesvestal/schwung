@@ -69,7 +69,7 @@ printf '%s\n' "$BODY" | grep -Eq "malloc|calloc|free\(|fopen|fprintf|unified_log
 called_in() {
   printf '%s\n' "$STRIPPED" \
     | awk -v fn="$1" '
-        $0 ~ ("^(static )?void " fn "\\(") {on=1}
+        $0 ~ ("^(static )?(void|int) " fn "\\(") {on=1}
         on && /chain_record_synth_note\(inst,/ {found=1}
         on && /^}/ {exit}
         END {exit found ? 0 : 1}
