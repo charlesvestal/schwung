@@ -66,6 +66,7 @@ fi
 # --- Entrypoint ---
 
 chmod +x "$BASE/shim-entrypoint.sh" 2>/dev/null
+[ -f "$BASE/schwung-entry.sh" ] && chmod +x "$BASE/schwung-entry.sh" 2>/dev/null
 
 # Backup original Move binary (only once)
 if [ ! -f /opt/move/MoveOriginal ] && [ -f /opt/move/Move ]; then

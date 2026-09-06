@@ -95,6 +95,7 @@ extern volatile int shim_usbc_monitor;     /* 37 12 bit1: monitoring engaged */
 #define SHIM_EVT_PREVIEW_PLAY       8  /* read preview cmd path, open + mmap */
 #define SHIM_EVT_OVERTAKE_DSP_LOAD  9  /* dlopen + create_instance for an overtake module */
 #define SHIM_EVT_OVERTAKE_DSP_FREE  10 /* destroy_instance + dlclose a retired overtake module */
+#define SHIM_EVT_BOOT_HEALTHY       11 /* touch boot-targets/schwung/healthy after the first SPI frame */
 
 void shim_worker_post(uint8_t evt);
 
@@ -128,6 +129,7 @@ typedef struct {
     void (*preview_play_pending)(void);
     void (*overtake_dsp_load_pending)(void);
     void (*overtake_dsp_free_pending)(void);
+    void (*boot_healthy)(void);
 } shim_worker_hooks_t;
 
 void shim_worker_set_hooks(const shim_worker_hooks_t *hooks);

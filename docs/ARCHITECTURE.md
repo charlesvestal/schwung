@@ -60,12 +60,17 @@ not reachable from a running module today.
 1. Deploys files to `/data/UserData/schwung/`:
    - `schwung-shim.so` (LD_PRELOAD library, with setuid bit so secure
      exec mode can still preload it)
-   - `shim-entrypoint.sh`
+   - `shim-entrypoint.sh`, `schwung-entry.sh`, `host/boot_target_lib.sh`,
+     `bin/boot-select`
    - `shared/`, `host/`, `modules/`, `scripts/` directories
    - `link-subscriber` sidecar binary
 2. Writes `config/features.json` (preserving prior settings if any).
-3. Configures Move's launcher to run the shim entrypoint, which sets
-   `LD_PRELOAD=schwung-shim.so` before exec'ing MoveOriginal.
+3. Installs `shim-entrypoint.sh` as `/opt/move/Move`. It is a **boot
+   selector**, not the launcher directly: it shows a ~2s "press Back to
+   change" window, resolves a target from `/data/UserData/boot-targets/`
+   (self-registering `schwung` on every boot), and execs that target's entry
+   script — normally `schwung-entry.sh`, which sets `LD_PRELOAD=schwung-shim.so`
+   and execs MoveOriginal. See `docs/BOOT_TARGETS.md`.
 
 After installation, every reboot loads the shim alongside Move's
 normal firmware. There is no separate "host takeover" — Schwung is
