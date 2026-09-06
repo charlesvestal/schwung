@@ -328,7 +328,14 @@ any hand-rolled hardware-mailbox zeroing.
 **Swallowing a button needs BOTH EDGES, latched.** Press-only leaves Move a lone
 button-up for a key it never saw go down, and Move acts on it. The release
 cannot be gated on `shadow_shift_held` either — Shift is usually let go *before*
-the button.
+the button. **Nor on the screen still being up:** `capabilities.claims_ccs`
+withholds a claimed press inside the `shadow_display_mode` block, so dropping
+the latch when the display closes hands Move the orphan release directly — hold
+Copy on a claiming module's grid, dismiss, let go. The latch is a TRI-state
+(`CLAIM_LATCH_HELD` vs `RELEASED`) precisely because it deliberately outlives
+the release, so "non-zero" cannot answer "is a release still owed?"; a held
+button keeps its latch across the close and a drain in the unconditional
+post-ioctl scan swallows what is owed.
 
 `shadow_midi_in_compact()` (`src/host/shadow_midi_filter.c`) closes the gaps and
 runs **last** in `shim_post_transfer` — the blocking sites above it pair `sh[j]`

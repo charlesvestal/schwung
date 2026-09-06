@@ -6947,7 +6947,18 @@ static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in,
  * receives its RELEASE even if the claim (capabilities.claims_ccs) changes
  * mid-hold. Read by both the Move-firmware filter and the forward-to-shadow_ui
  * site; the filter runs first in the frame, so the forward site sees this
- * frame's decision. Touched only from the SPI callback -- no locking. */
+ * frame's decision. Touched only from the SPI callback -- no locking.
+ *
+ * THREE states, not two, and the third is what makes the display-close edge
+ * safe. Both non-zero values mean "this button's press was claimed" -- which
+ * is all the forward site asks -- but only HELD means the button is still
+ * down. The distinction exists because the latch is deliberately NOT cleared
+ * on release (the forward site runs later in the same frame and must route the
+ * release the way the press went), so "non-zero" outlives the hold and cannot
+ * by itself answer "is a release still owed?". */
+#define CLAIM_LATCH_NONE     0
+#define CLAIM_LATCH_RELEASED 1   /* last press was claimed; button is up */
+#define CLAIM_LATCH_HELD     2   /* claimed press delivered, release still owed */
 static uint8_t claim_press_blocked[128];
 
 /* Controls the host owns and a module may NEVER claim: how you leave the
@@ -7235,15 +7246,26 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * exited (or crashed) before reconciling it to 0 would otherwise leave
      * Move's Undo / Copy / Delete captured with nothing left to deliver them
      * to. Same reasoning as the runtime-claim drops on overtake exit above:
-     * this edge covers EVERY exit path. Also disarms the press latch so a
-     * release arriving after the display closed is routed to Move, matching
-     * where its press went. Runs unconditionally -- the filter itself is inside
-     * the shadow_display_mode branch below, so this must not be. */
+     * this edge covers EVERY exit path. Runs unconditionally -- the filter
+     * itself is inside the shadow_display_mode branch below, so this must not
+     * be.
+     *
+     * A BUTTON STILL HELD KEEPS ITS LATCH. Clearing the whole array here
+     * looks like the tidy thing and is a stuck-button bug: that press was
+     * withheld from Move, so releasing the latch hands Move a lone button-up
+     * for a key it never saw go down, and Move acts on it -- Delete being the
+     * member of the trio that acts destructively. Hold Copy on a claiming
+     * module's grid, dismiss the shadow UI, let go: that is the whole repro.
+     * The owed releases are drained below (see the claim-latch drain in the
+     * post-ioctl scan), which is also the only thing that retires a HELD
+     * latch once the filter has stopped running. */
     {
         static int prev_display_mode = 0;
         if (prev_display_mode && !shadow_display_mode) {
             if (shadow_control) memset((void *)shadow_control->claim_cc_bits, 0, sizeof(shadow_control->claim_cc_bits));
-            memset(claim_press_blocked, 0, sizeof(claim_press_blocked));
+            for (int c = 0; c < 128; c++) {
+                if (claim_press_blocked[c] != CLAIM_LATCH_HELD) claim_press_blocked[c] = CLAIM_LATCH_NONE;
+            }
         }
         prev_display_mode = shadow_display_mode;
     }
@@ -7443,9 +7465,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
                                 claim_press_blocked[d1] =
-                                    (claim_cc_set(d1) && !claim_denied_cc(d1) && !shadow_shift_held) ? 1 : 0;
+                                    (claim_cc_set(d1) && !claim_denied_cc(d1) && !shadow_shift_held)
+                                        ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
                             }
                             if (claim_press_blocked[d1]) filter = 1;
+                            /* The hold ends here. Demoted rather than cleared:
+                             * the forward site below still needs a non-zero
+                             * latch this frame to route the release to the
+                             * module, but the button is no longer down, so the
+                             * display-close edge must not keep swallowing it. */
+                            if (d2 == 0 && claim_press_blocked[d1] == CLAIM_LATCH_HELD) {
+                                claim_press_blocked[d1] = CLAIM_LATCH_RELEASED;
+                            }
                             /* Deliberately NOT cleared on release: the latch is
                              * re-armed by the next press, which keeps it valid
                              * for the forward-to-shadow_ui site that runs LATER
@@ -8735,6 +8766,30 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
+                }
+
+                /* CLAIM-LATCH DRAIN. A claimed press withheld from Move while
+                 * the display was up owes Move nothing but silence on its
+                 * release -- and the filter that would have supplied that
+                 * silence lives inside the shadow_display_mode block, which
+                 * has stopped running. So swallow the owed events here, where
+                 * the walk is unconditional, and retire the latch on the
+                 * release that closes the hold.
+                 *
+                 * Gated on HELD, never on "non-zero": the latch survives a
+                 * release on purpose, and swallowing on that would eat the
+                 * button's NEXT press with the display closed and the claim
+                 * long gone.
+                 *
+                 * midi_in_swallow, not a hand-rolled zero of the hardware
+                 * mailbox -- Move reads the shadow buffer, and a zeroed slot
+                 * is a terminator. Sits after the forward above so a shadow_ui
+                 * still alive pairs the release, and before
+                 * shadow_midi_in_compact(), which must stay last. */
+                if (!shadow_display_mode && d1 < 128 &&
+                    claim_press_blocked[d1] == CLAIM_LATCH_HELD) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    if (d2 == 0) claim_press_blocked[d1] = CLAIM_LATCH_NONE;
                 }
 
                 /* Mute (CC 88) is passed through to Move firmware unconditionally,

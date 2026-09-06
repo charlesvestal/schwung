@@ -16449,15 +16449,24 @@ function moduleFileExists(path) {
     }
 }
 
-function getHierarchyActiveModuleId() {
+/* The same lookup, with the tri-state INTACT: null = the read did not complete.
+ * getHierarchyActiveModuleId below is the `|| ""` view of it, which is what
+ * every caller that only wants a name should use. reconcileCcClaim wants the
+ * third answer, because "the read failed" and "there is no module" lead to
+ * opposite decisions there. */
+function hierarchyActiveModuleIdRaw() {
     if (hierEditorSlot < 0 || !hierEditorComponent) return "";
     if (hierEditorIsMasterFx) {
-        return getSlotParam(0, `${hierEditorComponent}:module`) || "";
+        return getSlotParam(0, `${hierEditorComponent}:module`);
     }
 
     const prefix = getComponentParamPrefix(hierEditorComponent);
     if (!prefix) return "";
-    return getSlotParam(hierEditorSlot, `${prefix}_module`) || "";
+    return getSlotParam(hierEditorSlot, `${prefix}_module`);
+}
+
+function getHierarchyActiveModuleId() {
+    return hierarchyActiveModuleIdRaw() || "";
 }
 
 /* Module id whose in-grid widgets are currently registered. "" = none. */
@@ -16701,7 +16710,15 @@ function moduleClaimedCcs(moduleId) {
         if (typeof host_get_module_metadata === "function") {
             meta = host_get_module_metadata(moduleId);
         }
-    } catch (e) { meta = null; }
+    } catch (e) {
+        /* The read threw -- that is news about the CHANNEL, not about the
+         * module. Answer "no claim" for this tick and leave the cache empty so
+         * the next reconcile asks again; caching it would make one bad read
+         * permanent for the session. A metadata object that simply declares no
+         * capability is a real answer and IS cached below. */
+        debugLog(`claims_ccs: metadata read for ${moduleId} failed (${e}) -- not cached`);
+        return "";
+    }
     const caps = (meta && meta.capabilities) || {};
     const want = new Set();
     if (caps.claims_edit_ccs) for (const cc of EDIT_CCS) want.add(cc);
@@ -16739,14 +16756,31 @@ function reconcileCcClaim() {
         ? (view + "|" + coRunView + "|" + slot + "|" + comp)
         : "";
     if (key === ccClaimKey) return;
-    ccClaimKey = key;
+    /* THE READ COMES FIRST, AND null IS NOT AN ANSWER.
+     *
+     * getSlotParam is the tri-state: null means the read did not complete (the
+     * claim was refused, or the response timed out), "" means served-but-empty.
+     * Collapsing them with `|| ""` reads as "this component has no module", so
+     * the claim is dropped -- and latching ccClaimKey before the read made that
+     * verdict permanent for the whole visit to the screen, with Delete going
+     * back to Move. That is the failure the capability exists to prevent.
+     *
+     * So the key is latched only once an answer is in hand; a failed read
+     * leaves it alone and the next tick asks again. */
     let moduleId = "";
     if (onScreen && onGrid) {
         const prefix = getComponentParamPrefix(comp);
-        moduleId = prefix ? (getSlotParam(slot, `${prefix}_module`) || "") : "";
+        if (prefix) {
+            const raw = getSlotParam(slot, `${prefix}_module`);
+            if (raw === null || raw === undefined) return;   /* retry next tick */
+            moduleId = raw;
+        }
     } else if (onScreen) {
-        moduleId = getHierarchyActiveModuleId();
+        const raw = hierarchyActiveModuleIdRaw();
+        if (raw === null || raw === undefined) return;       /* retry next tick */
+        moduleId = raw;
     }
+    ccClaimKey = key;
     const claim = onScreen ? moduleClaimedCcs(moduleId) : "";
     if (claim === ccClaimed) return;
     ccClaimed = claim;
