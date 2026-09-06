@@ -1139,6 +1139,16 @@ let _midiWindowStart = 0, _midiCount = 0, _knobTurnCount = 0;
 export function handleParamPagesMidi(data) {
     if (!controller) return false;
 
+    /* Undo / Copy / Delete reach the grid only for a module that claimed them
+     * (capabilities.claims_edit_ccs). They drive the instance copy/clear
+     * gesture -- hold Copy or Delete, then pick an instance -- and nothing
+     * else on the grid wants them. Not consumed on a page that has no
+     * instance to copy, so the event falls through as before. */
+    if (data && data.length >= 3 && (data[0] & 0xf0) === 0xb0 &&
+        (data[1] === 56 || data[1] === 60 || data[1] === 119)) {
+        return typeof controller.onEditCc === "function" && controller.onEditCc(data[1], data[2] > 0);
+    }
+
     const nowMsProbe = Date.now();
     _midiCount++;
     if (!_midiWindowStart) _midiWindowStart = nowMsProbe;
