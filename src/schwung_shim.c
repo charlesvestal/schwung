@@ -190,6 +190,30 @@ static bool stay_in_shadow_setting = true;
 static void shim_hook_skipback_resize(void) {
     skipback_resize(skipback_seconds_setting);
 }
+
+/* Boot-healthy touch hook — runs on the shim worker (off the audio path).
+ * The boot selector counts attempts in /data/UserData/boot-targets/.boot-attempt
+ * and treats a boot as good once the target touches its own healthy marker;
+ * this is that touch for the schwung target. mkdir/open are not RT-safe, so
+ * the RT path only posts SHIM_EVT_BOOT_HEALTHY (see shim_pre_transfer) and
+ * this hook does the actual file I/O ~200ms later. */
+static void shim_hook_boot_healthy(void) {
+    if (mkdir("/data/UserData/boot-targets", 0755) != 0 && errno != EEXIST) {
+        LOG_DEBUG("shim", "boot-healthy: mkdir boot-targets failed: %s", strerror(errno));
+        return;
+    }
+    if (mkdir("/data/UserData/boot-targets/schwung", 0755) != 0 && errno != EEXIST) {
+        LOG_DEBUG("shim", "boot-healthy: mkdir boot-targets/schwung failed: %s", strerror(errno));
+        return;
+    }
+    int fd = open("/data/UserData/boot-targets/schwung/healthy", O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) {
+        LOG_DEBUG("shim", "boot-healthy: open healthy failed: %s", strerror(errno));
+        return;
+    }
+    close(fd);
+    LOG_DEBUG("shim", "boot-healthy: touched the healthy marker");
+}
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
 static int shadow_line_in_connected = 0;       /* 1 = cable plugged, 0 = internal mic active (from CC 114) */
@@ -1943,11 +1967,25 @@ static void shadow_inprocess_render_to_buffer(void) {
                         shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
                                                     "mod:tick", "128");
                     }
-                    shadow_slot_deferred_valid[s] = 1;
-                    goto slot_run_deferred_fx;
+                    int midi_wake = shadow_chain_take_midi_tick_wake &&
+                        shadow_chain_take_midi_tick_wake(shadow_chain_slots[s].instance);
+                    if (!midi_wake) {
+                        shadow_slot_deferred_valid[s] = 1;
+                        goto slot_run_deferred_fx;
+                    }
+                    /* A MIDI FX delivered a generated message to the synth on
+                     * this frame, so render it here rather than leaving it
+                     * parked until the next probe (up to ~0.5s away). NOT
+                     * counted as a probe below: probe_burst_this_frame is the
+                     * stagger-alignment detector, and a MIDI-driven wake is
+                     * not a probe — counting it reports a spike the stagger
+                     * cannot fix. */
+                    shadow_slot_idle[s] = 0;
+                    shadow_slot_silence_frames[s] = 0;
+                } else {
+                    /* Probe frame: fall through to render and check output */
+                    probe_burst_this_frame++;
                 }
-                /* Probe frame: fall through to render and check output */
-                probe_burst_this_frame++;
             }
 
             if (same_frame_fx) {
@@ -5611,7 +5649,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             int any = 0;
             for (int i = 0; i < 80; i += 4) {
                 uint8_t cin = midi_out[i] & 0x0F;
-                if (cin >= 0x04 && cin <= 0x07) {
+                /* First ~17s after arming: log EVERY nonzero slot, not just
+                 * SysEx framing — hunting the XMOS boot-LED-show stop, which
+                 * the cin 4..7 filter proved not to be (all six captured
+                 * boot SysEx messages were replayed on hardware; none
+                 * stopped it). Same write path and size cap; reverts to
+                 * SysEx-only after frame 6000. */
+                int log_all = (xmos_frame < 6000) && midi_out[i] != 0;
+                if (log_all || (cin >= 0x04 && cin <= 0x07)) {
                     int n = snprintf(line, sizeof(line),
                         "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
                         xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
@@ -5732,6 +5777,21 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Ensure subsystems are initialized on first call */
     if (!shim_subsystems_initialized) {
         shim_init_subsystems();
+    }
+
+    /* Boot-healthy: post only after ~30 s of continuously clocked SPI frames.
+     * Posting on the FIRST frame would defeat the boot watchdog: a restored
+     * module that crashes seconds into the session (the historical
+     * boot-loop case) would still mark every boot healthy. 30 s matches the
+     * selector's liveness-watcher horizon. ~344 SPI frames/s (2.90 ms each).
+     * RT path: counting and one post only, no file I/O. */
+    #define SHIM_BOOT_HEALTHY_FRAMES (30 * 345)
+    static int boot_healthy_frames = 0;
+    if (boot_healthy_frames <= SHIM_BOOT_HEALTHY_FRAMES) {
+        boot_healthy_frames++;
+        if (boot_healthy_frames == SHIM_BOOT_HEALTHY_FRAMES) {
+            shim_worker_post(SHIM_EVT_BOOT_HEALTHY);
+        }
     }
 
     /* Timing and overrun statics are at file scope (shared between pre/post callbacks) */
@@ -6882,6 +6942,43 @@ static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in,
     }
 }
 
+/* Button-claim press latch -- see the filter site in shim_post_transfer.
+ * Records, per CC, whether the module received its PRESS, so the same consumer
+ * receives its RELEASE even if the claim (capabilities.claims_ccs) changes
+ * mid-hold. Read by both the Move-firmware filter and the forward-to-shadow_ui
+ * site; the filter runs first in the frame, so the forward site sees this
+ * frame's decision. Touched only from the SPI callback -- no locking.
+ *
+ * THREE states, not two, and the third is what makes the display-close edge
+ * safe. Both non-zero values mean "this button's press was claimed" -- which
+ * is all the forward site asks -- but only HELD means the button is still
+ * down. The distinction exists because the latch is deliberately NOT cleared
+ * on release (the forward site runs later in the same frame and must route the
+ * release the way the press went), so "non-zero" outlives the hold and cannot
+ * by itself answer "is a release still owed?". */
+#define CLAIM_LATCH_NONE     0
+#define CLAIM_LATCH_RELEASED 1   /* last press was claimed; button is up */
+#define CLAIM_LATCH_HELD     2   /* claimed press delivered, release still owed */
+static uint8_t claim_press_blocked[128];
+
+/* Controls the host owns and a module may NEVER claim: how you leave the
+ * screen (Menu, Back, Shift), what the host routes itself (jog, the eight
+ * knobs, the master knob, the track buttons), and Mute, on which Move-native
+ * Mute+Pad depends. A claim on one of these is ignored here whatever shadow_ui
+ * wrote, so the shim stays correct even against a UI that forgot the list. */
+static int claim_denied_cc(uint8_t cc) {
+    if (cc == CC_SHIFT || cc == CC_MENU || cc == CC_BACK) return 1;
+    if (cc == CC_JOG_WHEEL || cc == CC_JOG_CLICK) return 1;
+    if (cc >= CC_KNOB1 && cc <= CC_KNOB8) return 1;
+    if (cc == CC_MASTER_KNOB || cc == CC_MUTE) return 1;
+    if (cc >= 40 && cc <= 43) return 1;                 /* track buttons */
+    if (cc == CC_MIC_IN_DETECT || cc == CC_LINE_OUT_DETECT) return 1;
+    return 0;
+}
+static inline int claim_cc_set(uint8_t cc) {
+    return shadow_control && ((shadow_control->claim_cc_bits[cc >> 3] >> (cc & 7)) & 1);
+}
+
 static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
 {
     (void)ctx;
@@ -7144,24 +7241,46 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         prev_overtake_mode = overtake_mode;
     }
 
-    /* Drop pad observation when the shadow display goes away. It only means
-     * anything while the knob grid is on screen, and a shadow_ui that exited
-     * (or crashed) before reconciling it to 0 would otherwise keep publishing
-     * every pad press into the UI ring -- which IS drained, so the cost is not
-     * a backlog but pad notes arriving at onMidiMessageInternal in views that
-     * have never seen one. Same reasoning as the runtime-claim drops on
-     * overtake exit above: this edge covers EVERY exit path, so it runs
-     * unconditionally rather than inside the display branch.
+    /* Drop the runtime claims when the shadow display goes away -- the
+     * edit-CC claim and pad observation both. Each only means anything while a
+     * module's UI is on screen, and a shadow_ui that exited (or crashed)
+     * before reconciling them to 0 would otherwise leave Move's Undo / Copy /
+     * Delete captured with nothing left to deliver them to, and every pad
+     * press still publishing into the UI ring -- which IS drained, so that
+     * cost is not a backlog but pad notes arriving at onMidiMessageInternal in
+     * views that have never seen one. Same reasoning as the runtime-claim
+     * drops on overtake exit above: this edge covers EVERY exit path. Runs
+     * unconditionally -- the filter itself is inside the shadow_display_mode
+     * branch below, so this must not be. ONE static for the edge, because two
+     * tracking the same transition is how they drift.
      *
-     * This drop is unilateral -- JS is not told -- which is why the reconcile
-     * on the other side RESTATES pad_observe every tick instead of comparing
-     * against a mirror of it. See shadow_ui_param_pages.mjs. */
+     * A BUTTON STILL HELD KEEPS ITS LATCH. Clearing the whole array here
+     * looks like the tidy thing and is a stuck-button bug: that press was
+     * withheld from Move, so releasing the latch hands Move a lone button-up
+     * for a key it never saw go down, and Move acts on it -- Delete being the
+     * member of the trio that acts destructively. Hold Copy on a claiming
+     * module's grid, dismiss the shadow UI, let go: that is the whole repro.
+     * The owed releases are drained below (see the claim-latch drain in the
+     * post-ioctl scan), which is also the only thing that retires a HELD
+     * latch once the filter has stopped running.
+     *
+     * pad_observe has no such latch -- nothing was withheld, so there is
+     * nothing owed. Both drops are UNILATERAL, though: JS is not told, which
+     * is why the reconcile on the other side RESTATES the flag every tick
+     * instead of comparing against a mirror of it. See
+     * shadow_ui_param_pages.mjs. */
     {
-        static int prev_display_mode_observe = 0;
-        if (prev_display_mode_observe && !shadow_display_mode && shadow_control) {
-            shadow_control->pad_observe = 0;
+        static int prev_display_mode = 0;
+        if (prev_display_mode && !shadow_display_mode) {
+            if (shadow_control) {
+                memset((void *)shadow_control->claim_cc_bits, 0, sizeof(shadow_control->claim_cc_bits));
+                shadow_control->pad_observe = 0;
+            }
+            for (int c = 0; c < 128; c++) {
+                if (claim_press_blocked[c] != CLAIM_LATCH_HELD) claim_press_blocked[c] = CLAIM_LATCH_NONE;
+            }
         }
-        prev_display_mode_observe = shadow_display_mode;
+        prev_display_mode = shadow_display_mode;
     }
 
     /* Boot jack-state re-assert: worker arms shim_inject_boot_jack ~5 s after
@@ -7333,6 +7452,49 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (cin == 0x0B && type == 0xB0) {
                         if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
                             filter = 1;
+                        }
+                        /* A CLAIMED button: withheld from Move firmware ONLY while
+                         * the module on screen has claimed it
+                         * (shadow_control->claim_cc_bits, reconciled by shadow_ui
+                         * from capabilities.claims_ccs / claims_edit_ccs). Unclaimed
+                         * it passes through untouched, so Move keeps its native
+                         * Undo during ordinary chain use -- precisely what the
+                         * unconditional version (#154) broke and why it was
+                         * reverted (#175). Forwarded to the shadow UI under the
+                         * same latch by the post-ioctl loop. The host-owned
+                         * controls (claim_denied_cc) can never be claimed. */
+                        if (d1 < 128) {
+                            /* Latch per button so a claim that changes MID-HOLD
+                             * cannot desync Move's view of the button: whoever
+                             * received the PRESS also receives the RELEASE.
+                             * Without this, a claim engaging between press and
+                             * release leaves Move believing the button is still
+                             * held, and a claim dropping mid-hold delivers Move an
+                             * orphan release. */
+                            if (d2 > 0) {
+                                /* Shift+<button> is the host's own vocabulary
+                                 * (Shift+Copy / Shift+Delete = snapshot and
+                                 * recall, handled and swallowed in the post-ioctl
+                                 * loop). A press with Shift held is never claimed:
+                                 * the module gets the BARE buttons only. */
+                                claim_press_blocked[d1] =
+                                    (claim_cc_set(d1) && !claim_denied_cc(d1) && !shadow_shift_held)
+                                        ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
+                            }
+                            if (claim_press_blocked[d1]) filter = 1;
+                            /* The hold ends here. Demoted rather than cleared:
+                             * the forward site below still needs a non-zero
+                             * latch this frame to route the release to the
+                             * module, but the button is no longer down, so the
+                             * display-close edge must not keep swallowing it. */
+                            if (d2 == 0 && claim_press_blocked[d1] == CLAIM_LATCH_HELD) {
+                                claim_press_blocked[d1] = CLAIM_LATCH_RELEASED;
+                            }
+                            /* Deliberately NOT cleared on release: the latch is
+                             * re-armed by the next press, which keeps it valid
+                             * for the forward-to-shadow_ui site that runs LATER
+                             * in this same frame and must route the release the
+                             * same way it routed the press. */
                         }
                         /* Filter Menu unless long-press mode dismisses shadow on tap */
                         if (d1 == CC_MENU && !LONG_PRESS_ACTIVE()) {
@@ -8604,13 +8766,43 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - CC 14 (jog wheel), CC 3 (jog click), CC 51 (back)
                  * - CC 40-43 (track buttons)
                  * - CC 71-78 (knobs)
-                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass */
+                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass
+                 * - any CC the module on screen has CLAIMED (capabilities.claims_ccs
+                 *   / claims_edit_ccs), by the latch the firmware filter above set
+                 *   on its press -- so a claimed press drives the module and
+                 *   nothing else. Unclaimed, a button is not forwarded and reaches
+                 *   Move unchanged. */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
                                          (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
-                                         d1 == 88);
+                                         d1 == 88 ||
+                                         (d1 < 128 && claim_press_blocked[d1]));
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
+                }
+
+                /* CLAIM-LATCH DRAIN. A claimed press withheld from Move while
+                 * the display was up owes Move nothing but silence on its
+                 * release -- and the filter that would have supplied that
+                 * silence lives inside the shadow_display_mode block, which
+                 * has stopped running. So swallow the owed events here, where
+                 * the walk is unconditional, and retire the latch on the
+                 * release that closes the hold.
+                 *
+                 * Gated on HELD, never on "non-zero": the latch survives a
+                 * release on purpose, and swallowing on that would eat the
+                 * button's NEXT press with the display closed and the claim
+                 * long gone.
+                 *
+                 * midi_in_swallow, not a hand-rolled zero of the hardware
+                 * mailbox -- Move reads the shadow buffer, and a zeroed slot
+                 * is a terminator. Sits after the forward above so a shadow_ui
+                 * still alive pairs the release, and before
+                 * shadow_midi_in_compact(), which must stay last. */
+                if (!shadow_display_mode && d1 < 128 &&
+                    claim_press_blocked[d1] == CLAIM_LATCH_HELD) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    if (d2 == 0) claim_press_blocked[d1] = CLAIM_LATCH_NONE;
                 }
 
                 /* Mute (CC 88) is passed through to Move firmware unconditionally,
@@ -9510,6 +9702,7 @@ static void shim_spi_init(void)
             .preview_play_pending   = shim_hook_preview_play,
             .overtake_dsp_load_pending = overtake_dsp_load_pending,
             .overtake_dsp_free_pending = overtake_dsp_free_pending,
+            .boot_healthy           = shim_hook_boot_healthy,
         };
         shim_worker_set_hooks(&hooks);
     }

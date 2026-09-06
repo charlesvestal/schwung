@@ -48,7 +48,15 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 - `abbrev`: Short display name (3-6 chars) for Shadow UI slot display (e.g., "SF2", "Dexed", "CLAP")
 - `module.json` is parsed by a minimal JSON reader. Use double quotes for keys, lowercase `true`/`false`, and avoid comments.
 - Keep `module.json` reasonably small (the loader caps it at 8KB).
-- `dsp`: any filename inside the module directory. The host loads whatever path you specify here, so `dsp.so`, `<module-id>.so`, or anything else is fine for standalone modules. **Exception — `audio_fx` modules used inside Signal Chain:** the chain host loads the FX directly as `modules/audio_fx/<id>/<id>.so` (it does not consult the FX's `module.json`), so audio FX shared libraries **must** be named `<module-id>.so`. Sound generators and MIDI sources loaded by the chain are hardcoded to `dsp.so`.
+- `dsp`: any filename inside the module directory — **but only for the standalone/menu load**, which is the only path that reads this field (`module_manager.c`). **Inside Signal Chain the chain host builds the path itself and never consults `module.json`**, using a different rule per component type:
+
+  | `component_type` | What the chain host opens | Source |
+  |---|---|---|
+  | `sound_generator` | `modules/sound_generators/<id>/**dsp.so**` | `chain_host.c` |
+  | `midi_fx` | `modules/midi_fx/<id>/**dsp.so**` | `chain_midi.c` |
+  | `audio_fx` | `modules/audio_fx/<id>/**<module-id>.so**` | `chain_host.c` |
+
+  Get it wrong and the module does not load, with **no error on screen** — the only symptom is one line in `debug.log`: `dlopen failed: ... cannot open shared object file`. The failure mode is worth stating because the rules differ: copying an audio FX's build script to make a sound generator produces `<id>.so`, which is correct for the template and silently wrong for the copy. Set `dsp` to match whichever name your type requires, so the two agree.
 
 ### Capabilities
 
@@ -78,6 +86,8 @@ for keys anywhere in `module.json`).
 | `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
+| `claims_ccs` | A list of CC numbers the module handles while its UI is on screen; they are withheld from Move firmware for that window. See "Claiming buttons" below. |
+| `claims_edit_ccs` | Shorthand for `claims_ccs: [56, 60, 119]` — Undo, Copy and Delete. Default off. |
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
@@ -638,23 +648,57 @@ Only consume Back while you actually have somewhere to go back *to*. If `handleB
 always returns truthy the user can never leave your module via Back — it is the only
 host-processed exit in this screen, so the sole remaining way out is to exit shadow mode.
 
-#### Copy / Delete / Undo (`ui_chain.js`)
+#### Claiming buttons (`capabilities.claims_ccs`, `claims_edit_ccs`)
 
-While the shadow UI is on screen, CC 56 (Undo), CC 60 (Copy), and CC 119
-(Delete) are delivered exclusively to the loaded module's `ui_chain.js` via
-`onMidiMessageInternal` — they are blocked from reaching Move firmware for
-the duration, so a press can never double-fire into Move's own undo/copy/
-delete while you're editing a module (e.g. a Delete press won't also delete
-a Move clip in the background).
+Move's buttons reach Move firmware by default and are **not** forwarded to
+modules. A module that wants some of them for its own gestures opts in:
 
-This makes the three buttons safe to repurpose for module-specific gestures
-— e.g. hold Copy/Delete + tap a pad to target it, tap Undo to revert the
-last such operation. They join the existing forwarded set (jog wheel/click,
-Back, track buttons, knobs, Mute) that a chain module already receives in
-this screen.
+```json
+{
+  "capabilities": {
+    "claims_edit_ccs": true,
+    "claims_ccs": [85, 58]
+  }
+}
+```
 
-Outside shadow display (or outside COMPONENT_EDIT), these CCs behave as
-normal Move hardware buttons and are not intercepted.
+`claims_edit_ccs: true` is shorthand for Undo (CC 56), Copy (CC 60) and
+Delete (CC 119) — the drum-rack trio. `claims_ccs` lists any others by CC
+number; the two combine.
+
+While that module's UI is on screen, a claimed button is delivered to the
+module (a `type: "canvas"` UI receives it in `onMidi`; on the knob grid Undo,
+Copy and Delete drive the instance copy/clear gesture under *Child Selectors*)
+**and withheld from Move firmware**, so a press cannot double-fire into Move's
+own action — hold Copy and tap a pad without also copying the Move clip behind
+the screen. The claim applies on the knob grid, the hierarchy editor, the
+component edit/params screens, and a canvas UI (fullscreen or co-run overlay).
+Leave any of those and the buttons return to Move immediately; the shim also
+drops every claim on its own when the shadow display closes, so a shadow UI
+that exits without reconciling cannot strand one.
+
+> **Opt-in is the whole point.** #154 withheld Undo/Copy/Delete unconditionally
+> whenever the shadow display was up, and #175 reverted it: it stole Move's
+> native Undo during ordinary chain use, so you could not undo a note edit
+> while any Schwung module was on screen. Modules that declare no claim are
+> unaffected, and Move keeps its own buttons everywhere else.
+
+**What cannot be claimed.** The controls the host itself owns are refused by
+the shim whatever a module lists, and the shadow UI logs the refusal: Shift,
+Menu and Back (how you leave a screen), the jog wheel and click, the eight
+knobs and the master knob, the four track buttons, Mute (Move-native Mute+Pad
+depends on it reaching firmware), and the two jack-detect CCs. Everything
+else is the module's to claim, transport included: a module that claims Play
+(CC 85) takes Move's transport button away while its UI is up, which is what
+a claim means.
+
+**Shift is the host's.** A press with Shift held is never claimed:
+Shift+Copy / Shift+Delete stay the host's snapshot and recall over a claiming
+module, and a module gets the bare buttons only.
+
+Press/release pairing is latched per button: whoever receives the press also
+receives the release, even if the claim changes mid-hold. Neither Move nor the
+module can be left believing a button is still held.
 
 ### Menu Layout Helpers
 
@@ -2055,6 +2099,86 @@ globalThis.canvas_overlay = {
 };
 ```
 
+##### Declaring more than one widget
+
+A module may supply several widgets. `widgetKind` is the single-widget spelling
+and is unchanged; `widgetKinds` is the plural, in either of two forms:
+
+```javascript
+globalThis.canvas_overlay = {
+    /* several names, ONE drawer -- right when they are one drawing at two
+     * crops, told apart by group.keys[0] */
+    widgetKinds: ["custom:face", "custom:mouth"],
+    drawCell(ctx, { values, group }) { /* branch on group.keys[0] */ },
+};
+```
+
+```javascript
+globalThis.canvas_overlay = {
+    /* a drawer EACH -- right when the widgets are unrelated, and the only form
+     * that lets each carry its own nominal */
+    widgetKinds: {
+        "custom:meter": (ctx, o) => { /* ... */ },
+        "custom:mode":  { draw(ctx, o) { /* ... */ }, nominal: { w: 17, h: 15 } },
+    },
+};
+```
+
+Both forms may be combined with `widgetKind`. A kind that cannot be registered —
+no drawer, or a name outside the `custom:` namespace — is **named in
+`debug.log`** rather than dropped: a declared widget that never registers falls
+through to a built-in, which looks completely correct, so the log line is the
+only way to find out the picture is not yours.
+
+##### A widget that needs a value with no cell on the page
+
+A widget is handed the page's value map and cannot read. So a picture that
+depends on a value with **no cell on this page** — the vowel of *which*
+character, a ratio against *which* base — has to name it:
+
+```json
+{ "key": "vowel", "type": "float", "min": 0, "max": 1,
+  "viz": { "kind": "custom:mouth", "extra_keys": ["face"] } }
+```
+
+The controller adds each to its value rotation as one extra stop and hands it
+over in `values`, exactly like a key that does have a cell.
+
+**One read per stop, so declare what the picture needs and nothing else.**
+Capped at four: a cell asking for twenty would spend the page's whole read
+budget and starve every other value on screen. An unavailable custom kind
+contributes none, since its group is abandoned whole.
+
+Without this the only way to get a fact to a widget was to give it a knob —
+which is how a module ended up shipping a read-only cell that existed purely to
+carry a number to the cell beside it.
+
+##### A parameter the module drives itself
+
+A knob is not always the only thing moving a parameter. A synth that sweeps its
+own vowel from pad pressure, a step sequencer walking its own position — the
+picture of that value should follow what it is *doing*, not where its knob was
+left.
+
+```json
+{ "key": "vowel", "type": "float", "min": 0, "max": 1, "live": true }
+```
+
+`live` buys the treatment a chain-modulated key already gets: the module is
+asked for `<key>:effective` **every tick**, rather than on the value rotation,
+and graphics are handed base-merged-with-effective. The rotation comes round
+about four times a second on an eight-knob page, and an animation drawn from
+that is a slideshow — the per-tick refresh is the entire point.
+
+Serve `<key>:effective` from your `get_param`, and `<key>:base` too if you want
+to save the host a fallback read. `values` stays the BASE everywhere a value is
+edited, because that is what a turn changes.
+
+**A silent slot is barely rendered.** The shim skips `render_block` on a slot
+making no sound — one probe frame in 172 — so an effective value computed inside
+`render_block` will appear frozen until something plays. Compute it from state
+your `set_param` already holds.
+
 **What you can draw with.** The frame context carries `fillRect`, `print`,
 `textWidth`, `setPixel`, `line`, `fillCircle`, `drawCircle` and `drawArc`. All of
 them are always present — they are implemented on the frame's own clipped
@@ -2122,10 +2246,12 @@ eight knob boxes: per-pixel blitting would cost ~1 ms of the 1.68 ms page render
 ##### The reference module
 
 `src/modules/audio_fx/widget-test/` is a working example of **all three**
-module-supplied surfaces on one parameter: `canvas.js` supplies the `drawCell`
-segmented meter and the fullscreen `draw`, `cards.js` supplies the card that
-floats while the knob turns, and a passthrough DSP makes it a real, loadable
-chain FX.
+module-supplied surfaces: `canvas.js` supplies the `drawCell` segmented meter on
+`level`, a SECOND widget kind on `mode` (through `widgetKinds`, to show that one
+module may declare several), and the fullscreen `draw`; `cards.js` supplies the
+card that floats while `level` turns — and that card reads `mode` out of
+`o.values`, which is the worked example of a card whose meaning lives on another
+parameter. A passthrough DSP makes it a real, loadable chain FX.
 
 Its card is also the reference for the null contract: `raw` may be null, and the
 drawer prints `--` with **no bar** rather than a bar at zero, because a bar at
@@ -2147,6 +2273,65 @@ under `src/modules/`, so a fixture also has to be scrubbed from `build/` when
 the gate is off. A `module.json` shipped without its `.so` still appears in the
 FX picker, and a chain slot pointing at a module that cannot load is restored on
 every boot. `tests/host/test_test_fixtures_not_shipped.sh` pins both halves.
+
+#### Custom UI pages (`as_page`)
+
+A `type: "canvas"` param is a CELL you click to dive into a fullscreen view.
+Add `as_page` and it becomes a **page in the level's jog rotation** instead,
+carrying that level's own knobs:
+
+```json
+{ "key": "face", "name": "Face", "type": "canvas",
+  "canvas_script": "canvas.js", "as_page": true, "show_value": false }
+```
+
+```javascript
+globalThis.canvas_overlay = {
+    drawPage(ctx, { values, base, keys, touched, nowMs, preset }) {
+        /* ctx is frame-scoped to the BODY BAND. (0,0) is its top-left. */
+    },
+};
+```
+
+- **It is reached by paging, not by diving**, and the canvas key gets no cell of
+  its own — so it does not also appear as an orphan overflow page.
+- **The eight encoders work**, doing exactly what they do on that level's grid.
+  You write no input code: the page carries the same keys.
+- **It animates.** The host redraws every tick and the page's keys are already
+  in the read rotation, so `values` is fresh at no extra cost. `nowMs` is a wall
+  clock for anything driven by time.
+- **The chrome is the host's.** You are handed the band the eight cells would
+  have occupied — the header (including the touch strip while a knob is held),
+  the bank bar and the footer are drawn around you. You cannot paint over them
+  and you should not draw any of your own.
+- `values` carries live values merged over the base; `base` is the knob
+  positions, for a page that wants to show both.
+- **One strike**, as everywhere else: a `drawPage` that throws is retired for
+  the session and the body is left empty under a normal page.
+
+Internally a custom page is an ordinary knobs page carrying a drawer, not a new
+page kind — which is why every knobs-page behaviour (reads, turns, touch,
+announce) applies to it unchanged.
+
+##### A custom page as the level's preset browser
+
+If the level declares the preset triple (`list_param` / `count_param` /
+`name_param`), add `preset_browser` and the custom page **becomes** that browser
+rather than a second page beside it:
+
+```json
+{ "key": "face", "name": "Face", "type": "canvas", "canvas_script": "canvas.js",
+  "as_page": true, "preset_browser": true, "show_value": false }
+```
+
+Same jog, same enter/exit, same announcements — and it is emitted first, so it
+is what you land on. `drawPage` additionally receives
+`preset: { name, index, count, entered }`, because what is being browsed is not
+a parameter and no read would find it.
+
+Use it when a picture is a better picker than a row of text — a face per
+character, a waveform per sample. Two pages, one showing the thing and one
+naming it, are two doors onto the same choice.
 
 #### The parameter card (`card_script`)
 
@@ -2197,6 +2382,19 @@ the wire value — **and `o.raw` may be `null`**, meaning the module did not ans
 that read. Draw a word and stop when it does; a read that did not answer must
 never become a picture. There is no `getParam` on this path (~2.8 ms, against a
 1.68 ms whole-page render).
+
+**You also get the rest of the page.** `o.values` is the page's value map — the
+same object a cell widget is handed — for a card whose meaning depends on a
+sibling: the vowel of *which* character, a ratio against *which* base, a time in
+*whose* clock division. `o.nowMs` is a wall clock, for a card that animates
+during the gesture that raised it. The null rules are identical: a sibling may
+be missing or `null`, and an absent one must not become a picture either.
+
+Without `o.values` such a card had no route to that fact at all — no `getParam`
+here, and the card script is loaded into its own closure, so it cannot see a
+variable the module's own `drawCell` set. The first module to need it went
+through `globalThis` with a staleness timestamp, which worked and was a hidden
+side channel between two files the contract said were unrelated.
 
 **One strike.** A drawer that throws is retired for the session, the card is
 left as an empty frame rather than a hole, and the parameter goes back to
@@ -2780,7 +2978,7 @@ Import path from modules: `../../shared/<file>.mjs`
 | `screen_reader.mjs` | Screen reader announce/announceMenuItem/announceView helpers |
 | `sampler_overlay.mjs` | Quantized sampler UI overlay |
 | `text_entry.mjs` | On-screen keyboard for text input |
-| `store_utils.mjs` | Module Store catalog fetching and install/remove functions |
+| `store_utils.mjs` | Catalog fetching and install/remove functions (the standalone host; the shadow UI uses only `getHostVersion`) |
 | `scrollable_text.mjs` | Scrollable text component |
 | `sound_generator_ui.mjs` | Sound generator UI helpers |
 | `chain_param_utils.mjs` | Chain parameter handling utilities |
@@ -2828,7 +3026,7 @@ For native code, shared headers are in `src/host/`:
 
 ## Help Content (help.json)
 
-Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → Updates → `[Help...]`). Add a `help.json` file to your module's source directory.
+Modules can provide on-device help accessible from the Shadow UI's Help viewer (Global Settings → System → Help). Add a `help.json` file to your module's source directory.
 
 ### File Location
 
@@ -3001,8 +3199,8 @@ The Signal Chain module allows combining MIDI sources, MIDI effects, sound gener
 |------|------------|
 | MIDI Sources | Sequencers or other modules referenced via `midi_source` |
 | Sound Generators | Line In, SF2, Dexed, CLAP, plus any module marked `"chainable": true` with `"component_type": "sound_generator"` (for example `obxd`, `minijv`) |
-| MIDI Effects | Chord (15 chord types with inversions, voicings, strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync), Velocity Scale (min/max velocity mapping), plus external MIDI FX via Module Store |
-| Audio Effects | Freeverb (reverb), CLAP effects, plus external audio FX via Module Store (CloudSeed, PSXVerb, Tapescam, etc.) |
+| MIDI Effects | Chord (15 chord types with inversions, voicings, strum), Arpeggiator (off, up, down, up_down, random with BPM/division/sync), Velocity Scale (min/max velocity mapping), plus external MIDI FX from the catalog |
+| Audio Effects | Freeverb (reverb), CLAP effects, plus external audio FX from the catalog (CloudSeed, PSXVerb, Tapescam, etc.) |
 
 ### CLAP Host Module
 
@@ -3251,7 +3449,7 @@ Shadow Mode runs custom signal chains alongside stock Ableton Move. Your modules
 
 ### How It Works
 
-Shadow mode loads the chain module and patches. When you install a module via Module Store (or manually copy it to the modules directory), it becomes available in Shadow Mode.
+Shadow mode loads the chain module and patches. When you install a module via Schwung Manager (or manually copy it to the modules directory), it becomes available in Shadow Mode.
 
 Modules and patches are read from:
 - Modules: `/data/UserData/schwung/modules/`
@@ -3603,9 +3801,9 @@ The built-in MIDI Controller module (`src/modules/controller/`) demonstrates ove
 - Progressive LED initialization
 - Dynamic C note highlighting based on octave
 
-## Publishing to Module Store
+## Publishing to the Module Catalog
 
-External modules can be distributed via the built-in Module Store. Users can browse, install, update, and remove modules directly from their Move device.
+External modules are distributed through the module catalog. Users browse, install, update and remove modules in **Schwung Manager**, the web interface the Move serves on port 7700 — the single install/update path. (The on-device store was retired: its privileged writes silently no-opped for devices without a current shim. On the Move itself, **Global Settings → System → Web Manager** shows the device's IP and a QR code for reaching the manager.)
 
 ### Requirements
 
@@ -3762,7 +3960,7 @@ Each module in `module-catalog.json`:
 
 ### release.json
 
-Each module repo must have a `release.json` on its main branch. The Module Store fetches this file (not the GitHub releases API) to determine the latest version and download URL.
+Each module repo must have a `release.json` on its main branch. Schwung Manager fetches this file (not the GitHub releases API) to determine the latest version and download URL.
 
 ```json
 {
@@ -3798,7 +3996,7 @@ Optional fields: `install_path`, `name`, `description`, `requires`, `post_instal
 
 The release workflow should auto-update `release.json` on each tagged release (see the workflow template above for an example).
 
-### How the Module Store Works
+### How installation works
 
 1. Fetches `module-catalog.json` from the main branch
 2. For each module, fetches `release.json` from the module's GitHub repo (on `default_branch`)
@@ -3818,7 +4016,7 @@ The release workflow should auto-update `release.json` on each tagged release (s
 
 ## Host Updates
 
-The Schwung host can also be updated via the Module Store. When an update is available, "Update Host" appears at the top of the Module Store category list.
+The Schwung host is updated through Schwung Manager, the same place modules are. There is no on-device update surface: `[Check Updates]` used to scan the catalog and list what was outdated, then send you to the manager to install any of it — and the manager shows that same list beside the button that acts on it.
 
 ### Releasing a Host Update
 
@@ -3859,7 +4057,7 @@ The Schwung host can also be updated via the Module Store. When an update is ava
 
 ### How Host Updates Work
 
-1. Module Store fetches `module-catalog.json` from the main branch
+1. Schwung Manager fetches `module-catalog.json` from the main branch
 2. Fetches `release.json` from the host repo for the latest version and download URL
 3. Compares to installed version in `/data/UserData/schwung/host/version.txt`
 4. If different, shows "Update Host" option with version numbers
@@ -3868,7 +4066,7 @@ The Schwung host can also be updated via the Module Store. When an update is ava
 
 ### Catalog Location
 
-The Module Store fetches the catalog from:
+The catalog is fetched from:
 ```
 https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json
 ```

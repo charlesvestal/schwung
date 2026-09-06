@@ -421,6 +421,25 @@ typedef struct shadow_control_t {
      */
     volatile uint8_t save_stems;
     /*
+     * Runtime button claim: one bit per CC number (bit cc&7 of byte cc>>3).
+     * A set bit withholds that CC from Move firmware and forwards it to the
+     * shadow UI instead, so a module can build its own gestures on a button
+     * without a press ALSO firing Move's action behind the screen.
+     *
+     * Opt-in on purpose. #154 blocked Undo/Copy/Delete unconditionally whenever
+     * the shadow display was up and was reverted in #175 because it stole
+     * Move's native Undo during ordinary chain use. This is the runtime
+     * complement to the STATIC capabilities.claims_ccs / claims_edit_ccs:
+     * shadow_ui reconciles it from whichever module's UI is actually on
+     * screen, so Move keeps its own buttons everywhere else. The shim refuses
+     * bits for the controls the host itself owns (Shift, Menu, Back, jog,
+     * knobs, Mute, tracks) whatever is set here. Same shape as pad_block.
+     *
+     * APPENDED, like save_stems above: sizeof is a contract between two
+     * binaries. Appending is free; inserting is not.
+     */
+    volatile uint8_t claim_cc_bits[16];
+    /*
      * Passive pad observation. 1 = ALSO forward hardware pad notes (68-99) to
      * the shadow UI, without touching their normal routing -- Move still plays
      * the pad and the DSP still hears the note. shadow_ui sets it while the
@@ -430,8 +449,8 @@ typedef struct shadow_control_t {
      * Move's MIDI_OUT echo can reconstruct. Unlike pad_block this never blocks
      * anything. The shim drops it itself when the shadow display closes.
      *
-     * APPENDED, like save_stems above: sizeof is a contract between two
-     * binaries. Appending is free; inserting is not.
+     * APPENDED after claim_cc_bits, for the reason stated on it: sizeof is a
+     * contract between two binaries. Appending is free; inserting is not.
      */
     volatile uint8_t pad_observe;
 } shadow_control_t;

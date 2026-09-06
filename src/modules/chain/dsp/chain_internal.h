@@ -25,6 +25,8 @@
 #include <pwd.h>
 #include <malloc.h>
 
+#include "chain_idle_tick.h"
+
 /* Sentinel for "channel field not present in patch file".
  * Distinguishes genuine absence from the legal 0 values used by
  * receive_channel (0=All) and forward_channel (0=ch 1 internal). */
@@ -36,6 +38,7 @@
  * chain-specific, and a second copy is precisely the bug class that made
  * fx3..fx8 silent. Reached the same way as plugin_api_v1.h below. */
 #include "host/chain_key_index.h"
+#include "host/json_compact.h"
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/midi_fx_api_v1.h"
@@ -397,6 +400,13 @@ typedef struct chain_instance {
      * events — not our own injection echoes — affect it. */
     uint8_t pre_pad_held[128];
 
+    /* The shim advances LFO/MIDI timers through "mod:tick" while an idle
+     * synth render is skipped. If a MIDI FX delivers to the synth, it must
+     * wake that same block without render_block ticking a second time. The
+     * transitions are pure and live in chain_idle_tick.h so tests/host can
+     * run them; this is only where the state is kept. */
+    chain_idle_tick_t idle_tick;
+
     /* Pre-mode inject-only record-align. Clock-driven generator output
      * (Beat Bank etc.) must reach Move's track AFTER the 0xF8 that advances
      * its step, or Move records it one 16th early. We can't delay the note
@@ -596,7 +606,7 @@ CHAIN_INTERNAL int chain_get_clock_status(void);
 CHAIN_INTERNAL int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name);
 CHAIN_INTERNAL int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name);
 CHAIN_INTERNAL void v2_on_midi(void *instance, const uint8_t *msg, int len, int source);
-CHAIN_INTERNAL void v2_tick_midi_fx(chain_instance_t *inst, int frames);
+CHAIN_INTERNAL int v2_tick_midi_fx(chain_instance_t *inst, int frames);
 CHAIN_INTERNAL void v2_unload_all_midi_fx(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_midi_fx_slot(chain_instance_t *inst, int slot);
 

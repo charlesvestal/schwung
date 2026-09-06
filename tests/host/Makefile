@@ -40,6 +40,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_rt_thread_audit \
 	$(BUILD_DIR)/test_master_fx_slot_routing \
 	$(BUILD_DIR)/test_master_fx_saved_state \
+	$(BUILD_DIR)/test_json_compact \
 	$(BUILD_DIR)/test_master_fx_snapshot \
 	$(BUILD_DIR)/test_spi_tally \
 	$(BUILD_DIR)/test_align_capture \
@@ -51,9 +52,12 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_metronome_announce \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_sampler_stem_path \
+	$(BUILD_DIR)/test_sampler_wav_trim \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
-	$(BUILD_DIR)/test_link_audio_backlog_trim
+	$(BUILD_DIR)/test_link_audio_backlog_trim \
+	$(BUILD_DIR)/test_boot_select_core \
+	$(BUILD_DIR)/test_chain_idle_tick
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -128,6 +132,9 @@ $(BUILD_DIR)/test_metronome_announce: test_metronome_announce.c ../../src/host/m
 $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
+$(BUILD_DIR)/test_sampler_wav_trim: test_sampler_wav_trim.c ../../src/host/sampler_wav_trim.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
 $(BUILD_DIR)/test_shadow_metronome: test_shadow_metronome.c ../../src/host/shadow_metronome.c ../../src/host/metronome_click.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS) -lm
 
@@ -139,6 +146,14 @@ $(BUILD_DIR)/test_relative_cc: test_relative_cc.c ../../src/modules/chain/dsp/re
 
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_select_core.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Same as relative_cc above: chain_idle_tick.h lives with the chain DSP and is
+# standalone by construction (no chain_internal.h).
+$(BUILD_DIR)/test_chain_idle_tick: test_chain_idle_tick.c ../../src/modules/chain/dsp/chain_idle_tick.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I../../src/modules/chain/dsp $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \

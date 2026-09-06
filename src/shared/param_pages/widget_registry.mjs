@@ -63,6 +63,86 @@ export function registerWidget(kind, impl) {
     return true;
 }
 
+/**
+ * Register every widget one canvas overlay declares.
+ *
+ * WHY THIS IS NOT JUST `registerWidget(ov.widgetKind, ...)`. It was, and the
+ * registry has always been a Map, so the ONLY thing limiting a module to a
+ * single widget was this one call site reading a single string. A module with
+ * two genuinely different pictures -- a face in one cell and that face's mouth
+ * in another -- had to declare ONE kind on both parameters and branch on the
+ * key inside its own drawCell. That works, but nothing says so: declaring
+ * `custom:a` and `custom:b` looked completely reasonable, the second one was
+ * never registered, and its cell quietly fell back to a built-in dial. A
+ * correct-looking page and no error, which is the failure mode this file's own
+ * header is otherwise careful about.
+ *
+ * Three shapes are accepted, and a module may use more than one:
+ *
+ *   widgetKind:  "custom:a"                     + drawCell   (unchanged)
+ *   widgetKinds: ["custom:a", "custom:b"]       + drawCell   (one drawer,
+ *                                                  told apart by group.keys)
+ *   widgetKinds: { "custom:a": fn,                            (a drawer each)
+ *                  "custom:b": { draw, nominal } }
+ *
+ * The array form keeps the dispatch-on-key style for a module whose widgets
+ * really are one drawing at two crops; the object form is for widgets that
+ * have nothing to do with each other, and lets each carry its own nominal.
+ *
+ * Returns what happened rather than a bare boolean, because "declared a custom
+ * kind and got no widget" is exactly what the caller needs to log -- an author
+ * who sees a reasonable picture has no other way to find out it is not theirs.
+ *
+ * @param {object} ov  the loaded canvas overlay
+ * @returns {{registered: string[], skipped: {kind: string, why: string}[]}}
+ */
+export function registerOverlayWidgets(ov) {
+    const registered = [];
+    const skipped = [];
+    if (!ov || typeof ov !== "object") return { registered, skipped };
+
+    const fallbackDraw = typeof ov.drawCell === "function" ? ov.drawCell.bind(ov) : null;
+    const fallbackNominal = ov.widgetNominal || null;
+
+    const add = (kind, draw, nominal) => {
+        if (!isCustomKind(kind)) {
+            skipped.push({ kind: String(kind), why: "not a custom: kind" });
+            return;
+        }
+        if (typeof draw !== "function") {
+            skipped.push({ kind, why: "no drawCell for it" });
+            return;
+        }
+        if (registerWidget(kind, { draw, nominal: nominal || null })) registered.push(kind);
+        else skipped.push({ kind, why: "registry refused it" });
+    };
+
+    /* Legacy single kind first, so an explicit widgetKinds entry for the same
+     * name wins -- a module spelling both means the richer one. */
+    if (typeof ov.widgetKind === "string") add(ov.widgetKind, fallbackDraw, fallbackNominal);
+
+    const many = ov.widgetKinds;
+    if (Array.isArray(many)) {
+        for (const kind of many) add(kind, fallbackDraw, fallbackNominal);
+    } else if (many && typeof many === "object") {
+        for (const kind of Object.keys(many)) {
+            const entry = many[kind];
+            if (typeof entry === "function") add(kind, entry.bind(ov), fallbackNominal);
+            else if (entry && typeof entry === "object") {
+                const d = typeof entry.draw === "function" ? entry.draw
+                        : (typeof entry.drawCell === "function" ? entry.drawCell : null);
+                add(kind, d ? d.bind(ov) : null, entry.nominal || entry.widgetNominal || fallbackNominal);
+            } else {
+                skipped.push({ kind, why: "entry is neither a function nor an object" });
+            }
+        }
+    } else if (many !== undefined) {
+        skipped.push({ kind: "widgetKinds", why: "must be an array or an object" });
+    }
+
+    return { registered, skipped };
+}
+
 /** Registered AND not disabled. This is the predicate viz.mjs consults. */
 export function isWidgetAvailable(kind) {
     return widgets.has(kind) && !disabled.has(kind);

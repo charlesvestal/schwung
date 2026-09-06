@@ -13,6 +13,7 @@
 #include "shim_worker.h"
 #include "shadow_constants.h"
 #include "sampler_stem_path.h"
+#include "sampler_wav_trim.h"
 #include <semaphore.h>
 
 #include <stdlib.h>
@@ -406,53 +407,20 @@ static void sampler_write_wav_header(FILE *f, uint32_t data_size) {
     fwrite(&header, sizeof(header), 1, f);
 }
 
-/* Drop `preroll_frames` from the FRONT of an open WAV, in place: copy the
- * tail down over the head, truncate, and update *frames to what is left.
- * Header is NOT rewritten here — the caller stamps the final size.
+/* Drop `preroll_frames` from the FRONT of an open WAV, in place.
  *
- * Extracted from sampler_worker_finalize so the stems get the identical trim
- * rather than a second implementation of it. Returns 1 if anything moved.
- *
- * Runs on the shim worker (SCHED_OTHER). The malloc and the seeks are the
- * reason this is not on the RT path. */
+ * The body lives in sampler_wav_trim.h so tests/host can run it against a real
+ * file — including the case that made this whole feature a no-op for five
+ * months, which was the FILE MODE and not the arithmetic. Read the header. */
 static int sampler_wav_trim_front(FILE *f, uint32_t preroll_frames, uint32_t *frames) {
-    if (!f || preroll_frames == 0 || !frames) return 0;
-    uint32_t bytes_per_frame = SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8);
-    uint32_t preroll_bytes = preroll_frames * bytes_per_frame;
-    uint32_t total_bytes = *frames * bytes_per_frame;
-    if (preroll_bytes >= total_bytes) return 0;
-
-    uint32_t keep_bytes = total_bytes - preroll_bytes;
-    uint32_t keep_frames = *frames - preroll_frames;
-    size_t header_size = sizeof(sampler_wav_header_t);
-
-    /* Process in chunks to limit memory usage */
-    #define TRIM_CHUNK_SIZE (44100 * 2 * 2)  /* ~1 second */
-    int16_t *chunk = malloc(TRIM_CHUNK_SIZE);
-    if (!chunk) return 0;
-    uint32_t remaining = keep_bytes;
-    uint32_t read_offset = (uint32_t)header_size + preroll_bytes;
-    uint32_t write_offset = (uint32_t)header_size;
-    while (remaining > 0) {
-        uint32_t to_copy = remaining < TRIM_CHUNK_SIZE ? remaining : TRIM_CHUNK_SIZE;
-        fseek(f, read_offset, SEEK_SET);
-        size_t got = fread(chunk, 1, to_copy, f);
-        if (got == 0) break;
-        fseek(f, write_offset, SEEK_SET);
-        /* Paced: the trim rewrites the WHOLE file, and finalize runs it once per
-         * stem. Six unpaced rewrites at stop is the same burst the skipback save
-         * was. */
-        sampler_write_paced(f, chunk, got);
-        read_offset += (uint32_t)got;
-        write_offset += (uint32_t)got;
-        remaining -= (uint32_t)got;
-    }
-    free(chunk);
-    #undef TRIM_CHUNK_SIZE
-
-    ftruncate(fileno(f), (off_t)(header_size + keep_bytes));
-    *frames = keep_frames;
-    return 1;
+    unsigned n = frames ? (unsigned)*frames : 0;
+    int moved = sampler_wav_trim_front_impl(
+        f, sizeof(sampler_wav_header_t),
+        SAMPLER_NUM_CHANNELS * (SAMPLER_BITS_PER_SAMPLE / 8),
+        (unsigned)preroll_frames, &n,
+        sampler_write_paced, s_host.log);
+    if (frames) *frames = (uint32_t)n;
+    return moved;
 }
 
 static size_t sampler_ring_available_write(void) {
@@ -900,7 +868,8 @@ static int sampler_worker_open_stems(void) {
         sampler_stem_t *st = &sampler_stems[i];
         sampler_stem_path_build(st->path, sizeof(st->path),
                                 sampler_current_recording, sampler_stem_names[i]);
-        st->file = fopen(st->path, "wb");
+        /* "w+b" — the preroll trim reads this back. See sampler_wav_trim_front. */
+        st->file = fopen(st->path, "w+b");
         if (!st->file) {
             char msg[380];
             snprintf(msg, sizeof(msg), "Sampler: failed to open stem file: %s", st->path);
@@ -1033,7 +1002,10 @@ void sampler_worker_prepare(void) {
         s_host.log("Sampler: source is Move Input — stems not available, recording master");
 
     if (SAVE_STEMS_WANTS_MASTER(sampler_take_stem_mode)) {
-        sampler_wav_file = fopen(sampler_current_recording, "wb");
+        /* "w+b", not "wb": sampler_wav_trim_front() READS this file back to
+         * copy the tail down over the preroll. A write-only stream fails that
+         * fread, which is the whole preroll bug — see the comment there. */
+        sampler_wav_file = fopen(sampler_current_recording, "w+b");
         if (!sampler_wav_file) {
             char msg[300];
             snprintf(msg, sizeof(msg), "Sampler: failed to open WAV file: %s",

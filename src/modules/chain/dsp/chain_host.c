@@ -753,12 +753,21 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
      * against the current header, and appending to it would have the host read
      * past the end of theirs. A string key costs one strcmp.
      *
+     * It also runs the MIDI FX tick, so a time-driven FX keeps generating
+     * while its synth is parked, and reports back whether anything reached
+     * the synth — the shim renders this same block if so (chain_idle_tick.h).
+     *
      * FIRST statement in the function, before the debug log and every other
      * route, because this is called from the SPI callback on every silent
-     * frame: no allocation, no logging, no file I/O on this path.
+     * frame. Nothing on OUR side of it allocates, logs or touches a file. It
+     * does call into third-party MIDI FX tick() and, when the MIDI trace is
+     * armed, chain_midi_trace() — the same code render_block has always run
+     * here, now also on the frames render_block skips.
      */
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
-        lfo_tick(inst, val ? atoi(val) : 128);
+        int frames = val ? atoi(val) : 128;
+        lfo_tick(inst, frames);
+        chain_idle_tick_mark(&inst->idle_tick, v2_tick_midi_fx(inst, frames));
         return;
     }
 
@@ -2066,11 +2075,12 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         }
     }
 
-    /* Tick LFOs — emit modulation before audio render */
-    lfo_tick(inst, frames);
-
-    /* Process MIDI FX tick (for arpeggiator timing) */
-    v2_tick_midi_fx(inst, frames);
+    /* A silent-slot mod:tick may already have advanced both timers and woken
+     * this exact block with a generated note. Never advance it twice. */
+    if (chain_idle_tick_consume(&inst->idle_tick)) {
+        lfo_tick(inst, frames);
+        v2_tick_midi_fx(inst, frames);
+    }
 
     /* Always render so synth state advances (envelopes, LFOs, phases).
      * If bypassed, zero the buffer afterward — downstream FX still see
@@ -2203,4 +2213,15 @@ int chain_fx_requires_continuous(void *instance) {
         if (inst->fx_requires_continuous[i]) return 1;
     }
     return 0;
+}
+
+/* Called by the shim immediately after its silent-slot mod:tick. A true result
+ * means a timer-generated MIDI message has already reached the synth, so the
+ * current audio block must render instead of remaining parked. One-shot; see
+ * chain_idle_tick.h for why a "no" clears the double-tick guard here. */
+__attribute__((visibility("default")))
+int chain_take_midi_tick_wake(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return 0;
+    return chain_idle_tick_take(&inst->idle_tick);
 }

@@ -604,7 +604,7 @@ those pages drawable.
 
 ### A turn PEEKS the list; a cell that is already big does not
 
-Turning a divable enum raises its option list over the grid for ~700ms
+Turning a divable enum raises its option list over the grid for 1500ms
 (`ENUM_PEEK_MS`), header `TURNING`, footer `TURN SET`. It is the same screen
 the picker draws (`enum_list.mjs`) with the opposite commit semantics: the
 detent has ALREADY written, so there is nothing to confirm and nothing to
@@ -646,6 +646,31 @@ obligation had to become a FUNCTION rather than a paragraph.
 the rows go through `menu_layout` (global `print`) while the header is a pixel
 font that never calls `print` at all — a recording `print()` reports a
 headerless screen as complete.
+
+**It must OUTLIVE `TURN_CLAIM_MS`** (1200), and for a year it did not: 700 was
+picked to match the chain editor card's `KNOB_CARD_DECAY_MS`, two numbers that
+never appear on the same screen. The same detent raises both — the header
+claims the cell and names the parameter, the peek shows what is either side of
+the value — so the shorter one took the list down while the header was still
+claiming, leaving the screen answering half a question. Reported from the
+device as simply "the peek disappears too quickly".
+`tests/host/test_enum_peek.sh` asserts the ORDER of the two constants rather
+than either number, so tuning one cannot silently re-cross them.
+
+**A LIST does not peek AT ALL** — the whole layout, not one graphic. The peek
+exists because a 30px GRID CELL cannot show a word; a list row prints the
+option in full, right-aligned beside its label, so the panel covers a legible
+answer with the same answer and hides the four rows around it as well.
+
+It was worst exactly where it was least needed. Global Settings is pinned to
+the list, and `skipback_shortcut` is two options: turning it blanked the screen
+to spell `Cap / Vol+Cap` over a row already reading `Skipback: Vol+Cap`.
+Reported from the device as a menu that should not be there — and it is not a
+two-option problem, a 47-model list is the same occlusion for the same reason.
+
+Gated on `s.layout`, not on `knobsAsList()`: by the time the turn is being
+handled the page is known to be a knobs page with a key under the cursor, and
+the remaining question is only what the layout can SHOW.
 
 **A parameter drawn across MORE THAN ONE CELL does not peek** (`drawnWide`).
 The peek exists because a 30px cell cannot show a list; once the picture has
@@ -1480,11 +1505,103 @@ shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
 calling `registerWidget()` directly. Every other widget test registers directly,
 and that is exactly why none of them saw this.
 
+### A module may declare SEVERAL widgets, and one call site said otherwise
+
+The registry has always been a `Map`, and `registerWidget` has always taken a
+kind. Nothing in the design limited a module to one widget — but the single call
+site in `shadow_ui.js` read `ov.widgetKind`, one **string**, so a module naming
+two kinds got the first registered and the second dropped.
+
+Dropped is not an error here, and that is the whole problem. An unregistered
+kind does not claim its key, so the key stays in the detector pool and a
+built-in dial draws — which is the same fall-through that makes a typo, a failed
+load and an older host all degrade safely. Correct-looking page, no log line,
+nothing to search for. The fixture's own author hit it: two reasonable names,
+one silent dial.
+
+`registerOverlayWidgets` in `widget_registry.mjs` owns the rule now, so the
+resolution lives beside the registry rather than in a UI file, and
+`tests/host/` can run it. `widgetKind` is unchanged; `widgetKinds` takes either
+an **array** of names sharing one `drawCell` (they are one drawing at two crops,
+told apart by `group.keys[0]`) or an **object** giving each kind its own drawer
+and its own nominal. Anything unusable is returned as a reason and logged
+against the module, because "declared a widget and did not get one" is precisely
+what an author cannot otherwise see.
+
+### A widget can name a value with NO CELL, and before it could not
+
+A widget cannot read — it is handed the page's value map. So a picture
+depending on a value that has no cell on this page had exactly one route: give
+that value a knob. A real module did, and shipped a read-only cell occupying one
+of eight slots on a 128x64 screen, drawing a 17x15 head nobody could interpret,
+whose only job was carrying a number to the cell beside it. Judged on hardware
+in three words: not useful.
+
+`extraKeys` already existed for this shape — `detectSample` sets it for an
+off-page filepath, and the controller already spends one rotation stop on each —
+but only an internal detector could produce one. `viz.extra_keys` lets a module
+declare them. Capped at four: one read per stop, and a cell asking for twenty
+would spend the page's whole read budget and starve every other value on screen.
+
+### A page the MODULE draws, and it is still a page
+
+`type: "canvas"` gives a cell you dive into. `as_page` gives a page in the
+level's jog rotation carrying that level's own knobs — reached by paging,
+turned by the encoders, redrawn every tick so it can animate, and wearing the
+host's own header and footer. `preset_browser` goes further and makes it the
+level's browser, so a face per character replaces a row of text.
+
+**IT IS A PAGE_KNOBS PAGE WITH A DRAWER, NOT A NEW KIND**, and that is the whole
+reason it works. Twenty-two places in `page_controller` branch on PAGE_KNOBS:
+reads, knob turns, touch, the touch strip, announce, dive targets, the list
+layout. A new kind would have to be threaded through every one, and missing one
+gives a page that looks right and does not respond. As a knobs page it inherits
+all of it and only the picture differs — which is also why the encoders work
+with no input code at all.
+
+Three gates asked "is this PAGE_KNOBS" when they meant "does this page have
+keys" (`pageHasKnobs`). A browser page also has to tick BOTH lanes: an ordinary
+preset page returns early after its own, which is right with no knobs and wrong
+the moment it has some.
+
+**THE BRANCH IS IN BOTH RENDERERS.** `render_page_movy` is the layout the device
+uses; putting it only in `render_page.mjs` produced a page whose header said
+FACE and whose body was eight knobs — correct everywhere except on hardware.
+
+### A module may declare a param LIVE, and the picture then follows the SOUND
+
+`isModulated` asks the chain's modulation system, which knows about LFOs and
+macros. It cannot know a synth drives its own vowel from pad pressure, so the
+widget drawing that vowel sat frozen at the knob while the sound moved.
+`"live": true` buys the treatment a modulated key already gets: `:effective`
+re-read EVERY TICK rather than on the rotation, which on an eight-knob page
+comes round about four times a second — an animation drawn from that is a
+slideshow.
+
+Two traps behind it, both found on hardware. The chain host OWNED `:effective`
+and, for a key it was not modulating, stripped the suffix and asked the plugin
+for the plain key — so a module serving its own effective value was never asked
+and the UI got the knob back. And **the shim skips `render_block` on a silent
+slot** (one probe frame in 172), so a module computing its effective value
+inside `render_block` appears frozen until something plays.
+
 ### A module's OTHER draw surface is a CARD, and it floats
 
 `drawCell` gives a module one cell. `card_script` gives it the page: a bordered
 picture, centred, raised while a knob is held or has just been turned, and gone
 on release. `param_card.mjs` owns the frame and the module owns the inside.
+
+**A card sees the PAGE, not only its own value.** The payload is `{ w, h, name,
+value, raw, values, nowMs }`. `values` is the page's value map — the same object
+`drawCell` is handed — and it exists because a card whose meaning depends on a
+sibling had no route to that fact at all: there is no `getParam` here, and the
+card script is loaded into its own closure, so it cannot even see a variable the
+module's own `drawCell` set. The first module to need it (which character's
+vowel is this?) went through `globalThis` plus a staleness timestamp. That
+worked, and it was a hidden side channel between two files this contract said
+were unrelated — which is a thing to remove, not to document. The null rules
+carry over unchanged: a sibling may be missing or `null`, and an absent one must
+not become a picture any more than an absent `raw` may.
 
 **Why a second surface rather than a bigger cell.** A cell is 17×15 and the
 grid's business is eight values at once. A card answers a different question —

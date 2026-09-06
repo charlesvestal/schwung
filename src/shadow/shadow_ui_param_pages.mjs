@@ -324,6 +324,17 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
                      * states for the other accessors. */
                     ? ctx.loadCardScript(currentSlot, currentComponent, scriptPath, exportRef)
                     : null),
+            /*
+             * A CUSTOM UI PAGE's body. Same shape and same reasoning as
+             * loadCard: resolving the module's script needs its directory and
+             * the host loader, so it comes from the consumer. A consumer that
+             * offers none simply gets an empty body under a normal header and
+             * footer, rather than a broken page.
+             */
+            drawCanvasPage: (drawCtx, band, canvas, payload) => {
+                if (typeof ctx.drawCanvasPageBody !== 'function') return;
+                ctx.drawCanvasPageBody(currentSlot, currentComponent, drawCtx, band, canvas, payload);
+            },
         }, io || {}));
     }
     /* Entering the view is the only way the module behind it can have changed,
@@ -1223,6 +1234,27 @@ export function handleParamPagesMidi(data) {
     const todo = traced("js.grid.input",
         () => applyInput(controller, intent, { nowMs: Date.now(), reveal: false }));
 
+    /*
+     * A TRIGGER THAT ASKED FOR AN ACTION, run here and nowhere else.
+     *
+     * A momentary writes through setParam, which the controller calls from
+     * inside applyInput — so a contract whose write NAVIGATES cannot act there
+     * without tearing the controller down mid-input. It queues instead, and
+     * this is the drain: the same point, and for the same reason, that a menu
+     * entry's action is run twenty lines below.
+     *
+     * Before `if (!todo)`, because a trigger returns no intent: the click was
+     * the whole interaction. Whatever the action opened is now on screen, so
+     * there is nothing left for this input to do either way.
+     */
+    if (controllerIo && typeof controllerIo.takePendingAction === 'function') {
+        const queued = controllerIo.takePendingAction();
+        if (queued) {
+            controllerIo.runAction(queued);
+            return true;
+        }
+    }
+
     if (!todo) return true;
 
     if (todo.action === 'exit') {
@@ -1325,6 +1357,19 @@ export function clearParamPagesTouch() {
 }
 
 /** The section picker, for anything that wants to drive it from outside. */
+/**
+ * The name of the page the grid is standing on, or null when it is not up.
+ *
+ * For a caller that has to LEAVE the grid and wants to come back to the same
+ * page: the engine restores by NAME (restorePageName; a page's identity
+ * survives a replan, its index does not).
+ */
+export function paramPagesPageName() {
+    if (!controller || typeof controller.pageLabel !== 'function') return null;
+    const label = controller.pageLabel();
+    return label ? String(label) : null;
+}
+
 export function paramPagesJumpIndex() {
     return controller ? controller.groupIndex() : [];
 }

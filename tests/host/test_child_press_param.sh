@@ -139,8 +139,13 @@ if sed -n "$fwd,$((fwd+4))p" "$shim" | command grep -q 'continue;'; then
 fi
 sed -n "$fwd,$((fwd+3))p" "$shim" | command grep -q 'shadow_ui_midi_publish' \
   || fail "the pad_observe branch does not publish to the shadow UI"
-command grep -B4 'shadow_control->pad_observe = 0;' "$shim" | command grep -q 'prev_display_mode_observe && !shadow_display_mode' \
-  || fail "the shim does not drop pad_observe when the shadow display closes"
+# Dropped on the shadow display's CLOSING edge -- the same one the edit-CC
+# claim is dropped on (#435), and deliberately the same `static int
+# prev_display_mode`: two statics tracking one transition is how they drift.
+command grep -B8 'shadow_control->pad_observe = 0;' "$shim" | command grep -q 'prev_display_mode && !shadow_display_mode' \
+  || fail "the shim does not drop pad_observe on the shadow display's closing edge"
+[ "$(command grep -c 'static int prev_display_mode;\|static int prev_display_mode = 0;' "$shim")" = "1" ] \
+  || fail "more than one static tracks the shadow display's closing edge -- they drift; pad_observe and the edit-CC claim share one"
 command grep -q '"host_pad_observe"' src/shadow/shadow_ui.c || fail "host_pad_observe is not bound for the shadow UI"
 echo "  ok  the shim forwards pads passively, only under pad_observe, and drops it on display close"
 

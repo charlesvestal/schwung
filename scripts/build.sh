@@ -524,7 +524,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/host/chain_permute.h \
-    src/host/chain_key_index.h \
+    src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h; then
@@ -835,6 +835,27 @@ else
     echo "Skipping schwung-heal (up to date)"
 fi
 
+# Build boot-select (SPI boot window + picker, run by /opt/move/Move before
+# anything else owns /dev/ablspi0.0). Links js_display.c for the display
+# primitives, so it drags in QuickJS the same way Shadow UI's link already
+# does — see that block above for the exact include/lib shape this mirrors.
+if needs_rebuild build/bin/boot-select src/boot-select.c src/host/boot_select_core.c \
+    src/host/js_display.c src/host/boot_select_core.h src/host/js_display.h \
+    src/lib/schwung_spi_lib.h; then
+    echo "Building boot-select..."
+    "${CROSS_PREFIX}gcc" -g -O2 \
+        src/boot-select.c \
+        src/host/boot_select_core.c \
+        src/host/js_display.c \
+        -o build/bin/boot-select \
+        -Isrc -Isrc/lib -Isrc/host \
+        -Ilibs/quickjs/quickjs-2025-04-26 \
+        -Llibs/quickjs/quickjs-2025-04-26 \
+        -lquickjs -lm -ldl -lrt -lpthread
+else
+    echo "Skipping boot-select (up to date)"
+fi
+
 # Copy shadow UI files (always — ExFAT timestamps can confuse cp -u)
 cp ./src/shadow/shadow_ui.js ./build/shadow/
 cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
@@ -846,6 +867,8 @@ fi
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
+cp ./src/schwung-entry.sh ./build/
+cp ./src/host/boot_target_lib.sh ./build/host/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/launch-standalone.sh ./build/ 2>/dev/null || true
 
@@ -935,14 +958,6 @@ if [ -f "./libs/curl/curl" ]; then
     echo "Bundled curl binary"
 else
     echo "Warning: libs/curl/curl not found - downloads will not work without it"
-fi
-
-# Copy filebrowser binary (if present)
-if [ -f "./libs/filebrowser/filebrowser" ]; then
-    mkdir -p ./build/bin/
-    cp -u ./libs/filebrowser/filebrowser ./build/bin/
-    cp -u ./libs/filebrowser/LICENSE ./build/licenses/FILEBROWSER_LICENSE.txt 2>/dev/null || true
-    echo "Bundled filebrowser binary"
 fi
 
 # eSpeak-NG data directory is copied to build/espeak-ng-data/ above

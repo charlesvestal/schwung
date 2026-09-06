@@ -300,7 +300,7 @@ function world() {
   w.applyComponentSelection = () => lift("applyComponentSelection",
     ["slotChainComponents", "selectedSlot", "selectedChainComponent", "availableModules",
      "selectedModuleIndex", "isChainModuleKey", "setView", "VIEWS", "getChainComponentModule",
-     "chainConfigs", "enterPresetBrowser", "getComponentParamPrefix", "enterStorePicker",
+     "chainConfigs", "enterPresetBrowser", "getComponentParamPrefix", "enterConnect",
      "moveChainComponent", "slotChainTarget", "slotChainComponentIndex", "chainEditorKeyAt",
      "lastChainComponent",
      "announce", "needsRedraw", "pendingChainInsertFor", "cancelPendingChainInsert",

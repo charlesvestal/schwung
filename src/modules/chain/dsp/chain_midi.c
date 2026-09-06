@@ -563,8 +563,16 @@ static int v2_run_midi_fx_from(chain_instance_t *inst, int from,
                                scratch, scratch_lens, MIDI_FX_MAX_OUT_MSGS);
 }
 
-void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
-    if (!inst) return;
+/* Returns 1 if a generated message was DELIVERED to the synth this tick —
+ * the shim's idle gate uses it to un-park a silent slot for this same block.
+ * Deliberately not "a MIDI FX emitted": a slot carrying MIDI FX with no synth
+ * loaded (Pre mode driving Move's native instrument) is silent by
+ * construction, so counting its output would wake it on every emitting frame
+ * to render a synth that isn't there — the idle gate switched off for exactly
+ * the slot that can never need it. */
+int v2_tick_midi_fx(chain_instance_t *inst, int frames) {
+    if (!inst) return 0;
+    int delivered = 0;
 
     for (int fx = 0; fx < inst->midi_fx_count; fx++) {
         if (fx < MAX_MIDI_FX && inst->midi_fx_bypassed[fx]) continue;
@@ -594,6 +602,7 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                     chain_midi_trace(inst, "  ~> synth(tick)", out_msgs[i], out_lens[i], -1, 0);
                 chain_record_synth_note(inst, out_msgs[i], out_lens[i]);
                 inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
+                delivered = 1;
             }
         }
 
@@ -644,6 +653,7 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
             }
         }
     }
+    return delivered;
 }
 
 /* ==========================================================================
@@ -1007,4 +1017,3 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
 }
 
 /* V2 set_param handler */
-
