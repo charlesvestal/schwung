@@ -20,6 +20,7 @@
  */
 
 import { hasChildren, childCount, childIndexParam, childName } from "./child_key.mjs";
+import { MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 
 /**
  * Every param key the hierarchy lists ANYWHERE — so the planner can ask
@@ -426,6 +427,19 @@ export function levelShortNames(lvl) {
  * rather than by diving, and the eight encoders do there exactly what they do
  * on the level's grid.
  */
+function declaredCanvasExtraKeys(p) {
+    const raw = Array.isArray(p.extra_keys) ? p.extra_keys
+              : (Array.isArray(p.extraKeys) ? p.extraKeys : null);
+    if (!raw) return [];
+    const out = [];
+    for (const k of raw) {
+        if (typeof k !== "string" || !k) continue;
+        if (out.indexOf(k) < 0) out.push(k);
+        if (out.length >= MAX_DECLARED_EXTRA_KEYS) break;
+    }
+    return out;
+}
+
 function canvasPageParams(chainParams) {
     const out = new Map();
     for (const p of chainParams || []) {
@@ -442,12 +456,14 @@ function canvasPageParams(chainParams) {
                    : (typeof p.overlay === "string" ? p.overlay : ""),
             /* Read-only values the picture needs but which must not become
              * visible/turnable cells on the level grid. They join the normal
-             * staggered read rotation, never the draw path. */
-            extraKeys: Array.isArray(p.extra_keys)
-                ? p.extra_keys.filter((k) => typeof k === "string" && k)
-                : (Array.isArray(p.extraKeys)
-                    ? p.extraKeys.filter((k) => typeof k === "string" && k)
-                    : []),
+             * staggered read rotation, never the draw path.
+             *
+             * Capped at the SAME four a widget's `viz.extra_keys` gets, and for
+             * the same reason: one read per stop, so an uncapped page spends
+             * its whole budget here and starves the knobs it is drawn beside.
+             * Measured on the uncapped version -- twenty keys took a
+             * three-knob page from a knob refresh every 4 ticks to every 24. */
+            extraKeys: declaredCanvasExtraKeys(p),
             name: p.name || p.short_name || p.key,
         });
     }

@@ -1666,6 +1666,15 @@ rotation only while that page is current. They never join `page.keys`, so an
 animation snapshot can reach `drawPage({ values })` without consuming a cell
 or encoder.
 
+**Capped at the same four**, from the same constant — `MAX_DECLARED_EXTRA_KEYS`
+is exported by `viz.mjs` rather than restated, because a widget and a canvas
+page spend the SAME rotation on the SAME page and two copies of the number
+would be two copies of the decision. It shipped uncapped in #433 and twenty
+keys took a three-knob page from a knob refresh every 4 ticks to every 24.
+Keys already carrying a cell on the page are skipped in the controller, not the
+planner: one canvas can serve both a custom page and the preset browser, and
+those two pages carry different key lists.
+
 **IT IS A PAGE_KNOBS PAGE WITH A DRAWER, NOT A NEW KIND**, and that is the whole
 reason it works. Twenty-two places in `page_controller` branch on PAGE_KNOBS:
 reads, knob turns, touch, the touch strip, announce, dive targets, the list

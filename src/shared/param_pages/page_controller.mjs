@@ -2064,7 +2064,14 @@ export function createController(io = {}) {
          * Read it on this same bounded rotation; never synchronously in draw. */
         if (p.canvas && Array.isArray(p.canvas.extraKeys)) {
             for (const k of p.canvas.extraKeys) {
-                if (k && extraKeys.indexOf(k) < 0) extraKeys.push(k);
+                if (!k || extraKeys.indexOf(k) >= 0) continue;
+                /* A key that already has a cell on this page is already in the
+                 * rotation. Declaring it here as well would buy nothing and
+                 * cost a second stop reading the same value -- the planner
+                 * cannot rule it out, because the canvas travels to the preset
+                 * browser too and the two pages carry different key lists. */
+                if (p.keys.indexOf(k) >= 0) continue;
+                extraKeys.push(k);
             }
         }
         /*

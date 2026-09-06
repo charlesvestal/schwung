@@ -321,8 +321,15 @@ function collectDeclared(keys, metaIndex, invalid) {
  * ONE READ PER STOP, so this is not free: declare what the picture needs and
  * nothing else. Capped, because a module asking for twenty keys would spend the
  * page's whole read budget on one cell and starve every other value on screen.
+ *
+ * EXPORTED, because a widget is no longer the only thing that can declare them:
+ * an `as_page` canvas param takes `extra_keys` too, and it spends the SAME
+ * rotation on the SAME page. A second copy of the number is a second copy of
+ * the decision, and the canvas path shipped without one -- twenty keys were
+ * accepted, and a three-knob page went from refreshing a knob every 4 ticks to
+ * every 24.
  */
-const MAX_DECLARED_EXTRA_KEYS = 4;
+export const MAX_DECLARED_EXTRA_KEYS = 4;
 
 function declaredExtraKeys(v) {
     const raw = v && (v.extra_keys || v.extraKeys);
