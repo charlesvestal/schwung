@@ -201,6 +201,7 @@ main() {
     ssh_with_retry "root" 'rm -f /usr/lib/schwung-web-shim.so' || true
     ssh_with_retry "ableton" 'rm -rf ~/schwung ~/schwung.tar.gz' || true
     ssh_with_retry "root" 'rm -f /data/UserData/move-anything' || true  # Remove backwards-compat symlink
+    ssh_with_retry "root" 'rm -rf /data/UserData/boot-targets' || true  # Remove boot-selector registry
 
     log "Restoring MoveWebService..."
     ssh_with_retry "root" 'for svc in /opt/move/MoveWebServiceOriginal /opt/move-web-service/MoveWebServiceOriginal; do if [ -f "$svc" ]; then dir=$(dirname "$svc"); base=$(basename "$svc" Original); rm -f "$dir/$base"; mv "$svc" "$dir/$base"; fi; done' || true

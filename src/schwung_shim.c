@@ -190,6 +190,30 @@ static bool stay_in_shadow_setting = true;
 static void shim_hook_skipback_resize(void) {
     skipback_resize(skipback_seconds_setting);
 }
+
+/* Boot-healthy touch hook — runs on the shim worker (off the audio path).
+ * The boot selector counts attempts in /data/UserData/boot-targets/.boot-attempt
+ * and treats a boot as good once the target touches its own healthy marker;
+ * this is that touch for the schwung target. mkdir/open are not RT-safe, so
+ * the RT path only posts SHIM_EVT_BOOT_HEALTHY (see shim_pre_transfer) and
+ * this hook does the actual file I/O ~200ms later. */
+static void shim_hook_boot_healthy(void) {
+    if (mkdir("/data/UserData/boot-targets", 0755) != 0 && errno != EEXIST) {
+        LOG_DEBUG("shim", "boot-healthy: mkdir boot-targets failed: %s", strerror(errno));
+        return;
+    }
+    if (mkdir("/data/UserData/boot-targets/schwung", 0755) != 0 && errno != EEXIST) {
+        LOG_DEBUG("shim", "boot-healthy: mkdir boot-targets/schwung failed: %s", strerror(errno));
+        return;
+    }
+    int fd = open("/data/UserData/boot-targets/schwung/healthy", O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) {
+        LOG_DEBUG("shim", "boot-healthy: open healthy failed: %s", strerror(errno));
+        return;
+    }
+    close(fd);
+    LOG_DEBUG("shim", "boot-healthy: touched the healthy marker");
+}
 static int shadow_speaker_active = 1;      /* 1=built-in speaker, 0=headphones/line-out (from CC 115) */
 static int shadow_speaker_active_known = 0; /* 1 once any CC 115 jack-detect has been observed */
 static int shadow_line_in_connected = 0;       /* 1 = cable plugged, 0 = internal mic active (from CC 114) */
@@ -5611,7 +5635,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             int any = 0;
             for (int i = 0; i < 80; i += 4) {
                 uint8_t cin = midi_out[i] & 0x0F;
-                if (cin >= 0x04 && cin <= 0x07) {
+                /* First ~17s after arming: log EVERY nonzero slot, not just
+                 * SysEx framing — hunting the XMOS boot-LED-show stop, which
+                 * the cin 4..7 filter proved not to be (all six captured
+                 * boot SysEx messages were replayed on hardware; none
+                 * stopped it). Same write path and size cap; reverts to
+                 * SysEx-only after frame 6000. */
+                int log_all = (xmos_frame < 6000) && midi_out[i] != 0;
+                if (log_all || (cin >= 0x04 && cin <= 0x07)) {
                     int n = snprintf(line, sizeof(line),
                         "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
                         xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
@@ -5732,6 +5763,21 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* Ensure subsystems are initialized on first call */
     if (!shim_subsystems_initialized) {
         shim_init_subsystems();
+    }
+
+    /* Boot-healthy: post only after ~30 s of continuously clocked SPI frames.
+     * Posting on the FIRST frame would defeat the boot watchdog: a restored
+     * module that crashes seconds into the session (the historical
+     * boot-loop case) would still mark every boot healthy. 30 s matches the
+     * selector's liveness-watcher horizon. ~344 SPI frames/s (2.90 ms each).
+     * RT path: counting and one post only, no file I/O. */
+    #define SHIM_BOOT_HEALTHY_FRAMES (30 * 345)
+    static int boot_healthy_frames = 0;
+    if (boot_healthy_frames <= SHIM_BOOT_HEALTHY_FRAMES) {
+        boot_healthy_frames++;
+        if (boot_healthy_frames == SHIM_BOOT_HEALTHY_FRAMES) {
+            shim_worker_post(SHIM_EVT_BOOT_HEALTHY);
+        }
     }
 
     /* Timing and overrun statics are at file scope (shared between pre/post callbacks) */
@@ -9475,6 +9521,7 @@ static void shim_spi_init(void)
             .preview_play_pending   = shim_hook_preview_play,
             .overtake_dsp_load_pending = overtake_dsp_load_pending,
             .overtake_dsp_free_pending = overtake_dsp_free_pending,
+            .boot_healthy           = shim_hook_boot_healthy,
         };
         shim_worker_set_hooks(&hooks);
     }

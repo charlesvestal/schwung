@@ -979,6 +979,15 @@ if [ "$use_reenable" = true ]; then
   if ! $ssh_ableton "test -f /data/UserData/schwung/shim-entrypoint.sh" 2>/dev/null; then
     fail "Entrypoint not found on data partition. Run a full install instead."
   fi
+  if ! $ssh_ableton "test -f /data/UserData/schwung/schwung-entry.sh" 2>/dev/null; then
+    fail "schwung-entry.sh not found on data partition. Run a full install instead."
+  fi
+  if ! $ssh_ableton "test -f /data/UserData/schwung/host/boot_target_lib.sh" 2>/dev/null; then
+    fail "host/boot_target_lib.sh not found on data partition. Run a full install instead."
+  fi
+  if ! $ssh_ableton "test -f /data/UserData/schwung/bin/boot-select" 2>/dev/null; then
+    fail "bin/boot-select not found on data partition. Run a full install instead."
+  fi
 
   # Clean stale ld.so.preload entries
   ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
@@ -1003,6 +1012,7 @@ if [ "$use_reenable" = true ]; then
 
   # Ensure entrypoint is executable
   ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+  ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
 
   # Install schwung-heal as setuid root (re-enable path mirror of full
   # install). Without this the entrypoint's boot-time heal silently
@@ -1116,6 +1126,9 @@ fi
 # Verify expected payload exists before making system changes
 ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-shim.so" || fail "Payload missing: schwung-shim.so"
 ssh_ableton_with_retry "test -f /data/UserData/schwung/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-entry.sh" || fail "Payload missing: schwung-entry.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/host/boot_target_lib.sh" || fail "Payload missing: host/boot_target_lib.sh"
+ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/boot-select" || fail "Payload missing: bin/boot-select"
 
 # Verify modules directory exists
 if ssh_ableton_with_retry "test -d /data/UserData/schwung/modules"; then
@@ -1200,6 +1213,7 @@ fi
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
 
 # Install schwung-heal as setuid root. This is the only privileged code
 # path on the device for ableton-context callers (entrypoint, schwung-
@@ -1873,7 +1887,19 @@ ssh_root_with_retry "for f in /data/UserData/schwung/schwung-manager.log /data/U
 # reboot re-runs init from scratch and reliably loads the new shim — same
 # thing users were doing manually anyway.
 ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
-reboot_and_wait_for_shim "Move came back up but the new shim isn't mapped — install incomplete?"
+# The shim-mapped check assumes the device boots Schwung — false when the boot
+# selector's default is a third-party target (the device then boots that
+# target, no MoveOriginal, no shim, and the check reports a phantom failure;
+# hit in the field with default=dronage). Payload verification happened above;
+# skip the shim probe and say why.
+boot_default=$($ssh_ableton "head -n 1 /data/UserData/boot-targets/default 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+if [ -n "$boot_default" ] && [ "$boot_default" != "schwung" ]; then
+  iecho "Boot default is '$boot_default' (not Schwung) — rebooting without the shim check."
+  iecho "  The update is installed; it activates next time Schwung boots."
+  ssh_root_with_retry "reboot" || true
+else
+  reboot_and_wait_for_shim "Move came back up but the new shim isn't mapped — install incomplete?"
+fi
 qecho "  Web UI available at http://move.local:7700"
 
 iecho ""

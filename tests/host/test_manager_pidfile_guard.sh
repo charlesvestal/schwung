@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# The schwung-manager start guard in src/shim-entrypoint.sh.
+# The schwung-manager start guard in src/schwung-entry.sh.
 #
 # The bug this pins, observed on hardware 2026-08-20: the guard was
 #
@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.."
 # The guard block is LIFTED from the real script rather than restated here, so
 # this cannot pass against a script that no longer contains it.
 
-SRC="src/shim-entrypoint.sh"
+SRC="src/schwung-entry.sh"
 [ -f "$SRC" ] || { echo "FAIL: $SRC not found"; exit 1; }
 
 TMP="$(mktemp -d)"

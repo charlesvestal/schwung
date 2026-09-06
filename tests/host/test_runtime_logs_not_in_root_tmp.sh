@@ -10,6 +10,7 @@ fi
 
 files=(
   src/shim-entrypoint.sh
+  src/schwung-entry.sh
   src/restart-move.sh
   src/schwung_shim.c
   src/host/shadow_process.c

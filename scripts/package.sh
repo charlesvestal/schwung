@@ -14,7 +14,7 @@ cd ./build
 # Build list of items to package
 # start.sh/stop.sh (standalone-host launchers) no longer ship — the
 # standalone runtime never runs on device (shadow mode only).
-ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./restart-move.sh ./launch-standalone.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts"
+ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./schwung-entry.sh ./restart-move.sh ./launch-standalone.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts"
 
 # Dev/test artifacts must not ride along in wholesale-packaged dirs.
 # Note: schwung-testd (the E2E test-bus daemon) is deliberately KEPT — it

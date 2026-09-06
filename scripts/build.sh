@@ -835,6 +835,27 @@ else
     echo "Skipping schwung-heal (up to date)"
 fi
 
+# Build boot-select (SPI boot window + picker, run by /opt/move/Move before
+# anything else owns /dev/ablspi0.0). Links js_display.c for the display
+# primitives, so it drags in QuickJS the same way Shadow UI's link already
+# does — see that block above for the exact include/lib shape this mirrors.
+if needs_rebuild build/bin/boot-select src/boot-select.c src/host/boot_select_core.c \
+    src/host/js_display.c src/host/boot_select_core.h src/host/js_display.h \
+    src/lib/schwung_spi_lib.h; then
+    echo "Building boot-select..."
+    "${CROSS_PREFIX}gcc" -g -O2 \
+        src/boot-select.c \
+        src/host/boot_select_core.c \
+        src/host/js_display.c \
+        -o build/bin/boot-select \
+        -Isrc -Isrc/lib -Isrc/host \
+        -Ilibs/quickjs/quickjs-2025-04-26 \
+        -Llibs/quickjs/quickjs-2025-04-26 \
+        -lquickjs -lm -ldl -lrt -lpthread
+else
+    echo "Skipping boot-select (up to date)"
+fi
+
 # Copy shadow UI files (always — ExFAT timestamps can confuse cp -u)
 cp ./src/shadow/shadow_ui.js ./build/shadow/
 cp ./src/shadow/*.mjs ./build/shadow/ 2>/dev/null || true
@@ -846,6 +867,8 @@ fi
 
 # Copy scripts and assets
 cp ./src/shim-entrypoint.sh ./build/
+cp ./src/schwung-entry.sh ./build/
+cp ./src/host/boot_target_lib.sh ./build/host/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/launch-standalone.sh ./build/ 2>/dev/null || true
 

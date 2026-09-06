@@ -400,6 +400,12 @@ once per repaint**, which makes it worse than the equivalent `set_param`.
 
 Device: `ssh ableton@move.local`. Stock firmware preserved at `/opt/move/MoveOriginal`.
 
+**Boot selector**: `/opt/move/Move` IS `shim-entrypoint.sh`, and it is a
+SELECTOR now, not the launcher — services live in `schwung-entry.sh`, targets
+in `/data/UserData/boot-targets/` (`docs/BOOT_TARGETS.md`). Read that file
+before touching boot; every selector failure path must end in an exec of
+MoveOriginal.
+
 ## Gain Staging (MFX ME-Only Bus)
 
 Master FX processes only Schwung's internal audio (slot synths, slot FX, overtake DSP) — never Move's. Shim builds:
