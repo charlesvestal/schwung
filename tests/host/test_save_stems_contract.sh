@@ -87,11 +87,18 @@ check(moveIdx === slots,
         const fields = [...body[1].matchAll(/volatile\s+\w+\s+(\w+)\s*(\[[^\]]*\])?\s*;/g)]
             .map(m => m[1]);
         check(fields.includes("save_stems"), "save_stems is not a field of shadow_control_t");
-        check(fields[fields.length - 1] === "save_stems",
-            "save_stems is not the LAST field of shadow_control_t (last is " +
-            JSON.stringify(fields[fields.length - 1]) + ") — appending is free, " +
-            "inserting moves every field behind it and schwung-manager reads one " +
-            "at a raw offset");
+        /* "Appended" means nothing was put in FRONT of it. It does not mean it
+         * stays last forever: the next register appended after it (the first
+         * was edit_cc_block) is exactly the discipline this pins, and a
+         * last-field check would fail on every correct append from here on. So
+         * the invariant is its PREDECESSOR -- the field it was appended after --
+         * which an insertion anywhere before it would change. */
+        const at = fields.indexOf("save_stems");
+        check(at > 0 && fields[at - 1] === "metronome_beats_per_bar",
+            "save_stems no longer directly follows metronome_beats_per_bar (preceded by " +
+            JSON.stringify(fields[at - 1]) + ") — a field was INSERTED before it, which " +
+            "moves every field behind it and schwung-manager reads one at a raw offset; " +
+            "new registers are APPENDED after the last field");
     }
 }
 
