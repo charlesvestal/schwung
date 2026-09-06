@@ -30,6 +30,8 @@
  * forgets is visible instead of silently drawing nothing.
  */
 
+import { locateAudioData, sampleReader, sampleBytesFor } from './wav_format.mjs';
+
 /** Peaks are always computed at this width and RESAMPLED down to whatever the
  *  graphic currently spans. Width is deliberately NOT part of the cache key:
  *  anything that resizes the graphic would otherwise throw the envelope away
@@ -54,93 +56,11 @@ export function setWavPeaksIO(io) { IO = io || null; }
 
 /* --------------------------------------------------------------- decode */
 
-const u16 = (b, i) => b[i] | (b[i + 1] << 8);
-const u32 = (b, i) => (b[i] | (b[i + 1] << 8) | (b[i + 2] << 16)) + b[i + 3] * 16777216;
-const s16 = (b, i) => { const v = b[i] | (b[i + 1] << 8); return (v & 0x8000) ? v - 65536 : v; };
-/* 24-bit PCM. Worth its own branch rather than being rejected as exotic:
- * sample libraries ship it as a matter of course, and a sampler that cannot
- * draw its own library is not much of a feature. */
-const s24 = (b, i) => {
-    const v = b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
-    return (v & 0x800000) ? v - 0x1000000 : v;
-};
-const u16be = (b, i) => (b[i] << 8) | b[i + 1];
-const u32be = (b, i) => ((b[i] << 16) | (b[i + 1] << 8) | b[i + 2]) * 256 + b[i + 3];
-const s16be = (b, i) => { const v = (b[i] << 8) | b[i + 1]; return (v & 0x8000) ? v - 65536 : v; };
-const s24be = (b, i) => {
-    const v = (b[i] << 16) | (b[i + 1] << 8) | b[i + 2];
-    return (v & 0x800000) ? v - 0x1000000 : v;
-};
-/* float32 without a DataView: QuickJS has typed arrays, and one shared scratch
- * pair avoids allocating per sample. */
-const f32buf = new ArrayBuffer(4);
-const f32u8 = new Uint8Array(f32buf);
-const f32f = new Float32Array(f32buf);
-const f32 = (b, i) => {
-    f32u8[0] = b[i]; f32u8[1] = b[i + 1]; f32u8[2] = b[i + 2]; f32u8[3] = b[i + 3];
-    return f32f[0];
-};
-
-/* RIFF/WAVE: little-endian chunks, `fmt ` describes the codec, `data` holds it. */
-function parseRiff(b, tag) {
-    let cur = 12, fmtAt = -1, dataAt = -1, dataSize = 0;
-    while (cur + 8 <= b.length) {
-        const id = tag(cur);
-        const sz = u32(b, cur + 4);
-        if (id === "fmt ") fmtAt = cur + 8;
-        else if (id === "data") { dataAt = cur + 8; dataSize = sz; break; }
-        cur = cur + 8 + sz + (sz % 2);
-    }
-    if (fmtAt < 0 || dataAt < 0) return null;
-    const fmt = u16(b, fmtAt);
-    const bits = u16(b, fmtAt + 14);
-    const blockAlign = Math.max(1, u16(b, fmtAt + 12));
-    const codec =
-        fmt === 1 && bits === 8 ? "pcm8"
-        : fmt === 1 && bits === 16 ? "pcm16le"
-        : fmt === 1 && bits === 24 ? "pcm24le"
-        : fmt === 3 && bits === 32 ? "f32le"
-        : null;
-    return codec ? { dataOffset: dataAt, dataSize, blockAlign, codec } : null;
-}
-
-/* FORM/AIFF(-C): big-endian chunks. COMM carries the frame count and sample
- * size; SSND holds the audio after an 8-byte offset/blockSize preamble that is
- * NOT part of the samples. AIFF-C adds a compression tag — only the
- * uncompressed ones are readable, and 'sowt' means the samples are stored
- * little-endian despite the big-endian container. */
-function parseAiff(b, tag) {
-    const form = tag(8);
-    if (form !== "AIFF" && form !== "AIFC") return null;
-    let cur = 12, chans = 0, bits = 0, ssndAt = -1, ssndSize = 0;
-    let compression = "NONE";
-    while (cur + 8 <= b.length) {
-        const id = tag(cur);
-        const sz = u32be(b, cur + 4);
-        if (id === "COMM") {
-            chans = u16be(b, cur + 8);
-            bits = u16be(b, cur + 14);
-            /* AIFF-C: 4-char compression tag after the 10-byte sample rate. */
-            if (form === "AIFC" && cur + 8 + 22 + 4 <= b.length) compression = tag(cur + 8 + 18);
-        } else if (id === "SSND") {
-            const off = u32be(b, cur + 8);
-            ssndAt = cur + 16 + off;
-            ssndSize = Math.max(0, sz - 8 - off);
-            break;
-        }
-        cur = cur + 8 + sz + (sz % 2);
-    }
-    if (ssndAt < 0 || chans <= 0) return null;
-    const swapped = compression === "sowt";
-    if (compression !== "NONE" && compression !== "sowt") return null;   /* compressed */
-    const codec =
-        bits === 8 ? "pcm8"
-        : bits === 16 ? (swapped ? "pcm16le" : "pcm16be")
-        : bits === 24 ? (swapped ? "pcm24le" : "pcm24be")
-        : null;
-    const blockAlign = Math.max(1, chans * Math.floor(bits / 8));
-    return codec ? { dataOffset: ssndAt, dataSize: ssndSize, blockAlign, codec } : null;
-}
+/* The containers and the sample formats are read by wav_format.mjs, which the
+ * fullscreen wave editor uses too. They were parsed separately once, and the
+ * two copies drifted: this one could not read the WAVE_FORMAT_EXTENSIBLE that
+ * every 24-bit WAV from ffmpeg or sox is written as, and it read AIFF 8-bit as
+ * unsigned, which drew a quiet sample full-scale. */
 
 /* ------------------------------------------------------------------ job */
 
@@ -205,14 +125,16 @@ function startJob(path, width, key) {
         f = null;
         if (b.length < 44) return null;
 
-        const tag = (i) => String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
-        const parsed = tag(0) === "RIFF" ? parseRiff(b, tag)
-            : tag(0) === "FORM" ? parseAiff(b, tag)
-            : null;
-        if (!parsed) return null;
+        const parsed = locateAudioData(b);
+        if (parsed.error) return null;
 
-        const { dataOffset, dataSize, blockAlign, codec } = parsed;
+        const { dataOffset, dataSize, blockAlign, kind } = parsed;
         if (dataSize <= 0 || blockAlign <= 0) return null;
+        /* Hoisted once per FILE. Picking the format inside the sample loop cost
+         * a chain of string comparisons per sample, which is the one place in
+         * this file where that is worth avoiding. */
+        const read = sampleReader(kind);
+        if (!read) return null;
 
         const frameCount = Math.max(1, Math.floor(dataSize / blockAlign));
         /* Block size must be a whole number of FRAMES. 32768 is not a multiple
@@ -223,7 +145,8 @@ function startJob(path, width, key) {
         const totalBlocks = Math.max(1, Math.ceil(dataSize / blockBytes));
         const buf = new ArrayBuffer(BLOCK_BYTES);
         return {
-            key, path, width, codec, points: new Array(width).fill(0),
+            key, path, width, kind, read, sampleBytes: sampleBytesFor(kind),
+            points: new Array(width).fill(0),
             dataOffset, dataSize, blockAlign, frameCount,
             block: 0, totalBlocks, blockBytes,
             blockStride: Math.max(1, Math.ceil(totalBlocks / MAX_BLOCKS)),
@@ -253,19 +176,11 @@ function runBlock(j) {
 
         const b = j.view;
         const step = j.blockAlign;
-        const codec = j.codec;
-        const sampleBytes = codec === "pcm8" ? 1
-            : codec === "pcm24le" || codec === "pcm24be" ? 3
-            : codec === "f32le" ? 4 : 2;
+        const read = j.read;
+        const sampleBytes = j.sampleBytes;
         const firstFrame = Math.floor(byteStart / step);
         for (let off = 0; off + sampleBytes <= got; off += step) {
-            let v = 0;
-            if (codec === "pcm16le") v = s16(b, off) / 32768;
-            else if (codec === "pcm16be") v = s16be(b, off) / 32768;
-            else if (codec === "pcm24le") v = s24(b, off) / 8388608;
-            else if (codec === "pcm24be") v = s24be(b, off) / 8388608;
-            else if (codec === "pcm8") v = (b[off] - 128) / 128;
-            else v = f32(b, off);
+            let v = read(b, off);
             if (v < 0) v = -v;
             if (v > 1) v = 1;
             const frame = firstFrame + off / step;

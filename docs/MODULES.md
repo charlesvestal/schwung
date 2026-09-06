@@ -1556,6 +1556,44 @@ Without this, adding a child level to a module that already follows the played
 pad would *cost* that behaviour — the grid would sit on the instance the picker
 last chose. With it, the declaration is purely additive.
 
+#### Copying and clearing an instance — hold Copy or Delete, then pick
+
+A drum rack's oldest gesture: hold **Copy**, hit a pad, hit another, and the
+second now sounds like the first. The knob grid offers it to any child level,
+once the module has claimed the buttons (`capabilities.claims_edit_ccs`; Move
+keeps them otherwise):
+
+- **Hold Copy** on an instance's page: that instance is the source. Every
+  instance that becomes focused while Copy is held — a pad hit through
+  `child_index_param`, or a pick from the instance list — is pasted into.
+- **Hold Delete**: every instance that becomes focused is cleared.
+- **Undo** puts back the last instance overwritten (one level).
+
+What is copied is the level's **`child_copy_keys`**, in declared order (that
+is also the write order, so list the sample first), or the level's own params
+when none are declared. Declare the list: "what the page shows" is a weak
+default. A pad's level-affecting params with no cell — a gain, a velocity
+depth — would be skipped and the copy would be quieter than its source, and
+a key that is a *pointer* (a position within this pad's folder, an identity
+like its note) must not be copied at all.
+
+```json
+"pads": {
+  "child_prefix": "pad", "child_count": 32,
+  "child_index_param": "ui_current_pad",
+  "child_copy_keys": ["sample", "start", "end", "transpose", "gain", "volume", "pan"],
+  "knobs": ["start", "end", "transpose", "volume", "pan"]
+}
+```
+
+Clear writes each key's declared `default`; a key without one is left alone,
+and a filepath without one is written `""`. A key whose read does not complete
+cancels the whole operation — a copy missing one key would leave the target's
+own value in place and still report a paste — so declare keys the module
+actually serves. The focused instance itself is
+not touched by Delete going down — only the instances you pick while holding
+it — so a pad already on screen is cleared by picking another first.
+
 ### Declaring your performance surface
 
 A sequencer driving your module — movy is the live case — has to lay out Move's

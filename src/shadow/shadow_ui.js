@@ -289,11 +289,15 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
+    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
+    paramPagesCachedValue, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
     paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue,
     paramPagesPageName
 } from './shadow_ui_param_pages.mjs';
+/* Container + sample decoding for the fullscreen wave editor, shared with the
+ * sample cell's peak reader so the two never disagree about a file. */
+import { locateAudioData, sampleReader, sampleBytesFor } from '/data/UserData/schwung/shared/param_pages/wav_format.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
  * genuinely device-only module — node never imports it (the host tests lift the
@@ -4984,13 +4988,13 @@ function compareConditionValue(actualRaw, expectedRaw) {
     return String(actualRaw) === String(expectedRaw);
 }
 
-function evaluateVisibilityConditionForContext(slot, componentPrefix, condition, levelDef, childIndex) {
+function evaluateVisibilityConditionForContext(slot, componentPrefix, condition, levelDef, childIndex, read) {
     if (!condition || typeof condition !== "object") return true;
     const conditionParam = condition.param || condition.key || condition.param_key;
     if (!conditionParam) return true;
 
     const fullKey = normalizeVisibilityConditionKey(componentPrefix, levelDef, childIndex, String(conditionParam));
-    const rawValue = getSlotParam(slot, fullKey);
+    const rawValue = (typeof read === "function") ? read(slot, fullKey) : getSlotParam(slot, fullKey);
     if (rawValue === null || rawValue === undefined) return true; // fail-open
 
     if (condition.equals !== undefined) {
@@ -5029,6 +5033,41 @@ function evaluateVisibilityConditionForContext(slot, componentPrefix, condition,
 }
 
 function evaluateVisibilityCondition(condition, levelDef) {
+    /*
+     * The knob grid is a caller too (page_controller's `visible` hook), and it
+     * keeps its OWN slot and component: enterParamPages never sets
+     * hierEditorSlot (see enterHierarchyEditorFromParamPages). So from the grid
+     * this read every condition against slot -1, got null, and FAILED OPEN --
+     * every visible_if on the grid was true, and a level meant to collapse to
+     * the armed type's cells (a send that is a reverb OR a delay) showed all of
+     * them, three pages deep. Reported from the device. On the grid, the
+     * grid's identity is the context.
+     */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+        const comp = paramPagesComponent();
+        const slot = paramPagesSlot();
+        const lvlName = paramPagesLevelNameOf(levelDef);
+        /* Cache-first. A re-plan follows every detent of a gating knob and
+         * evaluates every condition on the level; a blocking read per
+         * condition (~2.8 ms each, forty on a gated send page) froze the OLED
+         * while the knob turned. The grid's own values answer first -- they
+         * carry every write it made and every key its cursor has read -- and
+         * the TTL cache answers a miss, so a plan costs IPC only for a key
+         * nothing has touched yet. */
+        const read = (s, k) => {
+            const held = paramPagesCachedValue(k);
+            if (held !== undefined) return held;
+            return getSlotParamCached(s, k, `grid:${s}:${comp}`);
+        };
+        return evaluateVisibilityConditionForContext(
+            slot,
+            getComponentParamPrefix(comp),
+            condition,
+            levelDef,
+            lvlName ? paramPagesChildIndex(lvlName) : -1,
+            read
+        );
+    }
     const prefix = getComponentParamPrefix(hierEditorComponent);
     return evaluateVisibilityConditionForContext(
         hierEditorSlot,
@@ -15739,191 +15778,31 @@ function wavContentToBytes(content) {
     return null;
 }
 
-function wavByteAt(bytes, idx) {
-    if (!bytes || idx < 0 || idx >= bytes.length) return 0;
-    return bytes[idx] & 0xff;
-}
-
-function wavReadChunkId(bytes, idx) {
-    return String.fromCharCode(
-        wavByteAt(bytes, idx),
-        wavByteAt(bytes, idx + 1),
-        wavByteAt(bytes, idx + 2),
-        wavByteAt(bytes, idx + 3)
-    );
-}
-
-function wavReadU16LE(bytes, idx) {
-    return wavByteAt(bytes, idx) | (wavByteAt(bytes, idx + 1) << 8);
-}
-
-function wavReadS16LE(bytes, idx) {
-    const v = wavReadU16LE(bytes, idx);
-    return v > 0x7fff ? v - 0x10000 : v;
-}
-
-function wavReadU32LE(bytes, idx) {
-    return (wavByteAt(bytes, idx) |
-        (wavByteAt(bytes, idx + 1) << 8) |
-        (wavByteAt(bytes, idx + 2) << 16) |
-        (wavByteAt(bytes, idx + 3) << 24)) >>> 0;
-}
-
-function wavReadF32LE(bytes, idx) {
-    if (!bytes || idx < 0 || idx + 4 > bytes.length) return 0;
-    try {
-        const view = new DataView(bytes.buffer, bytes.byteOffset || 0, bytes.byteLength || bytes.length);
-        return view.getFloat32(idx, true);
-    } catch (e) {
-        return 0;
-    }
-}
-
-function wavFindRiffOffset(bytes) {
-    if (!bytes || bytes.length < 12) return -1;
-    if (wavReadChunkId(bytes, 0) === "RIFF" && wavReadChunkId(bytes, 8) === "WAVE") return 0;
-
-    const limit = Math.min(bytes.length - 12, 4096);
-    for (let i = 0; i <= limit; i++) {
-        if (wavReadChunkId(bytes, i) === "RIFF" && wavReadChunkId(bytes, i + 8) === "WAVE") {
-            return i;
-        }
-    }
-    return -1;
-}
-
-function wavReadU16BE(bytes, idx) {
-    return (wavByteAt(bytes, idx) << 8) | wavByteAt(bytes, idx + 1);
-}
-
-function wavReadU32BE(bytes, idx) {
-    return ((wavByteAt(bytes, idx) << 24) |
-        (wavByteAt(bytes, idx + 1) << 16) |
-        (wavByteAt(bytes, idx + 2) << 8) |
-        wavByteAt(bytes, idx + 3)) >>> 0;
-}
-
 /*
- * One sample as a float in -1..1, for every layout the peak reader accepts:
- * PCM 8 (unsigned in WAV, signed in AIFF), 16 and 24 in either byte order,
- * and 32-bit float (WAV only). Kept as a table of small readers rather than a
- * bit-twiddling generic so each format's sign convention is stated once.
+ * The editor holds the WHOLE file, so it sweeps the data once here rather than
+ * streaming it like the sample cell does. Which bytes those are, and how a
+ * sample is encoded, is the shared question -- wav_format.mjs answers it for
+ * both, which is what keeps the cell and the editor reading the same files.
  */
-function wavSampleReader(kind) {
-    switch (kind) {
-    case "pcm8u":   return (b, i) => (wavByteAt(b, i) - 128) / 128;
-    case "pcm8s":   return (b, i) => { const v = wavByteAt(b, i); return (v > 0x7f ? v - 0x100 : v) / 128; };
-    case "pcm16le": return (b, i) => wavReadS16LE(b, i) / 32768;
-    case "pcm16be": return (b, i) => { const v = wavReadU16BE(b, i); return (v > 0x7fff ? v - 0x10000 : v) / 32768; };
-    case "pcm24le": return (b, i) => {
-        const v = wavByteAt(b, i) | (wavByteAt(b, i + 1) << 8) | (wavByteAt(b, i + 2) << 16);
-        return (v > 0x7fffff ? v - 0x1000000 : v) / 8388608;
-    };
-    case "pcm24be": return (b, i) => {
-        const v = (wavByteAt(b, i) << 16) | (wavByteAt(b, i + 1) << 8) | wavByteAt(b, i + 2);
-        return (v > 0x7fffff ? v - 0x1000000 : v) / 8388608;
-    };
-    case "f32le":   return (b, i) => wavReadF32LE(b, i);
-    default:        return null;
-    }
-}
-
-/*
- * Locate the sample data in a RIFF/WAVE file. Returns { kind, channels,
- * blockAlign, dataOffset, dataSize } or { error }.
- */
-function wavLocateRiff(bytes, riffOffset) {
-    let fmtOffset = -1, dataOffset = -1, dataSize = 0;
-    let cursor = riffOffset + 12;
-    while (cursor + 8 <= bytes.length) {
-        const chunkId = wavReadChunkId(bytes, cursor);
-        const chunkSize = wavReadU32LE(bytes, cursor + 4);
-        const chunkData = cursor + 8;
-        const chunkEnd = chunkData + chunkSize;
-        const available = Math.max(0, bytes.length - chunkData);
-        if (chunkId === "fmt " && available >= 16) {
-            fmtOffset = chunkData;
-        } else if (chunkId === "data") {
-            dataOffset = chunkData;
-            dataSize = Math.min(chunkSize, available);
-            break;
-        }
-        if (chunkEnd <= chunkData || chunkEnd > bytes.length) break;
-        cursor = chunkEnd + (chunkSize % 2);
-    }
-    if (fmtOffset < 0 || dataOffset < 0 || dataSize <= 0) return { error: "missing wav chunks" };
-    const audioFmt = wavReadU16LE(bytes, fmtOffset);
-    const channels = Math.max(1, wavReadU16LE(bytes, fmtOffset + 2));
-    const blockAlign = Math.max(1, wavReadU16LE(bytes, fmtOffset + 12));
-    const bits = wavReadU16LE(bytes, fmtOffset + 14);
-    /* 0xFFFE is WAVE_FORMAT_EXTENSIBLE; its sub-format GUID's first two bytes
-     * name the real codec, and 24-bit files are very often written that way. */
-    let fmt = audioFmt;
-    if (audioFmt === 0xfffe && wavReadU16LE(bytes, fmtOffset + 16) >= 22) fmt = wavReadU16LE(bytes, fmtOffset + 24);
-    if (fmt !== 1 && fmt !== 3) return { error: "unsupported wav codec" };
-    const kind = fmt === 1 && bits === 8 ? "pcm8u"
-        : fmt === 1 && bits === 16 ? "pcm16le"
-        : fmt === 1 && bits === 24 ? "pcm24le"
-        : fmt === 3 && bits === 32 ? "f32le" : null;
-    if (!kind) return { error: "unsupported wav format" };
-    return { kind, channels, blockAlign, dataOffset, dataSize, bits };
-}
-
-/*
- * Locate the sample data in a FORM/AIFF file (also AIFC with no compression),
- * which is what much of Move's own Core Library ships as. Big-endian
- * throughout; SSND carries its own offset before the first frame.
- */
-function wavLocateAiff(bytes) {
-    const form = wavReadChunkId(bytes, 8);
-    if (wavReadChunkId(bytes, 0) !== "FORM" || (form !== "AIFF" && form !== "AIFC")) return { error: "not an aiff file" };
-    let channels = 0, bits = 0, compression = "NONE", dataOffset = -1, dataSize = 0;
-    let cursor = 12;
-    while (cursor + 8 <= bytes.length) {
-        const chunkId = wavReadChunkId(bytes, cursor);
-        const chunkSize = wavReadU32BE(bytes, cursor + 4);
-        const chunkData = cursor + 8;
-        const chunkEnd = chunkData + chunkSize;
-        const available = Math.max(0, bytes.length - chunkData);
-        if (chunkId === "COMM" && available >= 18) {
-            channels = Math.max(1, wavReadU16BE(bytes, chunkData));
-            bits = wavReadU16BE(bytes, chunkData + 6);
-            if (form === "AIFC" && available >= 22) compression = wavReadChunkId(bytes, chunkData + 18);
-        } else if (chunkId === "SSND" && available >= 8) {
-            const skip = wavReadU32BE(bytes, chunkData);
-            dataOffset = chunkData + 8 + skip;
-            dataSize = Math.max(0, Math.min(chunkSize, available) - 8 - skip);
-            break;
-        }
-        if (chunkEnd <= chunkData || chunkEnd > bytes.length) break;
-        cursor = chunkEnd + (chunkSize % 2);
-    }
-    if (!channels || !bits || dataOffset < 0 || dataSize <= 0) return { error: "missing aiff chunks" };
-    if (compression !== "NONE" && compression !== "sowt") return { error: "unsupported aiff codec" };
-    const le = compression === "sowt";
-    const kind = bits === 8 ? "pcm8s"
-        : bits === 16 ? (le ? "pcm16le" : "pcm16be")
-        : bits === 24 ? (le ? "pcm24le" : "pcm24be") : null;
-    if (!kind) return { error: "unsupported aiff format" };
-    return { kind, channels, blockAlign: channels * Math.ceil(bits / 8), dataOffset, dataSize, bits };
-}
-
 function parseWavPositionPeaks(content, width) {
     const bytes = wavContentToBytes(content);
     if (!bytes || bytes.length < 44) return { error: "file too small", points: [] };
 
-    const riffOffset = wavFindRiffOffset(bytes);
-    const located = riffOffset >= 0 ? wavLocateRiff(bytes, riffOffset) : wavLocateAiff(bytes);
+    const located = locateAudioData(bytes);
     if (located.error) return { error: located.error, points: [] };
 
-    const read = wavSampleReader(located.kind);
+    const read = sampleReader(located.kind);
     if (!read) return { error: "unsupported format", points: [] };
-    const sampleBytes = Math.ceil(located.bits / 8);
+    const sampleBytes = sampleBytesFor(located.kind);
     const effectiveBlockAlign = located.blockAlign > 0 ? located.blockAlign : Math.max(1, located.channels * sampleBytes);
-    const frameCount = Math.max(1, Math.floor(located.dataSize / effectiveBlockAlign));
-    const points = new Array(width).fill(0);
     const dataOffset = located.dataOffset;
-    const dataEnd = dataOffset + located.dataSize;
+    /* Declared length, clamped to what the file actually carries: a truncated
+     * take must draw the part that is there, not stop at the header. */
+    const dataSize = Math.min(located.dataSize, Math.max(0, bytes.length - dataOffset));
+    if (dataSize <= 0) return { error: "missing wav chunks", points: [] };
+    const frameCount = Math.max(1, Math.floor(dataSize / effectiveBlockAlign));
+    const points = new Array(width).fill(0);
+    const dataEnd = dataOffset + dataSize;
 
     for (let x = 0; x < width; x++) {
         const start = Math.floor((x * frameCount) / width);

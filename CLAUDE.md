@@ -611,6 +611,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   needs no `clearScreen` while the enum peek does. Same `frameCtx` contract as a
   widget, for a second reason: `card_w`/`card_h` are declared **per parameter**,
   so coordinates authored against one card are wrong on the next.
+- **The sample CELL and the fullscreen EDITOR share one format table** —
+  `wav_format.mjs`. They stream and sweep respectively, but "which bytes are
+  the samples" was answered twice and drifted four ways, each reading as a
+  broken file: the editor knowing only 8/16-bit RIFF (a Core Library kit drew
+  in the cell and then said "unsupported" in the editor), the cell missing
+  `WAVE_FORMAT_EXTENSIBLE` — which is **every** 24-bit WAV ffmpeg or sox
+  writes — the cell reading signed AIFF 8-bit as unsigned, and both rejecting
+  AIFC `twos`, the tag macOS's own `afconvert` emits for plain big-endian PCM.
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.
@@ -664,6 +672,15 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   your hand. A map matching the page order would be a second bank bar. Move's
   rack counts up from the BOTTOM-LEFT; off-rack draws the empty box rather than
   the nearest cell.
+- **Hold Copy or Delete, then pick an instance** — copy, clear and one-level
+  undo for any child level, opted into by `capabilities.claims_edit_ccs`. It
+  is the one thing on the grid that reads `child_index_param` **itself, every
+  tick, while a button is held**: the rotation refreshes that focus once every
+  `keys.length + 1` ticks, which made the SOURCE the pad before the one you
+  hit and made a second tap inside the window invisible — four pads tapped,
+  one pasted, silently. And a failed read voids the whole snapshot rather than
+  dropping a key, or a pad is copied without its sample and still reported as
+  `PASTED`.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
