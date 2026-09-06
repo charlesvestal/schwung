@@ -120,12 +120,22 @@ service to pause. They cannot reuse `schwung-heal`: its paths are compile-time
 constants on purpose. Instead a tool stages **its own** helper and lets
 `schwung-heal` install it:
 
-- stage the helper at `modules/tools/<id>/bin/heal.new` (a regular file, not a
-  symlink; `<id>` limited to `[A-Za-z0-9_.-]`);
+- stage the helper at `modules/tools/<id>/bin/heal.new` (a regular file;
+  `<id>` limited to `[A-Za-z0-9_.-]` and never leading-dot);
 - run `/data/UserData/schwung/bin/schwung-heal` (it is setuid; the tool may run
   it as `ableton`);
 - heal installs the stage beside itself as `bin/heal`, root-owned `04755`, and
   removes the stage — exactly the way it installs its own `schwung-heal.new`.
+
+`<id>`, `bin/` and the stage itself are ableton-writable names, so heal resolves
+every one of them with `O_NOFOLLOW` and copies through descriptors: **a symlink
+at any component is refused, not followed.** Nothing here may be a symlink, and
+the stage must be a regular file — a directory or a FIFO is ignored with a
+message rather than blocking heal, which runs at every boot.
+
+A tool's failure is reported but never changes heal's exit code, because that
+code gates `--reboot` and the reboot belongs to heal's own mirror. A broken
+stage cannot turn a repair into "shim mirrored, device never rebooted".
 
 The trust model is unchanged: `ableton` can already stage `schwung-heal.new`
 itself, so a staged helper adds convenience, not capability, and a device with
