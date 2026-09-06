@@ -2059,6 +2059,14 @@ export function createController(io = {}) {
          * takes.
          */
         const extraKeys = vizEnabled ? vizExtraKeys() : [];
+        /* A module-drawn page can depend on read-only state that is not one of
+         * its encoder keys (animation snapshots are the motivating case).
+         * Read it on this same bounded rotation; never synchronously in draw. */
+        if (p.canvas && Array.isArray(p.canvas.extraKeys)) {
+            for (const k of p.canvas.extraKeys) {
+                if (k && extraKeys.indexOf(k) < 0) extraKeys.push(k);
+            }
+        }
         /*
          * THE NEIGHBOUR LANE — why the incoming page arrives populated.
          *

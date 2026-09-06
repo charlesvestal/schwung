@@ -1660,6 +1660,12 @@ turned by the encoders, redrawn every tick so it can animate, and wearing the
 host's own header and footer. `preset_browser` goes further and makes it the
 level's browser, so a face per character replaces a row of text.
 
+An authored canvas page can declare `extra_keys` on its canvas parameter.
+They travel as `canvas.extraKeys` and join the controller's bounded value-read
+rotation only while that page is current. They never join `page.keys`, so an
+animation snapshot can reach `drawPage({ values })` without consuming a cell
+or encoder.
+
 **IT IS A PAGE_KNOBS PAGE WITH A DRAWER, NOT A NEW KIND**, and that is the whole
 reason it works. Twenty-two places in `page_controller` branch on PAGE_KNOBS:
 reads, knob turns, touch, the touch strip, announce, dive targets, the list

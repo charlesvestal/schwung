@@ -440,6 +440,14 @@ function canvasPageParams(chainParams) {
             script: typeof p.canvas_script === "string" ? p.canvas_script : "canvas.js",
             overlay: typeof p.canvas_overlay === "string" ? p.canvas_overlay
                    : (typeof p.overlay === "string" ? p.overlay : ""),
+            /* Read-only values the picture needs but which must not become
+             * visible/turnable cells on the level grid. They join the normal
+             * staggered read rotation, never the draw path. */
+            extraKeys: Array.isArray(p.extra_keys)
+                ? p.extra_keys.filter((k) => typeof k === "string" && k)
+                : (Array.isArray(p.extraKeys)
+                    ? p.extraKeys.filter((k) => typeof k === "string" && k)
+                    : []),
             name: p.name || p.short_name || p.key,
         });
     }
@@ -807,7 +815,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 nameParam: lvl.name_param || "preset_name",
                 ...(browserCanvas ? {
                     canvas: { key: browserCanvas.key, script: browserCanvas.script,
-                              overlay: browserCanvas.overlay },
+                              overlay: browserCanvas.overlay,
+                              extraKeys: browserCanvas.extraKeys },
                     keys: knobKeys(lvl).filter(
                         (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k))
                         .slice(0, perPage === Infinity ? undefined : perPage),
@@ -1068,7 +1077,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 authored: true,
                 /* What makes it custom. render_page hands the module this and
                  * the body band; everything else about the page is ordinary. */
-                canvas: { key: cp.key, script: cp.script, overlay: cp.overlay },
+                canvas: { key: cp.key, script: cp.script, overlay: cp.overlay,
+                          extraKeys: cp.extraKeys },
             });
         }
 

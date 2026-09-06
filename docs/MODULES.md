@@ -2316,6 +2316,18 @@ carrying that level's own knobs:
   "canvas_script": "canvas.js", "as_page": true, "show_value": false }
 ```
 
+If the drawing needs a read-only value that is not one of the level's knobs,
+declare it with `extra_keys`. Those values are added to the page's staggered
+read rotation without becoming visible or turnable cells:
+
+```json
+{ "key": "activity", "name": "Activity", "type": "string",
+  "access": "read", "hidden": true }
+{ "key": "face", "name": "Face", "type": "canvas",
+  "canvas_script": "canvas.js", "as_page": true,
+  "show_value": false, "extra_keys": ["activity"] }
+```
+
 ```javascript
 globalThis.canvas_overlay = {
     drawPage(ctx, { values, base, keys, touched, nowMs, preset }) {
@@ -2337,6 +2349,8 @@ globalThis.canvas_overlay = {
   and you should not draw any of your own.
 - `values` carries live values merged over the base; `base` is the knob
   positions, for a page that wants to show both.
+- `extra_keys` is capped by the same bounded read rotation as other visual
+  dependencies. Use it for compact state snapshots, not high-volume data.
 - **One strike**, as everywhere else: a `drawPage` that throws is retired for
   the session and the body is left empty under a normal page.
 
