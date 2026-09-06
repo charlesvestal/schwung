@@ -832,6 +832,15 @@ Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) 
 
 Shift+Sample. Source: resample (incl. Schwung synths) or Move Input. Duration in bars (or until stopped); uses MIDI clock, falls back to project tempo. Starts on note event or play. Saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`.
 
+**The take is recorded THROUGH the preroll and trimmed afterwards** — starting
+on the count-in is what makes it sample-accurate to the downbeat. That trim was
+a no-op from 2026-04 to 1.2: the WAV was opened `"wb"`, so its `fread` returned
+0, the copy broke on the first pass and the `ftruncate` ran anyway — leaving the
+COUNT-IN on the card at exactly the right duration with the tail cut, which
+reads as a sampler that ignores preroll rather than as a file never rewritten.
+It logged success. **A short read must never become a truncation, and a length
+assertion would have passed the whole time** — see `docs/SHADOW_UI.md`.
+
 ### Feedback Protection
 
 Loading a chain module / tool that consumes line-in shows "Speaker Feedback Risk" warning if speakers active AND no line-in cable. Jog-click proceeds, Back aborts.
