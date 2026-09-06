@@ -108,6 +108,12 @@ Instrumenting only the first means `last_note` never updates at all with an arp
 in the slot, and the grid follows a pad nobody played. The same split already
 bit the MIDI trace, for the same reason.
 
+`tick()` also continues while an otherwise silent chain slot is parked by the
+audio idle gate. If it emits MIDI, that same block wakes and renders so the
+generated note reaches the synth immediately. The idle tick is marked as
+already advanced, preventing the wake-up render from advancing MIDI FX or LFO
+time a second time.
+
 Note-offs are ignored: a released pad is still the pad you are editing. The
 record is an int store on the SPI callback and nothing else — no allocation, no
 parsing, no logging.

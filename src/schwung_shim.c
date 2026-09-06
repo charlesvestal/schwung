@@ -1943,8 +1943,15 @@ static void shadow_inprocess_render_to_buffer(void) {
                         shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
                                                     "mod:tick", "128");
                     }
-                    shadow_slot_deferred_valid[s] = 1;
-                    goto slot_run_deferred_fx;
+                    int midi_wake = shadow_chain_take_midi_tick_wake &&
+                        shadow_chain_take_midi_tick_wake(shadow_chain_slots[s].instance);
+                    if (midi_wake) {
+                        shadow_slot_idle[s] = 0;
+                        shadow_slot_silence_frames[s] = 0;
+                    } else {
+                        shadow_slot_deferred_valid[s] = 1;
+                        goto slot_run_deferred_fx;
+                    }
                 }
                 /* Probe frame: fall through to render and check output */
                 probe_burst_this_frame++;
