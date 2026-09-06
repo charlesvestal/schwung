@@ -41,7 +41,7 @@ export { LAYOUT_LIST };
 /* Re-exported so the LIST editor waits out the same module-side debounce the
  * grid does, from the same number. Two hand-written 500s would drift. */
 export { CONTRACT_SETTLE_MS };
-import { decodeInput, applyInput } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
+import { decodeInput, applyInput, isHardwarePadPress } from '/data/UserData/schwung/shared/param_pages/page_input.mjs';
 import { PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS } from '/data/UserData/schwung/shared/param_pages/page_plan.mjs';
 import { LAYOUT_MOVY, normalizedOf }
     from '/data/UserData/schwung/shared/param_pages/render_page_movy.mjs';
@@ -66,18 +66,27 @@ import { log, isLoggingEnabled } from '/data/UserData/schwung/shared/logger.mjs'
 let controller = null;
 
 /*
- * Whether the shim is forwarding hardware pad notes to us. Reconciled every
- * tick from the controller's livePressParam() and dropped on exit, so it can
- * never be left on by a path that forgot; the shim also drops it on its own
- * when the shadow display closes. Passive -- pads keep playing -- so the only
- * cost of being on is one UI ring event per press.
+ * Whether the shim should be forwarding hardware pad notes to us. Reconciled
+ * every tick from the controller's livePressParam() and dropped on exit, so it
+ * can never be left on by a path that forgot.
+ *
+ * STATED UNCONDITIONALLY, never memoised against a JS-side mirror. The shim
+ * drops pad_observe on its OWN authority -- the shadow display closes from
+ * four sites in the SPI callback (Menu tap, Track tap, Shift+Track,
+ * Shift+Step; schwung_shim.c) that never tell JS -- so a mirror here goes
+ * stale the first time the user dismisses with Menu, and a reconcile that
+ * trusts it then skips the write that would turn the feature back on. Live
+ * presses would stop for the rest of the session, silently, with the grid
+ * still showing the module that asked for them.
+ *
+ * That is exactly what js_host_pad_observe was written to make impossible: it
+ * is idempotent and logs only on a transition, precisely so a caller may
+ * restate this every tick. The cost of restating it is a QuickJS native call
+ * and one SHM byte store -- nothing beside the ~2.8ms IPC reads this file
+ * budgets against, and far less than the failure it removes.
  */
-let padObserveOn = false;
 function reconcilePadObserve(want) {
     if (typeof host_pad_observe !== 'function') return;
-    want = !!want;
-    if (want === padObserveOn) return;
-    padObserveOn = want;
     host_pad_observe(want ? 1 : 0);
 }
 /* Which param accessors the live controller closes over, so switching between
@@ -1151,20 +1160,19 @@ export function handleParamPagesMidi(data) {
     if (!controller) return false;
 
     /*
-     * A HARDWARE pad press -- its raw pad note (68-99), forwarded only while
+     * A HARDWARE pad press -- its raw pad note, forwarded only while
      * pad_observe is set. decodeInput returns null for pads on purpose; this is
      * the one thing the grid does with one: tell a module that declared
-     * child_press_param / focus_press_param that a FINGER did it. Note-on
-     * only -- the release carries nothing the module asked for -- and never
-     * WHICH pad: the pad-to-note map is Move's, the module pairs the vouch
-     * with the note it receives. Not consumed when nothing asked, so the event
-     * falls through to whatever else may want it, exactly as before.
+     * child_press_param / focus_press_param that a FINGER did it. Never WHICH
+     * pad: the pad-to-note map is Move's, so the module pairs the vouch with
+     * the note it receives. Not consumed when nothing asked, so the event falls
+     * through to whatever else may want it, exactly as before.
+     *
+     * The predicate is in page_input.mjs -- note-on only, velocity-0 is a
+     * release, and the pad range -- so it can be run without a device.
      */
-    if (data && data.length >= 3) {
-        const st = data[0] & 0xf0, d1 = data[1], d2 = data[2];
-        if (st === 0x90 && d2 > 0 && d1 >= 68 && d1 <= 99) {
-            return controller.vouchLivePress();
-        }
+    if (isHardwarePadPress(data)) {
+        return controller.vouchLivePress();
     }
 
     const nowMsProbe = Date.now();

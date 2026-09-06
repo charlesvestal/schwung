@@ -17,9 +17,12 @@ cd "$(dirname "$0")/../.."
 #   1. the pure half: the declarations resolve, and only on a child level
 #   2. the controller writes the vouch to <prefix>:<param>, once per note-on,
 #      and NOTHING for a module that declared no such param
-#   3. the shim's forward is PASSIVE -- no `continue`, the pad still plays --
+#   3. WHICH messages are a press: note-on only, velocity-0 is a release, and
+#      the pad range -- run for real, not grepped
+#   4. the shim's forward is PASSIVE -- no `continue`, the pad still plays --
 #      and gated on pad_observe, which the shim drops when the display closes
-#   4. the host reconciles pad_observe every tick and clears it on exit
+#   5. the host reconciles pad_observe every tick and clears it on exit, and
+#      RESTATES it rather than memoising: the shim drops it on its own
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -32,7 +35,8 @@ Promise.all([
   import("./src/shared/param_pages/page_controller.mjs"),
   import("./src/shared/param_pages/child_key.mjs"),
   import("./src/shared/param_pages/voices.mjs"),
-]).then(([PC, CK, V]) => {
+  import("./src/shared/param_pages/page_input.mjs"),
+]).then(([PC, CK, V, PI]) => {
   let bad = 0;
   const fail = (m) => { console.log("FAIL: " + m); bad++; };
 
@@ -49,7 +53,25 @@ Promise.all([
   if (V.focusPressParamOf({ focus_press_param: "hit" }) !== "hit") fail("focusPressParamOf does not report the declared key");
   if (V.focusPressParamOf({}) !== null) fail("focusPressParamOf invented a key");
 
-  /* ---- 2. driven through the real controller ---------------------------- */
+  /* ---- 2. WHICH message is a press -------------------------------------- */
+  /* Not a grep. Each of these is a bug that ships silently: a release vouched
+   * as a press moves the focus twice per hit, and a step button
+   * (16-31) or a track button (40-43) is a note on the same cable that is not
+   * a pad at all. */
+  const press = PI.isHardwarePadPress;
+  if (press([0x90, 68, 100]) !== true) fail("a pad note-on is not recognised as a press");
+  if (press([0x99, 99, 1]) !== true) fail("the pad range is not inclusive of 99, or the channel nibble is being read as status");
+  if (press([0x80, 68, 100]) !== false) fail("a NOTE-OFF vouched as a press -- the module would move focus twice per hit");
+  if (press([0x90, 68, 0]) !== false) fail("a velocity-0 note-on vouched as a press -- Move sends releases in that form too");
+  if (press([0x90, 67, 100]) !== false) fail("note 67 vouched as a press -- below the pad range");
+  if (press([0x90, 100, 100]) !== false) fail("note 100 vouched as a press -- above the pad range");
+  if (press([0x90, 28, 100]) !== false) fail("a STEP button (16-31) vouched as a press -- it is a note on the same cable, and it is not a pad");
+  if (press([0x90, 42, 100]) !== false) fail("a TRACK button (40-43) vouched as a press");
+  if (press([0x90, 3, 100]) !== false) fail("a knob-touch note vouched as a press");
+  if (press([0xB0, 71, 1]) !== false) fail("a CC vouched as a press");
+  if (press(null) !== false || press([0x90, 68]) !== false) fail("a short or absent message threw or vouched");
+
+  /* ---- 3. driven through the real controller ---------------------------- */
   const mk = (hier) => {
     const writes = [];
     const CP = [];
@@ -106,7 +128,7 @@ Promise.all([
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 ' || fail "controller half"
 
-# ---- 3. the shim forward is passive and gated ---------------------------------
+# ---- 4. the shim forward is passive and gated ---------------------------------
 shim="src/schwung_shim.c"
 hdr="src/host/shadow_constants.h"
 command grep -q 'volatile uint8_t pad_observe;' "$hdr" || fail "shadow_control_t has no pad_observe"
@@ -122,7 +144,7 @@ command grep -B4 'shadow_control->pad_observe = 0;' "$shim" | command grep -q 'p
 command grep -q '"host_pad_observe"' src/shadow/shadow_ui.c || fail "host_pad_observe is not bound for the shadow UI"
 echo "  ok  the shim forwards pads passively, only under pad_observe, and drops it on display close"
 
-# ---- 4. reconciled every tick, cleared on exit --------------------------------
+# ---- 5. reconciled every tick, cleared on exit, and RESTATED ------------------
 pp="src/shadow/shadow_ui_param_pages.mjs"
 command grep -q 'reconcilePadObserve(!!controller.livePressParam());' "$pp" \
   || fail "tickParamPages does not reconcile pad_observe from livePressParam"
@@ -130,6 +152,20 @@ command grep -A1 '^export function exitParamPages() {' "$pp" | command grep -q '
   || fail "exitParamPages does not clear pad_observe -- leaving the grid would keep pads streaming into the UI ring"
 command grep -q 'return controller.vouchLivePress();' "$pp" \
   || fail "handleParamPagesMidi does not vouch on a pad note-on"
+command grep -q 'if (isHardwarePadPress(data))' "$pp" \
+  || fail "handleParamPagesMidi hand-rolls the press predicate instead of using page_input.mjs -- the assertions above then test nothing the device runs"
+# The reconcile must RESTATE pad_observe, never compare against a JS-side
+# mirror of it. The shim clears pad_observe on its own authority (the shadow
+# display closes from four sites in the SPI callback -- Menu tap, Track tap,
+# Shift+Track, Shift+Step -- none of which tell JS), so a mirror is stale from
+# the first Menu dismiss onward and a reconcile that trusts it skips the write
+# that would turn the feature back on. js_host_pad_observe is idempotent and
+# logs only on a transition for exactly this reason.
+if sed -n "/^function reconcilePadObserve/,/^}/p" "$pp" | command grep -qE '===[[:space:]]*padObserveOn|padObserveOn[[:space:]]*==='; then
+  fail "reconcilePadObserve compares against a JS mirror of pad_observe -- the shim drops it without telling JS, so the mirror latches and live presses die silently after the first Menu dismiss"
+fi
+sed -n "/^function reconcilePadObserve/,/^}/p" "$pp" | command grep -q 'host_pad_observe(' \
+  || fail "reconcilePadObserve never calls host_pad_observe"
 echo "  ok  pad_observe follows the grid: on while a declaring component is shown, off on exit"
 
 echo "PASS: test_child_press_param"

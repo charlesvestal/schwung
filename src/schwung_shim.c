@@ -7146,10 +7146,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* Drop pad observation when the shadow display goes away. It only means
      * anything while the knob grid is on screen, and a shadow_ui that exited
-     * (or crashed) before reconciling it to 0 would otherwise keep every pad
-     * press streaming into a UI ring nobody drains. Same reasoning as the
-     * runtime-claim drops on overtake exit above: this edge covers EVERY exit
-     * path, so it runs unconditionally rather than inside the display branch. */
+     * (or crashed) before reconciling it to 0 would otherwise keep publishing
+     * every pad press into the UI ring -- which IS drained, so the cost is not
+     * a backlog but pad notes arriving at onMidiMessageInternal in views that
+     * have never seen one. Same reasoning as the runtime-claim drops on
+     * overtake exit above: this edge covers EVERY exit path, so it runs
+     * unconditionally rather than inside the display branch.
+     *
+     * This drop is unilateral -- JS is not told -- which is why the reconcile
+     * on the other side RESTATES pad_observe every tick instead of comparing
+     * against a mirror of it. See shadow_ui_param_pages.mjs. */
     {
         static int prev_display_mode_observe = 0;
         if (prev_display_mode_observe && !shadow_display_mode && shadow_control) {

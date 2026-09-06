@@ -571,6 +571,18 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   a clip anyway (both arrive through the same MIDI_OUT echo). `last_note` is
   still served as a diagnostic and the test asserts it is never READ, because a
   read is what someone later starts navigating on again.
+- **The one thing the grid DOES report about what is played is a VOUCH: a
+  finger hit a pad.** `child_press_param` (sibling shape: `focus_press_param`)
+  — while a declaring component is on the grid the shim ALSO forwards pad
+  notes to the UI, passively, and the UI writes `"1"`. Never WHICH pad: the
+  pad-to-note map is Move's, so the module pairs the vouch with the note it
+  receives and still owns `child_index_param`. It exists because Move turns a
+  press into an ordinary note *before* playing it, so downstream a hit and a
+  sequenced note are the same bytes — which is why the rule above holds and
+  this is not a hole in it. **The `pad_observe` flag is RESTATED every tick,
+  never memoised**: the shim drops it unilaterally from four SPI-callback
+  sites that never tell JS, so a mirror latches and the feature dies silently
+  after the first Menu dismiss.
 - **A focus answer may carry a CHANGE TOKEN — `"<count>:<level>"`.** The follow
   acts on a change, so a repeat does nothing — correct while a value is
   re-reported, wrong when it marks a second hit on the pad you are already
