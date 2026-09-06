@@ -289,7 +289,8 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
+    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
+    paramPagesCachedValue, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
     paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue,
     paramPagesPageName
@@ -4987,13 +4988,13 @@ function compareConditionValue(actualRaw, expectedRaw) {
     return String(actualRaw) === String(expectedRaw);
 }
 
-function evaluateVisibilityConditionForContext(slot, componentPrefix, condition, levelDef, childIndex) {
+function evaluateVisibilityConditionForContext(slot, componentPrefix, condition, levelDef, childIndex, read) {
     if (!condition || typeof condition !== "object") return true;
     const conditionParam = condition.param || condition.key || condition.param_key;
     if (!conditionParam) return true;
 
     const fullKey = normalizeVisibilityConditionKey(componentPrefix, levelDef, childIndex, String(conditionParam));
-    const rawValue = getSlotParam(slot, fullKey);
+    const rawValue = (typeof read === "function") ? read(slot, fullKey) : getSlotParam(slot, fullKey);
     if (rawValue === null || rawValue === undefined) return true; // fail-open
 
     if (condition.equals !== undefined) {
@@ -5032,6 +5033,41 @@ function evaluateVisibilityConditionForContext(slot, componentPrefix, condition,
 }
 
 function evaluateVisibilityCondition(condition, levelDef) {
+    /*
+     * The knob grid is a caller too (page_controller's `visible` hook), and it
+     * keeps its OWN slot and component: enterParamPages never sets
+     * hierEditorSlot (see enterHierarchyEditorFromParamPages). So from the grid
+     * this read every condition against slot -1, got null, and FAILED OPEN --
+     * every visible_if on the grid was true, and a level meant to collapse to
+     * the armed type's cells (a send that is a reverb OR a delay) showed all of
+     * them, three pages deep. Reported from the device. On the grid, the
+     * grid's identity is the context.
+     */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+        const comp = paramPagesComponent();
+        const slot = paramPagesSlot();
+        const lvlName = paramPagesLevelNameOf(levelDef);
+        /* Cache-first. A re-plan follows every detent of a gating knob and
+         * evaluates every condition on the level; a blocking read per
+         * condition (~2.8 ms each, forty on a gated send page) froze the OLED
+         * while the knob turned. The grid's own values answer first -- they
+         * carry every write it made and every key its cursor has read -- and
+         * the TTL cache answers a miss, so a plan costs IPC only for a key
+         * nothing has touched yet. */
+        const read = (s, k) => {
+            const held = paramPagesCachedValue(k);
+            if (held !== undefined) return held;
+            return getSlotParamCached(s, k, `grid:${s}:${comp}`);
+        };
+        return evaluateVisibilityConditionForContext(
+            slot,
+            getComponentParamPrefix(comp),
+            condition,
+            levelDef,
+            lvlName ? paramPagesChildIndex(lvlName) : -1,
+            read
+        );
+    }
     const prefix = getComponentParamPrefix(hierEditorComponent);
     return evaluateVisibilityConditionForContext(
         hierEditorSlot,

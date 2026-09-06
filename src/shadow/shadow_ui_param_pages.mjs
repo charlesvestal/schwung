@@ -451,6 +451,41 @@ export function currentParamPage() {
  * module owns the answer through child_index_param anyway. Same defect as the
  * duplicate picker pages: a second control for a fact that already has one.
  */
+/**
+ * The NAME of a level the grid is showing, given its definition object; "" if
+ * the grid does not hold it. A visible_if condition arrives with the level's
+ * DEFINITION (the planner hands the object through), and resolving a
+ * per-instance condition key needs the instance index, which is filed by name.
+ */
+export function paramPagesLevelNameOf(levelDef) {
+    if (!controller || !levelDef) return "";
+    const hier = controller.state && controller.state.hierarchy;
+    const levels = (hier && hier.levels) || {};
+    for (const name of Object.keys(levels)) if (levels[name] === levelDef) return name;
+    return "";
+}
+
+/**
+ * A value the grid ALREADY HOLDS for `fullKey` ("<prefix>:<key>"), or undefined.
+ *
+ * The visibility evaluator asks for every condition key on every re-plan, and a
+ * re-plan follows every detent of a gating knob. Each miss is a blocking
+ * ~2.8 ms IPC read; a send level with twenty gated cells is forty of them per
+ * detent, which is the OLED standing still while a knob turns (reported from
+ * the device). The controller's own value cache is filled by the read cursor --
+ * condition keys included -- and by every write the grid makes, so it is the
+ * right first answer, and a fresh write is visible to the very next plan.
+ */
+export function paramPagesCachedValue(fullKey) {
+    if (!controller || typeof fullKey !== "string") return undefined;
+    const pre = `${currentPrefix}:`;
+    const key = fullKey.startsWith(pre) ? fullKey.slice(pre.length) : fullKey;
+    const vals = controller.state && controller.state.values;
+    if (!vals || !(key in vals)) return undefined;
+    const v = vals[key];
+    return (v === null || v === undefined) ? undefined : v;
+}
+
 export function paramPagesChildIndex(level) {
     if (!controller || !level) return -1;
     return (typeof controller.childIndexOf === "function")
