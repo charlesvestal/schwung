@@ -54,6 +54,14 @@ const emitted = JSON.stringify({
     { present: 0, name: "Bus 4", orphans: 0, voices: [], sends: [0, 0], fx: [] },
   ],
   main_sends: [5, 30],
+  /* PER-VOICE SENDS. "cym" is deliberately a voice NO BUS holds and whose
+     levels are both zero: it must survive the whole trip anyway, because it is
+     a level the user set and an entry the chain host retains. */
+  voice_sends: [
+    { id: "kick", sends: [64, 0] },
+    { id: "chh", sends: [0, 127] },
+    { id: "cym", sends: [0, 0] },
+  ],
 });
 const config = M.parseBusesConfig(emitted);
 if (config.unresolved) { console.error("FAIL: fixture config did not parse"); process.exit(1); }
@@ -65,7 +73,10 @@ const fields = M.busPatchFields(config, (b, k) => states[b + ":" + k]);
 if (!fields) { console.error("FAIL: producer answered nothing"); process.exit(1); }
 
 const doc = { custom_name: "Kit", synth: { module: "mrdrums" },
-              main_sends: fields.main_sends, buses: fields.buses };
+              main_sends: fields.main_sends,
+              /* Emitted BEFORE "buses", the order busPatchFields builds: both
+                 of the first two are found by a whole-document scan. */
+              voice_sends: fields.voice_sends, buses: fields.buses };
 fs.writeFileSync(work + "/producer.json", JSON.stringify(doc, null, 2));
 
 const omitted = { ...doc };
@@ -73,7 +84,17 @@ delete omitted.buses;
 fs.writeFileSync(work + "/producer_omitted.json", JSON.stringify(omitted, null, 2));
 
 /* The same flattened summary bus_summary() prints in the C half. */
-const lines = ["main_sends=" + fields.main_sends.join(",")];
+const lines = ["main_sends=" + fields.main_sends.join(","),
+               /* From the CONFIG, not from `fields`. An expectation built out
+                  of the producer output makes the diff assert only that the
+                  parser echoes whatever the producer said -- so a producer
+                  that silently DROPPED an entry (a zero level, say) would drop
+                  it from both sides and pass. The config is the fixture, and
+                  it is the thing both halves must agree with.
+                  (No apostrophes in here: the whole script is one
+                  single-quoted shell string.) */
+               "voice_sends=" + config.voiceSends
+                 .map((e) => e.id + ":" + e.sends.join(",")).join("|")];
 fields.buses.forEach((b, i) => {
   if (!b.present) { lines.push(`bus${i} present=0`); return; }
   const fx = b.fx.map((e) => {

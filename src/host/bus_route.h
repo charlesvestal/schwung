@@ -34,19 +34,26 @@
  * rejected, matching chain_key_index.h. Accumulation is clamped so a long
  * digit run cannot overflow into a plausible-looking index.
  */
-static inline int bus_route_parse_index(const char *key, const char **out_end)
+static inline int bus_route_parse_prefixed(const char *key, const char *prefix,
+                                          const char **out_end)
 {
-    if (!key) return -1;
-    if (key[0] != 'b' || key[1] != 'u' || key[2] != 's') return -1;
-    const char *p = key + 3;
-    if (*p < '1' || *p > '9') return -1;   /* rejects "bus0" and "bus01" */
-    int n = 0;
+    if (!key || !prefix) return -1;
+    size_t n = strlen(prefix);
+    if (strncmp(key, prefix, n) != 0) return -1;
+    const char *p = key + n;
+    if (*p < '1' || *p > '9') return -1;   /* rejects "<prefix>0" and "<prefix>01" */
+    int v = 0;
     while (*p >= '0' && *p <= '9') {
-        if (n < 100000) n = n * 10 + (*p - '0');
+        if (v < 100000) v = v * 10 + (*p - '0');
         p++;
     }
     if (out_end) *out_end = p;
-    return n;
+    return v;
+}
+
+static inline int bus_route_parse_index(const char *key, const char **out_end)
+{
+    return bus_route_parse_prefixed(key, "bus", out_end);
 }
 
 /*
@@ -63,6 +70,42 @@ static inline int bus_route_param_key(const char *key, int bus_count,
     if (!end || *end != ':') return 0;
     if (out_bus) *out_bus = n - 1;
     if (out_rest) *out_rest = end + 1;
+    return 1;
+}
+
+/*
+ * Route "voice<V>:send<M>" — a PER-VOICE send level — to a 0-based voice index
+ * and a 1-based send number. Returns 1 on a match, 0 otherwise, leaving the
+ * out-params alone on 0.
+ *
+ * IT LIVES HERE, beside the bus route, because it is the same kind of rule and
+ * because this header is the one tests/host can compile and RUN. The spelling
+ * has to agree with busSendGridRealKey in bus_model.mjs, which is the only
+ * thing that ever writes it, and a spelling that lives in a translation unit
+ * the dev machine cannot build is a spelling nobody checks.
+ *
+ * V IS THE MODULE'S RENDER INDEX — the index into its flat split_voices list,
+ * the same index voice_bus[] and voice_out[] use — not a position in the
+ * stored, id-keyed config. The caller resolves it to an id before storing,
+ * which is what lets a level survive a module that gains or loses a voice.
+ *
+ * The whole key must be consumed: "voice1:send1:extra" is REFUSED rather than
+ * routed on its prefix. An unmatched key falling through to a bus or to the
+ * synth plugin is the Master FX else-branch this file was written to avoid.
+ */
+static inline int bus_route_voice_send(const char *sub, int max_voices, int n_sends,
+                                       int *out_voice, int *out_send)
+{
+    const char *end = NULL;
+    int v = bus_route_parse_prefixed(sub, "voice", &end);
+    if (v < 1 || v > max_voices) return 0;
+    if (!end || *end != ':') return 0;
+    const char *tail = NULL;
+    int s = bus_route_parse_prefixed(end + 1, "send", &tail);
+    if (s < 1 || s > n_sends) return 0;
+    if (!tail || *tail != '\0') return 0;
+    if (out_voice) *out_voice = v - 1;
+    if (out_send) *out_send = s;
     return 1;
 }
 

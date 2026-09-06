@@ -2490,6 +2490,12 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
      * external_fx_mode early return) must leave chain_drain_sends looking at
      * this frame's answer rather than the previous frame's. */
     inst->bus_rendered_mask = 0;
+    /* Same rule, same reason: chain_drain_sends must see THIS frame's answer.
+     * A stale solo mask would keep sending the last frame a voice was heard on,
+     * forever, out of a pool slot nothing is writing any more. */
+    inst->voice_send_mask = 0;
+    uint32_t solo_mask = 0;
+    int n_solo = 0;
     /* voice_out[] below is a SPLIT_VOICES_MAX stack array on the SPI callback,
      * and synth_split_voice_count's bound (n < max_ids) lives in another file
      * (split_voices_parse.h). Clamp locally so a bad count from that path is a
@@ -2507,17 +2513,35 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
                                        nv,
                                        SLOT_BUSES, bus_bufs, &active_bus_mask);
         inst->bus_rendered_mask = active_bus_mask;
+        /* Which voices need their own buffer this frame. Reads only RT-owned
+         * memory (voice_send is derived on this thread by
+         * chain_bus_rebuild_voice_map), so no gate and no atomics. */
+        n_solo = bus_mix_solo_mask(&inst->voice_send[0][0], nv,
+                                   BUS_MIX_SENDS, &solo_mask);
+        inst->voice_send_mask = solo_mask;
     }
 
     /* Always render so synth state advances (envelopes, LFOs, phases).
      * If bypassed, zero the buffer afterward — downstream FX still see
      * silence as input but the synth's internal time doesn't freeze, so
      * unbypass resumes cleanly without a burst. */
-    if (n_active > 0) {
+    /* `|| n_solo > 0` is not defensive: a 32-pad rack with a send on every pad
+     * and NOT ONE BUS is the reference case for per-voice sends, and gating on
+     * n_active alone would take the plain render_block path and never take a
+     * send at all. */
+    if (n_active > 0 || n_solo > 0) {
         /* The split render ACCUMULATES, so the destinations must be cleared
          * first — main, and ONLY the distinct bus buffers the mask names. An
          * allocated-but-unrouted bus is never touched. */
         memset(out_interleaved_lr, 0, frames * 2 * sizeof(int16_t));
+        /* And ONLY the pool slots the solo mask names, for the same reason:
+         * clearing all 32 would spend 16 KB a frame on a feature nobody
+         * switched on. Same `frames <= FRAMES_PER_BLOCK` clamp as the bus
+         * buffers, against the same BUS_BUF_SAMPLES capacity. */
+        for (int i = 0; i < SPLIT_VOICES_MAX; i++) {
+            if (solo_mask & (1u << i))
+                memset(inst->voice_send_buf[i], 0, frames * 2 * sizeof(int16_t));
+        }
         for (int b = 0; b < SLOT_BUSES; b++) {
             /* Clearing only `frames` samples of a BUS_BUF_SAMPLES-capacity
              * buffer, never the reverse — frames is clamped <= FRAMES_PER_BLOCK
@@ -2530,12 +2554,36 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         /* Entries alias deliberately: voices sharing a bus get the same
          * pointer, so their sum happens inside the module's own render. */
         int16_t *voice_out[SPLIT_VOICES_MAX];
-        bus_mix_build_table(voice_out, nv,
-                            inst->voice_bus, out_interleaved_lr,
-                            bus_bufs, SLOT_BUSES);
+        bus_mix_build_table_split(voice_out, nv,
+                                  inst->voice_bus, out_interleaved_lr,
+                                  bus_bufs, SLOT_BUSES,
+                                  solo_mask, &inst->voice_send_buf[0][0],
+                                  BUS_BUF_SAMPLES);
 
         inst->synth_render_split(inst->synth_instance, voice_out,
                                  nv, frames);
+
+        /*
+         * Fold each solo-buffered voice back into the destination it would have
+         * had. AFTER the render and BEFORE the inserts, which is the whole
+         * point: the voice's send has been taken from its own pre-insert audio
+         * (in chain_drain_sends, out of the same pool slot), and its audio
+         * still has to reach its bus and go through that bus's chain exactly as
+         * an unsent voice's does.
+         *
+         * bus_mix_voice_dest, not a second copy of the routing: the fold-back
+         * and the table build must agree about where a voice belongs or the
+         * audio lands somewhere the send was not taken from.
+         */
+        if (solo_mask) {
+            for (int i = 0; i < nv; i++) {
+                if (!(solo_mask & (1u << i))) continue;
+                int16_t *dest = bus_mix_voice_dest(i, inst->voice_bus,
+                                                   out_interleaved_lr,
+                                                   bus_bufs, SLOT_BUSES);
+                bus_mix_accumulate(dest, inst->voice_send_buf[i], frames * 2);
+            }
+        }
 
         /* Per-bus inserts, in series, with the main chain's bypass discipline:
          * always process so delay lines and reverb tails keep advancing, and
@@ -2615,6 +2663,12 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
          * seconds: a burst, not a steady leak, which is what made it read as
          * a hardware fault rather than a bypass bug. */
         inst->bus_rendered_mask = 0;
+        /* The per-voice sends leak the same way and for the same reason — the
+         * pool slots still hold this frame's audio and chain_drain_sends does
+         * not know about synth_bypassed either. Clearing the mask (not the
+         * buffers) stops this frame's drain without pretending the render did
+         * not happen. */
+        inst->voice_send_mask = 0;
     }
 
     /* In external_fx_mode, output raw synth only — skip inject and FX.
@@ -2788,6 +2842,38 @@ void chain_drain_sends(void *instance, int16_t *const *accum, int n_sends,
             /* bus_mix_send returns immediately on a level <= 0, so a bus with
              * no send costs one multiply and a compare. */
             bus_mix_send(accum[sd], buf, frames * 2, lvl);
+        }
+    }
+
+    /*
+     * PER-VOICE SENDS, summing into the SAME accumulators the buses just fed.
+     *
+     * Taken here rather than inside v2_render_block for one reason that is not
+     * a preference: `accum` does not exist there. The shim owns the global send
+     * buses and hands them to this call, after the render, together with the
+     * slot's volume — so this is the only point at which a per-voice send can
+     * be both taken from the voice's own audio AND scaled by the fader.
+     *
+     * POST-FADER, exactly like the per-bus send above and for the same reason:
+     * mute and solo arrive as volume 0, and a muted slot that went on feeding
+     * the reverb would be a bug nobody could find from the mixer. PRE-INSERT is
+     * the half that differs — voice_send_buf[i] is what the module rendered,
+     * before the bus's chain ran on the sum.
+     *
+     * The mask is this frame's (v2_render_block clears it on every path,
+     * bypass included), so a voice whose level was just zeroed stops sending
+     * immediately rather than draining a stale pool slot forever.
+     */
+    if (inst->voice_send_mask) {
+        for (int i = 0; i < SPLIT_VOICES_MAX; i++) {
+            if (!(inst->voice_send_mask & (1u << i))) continue;
+            for (int sd = 0; sd < ns; sd++) {
+                if (!accum[sd]) continue;
+                int lvl = ((int)inst->voice_send[i][sd] * slot_volume_0_127) /
+                          BUS_MIX_SEND_LEVEL_MAX;
+                bus_mix_send(accum[sd], inst->voice_send_buf[i],
+                             frames * 2, lvl);
+            }
         }
     }
 }

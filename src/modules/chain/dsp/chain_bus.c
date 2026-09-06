@@ -170,6 +170,60 @@ void chain_bus_rebuild_voice_map(chain_instance_t *inst)
         bus->orphan_count = bus_voice_apply(ids, n_ids, stored, n, b,
                                             inst->voice_bus, SPLIT_VOICES_MAX);
     }
+
+    /*
+     * PER-VOICE SENDS resolve here too, off the same `ids` list and in the same
+     * breath — not in a rebuild of their own. Every event that re-points a bus
+     * re-points these identically (a synth load, a voices edit, a patch apply),
+     * and two rebuilds behind one set of triggers is how one of them ends up
+     * stale on a path somebody forgot.
+     *
+     * Reset first for the same reason the bus map is: this only ever WRITES, so
+     * a level left from a previous module's list would survive as a level on
+     * whatever voice now holds that index.
+     */
+    memset(inst->voice_send, 0, sizeof(inst->voice_send));
+    inst->voice_send_orphans = 0;
+    int n_cfg = inst->voice_send_count;
+    if (n_cfg > SPLIT_VOICES_MAX) n_cfg = SPLIT_VOICES_MAX;
+    if (n_cfg < 0) n_cfg = 0;
+    for (int i = 0; i < n_cfg; i++) {
+        if (!inst->voice_send_ids[i][0]) continue;
+        int idx = bus_voice_index(ids, n_ids, inst->voice_send_ids[i]);
+        /* RETAINED AND COUNTED, never dropped — the same contract a bus's voice
+         * ids have. A module that is still loading, or that was swapped for one
+         * missing a voice, must not silently lose the levels: the id is still
+         * in the config and resolves again the moment the voice comes back. */
+        if (idx < 0 || idx >= SPLIT_VOICES_MAX) { inst->voice_send_orphans++; continue; }
+        for (int s = 0; s < BUS_MIX_SENDS; s++)
+            inst->voice_send[idx][s] = inst->voice_send_cfg[i][s];
+    }
+}
+
+/*
+ * The config slot holding `id`'s send levels, creating one if the list has
+ * room. NULL when the list is full — a refusal, not a silent overwrite of
+ * somebody else's voice.
+ *
+ * RT-safe: a bounded strcmp scan over at most SPLIT_VOICES_MAX short strings.
+ */
+static int8_t *voice_send_cfg_slot(chain_instance_t *inst, const char *id)
+{
+    if (!inst || !id || !id[0]) return NULL;
+    int n = inst->voice_send_count;
+    if (n > SPLIT_VOICES_MAX) n = SPLIT_VOICES_MAX;
+    if (n < 0) n = 0;
+    for (int i = 0; i < n; i++)
+        if (strcmp(inst->voice_send_ids[i], id) == 0) return inst->voice_send_cfg[i];
+    if (n >= SPLIT_VOICES_MAX) return NULL;
+    if ((int)strlen(id) > SPLIT_VOICE_ID_LEN - 1) return NULL;   /* never truncate: a
+                                                                 * truncated id compares
+                                                                 * unequal and orphans */
+    strncpy(inst->voice_send_ids[n], id, SPLIT_VOICE_ID_LEN - 1);
+    inst->voice_send_ids[n][SPLIT_VOICE_ID_LEN - 1] = '\0';
+    for (int s = 0; s < BUS_MIX_SENDS; s++) inst->voice_send_cfg[n][s] = 0;
+    inst->voice_send_count = n + 1;
+    return inst->voice_send_cfg[n];
 }
 
 /* Replace a bus's stored voice id list from a comma-separated string.
@@ -250,6 +304,13 @@ void chain_bus_clear_all(chain_instance_t *inst)
     if (!inst) return;
     for (int b = 0; b < SLOT_BUSES; b++) bus_reset(inst, b);
     for (int i = 0; i < BUS_MIX_SENDS; i++) inst->main_send_level[i] = 0;
+    /* The per-voice send CONFIG goes with them. The derived table and the
+     * render mask are rebuilt below and on the next frame respectively; the
+     * pool buffers are left alone, because nothing reads a slot the mask does
+     * not name. */
+    memset(inst->voice_send_ids, 0, sizeof(inst->voice_send_ids));
+    memset(inst->voice_send_cfg, 0, sizeof(inst->voice_send_cfg));
+    inst->voice_send_count = 0;
     chain_bus_rebuild_voice_map(inst);
 }
 
@@ -379,9 +440,46 @@ int chain_bus_set_param(chain_instance_t *inst, int b, const char *sub, const ch
     return -1;   /* not ours; the caller falls through */
 }
 
+/*
+ * Split "voice<V>:send<M>" into a 0-based RENDER index and a 1-based send
+ * number. Returns 0 when the key names neither.
+ *
+ * V IS THE MODULE'S CURRENT VOICE INDEX, not a position in the stored config:
+ * the grid addresses the voice it is drawing, and the config is a set keyed by
+ * id whose order is whatever the user happened to touch first. The write below
+ * resolves V to an id immediately and stores against THAT, which is what makes
+ * a level survive a module swap.
+ */
+static int voice_send_route(const char *sub, int *out_voice, int *out_send)
+{
+    /* The parse itself is bus_route.h's, so the spelling this serves and the
+     * spelling bus_model.mjs writes are joined by something tests/host can
+     * RUN (test_bus_route.c), not by two comments agreeing. */
+    return bus_route_voice_send(sub, SPLIT_VOICES_MAX, BUS_MIX_SENDS,
+                                out_voice, out_send);
+}
+
 int chain_bus_slot_set_param(chain_instance_t *inst, const char *sub, const char *val)
 {
     if (!inst || !sub) return -1;
+    {
+        int v = 0, sd = 0;
+        if (voice_send_route(sub, &v, &sd)) {
+            /* The id is the authority. A voice index the module does not
+             * currently declare has no id to store against, so the write is
+             * REFUSED rather than filed under an empty key that would resolve
+             * to the first hole in some later module's list. */
+            if (v >= inst->synth_split_voice_count) return 0;
+            const char *id = inst->synth_split_voice_ids[v];
+            if (!id[0]) return 0;
+            int8_t *levels = voice_send_cfg_slot(inst, id);
+            if (!levels) return 0;   /* config full: refused, not aliased */
+            levels[sd - 1] = (int8_t)bus_clamp_send(val ? atoi(val) : 0);
+            chain_bus_rebuild_voice_map(inst);
+            inst->dirty = 1;
+            return 0;
+        }
+    }
     int s = bus_suffix_index(sub, "main_send", BUS_MIX_SENDS);
     if (s > 0) {
         inst->main_send_level[s - 1] = bus_clamp_send(val ? atoi(val) : 0);
@@ -457,6 +555,34 @@ static int bus_emit_config(chain_instance_t *inst, char *buf, int buf_len)
     o += snprintf(buf + o, buf_len - o, "],\"main_sends\":[");
     for (int i = 0; i < BUS_MIX_SENDS; i++)
         o += snprintf(buf + o, buf_len - o, "%s%d", i ? "," : "", inst->main_send_level[i]);
+    /*
+     * PER-VOICE SENDS, id-keyed and carrying the ZERO entries too. The list is
+     * the config, not a summary of the audible ones: dropping a level the user
+     * has just turned down to 0 would make the fader jump back to its old value
+     * on the next read, and would lose it from the saved document entirely.
+     *
+     * Emitted after "main_sends" and before nothing — "buses" is already
+     * closed. Order matters to bus_field, which takes the FIRST occurrence of a
+     * key inside a span; "voice_sends" cannot be found by a search for
+     * "\"sends\"" or "\"main_sends\"" because both carry the opening quote.
+     */
+    o += snprintf(buf + o, buf_len - o, "],\"voice_sends\":[");
+    {
+        int n = inst->voice_send_count;
+        if (n > SPLIT_VOICES_MAX) n = SPLIT_VOICES_MAX;
+        int emitted = 0;
+        for (int i = 0; i < n && o < buf_len - 128; i++) {
+            if (!inst->voice_send_ids[i][0]) continue;
+            bus_json_escape(esc, sizeof(esc), inst->voice_send_ids[i]);
+            o += snprintf(buf + o, buf_len - o, "%s{\"id\":\"%s\",\"sends\":[",
+                          emitted ? "," : "", esc);
+            for (int sd = 0; sd < BUS_MIX_SENDS; sd++)
+                o += snprintf(buf + o, buf_len - o, "%s%d", sd ? "," : "",
+                              inst->voice_send_cfg[i][sd]);
+            o += snprintf(buf + o, buf_len - o, "]}");
+            emitted++;
+        }
+    }
     o += snprintf(buf + o, buf_len - o, "]}");
     return o;
 }
@@ -547,6 +673,22 @@ int chain_bus_slot_get_param(chain_instance_t *inst, const char *sub, char *buf,
 {
     if (!inst || !sub || !buf || buf_len <= 0) return -1;
     if (strcmp(sub, "config") == 0) return bus_emit_config(inst, buf, buf_len);
+    {
+        int v = 0, sd = 0;
+        if (voice_send_route(sub, &v, &sd)) {
+            /* Answered from the DERIVED table, which is what the audio path
+             * reads. A read served from the id-keyed config instead would keep
+             * reporting a level for a voice the current module does not have,
+             * i.e. a fader that moves and is not heard.
+             *
+             * No bounds check here on purpose: bus_route_voice_send was handed
+             * SPLIT_VOICES_MAX and BUS_MIX_SENDS as its caps and refuses
+             * anything past them, so a second test would be a guard no test
+             * could kill — it would pass for a reason other than the one it
+             * named. test_bus_route.c is where that bound is asserted. */
+            return snprintf(buf, buf_len, "%d", inst->voice_send[v][sd - 1]);
+        }
+    }
     int s = bus_suffix_index(sub, "main_send", BUS_MIX_SENDS);
     if (s > 0) return snprintf(buf, buf_len, "%d", inst->main_send_level[s - 1]);
     return -1;
@@ -627,6 +769,36 @@ int chain_bus_apply_patch(chain_instance_t *inst, const patch_info_t *patch)
 
     for (int i = 0; i < BUS_MIX_SENDS; i++)
         inst->main_send_level[i] = bus_clamp_send(patch->main_sends[i]);
+
+    /*
+     * PER-VOICE SENDS are REPLACED WHOLESALE, exactly as the buses above are.
+     * A patch is the authority for the slot: merging instead would leave a
+     * level from the previous kit on a voice this document says nothing about,
+     * and the user would hear a send they never set and cannot find.
+     *
+     * A document that predates this field arrives with voice_send_count 0 (the
+     * patch_info_t is zeroed before the parse), so it clears — which is the
+     * correct reading of "this file describes a slot with no per-voice sends",
+     * and is why the writer emits the key unconditionally.
+     */
+    memset(inst->voice_send_ids, 0, sizeof(inst->voice_send_ids));
+    memset(inst->voice_send_cfg, 0, sizeof(inst->voice_send_cfg));
+    inst->voice_send_count = 0;
+    {
+        int n = patch->voice_send_count;
+        if (n > SPLIT_VOICES_MAX) n = SPLIT_VOICES_MAX;
+        if (n < 0) n = 0;
+        for (int i = 0; i < n; i++) {
+            if (!patch->voice_send_ids[i][0]) continue;
+            int at = inst->voice_send_count;
+            strncpy(inst->voice_send_ids[at], patch->voice_send_ids[i],
+                    SPLIT_VOICE_ID_LEN - 1);
+            inst->voice_send_ids[at][SPLIT_VOICE_ID_LEN - 1] = '\0';
+            for (int sd = 0; sd < BUS_MIX_SENDS; sd++)
+                inst->voice_send_cfg[at][sd] = (int8_t)bus_clamp_send(patch->voice_sends[i][sd]);
+            inst->voice_send_count = at + 1;
+        }
+    }
 
     chain_bus_rebuild_voice_map(inst);
 

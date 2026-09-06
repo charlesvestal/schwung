@@ -1254,7 +1254,8 @@ function busesConfig(o) {
           sends: [0, 0],
           fx: Array.from({ length: BusModel.BUS_FX_SLOTS }, () => ({ module: "", bypassed: 0 })) });
   }
-  return JSON.stringify({ buses, main_sends: o.mainSends || [0, 0] });
+  return JSON.stringify({ buses, main_sends: o.mainSends || [0, 0],
+                          voice_sends: o.voiceSends || [] });
 }
 
 const voicesJson = (n) => JSON.stringify(
@@ -1462,7 +1463,8 @@ addBus("bus/chain/picker", { screen: "chain", picking: true,
  * io does, and a hand-typed copy of it would baseline a mapping nobody runs.
  */
 const mkBusSendsIo = lift("busSendsGridIo",
-  ["busSlot", "busConfig", "BusModel", "getSlotParam", "setSlotParam", "busConfigStale"]);
+  ["busSlot", "busConfig", "busVoices", "BusModel", "getSlotParam", "setSlotParam",
+   "busConfigStale"]);
 
 const busSendsCases = [];
 const addBusSends = (id, o) => busSendsCases.push(Object.assign({ id }, o));
@@ -1484,10 +1486,58 @@ addBusSends("bus/sends/full-send-a", { page: "Send A",
 addBusSends("bus/sends/hole-send-a", { page: "Send A",
   buses: [KICK, null, SNARE], mainSends: [5, 30] });
 
+/* PER-VOICE SENDS. A voice fader is a SECOND KIND of level on the same mixer --
+   pre-insert where a bus`s is post-insert -- so it lives on its own pages
+   ("Voices A" / "Voices B") and those pages PAGE, because a rack can declare 32
+   of them against eight knobs. Rendered because the failure mode is silent: a
+   contract that names a level nobody can reach draws nothing and reports
+   nothing. */
+const RACK_VOICES = [
+  { id: "bd", label: "Kick" },   { id: "sd", label: "Snare" },
+  { id: "chh", label: "CH Hat" }, { id: "ohh", label: "OH Hat" },
+  { id: "rim", label: "Rim" },   { id: "clp", label: "Clap" },
+  { id: "tml", label: "Lo Tom" }, { id: "tmh", label: "Hi Tom" },
+  { id: "cym", label: "Cymbal" }, { id: "cow", label: "Cowbell" },
+];
+const RACK_SENDS = [
+  { id: "bd", sends: [0, 0] },   { id: "sd", sends: [40, 0] },
+  { id: "chh", sends: [12, 90] }, { id: "ohh", sends: [12, 90] },
+  { id: "rim", sends: [0, 127] }, { id: "clp", sends: [64, 0] },
+  { id: "tml", sends: [7, 7] },  { id: "tmh", sends: [8, 8] },
+  { id: "cym", sends: [0, 0] },  { id: "cow", sends: [100, 1] },
+];
+/* Eight cells of a ten-voice rack, then the two that spill onto page 2 -- the
+   pagination the bus pages` `paginate: false` would have suppressed. */
+addBusSends("bus/sends/voices-a", { page: "Voices A",
+  buses: [KICK, HATS], mainSends: [5, 30],
+  voices: RACK_VOICES, voiceSends: RACK_SENDS });
+addBusSends("bus/sends/voices-a-2", { page: "Voices A - 2",
+  buses: [KICK, HATS], mainSends: [5, 30],
+  voices: RACK_VOICES, voiceSends: RACK_SENDS });
+addBusSends("bus/sends/voices-b", { page: "Voices B",
+  buses: [KICK, HATS], mainSends: [5, 30],
+  voices: RACK_VOICES, voiceSends: RACK_SENDS });
+/* THE REFERENCE CASE: a splittable rack with NO BUS AT ALL. Every level here is
+   per-voice, and before per-voice sends existed this screen could not be
+   reached -- the Sends door only opened for a bus. */
+addBusSends("bus/sends/voices-no-bus", { page: "Voices A",
+  buses: [], mainSends: [0, 0],
+  voices: RACK_VOICES.slice(0, 4), voiceSends: RACK_SENDS.slice(0, 4) });
+/* And the bus pages of the same slot, to show the two kinds keep their own
+   cells rather than sharing a row that changes meaning halfway along. */
+addBusSends("bus/sends/mixed-send-a", { page: "Send A",
+  buses: [KICK, HATS], mainSends: [5, 30],
+  voices: RACK_VOICES, voiceSends: RACK_SENDS });
+
 function renderBusSends(c) {
   const fb = createFramebuffer();
   const cfg = BusModel.parseBusesConfig(busesConfig(
-    { buses: c.buses, mainSends: c.mainSends }));
+    { buses: c.buses, mainSends: c.mainSends, voiceSends: c.voiceSends }));
+  /* null, not [], for a slot with no voices: that is what refreshBusVoices
+     leaves behind, and the io has to survive it. */
+  const voices = c.voices
+    ? BusModel.parseSplitVoices(JSON.stringify(c.voices))
+    : null;
   /* The store, keyed by the REAL spelling -- "busN:sendM". Seeded from the
      same config the rows come from, so a case says its levels once. A key the
      mixer must never ask for is seeded with a value it would be obvious about:
@@ -1499,15 +1549,24 @@ function renderBusSends(c) {
     store[`bus${b.index + 1}:send2`] = String(b.sends[1]);
   });
   installGlobals(fb, (slot, key) => (store[key] !== undefined ? store[key] : ""));
-  const io = mkBusSendsIo(0, cfg, BusModel,
+  (c.voiceSends || []).forEach((e) => {
+    const at = (c.voices || []).findIndex((v) => v.id === e.id);
+    if (at < 0) return;
+    store[`buses:voice${at + 1}:send1`] = String(e.sends[0]);
+    store[`buses:voice${at + 1}:send2`] = String(e.sends[1]);
+  });
+  const io = mkBusSendsIo(0, cfg, voices, BusModel,
     (slot, k) => (store[k] !== undefined ? store[k] : ""),
     (slot, k, v) => { store[k] = String(v); return true; },
     false)();
   const ctl = createController(Object.assign({ announce: noop }, io));
   ctl.load({ slot: 0, component: "bus_sends", prefix: "bus_sends",
-             /* One authored grouping per page -- the same flag the host hands
-                in through the chrome. */
-             paginate: false });
+             /* THE SAME EXPRESSION enterBusSendsGrid uses, not a constant: the
+                pin is dropped exactly when there are voice faders, because a
+                32-cell page against eight knobs is worse than the split the
+                pin exists to prevent. Hard-coding false here would baseline a
+                page the device never draws. */
+             paginate: !!(voices && voices.voices && voices.voices.length) });
   ctl.setLayout(LAYOUT_MOVY);
   const names = ctl.pages.map((p) => p.name);
   const at = names.indexOf(c.page);

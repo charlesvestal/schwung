@@ -265,12 +265,82 @@ next reconcile's `destroy_instance` and `dlclose`.
 see `src/host/plugin_api_v1.h` and rule 4 of `docs/REALTIME_SAFETY.md`, and keep
 all three in step.
 
+### Per-voice sends: a superset over the bus send, not a replacement
+
+The aliasing above is what makes a bus free, and it is also what makes a bus
+**coarse**. Two voices in one bus are handed one pointer and are already summed
+by the time the chain sees the buffer, so they cannot be scaled differently: a
+slot's send levels are `SLOT_BUSES × BUS_MIX_SENDS` = **8**, with every voice
+belonging to exactly one bus. The reference consumer, `schwung-dr32`, carries
+**64** — a `send_db[0]`/`send_db[1]` on each of 32 pads. It could not drop its
+internal sends and adopt the platform feature without losing capability, which
+is the test of whether the feature is sufficient.
+
+So a voice may carry its own two levels, and **nothing existing changes
+meaning**:
+
+| | taken from | when |
+|---|---|---|
+| **per-BUS send** (unchanged) | the bus buffer, **post-insert**, post-fader | after the bus's chain runs |
+| **per-VOICE send** (new) | the voice's **own** audio, **pre-insert**, post-fader | straight out of `render_split` |
+
+The two **sum** into the same `send_accum[]`. A voice with all-zero per-voice
+sends **costs nothing and still aliases** into its bus buffer exactly as before
+— you pay only for what you use.
+
+**The partition rule is: a voice is solo-buffered iff any of its per-voice send
+levels is above zero.** It lives in `bus_mix.h` (`bus_mix_solo_mask`,
+`bus_mix_build_table_split`) beside the routing it modifies, because that header
+is what `tests/host` can compile and run — `test_bus_mix.c` asserts the sparse
+case is **pointer-for-pointer identical** to the pre-sends build and that not
+one pool slot is touched, which is the property that keeps buses cheap. A
+solo-buffered voice renders into `chain_instance_t::voice_send_buf[i]`, its
+sends are taken from that in `chain_drain_sends`, and its audio is then
+accumulated into the destination it would have had — so it still reaches its
+bus and still goes through that bus's inserts. `bus_mix_active_mask` is
+deliberately unchanged by the partition for exactly that reason.
+
+**The pool is 16 KB inline on the instance and does NOT go through the bus
+worker.** Everything else in this feature does, because it has to be
+*allocated*; this does not — the array is part of the instance, live for exactly
+as long as the instance is, so there is nothing to publish, no release/acquire
+pair and no lifetime question. It is not on the callback's stack either.
+
+**The tap is chain-side. The module is never told sends exist** — it is handed
+a pointer and accumulates into it, the same contract as before.
+
+Two things the drain does that are not obvious from the arithmetic. It runs in
+`chain_drain_sends` rather than in `v2_render_block` because **`accum` does not
+exist there**: the shim owns the global send buses and passes them in after the
+render, together with the slot's volume, so that is the only point at which a
+per-voice send can be both taken from the voice's own audio and scaled by the
+fader. And `voice_send_mask` is cleared on **every** path out of
+`v2_render_block`, bypass included — "has a level" is not "was rendered this
+frame", and draining on the level alone would send a voice's final 128 frames
+forever.
+
+**The configuration is ID-KEYED; the render table is derived.**
+`voice_send_ids[]` / `voice_send_cfg[]` are what the user set and what is saved;
+`voice_send[]` is rebuilt from them by `chain_bus_rebuild_voice_map`, in the same
+pass and off the same id list the bus map uses, because every event that
+re-points a bus re-points these identically. An id that no longer resolves is
+**retained and counted** (`voice_send_orphans`), never dropped or re-pointed —
+the same contract a bus's voice ids have. The param is `buses:voice<V>:send<M>`
+with V the module's **render** index; `bus_route_voice_send` in `bus_route.h`
+parses it, so the spelling `bus_model.mjs` writes and the spelling the chain
+serves are joined by something `tests/host` runs.
+
+Worst case, all 32 voices carrying a distinct level, the added per-frame work is
+a 16 KB clear, a 16 KB fold-back and 32 × 2 scaled adds. The sparse case is a
+32-bit mask scan.
+
 ### The bus↔send seam, and whose design it is
 
 A bus's audio is summed into the slot's main output **before** the slot's own
 eight audio FX, so a slot compressor sees the whole kit; the two **global send**
 levels are taken from the post-insert bus buffer at the same point, and drained
-by the shim. The sends themselves — the topology, the post-fader rule, the
+by the shim, where the per-voice levels above are added to the same
+accumulators. The sends themselves — the topology, the post-fader rule, the
 return levels, the feedback-safe A→B and the generic FX-bus picker — are
 documented in `docs/SHADOW_UI.md`.
 

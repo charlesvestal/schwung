@@ -813,10 +813,53 @@ static void bus_parse_one(const char *obj_start, const char *obj_end, bus_config
     }
 }
 
+/*
+ * "voice_sends": [ {"id":"chh","sends":[20,0]}, ... ]
+ *
+ * ID-KEYED and positional in nothing: the array's order is not a voice order,
+ * it is the order the levels happened to be created in. The render index is
+ * resolved from the id at load, by chain_bus_rebuild_voice_map, which is what
+ * lets a module gain or lose a voice without re-pointing every level.
+ *
+ * A zero level is a REAL entry and is kept. It is what the user set the fader
+ * to, and dropping it would make the value spring back on the next load.
+ */
+static void voice_sends_parse_section(const char *json, patch_info_t *patch)
+{
+    const char *pos = strstr(json, "\"voice_sends\"");
+    if (!pos) return;
+    const char *bracket = strchr(pos, '[');
+    const char *arr_end = bracket ? json_array_end(bracket) : NULL;
+    /* Same refusal as the buses scan: no trustworthy end means parse NOTHING
+     * rather than invent entries out of the rest of the document. */
+    if (!bracket || !arr_end) return;
+
+    const char *p = bracket + 1;
+    while (patch->voice_send_count < SPLIT_VOICES_MAX && p < arr_end) {
+        const char *obj = memchr(p, '{', (size_t)(arr_end - p));
+        if (!obj || obj >= arr_end) break;
+        const char *obj_end = json_span_end(obj);
+        if (!obj_end || *obj_end != '}' || obj_end > arr_end) break;
+
+        char id[SPLIT_VOICE_ID_LEN];
+        bus_field_string(obj, obj_end, "id", id, sizeof(id));
+        if (id[0]) {
+            int at = patch->voice_send_count;
+            strncpy(patch->voice_send_ids[at], id, SPLIT_VOICE_ID_LEN - 1);
+            patch->voice_send_ids[at][SPLIT_VOICE_ID_LEN - 1] = '\0';
+            bus_field_int_array(obj, obj_end, "sends",
+                                patch->voice_sends[at], BUS_MIX_SENDS);
+            patch->voice_send_count = at + 1;
+        }
+        p = obj_end + 1;
+    }
+}
+
 static void bus_parse_section(const char *json, patch_info_t *patch)
 {
     bus_field_int_array(json, json + strlen(json), "main_sends",
                         patch->main_sends, BUS_MIX_SENDS);
+    voice_sends_parse_section(json, patch);
 
     const char *pos = strstr(json, "\"buses\"");
     if (!pos) return;

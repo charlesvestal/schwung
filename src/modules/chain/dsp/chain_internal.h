@@ -80,6 +80,8 @@ _Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= BUS_MIX_MAX_BUSES,
  * index is documented. */
 #define SPLIT_VOICES_MAX 32
 #define SPLIT_VOICE_ID_LEN 32
+_Static_assert(SPLIT_VOICES_MAX <= BUS_MIX_MAX_VOICES,
+               "SPLIT_VOICES_MAX must fit bus_mix_solo_mask's uint32_t");
 
 /* Optional file-based debug tracing for chain parsing/preset save diagnostics. */
 #define CHAIN_DEBUG_FLAG_PATH "/data/UserData/schwung/chain_debug_on"
@@ -296,6 +298,17 @@ typedef struct {
     lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
     bus_config_t buses[SLOT_BUSES];
     int main_sends[BUS_MIX_SENDS];
+    /*
+     * Per-voice sends, ID-KEYED and stored ONCE for the whole slot — not inside
+     * bus_config_t, and that placement is the cost decision. A voice's send is
+     * a property of the VOICE, not of a bus (a voice on Main can have one, and
+     * dr32's whole case is 32 such voices and no bus at all), and every byte
+     * added to bus_config_t is multiplied by SLOT_BUSES, then by MAX_PATCHES on
+     * the heap, then by four slots. Here it is ~1.1 KB per patch.
+     */
+    char voice_send_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
+    int  voice_sends[SPLIT_VOICES_MAX][BUS_MIX_SENDS];
+    int  voice_send_count;
 } patch_info_t;
 
 /* ============================================================================
@@ -558,6 +571,62 @@ typedef struct chain_instance {
      * Initialised to BUS_MIX_MAIN, never left at calloc's 0 — 0 is a real bus
      * index and would put every voice on bus 1 the moment buses allocate. */
     int8_t voice_bus[SPLIT_VOICES_MAX];
+
+    /*
+     * ============ PER-VOICE SENDS ==========================================
+     *
+     * A SUPERSET over the per-bus send, not a replacement: a bus's send is
+     * post-insert and post-fader and is unchanged, a voice's is taken from the
+     * voice's OWN audio before any bus insert, and the two SUM into the same
+     * accumulators. It exists because the aliasing that makes buses free also
+     * makes them coarse — two voices in one bus are handed one pointer and are
+     * already summed by the time the chain sees the buffer — and a 32-pad drum
+     * rack wants 32 send levels, not one.
+     *
+     * THE CONFIGURATION IS ID-KEYED; the render table is DERIVED.
+     * `voice_send_ids` / `voice_send_cfg` are what the user set and what is
+     * saved, in the same shape and for the same reason a bus stores voice ids:
+     * a module that gains or loses a voice must not silently re-point every
+     * level one place along. `voice_send` is rebuilt from them by
+     * chain_bus_rebuild_voice_map and is indexed by the RENDER index, the same
+     * index as voice_bus[] and voice_out[]. An id that no longer resolves is
+     * RETAINED in the config and COUNTED in voice_send_orphans, never dropped.
+     */
+    char   voice_send_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
+    int8_t voice_send_cfg[SPLIT_VOICES_MAX][BUS_MIX_SENDS];   /* 0..127 */
+    int    voice_send_count;
+    int    voice_send_orphans;
+    int8_t voice_send[SPLIT_VOICES_MAX][BUS_MIX_SENDS];       /* derived */
+
+    /*
+     * The solo-buffer pool: one 128-frame stereo block per voice, 16 KB.
+     *
+     * INLINE ON THE INSTANCE, AND DELIBERATELY NOT THROUGH THE BUS WORKER.
+     * Every other buffer in this feature goes through chain_bus_worker_fn
+     * because it has to be allocated, and an allocation on the SPI callback is
+     * the one thing that cannot happen — which is what the `buf` publish gate
+     * and its release/acquire pairing exist for. There is no allocation here:
+     * the array is part of the instance, so it is live for exactly as long as
+     * the instance is, there is nothing to publish, nothing to retire and no
+     * lifetime question to get wrong. 16 KB against an instance that already
+     * costs ~19 MB is not worth a second thread's worth of protocol.
+     *
+     * It is NOT on the callback's stack — that frame already grew 304 bytes for
+     * the bus work and 16 KB more would be reckless. Indexed by VOICE INDEX and
+     * never compacted; see bus_mix_build_table_split.
+     *
+     * Only the slots named by voice_send_mask are cleared or read in a frame,
+     * so a slot with no per-voice send costs nothing at all.
+     */
+    int16_t voice_send_buf[SPLIT_VOICES_MAX][BUS_BUF_SAMPLES];
+
+    /* Which voices were solo-buffered on the LAST frame — the exact set whose
+     * voice_send_buf[] slot holds this frame's audio. Written by the render,
+     * read by chain_drain_sends, both on the SPI callback, so no
+     * synchronisation is involved. Same reason bus_rendered_mask exists: "has a
+     * level" is not "was rendered this frame", and draining on the level alone
+     * would go on sending a voice's final 128 frames forever. */
+    uint32_t voice_send_mask;
 
     /* Per-bus sub-mixes and their insert chains. Main is bus 0 and implicit:
      * it is this instance's own out buffer and its existing fx[] chain. */

@@ -83,6 +83,66 @@ static void test_voice_index_lookup(void) {
     printf("  voice lookup: ok\n");
 }
 
+
+/* ==========================================================================
+ * THE PER-VOICE SEND KEY
+ *
+ * The spelling bus_model.mjs writes ("buses:voice7:send2", the "buses:" prefix
+ * stripped by the slot route before it reaches here) and the only thing that
+ * reads it. Both halves of a key that lived in a translation unit the dev
+ * machine cannot build.
+ * ========================================================================== */
+#define TEST_VOICES 32
+#define TEST_SENDS  2
+
+static void test_voice_send_routes(void) {
+    for (int v = 1; v <= TEST_VOICES; v++) {
+        for (int sd = 1; sd <= TEST_SENDS; sd++) {
+            char key[32];
+            snprintf(key, sizeof(key), "voice%d:send%d", v, sd);
+            int gv = -99, gs = -99;
+            assert(bus_route_voice_send(key, TEST_VOICES, TEST_SENDS, &gv, &gs) == 1);
+            assert(gv == v - 1);   /* 0-BASED: it is the render index */
+            assert(gs == sd);      /* 1-BASED: it is the send NUMBER */
+        }
+    }
+    printf("  voice send routes: ok\n");
+}
+
+static void test_voice_send_bounds_and_refusals(void) {
+    int v = -99, sd = -99;
+    /* Past either cap, and at zero. An out-of-range key must be REFUSED, not
+       clamped onto voice 0 or send 1 -- that is the Master FX else-branch that
+       wrote a garbage param into a different running module. */
+    char key[32];
+    snprintf(key, sizeof(key), "voice%d:send1", TEST_VOICES + 1);
+    assert(bus_route_voice_send(key, TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    snprintf(key, sizeof(key), "voice1:send%d", TEST_SENDS + 1);
+    assert(bus_route_voice_send(key, TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voice0:send1",  TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voice1:send0",  TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    /* Leading zeros, the same rule bus<N> has. */
+    assert(bus_route_voice_send("voice01:send1", TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voice1:send01", TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    /* Malformed, and the near-misses that would otherwise fall through to a
+       bus route or to the synth plugin. */
+    assert(bus_route_voice_send("voice1",        TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voice1:",       TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voice1:sends1", TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voices:send1",  TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("voice1:gain",   TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("bus1:send1",    TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("main_send1",    TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send("config",        TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    assert(bus_route_voice_send(NULL,            TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    /* THE WHOLE KEY IS CONSUMED. Routing on the prefix would send
+       "voice1:send1:extra" to voice 1 send 1 and drop the rest silently. */
+    assert(bus_route_voice_send("voice1:send1:extra", TEST_VOICES, TEST_SENDS, &v, &sd) == 0);
+    /* Every refusal left the out-params ALONE. */
+    assert(v == -99 && sd == -99);
+    printf("  voice send bounds: ok\n");
+}
+
 int main(void) {
     printf("test_bus_route (cap=%d):\n", TEST_SLOT_BUSES);
     test_full_range_parses();
@@ -90,6 +150,8 @@ int main(void) {
     test_malformed_ids();
     test_multi_digit_is_not_read_from_one_char();
     test_voice_index_lookup();
+        test_voice_send_routes();
+    test_voice_send_bounds_and_refusals();
     printf("PASS\n");
     return 0;
 }

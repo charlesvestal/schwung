@@ -946,6 +946,19 @@ static void bus_summary(const patch_info_t *p, FILE *f) {
     for (int i = 0; i < BUS_MIX_SENDS; i++)
         fprintf(f, "%s%d", i ? "," : "", p->main_sends[i]);
     fprintf(f, "\n");
+    /* PER-VOICE SENDS, in the order the producer emitted them: the list is a
+     * SET keyed by id and the order is only what the user touched first, so the
+     * summary carries it verbatim rather than sorting — a sort here would hide
+     * a parser that reordered, and the entries are matched to voices by id
+     * anyway. A ZERO entry prints: it is a level the user set, and a parser
+     * that dropped it would silently spring the fader back on the next load. */
+    fprintf(f, "voice_sends=");
+    for (int i = 0; i < p->voice_send_count; i++) {
+        fprintf(f, "%s%s:", i ? "|" : "", p->voice_send_ids[i]);
+        for (int sd = 0; sd < BUS_MIX_SENDS; sd++)
+            fprintf(f, "%s%d", sd ? "," : "", p->voice_sends[i][sd]);
+    }
+    fprintf(f, "\n");
     for (int b = 0; b < SLOT_BUSES; b++) {
         const bus_config_t *c = &p->buses[b];
         if (!c->present) { fprintf(f, "bus%d present=0\n", b); continue; }

@@ -12,6 +12,13 @@
  * so the sparse case costs literally nothing. Callers must therefore clear only
  * the DISTINCT buffers (bus_mix_active_mask) and modules must ACCUMULATE.
  *
+ * PER-VOICE SENDS ARE A SUPERSET LAID OVER THAT, not a replacement for it: a
+ * voice that asks for one is handed its own buffer (bus_mix_solo_mask,
+ * bus_mix_build_table_split) and folded back afterwards, and a voice that does
+ * not is aliased exactly as above. bus_mix_active_mask is deliberately
+ * UNCHANGED by the partition — a solo voice's bus still has to be cleared and
+ * still runs its inserts, because that is where the voice's audio ends up.
+ *
  * Every function here runs on the SCHED_FIFO SPI callback: no allocation, no
  * I/O, no locks.
  *
@@ -50,6 +57,17 @@
 #define BUS_MIX_MAX_BUSES 32
 
 /*
+ * The same ceiling for VOICES, and for the same reason: bus_mix_solo_mask
+ * returns a uint32_t. A voice at or past this index is EXCLUDED from the solo
+ * partition — it renders straight into its bus or into main, exactly as every
+ * voice did before per-voice sends existed, so the failure is "its send is not
+ * heard", never a shift into somebody else's buffer. chain_internal.h
+ * static-asserts SPLIT_VOICES_MAX <= this, so on the real path the exclusion
+ * is unreachable; it is here because n_voices is a runtime int.
+ */
+#define BUS_MIX_MAX_VOICES 32
+
+/*
  * How many global send buses a slot can feed.
  *
  * IT LIVES HERE, not in shadow_chain_mgmt.h, because BOTH sides need it and
@@ -77,23 +95,123 @@ static inline int16_t *bus_mix_target(int b, int n_buses, int16_t *const *bus_bu
 }
 
 /*
- * Build the per-voice output table.
+ * Where voice `i`'s audio BELONGS — its bus buffer, or main.
  *
- * voice_bus[i] is BUS_MIX_MAIN or a bus index. Entries alias deliberately.
+ * Distinct from where it is RENDERED, which is the same thing only for a voice
+ * with no per-voice send. A solo-buffered voice renders into its own buffer and
+ * is then accumulated into this, so the two answers must come from one place or
+ * a voice's audio lands somewhere its sends were not taken from.
+ *
  * A bus that is out of range, or whose buffer is NULL because it has not been
  * allocated yet (bus chains are allocated on demand, off the RT thread), falls
  * back to main_buf — the voice is still heard, just not separately.
+ */
+static inline int16_t *bus_mix_voice_dest(int i, const int8_t *voice_bus,
+                                          int16_t *main_buf,
+                                          int16_t *const *bus_buf, int n_buses)
+{
+    int b = voice_bus ? voice_bus[i] : BUS_MIX_MAIN;
+    int16_t *t = bus_mix_target(b, n_buses, bus_buf);
+    return t ? t : main_buf;
+}
+
+/*
+ * ================= THE SOLO PARTITION =======================================
+ *
+ * A per-voice send has to be scaled per voice, and the aliasing above makes
+ * that impossible for a voice sharing a bus buffer: by the time the chain sees
+ * that buffer the module has already summed them into it. So a voice that
+ * actually asks for one — and ONLY such a voice — is handed its own buffer out
+ * of a pool, its sends are taken from that, and its audio is then accumulated
+ * into the destination it would have had. Everything downstream is unchanged.
+ *
+ * The rule is therefore exactly: **a voice is solo-buffered iff it has a
+ * non-zero per-voice send level.** All-zero is the sparse case and must stay
+ * byte-for-byte what it was — aliased, no pool slot cleared, no extra pass —
+ * which is what keeps buses cheap and is what test_bus_mix.c pins by running
+ * the two build paths against each other.
+ *
+ * `voice_send` is a FLAT [n_voices][n_sends] table of 0..127 levels; passing
+ * NULL means no voice has one.
+ */
+static inline int bus_mix_voice_is_solo(const int8_t *voice_send, int n_voices,
+                                        int n_sends, int i)
+{
+    if (!voice_send || n_sends <= 0) return 0;
+    if (i < 0 || i >= n_voices || i >= BUS_MIX_MAX_VOICES) return 0;
+    for (int s = 0; s < n_sends; s++)
+        if (voice_send[(size_t)i * (size_t)n_sends + (size_t)s] > 0) return 1;
+    return 0;
+}
+
+/*
+ * Bitmask of the voices that need their own buffer this frame. Returns how many
+ * bits are set — a caller uses that to decide whether the split render is worth
+ * entering at all when no bus is routed, which is dr32's whole case: 32 pads on
+ * main, each with its own send, and not one bus between them.
+ */
+static inline int bus_mix_solo_mask(const int8_t *voice_send, int n_voices,
+                                    int n_sends, uint32_t *out_mask)
+{
+    uint32_t m = 0;
+    int n = 0;
+    for (int i = 0; i < n_voices && i < BUS_MIX_MAX_VOICES; i++) {
+        if (bus_mix_voice_is_solo(voice_send, n_voices, n_sends, i)) {
+            m |= 1u << i;
+            n++;
+        }
+    }
+    if (out_mask) *out_mask = m;
+    return n;
+}
+
+/*
+ * Build the per-voice output table.
+ *
+ * voice_bus[i] is BUS_MIX_MAIN or a bus index. Entries alias deliberately:
+ * voices sharing a bus get the SAME pointer and sum inside the module's own
+ * accumulating render.
+ *
+ * A voice named by `solo_mask` is handed `solo_pool + i * solo_stride` instead.
+ * THE POOL IS INDEXED BY VOICE INDEX AND NEVER COMPACTED — a packed pool would
+ * need a second index the caller then has to carry to the send tap and to the
+ * fold-back, and an index that means two things is the defect this branch has
+ * already paid for once. A slot per voice costs 512 bytes of a 16 KB inline
+ * array; a wrong pointer costs somebody's kick drum.
+ *
+ * `solo_mask` is IGNORED when no pool is supplied, so the failure of a caller
+ * that computed a mask without a buffer is today's behaviour rather than a
+ * store through NULL on the SPI callback.
+ */
+static inline void bus_mix_build_table_split(int16_t **voice_out, int n_voices,
+                                             const int8_t *voice_bus,
+                                             int16_t *main_buf,
+                                             int16_t *const *bus_buf, int n_buses,
+                                             uint32_t solo_mask,
+                                             int16_t *solo_pool, int solo_stride)
+{
+    if (!solo_pool || solo_stride <= 0) solo_mask = 0;
+    for (int i = 0; i < n_voices; i++) {
+        if (i < BUS_MIX_MAX_VOICES && (solo_mask & (1u << i)))
+            voice_out[i] = solo_pool + (size_t)i * (size_t)solo_stride;
+        else
+            voice_out[i] = bus_mix_voice_dest(i, voice_bus, main_buf, bus_buf, n_buses);
+    }
+}
+
+/*
+ * The sparse case, spelled as what it is: the split build with an EMPTY solo
+ * mask. Defined in terms of it rather than beside it so the two cannot drift —
+ * "a voice with no per-voice send routes exactly as it did before" is then a
+ * property of the code and not a claim in a comment.
  */
 static inline void bus_mix_build_table(int16_t **voice_out, int n_voices,
                                        const int8_t *voice_bus,
                                        int16_t *main_buf,
                                        int16_t *const *bus_buf, int n_buses)
 {
-    for (int i = 0; i < n_voices; i++) {
-        int b = voice_bus ? voice_bus[i] : BUS_MIX_MAIN;
-        int16_t *t = bus_mix_target(b, n_buses, bus_buf);
-        voice_out[i] = t ? t : main_buf;
-    }
+    bus_mix_build_table_split(voice_out, n_voices, voice_bus, main_buf,
+                              bus_buf, n_buses, 0u, NULL, 0);
 }
 
 /*

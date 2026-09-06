@@ -513,6 +513,18 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   entries **ALIAS**: two voices in one bus get one pointer, so the summing is
   free and the sparse case costs nothing — and the host flips between it and
   `render_block` **per frame**, so the two must share voice/envelope state.
+- **Per-voice sends are a SUPERSET over the bus send, and the partition rule is
+  one line**: a voice is solo-buffered *iff* any of its per-voice levels is
+  above zero. The coarseness they fix is inherent, not an oversight — two
+  voices in one bus share a pointer and are summed inside the module, so 4
+  buses × 2 sends is **8** levels where the reference rack (dr32) carries
+  **64**. A voice's send is taken from its OWN audio **pre-insert**; the bus
+  send stays **post-insert**, both post-fader, and they SUM. The sparse case
+  must stay **pointer-for-pointer identical** — `test_bus_mix.c` asserts that
+  and that no pool slot is touched. The 16 KB pool is **inline on the instance
+  and deliberately not through the bus worker**: nothing is allocated, so there
+  is no publish gate and no lifetime question. The tap is CHAIN-side; the
+  module is never told sends exist.
 - **A bus's realisation is a WORKER, not the callback** (`chain_bus.c`,
   SCHED_OTHER on cores 0-2): every `dlopen`, `create_instance` and megabyte
   calloc happens there, joined to the RT side by `buf` and a **sequence
@@ -686,10 +698,18 @@ A `Buses` action row opens the slot's bus list; a bus's own menu opens its
   Shift+Click swaps. Read `chain_params` and the entry gate's hierarchy through
   the BUS target: `slotChainTarget` answers null for "bus1:fx2", and an empty
   `chain_params` is what invents a `float 0..1` knob for every parameter.
-- **The send mixer is ONE PAGE PER SEND** (the `Sends` row on the bus list),
-  bounded at `SLOT_BUSES` cells and handed `paginate: false`. Its ROOT level
-  carries no knobs on purpose — the planner names a walk root's page "Main"
-  whatever it declares, and "Main / Send B" is not a mixer.
+- **The send mixer is ONE PAGE PER SEND PER KIND** (the `Sends` row on the bus
+  list): Send A/B are the buses, Voices A/B the per-voice sends, and a level
+  with no keys is OMITTED rather than emitted empty. Its ROOT level carries no
+  knobs on purpose — the planner names a walk root's page "Main" whatever it
+  declares, and "Main / Send B" is not a mixer. **`paginate` is a whole-CONTRACT
+  switch, not per-level**, so the pin to one page is dropped exactly when there
+  are voice faders — 32 cells against 8 knobs leaves 24 undrawable, worse than
+  the split the pin prevents. The `Sends` door opens for a bus OR a voice; on a
+  bus alone it was unreachable for the 32-pad rack the feature is for. A voice
+  key is **`buses:voice<V>:send<M>`** — the prefix is load-bearing, since
+  `bus<N>:` routes to a bus and a bare `voice7:send1` reaches the synth
+  plugin.
 - **There is no MAIN row: the slot's own two sends are WIRED AND INERT.**
   `main_send_level` is written, serialized and patch-applied, and
   `chain_drain_sends` reads it nowhere — Main's post-insert signal does not

@@ -79,6 +79,11 @@ bus/sends/2-send-a fa127d1d4fef237a0569f0a9df01ba1fc2180343
 bus/sends/2-send-b d3992bb4e7f1c0fe03cb001fd5dbae5f868edbe8
 bus/sends/full-send-a 73af292884dbbd202397f5002602d03097f944ef
 bus/sends/hole-send-a 5ab60500ed26afc4bebfa080d326143f44c9fd47
+bus/sends/mixed-send-a 834c9eab33134ff78f4919d8b61da51b58fd9c30
+bus/sends/voices-a a2428269a0d092bbd157508c5eadedb0021a44c4
+bus/sends/voices-a-2 a5402ef3a7d6ece2aff72ccaaaa44bc890db3c56
+bus/sends/voices-b 7020833ac0ed1df567bdf6922f9bb5223ffb3d17
+bus/sends/voices-no-bus d57bad0ae4cdb3aa101d473b64204b7e13f7446d
 bus/voices/16-scrolled f7c3b804e7a755a24ba7e28403c723cd87814cb5
 bus/voices/16-top 568376be1a7317c074fcbabb652f8d38b3c2d6d1
 bus/voices/orphans ed3210cb3d7e4db1b4fa9d0fc0834211c1e7c712

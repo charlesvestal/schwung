@@ -448,9 +448,132 @@ eq("an unresolved config lists no rows either -- the one refusal",
     fail("an unresolved buses:config no longer bails the save");
 }
 
+/* ---- PER-VOICE SENDS --------------------------------------------------- *
+ *
+ * The superset: a voice send is taken from the voice`s own PRE-INSERT audio,
+ * a bus send from the bus`s POST-INSERT sum, and they land in the same two
+ * accumulators. What is testable here is the CONTRACT that reaches the DSP --
+ * the spellings, which faders are offered, and what survives a save.
+ */
+{
+  const cfg = M.parseBusesConfig(JSON.stringify({
+    buses: [
+      { present: 1, name: "Hats", orphans: 0, voices: ["chh"], sends: [10, 0], fx: [] },
+      { present: 0 }, { present: 0 }, { present: 0 },
+    ],
+    main_sends: [0, 0],
+    voice_sends: [{ id: "chh", sends: [20, 0] },
+                  { id: "bd", sends: [0, 0] },
+                  { id: "gone", sends: [77, 77] }],
+  }));
+  const voices = M.parseSplitVoices(JSON.stringify([
+    { id: "bd", label: "Kick" }, { id: "chh", label: "CH" },
+  ])).voices;
+
+  /* A ZERO entry is a REAL answer and is kept. Dropping it would spring a
+     fader the user just pulled down back to its old value. */
+  eq("zero voice send is carried", M.voiceSendValue(cfg, "bd", 1), 0);
+  eq("voice send A", M.voiceSendValue(cfg, "chh", 1), 20);
+  eq("voice send B", M.voiceSendValue(cfg, "chh", 2), 0);
+  /* A voice the config says nothing about is zero, not unknown: an absent
+     entry IS a level of zero, and that is what the DSP answers too. */
+  eq("unknown voice is zero", M.voiceSendValue(cfg, "nobody", 1), 0);
+
+  /* THE SPELLINGS. A voice key carries the "buses:" prefix because
+     chain_host.c routes "bus<N>:" to a bus and "buses:" to the slot -- a bare
+     "voice7:send1" matches neither and is handed to the synth plugin, i.e. a
+     write to somebody else`s parameter. */
+  eq("voice grid key", M.voiceSendGridKey(6, 2), "voice7_send2");
+  eq("voice real key", M.busSendGridRealKey("voice7_send2"), "buses:voice7:send2");
+  eq("bus real key unchanged", M.busSendGridRealKey("bus2_send1"), "bus2:send1");
+  /* Bounded at the caps, both ends, both kinds. An out-of-range key must
+     answer null rather than reach a chain host that would refuse it in
+     silence -- the caller can then draw nothing instead of a dead fader. */
+  eq("voice past the cap", M.busSendGridRealKey("voice33_send1"), null);
+  eq("voice zero", M.busSendGridRealKey("voice0_send1"), null);
+  eq("voice send past the cap", M.busSendGridRealKey("voice1_send3"), null);
+  eq("not a send", M.busSendGridRealKey("voice1_gain"), null);
+
+  /* THE MIXER OFFERS EVERY DECLARED VOICE, not only the ones with a level:
+     built from voice_sends instead, a pad would get a fader only after you had
+     already found some other way to set one. */
+  const params = M.busSendGridParams(cfg, voices);
+  eq("mixer params", params.map((p) => p.key),
+     ["bus1_send1", "bus1_send2",
+      "voice1_send1", "voice2_send1", "voice1_send2", "voice2_send2"]);
+  eq("voice fader is named for the voice",
+     params.filter((p) => p.key === "voice1_send1").map((p) => p.name), ["Kick"]);
+  /* An ORPHAN ("gone") gets no fader: it names no voice the module declares,
+     so there is no cell it could belong to. It is still in the config and is
+     still saved -- see the producer check below. */
+  eq("orphan gets no fader",
+     params.filter((p) => /^voice/.test(p.key)).length, 4);
+
+  /* FOUR LEVELS, and buses and voices are never merged into one. Pagination is
+     a whole-CONTRACT switch, so one merged level would force the four bus
+     faders to page along with up to thirty-two voice ones -- and a row of
+     cells that changed meaning halfway along (post-insert to pre-insert) would
+     be a worse screen than two honest ones. */
+  const h = M.busSendGridHierarchy(cfg, voices);
+  eq("mixer levels", Object.keys(h.levels),
+     ["root", "send_a", "send_b", "voice_a", "voice_b"]);
+  eq("root carries no knobs", h.levels.root.knobs, []);
+  eq("send_a is buses", h.levels.send_a.knobs, ["bus1_send1"]);
+  eq("voice_a is voices", h.levels.voice_a.knobs, ["voice1_send1", "voice2_send1"]);
+  /* NO PER-LEVEL `paginate`. The planner takes it once for the whole contract,
+     so a flag written on a level would be read by nobody -- a promise the
+     planner never made. */
+  for (const id of Object.keys(h.levels))
+    if ("paginate" in h.levels[id]) fail("level " + id + " declares a paginate the planner never reads");
+
+  /* A LEVEL WITH NO KEYS IS OMITTED, not emitted empty. A module that cannot
+     split gets exactly the two bus pages that shipped before. */
+  const noVoices = M.busSendGridHierarchy(cfg, []);
+  eq("no voices, no voice levels", Object.keys(noVoices.levels),
+     ["root", "send_a", "send_b"]);
+
+  /* THE REFERENCE CASE: a splittable rack with NO BUS AT ALL. Every level is
+     per-voice, and the DOOR has to open -- before per-voice sends the Sends row
+     appeared only when a bus existed, so this whole screen was unreachable for
+     exactly the module the feature is for. */
+  const busless = M.parseBusesConfig(JSON.stringify({
+    buses: [{ present: 0 }, { present: 0 }, { present: 0 }, { present: 0 }],
+    main_sends: [0, 0], voice_sends: [],
+  }));
+  eq("busless rows without voices",
+     M.busListRows(busless, undefined, []).map((r) => r.kind), ["new"]);
+  eq("busless rows with voices",
+     M.busListRows(busless, undefined, voices).map((r) => r.kind), ["sends", "new"]);
+  const bh = M.busSendGridHierarchy(busless, voices);
+  eq("busless mixer is voices only", Object.keys(bh.levels),
+     ["root", "voice_a", "voice_b"]);
+  /* Nothing to ride at all is not a mixer. Reachable: the last bus can be
+     deleted from the screen behind this one. */
+  eq("nothing to ride is no contract", M.busSendGridHierarchy(busless, []), null);
+  /* An unresolved config declares no mixer, voices or not: a read that did not
+     complete is not "this slot has no buses". */
+  eq("unresolved declares nothing",
+     M.busSendGridHierarchy({ unresolved: true }, voices), null);
+  eq("unresolved declares no params",
+     M.busSendGridParams({ unresolved: true, buses: [] }, voices), []);
+
+  /* THE PRODUCER carries every entry VERBATIM, orphan and zero alike. An id
+     that does not resolve right now is an ORPHAN, not a deletion, and the chain
+     host retains and counts it -- filtering here is how a level is lost by
+     saving while the module is still loading. */
+  const fields = M.busPatchFields(cfg);
+  eq("producer carries every voice send",
+     fields.voice_sends.map((e) => e.id + ":" + e.sends.join(",")),
+     ["chh:20,0", "bd:0,0", "gone:77,77"]);
+  /* KEY ORDER: main_sends and voice_sends before buses, because
+     bus_parse_section scans the WHOLE document for the first two. */
+  eq("producer key order", Object.keys(fields),
+     ["main_sends", "voice_sends", "buses"]);
+}
+
 if (failures) process.exit(1);
 console.log("PASS: bus model — the tri-state read, positional buses, retained " +
-            "orphans, one-bus-per-voice, and the knob grid keys");
+            "orphans, one-bus-per-voice, per-voice sends, and the knob grid keys");
 '
 
 # THE CAPS ARE MIRRORS, and a mirror that drifts is worse than a duplicate: the
@@ -475,6 +598,7 @@ check SLOT_BUSES     SLOT_BUSES             src/modules/chain/dsp/chain_internal
 check BUS_FX_SLOTS   MAX_AUDIO_FX           src/modules/chain/dsp/chain_internal.h
 check BUS_SENDS      BUS_MIX_SENDS          src/host/bus_mix.h
 check SEND_LEVEL_MAX BUS_MIX_SEND_LEVEL_MAX src/host/bus_mix.h
+check SPLIT_VOICES_MAX SPLIT_VOICES_MAX     src/modules/chain/dsp/chain_internal.h
 [ "$fail" = 0 ] || exit 1
 echo "PASS: bus model caps match the C constants they mirror"
 
