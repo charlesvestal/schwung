@@ -484,6 +484,29 @@ declared wins because two live sources would disagree the moment a module moved
 its focus without a note — a preset load, mrdrums' auto-select — and the
 disagreement would latch.
 
+The grid does report one thing about what is PLAYED — a physical press. While
+the component declares `child_press_param` (or `focus_press_param`) the shim
+forwards hardware pad notes to the UI passively (`pad_observe`, reconciled in
+`tickParamPages`, dropped on exit and by the shim on display close) and
+`handleParamPagesMidi` writes `"1"` to that param on each note-on. It is a
+vouch, never a pad id, and the module still owns the index — see *Live
+presses* in `docs/MODULES.md`.
+
+**`pad_observe` is RESTATED every tick, never memoised.** The shim clears it on
+its own authority, and the shadow display closes from four sites in the SPI
+callback — Menu tap, Track tap, Shift+Track, Shift+Step — **none of which tell
+JS**. A JS-side mirror of the flag is therefore stale from the first Menu
+dismiss onward, and re-entering the grid then compares `want` against that
+mirror, finds them equal and skips the write that would turn the shim back on:
+live presses stop for the rest of the session, silently, with the declaring
+module still on screen. `js_host_pad_observe` is idempotent and logs only on a
+transition precisely so the caller can restate it — a native call and one SHM
+byte store, against the ~2.8 ms an IPC read costs.
+`tests/host/test_child_press_param.sh` fails on a reconcile that compares
+against a mirror, and the press predicate itself (note-on only, velocity-0 is a
+release, the pad range) lives in `page_input.mjs` so it is run rather than
+grepped.
+
 A `<prefix>:last_note` fallback used to sit at the end of that list. It is
 deleted: **a sequencer plays notes**, so a running pattern changed the page on
 every hit in the bar, and a pad press could not be told from a clip because

@@ -439,6 +439,20 @@ typedef struct shadow_control_t {
      * binaries. Appending is free; inserting is not.
      */
     volatile uint8_t claim_cc_bits[16];
+    /*
+     * Passive pad observation. 1 = ALSO forward hardware pad notes (68-99) to
+     * the shadow UI, without touching their normal routing -- Move still plays
+     * the pad and the DSP still hears the note. shadow_ui sets it while the
+     * knob grid shows a component that declared `child_press_param` /
+     * `focus_press_param` (docs/MODULES.md, "Live presses"): it is how the UI
+     * tells such a module that a FINGER hit a pad, which nothing downstream of
+     * Move's MIDI_OUT echo can reconstruct. Unlike pad_block this never blocks
+     * anything. The shim drops it itself when the shadow display closes.
+     *
+     * APPENDED after claim_cc_bits, for the reason stated on it: sizeof is a
+     * contract between two binaries. Appending is free; inserting is not.
+     */
+    volatile uint8_t pad_observe;
 } shadow_control_t;
 
 /* Values for shadow_control_t.save_stems. */

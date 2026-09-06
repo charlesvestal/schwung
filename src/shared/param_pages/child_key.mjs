@@ -149,6 +149,28 @@ export function childIndexParam(level) {
 }
 
 /**
+ * The param a LIVE pad press is reported through, or null.
+ *
+ * `child_index_param` lets the module OWN the focus; this is how the UI helps
+ * it move that focus for the one gesture nothing else can see. A drum module
+ * wants "the pad I just HIT", and by the time a note reaches it a hit and a
+ * sequenced note are the same bytes (Move turns the press into an ordinary
+ * note before playing it). The UI, and only the UI, still sees the raw pad
+ * event -- so while the grid shows a level declaring this, a physical press
+ * writes `"1"` here: "a finger did that". Not WHICH pad: the pad-to-note map
+ * is Move's (layout, octave), so the module pairs the vouch with the note it
+ * receives itself. See docs/MODULES.md, "Live presses".
+ *
+ * OPTIONAL. A level that does not declare it costs nothing: the shim never
+ * forwards a pad to the UI for it, and no write is ever made.
+ */
+export function childPressParam(level) {
+    if (!hasChildren(level)) return null;
+    const k = level && level.child_press_param;
+    return (typeof k === "string" && k.length) ? k : null;
+}
+
+/**
  * The wire value naming instance `i` — in the MODULE's numbering.
  *
  * `i` is zero-based everywhere inside the page engine; the module counts from

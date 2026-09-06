@@ -54,6 +54,14 @@ export function focusParamOf(hierarchy) {
     return (typeof k === "string" && k.length) ? k : null;
 }
 
+/** The sibling-shape spelling of `child_press_param` (child_key.mjs): a param
+ *  the UI writes "1" to when a FINGER hits a pad while this component is on
+ *  the grid. Or null. */
+export function focusPressParamOf(hierarchy) {
+    const k = hierarchy && hierarchy.focus_press_param;
+    return (typeof k === "string" && k.length) ? k : null;
+}
+
 function levelNote(level) {
     const n = level && level.note;
     return Number.isFinite(n) ? (n | 0) : null;
