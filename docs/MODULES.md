@@ -1587,7 +1587,10 @@ like its note) must not be copied at all.
 ```
 
 Clear writes each key's declared `default`; a key without one is left alone,
-and a filepath without one is written `""`. The focused instance itself is
+and a filepath without one is written `""`. A key whose read does not complete
+cancels the whole operation — a copy missing one key would leave the target's
+own value in place and still report a paste — so declare keys the module
+actually serves. The focused instance itself is
 not touched by Delete going down — only the instances you pick while holding
 it — so a pad already on screen is cleared by picking another first.
 
