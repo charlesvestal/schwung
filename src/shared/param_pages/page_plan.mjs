@@ -786,9 +786,21 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         /* The walk root's grid page is always "Main", even when the level
          * declares a label. 16 modules would otherwise open on a page called
          * "Patch" / "Console" / "BOOM"; one consistent name for "where you land"
-         * beats each module's own word for it. */
+         * beats each module's own word for it.
+         *
+         * `subtitle` is the OPT-IN exception: "Main - <subtitle>". It exists
+         * for a module that splits one level per page so the header can say
+         * which page you are on -- Hinge has three ADSR rows (OP2's, OP1's and
+         * the filter's) that draw the same graphic under the same four labels,
+         * so the header is the only thing distinguishing them, and its landing
+         * page had nothing to say. Deliberately NOT `name`: reading the level's
+         * own label here would rename the landing page of all 16 modules above,
+         * which is the thing this rule exists to prevent. A module must ask. */
         const isRoot = levelKey === rootKey;
-        const base = isRoot ? "Main" : nameOf(levelKey, lvl);
+        const subtitle = isRoot && lvl && typeof lvl.subtitle === "string"
+            ? lvl.subtitle.trim() : "";
+        const base = isRoot ? (subtitle ? `Main - ${subtitle}` : "Main")
+                            : nameOf(levelKey, lvl);
         const title = prefix ? `${prefix}/${base}` : base;
 
         /* Preset browser first — decided 2026-07-26. A level is routinely both
