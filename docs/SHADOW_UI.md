@@ -906,7 +906,7 @@ Skipback (Shift+Capture) and Song Mode's Record button all record through the
 same `shadow_sampler.c`, so a per-surface switch would be three places to keep
 in step. Song Mode needed no new recording code at all — it already called
 `host_sampler_start(path)`; it gained only a label, because pressing Record and
-getting five files when you expected one is a surprise you can only discover
+getting seven files when you expected one is a surprise you can only discover
 after the take.
 
 **A stem is a SLOT, and the four slot stems ARE the four tracks.** Under
@@ -916,7 +916,10 @@ branch). Move's track and Schwung's synth are inseparable after that point, and
 tapping them before it would hand back stems without their FX. Under
 Move→Schwung the four stems therefore sum to the master **exactly**: the
 reconstruction is composited from those four Link Audio channels and nothing
-else — the same fact that makes Move's metronome missing there.
+else — the same fact that makes Move's metronome missing there. **Until a
+global send carries signal**: a send return belongs to no slot, which is why it
+gets a stem of its own (below). With the sends silent the four-way statement
+holds exactly as written.
 
 **The fifth stem is MOVE, and it exists for the case the other four cannot
 cover.** With Link Audio routing off there is no four-way split to be had: Move
@@ -926,8 +929,31 @@ rest of the music on the floor — silently, since the files would exist. It is
 tapped from `native_bridge_move_component` un-scaled by the same smoothed `mv`
 `unity_view` uses, so it sits at unity with the slot stems. Under
 `rebuild_from_la` it is left INVALID **on purpose**: Move's tracks are already
-inside the four slot stems, and a sixth file repeating them would double every
+inside the four slot stems, and a Move file repeating them would double every
 instrument in a stem sum.
+
+**The last two stems are the GLOBAL SEND RETURNS (`_SendA`, `_SendB`), and they
+exist for the same reason the Move stem does.** A shared return belongs to no
+slot: a slot feeds a send post-fader and the wet signal comes back on a
+device-wide bus, so without these two the reverb tail would be in the master
+file and in **none** of the stems — the exact-sum property above would break the
+moment anybody used a send, silently, with every file present and plausible.
+They are tapped inside the send loop in `schwung_shim.c`, post-send-chain and
+scaled by the return level, which is to say **the identical block
+`bus_mix_send()` adds to the master bus**, so slots 1–4 + SendA + SendB still
+sum to the master exactly. That is also why the tap recomputes `bus_mix_send`'s
+integer scaling by hand instead of handing `shadow_stem_store` a float gain: the
+float path rounds where `bus_mix_send` truncates, and the two disagree by one
+LSB on roughly half of all samples. It is emphatically **not** read from
+`native_bridge_me_component`, which is snapshotted before `fx_target` exists — a
+send return read from there would be silence in every file. An unloaded send
+writes silence and its file is deleted at finalize like any other.
+
+`SAMPLER_STEM_COUNT` is 7 and the send stems must stay **contiguous and last**:
+the tap indexes the table as `SAMPLER_STEM_SEND_A + sb`, and three
+`_Static_assert`s in `schwung_shim.c` fail the build on a send bus added without
+a stem, on a non-contiguous pair, and on the Move stem moving off the end of the
+four slots.
 
 **Stems are pre-Master-FX and pre-master-volume.** MFX processes the mixed bus;
 there is no per-stem version of it to capture. With a Master FX chain loaded the
@@ -958,7 +984,8 @@ the two lines in `schwung_shim.c` ramps the stems by a block already spent — a
 wrong fade on the first 3 ms of every take, audible as a click and attributable
 to nothing.
 
-**A divergence is reported, not repaired.** Six streams share one ring size and
+**A divergence is reported, not repaired.** Eight streams (the master and seven
+stems) share one ring size and
 one drain pass, but each capture drops its block independently when its own ring
 is full, so sustained write backpressure could drop a block from one and not
 another — and a stem one block short is offset for the rest of the file.
@@ -966,10 +993,15 @@ Finalize logs the mismatch rather than padding or truncating, because either
 repair guesses *where* the gap was.
 
 **Skipback stems are capped at `SKIPBACK_STEM_MAX_SECONDS` (60 s)** while the
-master runs to 5 minutes. Five rolling buffers at that maximum is ~265 MB, which
-is not a budget this device has to spend on a feature that is off by default;
-60 s × 5 is 53 MB, the same as one master buffer at its maximum, and it covers
-the 30 s default untouched. When the master is longer the stems are a **suffix**
+master runs to 5 minutes. Seven rolling buffers at that maximum is ~370 MB,
+which is not a budget this device has to spend on a feature that is off by
+default; 60 s × 7 is ~71 MB, and that is the **cap** rather than the usual cost
+— the default Skipback length is 30 s (~35 MB), and the rings are allocated only
+while Save Stems is actually asking for stems. The original anchor here was
+"60 s × 5 is 53 MB, the same as one master buffer at its maximum"; the two send
+stems broke that arithmetic, and the cap was left at 60 s deliberately rather
+than shortened to restore it — shrinking it would silently truncate the stems of
+anyone already running a 60 s Skipback, which is a worse failure than the 18 MB. When the master is longer the stems are a **suffix**
 of it — both end at the save, so they line up with its tail. The buffers are
 allocated and freed by the worker as the setting changes, via
 `SHIM_EVT_SKIPBACK_RESIZE`; `skipback_resize`'s "length unchanged" early return
@@ -1101,6 +1133,96 @@ summary plus both send levels: past two inserts the summary becomes a COUNT
 (`3 FX`), because a third abbreviation pushed both levels off the row — seen in
 the render, not reasoned about. `valueX` is 52 rather than the default 92 for
 the same reason; the eight-character label floor still protects the bus name.
+
+### The FX buses: Master FX is now one of three, and the sends are GLOBAL
+
+**Design credit: PR #121 by legsmechanical.** The send topology below — two
+post-fader send buses hosted as `master_fx_slot_t`, a `send_accum[]` in the
+shim, return levels, the feedback-safe A→B ordering, shared presets, and one
+generic FX-bus picker over all three buses — is that PR's design,
+device-verified there and documented in its own `docs/SEND_FX.md`. It is
+unmergeable (merge-base 2026-03-04; `main` is 1696 commits ahead and the branch
+carries 864 of its own), so this is a re-implementation of its design on current
+`main`. The one part not re-implemented is the shared preset store — a send
+declares `hasPresets: false` here. `send_fx_key.h` and `docs/CHAIN.md` carry the
+same credit.
+
+**Sends are GLOBAL, and that is a cost decision.** Per-slot sends mean four
+reverbs when four slots want one reverb. There are two device-wide send buses
+instead, each hosted **exactly like Master FX** — the same `master_fx_slot_t`
+array, the same "always process, then restore the dry on a bypassed position"
+discipline — so there is one piece of chain machinery in the shim, not three.
+
+**Post-insert and post-fader.** A slot's per-bus buffers already carry their own
+insert chains when `chain_drain_sends` reads them, and the slot's effective
+volume is passed in, so pulling a track down pulls it out of the sends the way a
+console does. Mute and solo live inside `shadow_effective_volume`, so a muted
+slot feeds the sends nothing, and a bypassed synth clears `bus_rendered_mask` so
+its voices cannot reach a send through the 1-in-172 probe frame. The level is
+quantised to 0..127 and applied **per block**, so it does not follow the main
+mix's per-sample fade ramp: a slot fade is a step of at most one block here.
+
+**A→B is applied between A's chain and B's, which makes feedback impossible by
+CONSTRUCTION.** There is no point at which B's output can reach A, so there is
+no loop to detect and no loop detection to go wrong. It works because A is
+processed on an earlier iteration of the same loop — `sb == 1` reads a
+`send_out[0]` that is already final for the frame — and it is scaled by A's
+*return* level as well as the feed level, because a send from A is post-A's-fader
+like every other send here. A `_Static_assert` fails the build if `SEND_BUSES`
+ever leaves 2: the A→B block names send 1 by index, and a third bus turns "the
+second of two" into "one arbitrary bus", which needs a routing matrix rather
+than a special case.
+
+**The returns sum into `fx_target`** — the bus Master FX is about to process —
+which is the whole reason the send block sits immediately *above* the MFX loop
+rather than below it, and why the send stems are pre-Master-FX like every other
+stem.
+
+**One picker, three buses.** Shift+Vol+Menu (and hold-Menu, and Shift+Menu) now
+opens `VIEWS.FX_BUS_PICKER` — Master FX, Send A, Send B — rather than the master
+bus directly. The shim flag is unchanged: it says "the user asked for the FX
+screen", and *which* FX screen that is is a UI decision. Back from a bus returns
+to the picker, and Back from the picker is what leaves shadow mode; that is a
+change of destination for the Master FX screen, so its footer's `BACK` pair is
+**derived** from the shared chrome's pairs rather than written out again, or the
+two editors drift on the one word that differs.
+
+**The editor is PARAMETERISED BY PREFIX, not triplicated.** Every key the
+Master FX editor writes is `master_fx:` + the component key; a send's is
+`send1:` / `send2:`. `FX_BUSES` is the whole table, and two things a send does
+NOT have are declared there rather than inferred at a draw site: `hasLfos`
+(false — the shim serves no send LFOs, so asking is an IPC round trip that can
+only answer `""`, and a false here keeps four reads per frame off the diagram)
+and `hasPresets` (false — a send has no preset store yet, so a future one is one
+word). `busLevelKeys` names the return level and, for A, the A→B feed, so the
+settings menu and the info band read one list instead of two copies of a
+conditional.
+
+**Everything the editor holds about "the chain" is keyed by position, not by
+bus** — `masterFxConfig`, the selection, the chain-length override — so
+switching bus drops all of it. `fxBusSwap` is the one place `currentFxBusIndex`
+changes, for that reason.
+
+**The picker's value column asks the SHIM, never the mirror**, one positional
+GET per bus, once on entry — three IPC round trips at ~2.8 ms each is already
+more than a whole page render, so they must never reach a draw path. The mirror
+only reflects a bus that has been *entered* this session, so a never-opened send
+would read `Empty` from it with a chain loaded from a previous session. A `null`
+prints `--`, not `Empty`: "Empty" is what sends someone looking for the reverb
+they just loaded.
+
+**Persistence: the shim says what is loaded, and the levels are filed under the
+BUS.** `send<N>:modules` is one positional GET returning the whole chain, never
+compacted, for the same reason `master_fx:modules` is (see "The SHIM says what
+is loaded" above). Positions restore from `send_fx_<bus>_<pos>.json` through the
+**same function** `master_fx_N.json` goes through — two copies of that JSON
+scraping is how the sends would end up restoring `state` and not `params` with
+nothing to compare against. The two return levels and the A→B amount get their
+own `send_levels.json`, because they belong to the **bus** and filing them under
+position 0 would lose them the moment that position is emptied — an empty send
+with its return up is an ordinary state. They are restored **last**, because
+`shadow_send_bus_active()` answers true on a level alone, and raising a return
+before its chain exists would put one dry frame through the master bus.
 
 ### Snapshot / recall: what it restores, and what it deliberately does not
 

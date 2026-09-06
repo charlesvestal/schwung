@@ -375,6 +375,12 @@ infer a control thread because nothing contradicted them. The contract now
 lives at the top of `src/host/plugin_api_v1.h`, in `docs/MODULES.md`, and as
 rule 4 of `docs/REALTIME_SAFETY.md` — **keep all three in sync.**
 
+**One exception now exists, and it is in all three.** A chain **bus** insert is
+`dlopen`ed and `create_instance`d on the bus worker (SCHED_OTHER), not the
+callback — so the same module can be constructed on two threads at once when it
+sits in a slot and a bus, and `_dl_load_lock` becomes a priority inversion with
+no inheritance: a FIFO-70 load on the callback can wait behind the worker's.
+
 Two consequences worth remembering: `pthread_create` from those entry points
 inherits the callback's priority — **FIFO 70** (Move's own `Link Main` is FIFO
 35, so it starves). A source audit put this at seven modules; measuring it
@@ -496,6 +502,22 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   slot. It reports a NOTE, not a voice index — the canonical voice order lives
   in `voices.mjs` and a C copy of it would fail silently as "the grid follows
   the wrong pad".
+- **A module declares which voices it can render APART, and the grouping is
+  ours.** `split_voices` is a FLAT ORDERED list whose index IS the buffer
+  index — the map resolves in C on the callback and `chain_json.c` cannot walk
+  `levels` in order, the same constraint behind `synth:last_note`. A rejected
+  id is a HOLE at its own index, never a compaction: compacting re-points every
+  voice behind it, invisibly. Render is a **dlsym'd
+  `move_plugin_render_split`, never a field on `plugin_api_v2_t`** (breakbeat's
+  header drift boot-looped a device). It **ACCUMULATES**, and its `voice_out[]`
+  entries **ALIAS**: two voices in one bus get one pointer, so the summing is
+  free and the sparse case costs nothing — and the host flips between it and
+  `render_block` **per frame**, so the two must share voice/envelope state.
+- **A bus's realisation is a WORKER, not the callback** (`chain_bus.c`,
+  SCHED_OTHER on cores 0-2): every `dlopen`, `create_instance` and megabyte
+  calloc happens there, joined to the RT side by `buf` and a **sequence
+  number** — the boolean it replaced could be resurrected by a preempted
+  worker, racing `process_block` against the next reconcile's `dlclose`.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -656,6 +678,17 @@ Down on the synth opens the slot's bus list, Down on a bus row opens that bus's
   at five cells by `SLOT_BUSES + 1` and handed `paginate: false`. Its ROOT level
   carries no knobs on purpose — the planner names a walk root's page "Main"
   whatever it declares, and "Main / Send B" is not a mixer.
+- **Sends are GLOBAL, and that is a cost decision.** Per-slot sends mean four
+  reverbs when four slots want one. Two device-wide buses instead, hosted as
+  `master_fx_slot_t` like Master FX, **post-insert and post-fader**, with A→B
+  applied between A's chain and B's so **B can never reach A** — feedback-safe
+  by construction, with no loop detection to go wrong. Shift+Vol+Menu opens a
+  PICKER over all three FX buses now, and the editor is parameterised by key
+  prefix (`master_fx:` / `send1:` / `send2:`) rather than triplicated. A send
+  return belongs to no slot, so it lands in **stems 6 and 7** — without them the
+  four slot stems stop summing to the master the moment a send carries signal.
+  **Design credit: PR #121 (legsmechanical)**, re-implemented on current `main`
+  because that branch's merge-base is 2026-03-04.
 
 ### Recording / capture
 
@@ -673,9 +706,13 @@ because it already went through the same sampler**.
   shim builds a slot as `move_track[s] + synth[s]` and *then* runs the slot FX
   on the SUM, so Move's track and Schwung's synth are inseparable after that
   point — the four slot stems ARE the four tracks, and they sum to the master
-  exactly. A fifth **Move** stem carries the mailbox mix for the case
-  Move→Schwung is OFF and there is no split to be had; under Move→Schwung it is
-  left INVALID on purpose, or a stem sum would double every instrument.
+  exactly **until a global send carries signal**. A fifth **Move** stem carries
+  the mailbox mix for the case Move→Schwung is OFF and there is no split to be
+  had; under Move→Schwung it is left INVALID on purpose, or a stem sum would
+  double every instrument. Stems **6 and 7 are the two send returns**, tapped
+  post-send-chain at the return level — the identical block `bus_mix_send()`
+  adds to the master — because a shared return belongs to no slot and would
+  otherwise be in the master file and in none of the stems, silently.
 - **Stems are PRE-Master-FX.** MFX runs on the summed bus, so with a chain
   loaded the stems do not add up to the master file.
 - **The capture gate opens on the RT ARM, not in the worker** — `sampler_state`
@@ -686,8 +723,11 @@ because it already went through the same sampler**.
   fade-in ramp and the master is what consumes the counter.
 - **A silent stem's file is DELETED at finalize, never opened lazily** — a lazy
   open would start the file at the first sound rather than at t=0.
-- Skipback stems are capped at **60 s** against the master's 5 minutes (five
-  rings at the maximum is ~265 MB) and are a SUFFIX of it.
+- Skipback stems are capped at **60 s** against the master's 5 minutes (seven
+  rings at the maximum is ~370 MB; 60 s × 7 is ~71 MB) and are a SUFFIX of it.
+  The cap was NOT shortened to restore the old "same as one master buffer"
+  anchor — that would silently truncate the stems of anyone already running a
+  60 s Skipback.
 
 ## Shadow Mode
 
@@ -997,7 +1037,9 @@ Co-run lets an **overtake tool share Move's control surface with a second UI** f
 
 ### Master FX Chain
 
-8-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu.
+8-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu, which
+opens the **FX-bus picker** (Master FX / Send A / Send B) rather than the master
+bus directly — see the Slot buses hook above.
 
 The cap lives in **two** places that must move together — `MASTER_FX_SLOTS` in
 `src/host/shadow_chain_mgmt.h` and in `src/shadow/shadow_ui.js` —, and

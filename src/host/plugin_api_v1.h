@@ -390,4 +390,66 @@ typedef plugin_api_v2_t* (*move_plugin_init_v2_fn)(const host_api_v1_t *host);
 
 #define MOVE_PLUGIN_INIT_V2_SYMBOL "move_plugin_init_v2"
 
+/*
+ * ===========================================================================
+ * OPTIONAL: PER-VOICE RENDER (move_plugin_render_split)
+ * ===========================================================================
+ *
+ * A sound generator can offer to render named voices into SEPARATE buffers, so
+ * the Signal Chain can put a kick and a snare on different insert chains and
+ * different sends. Two things opt in, and both are optional -- a module that
+ * does neither is rendered exactly as it always was.
+ *
+ *   1. get_param("split_voices") answers a FLAT ORDERED JSON array:
+ *
+ *          [{"id":"kick","label":"Kick"},{"id":"snare","label":"Snare"}]
+ *
+ *      ENTRY i IS BUFFER i. The host resolves the bus->voice map in C on the
+ *      SPI callback and its JSON helpers cannot walk ui_hierarchy's `levels`
+ *      in order, so this list is flat and its ORDER is the contract. Never
+ *      reorder it between versions: a bus stores voice IDS, and an id that no
+ *      longer resolves is reported as an orphan rather than silently
+ *      re-pointed. Adding a voice at the END is safe; inserting one is not.
+ *      Answer "" (or do not serve the key) to say "I cannot split".
+ *
+ *   2. Export this symbol -- NOT a field on plugin_api_v2_t:
+ *
+ *          void move_plugin_render_split(void *instance,
+ *                                        int16_t *const *voice_out,
+ *                                        int n_voices, int frames);
+ *
+ *      A SEPARATE EXPORTED SYMBOL ON PURPOSE. Appending to plugin_api_v2_t is
+ *      what boot-looped a device via breakbeat's header drift: a module cannot
+ *      extend the ABI from its side, and a guarded read of a field the host
+ *      does not have tests memory belonging to somebody else. A dlsym'd symbol
+ *      is absent-or-present, with no offset to get wrong.
+ *
+ * IT ACCUMULATES -- the opposite of render_block, which overwrites. The host
+ * clears every destination before the call.
+ *
+ * ITS voice_out[] ENTRIES ALIAS. Two voices routed to the same bus are handed
+ * the SAME pointer, so their sum happens inside your own render loop with no
+ * mixing pass at all, and a voice on no bus is handed the main output buffer,
+ * so the sparse case costs nothing. Therefore:
+ *
+ *   - ACCUMULATE (out[i] += sample, saturating). Overwriting turns two voices
+ *     on one bus into whichever one wrote last.
+ *   - NEVER write more than `frames` frames (frames * 2 samples) into any
+ *     voice_out[] entry. Those buffers are shared, so an overrun is a
+ *     different bus's audio, not your own tail. Nothing checks this for you.
+ *   - Both entry points must be STATE-COMPATIBLE. The host switches between
+ *     render_split and render_block AT RUNTIME, PER FRAME, on whether any of
+ *     your voices is currently assigned to a bus -- assigning one voice on the
+ *     shadow UI flips your active entry point mid-stream with no reload. Same
+ *     voice allocator, same envelope/LFO/phase state, or the flip is audible.
+ *
+ * n_voices is what the host parsed from your own list (clamped to its own
+ * maximum), so it can be SHORTER than the list you published. Index
+ * voice_out[] only in [0, n_voices).
+ *
+ * Runs on the SPI callback, under every rule at the top of this header.
+ * See docs/CHAIN.md ("Buses") and src/host/bus_mix.h.
+ * ===========================================================================
+ */
+
 #endif /* MOVE_PLUGIN_API_V1_H */

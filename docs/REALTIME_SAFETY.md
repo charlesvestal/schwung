@@ -63,6 +63,31 @@ architecture and nothing contradicts them. The contract is now stated at the
 top of `src/host/plugin_api_v1.h` and in `docs/MODULES.md`; keep all three in
 sync.
 
+**One qualification — a BUS insert is constructed off the callback.** An audio
+FX loaded into a chain *slot* is created, configured and processed on the
+callback as described. An audio FX loaded into a chain *bus insert position* is
+loaded by the chain's bus worker (`chain_bus.c`, SCHED_OTHER on cores 0–2): its
+`dlopen`, `create_instance`, `destroy_instance` and the `set_param` that
+restores its saved state run **there**, while `process_block`, `on_midi` and
+every live `set_param`/`get_param` still run on the callback. It relaxes
+nothing for a module author — a module cannot tell which of the two it was
+loaded as, and the slot case is the callback — but it has two consequences:
+
+- **A module can be constructed on two threads at once**, on the worker for a
+  bus and on the callback for a slot, when the same FX sits in both.
+  Per-instance state is unaffected; a shared static table, a lazily built
+  wavetable or a non-reentrant library init is not.
+- **`_dl_load_lock` is now a priority inversion.** `dlopen` runs on both threads
+  and glibc serialises them on that lock, which has **no priority inheritance**
+  — so a FIFO-70 load on the callback can wait behind the SCHED_OTHER worker's
+  for as long as anything on cores 0–2 keeps the worker off the CPU. Same shape
+  as the `pthread_join` in `v2_destroy_instance`, on a path with no join in it.
+  Serialising the two (or moving the main chain's loads to the worker as well)
+  is a real design change and is deliberately not attempted; the comment in
+  `v2_destroy_instance` is the record that the inversion exists.
+
+"There is no control thread" stays the rule to write code against.
+
 **Worst shapes seen, worth grepping any new module for:**
 
 - `fork`/`exec` from `render_block` (`webstream`, `radiogarden`, `streamrtsp`)

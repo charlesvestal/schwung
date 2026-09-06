@@ -940,6 +940,108 @@ equivalent `set_param`. Seven modules in the audit had exactly that bug.
 
 See `docs/REALTIME_SAFETY.md` for the measurements.
 
+#### One qualification: a BUS insert is constructed off the callback
+
+An audio FX loaded into a chain **slot** is created, configured and processed on
+the callback, exactly as the table above says. An audio FX loaded into a chain
+**bus insert position** is loaded by the chain's bus worker (`chain_bus.c`,
+`SCHED_OTHER` on cores 0–2): its `dlopen`, `create_instance`, `destroy_instance`
+and the `set_param` that restores its saved state run **there**, while
+`process_block`, `on_midi` and every live `set_param` / `get_param` still run on
+the callback.
+
+This is not permission to relax anything:
+
+- **You still may not do the forbidden things at create time.** You have no way
+  to know which of the two you were loaded as, and the slot case — the common
+  one — is the callback.
+- **Process-global initialisation must be thread-safe.** The same module can be
+  constructed on the worker for a bus and on the callback for a slot **at the
+  same time**. Per-instance state is unaffected; a shared static table, a lazily
+  built wavetable, or a library init that is not reentrant is not.
+
+There is also a **priority inversion** on the loader lock that nothing here
+fixes: `dlopen` now runs on two threads, and glibc serialises them on
+`_dl_load_lock`, which has no priority inheritance. A FIFO-70 load on the
+callback can therefore wait behind the `SCHED_OTHER` worker's for as long as
+anything on cores 0–2 keeps the worker off the CPU. The comment in
+`v2_destroy_instance` (`chain_host.c`) is the record of it; serialising the two
+would be a real design change and has not been attempted.
+
+**"There is no control thread" remains the rule to write code against.** This is
+the one place the host does not hold still, and it buys you nothing. The same
+qualification is in `src/host/plugin_api_v1.h` and in rule 4 of
+`docs/REALTIME_SAFETY.md` — all three must move together.
+
+### Rendering voices apart: `split_voices` and `move_plugin_render_split`
+
+**Optional.** A sound generator can offer to render named voices into separate
+buffers, so Signal Chain can put a kick and a snare on different insert chains
+and different sends. A module that does not opt in is rendered exactly as
+before and the shadow UI shows no bus affordance at all.
+
+**1. Answer `get_param("split_voices")` with a flat ordered array:**
+
+```c
+if (strcmp(key, "split_voices") == 0)
+    return snprintf(buf, buf_len,
+        "[{\"id\":\"kick\",\"label\":\"Kick\"},"
+        " {\"id\":\"snare\",\"label\":\"Snare\"}]");
+```
+
+**Entry *i* is buffer *i*, and the ORDER is the contract.** The host resolves
+the bus→voice map in C on the SPI callback, and its JSON helpers are flat key
+scans that cannot walk `ui_hierarchy`'s `levels` in order — so this list is flat
+and is never reconciled against your hierarchy. A bus stores voice **ids**, so
+adding a voice at the **end** is safe and *inserting* one is not: existing buses
+keep pointing at the same ids, and an id that no longer resolves is reported to
+the user as an orphan rather than silently re-pointed.
+
+Return `-1` (or do not handle the key) if you cannot split — the chain host
+clamps that to `""`, "served, produced nothing", so it can never be confused
+with a param read that failed. Keep the answer under **4096 bytes**: that is the
+buffer the chain host parses your id table out of.
+
+**2. Export `move_plugin_render_split` — a separate symbol, not a struct field:**
+
+```c
+void move_plugin_render_split(void *instance, int16_t *const *voice_out,
+                              int n_voices, int frames)
+{
+    my_instance_t *inst = instance;
+    for (int v = 0; v < n_voices; v++)
+        render_voice_accumulating(inst, v, voice_out[v], frames);
+}
+```
+
+It is dlsym'd off your `.so`, deliberately: appending a field to
+`plugin_api_v2_t` is what boot-looped a device via breakbeat's header drift — a
+module cannot extend the ABI from its side, and a guarded read of a field the
+host does not have tests memory belonging to somebody else.
+
+**It ACCUMULATES, and `voice_out[]` entries ALIAS.** The host clears every
+destination first, then hands you one pointer per voice. Two voices routed to
+the same bus get **the same pointer**, so their sum happens inside your own
+render loop with no mixing pass at all, and a voice on no bus gets the main
+output buffer, so the sparse case costs nothing. So:
+
+- **Accumulate** (`out[i] += sample`, saturating). Overwriting turns two voices
+  on one bus into whichever one wrote last.
+- **Never write more than `frames` frames** into any entry. The buffers are
+  shared, so an overrun is a *different bus's* audio, not your own tail, and
+  nothing checks this for you.
+- **Both entry points must be state-compatible.** The host switches between
+  `render_split` and `render_block` at runtime, **per frame**, on whether any of
+  your voices is currently assigned to a bus. Assigning one voice on the shadow
+  UI flips your active entry point mid-stream with no reload — same voice
+  allocator, same envelope / LFO / phase state, or the flip is audible.
+- `n_voices` is what the host parsed from your own list, clamped to its maximum
+  (32), so it can be **shorter** than what you published. Index only `[0,
+  n_voices)`.
+
+Full contract and the host side: `src/host/plugin_api_v1.h`,
+`src/host/bus_mix.h`, and `docs/CHAIN.md` ("Buses").
+
 ### Plugin API v2 (Recommended)
 
 V2 supports multiple instances and is **required for Signal Chain integration**:

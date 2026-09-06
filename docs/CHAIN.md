@@ -182,3 +182,104 @@ destroy and create a module.
 The two `+` boxes add **where they are drawn** — the MIDI one at the head of the
 chain (index 0), the audio one appended. Backing out of a `+` picker, or picking
 `None` in one, writes nothing at all.
+
+### Buses: a module declares which voices it can render APART
+
+A splittable module publishes **`split_voices`** from `get_param` and exports
+**`move_plugin_render_split`**. Neither is required; a module that does neither
+is rendered exactly as before, and the shadow UI offers no bus affordance at all
+(see `docs/SHADOW_UI.md`, "Slot buses").
+
+```json
+[{"id":"kick","label":"Kick"},{"id":"snare","label":"Snare"}]
+```
+
+```c
+/* Exported alongside move_plugin_init_v2. NOT a field on plugin_api_v2_t. */
+void move_plugin_render_split(void *instance, int16_t *const *voice_out,
+                              int n_voices, int frames);
+```
+
+**`split_voices` is FLAT AND ORDERED, and entry *i* is buffer *i*.** The
+bus→voice map has to be resolved in C on the SPI callback, and `chain_json.c`'s
+helpers are flat key scans that **cannot walk `ui_hierarchy`'s `levels` in
+order** — the same constraint that makes `synth:last_note` report a note rather
+than a voice index. So the module publishes a flat array and the host never
+tries to walk its hierarchy for this. `split_voices_parse.h` does the scan; it
+has no escape handling and no brace tracking, so an id containing `\"`
+truncates and a *nested* `"id"` key is harvested as a phantom voice.
+
+**A rejected entry is a HOLE at its own index, never a compaction.** An id that
+is empty, or too long for `SPLIT_VOICE_ID_LEN`, is stored as an empty string and
+still counted. Dropping it and shifting everything up would be worse than the
+truncation the rejection exists to prevent: a truncated id orphans one bus,
+visibly, while a shifted index silently re-points **every voice behind it** to
+the wrong render buffer, with nothing on screen to say so. An empty stored id
+never matches a lookup (`bus_voice_index`), so a hole resolves to Main like any
+unassigned voice.
+
+**`render_split` is a dlsym'd symbol, never a field on `plugin_api_v2_t`.**
+Appending to that struct is what boot-looped a device via breakbeat's header
+drift (see `CLAUDE.md`, "`host_api_v1_t` ends in a run of NULLs"): a module
+cannot extend the ABI from its side, and a guarded read of a field we do not
+have tests memory belonging to somebody else. A dlsym'd symbol is
+absent-or-present with no offset to get wrong. `v2_load_synth` resolves it on
+the synth handle and clears it on unload — the pointer is resolved against a
+handle that is about to be `dlclose`d.
+
+**It ACCUMULATES, and `voice_out[]` entries ALIAS.** `v2_render_block` clears
+the main buffer and the *distinct* bus buffers named by `bus_mix_active_mask`,
+then hands `voice_out[i]` to the module for voice *i*. Two voices assigned to
+one bus get **the same pointer**, so their sum happens inside the module's own
+render with no mixing pass of ours; a voice on no bus gets the main buffer, so
+the sparse case costs nothing at all. Three consequences a module author owns:
+
+- **Accumulate, never overwrite** — the opposite of `render_block`. Overwriting
+  makes two voices on one bus into "whichever wrote last".
+- **Never write more than `frames` frames** into any `voice_out[]` entry. These
+  point at shared bus buffers, so an overrun is another bus's audio, not your
+  own tail. Nothing checks this.
+- **Both entry points must be state-compatible.** The host switches between
+  `render_split` and `render_block` **at runtime, per frame**, on whether any
+  voice is currently assigned to a bus — assigning one voice on the shadow UI
+  flips the module's active entry point mid-stream with no reload. Same voice
+  allocator, same envelope / LFO / phase state, or the flip is audible.
+
+`bus_mix.h` holds that arithmetic, header-only so `tests/host` can run it
+natively: `v2_render_block` lives in a translation unit that cannot be built on
+the dev machine, which is how arithmetic like this ships untested.
+
+**Two threads own a bus, and the split is the design** (`chain_bus.c`). The RT
+side (the SPI callback) owns the **request** — which module, which voices, the
+send levels — and never allocates, opens a file or `dlopen`s. The **worker**
+(`chain_bus_worker_fn`, SCHED_OTHER on cores 0–2) owns the **realisation** —
+the bus buffer, the `dlopen`, the `create_instance`, the ~1.1 MB param table.
+`get_param` answers from the *request* side, so the UI never reads a field the
+worker is writing and "what is loaded" is positional and immediate rather than
+lagging a load. Two gates join them: `buf` (release/acquire) and a **sequence
+number**, not a flag — the boolean it replaced could be resurrected by a
+preempted worker, putting `process_block` on the audio thread in a race with the
+next reconcile's `destroy_instance` and `dlclose`.
+
+**That worker is why the threading contract is now true-with-one-exception**;
+see `src/host/plugin_api_v1.h` and rule 4 of `docs/REALTIME_SAFETY.md`, and keep
+all three in step.
+
+### The bus↔send seam, and whose design it is
+
+A bus's audio is summed into the slot's main output **before** the slot's own
+eight audio FX, so a slot compressor sees the whole kit; the two **global send**
+levels are taken from the post-insert bus buffer at the same point, and drained
+by the shim. The sends themselves — the topology, the post-fader rule, the
+return levels, the feedback-safe A→B and the generic FX-bus picker — are
+documented in `docs/SHADOW_UI.md`.
+
+**Design credit: PR #121 by legsmechanical**, which designed and
+device-verified the global-send half of this feature: two post-fader send buses
+hosted as `master_fx_slot_t`, a `send_accum[]` in the shim, return levels, the
+A→B ordering that makes feedback impossible by construction, shared presets, and
+one picker over all three FX buses. That branch is unmergeable — its merge-base
+is 2026-03-04, `main` is 1696 commits ahead and the branch carries 864 of its
+own — so this is a re-implementation of its design on current `main`, not an
+independent invention of it. `send_fx_key.h` carries the same credit at the
+point the keys are parsed.
