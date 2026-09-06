@@ -39,7 +39,8 @@ const G = await import(R + "/src/shadow/shadow_ui_global_grid.mjs");
 const { planPages, PAGE_KNOBS, PAGE_MENU, KNOBS_PER_PAGE } =
     await import(R + "/src/shared/param_pages/page_plan.mjs");
 const { validateContract } = await import(R + "/src/shared/param_pages/validate_contract.mjs");
-const { buildMetaIndex } = await import(R + "/src/shared/param_pages/param_meta.mjs");
+const { buildMetaIndex, isTrigger, isTurnable } =
+    await import(R + "/src/shared/param_pages/param_meta.mjs");
 
 /* ---- 1. purity ----------------------------------------------------------
  *
@@ -74,14 +75,15 @@ if (!contract) { console.error("FAIL: no contract to test"); process.exit(1); }
 
 const { hierarchy, chainParams } = contract;
 
-/* ---- 2. the seven levels ------------------------------------------------ */
-const WANT = ["display", "audio", "accessibility", "set_pages", "shortcuts", "services", "updates"];
+/* ---- 2. the six levels -------------------------------------------------- */
+const WANT = ["display", "audio", "accessibility", "set_pages", "shortcuts", "system"];
 {
   for (const lv of WANT) {
     if (!hierarchy.levels[lv]) fail("missing level: " + lv);
   }
-  /* Seven and only seven, plus root. An eighth level is a page nobody asked
-   * for, and [Help...] becoming one is the specific way that happens. */
+  /* Six and only six, plus root. A seventh LEVEL is a section nobody asked
+   * for, and [Help...] becoming one is the specific way that happens -- it
+   * belongs on the System menu, which is a page, not a level of its own. */
   const got = Object.keys(hierarchy.levels).filter((k) => k !== "root").sort();
   if (got.join(",") !== WANT.slice().sort().join(",")) {
     fail("levels should be exactly " + WANT.join(",") + " (plus root), got " + got.join(","));
@@ -116,29 +118,76 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
   }
 }
 {
+  /* A LIST of kinds per level, not one kind: System plans a grid page AND a
+   * menu page, and a plain assignment let the second silently overwrite the
+   * first -- which reads as "System is a menu" and hides the grid entirely. */
   const byLevel = {};
-  for (const p of plan.pages) byLevel[p.level || p.name] = p.kind;
+  for (const p of plan.pages) (byLevel[p.level || p.name] ||= []).push(p.kind);
 
-  if (byLevel["updates"] !== PAGE_MENU) {
-    fail("updates must plan to PAGE_MENU (two actions, nothing to show), got " +
-         JSON.stringify(byLevel["updates"]));
-  }
-  for (const lv of WANT.filter((x) => x !== "updates")) {
-    if (byLevel[lv] !== PAGE_KNOBS) {
-      fail(lv + " must plan to PAGE_KNOBS, got " + JSON.stringify(byLevel[lv]));
+  for (const lv of WANT) {
+    if (!(byLevel[lv] || []).includes(PAGE_KNOBS)) {
+      fail(lv + " must plan a PAGE_KNOBS page, got " + JSON.stringify(byLevel[lv]));
     }
   }
-  /* Exactly seven pages. One per section is the property that makes
-   * sections-as-levels work without the bank bar papering over a split, and it
-   * is the thing a ninth param in any section silently destroys. */
-  if (plan.pages.length !== 7) {
-    fail("expected exactly 7 pages, one per section, got " + plan.pages.length + ": " +
-         plan.pages.map((p) => p.name + "/" + p.kind).join(", "));
+  /*
+   * SIX SECTIONS, SIX PAGES. ONE SECTION, ONE PAGE.
+   *
+   * That property is what makes sections-as-levels work: a section that split
+   * would put a jog step in the middle of a scrolling list, arriving silently
+   * and chosen by nobody. It held for every section except System, which for
+   * one round carried a `menu` alongside its knobs and therefore planned TWO
+   * pages -- the planner emits a level menu as a page of its own
+   * (page_plan.mjs, "Menu LAST"), and there is no branch anywhere that merges
+   * menu entries into a knobs page.
+   *
+   * [Connect...] and [Help...] are write-only PARAMS now, so they are rows on
+   * the System page and the menu is gone. Pinned as the exact page LIST rather
+   * than a count, because a bare six could not say whether a section had been
+   * removed or a menu had been folded in.
+   */
+  const names = plan.pages.map((p) => p.name);
+  const WANT_PAGES = ["Display", "Audio", "Screen Reader", "Set Pages", "Shortcuts", "System"];
+  if (names.join(" | ") !== WANT_PAGES.join(" | ")) {
+    fail("the page list should be [" + WANT_PAGES.join(", ") + "], got [" + names.join(", ") + "]");
   }
-  /* [Help...] is a navigation entry into the existing help stack. It must not
-   * become an eighth page. */
-  if (plan.pages.some((p) => /help/i.test(String(p.name)))) {
-    fail("[Help...] must not plan to a page: " + plan.pages.map((p) => p.name).join(", "));
+  if (plan.pages.some((p) => p.kind === PAGE_MENU)) {
+    fail("Global Settings publishes no menu: a level carrying one plans a SECOND page, " +
+         "which is the split every other assertion here exists to prevent");
+  }
+}
+
+/* ---- 3b. the two doors are TRIGGERS, not settings -----------------------
+ *
+ * `access: "write"` is the entire mechanism that lets Connect and Help sit on
+ * the same page as a toggle. Get it wrong and they become editable enums: the
+ * knob turns them, a click focuses instead of firing, and the row shows a
+ * state that means nothing. None of that throws.
+ */
+{
+  const meta = buildMetaIndex(contract);
+  for (const key of ["connect", "help"]) {
+    const m = meta.getOrGuess(key);
+    if (m.guessed) { fail(key + " has no metadata in the contract"); continue; }
+    if (!isTrigger(m)) fail(key + " must be a trigger (access write), or a knob will edit it");
+    if (isTurnable(m)) fail(key + " must not be turnable");
+    if (m.divable) fail(key + " must not be divable -- a door opens, it does not have a picker");
+    /* Both options the same word: a door has no state, and the row draws its
+     * value unconditionally. The SECOND is what fireTrigger speaks. */
+    if (!Array.isArray(m.options) || m.options.length !== 2 || m.options[0] !== m.options[1]) {
+      fail(key + " should declare the same word twice, got " + JSON.stringify(m.options));
+    }
+    if (/^[^A-Za-z]*$/.test(String(m.options[1] || ""))) {
+      fail(key + " announces " + JSON.stringify(m.options[1]) + " when fired; the screen reader " +
+           "needs a WORD (this was three dots once, which sounds like nothing)");
+    }
+    /* Served a read, even with no state: an unserved key announces "not read
+     * yet" every time the cursor lands on it. */
+    const io2 = { readParam: () => "0", writeParam: () => {}, runAction: () => {} };
+    const answered = G.createGlobalGridIo(io2).getParam(key);
+    if (answered === "" || answered === null || answered === undefined) {
+      fail(key + " is not served a read (" + JSON.stringify(answered) + "), so landing on the " +
+           "row announces a not-read-yet fault on a control that works");
+    }
   }
 }
 
@@ -167,7 +216,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * a jog step in the middle of a list — and that is what the seven-page
    * assertion above and these per-section counts catch together.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, services: 2 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -369,8 +418,16 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     /* One word, because it names the whole question the three options answer
        ("Master / Stems / Both") and the options are right beside it. */
     save_stems: "Save",
-    filebrowser_enabled: "File Browser",
+    /* File Browser is GONE: it started a bundled binary serving all of
+       /data/UserData with --noauth on :404, and Schwung Manager serves the
+       same tree at :7700/files. Analytics is the whole of the System grid
+       page now. */
     analytics_enabled: "Analytics",
+    /* Two DOORS, not settings — see the trigger assertions above. They are
+       rows on the System page rather than a menu page of their own, which is
+       what a level carrying a `menu` alongside its knobs would have cost. */
+    connect: "Web Manager",
+    help: "Help",
   };
   let seen = 0;
   for (const p of chainParams) {
@@ -482,10 +539,15 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 
   /* NOT VACUOUS. If every key persisted, the loop above would pass no matter
    * what writeGlobalParam did with the set. These four cover all three of the
-   * other persistence kinds: an own saver (pad_typing, filebrowser_enabled),
-   * a self-persisting backend (screen_reader_speed) and a feature flag
-   * (analytics_enabled). None may reach the shared sink. */
-  for (const k of ["pad_typing", "filebrowser_enabled", "screen_reader_speed", "analytics_enabled"]) {
+   * other persistence kinds: an own saver (pad_typing, text_preview), a
+   * self-persisting backend (screen_reader_speed) and a feature flag
+   * (analytics_enabled). None may reach the shared sink.
+   *
+   * `text_preview` replaced `filebrowser_enabled` as the second own-saver case
+   * when that setting was removed -- deleting it outright would have left
+   * pad_typing covering the kind alone, which is how a non-vacuity check
+   * quietly becomes a single example. */
+  for (const k of ["pad_typing", "text_preview", "screen_reader_speed", "analytics_enabled"]) {
     if (G.PERSISTING_KEYS.has(k)) {
       fail(k + " does not call saveMasterFxChainConfig in the code being replaced — " +
            "including it makes the persistence assertion vacuous");
@@ -615,8 +677,9 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — seven levels (7/9/6/1/4/2 params + Updates as a " +
-            "menu), every section ONE page with no length limit (Audio holds nine), every enum listable with a " +
+console.log("PASS: global settings contract — six levels (7/9/6/1/4/3 params, Connect and Help " +
+            "among them as write-only triggers), ONE section one page and no menu, no " +
+            "length limit (Audio holds nine), every enum listable with a " +
             "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
             "validator clean, no host global read, every key routed to a backend, the six " +
             "saveMasterFxChainConfig keys persisting and four others provably not, and " +

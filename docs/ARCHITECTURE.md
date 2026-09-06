@@ -128,8 +128,10 @@ Responsibilities:
 
 - Render the Shadow UI to a dedicated display SHM that the shim
   composites onto Move's display.
-- Drive slot and Master FX menus, the Tools menu, Global Settings,
-  the Module Store.
+- Drive slot and Master FX menus, the Tools menu and Global
+  Settings. (The on-device Module Store is retired; installs and
+  updates go through Schwung Manager, and the Connect screen shows
+  the device's address and a QR code for reaching it.)
 - Host overtake modules (modules with `component_type: "overtake"`):
   the host clears LEDs progressively, waits ~500ms, then calls the
   module's `init()`. Shift+Vol+Jog-Click is handled at host level for
@@ -264,11 +266,10 @@ the press).
 Modules are extracted to category subdirectories under
 `/data/UserData/schwung/modules/`:
 
-- `chain/`, `controller/`, `store/`, `file-browser/`, `song-mode/`,
-  `wav-player/` — built-in
+- `chain/`, `file-browser/`, `song-mode/`, `wav-player/` — built-in
 - `sound_generators/<id>/`, `audio_fx/<id>/`, `midi_fx/<id>/`,
   `tools/<id>/`, `overtake/<id>/`, `utilities/<id>/` — installed via
-  Module Store
+  Schwung Manager
 
 Each module ships a `module.json`, optional `ui.js` / `ui_chain.js`,
 optional `dsp.so`. Native plugins are dlopen'd by `chain_host` (for
@@ -292,7 +293,7 @@ launcher.
 - The shim runs with the setuid bit set so LD_PRELOAD survives
   MoveOriginal's secure-exec mode.
 - Modules are native ARM code with full system access; only install
-  modules from sources you trust. Module Store fetches are
+  modules from sources you trust. Catalog fetches are
   authenticated through GitHub releases declared in
   `module-catalog.json` plus each module's own `release.json`.
 - The web Schwung Manager (`move.local:7700`) is unauthenticated by

@@ -79,16 +79,30 @@ change) plan it the same way the first plan did. Default `true`: every other
 caller keeps the grid's chunking.
 
 The contract test plans with `paginate: false`, the way the screen does, and
-pins the per-section counts (7/9/6/1/4/2) plus "Audio is longer than a grid page
+pins the per-section counts (7/9/6/1/4/1) plus "Audio is longer than a grid page
 and is still one page" — which is the assertion that fails if the hand-off is
 ever dropped.
 
 Three consequences worth knowing:
 
-- **`[Help...]` lives on the Updates page**, one row under `[Module Store]`. It
-  used to be a peer of the sections; it cannot be a page of its own (that is an
-  eighth page, pinned against twice) and a one-entry menu page is the shape
-  Master FX already records as a mistake. See `UPDATES_ACTIONS`.
+- **Help and Connect are write-only PARAMS on the System page, not a menu.**
+  Help has been in three places: an action on `root` (which plans to no page,
+  so it had no surface anywhere), then a row on a menu page — and a `menu` on a
+  level costs that section a SECOND page. The planner emits a level's menu
+  after its grids ("Menu LAST", `page_plan.mjs`) and **nothing anywhere merges
+  menu entries into a knobs page**, so one section meant two jog steps and a
+  second page name to invent, for three rows that fit one screen.
+
+  `access: "write"` collapses them: a two-option enum becomes a momentary
+  (`isTrigger`, not turnable, not divable), `page_controller.onClick` routes a
+  list row for it straight to `fireTrigger`, and the write is what the io turns
+  back into an action. Two details that are not obvious and are both pinned —
+  **both options are the same WORD** ("Open"), because a list row draws its
+  value unconditionally and a door has no state, and the second is what
+  `fireTrigger` speaks (it was "..." for one round, which sounds like nothing);
+  and the keys are **served a read** despite having none, because an unserved
+  key makes `announceTouch` say "not read yet" every time the cursor lands on
+  it. See `SYSTEM_PARAMS`.
 - **`VIEWS.GLOBAL_SETTINGS` is now only the help viewer's host.** The section
   list, the in-section list, the four `globalSettings*` state vars and the three
   switch arms that drove them are gone. `runGlobalActionFromGrid` /
@@ -881,6 +895,42 @@ pulse error, a latency, or any mix; it took a second tempo to solve for both.
 (`isUsingCountIn` in Settings.json), is equally silent under `rebuild_from_la`,
 and has no announcement to key off. Record + transport is not a sufficient
 signal. Not covered.
+
+### The preroll trim was a no-op for five months, and looked like bad timing
+
+The quantized sampler records **through** its preroll — starting on the count-in
+rather than on the tick that ends it is what makes the take sample-accurate to
+the downbeat (`b76cdfed`, 2026-04-01, which measured the offset down from
+15–45 ms to <1.5 ms). The count-in bars are then cut off the front of the WAV on
+stop, by `sampler_wav_trim_front`.
+
+**That cut never happened.** The take and its five stems were opened `"wb"`, and
+`fread` on a write-only stream returns 0 — so the copy loop broke on its first
+pass, before anything moved. The `ftruncate` after it ran anyway, cutting the
+preroll's worth of bytes off the **END** of a file whose front was untouched. So
+what landed on the card was the **count-in**, at exactly the right duration, with
+the take's tail missing. Every visible signal agreed it had worked: the length
+was right, the file was there, and `"trimmed N preroll frames"` was logged —
+because the caller printed it on a return value of 1, which the function returned
+whether or not it had copied a byte.
+
+Two things follow, and they are the general ones:
+
+- **A short read must not become a truncation.** `sampler_wav_trim_front_impl`
+  returns 0 and leaves the file **whole** if the copy did not complete. A take
+  that kept its preroll can be trimmed by hand; one truncated around unmoved
+  audio has lost the end of the performance for good. Same rule as the
+  three-answer param read: a failed read may not produce a result.
+- **A length assertion would have passed the entire time.** The failing
+  implementation gets the frame count exactly right and the audio entirely
+  wrong. `tests/host/test_sampler_wav_trim.c` asserts the file **begins** on the
+  first post-preroll frame and **ends** on the last recorded one, against a file
+  whose every frame is stamped with its own index; and it runs the trim against
+  a write-only stream to pin the recovery. The body lives in
+  `src/host/sampler_wav_trim.h` so it can be run on the dev machine at all —
+  five months on hardware never caught it, and one host test does.
+  `tests/host/test_sampler_wav_open_mode.sh` pins the two call sites, because
+  the arithmetic was never what was wrong.
 
 ### Save Stems: a stem is a SLOT, and that is forced by the FX chain
 

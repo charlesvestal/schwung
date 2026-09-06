@@ -13,9 +13,15 @@
  * test fixture is a real module that is not built by default -- which is why
  * this, like gesture-test, is gated on SCHWUNG_BUILD_TEST_MODULES.
  *
- * One knob:
+ * Two knobs, and DELIBERATELY TWO DIFFERENT CUSTOM WIDGETS:
  *   level   float 0..1, drawn by the module's own segmented meter rather than
  *           the built-in dial. Turn it and the staircase grows.
+ *   mode    enum, drawn by a SECOND kind the same module declares. A module
+ *           used to be limited to one widget -- not by the registry, which was
+ *           always a map, but by a call site that read one string -- and the
+ *           second kind was dropped silently onto a built-in dial. It is also
+ *           the sibling `level`'s card reads, to name what the blend is
+ *           between.
  *
  * One canvas param:
  *   detail  clicks into the same overlay's fullscreen draw, which is the whole
@@ -35,6 +41,7 @@ static const host_api_v1_t *g_host = NULL;
 
 typedef struct {
     float level;
+    int mode;      /* 0..2, drawn by the module's SECOND widget kind */
 } inst_t;
 
 static void *v2_create_instance(const char *dir, const char *cfg) {
@@ -60,6 +67,8 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         /* Restore is deliberately forgiving: find the number and take it. */
         const char *p = strstr(val, "\"level\"");
         if (p) { const char *c = strchr(p, ':'); if (c) v2_set_param(inst, "level", c + 1); }
+        p = strstr(val, "\"mode\"");
+        if (p) { const char *c = strchr(p, ':'); if (c) v2_set_param(inst, "mode", c + 1); }
         return;
     }
     if (strcmp(key, "level") == 0) {
@@ -67,6 +76,13 @@ static void v2_set_param(void *inst, const char *key, const char *val) {
         if (v < 0.0f) v = 0.0f;
         if (v > 1.0f) v = 1.0f;
         s->level = v;
+        return;
+    }
+    if (strcmp(key, "mode") == 0) {
+        int m = atoi(val);
+        if (m < 0) m = 0;
+        if (m > 2) m = 2;
+        s->mode = m;
     }
 }
 
@@ -77,12 +93,15 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (strcmp(key, "level") == 0)
         return snprintf(buf, len, "%.4f", s->level);
 
+    if (strcmp(key, "mode") == 0)
+        return snprintf(buf, len, "%d", s->mode);
+
     /* Per-component preset/autosave snapshot. Without it the shadow UI logs
      * "fx1:state read FAILED after retries" every ~7 seconds and declines to
      * write the slot file at all -- a chain component is expected to answer
      * this even when it has almost nothing to say. */
     if (strcmp(key, "state") == 0)
-        return snprintf(buf, len, "{\"level\":%.4f}", s->level);
+        return snprintf(buf, len, "{\"level\":%.4f,\"mode\":%d}", s->level, s->mode);
 
     /* The custom kind is declared HERE, on the viz field, exactly as a
      * built-in kind would be. An older host that has never heard of
@@ -91,6 +110,13 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
     if (strcmp(key, "chain_params") == 0) {
         const char *p =
         "["
+          /* TWO CUSTOM KINDS ON ONE PAGE. `mode` carries the module's second
+           * widget, which exists here to prove a module may declare more than
+           * one -- and it is a SIBLING the card below reads, which is the other
+           * thing this fixture now covers. */
+          "{\"key\":\"mode\",\"name\":\"Mode\",\"short_name\":\"Mod\","
+           "\"type\":\"enum\",\"options\":[\"Dry/Wet\",\"In/Out\",\"A/B\"],\"default\":0,"
+           "\"viz\":{\"kind\":\"custom:wtmode\"}},"
           "{\"key\":\"level\",\"name\":\"Level\",\"short_name\":\"Lvl\","
            "\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01,\"default\":0.5,"
            /* THE SAME PARAM CARRIES BOTH SURFACES: the in-grid cell widget and
@@ -114,7 +140,8 @@ static int v2_get_param(void *inst, const char *key, char *buf, int len) {
           "\"levels\":{"
             "\"root\":{"
               "\"label\":\"Widget Test\","
-              "\"params\":[{\"key\":\"level\"},{\"key\":\"detail\"}]"
+              "\"knobs\":[\"level\",\"mode\"],"
+              "\"params\":[{\"key\":\"level\"},{\"key\":\"mode\"},{\"key\":\"detail\"}]"
             "}"
           "}"
         "}";

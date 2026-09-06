@@ -193,6 +193,33 @@ export function drawParamCard(ctx, o) {
              * pixels are somebody else`s.
              */
             raw: o.raw === undefined ? null : o.raw,
+            /*
+             * THE PAGE'S OTHER VALUES, and why a card needs them at all.
+             *
+             * `raw` is this parameter and nothing else, which is enough for a
+             * card that only has to picture its own number -- and was assumed
+             * to be enough for every card. It is not. A card whose meaning
+             * DEPENDS on a sibling (the vowel of WHICH character; a ratio
+             * against which base; a time in whose clock division) had no way to
+             * ask: there is no getParam on this path, and the card script is
+             * loaded into its own closure, so it cannot even see a variable
+             * that the module's own drawCell set.
+             *
+             * The first module to hit this reached for globalThis and a
+             * timestamp, which worked and was the wrong shape -- a hidden side
+             * channel between two files that the contract said were unrelated.
+             *
+             * This is the SAME map drawCell is handed (page_controller's own
+             * value cache), so the two surfaces now see exactly the same facts
+             * and neither is privileged. Same rules as there: a key may be
+             * missing or null, meaning a read that did not answer, and a
+             * drawer must not turn that into a picture.
+             */
+            values: o.values || null,
+            /* Wall clock, for a card that animates. drawCell has always had
+             * this; without it a card's animation sat frozen while the very
+             * gesture that raised it was in progress. */
+            nowMs: typeof o.nowMs === "number" ? o.nowMs : 0,
         });
     } catch (e) {
         /*

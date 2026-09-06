@@ -523,6 +523,15 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   the peek was tracked on each detent, `applyInput` swallowed the Back that
   dismissed it, and it was painted nowhere. CW-78 and 6W6 both shipped that
   way.
+- **A LIST never peeks, and the peek must OUTLIVE the turn claim.** The enum
+  peek exists because a 30px grid CELL cannot show a word; a list row prints
+  the option in full, so the panel covered a legible answer with the same
+  answer and hid four rows doing it — worst on Global Settings, which is pinned
+  to the list (`Skipback` blanking the screen to spell `Cap / Vol+Cap`). And
+  `ENUM_PEEK_MS` was 700 against `TURN_CLAIM_MS` 1200 — matched to the chain
+  card's decay, a constant that never shares a screen with it — so the list
+  went while the header was still claiming the cell. 1500 now, pinned as an
+  ORDERING between the two.
 - **Two-option enums: the GRID flips on click, a LIST focuses instead** — and on
   the KNOB they split BY WIDGET, not by semantics: a **switch** has a track, so
   its form names a direction and it is direction-absolute (clockwise on,
@@ -539,6 +548,42 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   was pixel-identical to a control.
 - A momentary fires from the knob too, **latched per gesture** — a rate limit
   still fires eight times across a two-second spin.
+- **A widget can NAME a value that has no cell** — `viz.extra_keys`, capped at
+  four, one read stop each. Before it, the only way to get a fact to a widget
+  was to give it a knob, which is how a module shipped a read-only cell whose
+  whole job was carrying a number to the cell beside it.
+- **A module can own a PAGE (`as_page`), and it is a PAGE_KNOBS page with a
+  drawer, NOT a new kind.** That is what makes the encoders work with no input
+  code and the reads happen at all: 22 controller branches test PAGE_KNOBS, and
+  threading a new kind through every one is how you get a page that looks right
+  and does not respond. Three gates now ask `pageHasKnobs` — "does it have
+  keys" — instead. `preset_browser` makes such a page the level's BROWSER, so a
+  picture replaces a row of text; it must tick BOTH lanes, because a preset page
+  returns early after its own. **The branch belongs in BOTH renderers** —
+  `render_page_movy` is the one the device uses, and a version only in
+  `render_page.mjs` is correct everywhere except on hardware.
+- **`"live": true` says the MODULE drives this param**, so `:effective` is
+  re-read every tick instead of on the rotation (which comes round ~4x/sec — an
+  animation drawn from that is a slideshow). Two traps behind it: the chain host
+  OWNED `:effective` and, for a key it was not modulating, asked the plugin for
+  the PLAIN key, so a module serving its own driven value was never asked; and
+  **the shim skips `render_block` on a silent slot** (one probe frame in 172),
+  so an effective value computed there looks frozen until something plays.
+- **A module may declare SEVERAL widgets, and for a long time exactly one
+  registered.** The registry was always a Map; the single call site read
+  `ov.widgetKind`, one *string*, so a second declared kind was dropped — and a
+  dropped kind is not an error, it falls through to a built-in dial. Correct
+  page, no log line. `widgetKinds` takes an ARRAY (several names, one
+  `drawCell`, told apart by `group.keys[0]`) or an OBJECT (a drawer and a
+  nominal each); the rule lives in `registerOverlayWidgets`, beside the
+  registry, so `tests/host/` can run it, and an unusable declaration is LOGGED
+  rather than dropped.
+- **A card is handed the PAGE's values, not only its own.** The payload is
+  `{w, h, name, value, raw, values, nowMs}`. A card whose meaning depends on a
+  sibling — the vowel of *which* character — otherwise had no route to it at
+  all: no `getParam` on that path, and the card script is its own closure, so it
+  cannot see what the module's `drawCell` set. The first module to need it used
+  `globalThis` and a staleness stamp, which worked and was a side channel.
 - **A module's OTHER draw surface is a CARD, and it FLOATS.** `drawCell` gives it
   one cell; `card_script` gives it the page — a bordered picture raised while a
   knob is held, gone on release. It is centred in the page's **FRAME**, not on
@@ -676,8 +721,15 @@ component load gate, and the input-dispatch order. Read it before editing
   and the *correct* read milliseconds later is what made it permanent, by matching.
 - **A component editor WAITS; it does not decide from one read.** Everything that
   knows how to wait sits behind the entry, and the fallback is irreversible.
-- Global Settings is seven sections = seven PAGES. **One section, one page** is
+- Global Settings is six sections = six PAGES. **One section, one page** is
   load-bearing — but the rule is "never SPLIT", not "never exceed eight".
+  **A `menu` on a level costs that section a SECOND page**: the planner emits
+  it after the level's grids and nothing merges menu entries into a knobs
+  page. That is why Connect and Help are write-only PARAMS on System rather
+  than a menu — `access: "write"` makes a two-option enum a trigger, so a
+  click fires it and a knob cannot edit it, and three rows fit one screen.
+  The contract test pins the exact page LIST, so folding a menu back in fails
+  with the shape rather than with a count.
   **Eight is the number of physical KNOBS**, and this screen is pinned to the
   LIST (`layout: LAYOUT_LIST`), which draws five rows and scrolls the rest.
   The planner was chunking it as a grid anyway, so a ninth param silently
@@ -691,6 +743,20 @@ component load gate, and the input-dispatch order. Read it before editing
   of 418 rows for minijv. The group step is SKIPPED, not emptied, and Back
   branches on that. **A child level lists TEMPLATES** — resolve them through
   `child_key.mjs` or a drum module files 200+ keys under "Other".
+- **`[Check Updates]`, `[Module Store]` and Services → File Browser are GONE,
+  and one of the three could not simply be deleted.** Detection listed what
+  was outdated and then sent you to the manager to install it — which shows
+  that list beside the button that acts on it. The store pointer printed
+  `move.local:7700`. Both are replaced by **Connect** (Global Settings →
+  System → **Web Manager**, a row beside Analytics and Help, and every
+  `[Get more...]` row),
+  which draws the device's own IP and a QR of `http://<ip>:7700` —
+  `src/shared/{qr,connect_screen}.mjs`, `host_get_device_ip()`. The File
+  Browser toggle started a bundled binary serving all of `/data/UserData`
+  with `--noauth` on :404 **from a flag file read by `shim-entrypoint.sh`**,
+  so removing the toggle alone would have left a device that had it switched
+  on serving :404 at every boot with nothing left to turn it off:
+  `retireFilebrowserService()` deletes the flag and kills the process, once.
 - **A Track tap switches SLOT (`Keep Schwung`, default ON — a reversal); off it
   dismisses** — enforced in the SHIM, on the PRESS, *outside* the long-press block
   (that block is gated on the trigger mode, so a jump inside it works on
@@ -771,6 +837,15 @@ Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) 
 ### Quantized Sampler
 
 Shift+Sample. Source: resample (incl. Schwung synths) or Move Input. Duration in bars (or until stopped); uses MIDI clock, falls back to project tempo. Starts on note event or play. Saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`.
+
+**The take is recorded THROUGH the preroll and trimmed afterwards** — starting
+on the count-in is what makes it sample-accurate to the downbeat. That trim was
+a no-op from 2026-04 to 1.2: the WAV was opened `"wb"`, so its `fread` returned
+0, the copy broke on the first pass and the `ftruncate` ran anyway — leaving the
+COUNT-IN on the card at exactly the right duration with the tail cut, which
+reads as a sampler that ignores preroll rather than as a file never rewritten.
+It logged success. **A short read must never become a truncation, and a length
+assertion would have passed the whole time** — see `docs/SHADOW_UI.md`.
 
 ### Feedback Protection
 
@@ -993,10 +1068,11 @@ Reference: `src/modules/controller/ui.js`.
 
 **schwung-manager (web UI at `http://move.local:7700`) is the single
 install/update path** for the host and all modules. On-device, the shadow UI
-keeps exactly two store surfaces: update *detection* (Settings → Updates →
-Check Updates shows what's outdated and points at the web manager) and
-pointer screens ([Get more...] / [Module Store]). The old on-device store
-module is retired (source kept for the standalone/sim host; not shipped).
+keeps NO store surface at all: browsing went first, then the pointer screens,
+then update detection. `[Get more...]` and Global Settings → System →
+`[Connect...]` open the **Connect** screen instead, which draws this device's
+IP and a QR of `http://<ip>:7700`. The old on-device store module is retired
+(source kept for the standalone/sim host; not shipped).
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 

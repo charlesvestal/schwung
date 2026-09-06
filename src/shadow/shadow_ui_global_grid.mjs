@@ -161,14 +161,15 @@ export const GLOBAL_ENUM_VALUES = {
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
  *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
- *   filebrowser_enabled    | filebrowserEnabled      | flag file + host_system_cmd | own  | filebrowserEnabled     | File Browser
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
+ *   connect                | (write-only trigger)    | runAction("connect")      | -       | -                      | -
+ *   help                   | (write-only trigger)    | runAction("help")         | -       | -                      | -
  *
  * Three kinds of persistence, and conflating them is how a write goes missing:
  *
  *   "save"  saveMasterFxChainConfig() — the SHARED sink. These are the keys
  *           writeGlobalParam persists via io.persist(), and only these.
- *   "own"   a key-specific writer (savePadTypingConfig, saveFilebrowserConfig,
+ *   "own"   a key-specific writer (savePadTypingConfig, savePadTypingConfig,
  *           …). It is inseparable from the write itself, so it lives in the
  *           host's writeParam beside the assignment it saves, not here — the
  *           generic persist() must not fire for these or every key would look
@@ -229,8 +230,23 @@ export const GLOBAL_ROUTING = {
      * writes lives in SHM and does not survive a reboot. */
     recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
-    filebrowser_enabled:    { read: "js.filebrowserEnabled",  write: "js.filebrowserEnabled",  persist: "own",  cache: "filebrowserEnabled",     modal: "filebrowser" },
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
+
+    /*
+     * TRIGGERS, whose "backend" is an ACTION.
+     *
+     * They are in this table because writeGlobalParam refuses any key that is
+     * not — an unrouted key is silently dropped, which for a door means a row
+     * you can press that does nothing.
+     *
+     * The read is `js.stateless`: a constant "0", so the row shows option 0 and
+     * the cursor landing on it announces the name and that word. Leaving it
+     * unserved is NOT the same and was the first cut: "" makes announceTouch
+     * say "not read yet" every time you land on the row, which is a fault
+     * report on a control that is working.
+     */
+    connect:                { read: "js.stateless",           write: "action.connect",           persist: null,   cache: null,                     modal: null },
+    help:                   { read: "js.stateless",           write: "action.help",              persist: null,   cache: null,                     modal: null },
 };
 
 /**
@@ -587,58 +603,116 @@ export const SHORTCUTS_PARAMS = [
       options: ["30s", "1m", "2m", "3m", "4m", "5m"], default: 0 },
 ];
 
-export const SERVICES_PARAMS = [
-    bool("filebrowser_enabled", "File Browser", 0),
+export const SYSTEM_PARAMS = [
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
+    /*
+     * TWO DOORS AS TRIGGERS, ON THE SAME PAGE AS THE TOGGLE ABOVE.
+     *
+     * These were a menu page of their own, which is what the planner does with
+     * a level's `menu`: a level carrying knobs AND a menu plans TWO pages, grid
+     * then menu (page_plan.mjs, "Menu LAST"), and there is no branch anywhere
+     * that merges menu entries into a knobs page. So one section meant two jog
+     * steps to reach three rows, and a second page name to invent and truncate.
+     *
+     * `access: "write"` is the mechanism that collapses them. It makes a
+     * two-option enum a MOMENTARY — `isTrigger`, `WIDGET_BUTTON` on a grid, a
+     * plain row in a list — which is not turnable and not divable, so a click
+     * fires it and nothing else can happen to it. page_controller.onClick
+     * routes a list row for a write-only param straight to fireTrigger, which
+     * writes option index 1; that write is what the io turns back into an
+     * action.
+     *
+     * BOTH OPTIONS ARE "Open", AND THE REPETITION IS THE POINT.
+     *
+     * A list row draws `name` and `value` unconditionally (knobListEntries), so
+     * a trigger shows whatever its current option is — "Help / Idle" would read
+     * as a state the user is meant to change. A door has no state, so both
+     * sides of the write say the same word and the row reads "Help  Open"
+     * before, during and after.
+     *
+     * It was "..." for one round, which looks right and SOUNDS like nothing:
+     * fireTrigger announces `${label}, ${options[1]}` and landing on a row
+     * announces the value too, so the screen reader — a flagship feature on
+     * this device — said "Connect, dot dot dot". The word is chosen for the
+     * ear; the eye is happy with either.
+     *
+     * These keys must still be SERVED a read, even though they have no state:
+     * an unserved key announces "not read yet" every time the cursor lands on
+     * it (announceTouch), which is a fault report on a row that is working
+     * perfectly. `globalGridIoFor` answers "0" for both.
+     *
+     * The KEYS stay `connect` and `help`, whatever the rows are called: they
+     * are the action strings runGlobalActionFromGrid and
+     * handleGlobalSettingsAction dispatch on, and renaming a key to match a
+     * label would be a rename of the dispatch for the sake of a word on
+     * screen.
+     */
+    /*
+     * "Web Manager", NOT "Connect". The row names the DESTINATION.
+     *
+     * "Connect" names what you are doing and leaves what you get to guesswork —
+     * connect to what? Every other row on this screen is named for the thing it
+     * governs. 66px of the ~90px a list row has for a name, so it fits beside
+     * its value with room to spare; the screen it opens keeps the wider
+     * explanation ("Schwung Manager", the address, the QR).
+     */
+    { key: "connect", name: "Web Manager", type: "enum", options: ["Open", "Open"],
+      short_options: ["OPN", "OPN"], access: "write", default: 0 },
+    { key: "help", name: "Help", type: "enum", options: ["Open", "Open"],
+      short_options: ["OPN", "OPN"], access: "write", default: 0 },
 ];
 
-/* ------------------------------------------------------------------ updates */
+/* ------------------------------------------------------------------- system */
 
 /*
- * Detection runs on-device (catalog scan + version compare) so users can see
- * what is outdated without opening a browser. The INSTALL always happens via
- * the web manager — the on-device install paths silently failed for users
- * without a current shim, so they were removed.
+ * WHAT WENT, AND WHY THERE IS NO "UPDATES" SECTION ANY MORE.
  *
- * Entries with a name and a consequence and nothing to show, which is the
- * definition of a menu page. There is no value to draw, so rendering them as
- * knob cells would spend the whole widget band on four words.
+ * This section was a menu page of three rows: [Check Updates], [Module Store]
+ * and [Help...]. None of the three was removed for tidiness:
  *
- * [HELP...] IS THE THIRD ONE, and it is here because there is nowhere else it
- * can be.
+ *   [Module Store] had ALREADY been reduced to a screen that printed
+ *   "move.local:7700" and nothing else -- the on-device store was retired when
+ *   the install paths stopped working for anyone without a current shim, and
+ *   what was left was a signpost wearing a shop's name. It is the Connect row
+ *   now, which answers the same question ("where do I get modules") with an
+ *   address the user can actually reach and a QR that opens it.
  *
- * It was declared as an action entry on `root` on the theory that "the host
- * dispatches it" — but root is pure navigation and plans to NO page, so the
- * planner walked past it and nothing ever drew it. There was no affordance:
- * the section picker enumerates PAGES, and an entry on a level that is not a
- * page is invisible from every surface. A declaration nothing can reach is the
- * same as a deleted one, only harder to notice.
+ *   [Check Updates] scanned the catalog over the network and listed what was
+ *   outdated, then told you to go to the web manager to install any of it. The
+ *   manager shows that same list, next to the button that acts on it. A second
+ *   copy on a 128x64 screen that cannot act is a report you have to go
+ *   somewhere else to use.
  *
- * The two obvious repairs are both closed. A `help` LEVEL is an eighth page,
- * which sections-as-levels forbids and tests/host/test_global_settings_contract
- * .sh pins twice over (seven pages, and no page whose name matches /help/i). A
- * one-entry menu level is the shape the Master FX contract already records as a
- * mistake — "a ONE ENTRY actions menu, which the knob grid draws as a menu page
- * you have to enter to press a single button".
+ *   [Help...] stayed, and it is a ROW rather than a menu entry now.
  *
- * So it joins the only menu this contract has. That is a demotion from the peer
- * of a section it used to be, and it is stated rather than hidden: Help now
- * lives one row below [Module Store] on the last page. The section LABEL stays
- * "Updates" because the page-name check above forbids the honest "Updates &
- * Help" — worth revisiting if that check is ever relaxed.
+ * The section is "System" and it is ONE PAGE: Analytics, Connect, Help. It was
+ * briefly a grid page plus a menu page -- which is what a level carrying both
+ * plans -- and that was two jog steps and a second page name to invent, for
+ * three rows that fit on one screen with room to spare. See SYSTEM_PARAMS for
+ * how the two doors became rows.
  */
-export const UPDATES_ACTIONS = [
-    { label: "[Check Updates]", action: "check_updates" },
-    { label: "[Module Store]", action: "module_store" },
-    { label: "[Help...]", action: "help" },
-];
 
 /* --------------------------------------------------------------- assembly */
 
 /**
  * The sections, in the order they are paged through. `id` is the level name,
  * `label` is what the header and the section picker show.
+ *
+ * SIX SECTIONS, SEVEN PAGES, and the one section that splits does it on
+ * purpose. "One section, one page" was the property that made sections-as-
+ * levels work: a section long enough to PAGINATE would put a jog step in the
+ * middle of a scrolling list, arriving silently, chosen by nobody. That rule is
+ * intact and is the one tests/host/test_global_settings_contract.sh enforces
+ * per level.
+ *
+ * A `menu` is a different thing entirely. It is a second page of a KIND that
+ * the grid cannot hold -- entries with a name and a consequence and no value to
+ * draw -- so it is authored, named, and visible in the section picker as its
+ * own row, which is how [Help...] became findable instead of being the last
+ * line of a page called "Updates". The planner has always emitted it that way
+ * (page_plan.mjs, "Menu LAST, after this level's grids"); what is new here is
+ * only that a Global Settings section now uses it alongside params.
  */
 export const GLOBAL_SECTIONS = [
     { id: "display", label: "Display", params: DISPLAY_PARAMS },
@@ -646,11 +720,10 @@ export const GLOBAL_SECTIONS = [
     { id: "accessibility", label: "Screen Reader", params: ACCESSIBILITY_PARAMS },
     { id: "set_pages", label: "Set Pages", params: SET_PAGES_PARAMS },
     { id: "shortcuts", label: "Shortcuts", params: SHORTCUTS_PARAMS },
-    { id: "services", label: "Services", params: SERVICES_PARAMS },
-    { id: "updates", label: "Updates", params: [], menu: UPDATES_ACTIONS },
+    { id: "system", label: "System", params: SYSTEM_PARAMS },
 ];
 
-/** Every declared param, across all six grid sections. */
+/** Every declared param, across every section. */
 export function allGlobalParams() {
     const out = [];
     for (const s of GLOBAL_SECTIONS) for (const p of s.params) out.push(p);
@@ -661,15 +734,16 @@ export function allGlobalParams() {
  * Global Settings as a ui_hierarchy plus chain_params.
  *
  * Root carries no params of its own — it is pure navigation, so it plans to no
- * page and the seven sections are the whole page set. Its nav entries are what
- * name each page: planPages prefers a nav entry's label over the level's own,
- * which is the label users already see.
+ * page and the sections are the whole page set. Its nav entries are what name
+ * each page: planPages prefers a nav entry's label over the level's own, which
+ * is the label users already see.
  *
- * [Help...] is NOT here. It used to be an action entry on root, which reads
- * well and does nothing: root plans to no page, the planner walks past an entry
- * with no `key` and no `level`, and the section picker enumerates pages — so it
- * had no surface anywhere. It is an entry on the Updates menu now; see
- * UPDATES_ACTIONS for why that is the only place left for it.
+ * HELP IS NOT AN ENTRY HERE, and it was, twice, in two different wrong ways.
+ * First as an action on ROOT, which reads well and does nothing: root plans to
+ * no page, the planner walks past an entry with no `key` and no `level`, and
+ * the section picker enumerates pages — so it had no surface anywhere. Then as
+ * a `menu` on the System level, which works and costs that section a second
+ * page. It is a write-only PARAM on System now; see SYSTEM_PARAMS.
  *
  * @param {object} [io]  unused by the declaration; accepted so the call shape
  *   matches createSlotGridIo's and so a future runtime-shaped section (one
@@ -694,7 +768,15 @@ export function buildGlobalSettingsContract(io) {
         };
         if (s.menu) {
             level.menu = s.menu.map((m) => ({ label: m.label, action: m.action }));
-            level.menu_label = s.label;
+            /*
+             * The menu page needs a name of its OWN once its level also has a
+             * grid page. `s.label` was right while a menu level had nothing
+             * else on it — the section WAS the menu — and would now name two
+             * pages "System", which planPages disambiguates by appending
+             * " - 2". A user looking for help would be scanning the section
+             * picker for a row called "System - 2".
+             */
+            level.menu_label = s.menu_label || s.label;
         }
         levels[s.id] = level;
     }
@@ -765,6 +847,34 @@ export function createGlobalGridIo(io) {
     const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
     const contract = buildGlobalSettingsContract(io);
 
+    /*
+     * ⚠ A TRIGGER'S WRITE IS QUEUED, NOT PERFORMED, AND THAT IS NOT A STYLE
+     * CHOICE — IT IS THE DIFFERENCE BETWEEN WORKING AND CORRUPTING THE SCREEN.
+     *
+     * `setParam` is called from INSIDE the page controller: onClick ->
+     * fireTrigger -> setParam, all within one applyInput. The two actions here
+     * navigate — they exit the knob grid and open another view — and running
+     * that from here tears the controller down (exitParamPages sets
+     * `controller = null`) while applyInput is still executing on it. Reported
+     * from the device: Back came out on the wrong page and every setting read
+     * zero.
+     *
+     * The menu path never had this problem and that is what shows the shape of
+     * the fix: shadow_ui_param_pages runs a menu entry's action from the INTENT
+     * applyInput returns, after the controller has finished. So a trigger whose
+     * routing names an action queues it, and the same host drains it at the
+     * same point. `takePendingAction` is the seam.
+     *
+     * One slot deep on purpose: two doors cannot be pressed in one frame, and a
+     * queue that could hold two would silently open the second one behind the
+     * first.
+     */
+    let pendingAction = null;
+    const actionOf = (route) => {
+        const w = route && typeof route.write === "string" ? route.write : "";
+        return w.startsWith("action.") ? w.slice("action.".length) : null;
+    };
+
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
@@ -776,8 +886,24 @@ export function createGlobalGridIo(io) {
 
         setParam(fullKey, value) {
             const k = bare(fullKey);
-            if (!GLOBAL_ROUTING[k]) return;
+            const route = GLOBAL_ROUTING[k];
+            if (!route) return;
+            const action = actionOf(route);
+            if (action) { pendingAction = action; return; }
             writeGlobalParam(io, k, value);
+        },
+
+        /**
+         * The action a trigger asked for, taken once.
+         *
+         * Named "take" rather than "get" because reading it CLEARS it: the
+         * caller is committing to run it, and an action left in the slot would
+         * fire again on the next input the grid saw.
+         */
+        takePendingAction() {
+            const a = pendingAction;
+            pendingAction = null;
+            return a;
         },
 
         /* Not a modulation target and not an LFO target — answered flatly

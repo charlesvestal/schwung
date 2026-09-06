@@ -143,7 +143,12 @@ want(/masterFxIndexFromComponentKey\(componentKey\)[\s\S]{0,160}enterMasterFxHie
 want(/tts_get_enabled[\s\S]{0,80}return false/, "the screen reader does not force the list", v);
 
 /* ---- the view module owns no screens it should not --------------------- */
-if (/openTextEntry|filepathBrowser|drawCanvas/.test(v)) {
+/* `drawCanvasPreview`, not `drawCanvas`: the thing this forbids is the view
+ * module owning the fullscreen canvas VIEW, which is an editor the list already
+ * has. It is not a ban on the substring. A custom UI PAGE delegates its body
+ * through `drawCanvasPage` -- three lines handing a band to the host, owning no
+ * screen and reimplementing nothing -- and the looser pattern caught that too. */
+if (/openTextEntry|filepathBrowser|drawCanvasPreview/.test(v)) {
   fail("the view module is reimplementing an editor the list already has");
 }
 /* The grid owns KNOBS, MENU, PRESET and ITEMS — all four are drawn in its

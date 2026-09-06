@@ -60,21 +60,17 @@ if [ -x "$SCHWUNG_MGR" ]; then
     fi
 fi
 
-# Start filebrowser for file management (port 404, no auth) if enabled
-FB="$SCHWUNG_DIR/bin/filebrowser"
-FB_FLAG="$SCHWUNG_DIR/filebrowser_enabled"
-if [ -x "$FB" ] && [ -f "$FB_FLAG" ]; then
-    "$FB" \
-        --noauth \
-        --address 0.0.0.0 \
-        --port 404 \
-        --root /data/UserData \
-        --database "$SCHWUNG_DIR/filebrowser.db" \
-        --disableThumbnails \
-        --disablePreviewResize \
-        --disableExec \
-        --disableTypeDetectionByHeader \
-        >/dev/null 2>&1 &
-fi
+# The standalone :404 file browser is GONE and is not started here any more.
+#
+# It was a bundled third-party binary serving all of /data/UserData with
+# --noauth, gated on a flag file that Global Settings -> Services wrote. Schwung
+# Manager already serves the same tree at :7700/files, with keyboard and
+# screen-reader access this one never had -- so the toggle amounted to a second
+# unauthenticated web server for a job already done.
+#
+# The flag file on an upgraded device is removed by retireFilebrowserService()
+# in shadow_ui.js, which also kills anything still listening. Deleting this
+# block alone would have been enough to stop it at the NEXT boot and would have
+# left the flag behind for a reinstall to find.
 
 exec env LD_PRELOAD=schwung-shim.so /opt/move/MoveOriginal

@@ -524,7 +524,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/host/chain_permute.h \
-    src/host/chain_key_index.h \
+    src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h; then
@@ -958,14 +958,6 @@ if [ -f "./libs/curl/curl" ]; then
     echo "Bundled curl binary"
 else
     echo "Warning: libs/curl/curl not found - downloads will not work without it"
-fi
-
-# Copy filebrowser binary (if present)
-if [ -f "./libs/filebrowser/filebrowser" ]; then
-    mkdir -p ./build/bin/
-    cp -u ./libs/filebrowser/filebrowser ./build/bin/
-    cp -u ./libs/filebrowser/LICENSE ./build/licenses/FILEBROWSER_LICENSE.txt 2>/dev/null || true
-    echo "Bundled filebrowser binary"
 fi
 
 # eSpeak-NG data directory is copied to build/espeak-ng-data/ above

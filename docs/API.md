@@ -178,7 +178,7 @@ host_flush_display()          // Force immediate display update
 host_set_refresh_rate(hz)     // Set display refresh rate (default ~11Hz)
 host_get_refresh_rate()       // Get current refresh rate
 
-// File system utilities (used by Module Store)
+// File system utilities
 host_file_exists(path)        // Returns bool - check if file/directory exists
 host_read_file(path)          // Returns file contents as string, or null on error
 host_write_file(path, content) // Write string content to file, returns bool
@@ -192,6 +192,12 @@ host_remove_dir(path)         // Recursively remove directory, returns bool
 host_speaker_active()         // Returns bool - true when built-in speakers active (no headphones)
 host_line_in_connected()      // Returns bool - true when line-in cable plugged (vs internal mic)
 host_get_module_metadata(id)  // Returns parsed module.json object, or null if not installed
+
+// Network
+host_get_device_ip()          // Returns "192.168.1.42", or "" when the device has no usable
+                              // LAN address. Skips loopback, down interfaces, 169.254/16
+                              // link-local, and the USB-C gadget (reachable only from the
+                              // computer holding the cable). Prefers wlan*.
 
 // Screen reader
 host_announce_screenreader(text) // Speak text via TTS (if screen reader enabled)
