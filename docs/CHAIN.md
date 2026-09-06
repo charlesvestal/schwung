@@ -109,10 +109,27 @@ in the slot, and the grid follows a pad nobody played. The same split already
 bit the MIDI trace, for the same reason.
 
 `tick()` also continues while an otherwise silent chain slot is parked by the
-audio idle gate. If it emits MIDI, that same block wakes and renders so the
-generated note reaches the synth immediately. The idle tick is marked as
-already advanced, preventing the wake-up render from advancing MIDI FX or LFO
-time a second time.
+audio idle gate: the shim's `mod:tick` runs it alongside the LFOs, so a
+time-driven MIDI FX keeps generating with no audio render behind it. If it
+**delivers a message to the synth**, that same block wakes and renders, so the
+generated note is heard now rather than on the next idle probe up to ~0.5 s
+later. The tick is marked as already advanced, so the wake-up render does not
+advance MIDI FX or LFO time a second time.
+
+Delivery, not emission, is the trigger — and the distinction is not academic.
+A slot carrying MIDI FX with **no synth loaded** (Pre mode, driving Move's own
+track instrument) is silent by construction and therefore permanently idle, so
+waking it on "a MIDI FX emitted" would un-park it on every generating frame to
+render a synth that is not there: the idle gate switched off for exactly the
+slot that can never need it.
+
+The handshake is three calls and it is order-dependent — `mod:tick`, then one
+`chain_take_midi_tick_wake`, then the render. `take` is one-shot and clears the
+double-tick guard when the answer is no, because in that case no render is
+coming to consume it; ask twice and the second answer erases the first. The
+transitions are pure and live in `chain_idle_tick.h` so `tests/host` can drive
+them (`test_chain_idle_tick.c`); the wiring is pinned by
+`test_idle_midi_tick_wake.sh`.
 
 Note-offs are ignored: a released pad is still the pad you are editing. The
 record is an int store on the SPI callback and nothing else — no allocation, no

@@ -502,6 +502,18 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   slot. It reports a NOTE, not a voice index — the canonical voice order lives
   in `voices.mjs` and a C copy of it would fail silently as "the grid follows
   the wrong pad".
+- **A MIDI FX `tick()` runs on IDLE frames too, and what wakes the slot is
+  DELIVERY, not emission.** The shim skips `render_block` on a silent slot
+  (one frame in 172), which used to freeze every time-driven MIDI FX with it —
+  the generator stopped, then replayed. `mod:tick` now runs the MIDI FX tick
+  beside the LFOs, and a message that reaches the synth un-parks that same
+  block. Waking on "a MIDI FX emitted" instead would switch the idle gate off
+  permanently for a slot with **no synth** (Pre mode driving Move's own
+  instrument): silent by construction, so idle forever, so woken on every
+  generating frame to render nothing. The handshake is order-dependent —
+  tick, then ONE `chain_take_midi_tick_wake`, then the render — because `take`
+  is one-shot and a "no" is what clears the double-tick guard. Transitions in
+  `chain_idle_tick.h` so `tests/host` can drive them.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
