@@ -44,9 +44,15 @@
  * heal installs it beside the stage as bin/heal, root-owned 04755, exactly
  * like its own self-update. Same trust as schwung-heal.new: ableton can
  * already stage anything at that path. <id> is the directory name, taken
- * from a directory scan (never argv) and limited to [A-Za-z0-9_.-].
- * Nothing is installed unless a tool has staged something; stock devices
- * never hit this path.
+ * from a directory scan (never argv) and limited to [A-Za-z0-9_.-] by
+ * heal_tool_id_is_safe() in host/heal_tool_id.h. Nothing is installed
+ * unless a tool has staged something; stock devices never hit this path.
+ *
+ * That path is the one place this binary works on names it did not compile
+ * in, so it resolves every component with O_NOFOLLOW and copies through
+ * descriptors — see install_one_tool_helper(). And a tool's failure there is
+ * reported but never folded into the exit code, because the exit code gates
+ * --reboot and that reboot belongs to the mirrors below.
  */
 
 #include <dirent.h>
@@ -59,6 +65,34 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "host/heal_tool_id.h"
+
+/* Stream sfd -> dfd. Returns 0 on success, -1 on error (message printed).
+ * Closes nothing and unlinks nothing: the caller owns both descriptors and
+ * whatever cleanup its own failure path needs. The labels are for messages
+ * only, so a descriptor-based caller can name a path it never opened by name. */
+static int copy_body(int sfd, int dfd, const char *src_label, const char *dst_label) {
+    char buf[65536];
+    ssize_t r;
+    while ((r = read(sfd, buf, sizeof(buf))) > 0) {
+        ssize_t off = 0;
+        while (off < r) {
+            ssize_t w = write(dfd, buf + off, r - off);
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                fprintf(stderr, "schwung-heal: write %s: %s\n", dst_label, strerror(errno));
+                return -1;
+            }
+            off += w;
+        }
+    }
+    if (r < 0) {
+        fprintf(stderr, "schwung-heal: read %s: %s\n", src_label, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
 
 static int copy_atomic(const char *src, const char *dst, mode_t perms) {
     int sfd = open(src, O_RDONLY);
@@ -90,23 +124,7 @@ static int copy_atomic(const char *src, const char *dst, mode_t perms) {
         return -1;
     }
 
-    char buf[65536];
-    ssize_t r;
-    while ((r = read(sfd, buf, sizeof(buf))) > 0) {
-        ssize_t off = 0;
-        while (off < r) {
-            ssize_t w = write(dfd, buf + off, r - off);
-            if (w < 0) {
-                if (errno == EINTR) continue;
-                fprintf(stderr, "schwung-heal: write %s: %s\n", tmp, strerror(errno));
-                close(sfd); close(dfd); unlink(tmp);
-                return -1;
-            }
-            off += w;
-        }
-    }
-    if (r < 0) {
-        fprintf(stderr, "schwung-heal: read %s: %s\n", src, strerror(errno));
+    if (copy_body(sfd, dfd, src, tmp) < 0) {
         close(sfd); close(dfd); unlink(tmp);
         return -1;
     }
@@ -175,50 +193,110 @@ static int needs_copy(const char *src, const char *dst) {
     return contents_differ(src, dst);             /* same size → verify bytes */
 }
 
-/* Install every staged standalone-tool helper (see the file header). One
- * failure does not stop the others; returns nonzero if any failed. */
-static int install_tool_helpers(void) {
-    static const char *tools_dir = "/data/UserData/schwung/modules/tools";
-    DIR *d = opendir(tools_dir);
-    if (!d) return 0;                              /* no tools dir → nothing to do */
+/* Install one tool's staged helper, working entirely through a descriptor for
+ * that tool's bin/ directory.
+ *
+ * Every open here is O_NOFOLLOW and every subsequent operation is *at()-
+ * relative, because unlike the mirrors above NONE of this path is hardcoded:
+ * <id> and bin/ are ableton-writable directory names. A path-based copy would
+ * follow a symlink planted at any component and steer a root-owned 04755 write
+ * anywhere on the filesystem, and an lstat-then-open check would still lose the
+ * race between the two calls. Resolving once and then working from the
+ * descriptor closes both. (This is not an escalation under the threat model in
+ * the file header — ableton can already stage schwung-heal.new — but the audit
+ * story for this binary is "it can only ever do what is hardcoded", and a
+ * directory scan is where that stops being true for free.)
+ *
+ * O_NONBLOCK on the stage matters: without it a FIFO left at heal.new would
+ * block the open forever, and shim-entrypoint.sh runs heal at every boot
+ * before the LD_PRELOAD exec. The fstat below rejects it a moment later.
+ *
+ * Returns 0 on success or when nothing is staged, -1 on failure. */
+static int install_one_tool_helper(int tools_fd, const char *id) {
+    int idfd = openat(tools_fd, id, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    if (idfd < 0) return 0;                    /* not a real directory -> skip */
+    int bfd = openat(idfd, "bin", O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+    close(idfd);
+    if (bfd < 0) return 0;                     /* no bin/ -> nothing staged */
+
+    int sfd = openat(bfd, "heal.new", O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+    if (sfd < 0) {
+        if (errno == ELOOP)                    /* a symlink is not a stage */
+            fprintf(stderr, "schwung-heal: %s/bin/heal.new: symlink, ignored\n", id);
+        close(bfd);
+        return 0;                              /* usually: nothing staged */
+    }
+
+    struct stat sst;
+    if (fstat(sfd, &sst) < 0 || !S_ISREG(sst.st_mode)) {
+        fprintf(stderr, "schwung-heal: %s/bin/heal.new: not a regular file, ignored\n", id);
+        close(sfd); close(bfd);
+        return 0;
+    }
+
+    /* Fresh tmp beside the stage: drop any leftover from a killed run, then
+     * O_EXCL so we can never write through something planted in between. */
+    unlinkat(bfd, "heal.heal-tmp", 0);
+    int dfd = openat(bfd, "heal.heal-tmp",
+                     O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (dfd < 0) {
+        fprintf(stderr, "schwung-heal: open %s/bin/heal.heal-tmp: %s\n",
+                id, strerror(errno));
+        close(sfd); close(bfd);
+        return -1;
+    }
 
     int rc = 0;
+    if (copy_body(sfd, dfd, "tool heal.new", "tool heal.heal-tmp") < 0) rc = -1;
+    close(sfd);
+
+    /* fchmod AFTER the write and never fchown after it — Linux clears the suid
+     * bit on chown. setuid(0)/setgid(0) at startup already made this root:root. */
+    if (rc == 0 && fchmod(dfd, 04755) < 0) {
+        fprintf(stderr, "schwung-heal: fchmod %s/bin/heal.heal-tmp: %s\n",
+                id, strerror(errno));
+        rc = -1;
+    }
+    if (rc == 0) { if (fsync(dfd) < 0) { /* non-fatal; rename is the durability point */ } }
+    if (close(dfd) < 0 && rc == 0) {
+        fprintf(stderr, "schwung-heal: close %s/bin/heal.heal-tmp: %s\n",
+                id, strerror(errno));
+        rc = -1;
+    }
+
+    if (rc == 0 && renameat(bfd, "heal.heal-tmp", bfd, "heal") < 0) {
+        fprintf(stderr, "schwung-heal: rename %s/bin/heal: %s\n", id, strerror(errno));
+        rc = -1;
+    }
+
+    if (rc != 0) {
+        unlinkat(bfd, "heal.heal-tmp", 0);
+    } else {
+        unlinkat(bfd, "heal.new", 0);
+        fprintf(stderr, "schwung-heal: installed tool helper %s/bin/heal\n", id);
+    }
+    close(bfd);
+    return rc;
+}
+
+/* Install every staged standalone-tool helper (see the file header). One
+ * failure does not stop the others; returns how many failed. A device with
+ * nothing staged never opens anything past the tools directory itself. */
+static int install_tool_helpers(void) {
+    static const char *tools_dir = "/data/UserData/schwung/modules/tools";
+    int tools_fd = open(tools_dir, O_RDONLY | O_DIRECTORY);
+    if (tools_fd < 0) return 0;                /* no tools dir -> nothing to do */
+    DIR *d = fdopendir(tools_fd);
+    if (!d) { close(tools_fd); return 0; }
+
+    int failures = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
-        const char *id = e->d_name;
-        if (id[0] == '.') continue;
-        int ok = 1;
-        for (const char *c = id; *c; c++) {
-            if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') ||
-                  (*c >= '0' && *c <= '9') || *c == '_' || *c == '-' || *c == '.')) {
-                ok = 0;
-                break;
-            }
-        }
-        if (!ok) continue;
-
-        char staged[512], dst[512];
-        int n1 = snprintf(staged, sizeof(staged), "%s/%s/bin/heal.new", tools_dir, id);
-        int n2 = snprintf(dst, sizeof(dst), "%s/%s/bin/heal", tools_dir, id);
-        if (n1 < 0 || (size_t)n1 >= sizeof(staged) ||
-            n2 < 0 || (size_t)n2 >= sizeof(dst)) continue;
-
-        struct stat st;
-        if (lstat(staged, &st) < 0) continue;      /* nothing staged for this tool */
-        if (!S_ISREG(st.st_mode)) {                /* a symlink or dir is not a stage */
-            fprintf(stderr, "schwung-heal: %s: not a regular file, ignored\n", staged);
-            continue;
-        }
-
-        if (copy_atomic(staged, dst, 04755) == 0) {
-            unlink(staged);
-            fprintf(stderr, "schwung-heal: installed tool helper %s\n", dst);
-        } else {
-            rc = 2;
-        }
+        if (!heal_tool_id_is_safe(e->d_name)) continue;
+        if (install_one_tool_helper(tools_fd, e->d_name) != 0) failures++;
     }
-    closedir(d);
-    return rc;
+    closedir(d);                               /* also closes tools_fd */
+    return failures;
 }
 
 int main(int argc, char **argv) {
@@ -273,8 +351,18 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Standalone tools' staged helpers (see the file header). */
-    if (install_tool_helpers() != 0) rc = 2;
+    /* Standalone tools' staged helpers (see the file header). A tool's failure
+     * is reported but deliberately does NOT feed `rc`: rc gates --reboot, and
+     * that reboot exists for OUR mirror (post-update.sh, the manager's
+     * /system/repair). A third-party tool leaving an unreadable stage must not
+     * be able to turn a repair into "shim mirrored, device never rebooted" —
+     * the silent, self-concealing shape that flow was built to avoid. */
+    {
+        int helper_failures = install_tool_helpers();
+        if (helper_failures > 0)
+            fprintf(stderr, "schwung-heal: %d tool helper(s) failed to install\n",
+                    helper_failures);
+    }
 
     /* Shim — perms 04755 (-rwsr-xr-x). The setuid bit on the .so is
      * required for glibc 2.35+ AT_SECURE on devices where MoveOriginal

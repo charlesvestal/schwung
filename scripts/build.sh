@@ -826,7 +826,9 @@ fi
 # and entrypoint to /usr/lib + /opt/move). Needed because everything from
 # MoveLauncher down runs as ableton; this is the only way ableton-context
 # code (entrypoint, schwung-manager) can refresh the live shim.
-if needs_rebuild build/bin/schwung-heal src/schwung-heal.c; then
+# Header dep is tracked too: heal_tool_id.h carries the tool-id filter, and
+# without it here an edit to the header leaves a stale binary on the device.
+if needs_rebuild build/bin/schwung-heal src/schwung-heal.c src/host/heal_tool_id.h; then
     echo "Building schwung-heal..."
     "${CROSS_PREFIX}gcc" -g -O2 -static \
         src/schwung-heal.c \
