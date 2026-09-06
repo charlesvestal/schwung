@@ -7650,6 +7650,90 @@ function isLineInConsumerModule(moduleId) {
     return v;
 }
 
+/*
+ * ============================================================================
+ * default_fx — a module says what belongs in the chain behind it
+ * ============================================================================
+ *
+ * `capabilities.default_fx: [{ "module": "clap", "params": { ... } }]`
+ *
+ * A drum module whose kit is voiced through a bus compressor has no way to ship
+ * that today: the effect either lives INSIDE the module -- a second, worse copy
+ * of a facility the slot chain already provides, reachable only from in there
+ * and persisted by hand -- or the user adds it after every load and it is not
+ * part of the sound.
+ *
+ * SEEDED ON AN INTERACTIVE PICK AND NOWHERE ELSE. Not on boot restore, not on a
+ * set change, not on a patch load. Those all reconstruct a chain the user has
+ * already shaped, so seeding there would put back an effect they deleted, every
+ * boot, with no way to refuse it permanently. That is the whole of the design:
+ * a default is an opening position, not a policy.
+ *
+ * AND ONLY INTO AN EMPTY FX SECTION. A slot that already carries effects has
+ * been shaped by somebody; appending to it silently rewrites their signal path.
+ *
+ * What lands is an ORDINARY INSERT afterwards -- editable, removable, saved by
+ * the same autosave as any other. Nothing marks it as special, because a
+ * position that could not be removed is a worse version of the in-module
+ * effect this replaces.
+ */
+function moduleDefaultFx(moduleId) {
+    if (!moduleId) return [];
+    let meta = null;
+    try {
+        if (typeof host_get_module_metadata === "function") meta = host_get_module_metadata(moduleId);
+    } catch (e) { return []; }
+    if (typeof meta === "string") {
+        try { meta = JSON.parse(meta); } catch (e) { return []; }
+    }
+    const list = meta && meta.capabilities && meta.capabilities.default_fx;
+    if (!Array.isArray(list)) return [];
+    /* Bounded by the section cap, so a module cannot declare a chain longer
+     * than the slot can hold and have the tail vanish without a word. */
+    return list.filter((e) => e && typeof e.module === "string" && e.module)
+               .slice(0, CHAIN_CAP.fx);
+}
+
+/*
+ * Returns how many positions were seeded (0 when it declined), so the caller
+ * can decide whether the chain needs re-reading rather than re-reading always.
+ */
+function seedDefaultFxForSlot(slotIndex, moduleId) {
+    const wanted = moduleDefaultFx(moduleId);
+    if (!wanted.length) return 0;
+
+    /*
+     * The DSP's own count, not the cached model: this runs right after a synth
+     * write, and the cached chain is the one from before it.
+     *
+     * ONLY AN EXPLICIT ZERO SEEDS. The tri-state is covered by the NaN test
+     * rather than by a test of its own -- null, undefined and "" all parse to
+     * NaN, so an added `raw === null || ...` line is a branch no mutation can
+     * kill, and one of those was written here and removed for that reason.
+     * What matters is the direction: anything that is not a definite zero
+     * declines, so a read that did not complete cannot append a module to a
+     * chain somebody has already shaped.
+     */
+    const held = parseInt(getSlotParam(slotIndex, "fx_count"), 10);
+    if (!Number.isFinite(held) || held !== 0) return 0;
+
+    let seeded = 0;
+    for (const entry of wanted) {
+        const key = `fx${seeded + 1}`;
+        if (!setSlotParam(slotIndex, `${key}:module`, entry.module)) break;
+        seeded++;
+        if (entry.params && typeof entry.params === "object") {
+            for (const pk in entry.params) {
+                setSlotParam(slotIndex, `${key}:${pk}`, String(entry.params[pk]));
+            }
+        }
+    }
+    if (seeded) {
+        debugLog(`default_fx: seeded ${seeded} position(s) for ${moduleId}`);
+    }
+    return seeded;
+}
+
 /* Rotates the no-risk scan over the slots; see reconcileFeedbackHolds. */
 let _feedbackScanCursor = 0;
 
@@ -13373,6 +13457,13 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
         if (!success) {
             print(2, 50, "Failed to apply", 1);
         }
+    }
+
+    /* A SYNTH the user just picked may declare the effects that belong behind
+     * it. Only here -- this is the interactive pick; every restore path
+     * reconstructs a chain that has already been shaped. See moduleDefaultFx. */
+    if (moduleId && comp.key === "synth") {
+        seedDefaultFxForSlot(slotIndex, moduleId);
     }
 
     /* Track component selection for analytics. Outside the branches, because a

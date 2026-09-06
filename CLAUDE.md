@@ -1441,7 +1441,30 @@ Optional: `install_path`, `name`, `description`, `requires`, `post_install`, `re
 
 ### Catalog Entry
 
-Required: `id`, `name`, `description`, `author`, `component_type`, `github_repo`, `default_branch`, `asset_name`, `min_host_version`. Optional: `requires` (user-facing note about external assets like ROMs).
+Required: `id`, `name`, `description`, `author`, `component_type`, `github_repo`, `default_branch`, `asset_name`, `min_host_version`. Optional: `requires` (user-facing note about external assets like ROMs), `requires_modules`.
+
+**`requires` is PROSE, `requires_modules` is a LIST THE MANAGER ACTS ON**, and
+keeping them apart is the whole point of the second name: a module naming a ROM
+in `requires` must not have the manager go looking for a module called that.
+
+`requires_modules: ["clap"]` installs those ids first, depth first, and REFUSES
+to uninstall one while something on disk still declares it. A dependency
+failure fails the install and the message names the DEPENDENCY — a module whose
+effects silently do nothing because a dependency is absent is the outcome this
+exists to prevent, and it is undiagnosable from the device.
+
+Three rules that are not obvious:
+
+- **Already-installed dependencies are SKIPPED, never reinstalled.** A
+  dependency is a floor, not a version pin; reinstalling would quietly
+  downgrade a module the user updated on purpose.
+- **Only what is ON DISK pins anything.** The relationship comes from the
+  catalog, the dependents from the filesystem, so a module the user never
+  installed cannot make another un-removable by proxy.
+- **An unreachable (or absent) catalog answers "nobody depends on it"**, so
+  uninstall keeps working offline. That is the deliberate direction to fail in
+  — the alternative is a device that cannot remove a module because it cannot
+  reach the network.
 
 ## External Module Development
 

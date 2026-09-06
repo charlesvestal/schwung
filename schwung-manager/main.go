@@ -55,6 +55,13 @@ type CatalogModule struct {
 	AssetName     string `json:"asset_name"`
 	MinHostVer    string `json:"min_host_version"`
 	Requires      string `json:"requires,omitempty"`
+	// RequiresModules names other catalog modules this one cannot work without.
+	//
+	// Distinct from Requires, which is PROSE shown to the user about external
+	// assets it cannot fetch for them (ROMs, soundfonts). This is a list of ids
+	// the manager can and does act on: they are installed with the module and
+	// refused for uninstall while something still needs them.
+	RequiresModules []string `json:"requires_modules,omitempty"`
 }
 
 // CatalogHost describes the host entry in the catalog.
@@ -1165,6 +1172,55 @@ func (r ReleaseJSON) forModule(moduleID string) (ReleaseJSON, bool) {
 
 // installModule downloads and extracts a module from its GitHub release.
 func (app *App) installModule(mod *CatalogModule) error {
+	return app.installModuleWithDeps(mod, map[string]bool{})
+}
+
+// installModuleWithDeps installs `mod` and anything it declares in
+// requires_modules, depth first.
+//
+// DEPENDENCIES GO FIRST. A module that needs another one needs it at the moment
+// it is first loaded, not at the end of a batch -- and installing the dependent
+// first means a failure part-way leaves the thing that cannot work sitting on
+// the device looking installed.
+//
+// A dependency failure FAILS THE INSTALL, and the message names the dependency
+// rather than the module the user asked for. "requires" is not a suggestion; a
+// module whose effects silently do nothing because a dependency is absent is
+// the outcome this exists to prevent, and it is one nobody can diagnose from
+// the device.
+//
+// ALREADY-INSTALLED DEPENDENCIES ARE SKIPPED rather than reinstalled: a
+// dependency is a floor, not a version pin, and reinstalling one would quietly
+// downgrade a module the user had updated on purpose.
+//
+// `seen` breaks cycles. Two modules that require each other is a catalog
+// mistake rather than something to support, but it must not hang the manager.
+func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) error {
+	if seen[mod.ID] {
+		return nil
+	}
+	seen[mod.ID] = true
+
+	for _, depID := range mod.RequiresModules {
+		if depID == "" || depID == mod.ID || seen[depID] {
+			continue
+		}
+		if app.findModuleDir(depID) != "" {
+			app.logger.Info("dependency already installed", "id", mod.ID, "dep", depID)
+			seen[depID] = true
+			continue
+		}
+		dep := app.findCatalogModule(depID)
+		if dep == nil {
+			return fmt.Errorf("%s requires %q, which is not in the catalog", mod.ID, depID)
+		}
+		app.logger.Info("installing dependency", "id", mod.ID, "dep", depID)
+		if err := app.installModuleWithDeps(dep, seen); err != nil {
+			return fmt.Errorf("%s requires %s, which failed to install: %w",
+				mod.ID, depID, err)
+		}
+	}
+
 	if err := app.checkHostCompat(mod.MinHostVer); err != nil {
 		return err
 	}
@@ -1329,8 +1385,52 @@ func (app *App) uninstallModule(id string) error {
 	if modDir == "" {
 		return fmt.Errorf("module %q not found on disk", id)
 	}
+	if dependents := app.installedDependentsOf(id); len(dependents) > 0 {
+		return fmt.Errorf("%s is required by %s — uninstall %s first",
+			id, strings.Join(dependents, ", "),
+			map[bool]string{true: "it", false: "those"}[len(dependents) == 1])
+	}
 	app.logger.Info("uninstalling module", "id", id, "path", modDir)
 	return os.RemoveAll(modDir)
+}
+
+// installedDependentsOf lists the modules PRESENT ON DISK that declare `id` in
+// requires_modules, sorted so the message is stable.
+//
+// Asks the catalog for the relationship but the DISK for who is here: a module
+// the user never installed cannot pin anything, and a catalog that has moved on
+// must not make an installed module un-removable by proxy.
+//
+// An unreachable catalog answers "nobody", so uninstall keeps working offline.
+// That is the deliberate direction to fail in -- the alternative is a device
+// that cannot remove a module because it cannot reach the network.
+func (app *App) installedDependentsOf(id string) []string {
+	// No catalog service at all is the same answer as an unreachable one:
+	// nobody. uninstallModule calls this, so a nil here would turn "the
+	// catalog is not configured" into a panic on a path whose whole job is
+	// to keep working when the catalog cannot be consulted.
+	if app == nil || app.catalogSvc == nil {
+		return nil
+	}
+	cat, _ := app.catalogSvc.Fetch()
+	if cat == nil {
+		return nil
+	}
+	var out []string
+	for i := range cat.Modules {
+		m := &cat.Modules[i]
+		if m.ID == id {
+			continue
+		}
+		for _, dep := range m.RequiresModules {
+			if dep == id && app.findModuleDir(m.ID) != "" {
+				out = append(out, m.ID)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // findCatalogModule looks up a module by ID in the catalog.
