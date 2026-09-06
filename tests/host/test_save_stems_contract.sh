@@ -89,8 +89,9 @@ check(moveIdx === slots,
         check(fields.includes("save_stems"), "save_stems is not a field of shadow_control_t");
         /* "Appended" means nothing was put in FRONT of it. It does not mean it
          * stays last forever: the next register appended after it (the first
-         * was edit_cc_block) is exactly the discipline this pins, and a
-         * last-field check would fail on every correct append from here on. So
+         * were claim_cc_bits and then pad_observe) is exactly the discipline
+         * this pins, and a last-field check would fail on every correct append
+         * from here on. So
          * the invariant is its PREDECESSOR -- the field it was appended after --
          * which an insertion anywhere before it would change. */
         const at = fields.indexOf("save_stems");

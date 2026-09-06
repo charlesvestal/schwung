@@ -7241,14 +7241,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         prev_overtake_mode = overtake_mode;
     }
 
-    /* Drop any edit-CC claim when the shadow display goes away. The claim only
-     * means anything while a module's UI is on screen, and a shadow_ui that
-     * exited (or crashed) before reconciling it to 0 would otherwise leave
-     * Move's Undo / Copy / Delete captured with nothing left to deliver them
-     * to. Same reasoning as the runtime-claim drops on overtake exit above:
-     * this edge covers EVERY exit path. Runs unconditionally -- the filter
-     * itself is inside the shadow_display_mode branch below, so this must not
-     * be.
+    /* Drop the runtime claims when the shadow display goes away -- the
+     * edit-CC claim and pad observation both. Each only means anything while a
+     * module's UI is on screen, and a shadow_ui that exited (or crashed)
+     * before reconciling them to 0 would otherwise leave Move's Undo / Copy /
+     * Delete captured with nothing left to deliver them to, and every pad
+     * press still publishing into the UI ring -- which IS drained, so that
+     * cost is not a backlog but pad notes arriving at onMidiMessageInternal in
+     * views that have never seen one. Same reasoning as the runtime-claim
+     * drops on overtake exit above: this edge covers EVERY exit path. Runs
+     * unconditionally -- the filter itself is inside the shadow_display_mode
+     * branch below, so this must not be. ONE static for the edge, because two
+     * tracking the same transition is how they drift.
      *
      * A BUTTON STILL HELD KEEPS ITS LATCH. Clearing the whole array here
      * looks like the tidy thing and is a stuck-button bug: that press was
@@ -7258,11 +7262,20 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * module's grid, dismiss the shadow UI, let go: that is the whole repro.
      * The owed releases are drained below (see the claim-latch drain in the
      * post-ioctl scan), which is also the only thing that retires a HELD
-     * latch once the filter has stopped running. */
+     * latch once the filter has stopped running.
+     *
+     * pad_observe has no such latch -- nothing was withheld, so there is
+     * nothing owed. Both drops are UNILATERAL, though: JS is not told, which
+     * is why the reconcile on the other side RESTATES the flag every tick
+     * instead of comparing against a mirror of it. See
+     * shadow_ui_param_pages.mjs. */
     {
         static int prev_display_mode = 0;
         if (prev_display_mode && !shadow_display_mode) {
-            if (shadow_control) memset((void *)shadow_control->claim_cc_bits, 0, sizeof(shadow_control->claim_cc_bits));
+            if (shadow_control) {
+                memset((void *)shadow_control->claim_cc_bits, 0, sizeof(shadow_control->claim_cc_bits));
+                shadow_control->pad_observe = 0;
+            }
             for (int c = 0; c < 128; c++) {
                 if (claim_press_blocked[c] != CLAIM_LATCH_HELD) claim_press_blocked[c] = CLAIM_LATCH_NONE;
             }
@@ -8840,6 +8853,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                     continue;  /* Skip DSP routing for blocked pads */
+                }
+
+                /* Forward pad notes (68-99) to the shadow UI while it is OBSERVING
+                 * pads (shadow_control->pad_observe). ADDITIONAL and passive: no
+                 * `continue`, so the routing below is untouched and the pad plays
+                 * exactly as before -- the UI merely also learns a finger hit it.
+                 *
+                 * That distinction exists only here. Move turns a press into an
+                 * ordinary note, so by the time one reaches a module its status,
+                 * channel, note and source are identical to a sequenced note
+                 * (measured on device). This is the raw pad number, which a
+                 * sequencer cannot produce. */
+                if (shadow_control && shadow_control->pad_observe &&
+                    d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
                 }
 
                 /* Check capture rules for focused slot.

@@ -2727,6 +2727,26 @@ static JSValue js_shadow_set_display_overlay(JSContext *ctx, JSValueConst this_v
 #define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 
 /* host_pad_block(enable) - suppress pad notes from reaching Move firmware */
+/* host_pad_observe(enable) - ask the shim to ALSO forward hardware pad notes
+ * (68-99) to the shadow UI, passively: nothing is blocked, the pad still plays.
+ * The knob grid sets it while the component on screen declared
+ * child_press_param / focus_press_param, and clears it when it leaves.
+ * Idempotent and logs only on a transition, so a caller may reconcile it every
+ * tick from what is on screen. */
+static JSValue js_host_pad_observe(JSContext *ctx, JSValueConst this_val,
+                                   int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    uint8_t next = val ? 1 : 0;
+    if (shadow_control->pad_observe != next) {
+        shadow_control->pad_observe = next;
+        shadow_ui_log_line(next ? "shadow_ui: pad_observe ON" : "shadow_ui: pad_observe OFF");
+    }
+    return JS_TRUE;
+}
+
 /* host_claim_ccs([cc, ...]) - claim buttons at runtime. Every listed CC is
  * withheld from Move firmware and forwarded to the shadow UI (the runtime
  * complement to the static capabilities.claims_ccs / claims_edit_ccs), so a
@@ -3257,6 +3277,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register pad block function */
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_claim_ccs", JS_NewCFunction(ctx, js_host_claim_ccs, "host_claim_ccs", 1));
 
     /* Register preview player functions */

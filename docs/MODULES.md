@@ -1788,6 +1788,7 @@ declared.
 | `child_notes` | a child level | sparse per-instance notes; wins over `child_note_base` |
 | `child_names` | a child level | per-instance names; falls back **per item** to `child_label` + index |
 | `child_roles` | a child level | per-instance roles, same free-form rule as `role` |
+| `child_press_param` | a child level | a param the knob grid writes `"1"` to when a **finger** hits a pad while this component is on screen — see *Live presses* below |
 
 #### A `note` is a MIDI NOTE, never a pad id
 
@@ -1812,6 +1813,7 @@ a pad id. It is a diagnostic — **nothing navigates on it**, for the reason
 under "Why there is no note-based fallback" below.
 
 | `focus_param` | hierarchy top level | a param naming the focused voice: a **level name**, optionally prefixed `"<count>:"` |
+| `focus_press_param` | hierarchy top level | the sibling-shape spelling of `child_press_param` — see *Live presses* below |
 
 `role` is a **free string** and deliberately not an enumeration. It is a hint a
 consumer may use to colour or seat a rack it has never seen, and one that does
@@ -1856,6 +1858,47 @@ publish a focus param.
 
 `synth:last_note` is still served (see `docs/CHAIN.md`) and is a reasonable
 thing for a sequencer to ask. **Nothing navigates on it.**
+
+##### Live presses — a vouch, never a pad id
+
+The follow above moves the grid to the voice **you** say is focused. For a
+drum module the voice you want focused is the pad you just **hit**, and that
+is the one fact the module cannot get on its own: Move turns a pad press into
+an ordinary note before playing it, so by the time it reaches `on_midi` a hit
+and a sequenced note are the same bytes — same status, channel, note and
+source (measured on device). Capture rules would tell them apart, but they
+take the pad away from Move, which is the opposite of what a drum rack wants.
+
+The knob grid still sees the raw pad event. So a level may ask to be told:
+
+```json
+"pads": {
+  "child_count": 16, "child_key_template": "p{index}_{key}",
+  "child_index_param": "focused_pad",
+  "child_press_param": "live_press",
+  "knobs": ["vol", "pan", "tune"]
+}
+```
+
+While the grid shows a component with such a level (or a `focus_press_param`
+at the top of a sibling-shape hierarchy), the host forwards Move's hardware
+pad notes to itself **passively** — nothing is blocked, the pad still plays —
+and on each press writes `<prefix>:<child_press_param> = "1"`: *a finger did
+that.* Note-on only, one write per press.
+
+**It is a vouch, not a pad id.** The host does not say *which* pad, because
+the pad-to-note map is Move's (drum layout, octave, a track's own transpose),
+and a module told "pad 68" could only ever address the sixteen pads of one
+bank, mis-strided. The module pairs the vouch with the note it receives
+itself, in either order — the two cross a process boundary and arrive a few
+milliseconds apart — inside a short window, and moves `child_index_param` to
+that pad. A vouch with no note inside the window is dropped; a note with no
+vouch is a sequenced note and moves nothing. That is the whole contract, and
+it is why `child_index_param` stays the single source of truth: the host
+never writes the index, it only reports the gesture.
+
+Declaring neither costs nothing: the shim never forwards a pad for you and
+no write is made. The list editor does not report presses; only the grid does.
 
 ##### A focus answer may carry a CHANGE TOKEN
 

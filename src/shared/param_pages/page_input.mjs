@@ -30,6 +30,42 @@ export const BACK_CC = 51;
 export const MUTE_CC = 88;
 export const TOUCH_NOTE_FIRST = 0;
 export const TOUCH_NOTE_LAST = 7;
+export const PAD_NOTE_FIRST = 68;
+export const PAD_NOTE_LAST = 99;
+
+/**
+ * Is this message a FINGER hitting a pad?
+ *
+ * The one thing the grid does with a pad note, and the only one it can: it
+ * vouches for the gesture to a module that declared `child_press_param`
+ * (docs/MODULES.md, "Live presses"). `decodeInput` returns null for pads on
+ * purpose and must keep doing so -- pad typing belongs to the keyboard -- so
+ * this is a separate question with a separate answer, not an intent.
+ *
+ * It lives HERE rather than at the one call site because it is three boring
+ * conditions of exactly the kind this file exists to keep testable, and each
+ * of them is a bug somebody would otherwise ship unnoticed:
+ *
+ *   - NOTE-ON ONLY. A pad sends a release too, and vouching for it would
+ *     report two presses per hit -- the module would move focus twice, the
+ *     second time from a gesture that had already ended.
+ *   - A velocity-0 note-on IS a release. Move sends both forms.
+ *   - The pad RANGE. Steps (16-31), tracks (40-43) and knob touch (0-9) all
+ *     arrive as notes on the same cable, and none of them is a pad.
+ *
+ * The shim gates the same range before it forwards anything (pad_observe in
+ * schwung_shim.c), so in practice this is a second lock on the same door. It
+ * is still the one that can be run without a device.
+ *
+ * @param {number[]|Uint8Array} data  [status, d1, d2]
+ * @returns {boolean}
+ */
+export function isHardwarePadPress(data) {
+    if (!data || data.length < 3) return false;
+    if ((data[0] & 0xf0) !== 0x90) return false;   /* note-on only */
+    if (!(data[2] > 0)) return false;              /* velocity 0 is a release */
+    return data[1] >= PAD_NOTE_FIRST && data[1] <= PAD_NOTE_LAST;
+}
 
 /**
  * @param {number[]|Uint8Array} data  [status, d1, d2]
