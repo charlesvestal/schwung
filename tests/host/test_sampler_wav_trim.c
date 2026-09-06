@@ -12,6 +12,10 @@
  * AUDIO wrong, so a test that only counted frames would have passed for the
  * whole time this was broken. */
 
+/* Before every include: the trim calls ftruncate/fileno and this file calls
+ * fdopen, all POSIX, all hidden by glibc under the suite's -std=c11. */
+#define _POSIX_C_SOURCE 200809L
+
 #include "../../src/host/sampler_wav_trim.h"
 #include <stdio.h>
 #include <string.h>

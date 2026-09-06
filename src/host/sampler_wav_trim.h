@@ -28,8 +28,18 @@
 #ifndef SAMPLER_WAV_TRIM_H
 #define SAMPLER_WAV_TRIM_H
 
+/* ftruncate/fileno and off_t are POSIX, and glibc hides them under a strict
+ * -std=c11 unless the TU asks. shadow_sampler.c defines _GNU_SOURCE; a caller
+ * that does not (tests/host builds with -std=c11) must say so before including
+ * this. macOS declares them regardless, which is why a build that is fine on
+ * the dev machine fails on CI and on the device toolchain. */
+#if !defined(_GNU_SOURCE) && !defined(_POSIX_C_SOURCE) && !defined(__APPLE__)
+#error "sampler_wav_trim.h needs POSIX: define _POSIX_C_SOURCE 200809L (or _GNU_SOURCE) before including it"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 /* Writes `bytes` from `buf` at the stream's current position, returning the
