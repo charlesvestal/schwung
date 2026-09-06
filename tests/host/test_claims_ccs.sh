@@ -50,7 +50,15 @@ command grep -q 'claim_press_blocked\[d1\] =' "$shim" \
   || fail "the per-button press latch is gone from the firmware filter"
 command grep -A1 'claim_press_blocked\[d1\] =' "$shim" | command grep -q 'claim_cc_set(d1)' \
   || fail "the press latch is not derived from the claim bitmap -- that is #154 again"
-if command grep -B2 -A2 'claim_press_blocked\[d1\] =' "$shim" | command grep -q 'shadow_display_mode'; then
+# Scoped to the firmware-filter block rather than to a +-2 line window around
+# the assignment: the drain added later legitimately reads shadow_display_mode,
+# and a window pin cannot tell the two sites apart (it also matched `==` on the
+# `[d1] =` prefix, so it failed on a correct tree).
+press_block=$(sed -n '/A CLAIMED button: withheld from Move firmware ONLY while/,/Filter Menu unless long-press mode/p' "$shim")
+[ -n "$press_block" ] || fail "the firmware-filter claim block is gone"
+echo "$press_block" | command grep -q 'claim_press_blocked\[d1\] =' \
+  || fail "the firmware-filter claim block no longer sets the press latch"
+if echo "$press_block" | command grep -q 'shadow_display_mode'; then
   fail "the claim site tests the display, not the claim -- the #175 revert exists because of exactly this"
 fi
 echo "  ok  the firmware filter withholds a button only under the runtime claim"
@@ -96,6 +104,65 @@ command grep -q 'CC_CLAIM_VIEWS\[VIEWS.PARAM_PAGES\] = true' "$ui_js" \
 command grep -B3 'memset((void \*)shadow_control->claim_cc_bits, 0' "$shim" | command grep -q 'prev_display_mode && !shadow_display_mode' \
   || fail "the shim does not drop the claims when the shadow display closes -- a crashed shadow_ui strands Move's buttons"
 echo "  ok  claims are reconciled from metadata in one place and dropped by the shim on display close"
+
+# ---- 6. a HELD button keeps its latch across the display close ---------------
+# Clearing the whole latch array on that edge hands Move a lone button-up for a
+# key it never saw go down -- the shape that deleted a clip once already.
+close_edge=$(sed -n '/prev_display_mode && !shadow_display_mode/,/prev_display_mode = shadow_display_mode;/p' "$shim")
+[ -n "$close_edge" ] || fail "the display-close edge is gone"
+if echo "$close_edge" | command grep -q 'memset(claim_press_blocked'; then
+  fail "the display-close edge blanket-clears the press latch -- a button held across it hands Move an orphan release"
+fi
+echo "$close_edge" | command grep -q 'CLAIM_LATCH_HELD' \
+  || fail "the display-close edge does not spare the buttons still HELD"
+echo "  ok  a button held across the display close keeps its latch"
+
+# ---- 7. ...and the owed release is drained, not leaked ------------------------
+drain=$(sed -n '/CLAIM-LATCH DRAIN/,/^                }$/p' "$shim")
+[ -n "$drain" ] || fail "the claim-latch drain is gone -- a HELD latch kept past the display close is never retired"
+echo "$drain" | command grep -q 'claim_press_blocked\[d1\] == CLAIM_LATCH_HELD' \
+  || fail "the drain is not gated on HELD -- gated on non-zero it eats the button's NEXT press"
+echo "$drain" | command grep -q 'midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)' \
+  || fail "the drain does not use midi_in_swallow -- Move reads the SHADOW buffer, and a zeroed hw slot is a terminator"
+echo "$drain" | command grep -q 'if (d2 == 0) claim_press_blocked\[d1\] = CLAIM_LATCH_NONE;' \
+  || fail "the drain never retires the latch, so the button stays swallowed forever"
+# It must run BEFORE compaction, which is required to be last.
+drain_line=$(command grep -n 'CLAIM-LATCH DRAIN' "$shim" | head -1 | cut -d: -f1)
+compact_line=$(command grep -n 'shadow_midi_in_compact(global_mmap_addr' "$shim" | head -1 | cut -d: -f1)
+[ -n "$drain_line" ] && [ -n "$compact_line" ] && [ "$drain_line" -lt "$compact_line" ] \
+  || fail "the drain runs after shadow_midi_in_compact() -- nothing may zero a slot once the gaps are closed"
+echo "  ok  the owed release is swallowed in both buffers and the latch retired"
+
+# ---- 8. a FAILED module-id read plans nothing and latches nothing -------------
+# null from getSlotParam is "the read did not complete", not "no module here".
+# Collapsed with || "" it reads as "nothing claims anything" -- and latching the
+# key before the read made that verdict stick for the whole visit, with Delete
+# going back to Move.
+rec=$(sed -n '/^function reconcileCcClaim()/,/^}/p' "$ui_js")
+[ -n "$rec" ] || fail "reconcileCcClaim is gone"
+if echo "$rec" | command grep -q '_module`) || ""'; then
+  fail "reconcileCcClaim collapses a failed module-id read into \"\" -- a timed-out read then reads as \"no claim\""
+fi
+# BOTH branches, counted. reconcileCcClaim reads a module id two ways -- the
+# grid's own slot/component, and the list editor's -- and guarding one of them
+# is indistinguishable from guarding both unless the count is the assertion.
+raws=$(echo "$rec" | command grep -c 'const raw = ' || true)
+guards=$(echo "$rec" | command grep -c 'raw === null || raw === undefined) return;' || true)
+[ "$raws" -eq 2 ] || fail "reconcileCcClaim no longer makes exactly 2 raw module-id reads (found $raws) -- update the guard count with them"
+[ "$guards" -eq "$raws" ] \
+  || fail "$((raws - guards)) of $raws raw module-id reads in reconcileCcClaim are unguarded -- an unguarded one turns a timed-out read into \"no claim\""
+key_line=$(echo "$rec" | command grep -n 'ccClaimKey = key;' | head -1 | cut -d: -f1)
+raw_line=$(echo "$rec" | command grep -n 'raw === null' | head -1 | cut -d: -f1)
+[ -n "$key_line" ] && [ -n "$raw_line" ] && [ "$raw_line" -lt "$key_line" ] \
+  || fail "ccClaimKey is latched BEFORE the read -- a failed read is then never retried for this screen"
+echo "$rec" | command grep -q 'hierarchyActiveModuleIdRaw()' \
+  || fail "the hierarchy branch reads through the || \"\" helper, which has already thrown the third answer away"
+command grep -q 'function hierarchyActiveModuleIdRaw' "$ui_js" \
+  || fail "hierarchyActiveModuleIdRaw is gone"
+mcc=$(sed -n '/^function moduleClaimedCcs(/,/^}/p' "$ui_js")
+echo "$mcc" | command grep -q 'not cached' \
+  || fail "a THROWN metadata read is cached -- one bad read then answers \"no claim\" for the rest of the session"
+echo "  ok  a read that did not answer produces no claim, no cache entry and no latch"
 
 # ---- docs say what the code does ---------------------------------------------
 command grep -q '| `claims_ccs` |' "$docs" || fail "docs/MODULES.md capability table has no claims_ccs row"
