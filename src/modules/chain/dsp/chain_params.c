@@ -5,6 +5,7 @@
  */
 
 #include "chain_internal.h"
+#include "relative_cc.h"
 
 /*
  * Format a parameter value for display based on its metadata.
@@ -929,9 +930,261 @@ chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, 
     return NULL;
 }
 
-/* Forward a formatted value string to the plugin identified by target. */
+/*
+ * Point a destination at a parameter, whole-range.
+ *
+ * One owner for the three fields that must move together: a truncated name and
+ * an unreset range are both silent, and the strncpy-then-terminate spelling
+ * this replaces was six lines per assignment and appeared twice.
+ */
+void knob_dest_assign(knob_dest_t *d, const char *target, const char *param) {
+    if (!d) return;
+    snprintf(d->target, sizeof(d->target), "%s", target ? target : "");
+    snprintf(d->param, sizeof(d->param), "%s", param ? param : "");
+    d->lo = 0.0f;
+    d->hi = 1.0f;
+}
+
+/* ---- One knob-turn law ---------------------------------------------------
+ *
+ * Three paths turn a chain knob and each had hand-rolled the same time-based
+ * acceleration curve: the relative CC decode and the absolute CC in
+ * chain_midi.c, and knob_N_adjust in chain_host.c -- which is the path the
+ * device's own encoders use, so it is the common case rather than an edge.
+ *
+ * Three copies of one curve is three places for it to drift, and it already
+ * had. The two spellings nested their bounds differently (`elapsed <
+ * KNOB_ACCEL_SLOW_MS` outside, vs `elapsed <= KNOB_ACCEL_FAST_MS` first) and
+ * happened to compute the same answer -- but they still disagree on the
+ * FALLBACK BASE STEP used when a parameter declares no step of its own:
+ * chain_midi.c uses KNOB_STEP_FLOAT (0.0015), chain_host.c uses 0.01f, a 6.7x
+ * difference between an external controller and the device's own encoder on
+ * the same parameter. That one is deliberately NOT resolved here: either value
+ * is a behaviour change for somebody, and picking one is a judgement call for
+ * review rather than a silent side effect of deduplication.
+ *
+ * Extracted here rather than into a header because chain_params.c IS compiled
+ * natively by tests/host (unlike chain_midi.c and chain_host.c, which dlopen
+ * plugins -- that asymmetry is why relative_cc.h exists at all). The curve is
+ * split from the clock read for the same reason relative_cc.h split the decode
+ * from its call site: a source-level pin cannot tell 4 from 8.
+ *
+ * Shape and name taken from #347, which reached the same extraction first.
+ */
+
+/*
+ * Time-based acceleration multiplier for one knob message, against the FLOAT
+ * ceiling. Callers that need the int or enum cap apply chain_knob_accel_cap
+ * afterwards, because only they know the parameter's type. `last_ms` is read
+ * and updated in place.
+ */
+int chain_knob_accel_for_gap(uint64_t elapsed_ms) {
+    if (elapsed_ms >= KNOB_ACCEL_SLOW_MS) return KNOB_ACCEL_MIN_MULT;
+    if (elapsed_ms <= KNOB_ACCEL_FAST_MS) return KNOB_ACCEL_MAX_MULT;
+
+    float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed_ms) /
+                  (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
+    return KNOB_ACCEL_MIN_MULT +
+           (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
+}
+
+int chain_knob_accel(uint64_t *last_ms) {
+    uint64_t now = get_time_ms();
+    uint64_t last = *last_ms;
+    *last_ms = now;
+
+    /* No previous message: the first turn of a session is a slow one. */
+    if (last == 0) return KNOB_ACCEL_MIN_MULT;
+    return chain_knob_accel_for_gap(now - last);
+}
+
+/*
+ * Cap the multiplier for a stepped parameter. Enums never accelerate on TIME
+ * (a deliberate slow turn must not overshoot a list of options); ints are
+ * limited rather than pinned. Both rules predate this extraction and are
+ * unchanged -- see relative_cc_multiplier for why a DETENT count is still
+ * honoured for an enum even though the time multiplier is not.
+ */
+int chain_knob_accel_cap(int accel, int type) {
+    if (type == KNOB_TYPE_ENUM) return KNOB_ACCEL_ENUM_MULT;
+    if (type == KNOB_TYPE_INT && accel > KNOB_ACCEL_MAX_MULT_INT)
+        return KNOB_ACCEL_MAX_MULT_INT;
+    return accel;
+}
+
+/* ---- Destination windows -------------------------------------------------
+ *
+ * A destination's lo/hi are fractions of its parameter's own range. These four
+ * convert between the two, and they are the only place that arithmetic lives.
+ */
+
+/*
+ * ceil and floor, without libm.
+ *
+ * `ceilf`/`floorf` live in libm on glibc and in libc on macOS, so using them
+ * here linked fine on a dev machine and broke CI with `undefined reference to
+ * ceilf` -- and it would have broken it again for the next person to compile
+ * chain_params.c into a test, of which there are thirteen. A cast truncates
+ * toward zero, which is all that is needed to build both: correct for negative
+ * inputs too, which signed parameter ranges make ordinary.
+ */
+static float knob_ceil_toward_pos(float v) {
+    float t = (float)(long)v;
+    return (t < v) ? t + 1.0f : t;
+}
+static float knob_floor_toward_neg(float v) {
+    float t = (float)(long)v;
+    return (t > v) ? t - 1.0f : t;
+}
+
+/* Fraction (0..1 of the parameter's range) -> a value in the parameter's own
+ * units, WITHOUT quantisation. The bounds of a window come from here, so that
+ * a whole-range window is exactly [min_val, max_val] and clamping to it cannot
+ * move a value the caller has already quantised. */
+static float knob_frac_to_raw(float frac, const chain_param_info_t *pinfo) {
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    return pinfo->min_val + frac * (pinfo->max_val - pinfo->min_val);
+}
+
+/* ...and the same, quantised the way the parameter is quantised. */
+float knob_frac_to_value(float frac, const chain_param_info_t *pinfo) {
+    if (!pinfo) return frac;
+
+    float v = knob_frac_to_raw(frac, pinfo);
+    if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM) {
+        /*
+         * The half is what lets an enum sub-range REACH its top option; plain
+         * truncation leaves the last one unreachable except at exactly 1.0.
+         *
+         * ⚠ `(int)` truncates TOWARD ZERO, so on a parameter with a negative
+         * minimum this rounds the wrong way -- -64 + 0.5 = -63.5 becomes -63,
+         * and the bottom of a -64..63 parameter is a step out of reach. That
+         * is not new: it is exactly what the absolute-CC path (CC 102-109) has
+         * always done, and it is left alone deliberately. Correcting it here
+         * would shift every inbound CC value by one step on every signed
+         * parameter -- a behaviour change to existing rigs, which does not
+         * belong in a commit about destinations. Worth fixing on its own.
+         */
+        v = (float)((int)(v + 0.5f));
+    }
+    if (v < pinfo->min_val) v = pinfo->min_val;
+    if (v > pinfo->max_val) v = pinfo->max_val;
+    return v;
+}
+
+/* The inverse. A degenerate range answers 0 rather than dividing by it. */
+float knob_value_to_frac(float value, const chain_param_info_t *pinfo) {
+    if (!pinfo) return 0.0f;
+    float span = pinfo->max_val - pinfo->min_val;
+    if (span <= 0.0f) return 0.0f;
+    float f = (value - pinfo->min_val) / span;
+    if (f < 0.0f) f = 0.0f;
+    if (f > 1.0f) f = 1.0f;
+    return f;
+}
+
+/* Clamp a value into a destination's window, in the parameter's own units.
+ * This is the whole of what a range means for a SINGLE-destination knob: the
+ * parameter keeps its own step and feel and is simply bounded. `lo > hi` names
+ * the same window from the other end, so the bounds are ordered here. */
+float knob_dest_clamp(const knob_dest_t *d, float value,
+                      const chain_param_info_t *pinfo) {
+    if (!d || !pinfo) return value;
+
+    /* Bounds from the UNQUANTISED map, so a whole-range window is exactly the
+     * parameter's own [min, max] and this is a no-op on it -- which is what
+     * keeps an ordinary knob's behaviour bit-identical to what shipped. Taking
+     * them through the quantiser instead rounded the bounds themselves, and on
+     * a parameter with a negative minimum that made its bottom value
+     * unreachable through a knob that had always reached it. */
+    float a = knob_frac_to_raw(d->lo, pinfo);
+    float b = knob_frac_to_raw(d->hi, pinfo);
+    float lo = (a < b) ? a : b;
+    float hi = (a < b) ? b : a;
+
+    /* A stepped parameter's window is the whole steps INSIDE it: a window
+     * ending at 4.3 offers 4, not a value the parameter cannot hold. */
+    if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM) {
+        lo = knob_ceil_toward_pos(lo);
+        hi = knob_floor_toward_neg(hi);
+        if (hi < lo) hi = lo;
+    }
+
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+/* Where a destination sits when the knob is at `position`. lo > hi is an
+ * inverted destination and needs no special case: the interpolation simply
+ * runs backwards. */
+float knob_dest_value_at(const knob_dest_t *d, float position,
+                         const chain_param_info_t *pinfo) {
+    if (!d) return 0.0f;
+    if (position < 0.0f) position = 0.0f;
+    if (position > 1.0f) position = 1.0f;
+
+    /* Clamped through the SAME rule that bounds a single destination, so a
+     * window has the same edges however many destinations the knob has.
+     * Without it the two rounding rules disagree wherever a bound's fraction
+     * falls below a half: an 8-option enum windowed 30-90% bottomed at option
+     * 3 with one destination and option 2 with two, so adding a second
+     * destination moved the first one's floor. */
+    return knob_dest_clamp(d, knob_frac_to_value(d->lo + position * (d->hi - d->lo), pinfo),
+                           pinfo);
+}
+
+/* Clamp a value into a destination's window, in the parameter's own units.
+ * This is the whole of what a range means for a SINGLE-destination knob: the
+ * parameter keeps its own step and feel and is simply bounded. `lo > hi` names
+ * the same window from the other end, so the bounds are ordered here. */
+
+/* The base step for one detent: what the parameter declares, or a fallback.
+ * `float_fallback` is a PARAMETER because the two knob paths disagree about it
+ * -- chain_midi.c has always used KNOB_STEP_FLOAT and chain_host.c 0.01f, a
+ * 6.7x difference on the same parameter. Passing it in keeps that divergence
+ * visible at both call sites instead of quietly resolving it here; see the
+ * note above chain_knob_accel. */
+float knob_base_step(const chain_param_info_t *pinfo, float float_fallback) {
+    if (!pinfo) return float_fallback;
+    if (pinfo->step > 0) return pinfo->step;
+    if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM)
+        return (float)KNOB_STEP_INT;
+    return float_fallback;
+}
+
+/*
+ * Forward a formatted value string to the plugin identified by target.
+ *
+ * A knob turn is an EDIT of the parameter's RESTING value, exactly as an edit
+ * from the parameter's own page is -- so it has to reach the modulation bus by
+ * the same route. It did not, and the consequence was a knob that looked dead.
+ *
+ * A modulated parameter is not owned by whoever wrote it last. The bus holds a
+ * base and rewrites `base + modulation` to the plugin on every tick
+ * (chain_mod_apply_effective_value). The prefixed `synth:` / `fxN:` /
+ * `midi_fxN:` set_param routes therefore update the base FIRST, so the wobble
+ * follows the new setting. This function did not: it wrote straight through to
+ * the plugin and told the bus nothing, so the next tick recomputed from the
+ * stale base and erased the turn -- within milliseconds, every time. Assign a
+ * knob to a parameter an LFO is driving and the knob reads as dead, or moves
+ * and snaps back.
+ *
+ * REALTIME: the added call is the same one the prefixed routes already make
+ * from this same thread, and chain_mod_apply_effective_value allocates nothing.
+ */
 void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str) {
-    if (!inst || !target) return;
+    if (!inst || !target || !param) return;
+
+    if (chain_mod_is_target_active(inst, target, param)) {
+        chain_mod_update_base_from_set_param(inst, target, param, val_str);
+        mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
+        if (entry) {
+            chain_mod_apply_effective_value(inst, entry, 0);
+            return;
+        }
+    }
 
     if (strcmp(target, "synth") == 0) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param)
@@ -959,6 +1212,296 @@ void knob_forward_value(chain_instance_t *inst, const char *target, const char *
 }
 
 
+/* Format a value the way its parameter is spelled, and forward it. Kept
+ * separate so the two branches of knob_turn cannot format differently. */
+static void knob_format_and_forward(chain_instance_t *inst, const knob_dest_t *d,
+                                    const chain_param_info_t *pinfo, float value) {
+    char val_str[16];
+    if (pinfo && (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM))
+        snprintf(val_str, sizeof(val_str), "%d", (int)value);
+    else
+        snprintf(val_str, sizeof(val_str), "%.3f", value);
+    knob_forward_value(inst, d->target, d->param, val_str);
+}
+
+/* ---- Destination editing -------------------------------------------------
+ *
+ * One owner for every change to a knob's destination list, so the two things
+ * that must happen alongside a change cannot be forgotten at a call site:
+ * seeding the position when a knob first gains a second destination, and
+ * re-writing the destinations when a window moves.
+ */
+
+/*
+ * Find the knob mapping for a CC, creating one if there is room.
+ * Returns NULL when the table is full.
+ */
+knob_mapping_t *knob_mapping_for_cc(chain_instance_t *inst, int cc, int create) {
+    if (!inst) return NULL;
+    for (int i = 0; i < inst->knob_mapping_count; i++)
+        if (inst->knob_mappings[i].cc == cc) return &inst->knob_mappings[i];
+    if (!create || inst->knob_mapping_count >= MAX_KNOB_MAPPINGS) return NULL;
+
+    knob_mapping_t *km = &inst->knob_mappings[inst->knob_mapping_count++];
+    memset(km, 0, sizeof(*km));
+    km->cc = cc;
+    km->last_cc_out = -1;
+    return km;
+}
+
+/*
+ * Seed the knob's position from its FIRST destination's live value.
+ *
+ * Called at the moment a knob gains a second destination. Without it the
+ * position is wherever it was left -- 0 for a new mapping -- and the first
+ * turn would yank every destination to the bottom of its window. Seeding from
+ * destination 0 means nothing moves at the moment of adding.
+ *
+ * NOT called from a poll, and that is deliberate: re-deriving the position
+ * from a destination's own quantisation grid between detents would stall a
+ * slow turn on a coarse destination, which is the same arithmetic that keeps a
+ * single destination off this path in the first place.
+ */
+void knob_seed_position(chain_instance_t *inst, knob_mapping_t *km) {
+    if (!inst || !km || km->dest_count < 1) return;
+    const knob_dest_t *d = &km->dests[0];
+    chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+    if (!pinfo) return;
+
+    float span = d->hi - d->lo;
+    if (span == 0.0f) { km->position = 0.0f; return; }
+
+    float pos = (knob_value_to_frac(d->current_value, pinfo) - d->lo) / span;
+    if (pos < 0.0f) pos = 0.0f;
+    if (pos > 1.0f) pos = 1.0f;
+    km->position = pos;
+}
+
+/* Ask whatever is at `target` for a parameter's current value. The same
+ * indexed ladder the patch serializer walks -- enumerated versions of it have
+ * stopped at fx2/midi_fx1 twice, so the bound is the cap and not a list. */
+int knob_read_live_value(chain_instance_t *inst, const char *target, const char *param,
+                         char *buf, int buf_len) {
+    if (!inst || !target || !param) return -1;
+
+    if (strcmp(target, "synth") == 0) {
+        if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param)
+            return inst->synth_plugin_v2->get_param(inst->synth_instance, param, buf, buf_len);
+        return -1;
+    }
+
+    int fx = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+    if (fx >= 0) {
+        if (fx < inst->fx_count && inst->fx_is_v2[fx] && inst->fx_plugins_v2[fx] &&
+            inst->fx_instances[fx] && inst->fx_plugins_v2[fx]->get_param)
+            return inst->fx_plugins_v2[fx]->get_param(inst->fx_instances[fx], param, buf, buf_len);
+        return -1;
+    }
+
+    int mfx = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+    if (mfx >= 0) {
+        if (mfx < inst->midi_fx_count && inst->midi_fx_plugins[mfx] &&
+            inst->midi_fx_instances[mfx] && inst->midi_fx_plugins[mfx]->get_param)
+            return inst->midi_fx_plugins[mfx]->get_param(inst->midi_fx_instances[mfx], param, buf, buf_len);
+        return -1;
+    }
+    return -1;
+}
+
+/* A mapping's index in the table, or -1. The knob helpers take a pointer, but
+ * the CC-out and position calls are indexed. */
+int knob_mapping_index(chain_instance_t *inst, const knob_mapping_t *km) {
+    if (!inst || !km) return -1;
+    for (int i = 0; i < inst->knob_mapping_count; i++)
+        if (&inst->knob_mappings[i] == km) return i;
+    return -1;
+}
+
+/* Remove a mapping from the table, blanking the slot the shift vacates -- a
+ * mapping added later lands on it and only writes its first destination. */
+void knob_mapping_drop(chain_instance_t *inst, knob_mapping_t *km) {
+    int i = knob_mapping_index(inst, km);
+    if (i < 0) return;
+    for (int j = i; j < inst->knob_mapping_count - 1; j++)
+        inst->knob_mappings[j] = inst->knob_mappings[j + 1];
+    inst->knob_mapping_count--;
+    memset(&inst->knob_mappings[inst->knob_mapping_count], 0, sizeof(inst->knob_mappings[0]));
+}
+
+/* Point destination `di` (0-based) at a parameter, keeping its window -- a
+ * window is a fraction of whatever parameter is there, so re-pointing is
+ * exactly the case it was designed to survive. `di == dest_count` appends.
+ * Returns 0 on success. */
+int knob_dest_point(chain_instance_t *inst, knob_mapping_t *km, int di,
+                    const char *target, const char *param) {
+    if (!inst || !km || di < 0 || di >= MAX_KNOB_DESTS) return -1;
+    if (di > km->dest_count) return -1;          /* no gaps */
+
+    int appending = (di == km->dest_count);
+    if (appending) {
+        memset(&km->dests[di], 0, sizeof(km->dests[di]));
+        km->dests[di].lo = 0.0f;
+        km->dests[di].hi = 1.0f;
+    }
+
+    float lo = km->dests[di].lo, hi = km->dests[di].hi;
+    knob_dest_assign(&km->dests[di], target, param);
+    km->dests[di].lo = lo;
+    km->dests[di].hi = hi;
+
+    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
+    if (pinfo) {
+        char val_buf[64];
+        /* Every kind of position, not just the synth. Reading only synth here
+         * meant a destination on an FX started from the parameter's DEFAULT,
+         * so the first turn of the knob jumped it away from whatever the user
+         * had actually dialled in -- and the position seeded from it was wrong
+         * by the same amount. */
+        int got = knob_read_live_value(inst, target, param, val_buf, sizeof(val_buf));
+        km->dests[di].current_value = (got > 0)
+            ? dsp_value_to_float(val_buf, pinfo, pinfo->default_val)
+            : pinfo->default_val;
+    }
+
+    if (appending) km->dest_count = di + 1;
+
+    /* Crossing from one destination to two is where the position starts to
+     * mean something. */
+    if (km->dest_count == 2 && appending) knob_seed_position(inst, km);
+    return 0;
+}
+
+/* Remove destination `di`, closing the gap. Returns the remaining count. */
+int knob_dest_remove(chain_instance_t *inst, knob_mapping_t *km, int di) {
+    (void)inst;
+    if (!km || di < 0 || di >= km->dest_count) return km ? km->dest_count : 0;
+    for (int j = di; j < km->dest_count - 1; j++) km->dests[j] = km->dests[j + 1];
+    memset(&km->dests[km->dest_count - 1], 0, sizeof(km->dests[0]));
+    km->dest_count--;
+    return km->dest_count;
+}
+
+/*
+ * Set destination `di`'s window and APPLY IT NOW.
+ *
+ * Applying immediately is the point: the window is being adjusted by ear, and
+ * a range you cannot hear until the next turn is a range you are setting
+ * blind. For a multi-destination knob that means re-deriving this destination
+ * from the current position; for a single one it means clamping the value into
+ * the new window, which can move the parameter -- deliberately, for the same
+ * reason.
+ */
+void knob_dest_set_window(chain_instance_t *inst, knob_mapping_t *km, int di,
+                          float lo, float hi) {
+    if (!inst || !km || di < 0 || di >= km->dest_count) return;
+    if (lo < 0.0f) lo = 0.0f;
+    if (lo > 1.0f) lo = 1.0f;
+    if (hi < 0.0f) hi = 0.0f;
+    if (hi > 1.0f) hi = 1.0f;
+
+    knob_dest_t *d = &km->dests[di];
+    d->lo = lo;
+    d->hi = hi;
+
+    chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+    if (!pinfo) return;
+
+    float nv = knob_is_multi(km) ? knob_dest_value_at(d, km->position, pinfo)
+                                 : knob_dest_clamp(d, d->current_value, pinfo);
+    if (nv == d->current_value) return;
+    d->current_value = nv;
+    knob_format_and_forward(inst, d, pinfo, nv);
+}
+
+/* ---- The turn -----------------------------------------------------------
+ *
+ * One place a chain knob becomes parameter writes, called by all three input
+ * paths: the relative CC decode and the absolute CC in chain_midi.c, and
+ * knob_N_adjust in chain_host.c (the device's own encoders).
+ *
+ * THE LINE IS "SEVERAL DESTINATIONS", NOT "HAS A RANGE", and the two branches
+ * below are that line:
+ *
+ *   ONE destination, ranged or not -- the parameter's own step, its own
+ *   acceleration, its own enum feel, and a clamp into the destination's
+ *   window. The knob's `position` is not consulted and not stored.
+ *
+ *   SEVERAL destinations -- there is no single parameter to be, so the knob's
+ *   own 0..1 position becomes the thing being turned, and each destination
+ *   follows it through its own window.
+ *
+ * The asymmetry is not tidiness. Driving a LONE stepped parameter from a
+ * position makes it crawl: an 8-option enum spans 7 units, so one detent moves
+ * it by the position step times 7 -- 4 -> 4.0105 -> (int) 4, the same value,
+ * for ~95 detents per option instead of one at the MIDI path's 0.0015 step.
+ * The device's own encoder passes a coarser fallback and so crawls less, but
+ * the shape is the same at any step: a shared parameter pays this by
+ * necessity, and one that is not shared must never be made to.
+ *
+ * REALTIME: fixed arrays, a stack buffer per write, no allocation, no logging.
+ * A multi-destination turn issues up to MAX_KNOB_DESTS plugin writes instead of
+ * one -- bounded, and the same shape the LFO tick already runs every block.
+ */
+void knob_turn(chain_instance_t *inst, int idx, int ticks, float float_fallback_step) {
+    if (!inst || idx < 0 || idx >= MAX_KNOB_MAPPINGS) return;
+    if (ticks == 0) return;
+
+    knob_mapping_t *km = &inst->knob_mappings[idx];
+    if (km->dest_count < 1) return;
+
+    int mag = (ticks < 0) ? -ticks : ticks;
+    int dir = (ticks < 0) ? -1 : 1;
+
+    if (!knob_is_multi(km)) {
+        knob_dest_t *d = &km->dests[0];
+        chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+        if (!pinfo) return;
+
+        int accel = chain_knob_accel_cap(chain_knob_accel(&inst->knob_last_time_ms[idx]),
+                                         pinfo->type);
+        int mult = relative_cc_multiplier(mag, accel);
+        float delta = knob_base_step(pinfo, float_fallback_step) * (float)mult * (float)dir;
+
+        float nv = d->current_value + delta;
+        if (nv < pinfo->min_val) nv = pinfo->min_val;
+        if (nv > pinfo->max_val) nv = pinfo->max_val;
+        if (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM)
+            nv = (float)((int)nv);
+        nv = knob_dest_clamp(d, nv, pinfo);
+        d->current_value = nv;
+
+        knob_format_and_forward(inst, d, pinfo, nv);
+        return;
+    }
+
+    /* Several destinations: the position is what turns. The float ceiling
+     * applies whatever the destinations are -- a stepped destination does not
+     * get to slow down a knob it shares with a continuous one. */
+    int accel = chain_knob_accel(&inst->knob_last_time_ms[idx]);
+    int mult = relative_cc_multiplier(mag, accel);
+
+    /* The position is a 0..1 quantity with no declared step of its own, so it
+     * takes the caller's fallback exactly as a stepless float parameter does.
+     * Pinning it to KNOB_STEP_FLOAT instead made a multi-destination knob
+     * ~6.7x slower than an ordinary one on the device's own encoder, which
+     * reads as a broken knob rather than as a design. */
+    float pos = km->position + float_fallback_step * (float)mult * (float)dir;
+    if (pos < 0.0f) pos = 0.0f;
+    if (pos > 1.0f) pos = 1.0f;
+    km->position = pos;
+
+    for (int i = 0; i < km->dest_count && i < MAX_KNOB_DESTS; i++) {
+        knob_dest_t *d = &km->dests[i];
+        if (!d->param[0]) continue;
+        chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+        if (!pinfo) continue;   /* a destination whose module is gone is skipped,
+                                 * not fatal to its siblings */
+        float nv = knob_dest_value_at(d, pos, pinfo);
+        d->current_value = nv;
+        knob_format_and_forward(inst, d, pinfo, nv);
+    }
+}
+
 /* ---- Chain-knob CC out ---------------------------------------------------
  *
  * The input half has shipped for a long time: CC 102-109 on a slot's receive
@@ -978,15 +1521,78 @@ void knob_forward_value(chain_instance_t *inst, const char *target, const char *
 
 /* Inverse of the inbound scaling in chain_midi.c. Returns -1 when the range is
  * degenerate or dynamic (max_val < 0), where there is no meaningful 0-127. */
-static int knob_value_to_cc(float val, const chain_param_info_t *pinfo) {
+/*
+ * WHERE THE KNOB SITS ACROSS ITS OWN TRAVEL, as 0-127. One sentence, and
+ * therefore one rule, for both kinds of knob:
+ *
+ *   several destinations -> the knob's own position, which is the only thing
+ *                           they have in common;
+ *   one destination      -> that parameter's value as a fraction of its own
+ *                           WINDOW (not of the parameter's full range).
+ *
+ * With one destination at the whole-range default the second reduces to
+ * (val - min) / (max - min), i.e. exactly knob_value_to_cc -- so nothing
+ * changes for any knob that exists today, and test_chain_knob_cc_out's
+ * inverse-scaling assertion passes untouched.
+ *
+ * Measuring a RANGED single destination against its window rather than the
+ * full range is what keeps in and out symmetric. The alternative gives an
+ * external fader dead zones at both ends, where its travel maps outside the
+ * window and clamps, so a third of the throw does nothing.
+ */
+int knob_position_cc(chain_instance_t *inst, const knob_mapping_t *km) {
+    if (!inst || !km || km->dest_count < 1) return -1;
+
+    if (knob_is_multi(km)) {
+        int cc_val = (int)(km->position * 127.0f + 0.5f);
+        if (cc_val < 0) cc_val = 0;
+        if (cc_val > 127) cc_val = 127;
+        return cc_val;
+    }
+
+    const knob_dest_t *d = &km->dests[0];
+    chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
     if (!pinfo) return -1;
-    float span = pinfo->max_val - pinfo->min_val;
-    if (!(span > 0.0f)) return -1;
-    int cc_val = (int)(((val - pinfo->min_val) / span) * 127.0f + 0.5f);
-    if (cc_val < 0) cc_val = 0;
-    if (cc_val > 127) cc_val = 127;
-    return cc_val;
+    /* A parameter with no range has no position. knob_value_to_frac answers 0
+     * for one, which would emit CC 0 where nothing was ever emitted before. */
+    if (!(pinfo->max_val - pinfo->min_val > 0.0f)) return -1;
+
+    float lo = d->lo, hi = d->hi;
+    float span = hi - lo;
+    if (span == 0.0f) return -1;              /* a zero-width window has no position */
+
+    float frac = (knob_value_to_frac(d->current_value, pinfo) - lo) / span;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    return (int)(frac * 127.0f + 0.5f);
 }
+
+/*
+ * The inbound half: put the knob AT a position, 0..1, and let every
+ * destination follow. The same rule read backwards, so a controller that sends
+ * back what it was told lands where it started.
+ */
+void knob_set_position(chain_instance_t *inst, int idx, float position) {
+    if (!inst || idx < 0 || idx >= MAX_KNOB_MAPPINGS) return;
+    knob_mapping_t *km = &inst->knob_mappings[idx];
+    if (km->dest_count < 1) return;
+
+    if (position < 0.0f) position = 0.0f;
+    if (position > 1.0f) position = 1.0f;
+
+    if (knob_is_multi(km)) km->position = position;
+
+    for (int i = 0; i < km->dest_count && i < MAX_KNOB_DESTS; i++) {
+        knob_dest_t *d = &km->dests[i];
+        if (!d->param[0]) continue;
+        chain_param_info_t *pinfo = knob_find_param(inst, d->target, d->param);
+        if (!pinfo) continue;
+        float nv = knob_dest_value_at(d, position, pinfo);
+        d->current_value = nv;
+        knob_format_and_forward(inst, d, pinfo, nv);
+    }
+}
+
 
 void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     if (!inst || !inst->knob_cc_out) return;
@@ -1004,8 +1610,7 @@ void knob_emit_cc_out(chain_instance_t *inst, int idx) {
     int recv_ch = inst->host->slot_recv_channel((void *)inst);
     if (recv_ch < 0 || recv_ch > 15) return;
 
-    chain_param_info_t *pinfo = knob_find_param(inst, km->target, km->param);
-    int cc_val = knob_value_to_cc(km->current_value, pinfo);
+    int cc_val = knob_position_cc(inst, km);
     if (cc_val < 0) return;
     if (cc_val == km->last_cc_out) return;          /* change detection at CC resolution */
 

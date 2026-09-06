@@ -78,6 +78,18 @@ CHAIN_INTERNAL chain_param_info_t *knob_find_param(chain_instance_t *inst,
     (void)inst; (void)target; (void)param;
     return NULL;
 }
+/* The knob-turn law also lives in chain_params.c, which this file does not
+ * link. knob_find_param above answers NULL, so no knob message here ever
+ * reaches these -- they exist to satisfy the linker, and their behaviour is
+ * proved in test_chain_knob_mod_base and test_chain_knob_cc_out. */
+CHAIN_INTERNAL int chain_knob_accel(uint64_t *last_ms) { (void)last_ms; return 1; }
+CHAIN_INTERNAL int chain_knob_accel_cap(int accel, int type) { (void)type; return accel; }
+CHAIN_INTERNAL void knob_turn(chain_instance_t *inst, int idx, int ticks, float fb) {
+    (void)inst; (void)idx; (void)ticks; (void)fb;
+}
+CHAIN_INTERNAL void knob_set_position(chain_instance_t *inst, int idx, float position) {
+    (void)inst; (void)idx; (void)position;
+}
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target,
                                        const char *param, const char *val_str) {
     (void)inst; (void)target; (void)param; (void)val_str;

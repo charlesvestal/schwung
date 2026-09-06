@@ -78,6 +78,28 @@ int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *tar
     (void)inst; (void)target; return 0;
 }
 
+/*
+ * knob_forward_value now routes a modulated parameter through the modulation
+ * bus (a knob turn edits the RESTING value, like any other edit). No case in
+ * this fixture involves a modulated parameter, so "no target is active" is its
+ * honest answer and the behaviour under test is unchanged.
+ */
+int chain_mod_is_target_active(chain_instance_t *inst, const char *target, const char *param) {
+    (void)inst; (void)target; (void)param; return 0;
+}
+void chain_mod_update_base_from_set_param(chain_instance_t *inst, const char *target,
+                                          const char *param, const char *val) {
+    (void)inst; (void)target; (void)param; (void)val;
+}
+mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target,
+                                                const char *param) {
+    (void)inst; (void)target; (void)param; return NULL;
+}
+void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry,
+                                     int force_write) {
+    (void)inst; (void)entry; (void)force_write;
+}
+
 int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     snprintf(loaded_synth, sizeof(loaded_synth), "%s", module_name);
     inst->synth_plugin_v2 = &fake_synth_api;
@@ -242,10 +264,10 @@ static void test_full_capacity(chain_instance_t *inst, patch_info_t *patch) {
      * no-metadata default. */
     CHECK(inst->knob_mapping_count == 2, "knob_mapping_count=%d", inst->knob_mapping_count);
     for (int i = 0; i < inst->knob_mapping_count; i++) {
-        CHECK(inst->knob_mappings[i].current_value > 0.24f &&
-              inst->knob_mappings[i].current_value < 0.26f,
+        CHECK(inst->knob_mappings[i].dests[0].current_value > 0.24f &&
+              inst->knob_mappings[i].dests[0].current_value < 0.26f,
               "knob mapping on %s did not re-read from the plugin (value=%.3f)",
-              inst->knob_mappings[i].target, (double)inst->knob_mappings[i].current_value);
+              inst->knob_mappings[i].dests[0].target, (double)inst->knob_mappings[i].dests[0].current_value);
     }
 }
 
@@ -281,8 +303,8 @@ static void test_legacy_two_fx(chain_instance_t *inst, patch_info_t *patch) {
     CHECK(strstr(fake_fx[1].log, "gain=0.3;") != NULL, "legacy fx2 params [%s]", fake_fx[1].log);
     CHECK(fake_fx[2].log[0] == '\0', "legacy touched fx3 [%s]", fake_fx[2].log);
     CHECK(inst->knob_mapping_count == 1 &&
-          inst->knob_mappings[0].current_value > 0.24f &&
-          inst->knob_mappings[0].current_value < 0.26f,
+          inst->knob_mappings[0].dests[0].current_value > 0.24f &&
+          inst->knob_mappings[0].dests[0].current_value < 0.26f,
           "legacy fx2 knob did not re-read from the plugin");
 }
 
@@ -543,9 +565,9 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
     for (int i = 0; i < 3; i++) {
         CHECK(patch->knob_mappings[i].cc == want_cc[i],
               "knob %d parsed CC %d, want %d", i, patch->knob_mappings[i].cc, want_cc[i]);
-        CHECK(strcmp(patch->knob_mappings[i].target, want_target[i]) == 0,
+        CHECK(strcmp(patch->knob_mappings[i].dests[0].target, want_target[i]) == 0,
               "knob %d parsed target \"%s\", want \"%s\"",
-              i, patch->knob_mappings[i].target, want_target[i]);
+              i, patch->knob_mappings[i].dests[0].target, want_target[i]);
     }
 
     CHECK(v2_load_from_patch_info(inst, patch) == 0, "knob patch load failed");
@@ -555,27 +577,27 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
     /* The two live ones re-read from THEIR plugin (0.25), not the saved 0.9 and
      * not the 0.5 no-metadata default. 0.9 would mean the lookup fell through;
      * 0.5 would mean it resolved nothing at all. */
-    CHECK(inst->knob_mappings[0].current_value > 0.24f &&
-          inst->knob_mappings[0].current_value < 0.26f,
+    CHECK(inst->knob_mappings[0].dests[0].current_value > 0.24f &&
+          inst->knob_mappings[0].dests[0].current_value < 0.26f,
           "the knob on fx6 did not re-read from its plugin (value=%.3f)",
-          (double)inst->knob_mappings[0].current_value);
-    CHECK(inst->knob_mappings[1].current_value > 0.24f &&
-          inst->knob_mappings[1].current_value < 0.26f,
+          (double)inst->knob_mappings[0].dests[0].current_value);
+    CHECK(inst->knob_mappings[1].dests[0].current_value > 0.24f &&
+          inst->knob_mappings[1].dests[0].current_value < 0.26f,
           "the knob on midi_fx6 did not re-read from its plugin (value=%.3f)",
-          (double)inst->knob_mappings[1].current_value);
-    CHECK(strcmp(inst->knob_mappings[0].target, "fx6") == 0,
-          "the loaded knob target became \"%s\"", inst->knob_mappings[0].target);
-    CHECK(strcmp(inst->knob_mappings[1].target, "midi_fx6") == 0,
-          "the loaded knob target became \"%s\"", inst->knob_mappings[1].target);
+          (double)inst->knob_mappings[1].dests[0].current_value);
+    CHECK(strcmp(inst->knob_mappings[0].dests[0].target, "fx6") == 0,
+          "the loaded knob target became \"%s\"", inst->knob_mappings[0].dests[0].target);
+    CHECK(strcmp(inst->knob_mappings[1].dests[0].target, "midi_fx6") == 0,
+          "the loaded knob target became \"%s\"", inst->knob_mappings[1].dests[0].target);
 
     /* Past the chain: must resolve to nothing. A read of 0.25 here means the
      * target was coerced onto a real slot -- almost certainly slot 0, which is
      * a knob driving the first module in the chain. */
-    CHECK(inst->knob_mappings[2].current_value < 0.24f ||
-          inst->knob_mappings[2].current_value > 0.26f,
+    CHECK(inst->knob_mappings[2].dests[0].current_value < 0.24f ||
+          inst->knob_mappings[2].dests[0].current_value > 0.26f,
           "a knob naming fx7 in a six-long chain read a plugin value (%.3f) -- it "
           "resolved onto a slot that is not the one it names",
-          (double)inst->knob_mappings[2].current_value);
+          (double)inst->knob_mappings[2].dests[0].current_value);
     /* ...and the cleared row is not among the loaded ones at all. */
     for (int i = 0; i < inst->knob_mapping_count; i++)
         CHECK(inst->knob_mappings[i].cc != 74,
@@ -606,6 +628,142 @@ static void test_knob_high_slots(chain_instance_t *inst, patch_info_t *patch) {
  * Each row below omits exactly one field, so an inherited value is the only
  * way it could come back non-empty.
  */
+/*
+ * A knob with several destinations is stored as several FLAT ROWS sharing one
+ * cc, merged back into one mapping here.
+ *
+ * Flat rather than nested because this parser -- and every build already in
+ * the field -- walks the array by scanning for braces. Nesting a destination
+ * list inside a mapping object would end each object at the first inner brace,
+ * and an older host would read the leftovers as further mappings pointed at
+ * whatever those inner fields happened to name.
+ */
+static void test_knob_destinations(chain_instance_t *inst, patch_info_t *patch) {
+    if (MAX_AUDIO_FX < 2 || MAX_KNOB_DESTS < 3) return;
+
+    static const char json[] =
+        "{\n  \"name\": \"dests\",\n"
+        "  \"audio_fx\": [{\"type\": \"afx1\"}, {\"type\": \"afx2\"}],\n"
+        "  \"knob_mappings\": ["
+        /* one knob, three destinations, all on cc 71 */
+        "{\"cc\": 71, \"target\": \"synth\", \"param\": \"cutoff\", \"value\": 0.4,"
+        " \"dest\": 0, \"pos\": 0.75}, "
+        "{\"cc\": 71, \"target\": \"fx1\", \"param\": \"mix\", \"value\": 0.2,"
+        " \"lo\": 0.2000, \"hi\": 0.8000, \"dest\": 1, \"pos\": 0.75}, "
+        "{\"cc\": 71, \"target\": \"fx2\", \"param\": \"drive\", \"value\": 0.1,"
+        " \"lo\": 1.0000, \"hi\": 0.0000, \"dest\": 2, \"pos\": 0.75}, "
+        /* a second knob, ONE destination with a window and no dest index */
+        "{\"cc\": 72, \"target\": \"fx1\", \"param\": \"gain\", \"value\": 0.5,"
+        " \"lo\": 0.1000, \"hi\": 0.6000}, "
+        /* a row naming a destination past the cap is DROPPED, not folded onto
+         * another one -- silently landing on destination 0 would rewrite a
+         * different parameter's assignment */
+        "{\"cc\": 73, \"target\": \"synth\", \"param\": \"res\", \"dest\": 99}"
+        "]\n}\n";
+
+    write_patch(json);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "destination patch parsed");
+
+    CHECK(patch->knob_mapping_count == 3,
+          "three rows on one cc merged into ONE mapping (got %d mappings)",
+          patch->knob_mapping_count);
+
+    knob_mapping_t *k71 = NULL, *k72 = NULL, *k73 = NULL;
+    for (int i = 0; i < patch->knob_mapping_count; i++) {
+        if (patch->knob_mappings[i].cc == 71) k71 = &patch->knob_mappings[i];
+        if (patch->knob_mappings[i].cc == 72) k72 = &patch->knob_mappings[i];
+        if (patch->knob_mappings[i].cc == 73) k73 = &patch->knob_mappings[i];
+    }
+
+    CHECK(k71 && k71->dest_count == 3, "cc 71 has three destinations");
+    if (k71) {
+        CHECK(strcmp(k71->dests[0].param, "cutoff") == 0, "destination 0 is cutoff");
+        CHECK(strcmp(k71->dests[1].param, "mix") == 0, "destination 1 is mix");
+        CHECK(strcmp(k71->dests[2].param, "drive") == 0, "destination 2 is drive");
+        CHECK(k71->dests[0].lo == 0.0f && k71->dests[0].hi == 1.0f,
+              "a destination with no window is whole-range, not zero-width");
+        CHECK(k71->dests[1].lo > 0.19f && k71->dests[1].hi < 0.81f,
+              "a window round-trips");
+        CHECK(k71->dests[2].lo > k71->dests[2].hi,
+              "an INVERTED window survives as inverted, not reordered");
+        CHECK(k71->position > 0.74f && k71->position < 0.76f,
+              "the knob's position round-trips");
+    }
+
+    CHECK(k72 && k72->dest_count == 1, "cc 72 has one destination");
+    if (k72) {
+        CHECK(k72->dests[0].lo > 0.09f && k72->dests[0].hi < 0.61f,
+              "a SINGLE destination can carry a window too");
+    }
+
+    CHECK(k73 && k73->dest_count == 0,
+          "a row past the destination cap is dropped, not folded onto destination 0");
+}
+
+/*
+ * A parameter NAMED like one of the row's own fields must not rewrite the row
+ * around it.
+ *
+ * Each field is found by searching the object for its name, so a row whose
+ * param VALUE is the word being searched for answers the search first and the
+ * colon that follows belongs to the next field. A module is free to expose a
+ * parameter called `lo`, `hi`, `pos` or `dest`; before the field names carried
+ * their own colons, `{"param":"hi","value":0.5}` came back with a window of
+ * 0..0.5, and `{"param":"dest","value":3}` built a mapping claiming four
+ * destinations whose first three were empty -- which then persisted through a
+ * save, because the row it re-emitted was the one it had invented.
+ */
+static void test_knob_param_named_like_a_field(chain_instance_t *inst, patch_info_t *patch) {
+    static const char json[] =
+        "{\n  \"name\": \"shadow\",\n"
+        "  \"knob_mappings\": ["
+        "{\"cc\": 71, \"target\": \"synth\", \"param\": \"hi\", \"value\": 0.500}, "
+        "{\"cc\": 72, \"target\": \"synth\", \"param\": \"lo\", \"value\": 0.500}, "
+        "{\"cc\": 73, \"target\": \"synth\", \"param\": \"pos\", \"value\": 0.500}, "
+        "{\"cc\": 74, \"target\": \"synth\", \"param\": \"dest\", \"value\": 3.000}"
+        "]\n}\n";
+
+    write_patch(json);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "field-named patch parsed");
+    CHECK(patch->knob_mapping_count == 4, "four ordinary knobs, one per cc (got %d)",
+          patch->knob_mapping_count);
+
+    for (int i = 0; i < patch->knob_mapping_count; i++) {
+        knob_mapping_t *m = &patch->knob_mappings[i];
+        CHECK(m->dest_count == 1,
+              "cc %d has ONE destination, not a list invented from its param name (got %d)",
+              m->cc, m->dest_count);
+        CHECK(m->dests[0].lo == 0.0f && m->dests[0].hi == 1.0f,
+              "cc %d is whole-range; its param name did not become a window (%.3f..%.3f)",
+              m->cc, (double)m->dests[0].lo, (double)m->dests[0].hi);
+        CHECK(m->position == 0.0f, "cc %d has no position from a param named pos", m->cc);
+    }
+}
+
+/*
+ * An older patch -- every knob a bare cc/target/param/value with none of the
+ * fields above -- must load as exactly what it was: one whole-range
+ * destination. This is the migration, and it is the absence of code.
+ */
+static void test_knob_legacy_rows_are_whole_range(chain_instance_t *inst, patch_info_t *patch) {
+    static const char json[] =
+        "{\n  \"name\": \"legacy\",\n"
+        "  \"knob_mappings\": ["
+        "{\"cc\": 71, \"target\": \"synth\", \"param\": \"cutoff\", \"value\": 0.4}"
+        "]\n}\n";
+
+    write_patch(json);
+    memset(patch, 0, sizeof(*patch));
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "legacy patch parsed");
+    CHECK(patch->knob_mapping_count == 1, "one mapping");
+    CHECK(patch->knob_mappings[0].dest_count == 1, "one destination");
+    CHECK(patch->knob_mappings[0].dests[0].lo == 0.0f &&
+          patch->knob_mappings[0].dests[0].hi == 1.0f,
+          "whole-range, so it behaves exactly as it did before destinations existed");
+}
+
 static void test_knob_rejected_row_does_not_bleed(chain_instance_t *inst, patch_info_t *patch) {
     if (MAX_AUDIO_FX < 2) return;
 
@@ -640,14 +798,14 @@ static void test_knob_rejected_row_does_not_bleed(chain_instance_t *inst, patch_
 
     CHECK(patch->knob_mappings[0].cc == 71, "first mapping CC %d, want 71",
           patch->knob_mappings[0].cc);
-    CHECK(strcmp(patch->knob_mappings[0].target, "fx1") == 0,
-          "first mapping target \"%s\", want fx1", patch->knob_mappings[0].target);
+    CHECK(strcmp(patch->knob_mappings[0].dests[0].target, "fx1") == 0,
+          "first mapping target \"%s\", want fx1", patch->knob_mappings[0].dests[0].target);
 
     CHECK(patch->knob_mappings[1].cc == 73, "second mapping CC %d, want 73",
           patch->knob_mappings[1].cc);
-    CHECK(patch->knob_mappings[1].target[0] == '\0',
+    CHECK(patch->knob_mappings[1].dests[0].target[0] == '\0',
           "a mapping that names no target came back aimed at \"%s\" -- inherited "
-          "from the rejected row before it", patch->knob_mappings[1].target);
+          "from the rejected row before it", patch->knob_mappings[1].dests[0].target);
 }
 
 /* ---- 3. Modulation / knob targets reach every slot ---- */
@@ -826,6 +984,9 @@ int main(int argc, char **argv) {
     }
 
     test_full_capacity(inst, patch);
+    test_knob_destinations(inst, patch);
+    test_knob_param_named_like_a_field(inst, patch);
+    test_knob_legacy_rows_are_whole_range(inst, patch);
     test_legacy_two_fx(inst, patch);
     test_hostile_json(inst, patch);
     test_midi_fx_state_forms(inst, patch);

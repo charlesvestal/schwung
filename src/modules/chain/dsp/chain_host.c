@@ -1207,6 +1207,82 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (sscanf(key + 5, "%d_%31s", &knob_num, action) == 2 && knob_num >= 1 && knob_num <= 8) {
             int cc = 70 + knob_num;  /* CC 71-78 for knobs 1-8 */
 
+            /* Destination editing: knob_N_dest_M_set / _clear / _range, and
+             * knob_N_position. M is 1-based to match knob_N, fxN and lfoN.
+             *
+             * A key family rather than a JSON value: this set_param is reached
+             * from the SPI callback, and the existing dispatcher already
+             * sscanf's `knob_N_<action>`, so a second sscanf on the action
+             * finishes the job with no structural change and no parser on a
+             * realtime path. */
+            if (strncmp(action, "dest_", 5) == 0) {
+                int dest_num; char sub[16];
+                if (sscanf(action + 5, "%d_%15s", &dest_num, sub) == 2 &&
+                    dest_num >= 1 && dest_num <= MAX_KNOB_DESTS) {
+                    int di = dest_num - 1;
+
+                    if (strcmp(sub, "set") == 0 && val) {
+                        char target[32] = "", param[64] = "";
+                        const char *colon = strchr(val, ':');
+                        if (colon) {
+                            int tlen = colon - val;
+                            if (tlen > 0 && tlen < 32) { strncpy(target, val, tlen); target[tlen] = '\0'; }
+                            strncpy(param, colon + 1, 63); param[63] = '\0';
+                        }
+                        if (target[0] && param[0]) {
+                            knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 1);
+                            if (km && knob_dest_point(inst, km, di, target, param) == 0) {
+                                km->last_cc_out = -1;
+                                knob_emit_cc_out(inst, knob_mapping_index(inst, km));
+                                inst->dirty = 1;
+                            } else if (km && km->dest_count == 0) {
+                                /* The mapping had to exist before the point
+                                 * could be attempted, and the point was
+                                 * refused -- a destination index past the end.
+                                 * Leaving it would be a mapping with no
+                                 * destinations, which every readback answers
+                                 * for by reading dests[0]: ": " where the knob
+                                 * should read unassigned. */
+                                knob_mapping_drop(inst, km);
+                            }
+                        }
+                    }
+                    else if (strcmp(sub, "clear") == 0) {
+                        knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 0);
+                        if (km) {
+                            /* Removing the last destination is the same thing
+                             * as clearing the knob, and must leave the table
+                             * in the same state either way. */
+                            if (knob_dest_remove(inst, km, di) == 0)
+                                knob_mapping_drop(inst, km);
+                            inst->dirty = 1;
+                        }
+                    }
+                    else if (strcmp(sub, "range") == 0 && val) {
+                        /* "lo:hi", fractions of the destination's own range. */
+                        const char *colon = strchr(val, ':');
+                        if (colon) {
+                            knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 0);
+                            if (km) {
+                                knob_dest_set_window(inst, km, di,
+                                                     strtof(val, NULL), strtof(colon + 1, NULL));
+                                knob_emit_cc_out(inst, knob_mapping_index(inst, km));
+                                inst->dirty = 1;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+            if (strcmp(action, "position") == 0 && val) {
+                knob_mapping_t *km = knob_mapping_for_cc(inst, cc, 0);
+                if (km) {
+                    knob_set_position(inst, knob_mapping_index(inst, km), strtof(val, NULL));
+                    inst->dirty = 1;
+                }
+                return;
+            }
+
             if (strcmp(action, "set") == 0 && val) {
                 /* Parse "target:param" format */
                 char target[32] = "";
@@ -1240,29 +1316,29 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     /* Set mapping */
+                    /* knob_N_set means "this knob has ONE whole-range
+                     * destination, here" -- it collapses whatever the knob had
+                     * before. That is what it has always meant for a knob with
+                     * a single destination, and it is the contract the shadow
+                     * UI and any external caller already rely on. */
                     if (found >= 0) {
                         /* Update existing (type/min/max looked up dynamically from pinfo) */
-                        strncpy(inst->knob_mappings[found].target, target, sizeof(inst->knob_mappings[found].target) - 1);
-                        inst->knob_mappings[found].target[sizeof(inst->knob_mappings[found].target) - 1] = '\0';
-                        strncpy(inst->knob_mappings[found].param, param, sizeof(inst->knob_mappings[found].param) - 1);
-                        inst->knob_mappings[found].param[sizeof(inst->knob_mappings[found].param) - 1] = '\0';
+                        knob_mapping_t *km = &inst->knob_mappings[found];
+                        knob_dest_assign(&km->dests[0], target, param);
+                        km->dest_count = 1;
                         /* Remapped: this knob now means something else. */
-                        inst->knob_mappings[found].last_cc_out = -1;
+                        km->last_cc_out = -1;
                         knob_emit_cc_out(inst, found);
                     } else if (inst->knob_mapping_count < MAX_KNOB_MAPPINGS) {
                         /* Add new */
                         int i = inst->knob_mapping_count++;
-                        inst->knob_mappings[i].cc = cc;
-                        strncpy(inst->knob_mappings[i].target, target, sizeof(inst->knob_mappings[i].target) - 1);
-                        inst->knob_mappings[i].target[sizeof(inst->knob_mappings[i].target) - 1] = '\0';
-                        strncpy(inst->knob_mappings[i].param, param, sizeof(inst->knob_mappings[i].param) - 1);
-                        inst->knob_mappings[i].param[sizeof(inst->knob_mappings[i].param) - 1] = '\0';
-                        if (pinfo) {
-                            inst->knob_mappings[i].current_value = pinfo->default_val;
-                        } else {
-                            inst->knob_mappings[i].current_value = 0.5f;
-                        }
-                        inst->knob_mappings[i].last_cc_out = -1;
+                        knob_mapping_t *km = &inst->knob_mappings[i];
+                        memset(km, 0, sizeof(*km));   /* no inherited destinations */
+                        km->cc = cc;
+                        knob_dest_assign(&km->dests[0], target, param);
+                        km->dest_count = 1;
+                        km->dests[0].current_value = pinfo ? pinfo->default_val : 0.5f;
+                        km->last_cc_out = -1;
                         knob_emit_cc_out(inst, i);
                     }
                 }
@@ -1277,6 +1353,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                             inst->knob_mappings[j] = inst->knob_mappings[j + 1];
                         }
                         inst->knob_mapping_count--;
+                        /* Blank the slot the shift vacated. It is past the
+                         * count and so unread today, but a mapping added later
+                         * lands on it, and only its first destination is
+                         * written on that path -- any others would be
+                         * inherited from whatever used to live here. */
+                        memset(&inst->knob_mappings[inst->knob_mapping_count], 0,
+                               sizeof(inst->knob_mappings[0]));
                         inst->dirty = 1;
                         break;
                     }
@@ -1290,58 +1373,26 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 /* Find mapping for this CC */
                 for (int i = 0; i < inst->knob_mapping_count; i++) {
                     if (inst->knob_mappings[i].cc == cc) {
-                        /* Look up parameter metadata */
-                        const char *target = inst->knob_mappings[i].target;
-                        const char *param = inst->knob_mappings[i].param;
-                        chain_param_info_t *pinfo = knob_find_param(inst, target, param);
-                        if (!pinfo) continue;
-
-                        /* Calculate acceleration based on time between events */
-                        uint64_t now = get_time_ms();
-                        uint64_t last = inst->knob_last_time_ms[i];
-                        inst->knob_last_time_ms[i] = now;
-                        int accel = KNOB_ACCEL_MIN_MULT;
-                        if (last > 0) {
-                            uint64_t elapsed = now - last;
-                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
-                                accel = KNOB_ACCEL_MAX_MULT;
-                            } else if (elapsed < KNOB_ACCEL_SLOW_MS) {
-                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
-                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
-                            }
-                        }
-
-                        /* Cap acceleration: enums never accelerate, ints limited */
-                        int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                        if (pinfo->type == KNOB_TYPE_ENUM) {
-                            accel = KNOB_ACCEL_ENUM_MULT;
-                        } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
-                            accel = KNOB_ACCEL_MAX_MULT_INT;
-                        }
-                        /* Use step from param metadata, or 0.01 default for shadow adjust */
-                        float base_step = (pinfo->step > 0) ? pinfo->step
-                            : (is_int ? (float)KNOB_STEP_INT : 0.01f);
-                        float delta = base_step * accel * (delta_int > 0 ? 1 : -1);
-
-                        /* Apply delta with clamping */
-                        float new_val = inst->knob_mappings[i].current_value + delta;
-                        if (new_val < pinfo->min_val) new_val = pinfo->min_val;
-                        if (new_val > pinfo->max_val) new_val = pinfo->max_val;
-                        if (is_int) new_val = (float)((int)new_val);  /* Round to int */
-                        inst->knob_mappings[i].current_value = new_val;
-
-                        /* Format value as string */
-                        char val_str[16];
-                        if (is_int) {
-                            snprintf(val_str, sizeof(val_str), "%d", (int)new_val);
-                        } else {
-                            snprintf(val_str, sizeof(val_str), "%.3f", new_val);
-                        }
-
-                        knob_forward_value(inst, target, param, val_str);
-                        /* Move's own encoder moved this knob. Nothing else
-                         * tells an external control surface that happened. */
+                        /*
+                         * ONE detent per message, whatever `val` says.
+                         *
+                         * handleKnobTurn in shadow_ui.js sums every detent for
+                         * this knob between frames, so `val` is an accumulated
+                         * COUNT and reading only its sign discards a fast turn.
+                         * Honouring the count would make the device's own
+                         * encoders move further for the same gesture -- a
+                         * change every existing user would feel on every chain
+                         * knob, and not one to make in passing. The sign is
+                         * what has always shipped here; max(1, accel) == accel,
+                         * so this is bit-identical to it.
+                         *
+                         * 0.01f rather than KNOB_STEP_FLOAT is this path's
+                         * historical fallback for a parameter that declares no
+                         * step -- a 6.7x difference from the external-CC path
+                         * on the same parameter, preserved for the same reason.
+                         * See the note above chain_knob_accel.
+                         */
+                        knob_turn(inst, i, (delta_int > 0) ? 1 : -1, 0.01f);
                         knob_emit_cc_out(inst, i);
                         inst->dirty = 1;
                         break;
@@ -1573,48 +1624,103 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
     /* Knob mapping info */
     if (strcmp(key, "knob_mappings") == 0) {
-        /* Return full knob mappings array as JSON for patch saving.
-         * Read ACTUAL current values from DSP plugins, not the knob
-         * tracking value which may be stale if params were changed
-         * via module UI or state restore. */
+        /*
+         * The patch's knob array, as FLAT ROWS.
+         *
+         * A knob with several destinations writes one ordinary object per
+         * destination, all sharing its `cc`, distinguished by `dest`. Nothing
+         * is nested, which matters: the parser below walks objects with a plain
+         * scan for the next brace, and so does every build already in the
+         * field. An older host reading this file sees several mappings on one
+         * CC and uses the first, which is destination 0 -- it degrades to the
+         * knob it would have had rather than to nonsense.
+         *
+         * `lo`/`hi` are written only when the destination is not whole-range,
+         * and `dest`/`pos` only when there is more than one destination, so a
+         * patch full of ordinary knobs re-saves BYTE-IDENTICAL to what shipped
+         * before any of this. test_chain_patch_roundtrip asserts exactly that.
+         *
+         * Values are read back from the plugins rather than trusted from the
+         * tracking copy, which may be stale if a parameter was changed through
+         * the module's own UI or a state restore.
+         */
         int off = 0;
+        int rows = 0;
         off += snprintf(buf + off, buf_len - off, "[");
         for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
-            const char *target = inst->knob_mappings[i].target;
-            const char *param = inst->knob_mappings[i].param;
-            float value = inst->knob_mappings[i].current_value;
+            const knob_mapping_t *km = &inst->knob_mappings[i];
+            int multi = knob_is_multi(km);
 
-            /* Try to read actual value from DSP plugin */
-            char val_buf[64];
-            int got = -1;
-            /* Indexed, not enumerated: this ladder stopped at fx2/midi_fx1, so
-             * a knob on fx3+ saved the STALE tracking value into the patch
-             * instead of the plugin's live one. The per-position plugin/
-             * instance checks stay — fx_count is a high-water mark and an
-             * interior position can be empty. */
-            if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
-                got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
-            } else {
-                int fxi = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
-                int mfi = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
-                if (fxi >= 0 && fxi < inst->fx_count &&
-                    inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
-                    got = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], param, val_buf, sizeof(val_buf));
-                } else if (mfi >= 0 && mfi < inst->midi_fx_count &&
-                           inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
-                    got = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], param, val_buf, sizeof(val_buf));
+            for (int di = 0; di < km->dest_count && di < MAX_KNOB_DESTS; di++) {
+                const char *target = km->dests[di].target;
+                const char *param = km->dests[di].param;
+                if (!param[0]) continue;
+                float value = km->dests[di].current_value;
+
+                /* Try to read actual value from DSP plugin.
+                 * Indexed, not enumerated: this ladder stopped at fx2/midi_fx1, so
+                 * a knob on fx3+ saved the STALE tracking value into the patch
+                 * instead of the plugin's live one. The per-position plugin/
+                 * instance checks stay -- fx_count is a high-water mark and an
+                 * interior position can be empty. */
+                char val_buf[64];
+                int got = -1;
+                if (strcmp(target, "synth") == 0 && inst->synth_plugin_v2 && inst->synth_instance) {
+                    got = inst->synth_plugin_v2->get_param(inst->synth_instance, param, val_buf, sizeof(val_buf));
+                } else {
+                    int fxi = chain_fx_index_from_id(target, "fx", MAX_AUDIO_FX);
+                    int mfi = chain_fx_index_from_id(target, "midi_fx", MAX_MIDI_FX);
+                    if (fxi >= 0 && fxi < inst->fx_count &&
+                        inst->fx_is_v2[fxi] && inst->fx_plugins_v2[fxi] && inst->fx_instances[fxi]) {
+                        got = inst->fx_plugins_v2[fxi]->get_param(inst->fx_instances[fxi], param, val_buf, sizeof(val_buf));
+                    } else if (mfi >= 0 && mfi < inst->midi_fx_count &&
+                               inst->midi_fx_plugins[mfi] && inst->midi_fx_instances[mfi]) {
+                        got = inst->midi_fx_plugins[mfi]->get_param(inst->midi_fx_instances[mfi], param, val_buf, sizeof(val_buf));
+                    }
                 }
-            }
-            if (got > 0) {
-                chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
-                value = dsp_value_to_float(val_buf, pinfo, value);
-            }
+                if (got > 0) {
+                    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+                    value = dsp_value_to_float(val_buf, pinfo, value);
+                }
 
-            off += snprintf(buf + off, buf_len - off,
-                "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f}",
-                (i > 0) ? "," : "",
-                inst->knob_mappings[i].cc, target, param, value);
-            if (off >= buf_len - 1) break;
+                /*
+                 * Four writes, and the room is checked after each.
+                 *
+                 * `buf_len - off` is an int: once off passes buf_len it goes
+                 * NEGATIVE and converts to an enormous size_t, so a single
+                 * check after the last write would be checking a bound that
+                 * had already been blown past. Unreachable at today's sizes
+                 * (64 KB against ~4 KB of rows) and cheap to make impossible.
+                 *
+                 * Truncation answers an empty array rather than half an
+                 * object: JSON.parse in the shadow UI throws a half-written
+                 * one into a silent catch, and the knobs would vanish from the
+                 * saved patch with no error anywhere. Visibly nothing beats
+                 * invisibly broken.
+                 */
+                #define KNOB_ROW_ROOM() do { if (off >= buf_len - 2) \
+                    return snprintf(buf, buf_len, "[]"); } while (0)
+
+                off += snprintf(buf + off, buf_len - off,
+                    "%s{\"cc\":%d,\"target\":\"%s\",\"param\":\"%s\",\"value\":%.3f",
+                    rows ? "," : "", km->cc, target, param, value);
+                KNOB_ROW_ROOM();
+
+                if (km->dests[di].lo != 0.0f || km->dests[di].hi != 1.0f) {
+                    off += snprintf(buf + off, buf_len - off,
+                        ",\"lo\":%.4f,\"hi\":%.4f", km->dests[di].lo, km->dests[di].hi);
+                    KNOB_ROW_ROOM();
+                }
+                if (multi) {
+                    off += snprintf(buf + off, buf_len - off,
+                        ",\"dest\":%d,\"pos\":%.4f", di, km->position);
+                    KNOB_ROW_ROOM();
+                }
+                off += snprintf(buf + off, buf_len - off, "}");
+                rows++;
+                KNOB_ROW_ROOM();
+                #undef KNOB_ROW_ROOM
+            }
         }
         off += snprintf(buf + off, buf_len - off, "]");
         return off;
@@ -1632,16 +1738,50 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
                     /* Look up param info for all queries */
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
+                    const char *target = inst->knob_mappings[i].dests[0].target;
+                    const char *param = inst->knob_mappings[i].dests[0].param;
                     /* Indexed, not enumerated — see the knob_N_set site. This
                      * pinfo feeds the min/max/step/options answers below, so
                      * an unresolved fx4+ target made the whole knob undrivable. */
                     chain_param_info_t *pinfo = knob_find_param(inst, target, param);
 
                     if (strcmp(query_param, "name") == 0) {
+                        /* A multi-destination knob is not any one parameter, so
+                         * it says what it DRIVES: the first destination plus a
+                         * count of the others. This one string is what puts the
+                         * label on the touched-knob card -- refreshPendingKnobOverlay
+                         * passes knob_N_name and knob_N_value straight through --
+                         * so the card needs no change and, more to the point, no
+                         * extra read. */
+                        if (knob_is_multi(&inst->knob_mappings[i]))
+                            return snprintf(buf, buf_len, "%s +%d", param,
+                                            inst->knob_mappings[i].dest_count - 1);
                         /* Construct display name from target and param */
                         return snprintf(buf, buf_len, "%s: %s", target, param);
+                    }
+                    else if (strcmp(query_param, "dest_count") == 0) {
+                        return snprintf(buf, buf_len, "%d", inst->knob_mappings[i].dest_count);
+                    }
+                    else if (strcmp(query_param, "position") == 0) {
+                        return snprintf(buf, buf_len, "%.4f", inst->knob_mappings[i].position);
+                    }
+                    else if (strcmp(query_param, "dests") == 0) {
+                        /* The whole destination list in ONE read, for the
+                         * editor screen. Eight knobs times four destinations
+                         * times three reads each would be most of a second of
+                         * IPC on entry. */
+                        const knob_mapping_t *km = &inst->knob_mappings[i];
+                        int off = snprintf(buf, buf_len, "[");
+                        for (int di = 0; di < km->dest_count && di < MAX_KNOB_DESTS; di++) {
+                            off += snprintf(buf + off, buf_len - off,
+                                "%s{\"target\":\"%s\",\"param\":\"%s\",\"lo\":%.4f,\"hi\":%.4f}",
+                                di ? "," : "",
+                                km->dests[di].target, km->dests[di].param,
+                                km->dests[di].lo, km->dests[di].hi);
+                            if (off >= buf_len - 2) return snprintf(buf, buf_len, "[]");
+                        }
+                        off += snprintf(buf + off, buf_len - off, "]");
+                        return off;
                     }
                     else if (strcmp(query_param, "target") == 0) {
                         return snprintf(buf, buf_len, "%s", target);
@@ -1650,17 +1790,24 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
                         return snprintf(buf, buf_len, "%s", param);
                     }
                     else if (strcmp(query_param, "value") == 0) {
+                        /* A multi-destination knob has no single parameter
+                         * value to show, so it shows where it sits: the same
+                         * thing it sends on CC 102-109, in the same units the
+                         * user set it in. */
+                        if (knob_is_multi(&inst->knob_mappings[i]))
+                            return snprintf(buf, buf_len, "%d%%",
+                                            (int)(inst->knob_mappings[i].position * 100.0f + 0.5f));
                         /* Look up param metadata */
                         chain_param_info_t *param_info = find_param_by_key(inst, target, param);
                         if (param_info) {
                             /* Use centralized formatting */
-                            return format_param_value(param_info, inst->knob_mappings[i].current_value, buf, buf_len);
+                            return format_param_value(param_info, inst->knob_mappings[i].dests[0].current_value, buf, buf_len);
                         }
                         /* Fallback for params without metadata */
                         if (pinfo && pinfo->type == KNOB_TYPE_INT) {
-                            return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].current_value);
+                            return snprintf(buf, buf_len, "%d", (int)inst->knob_mappings[i].dests[0].current_value);
                         } else {
-                            return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].current_value);
+                            return snprintf(buf, buf_len, "%.2f", inst->knob_mappings[i].dests[0].current_value);
                         }
                     }
                     else if (strcmp(query_param, "min") == 0) {

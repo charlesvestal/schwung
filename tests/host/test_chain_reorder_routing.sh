@@ -121,16 +121,50 @@ struct_body=$(awk '/^typedef struct chain_instance \{/,/^\} chain_instance_t;/' 
 checked=0
 
 for type in $keyed; do
+  # `|| true`: a type with no DIRECT chain_instance_t member is now a legitimate
+  # case (see the nested branch below), and without this the failing grep in a
+  # command substitution takes the assignment's exit status down with it -- which
+  # under `set -e` ends the script silently, and a silent end reads as a pass.
   members=$(printf '%s\n' "$struct_body" | command grep "^ *$type " \
-    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/")
-  [ -n "$members" ] || fail "found the position-keyed type $type but no chain_instance_t member of it"
-  for m in $members; do
-    checked=$((checked + 1))
-    command grep -q "inst->$m\[" "$src" || fail \
+    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/" || true)
+
+  if [ -n "$members" ]; then
+    for m in $members; do
+      checked=$((checked + 1))
+      command grep -q "inst->$m\[" "$src" || fail \
 "chain_instance_t.$m is an array of $type, which names a chain position by \
 string, but chain_reorder.c never walks it. A shape edit will leave every \
 routing in it pointing at whatever module slides into the index it names. \
 Add it to chain_perm_retarget_all."
+    done
+    continue
+  fi
+
+  # No direct member. A position-keyed type may also be reached one level
+  # down -- knob_dest_t lives in an array inside knob_mapping_t, which is the
+  # chain_instance_t member. Being nested makes it no less position-keyed:
+  # every one of those destinations names a chain position by string too, and
+  # a walk that only ever touched index 0 would leave the rest aimed at
+  # whatever slid into their index.
+  inner=$(command grep -E "^ *$type +[a-z_0-9]+\[" "$hdr" \
+    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/" | sort -u)
+  [ -n "$inner" ] || fail "found the position-keyed type $type but no member of it anywhere in $hdr"
+
+  for m in $inner; do
+    checked=$((checked + 1))
+    # The walk must index it, and must not stop at the first one: a literal
+    # [0] and nothing else is exactly the shape that reads as handled.
+    command grep -q "\.$m\[" "$src" || command grep -q -- "->$m\[" "$src" || fail \
+"$type is nested as .$m[] inside a chain_instance_t member, and names a chain \
+position by string, but chain_reorder.c never indexes it. Add it to \
+chain_perm_retarget_all."
+    # A NON-NUMERIC subscript. `[a-z_0-9]+` would have accepted the literal
+    # `[0]` this check exists to reject, which is the whole failure it guards
+    # against -- it passed a deliberately-broken walk when first written.
+    if [ "$(command grep -c -E "[.>]$m\[[a-z_][a-z_0-9]*\]" "$src" || true)" -eq 0 ]; then
+      fail "chain_reorder.c only ever reaches .$m[] at a literal index, so it \
+walks one entry and leaves the others pointing at a renumbered position."
+    fi
   done
 done
 
