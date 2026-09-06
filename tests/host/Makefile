@@ -56,7 +56,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
-	$(BUILD_DIR)/test_boot_select_core
+	$(BUILD_DIR)/test_boot_select_core \
+	$(BUILD_DIR)/test_chain_idle_tick
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -148,6 +149,11 @@ $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../sr
 
 $(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_select_core.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Same as relative_cc above: chain_idle_tick.h lives with the chain DSP and is
+# standalone by construction (no chain_internal.h).
+$(BUILD_DIR)/test_chain_idle_tick: test_chain_idle_tick.c ../../src/modules/chain/dsp/chain_idle_tick.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I../../src/modules/chain/dsp $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \

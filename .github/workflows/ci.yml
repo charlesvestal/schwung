@@ -112,6 +112,21 @@ jobs:
           file build/link-subscriber | grep -q 'aarch64' || \
             { echo "WRONG ARCH"; file build/link-subscriber; exit 1; }
           echo "ok"
+      - name: Install ripgrep
+        # test_chain_host_file_split.sh uses rg. host-tests installs it in its
+        # own job; this one runs the same script on the runner, not in the
+        # builder container, so it needs its own copy.
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      - name: Chain dsp.so exported-symbol invariant
+        # test_chain_host_file_split.sh step 5 asserts dsp.so exports exactly
+        # the chain entry points plus the unified_log set — cross-TU internals
+        # must stay hidden or a dlopen'd sub-plugin can collide with them. That
+        # check is gated on `[ -f build/modules/chain/dsp.so ]`, and the
+        # host-tests job never builds one, so the invariant has been SKIPPING
+        # in CI since it was written: the ABI it guards was only ever checked
+        # by whoever happened to have a local ARM build. This job has the .so.
+        # GNU nm reads aarch64 ELF fine on the runner.
+        run: bash tests/host/test_chain_host_file_split.sh
       - name: Verify packaged tarball
         run: |
           test -f schwung.tar.gz

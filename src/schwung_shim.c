@@ -1969,16 +1969,23 @@ static void shadow_inprocess_render_to_buffer(void) {
                     }
                     int midi_wake = shadow_chain_take_midi_tick_wake &&
                         shadow_chain_take_midi_tick_wake(shadow_chain_slots[s].instance);
-                    if (midi_wake) {
-                        shadow_slot_idle[s] = 0;
-                        shadow_slot_silence_frames[s] = 0;
-                    } else {
+                    if (!midi_wake) {
                         shadow_slot_deferred_valid[s] = 1;
                         goto slot_run_deferred_fx;
                     }
+                    /* A MIDI FX delivered a generated message to the synth on
+                     * this frame, so render it here rather than leaving it
+                     * parked until the next probe (up to ~0.5s away). NOT
+                     * counted as a probe below: probe_burst_this_frame is the
+                     * stagger-alignment detector, and a MIDI-driven wake is
+                     * not a probe — counting it reports a spike the stagger
+                     * cannot fix. */
+                    shadow_slot_idle[s] = 0;
+                    shadow_slot_silence_frames[s] = 0;
+                } else {
+                    /* Probe frame: fall through to render and check output */
+                    probe_burst_this_frame++;
                 }
-                /* Probe frame: fall through to render and check output */
-                probe_burst_this_frame++;
             }
 
             if (same_frame_fx) {

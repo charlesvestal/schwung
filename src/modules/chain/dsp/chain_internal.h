@@ -25,6 +25,8 @@
 #include <pwd.h>
 #include <malloc.h>
 
+#include "chain_idle_tick.h"
+
 /* Sentinel for "channel field not present in patch file".
  * Distinguishes genuine absence from the legal 0 values used by
  * receive_channel (0=All) and forward_channel (0=ch 1 internal). */
@@ -399,10 +401,11 @@ typedef struct chain_instance {
     uint8_t pre_pad_held[128];
 
     /* The shim advances LFO/MIDI timers through "mod:tick" while an idle
-     * synth render is skipped. If a MIDI FX emits, it must wake that same
-     * block; idle_tick_advanced then prevents render_block ticking twice. */
-    int idle_tick_advanced;
-    int midi_tick_wake;
+     * synth render is skipped. If a MIDI FX delivers to the synth, it must
+     * wake that same block without render_block ticking a second time. The
+     * transitions are pure and live in chain_idle_tick.h so tests/host can
+     * run them; this is only where the state is kept. */
+    chain_idle_tick_t idle_tick;
 
     /* Pre-mode inject-only record-align. Clock-driven generator output
      * (Beat Bank etc.) must reach Move's track AFTER the 0xF8 that advances
