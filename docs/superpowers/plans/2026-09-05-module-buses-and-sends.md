@@ -2374,6 +2374,27 @@ Then on hardware, with a splittable module in a slot:
 - **Any CPU throttle or dynamic cap.** The ceiling was chosen deliberately; the
   mitigation is visibility on `/system/cpu`, not enforcement.
 
+## Defects found while documenting — reported, not fixed
+
+Task 12 surfaced these; none is caused by this branch and none blocks it.
+
+1. **`split_voices` has an undocumented 4096-byte ceiling** (`chain_host.c`,
+   `char split_buf[4096]`). A module publishing a long list is silently
+   truncated for the C-side id table, while the UI's re-serve path uses the
+   param channel's own `buf_len` — so **the two can disagree about how many
+   voices exist**, with the C side short. Nothing enforces or reports it. This
+   is the one worth fixing: it is the same silent-divergence shape as the
+   compaction bug, one layer out. Documented in `docs/MODULES.md`.
+2. **`shadow_sampler.c` still says "Six streams"** in two comments; with seven
+   stems plus the master it is eight. It is the comment a future reader will
+   use to reason about the divergence check and the fade ramp.
+3. **`shadow_sampler.h` mixes MB and MiB** in adjacent figures ("~370 MB" is
+   decimal; "71 MB" and "35 MB" are MiB). The docs quote the header verbatim so
+   the two agree, rather than silently re-deriving.
+4. ~~FIFO 90 / ~900 µs in the threading contract~~ — **FIXED** (`11359b68`).
+   Both measured wrong; see that commit. `docs/REALTIME_SAFETY.md`'s remaining
+   FIFO 90 rows describe the SPI *driver* kernel thread and are correct.
+
 ## Open risks
 
 - **CPU.** A slot can now hold 40 positions against a ~2370 us frame in which a

@@ -102,12 +102,12 @@
     {
       "id": 11,
       "subject": "Task 12: Documentation and credit",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Every doc that describes the chain, the module contract or the shortcuts reflects buses and sends, and PR #121 is credited in public.\n\n**Files:**\n- Modify: `CLAUDE.md` (one bullet per subsystem hook \u2014 NOT the prose)\n- Modify: `docs/CHAIN.md` (the module contract: `split_voices`, `render_split`)\n- Modify: `docs/MODULES.md` (how a module author opts in)\n- Modify: `src/host/plugin_api_v1.h` (the `render_split` contract beside the threading one)\n- Modify: `docs/SHADOW_UI.md` (the picker, the bus list, send persistence)\n- Modify: `src/shared/help_content.json`\n- Modify: `../schwung-catalog-site/manual.html` (buses, sends, the new gestures)\n\n**Acceptance Criteria:**\n- [ ] `CLAUDE.md` gains a bullet under the CHAIN and SHADOW_UI hooks, not paragraphs \u2014 it is an INDEX, and adding prose inline is how it reached 151 KB\n- [ ] The `render_split` accumulate-and-alias contract appears in `plugin_api_v1.h`, `docs/MODULES.md` and `docs/CHAIN.md`, and the three are consistent\n- [ ] PR #121 and legsmechanical are credited in `docs/CHAIN.md` and in the commit trailer\n- [ ] `manual.html` documents the down-gesture and the FX-bus picker (a gesture changed, so this is required, not optional)\n- [ ] `bash tests/host/test_builtin_help_content.sh` green\n\n**Verify:** `for t in tests/host/*.sh; do bash \"$t\" || echo \"FAILED: $t\"; done` -> no failures\n\n**Steps:**\n- Step 1: Write the `CLAUDE.md` bullets\n- Step 2: Update the manual\n- Step 3: Run the full suite\n- Step 4: Commit\n\n```json:metadata\n{\"files\": [\"CLAUDE.md\", \"docs/CHAIN.md\", \"docs/MODULES.md\", \"docs/SHADOW_UI.md\", \"src/host/plugin_api_v1.h\", \"src/shared/help_content.json\"], \"verifyCommand\": \"for t in tests/host/*.sh; do bash \\\"$t\\\" || echo \\\"FAILED: $t\\\"; done\", \"acceptanceCriteria\": [\"`CLAUDE.md` gains a bullet under the CHAIN and SHADOW_UI hooks, not paragraphs \\u2014 it is an INDEX, and adding prose inline is how it reached 151 KB\", \"The `render_split` accumulate-and-alias contract appears in `plugin_api_v1.h`, `docs/MODULES.md` and `docs/CHAIN.md`, and the three are consistent\", \"PR #121 and legsmechanical are credited in `docs/CHAIN.md` and in the commit trailer\", \"`manual.html` documents the down-gesture and the FX-bus picker (a gesture changed, so this is required, not optional)\", \"`bash tests/host/test_builtin_help_content.sh` green\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         10
       ]
     }
   ],
-  "lastUpdated": "2026-09-06T01:29:36.459233"
+  "lastUpdated": "2026-09-06T02:05:49.806812"
 }
