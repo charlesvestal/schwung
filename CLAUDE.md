@@ -786,6 +786,24 @@ A `Buses` action row opens the slot's bus list; a bus's own menu opens its
   equality rather than a hash. `null` from that read is a channel failure, not
   "cannot split" — chain_host.c clamps a plugin's -1 to `""` so the two cannot
   collide.
+- **`Buses` is CONTAINERS, `Sends` is LEVELS, and they are two rows.** One
+  screen held both, so `New Bus` sat beside a mixer, while the slot's own two
+  send levels lived two screens away under a third name — and the mixer that
+  called itself the sends view omitted `Main`, the source most slots use and the
+  only one a busless slot has. The mixer carries Main now; the keys did not
+  move. **In LIST view the two plain rows come back** (a grid has nothing for a
+  screen reader to read out), and exactly one of the two forms is ever present.
+- **A send level knob did ~17 flash writes per DETENT.** `saveSendFxChainConfig`
+  walks both buses, reads a `:bypassed` per position and writes up to sixteen
+  state files; the jog got away with calling it per detent because it steps by
+  four and a hand is slow. `saveSendLevels()` is split out and the grid write
+  marks a flag the tick flushes — a level change is not a chain change.
+- **An LFO can target the slot send amounts** (`buses` / `main_send<N>`), and it
+  is an OFFSET applied at the drain, never a write to `main_send_level`. That
+  level is read back by `saveSendLevels()`, so driving it directly would persist
+  a modulated value as the user's setting. The offset is zeroed every block —
+  otherwise a disabled LFO leaves it stuck with no gesture that puts it back —
+  and ADDED, so two LFOs on one send sum.
 - **Orphaned voice ids are shown and are the only thing that can clear them**;
   every `bus<N>:voices` write is a whole-list replace, so the write CARRIES them.
 - **A bus insert is a THIRD CHAIN TARGET.** Its parameters were unreachable —
@@ -1213,8 +1231,32 @@ Co-run lets an **overtake tool share Move's control surface with a second UI** f
 ### Master FX Chain
 
 8-slot Master FX processes mixed shadow output. Access: Shift+Vol+Menu, which
-opens the **FX-bus picker** (Master FX / Send A / Send B) rather than the master
-bus directly — see the Slot buses hook above.
+lands on the MASTER bus — Send A and Send B are the first two BOXES of its row,
+not a picker in front of it.
+
+- **The row heads with DOORS, and that is topology rather than menu design.**
+  Sends land BEFORE Master FX (`schwung_shim.c` sums the returns into
+  `fx_target`; the MFX loop processes that same buffer), so the leftmost boxes
+  ARE what arrives ahead of position 1. A send row heads with the way back —
+  same place, opposite direction. `isBusDoor()` is the shared test, so the
+  grouping gap is written once against the ROLE.
+- **ROW INDEX and FX POSITION are different numbers now.** They were equal only
+  because the row began at fx1, so nine call sites passed one where the other
+  was wanted and were right by coincidence — both small in-range integers, so a
+  mismatch is a click on fx1 that edits fx3, with no error. `masterFxPositionOf`
+  / `masterFxRowOf` convert; `enterMasterFxModuleSelect` was the one of four
+  master entry points taking a ROW and returned SILENTLY when handed a position.
+- **The landing is resolved AFTER the chain is loaded**, in
+  `enterMasterFxSettings` and nowhere else. `enterFxBus` computes nothing: it
+  invalidates the mirror, whose reload is LAZY, and its last statement used to
+  assign `selectedMasterFxComponent = 0` — harmless while row 0 was fx1, and
+  "opening MFX jumps to Send A" once row 0 was a door.
+  `resolveFxBusLanding()` is where this bus was left, else the first module,
+  else the first non-door row (the `+`). Falling back to 0 is the bug in its
+  quietest form.
+- **Every box is NOTCHED** (`notchCorners`, imported from the knob grid rather
+  than copied). The diagram was the one surface not wearing the idiom every
+  filled or framed box on the grid already does.
 
 The cap lives in **two** places that must move together — `MASTER_FX_SLOTS` in
 `src/host/shadow_chain_mgmt.h` and in `src/shadow/shadow_ui.js` —, and
@@ -1251,6 +1293,16 @@ one still arriving**, and the hold never gives up. A loading position names the
 module it is **becoming**; naming the outgoing one opens the wrong editor,
 naming nothing makes the autosave erase the state file. Restores WAIT
 (`waitForFxPositionSettled`); an interactive pick does not.
+
+**A SEND REORDERS NOW**, through the same `chain_permute` machinery, and the
+permutation is genuinely simpler rather than a trimmed copy: no LFOs to re-aim,
+no published length, and `chain_params_cache` is a field of the shared
+`master_fx_slot_t` so it rotates with the array. `send_fx_key.h` names the three
+verbs explicitly — its guard rejects anything fx-shaped that names no position,
+which swallowed `send1:fx:move` whole, so the editor reordered its own model
+against a shim that dropped the verb: the picture moved and the audio did not.
+`hasShapeVerbs` has now cost a hardware bug in BOTH directions, so the test pins
+the AGREEMENT between the flag and what the shim serves, not either value.
 
 Master FX still has **no insert, remove or move** — removal is picking `None`,
 which unloads in place and leaves a hole. Adding those (and the permutation
