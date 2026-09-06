@@ -555,17 +555,39 @@ void chain_mod_clear_source(void *ctx, const char *source_id) {
 }
 
 
+/*
+ * Scratch for the refresh below, deliberately NOT on the stack.
+ *
+ * chain_param_info_t is ~4.3 KB -- options[128][32] alone is 4 KB -- so
+ * chain_param_info_t[MAX_CHAIN_PARAMS] is about 1.05 MB, and the answer buffer
+ * is another SHADOW_PARAM_VALUE_LEN on top. As locals that was a ~1.2 MB stack
+ * frame on a function reachable from a plugin entry point, i.e. from the SPI
+ * callback, every MOD_PARAM_CACHE_REFRESH_MS.
+ *
+ * Static is safe here and heap is not: every caller reaches this through a
+ * plugin entry point, which is the callback thread, and malloc on that thread
+ * is a realtime violation. The function does not recurse. Keeping the
+ * temporary separate from the destination is what preserves the failure
+ * semantics -- a parse that fails must leave the previous cache intact, and
+ * parsing straight into inst->synth_params would half-overwrite it.
+ *
+ * tests/host/test_param_buffers_not_on_stack.sh fails if either goes back.
+ */
+static char s_refresh_buf[SHADOW_PARAM_VALUE_LEN];
+static chain_param_info_t s_refresh_parsed[MAX_CHAIN_PARAMS];
+
 int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *target) {
     if (!inst || !target) return -1;
 
-    char buf[SHADOW_PARAM_VALUE_LEN];
+    char *buf = s_refresh_buf;
+    const size_t buf_size = sizeof(s_refresh_buf);
     int result = -1;
-    chain_param_info_t parsed[MAX_CHAIN_PARAMS];
+    chain_param_info_t *parsed = s_refresh_parsed;
     int parsed_count = -1;
 
     if (strcmp(target, "synth") == 0) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->get_param) {
-            result = inst->synth_plugin_v2->get_param(inst->synth_instance, "chain_params", buf, sizeof(buf));
+            result = inst->synth_plugin_v2->get_param(inst->synth_instance, "chain_params", buf, (int)buf_size);
         }
         if (result <= 0) return -1;
         parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
@@ -581,7 +603,7 @@ int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *tar
 
         if (inst->fx_is_v2[fx_slot] && inst->fx_plugins_v2[fx_slot] &&
             inst->fx_instances[fx_slot] && inst->fx_plugins_v2[fx_slot]->get_param) {
-            result = inst->fx_plugins_v2[fx_slot]->get_param(inst->fx_instances[fx_slot], "chain_params", buf, sizeof(buf));
+            result = inst->fx_plugins_v2[fx_slot]->get_param(inst->fx_instances[fx_slot], "chain_params", buf, (int)buf_size);
         }
         if (result <= 0) return -1;
         parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
@@ -602,7 +624,7 @@ int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *tar
         result = inst->midi_fx_plugins[midi_fx_slot]->get_param(inst->midi_fx_instances[midi_fx_slot],
                                                                 "chain_params",
                                                                 buf,
-                                                                sizeof(buf));
+                                                                (int)buf_size);
         if (result <= 0) return -1;
         parsed_count = parse_chain_params_array_json(buf, parsed, MAX_CHAIN_PARAMS);
         if (parsed_count < 0) return -1;
