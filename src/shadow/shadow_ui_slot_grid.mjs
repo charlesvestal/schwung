@@ -276,25 +276,40 @@ export function lfoLevels(indices, keyPrefix = "") {
     return levels;
 }
 
-/** Actions, in the order they appear on the menu page. */
+/*
+ * Actions, in the order they appear on the menu page.
+ *
+ * `when` names which of the two facts this entry needs, or null for always.
+ * Two of them are conditional on unrelated things -- Delete needs a preset to
+ * delete, Buses needs a synth that publishes voices to split -- and a shared
+ * `always` boolean could only ever have expressed one of them.
+ */
 export const SLOT_GRID_ACTIONS = [
-    { label: "Knob Mapping", action: "knobs", always: true },
+    { label: "Knob Mapping", action: "knobs", when: null },
     /* LFO 1 and LFO 2 are PAGES now, not menu entries — eight of their nine
      * params are turnable and the widgets draw the thing itself. */
-    { label: "Save", action: "save", always: true },
+    /* Buses is a DOOR, not a page: it opens a list of this slot's split-voice
+     * buses, each with its own voices, inserts and sends. It is here as well as
+     * on the two settings LISTS because this menu is what the grid shows in
+     * their place, and the grid is the default Param View — a row only on the
+     * lists would be a feature most users could not reach. */
+    { label: "Buses", action: "buses", when: "splits" },
+    { label: "Save", action: "save", when: null },
     /* Save As stays even with nothing saved: it goes straight to the keyboard
      * where Save offers a generated name. Only DELETE is meaningless. Same
      * filter getChainSettingsItems applies to the list. */
-    { label: "Save As", action: "save_as", always: true },
-    { label: "Delete", action: "delete", always: false },
+    { label: "Save As", action: "save_as", when: null },
+    { label: "Delete", action: "delete", when: "preset" },
 ];
 
 /**
  * @param {boolean} hasPreset  whether this slot already holds a saved preset
+ * @param {boolean} [hasSplits] whether this slot's synth publishes split_voices
  */
-export function slotGridHierarchy(hasPreset) {
+export function slotGridHierarchy(hasPreset, hasSplits) {
+    const have = { preset: !!hasPreset, splits: !!hasSplits };
     const menu = SLOT_GRID_ACTIONS
-        .filter((a) => a.always || hasPreset)
+        .filter((a) => !a.when || have[a.when])
         .map((a) => ({ label: a.label, action: a.action }));
     /*
      * Page order is Main, LFO 1, LFO 2, Actions.
@@ -358,6 +373,10 @@ export function realKeyFor(gridKey) {
  * @param {()=>boolean}            io.isMpeMode
  * @param {(on:boolean)=>void}     io.setMpeMode
  * @param {()=>boolean}            io.hasPreset
+ * @param {()=>boolean}            [io.hasSplitVoices]  whether the loaded synth
+ *   publishes `split_voices`. Omitted, the Buses action is absent -- which is
+ *   the right answer for a caller that cannot tell, since the screen behind it
+ *   would have nothing to list.
  * @param {(lfoIndex:number)=>object} [io.describeTarget]  resolve LFO N's
  *   routing to {short, header, long} — see shared/lfo_target_label.mjs. The
  *   host owns it because it costs IPC and therefore wants caching; omitted,
@@ -369,7 +388,11 @@ export function createSlotGridIo(io) {
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
-            if (k === "ui_hierarchy") return JSON.stringify(slotGridHierarchy(!!io.hasPreset()));
+            if (k === "ui_hierarchy") {
+                return JSON.stringify(slotGridHierarchy(
+                    !!io.hasPreset(),
+                    io.hasSplitVoices ? !!io.hasSplitVoices() : false));
+            }
             if (k === "chain_params") return JSON.stringify(allSlotGridParams());
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";
             if (k === "forward_channel") {

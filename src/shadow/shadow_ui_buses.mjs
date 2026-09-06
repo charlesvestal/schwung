@@ -81,10 +81,6 @@ export function drawBusList() {
      * primary action goes first and the count is kept where it fits. */
     const row = rows[busListIndex];
     if (row && row.kind === "new") drawFooter(["Clk: create", "Back: out"]);
-    /* "Dn: fx", not "Dn: inserts": drawFooter pins BACK and drops the MIDDLE
-     * pairs that do not fit, silently, so the longer word cost this row the
-     * hint for its own second gesture. Measured in the render, not guessed. */
-    else if (row && row.kind === "bus") drawFooter(["Clk: edit", "Dn: fx", "Back: out"]);
     /* The Sends row opens the send MIXER, not a menu — the verb names what the
      * click does. */
     else if (row && row.kind === "sends") drawFooter(["Clk: sends", "Back: out"]);

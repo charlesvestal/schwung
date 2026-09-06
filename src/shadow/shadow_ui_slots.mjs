@@ -27,6 +27,13 @@ import {
 export const SLOT_SETTINGS = [
     { key: "patch", label: "Patch", type: "action" },
     { key: "chain", label: "Edit Chain", type: "action" },
+    /* The other door onto a slot's split-voice buses. This list and
+     * CHAIN_SETTINGS_ITEMS overlap heavily already (Volume through MPE Mode are
+     * in both); the duplication is pre-existing and matched here rather than
+     * left as an asymmetry — a row that exists on one of the two ways into a
+     * slot and not the other is worse than either. Hidden when the synth
+     * publishes no `split_voices` — see slotSettingsItems. */
+    { key: "buses", label: "Buses", type: "action" },
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
@@ -36,6 +43,22 @@ export const SLOT_SETTINGS = [
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
 ];
+
+/*
+ * The rows this slot actually shows.
+ *
+ * ONE list for the draw, the jog and the click. Three sites indexed
+ * SLOT_SETTINGS directly and a conditional row makes that a click acting on a
+ * row that was not drawn, which is the bug the bus list's own `ctx.busRows()`
+ * exists to prevent.
+ *
+ * `chainSynthSplits` is the host's — cached, and false for a read that did not
+ * complete, so a stalled channel costs one draw without the row.
+ */
+export function slotSettingsItems(slot) {
+    const splits = ctx.chainSynthSplits ? ctx.chainSynthSplits(slot) : false;
+    return SLOT_SETTINGS.filter((item) => item.key !== "buses" || splits);
+}
 
 /* ---- Module-local state ------------------------------------------------- */
 
@@ -59,6 +82,11 @@ export function getSlotSettingValue(slot, setting) {
     }
     if (setting.key === "mpe_mode") {
         return isSlotMpe(slot) ? "On" : "Off";
+    }
+    /* Host-side, because it is the same count the other settings list prints
+     * and one cache serves both. */
+    if (setting.key === "buses") {
+        return ctx.slotBusCountLabel ? ctx.slotBusCountLabel(slot) : "";
     }
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";
@@ -153,7 +181,7 @@ export function enterSlotSettings(slotIndex) {
     setView(VIEWS.SLOT_SETTINGS);
     ctx.needsRedraw = true;
 
-    const setting = SLOT_SETTINGS[0];
+    const setting = slotSettingsItems(slotIndex)[0];
     const val = getSlotSettingValue(slotIndex, setting);
     announceMenuItem(`Slot Settings, ${setting.label}`, val);
 }
@@ -235,7 +263,7 @@ export function drawSlotSettings() {
     /* The hand-drawn "> " / "* " prefix is gone: drawMenuList supplies the
      * caret and editMode carries the editing marker. */
     drawMenuList({
-        items: SLOT_SETTINGS,
+        items: slotSettingsItems(selectedSlot),
         selectedIndex: selectedSetting,
         getLabel: (setting) => `${setting.label}:`,
         getValue: (setting) => truncateText(
@@ -263,14 +291,17 @@ export function handleSlotsJog(delta) {
 
 export function handleSlotSettingsJog(delta) {
     const { selectedSlot } = ctx;
+    const items = slotSettingsItems(selectedSlot);
     if (editingSettingValue) {
-        const setting = SLOT_SETTINGS[selectedSetting];
+        const setting = items[selectedSetting];
+        if (!setting) return;
         adjustSlotSetting(selectedSlot, setting, delta);
         const newVal = getSlotSettingValue(selectedSlot, setting);
         announceParameter(setting.label, newVal);
     } else {
-        selectedSetting = Math.max(0, Math.min(SLOT_SETTINGS.length - 1, selectedSetting + delta));
-        const setting = SLOT_SETTINGS[selectedSetting];
+        selectedSetting = Math.max(0, Math.min(items.length - 1, selectedSetting + delta));
+        const setting = items[selectedSetting];
+        if (!setting) return;
         const val = getSlotSettingValue(selectedSlot, setting);
         announceMenuItem(setting.label, val);
     }
@@ -288,13 +319,19 @@ export function handleSlotsSelect() {
 }
 
 export function handleSlotSettingsSelect() {
-    const { selectedSlot, enterPatchBrowser, enterChainEdit } = ctx;
-    const setting = SLOT_SETTINGS[selectedSetting];
+    const { selectedSlot, enterPatchBrowser, enterChainEdit, enterBusList } = ctx;
+    const setting = slotSettingsItems(selectedSlot)[selectedSetting];
+    if (!setting) return;
     if (setting.type === "action") {
         if (setting.key === "patch") {
             enterPatchBrowser(selectedSlot);
         } else if (setting.key === "chain") {
             enterChainEdit(selectedSlot);
+        } else if (setting.key === "buses") {
+            /* Back comes back to THIS screen, not to the other slot settings
+             * list — the thunk is what carries that, and it announces itself,
+             * so the destination and the announcement cannot disagree. */
+            enterBusList(selectedSlot, () => enterSlotSettings(selectedSlot));
         }
     } else {
         editingSettingValue = !editingSettingValue;

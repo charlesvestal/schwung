@@ -32,7 +32,6 @@ import {
     MoveKnob1, MoveKnob2, MoveKnob3, MoveKnob4,
     MoveKnob5, MoveKnob6, MoveKnob7, MoveKnob8,
     MoveKnob1Touch, MoveKnob8Touch,  // Capacitive touch notes (0-7)
-    MoveDown,          // CC 54 - down arrow, claimed for the bus screens
     MidiNoteOn, MidiNoteOff
 } from '/data/UserData/schwung/shared/constants.mjs';
 
@@ -2346,7 +2345,7 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
         { label: "Preset", value: presetRowValue(record, liveBlob), action: "up_load" },
     ];
     /* Save and Delete both target the LOADED preset, so both are meaningless
-     * with none loaded — same always-or-hasPreset filter SLOT_GRID_ACTIONS
+     * with none loaded — the same conditional-row filter SLOT_GRID_ACTIONS
      * applies for the slot settings menu. Save As stays unconditional: it
      * goes straight to the keyboard where Save offers a generated name. */
     if (hasRecord) presetEntries.push({ label: "Save", action: "up_save" });
@@ -3414,19 +3413,25 @@ function drawFxBusPicker() {
 }
 
 /* ==========================================================================
- * SLOT BUSES — the screens that hang BELOW the synth box
+ * SLOT BUSES — a slot's split-voice buses and their inserts
  *
- * Down on the synth box opens this slot's bus list; Down on a bus row opens
- * that bus's 8-position insert chain. Everything drawn lives in
- * shadow_ui_buses.mjs; what lives here is the state, the reads and the
- * gestures — the same split every other view module in this directory has.
+ * The door is a `Buses` ACTION ROW on the slot's settings, beside Knobs and the
+ * two LFOs — every one of which is a row that opens a per-slot sub-editor, so
+ * this is that list's existing shape rather than a fourth kind of thing. It was
+ * briefly the DOWN arrow on the chain editor's synth box, which is wrong for a
+ * reason worth recording: Up and Down are Move's octave shift and only Down was
+ * ever claimed, so the pair broke — you could shift up and not come back, at the
+ * chain editor's default resting cursor position.
+ *
+ * Everything drawn lives in shadow_ui_buses.mjs; what lives here is the state,
+ * the reads and the entry — the same split every other view module in this
+ * directory has.
  *
  * THE AFFORDANCE IS A READ, and the read has three answers. A slot whose synth
- * publishes no `split_voices` offers NOTHING: no footer hint (the cached read
- * below is what the chain editor asks) and no screen (handleChainEditDown
- * returns without changing the view). A read that did not COMPLETE is not that
- * answer — it opens the list in its waiting state and retries, because a
- * failed read is not news about the module.
+ * publishes no `split_voices` offers NOTHING: the row is not in the list
+ * (chainSynthSplits, below, is what both settings lists ask). A read that did
+ * not COMPLETE is not that answer — it answers false for that frame and is not
+ * cached, so the row appears as soon as the channel does.
  * ========================================================================== */
 
 let busSlot = -1;              /* which slot's buses are open */
@@ -3529,17 +3534,43 @@ function busRowsNow() {
 }
 
 /*
+ * WHERE BACK GOES, resolved ONCE at entry.
+ *
+ * THREE surfaces carry a `Buses` row, but they are only TWO destinations: a
+ * slot's Settings position is reached as the knob grid or as the list, and
+ * enterChainSettings is the one place that decides which — while the older slot
+ * list's own settings screen (VIEWS.SLOT_SETTINGS) is a third door onto the same
+ * slot. Back has to land on whichever was actually used.
+ *
+ * A THUNK rather than a view id, for two reasons. Both destinations are
+ * re-ENTERED rather than merely set: setting VIEWS.CHAIN_SETTINGS directly from
+ * a grid session would drop you on a screen you never opened. And the thunk
+ * ANNOUNCES itself, so the announcement cannot disagree with the destination —
+ * this branch has already shipped one Back that said "Chain Editor" and went
+ * elsewhere (hierEditorIsMasterFx, a boolean that could not name a third chain),
+ * and sharing a string between two switches is how that happens again.
+ *
+ * null only before the first entry; the Back handler falls back to the slot's
+ * settings rather than assuming a view.
+ */
+let busListReturn = null;
+
+/*
  * Open the bus list for `slot`.
  *
- * `voices` is the read the CALLER already made — the gesture reads it to decide
- * whether there is an affordance at all, and re-reading it here would be a
- * second ~2.8ms round trip for an answer we hold. Pass null and it is read.
+ * `back` is the thunk described above; omitted, Back goes to the slot's
+ * settings, which is where every door onto this screen lives today.
+ *
+ * The voices are read HERE, uncached: the row that opened this screen was gated
+ * on a CACHED answer to a different question ("does this synth split at all"),
+ * and the multi-select behind it needs the real list. One round trip, once, on a
+ * screen change.
  */
-function enterBusList(slot, voices) {
+function enterBusList(slot, back) {
+    busListReturn = (typeof back === "function") ? back : (() => enterChainSettings(slot));
     if (busSlot !== slot) { busConfig = null; busVoices = null; busListIndex = 0; }
     busSlot = slot;
-    if (voices && !voices.unresolved) { busVoices = voices; busVoicesStale = false; }
-    else refreshBusVoices();
+    refreshBusVoices();
     refreshBusConfig();
     const rows = busRowsNow();
     busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex));
@@ -3551,15 +3582,19 @@ function enterBusList(slot, voices) {
 }
 
 /*
- * Does the synth in `slot` publish voices to split?
+ * Does the synth in `slot` publish voices to split? — the ONE gate on whether
+ * the `Buses` row exists at all, asked by both settings lists and by the knob
+ * grid's action menu.
  *
- * CACHED (getSlotParamCached, keyed on the loaded module id) because both
- * callers run per frame — the chain editor's footer and the arrow claim — and
- * an uncached read there would be ~2.8ms every frame for an answer that cannot
- * change without a module swap. A failed read is not cached and answers false
- * HERE, which is the conservative half of the tri-state for a per-frame
- * question: no hint and no claim for a frame, rather than a hint for a module
- * that may not split. The DECISION, in handleChainEditDown, reads uncached.
+ * CACHED (getSlotParamCached, keyed on the loaded module id) because a settings
+ * list re-derives its rows on every draw, and an uncached read there would be
+ * ~2.8ms per frame for an answer that cannot change without a module swap.
+ *
+ * A failed read is not cached and answers false HERE, which is the conservative
+ * half of the tri-state for a per-draw question: no row for that frame, rather
+ * than a row for a module that may not split. It costs nothing, because the row
+ * appears on the next draw the channel answers on — unlike the irreversible
+ * "this position is empty" latch the same failure caused elsewhere.
  */
 function chainSynthSplits(slot) {
     const cfg = chainConfigs[slot];
@@ -3570,59 +3605,34 @@ function chainSynthSplits(slot) {
 }
 
 /*
- * Whether the DOWN arrow should be taken from Move THIS FRAME.
+ * What the `Buses` settings row prints beside its label: how many buses this
+ * slot has, or nothing when it has none.
  *
- * Up and down are Move's octave shift, so the claim is as narrow as the
- * gesture: the chain editor with the cursor on a splittable synth, and the bus
- * list with the cursor on a bus. Everywhere else the arrow stays Move's — which
- * is also what makes criterion "a module that cannot split shows no bus
- * affordance" true of the ARROW and not only of the screen.
+ * CACHED for the same reason chainSynthSplits is — a settings list asks per
+ * draw. Three answers, kept distinct: a count, "" for a slot with no buses yet
+ * (an honest, complete answer, and a "0" beside a door reads as broken), and
+ * "-" for a read that did not complete, which is what every other unread value
+ * on these two lists already prints.
  */
-function navDownWanted() {
-    if (view === VIEWS.BUS_LIST) {
-        const row = busRowsNow()[busListIndex];
-        return !!(row && row.kind === "bus");
-    }
-    if (view !== VIEWS.CHAIN_EDIT) return false;
-    const comps = slotChainComponents(selectedSlot);
-    const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
-    if (!comp || comp.kind !== "synth") return false;
-    return chainSynthSplits(selectedSlot);
+function slotBusCountLabel(slot) {
+    const cfg = chainConfigs[slot];
+    const mid = cfg && cfg.synth && cfg.synth.module;
+    if (!mid) return "-";
+    /* The OPEN config wins when it is this slot's. Every write path
+     * (busCreate / busDelete / the voice writer) calls refreshBusConfig, so
+     * returning here from the bus list shows the count that screen just left
+     * you with — where the 500ms cached read would print the old one for
+     * half a second, on precisely the transition where it is most obviously
+     * wrong. */
+    const parsed = (busSlot === slot && busConfig && !busConfig.unresolved)
+        ? busConfig
+        : BusModel.parseBusesConfig(getSlotParamCached(slot, "buses:config", mid));
+    const n = BusModel.busCount(parsed);
+    if (n < 0) return "-";
+    return n > 0 ? String(n) : "";
 }
 
-/* The chain editor's resting footer with its third pair replaced. Declared
- * beside the rule that uses it, not in chain_editor_chrome.mjs: Master FX draws
- * from that file too and has no buses to descend into. */
-const CHAIN_HINTS_SYNTH_BUS = Object.freeze(
-    [["JOG", "SEL"], ["CLK", "OPEN"], ["DN", "BUS"]]);
-
-let _navDownClaimed = 0;
-
-/* Push the claim down to the shim, on CHANGE only: the byte is read every SPI
- * frame, so re-writing the same value would be a pointless call per tick. */
-function reconcileNavClaim() {
-    let want = 0;
-    try { want = navDownWanted() ? 1 : 0; } catch (e) { want = 0; }
-    if (want === _navDownClaimed) return;
-    _navDownClaimed = want;
-    if (typeof host_nav_down_claim === "function") host_nav_down_claim(want);
-}
-
-/* Down on the chain editor's synth box. The ONE decision point for whether
- * this slot has buses at all — see the block comment above. */
-function handleChainEditDown() {
-    const comps = slotChainComponents(selectedSlot);
-    const comp = selectedChainComponent >= 0 ? comps[selectedChainComponent] : null;
-    if (!comp || comp.kind !== "synth") return false;
-    const sv = BusModel.parseSplitVoices(getSlotParam(selectedSlot, "synth:split_voices"));
-    /* SERVED AND EMPTY: this module cannot split. No row, no hint, no screen. */
-    if (!sv.unresolved && sv.voices.length === 0) return false;
-    enterBusList(selectedSlot, sv);
-    return true;
-}
-
-/* Down on a bus row of the list, and Inserts from the bus menu: the bus's own
- * 8 positions. */
+/* `Inserts` on the bus menu: that bus's own 8 positions. */
 function enterBusChain(busIndex) {
     busChainBus = busIndex;
     busChainPos = 0;
@@ -5127,6 +5137,17 @@ function exitConnect() {
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
+    /* The door onto this slot's split-voice buses. An ACTION ROW opening a
+     * per-slot sub-editor, which is what Knobs and both LFOs already are —
+     * hidden entirely when the synth publishes no `split_voices`, so a module
+     * that cannot split shows no row rather than a row onto an empty screen.
+     * See getChainSettingsItems.
+     *
+     * `showsValue` is opt-in because an action row draws no value by default,
+     * and that default is load-bearing: getChainSettingValue's fallback is an
+     * IPC read of the row's key, so asking every action row for a value would
+     * spend a ~2.8ms round trip per row per draw to print "-" beside Save. */
+    { key: "buses", label: "Buses", type: "action", showsValue: true },
     /* 2.0 is +6 dB. It was 4.0 (+12 dB), which is more headroom than a slot
      * has any use for and reads as an alarming 400% now that the knob grid
      * shows it as a percentage. Capped in BOTH places or the two surfaces
@@ -8922,18 +8943,26 @@ function isExistingPreset(slotIndex) {
     return name && name !== "" && name !== "Untitled";
 }
 
-/* Get dynamic settings items (excludes Delete for new presets) */
+/*
+ * Get dynamic settings items.
+ *
+ * Two rows are conditional, and they are conditional on unrelated things:
+ * DELETE needs a preset to delete (Save As stays even with nothing saved — see
+ * the Master FX twin of this filter; the two chains must offer the same entries
+ * or their settings screens drift again), and BUSES needs a synth that
+ * publishes voices to split.
+ *
+ * chainSynthSplits is cached and answers false on a read that did not complete,
+ * so a stalled channel costs one draw without the row rather than a row that
+ * opens nothing.
+ */
 function getChainSettingsItems(slotIndex) {
-    if (isExistingPreset(slotIndex)) {
-        /* Existing preset: show all items (Save, Save As, Delete) */
-        return CHAIN_SETTINGS_ITEMS;
-    }
-    /* New preset: hide DELETE, but keep Save As — see the Master FX twin of
-     * this filter. Save suggests a name, Save As asks for one; both are
-     * meaningful before anything is saved, and the two chains must offer the
-     * same entries or their settings screens drift again. */
+    const hasPreset = isExistingPreset(slotIndex);
+    const splits = chainSynthSplits(slotIndex);
     return CHAIN_SETTINGS_ITEMS.filter(function(item) {
-        return item.key !== "delete";
+        if (item.key === "delete") return hasPreset;
+        if (item.key === "buses") return splits;
+        return true;
     });
 }
 
@@ -12975,6 +13004,15 @@ function runChainSettingAction(slot, key) {
         return;
     }
 
+    if (key === "buses") {
+        /* Back comes straight back HERE, whichever form of this screen was
+         * open: enterChainSettings is the one place that decides grid vs list,
+         * so the same thunk serves both. Same shape as the knob editor's own
+         * Back (VIEWS.KNOB_EDITOR -> enterChainSettings). */
+        enterBusList(slot, () => enterChainSettings(slot));
+        return;
+    }
+
     if (key === "save") {
         /* Start save flow */
         const currentName = slots[slot] ? slots[slot].name : "";
@@ -13150,6 +13188,9 @@ function slotGridIoFor(slotIndex) {
          * and only acts when the state actually differs. */
         setMpeMode: (on) => adjustChainSetting(slotIndex, { key: "mpe_mode" }, on ? 1 : -1),
         hasPreset: () => isExistingPreset(slotIndex),
+        /* Gates the Buses action. Cached and conservative on a failed read —
+         * see chainSynthSplits. */
+        hasSplitVoices: () => chainSynthSplits(slotIndex),
         /* An LFO's target reads as a name, not as "fx1" — see
          * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
          * editor uses, so the grid and the list can never describe the same
@@ -13653,6 +13694,7 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "mpe_mode") {
         return isSlotMpeMode(slot) ? "On" : "Off";
     }
+    if (setting.key === "buses") return slotBusCountLabel(slot);
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";
 
@@ -15392,7 +15434,7 @@ function hierEditorReturnDestinationName() {
             const bus = (busAt && busConfig && !busConfig.unresolved)
                 ? busConfig.buses[busAt.bus] : null;
             /* The same sentence enterBusChain announces, so arriving by Back
-             * and arriving by Down sound alike. */
+             * and arriving from the bus menu sound alike. */
             return bus ? `${bus.name} inserts` : "Inserts";
         }
         default:
@@ -20635,11 +20677,11 @@ function handleBack() {
             }
             break;
         case VIEWS.BUS_LIST:
-            /* Back up to the chain editor the Down came from — the level
-             * above, as every other list here does. */
-            setView(VIEWS.CHAIN_EDIT);
-            needsRedraw = true;
-            announce("Chain Editor");
+            /* Back to the list this was opened FROM — see busListReturn. The
+             * destination announces itself, so there is no second copy of it
+             * here to fall out of step. */
+            if (busListReturn) busListReturn();
+            else enterChainSettings(busSlot >= 0 ? busSlot : selectedSlot);
             break;
         case VIEWS.BUS_ACTIONS:
             if (busConfirmingDelete) { busConfirmingDelete = false; needsRedraw = true; break; }
@@ -20655,13 +20697,11 @@ function handleBack() {
             break;
         case VIEWS.BUS_CHAIN:
             if (selectingBusModule) { selectingBusModule = false; needsRedraw = true; break; }
-            /* A bus chain opened from the LIST (Down on a row) and one opened
-             * from the bus menu both return to where they came from, and the
-             * menu row is what says which: busActionsRow is only set by
-             * enterBusActions. */
-            setView(busActionsRow >= 0 ? VIEWS.BUS_ACTIONS : VIEWS.BUS_LIST);
+            /* The bus menu is the only door into an insert chain, so Back goes
+             * back to it. */
+            setView(VIEWS.BUS_ACTIONS);
             needsRedraw = true;
-            announce(busActionsRow >= 0 ? "Bus" : "Buses");
+            announce("Bus");
             break;
         case VIEWS.COMPONENT_SELECT:
             /* Return to chain edit. A picker opened from a `+` box leaves with
@@ -21282,20 +21322,7 @@ function drawChainEdit() {
         headerRight,
         label,
         info: infoLine,
-        /*
-         * The third pair NAMES THE BUS DESCENT when the cursor is on a synth
-         * that can split, because Down is otherwise an undiscoverable gesture.
-         * It REPLACES Back rather than being added: three pairs is what fits,
-         * drawFooter drops a fourth silently, and Back means the same thing on
-         * every screen while this is news about the cell under the cursor.
-         *
-         * A synth that cannot split is byte-identical to before — which is what
-         * makes "no bus affordance at all" checkable as a pixel hash rather
-         * than as a claim.
-         */
-        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
-             : (selectedComp && selectedComp.kind === "synth" && chainSynthSplits(selectedSlot)
-                ? CHAIN_HINTS_SYNTH_BUS : CHAIN_HINTS_AT_REST),
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp) : CHAIN_HINTS_AT_REST,
     });
 
     /*
@@ -22135,6 +22162,12 @@ function drawHelpDetail() {
      * would open whichever bus the editor last pointed at, not the master. */
     _ctx.enterMasterFxSettings = (...args) => enterFxBus(0);
     _ctx.enterSlotSettings = (...args) => _enterSlotSettings(...args);
+    /* The slot list's own settings screen carries a `Buses` row too, and asks
+     * the host the same two questions its twin in this file does — whether the
+     * synth splits, and how many buses it has — so ONE cache answers both. */
+    _ctx.enterBusList = (...args) => enterBusList(...args);
+    _ctx.chainSynthSplits = (slot) => chainSynthSplits(slot);
+    _ctx.slotBusCountLabel = (slot) => slotBusCountLabel(slot);
 })();
 
 /* Delegate draw/enter functions to extracted modules */
@@ -23449,13 +23482,6 @@ globalThis.tick = function() {
      * write ("Bus created") and then asked nothing ever again, in this
      * function or on re-entry.
      */
-    /* Every tick, and unthrottled: the claim follows the CURSOR, so a throttle
-     * would leave the arrow with the wrong owner for the frames right after a
-     * jog — which is exactly when Down is pressed. It costs one cached param
-     * read (TTL 500 ms) on the chain editor's synth box and nothing anywhere
-     * else, and only calls into the shim when the answer CHANGES. */
-    reconcileNavClaim();
-
     if (view === VIEWS.BUS_LIST || view === VIEWS.BUS_ACTIONS ||
         view === VIEWS.BUS_VOICES || view === VIEWS.BUS_CHAIN) {
         if (busConfigStale || busVoicesStale) {
@@ -25261,35 +25287,6 @@ globalThis.onMidiMessageInternal = function(data) {
         }
         if (d1 === MoveBack && d2 > 0) {
             handleBack();
-            return;
-        }
-
-        /*
-         * DOWN — the one gesture that reaches sideways out of the chain row.
-         *
-         * The chain row is horizontal and a slot's buses hang below its synth,
-         * so Down is what descends into them: on the synth box it opens the bus
-         * list, on a bus row it opens that bus's inserts. Anywhere else in
-         * either screen it does nothing, which is what leaves Move's own use of
-         * the arrow untouched everywhere Schwung has no answer for it.
-         *
-         * The shim only forwards CC 54 while `nav_down_claim` is up, and it is up
-         * only for the frames one of these two screens can act on it — see
-         * reconcileNavClaim.
-         */
-        if (d1 === MoveDown && d2 > 0) {
-            if (view === VIEWS.CHAIN_EDIT) { handleChainEditDown(); return; }
-            if (view === VIEWS.BUS_LIST) {
-                const rows = busRowsNow();
-                const row = rows[busListIndex];
-                if (row && row.kind === "bus") {
-                    /* Opened from the LIST, so Back comes back to the list —
-                     * busActionsRow is what drawBusChain's Back branches on. */
-                    busActionsRow = -1;
-                    enterBusChain(row.index);
-                }
-                return;
-            }
             return;
         }
 

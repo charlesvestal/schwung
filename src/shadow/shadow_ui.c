@@ -2738,25 +2738,6 @@ static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
-/*
- * host_nav_down_claim(enable) - take the DOWN arrow (CC 54) from Move.
- *
- * Raised only while a screen can act on it (the chain editor on a splittable
- * synth, the bus list on a bus row); lowered otherwise, so Move keeps the
- * arrow's octave shift everywhere else. Called every frame from the UI's own
- * reconcile, so it is deliberately SILENT -- unlike pad_block, which is a
- * one-shot and logs.
- */
-static JSValue js_host_nav_down_claim(JSContext *ctx, JSValueConst this_val,
-                                      int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (argc < 1 || !shadow_control) return JS_FALSE;
-    int val = 0;
-    JS_ToInt32(ctx, &val, argv[0]);
-    shadow_control->nav_down_claim = val ? 1 : 0;
-    return JS_TRUE;
-}
-
 /* host_preview_play(path) - play WAV file for browser preview via shim IPC */
 static JSValue js_host_preview_play(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv) {
@@ -3235,7 +3216,6 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register pad block function */
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
-    JS_SetPropertyStr(ctx, global_obj, "host_nav_down_claim", JS_NewCFunction(ctx, js_host_nav_down_claim, "host_nav_down_claim", 1));
 
     /* Register preview player functions */
     JS_SetPropertyStr(ctx, global_obj, "host_preview_play", JS_NewCFunction(ctx, js_host_preview_play, "host_preview_play", 1));

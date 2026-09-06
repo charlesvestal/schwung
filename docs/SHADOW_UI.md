@@ -1025,41 +1025,65 @@ persistence), `test_sampler_stem_path.c` (filename derivation),
 `test_global_settings_contract.sh` (the section counts, and that Audio stays one
 page while holding more than a grid page could).
 
-### The slot BUS screens, and the arrow they had to borrow
+### The slot BUS screens, and the arrow they were briefly on
 
-Down on the chain editor's synth box opens the slot's bus list; Down on a bus
-row opens that bus's 8-position insert chain. `src/shared/bus_model.mjs` holds
-every rule (pure, run by `tests/host/test_bus_model.sh`);
+A `Buses` action row on the slot's SETTINGS opens the bus list; a bus's own menu
+opens its 8-position insert chain. `src/shared/bus_model.mjs` holds every rule
+(pure, run by `tests/host/test_bus_model.sh`);
 `src/shadow/shadow_ui_buses.mjs` draws them; `shadow_ui.js` owns the state and
-the gestures. Four screens: the list (buses, then Main, then New Bus), one bus's
-menu (Voices / Inserts / Send A / Send B / Rename / Delete — Main gets only the
-two sends, because it has no chain and no name), the voice multi-select, and the
-insert chain with its own module picker.
+the entry. Four screens: the list (buses, then Sends, then New Bus), one bus's
+menu (Voices / Inserts / Send A / Send B / Rename / Delete), the voice
+multi-select, and the insert chain with its own module picker.
 
-**The DOWN arrow is Move's, and it is BORROWED one cursor position at a time.**
-Up and down shift Move's octave and the shim let them through on purpose ("let
-up/down through for octave"). Taking Down outright would cost that everywhere
-the shadow UI is up, and asymmetrically — Up would still work. So
-`shadow_control_t.nav_down_claim` is raised by the UI only while a screen can
-act on the arrow (the chain editor on a splittable synth cell, the bus list on a
-bus row) and lowered otherwise; the shim uses the SAME byte to decide both
-whether to forward CC 54 to the shadow UI and whether to swallow it from Move,
-and it is sampled ONCE per frame into a local (the two sites are ~1300 lines
-apart in `shim_post_transfer` and shadow_ui writes the byte from another
-process), so the arrow cannot be taken from Move without being delivered here,
-nor delivered here while Move still acts on it. `pad_block` is the same shape for
-the same reason: the decision is the cursor's, and the shim cannot see a cursor.
-The swallow is **latched across both edges** — the press usually changes the
-screen and therefore lowers the claim, so a release re-tested against it would
-reach Move as a button-up for a key Move never saw go down.
+**The door is a ROW, and it was briefly the DOWN arrow.** Down on the chain
+editor's synth box opened the list, which took a shim change:
+`shadow_control_t.nav_down_claim`, a `host_nav_down_claim()` JS binding, a
+frame-sampled read gating a latched both-edge swallow, and a display-mode edge
+clear to unstick the latch. All of it is gone, and the reason is worse than
+"nobody would find the gesture": **up and down are Move's octave shift and only
+DOWN was ever claimed**, so on a splittable synth you could shift up an octave
+and not come back. The pair was broken, not borrowed — and it broke at the chain
+editor's default resting cursor position. Removing the claim byte also restored
+`sizeof(shadow_control_t)` and `stay_in_shadow`'s offset, which schwung-manager
+reads raw (`shmconfig.go`, offset 85).
 
-**A slot whose synth publishes no `split_voices` shows NOTHING** — no footer
-hint, no claimed arrow, no screen. That is checkable rather than assertable:
-every pre-existing case in `tests/fixtures/chain-editor-baseline.txt` is
-byte-identical after this feature, because the harness's slot states leave the
-key unset and an unset key reads `""`. The footer hint that DOES appear on a
-splittable synth replaces `BACK EXIT` with `DN BUS` rather than adding a fourth
-pair, which `drawFooter` would drop silently.
+**Three surfaces carry the row, because a slot's settings take three forms.**
+`CHAIN_SETTINGS_ITEMS` (the chain editor's Settings position, as a list),
+`SLOT_SETTINGS` (the slot list's own screen) and `SLOT_GRID_ACTIONS` (the KNOB
+GRID, which is what `enterChainSettings` opens by default — a row only on the two
+lists would be unreachable for most users). It is an action row opening a
+per-slot sub-editor, which is exactly what `Knobs`, `LFO 1` and `LFO 2` already
+are on the same list, so it is that list's existing shape rather than a fourth
+kind of thing. The two lists overlap heavily by long-standing accident (Volume
+through MPE Mode are on both); that duplication is pre-existing and was MATCHED
+rather than left as an asymmetry.
+
+**Back from the bus list returns to whichever list opened it**, and it does so
+through a THUNK resolved once at entry (`busListReturn`), not a view id. Two
+reasons. Both destinations are re-entered rather than merely set —
+`enterChainSettings` is the one place that decides grid-vs-list, and setting
+`VIEWS.CHAIN_SETTINGS` from a grid session would drop you on a screen you never
+opened. And the thunk ANNOUNCES itself, so the announcement cannot disagree with
+the destination: this branch already shipped one Back that said "Chain Editor"
+and went elsewhere, from `hierEditorIsMasterFx` — a boolean that could not name
+a third chain.
+
+**A slot whose synth publishes no `split_voices` shows NOTHING** — no row on any
+of the three surfaces, and no screen. One predicate answers for all three
+(`chainSynthSplits`, cached on the module id, false for a read that did not
+complete — a stalled channel costs one draw without the row, never a row onto an
+empty screen). It is checkable rather than assertable: `chain/len2/synth-splits`
+in `tests/fixtures/chain-editor-baseline.txt` is byte-identical to
+`chain/len2/sel-synth` and declared so in that test's `SAME_ON_PURPOSE`, so a
+footer hint or a reclaimed arrow coming back breaks an EQUALITY rather than
+sitting unnoticed in a hash nobody rederives. The `settings/slot/*` and
+`settings/slotlist/*` cases render both lists with the row absent, present with
+no buses, and present with a count.
+
+The row's value is that count: a number when the slot has buses, nothing when it
+has none, and `-` for a read that did not complete — three answers, because "no
+buses" and "the channel did not answer" are different sentences (`busCount` in
+`bus_model.mjs` returns -1 for the second, never 0).
 
 **`null` from `synth:split_voices` is not "cannot split".** `chain_host.c`
 clamps a plugin's -1 to `""` in its `split_voices` branch precisely so the two

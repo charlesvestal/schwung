@@ -147,14 +147,6 @@ const uiSrc = readFileSync("src/shadow/shadow_ui.js", "utf8");
 const mfxSrc = readFileSync("src/shadow/shadow_ui_master_fx.mjs", "utf8");
 const busSrc = readFileSync("src/shadow/shadow_ui_buses.mjs", "utf8");
 
-/* The synth cell`s bus footer, evaluated out of shadow_ui.js rather than
-   retyped here: a mirrored copy that drifted would baseline a footer the device
-   does not draw. */
-const CHAIN_HINTS_SYNTH_BUS = new Function(
-  uiSrc.slice(uiSrc.indexOf("const CHAIN_HINTS_SYNTH_BUS ="),
-              uiSrc.indexOf(";", uiSrc.indexOf("const CHAIN_HINTS_SYNTH_BUS =")) + 1) +
-  "\nreturn CHAIN_HINTS_SYNTH_BUS;")();
-
 /* Same lift as test_chain_edit_read_budget.sh: pull a top-level function out of
    a device UI module -- which cannot be imported, being full of host globals --
    and hand it its dependencies as parameters, so what runs is the REAL body. */
@@ -256,9 +248,11 @@ function chainWorld(state) {
   const chainComponentBypassed = lift("chainComponentBypassed",
     ["chainTargetGetParam"])(chainTargetGetParam);
 
-  /* The REAL one, lifted: it is the rule that decides whether the bus footer
-     appears at all, and it reads through the same cached-read helper the
-     device uses. BusModel is a free identifier under the lift (shadow_ui.js
+  /* The REAL one, lifted: it is the rule that decides whether the `Buses` row
+     exists at all, and it reads through the same cached-read helper the device
+     uses. Not a dependency of drawChainEdit -- the chain editor has no bus
+     affordance -- but the settings-list cases below drive their row filter
+     through it. BusModel is a free identifier under the lift (shadow_ui.js
      imports it) and is supplied from the shared module itself. */
   const chainSynthSplits = lift("chainSynthSplits",
     ["chainConfigs", "getSlotParamCached", "BusModel"])(
@@ -287,15 +281,6 @@ const CHAIN_DRAW_DEPS = [
   "getComponentParamPrefix", "drawMovyFooter", "isShiftHeld", "shiftHintsFor", "CHAIN_HINTS_AT_REST", "ensureChainConfigFresh",
   "knobCardDrawState", "drawKnobCard",
   "slotChainTarget", "chainLfoTargetMap", "chainComponentBypassed",
-  /* The bus affordance on the synth cell: the cached split_voices read and the
-     footer it swaps the third pair for. REAL, both of them -- a stub that
-     always said "no" would leave the one new branch on this screen unrendered,
-     which is the blind spot the two module pickers were allowed to diverge in.
-     chainSynthSplits reads through getSlotParamCached, so a case that sets no
-     `synth:split_voices` gets "" and the resting footer, byte for byte as
-     before: that is what makes "a module that cannot split shows no bus
-     affordance" a PIXEL claim rather than a written one. */
-  "chainSynthSplits", "CHAIN_HINTS_SYNTH_BUS",
   /* The shared bands (header / label / info / footer), 4a-3. Supplied REAL --
      a noop here would empty three of the four bands the content floor checks,
      which is the whole point of checking them. */
@@ -325,7 +310,6 @@ function renderChain(c) {
     CHROME_REST_HINTS, w.ensureChainConfigFresh,
     () => (c.card || null), drawKnobCard,
     w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
-    w.chainSynthSplits, CHAIN_HINTS_SYNTH_BUS,
     drawChainEditorBands,
     () => ({ fillRect: g.fill_rect, print: g.print, textWidth: g.text_width, setPixel: g.set_pixel }));
   draw();
@@ -926,18 +910,18 @@ addChain("chain/len5/bypassed+lfo1+2", Object.assign({ selKey: "fx1",
   extra: { "fx2:bypassed": "1", "lfo1:enabled": "1", "lfo1:target": "fx2",
            "lfo2:enabled": "1", "lfo2:target": "fx2" } }, FIVE));
 
-/* --- the bus affordance on the synth cell -------------------------------- *
+/* --- a splittable synth changes NOTHING on the chain editor --------------- *
  *
- * A synth that publishes `split_voices` swaps the footer`s third pair for
- * `DN BUS`, because Down is otherwise an undiscoverable gesture. Three cases,
- * and the third is the one that matters: the SAME slot with the cursor
- * elsewhere draws the resting footer, so the hint is a fact about the CELL and
- * not about the slot.
+ * The bus door is a row on the slot`s SETTINGS, not a gesture here. Down was
+ * briefly it, and it was wrong for a reason worth keeping a test for: up and
+ * down are Move`s octave shift, and only Down was ever claimed -- so the pair
+ * broke, at the chain editor`s default resting cursor position.
  *
- * Nothing here moves an existing hash. Every case above leaves
- * `synth:split_voices` unset, which reads as "" -- served, and the module does
- * not split -- so a module with no buses renders exactly as it did before this
- * feature existed.
+ * These three cases are what says the gesture and its footer hint are really
+ * gone. Each is byte-identical to its twin with no `split_voices` at all, and
+ * the two that HAVE a twin are declared in SAME_ON_PURPOSE below: a footer hint
+ * or a claimed arrow coming back would break that equality rather than sitting
+ * unnoticed in a hash nobody rederives.
  */
 const SPLITS = { "synth:split_voices": JSON.stringify(
   [{ id: "kick", label: "Kick" }, { id: "chh", label: "Closed Hat" }]) };
@@ -1542,6 +1526,152 @@ function renderBusSends(c) {
 }
 
 /* ======================================================================== */
+/* THE TWO SLOT SETTINGS LISTS                                               */
+/* ======================================================================== */
+/*
+ * A slot has two settings screens -- CHAIN_SETTINGS (the chain editor`s
+ * Settings position, as a list) and SLOT_SETTINGS (the slot list`s own) -- and
+ * they overlap heavily by long-standing accident. The `Buses` door is a row on
+ * BOTH, so it is rendered down both, the way the two module pickers are: a row
+ * that appeared on one and not the other is exactly the drift this harness
+ * exists to catch.
+ *
+ * The ROW LISTS are the real ones. getChainSettingsItems and slotSettingsItems
+ * are lifted, and the predicate that hides the row (chainSynthSplits) is lifted
+ * too and reads through the same cached-read helper the device uses -- so a
+ * case that sets no `synth:split_voices` gets "" (served, does not split) and
+ * no row, which is what makes "a module that cannot split shows no bus
+ * affordance" a PIXEL claim rather than a written one.
+ *
+ * The VALUE of the Buses row is real as well (slotBusCountLabel, over the real
+ * bus_model.mjs parse), because the count is the half of this row that can be
+ * silently wrong.
+ */
+const settingsSrc = readFileSync("src/shadow/shadow_ui_settings.mjs", "utf8");
+const slotsSrc = readFileSync("src/shadow/shadow_ui_slots.mjs", "utf8");
+
+/* An exported const ARRAY, evaluated out of its own source rather than retyped:
+   a mirrored copy that drifted would baseline a list the device does not draw. */
+function liftArray(src, what, name) {
+  const at = src.indexOf("const " + name + " = [");
+  if (at < 0) { fail(name + " is gone from " + what); return []; }
+  const end = src.indexOf("\n];", at);
+  if (end < 0) { fail("could not find the end of " + name + " in " + what); return []; }
+  return new Function(src.slice(at, end + 3) + "\nreturn " + name + ";")();
+}
+const CHAIN_SETTINGS_ITEMS = liftArray(uiSrc, "shadow_ui.js", "CHAIN_SETTINGS_ITEMS");
+const SLOT_SETTINGS = liftArray(slotsSrc, "shadow_ui_slots.mjs", "SLOT_SETTINGS");
+
+const mkChainSettingsDraw = liftFrom(settingsSrc, "shadow_ui_settings.mjs",
+  "drawChainSettings",
+  ["ctx", "drawNamePreview", "drawConfirmModal", "drawHeader", "drawMenuList",
+   "LIST_TOP_Y", "FOOTER_RULE_Y"]);
+const mkSlotSettingsDraw = liftFrom(slotsSrc, "shadow_ui_slots.mjs",
+  "drawSlotSettings",
+  ["ctx", "drawHeader", "drawMenuList", "drawFooter", "truncateText",
+   "LIST_TOP_Y", "FOOTER_RULE_Y", "slotSettingsItems", "getSlotSettingValue",
+   "selectedSetting", "editingSettingValue"]);
+const mkSlotSettingsItems = liftFrom(slotsSrc, "shadow_ui_slots.mjs",
+  "slotSettingsItems", ["ctx", "SLOT_SETTINGS"]);
+const mkIsSlotMpe = liftFrom(slotsSrc, "shadow_ui_slots.mjs", "isSlotMpe", ["ctx"]);
+const mkGetSlotSettingValue = liftFrom(slotsSrc, "shadow_ui_slots.mjs",
+  "getSlotSettingValue", ["ctx", "isSlotMpe"]);
+
+const settingsListCases = [];
+const addSettingsList = (id, o) => settingsListCases.push(Object.assign({ id }, o));
+
+/* Two voices is a splittable synth; absent, the key reads "" and the row is
+   gone. The bus config is the same document bus_emit_config writes. */
+/* `synth_module`, underscored: that is the GET spelling (set_param uses
+   `synth:module`), and it is what loadChainConfigFromSlot reads. */
+const SPLIT_STATE = { "synth_module": "sf2",
+  "synth:split_voices": JSON.stringify([{ id: "kick", label: "Kick" },
+                                        { id: "snare", label: "Snare" }]) };
+const NOSPLIT_STATE = { "synth_module": "sf2" };
+const SLOT_VALUES = {
+  "slot:volume": "1.00", "slot:muted": "0", "slot:soloed": "0",
+  "slot:receive_channel": "1", "slot:forward_channel": "-1",
+  "slot:transpose": "0", "midi_fx_pre_mode": "0",
+};
+
+/* THE THREE STATES OF THE ROW, down both lists: absent (the synth cannot
+   split), present with no buses yet, and present with a count. */
+addSettingsList("settings/slot/no-buses",
+  { screen: "chain", state: NOSPLIT_STATE, sel: 0, preset: "Deep Pad" });
+addSettingsList("settings/slot/buses-none",
+  { screen: "chain", state: SPLIT_STATE, buses: [], sel: 0, preset: "Deep Pad" });
+addSettingsList("settings/slot/buses-2",
+  { screen: "chain", state: SPLIT_STATE, buses: [KICK, HATS], sel: 0, preset: "Deep Pad" });
+/* The cursor ON the row. The list draws the caret and the value together, so
+   this is the only case that shows the row as the user activates it. */
+addSettingsList("settings/slot/buses-cursor",
+  { screen: "chain", state: SPLIT_STATE, buses: [KICK, HATS], sel: 1, preset: "Deep Pad" });
+/* A slot with nothing saved drops Delete and keeps Buses: the two conditions
+   are unrelated, and one filter answering both is the mistake being avoided. */
+addSettingsList("settings/slot/buses-nopreset",
+  { screen: "chain", state: SPLIT_STATE, buses: [KICK], sel: 1, preset: "" });
+
+addSettingsList("settings/slotlist/no-buses",
+  { screen: "slots", state: NOSPLIT_STATE, sel: 0 });
+addSettingsList("settings/slotlist/buses-2",
+  { screen: "slots", state: SPLIT_STATE, buses: [KICK, HATS], sel: 0 });
+/* On the row, so the FOOTER is drawn beside it: drawFooter drops a pair that
+   does not fit and every pair after it, silently. */
+addSettingsList("settings/slotlist/buses-cursor",
+  { screen: "slots", state: SPLIT_STATE, buses: [KICK, HATS], sel: 2 });
+
+function renderSettingsList(c) {
+  const fb = createFramebuffer();
+  const state = Object.assign({}, SLOT_VALUES, c.state);
+  if (c.buses) state["buses:config"] = busesConfig({ buses: c.buses });
+  const g = installGlobals(fb, (slot, key) => (state[key] !== undefined ? state[key] : ""));
+  const w = chainWorld(state);
+  w.ensureChainConfigFresh(0);
+
+  /* The count, over the REAL parse. busSlot is -1 and busConfig null, which is
+     the state a settings list is actually in: the bus screens have not been
+     opened, so the cached read is the only source. */
+  const slotBusCountLabel = lift("slotBusCountLabel",
+    ["chainConfigs", "busSlot", "busConfig", "BusModel", "getSlotParamCached"])(
+    w.chainConfigs, -1, null, BusModel, w.getSlotParamCached);
+  const isSlotMpeMode = lift("isSlotMpeMode", ["getSlotParam"])(w.getSlotParam);
+  const getChainSettingValue = lift("getChainSettingValue",
+    ["isSlotMpeMode", "slotBusCountLabel", "getSlotParam"])(
+    isSlotMpeMode, slotBusCountLabel, w.getSlotParam);
+  const isExistingPreset = lift("isExistingPreset", ["slots"])([{ name: c.preset || "" }]);
+  const getChainSettingsItems = lift("getChainSettingsItems",
+    ["isExistingPreset", "chainSynthSplits", "CHAIN_SETTINGS_ITEMS"])(
+    isExistingPreset, w.chainSynthSplits, CHAIN_SETTINGS_ITEMS);
+
+  Object.assign(BUS_CTX, {
+    slots: [{ name: c.preset || "Untitled" }],
+    selectedSlot: 0,
+    getSlotParam: w.getSlotParam,
+    chainSynthSplits: w.chainSynthSplits,
+    slotBusCountLabel,
+    showingNamePreview: false, confirmingOverwrite: false, confirmingDelete: false,
+    confirmIndex: 0, pendingSaveName: "", namePreviewIndex: 0,
+    selectedChainSetting: c.sel || 0,
+    editingChainSettingValue: false,
+    getChainSettingsItems, getChainSettingValue,
+  });
+
+  if (c.screen === "chain") {
+    mkChainSettingsDraw(BUS_CTX, noop, noop, drawMenuHeader, drawMenuList,
+      LIST_TOP_Y, FOOTER_RULE_Y)();
+  } else {
+    const isSlotMpe = mkIsSlotMpe(BUS_CTX);
+    const getSlotSettingValue = mkGetSlotSettingValue(BUS_CTX, isSlotMpe);
+    const slotSettingsItems = mkSlotSettingsItems(BUS_CTX, SLOT_SETTINGS);
+    mkSlotSettingsDraw(BUS_CTX, drawMenuHeader, drawMenuList, drawMenuFooter,
+      truncateText, LIST_TOP_Y, FOOTER_RULE_Y, slotSettingsItems,
+      getSlotSettingValue, c.sel || 0, false)();
+  }
+  clearGlobals();
+  return fb;
+}
+
+/* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
 /* ======================================================================== */
 
@@ -1590,8 +1720,25 @@ const SETTINGS_BANDS = [
   ["body", MOVY_HEADER_H, MOVY_RULE_Y - 1],
   ["footer", MOVY_RULE_Y, 63],
 ];
+/*
+ * The two settings LISTS. drawChainSettings draws no footer at all -- it never
+ * has -- so its list band runs to the bottom of the screen; drawSlotSettings
+ * draws one, and gets the three-band form. Two lists rather than one, because a
+ * band list that demanded a footer of both would either fail every chain case
+ * or have to be weakened for both.
+ */
+const LIST_BANDS = [
+  ["header", 0, LIST_TOP_Y - 1],
+  ["list", LIST_TOP_Y, 63],
+];
+const FOOTED_LIST_BANDS = [
+  ["header", 0, LIST_TOP_Y - 1],
+  ["list", LIST_TOP_Y, FOOTER_RULE_Y - 1],
+  ["footer", FOOTER_RULE_Y, 63],
+];
 const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS, picker: PICKER_BANDS,
-                settings: SETTINGS_BANDS };
+                settings: SETTINGS_BANDS, list: LIST_BANDS,
+                footedlist: FOOTED_LIST_BANDS };
 const MIN_LIT = 120;
 
 function inkInBand(fb, y0, y1) {
@@ -1652,6 +1799,8 @@ run(busCases.filter((c) => c.screen === "chain" && c.picking), renderBusScreen, 
 /* The send mixer wears the knob grid`s three bands, like every other page the
    controller draws. */
 run(busSendsCases, renderBusSends, "settings");
+run(settingsListCases.filter((c) => c.screen === "chain"), renderSettingsList, "list");
+run(settingsListCases.filter((c) => c.screen === "slots"), renderSettingsList, "footedlist");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
@@ -1690,11 +1839,12 @@ if (process.env.DUMP_CASE) {
    two renders are supposed to match, and that is worth pinning rather than
    working around by pointing the case at a different cell. */
 const SAME_ON_PURPOSE = [["master/len0/sel-add-fx", "master/len0/shift"],
-  /* The bus hint is a fact about the CELL, not about the slot: a slot whose
-     synth splits, with the cursor on an FX position, draws the resting footer
-     and therefore the identical screen. That is the claim the case exists to
-     make, so the two matching is the PASS, not a collision. */
-  ["chain/len2/sel-fx1", "chain/len2/fx1-splits"]];
+  /* A splittable synth draws the chain editor EXACTLY as an unsplittable one
+     does -- there is no bus affordance on this screen at all. Both pairs are
+     the claim those cases exist to make, so matching is the PASS, not a
+     collision; a footer hint or a reclaimed arrow would break the equality. */
+  ["chain/len2/sel-fx1", "chain/len2/fx1-splits"],
+  ["chain/len2/sel-synth", "chain/len2/synth-splits"]];
 const sameAllowed = (a, b) =>
   SAME_ON_PURPOSE.some((p) => p.indexOf(a) >= 0 && p.indexOf(b) >= 0);
 {
@@ -1743,6 +1893,17 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# split_voices renders byte for byte as it did before buses existed, so",
     "# \"a module that cannot split shows no bus affordance\" is a pixel fact,",
     "# not a claim.",
+    "#",
+    "# MOVING THE BUS DOOR off the DOWN arrow and onto a settings row moved six",
+    "# hashes and added eight cases. Up and Down are Move`s octave shift and only",
+    "# Down was ever claimed, so the pair broke at the chain editor`s resting",
+    "# cursor -- the gesture and the two footer hints that named it are gone.",
+    "# chain/len2/synth-splits lost `DN BUS` and now equals chain/len2/sel-synth,",
+    "# and the five bus/list rows lost `Dn: fx`; both are declared in",
+    "# SAME_ON_PURPOSE or visible in the render. The eight new settings/slot and",
+    "# settings/slotlist cases are the two settings LISTS, which this harness had",
+    "# never drawn, with the `Buses` row absent, present-with-no-buses and",
+    "# present-with-a-count.",
     "#",
     "# Step 4e made Master FX a variable-length chain: every master/ hash moved,",
     "# two cases naming an empty position past the end of the chain were deleted,",
@@ -1793,7 +1954,8 @@ console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chai
             (pickerCases.length * 2) + " module-picker, " + busPickerCases.length +
             " FX-bus-picker, " + settingsCases.length + " Master FX settings and " +
             sendSettingsCases.length + " send settings-menu and " +
-            busCases.length + " slot-bus renders match the baseline, " +
+            busCases.length + " slot-bus and " + settingsListCases.length +
+            " slot-settings-list renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");
 '

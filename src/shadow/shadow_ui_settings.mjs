@@ -56,7 +56,11 @@ export function drawChainSettings() {
         items,
         selectedIndex: selectedChainSetting,
         getLabel: (item) => item.label,
-        getValue: (item) => item.type === "action"
+        /* An action row draws no value unless it asks for one (`showsValue`):
+         * getChainSettingValue falls back to an IPC read of the row's key, so
+         * the default is what keeps Save / Save As / Delete off the param
+         * channel. See CHAIN_SETTINGS_ITEMS. */
+        getValue: (item) => (item.type === "action" && !item.showsValue)
             ? ""
             : (getChainSettingValue(selectedSlot, item) || ""),
         listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },

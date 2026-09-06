@@ -580,7 +580,7 @@ export function createController(io = {}) {
      *
      * A function rather than an array because the rows are conditional — Save
      * and Delete mean nothing with no preset loaded — and the page set outlives
-     * those conditions. Same shape as SLOT_GRID_ACTIONS' always-or-hasPreset
+     * those conditions. Same shape as SLOT_GRID_ACTIONS' conditional-row
      * filter, just evaluated by the host instead of filtered here: the
      * controller does not know what a preset is.
      */

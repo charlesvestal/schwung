@@ -189,6 +189,20 @@ export function busListRows(config, abbrev) {
     return rows;
 }
 
+/*
+ * How many buses this slot actually has — what the `Buses` settings row shows
+ * beside its label, the way the module picker's row shows "2 FX".
+ *
+ * -1 for an UNRESOLVED config, never 0: "no buses" and "the read did not
+ * complete" are different sentences and the row prints different things for
+ * them. Collapsing the two is the tri-state mistake this repo has paid for
+ * three times in one day.
+ */
+export function busCount(config) {
+    if (!config || config.unresolved) return -1;
+    return config.buses.filter((b) => b.present).length;
+}
+
 /* The lowest bus index not in use, or -1. Positional: a hole in the middle is
  * filled before a later index, because the array is never compacted and a
  * deleted bus 2 must be re-creatable as bus 2. */

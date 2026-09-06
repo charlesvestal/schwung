@@ -124,9 +124,12 @@ check(moveIdx === slots,
         check(fields.includes("save_stems"), "save_stems is not a field of shadow_control_t");
         /* AFTER stay_in_shadow, not LAST. The claim this pins is that save_stems
          * was APPENDED — that nothing was inserted ahead of the field
-         * schwung-manager reads at a raw offset. "Last" said that too until
-         * somebody appended the next field (nav_down_claim), which is the
-         * sanctioned move and made this fail for doing the right thing.
+         * schwung-manager reads at a raw offset. "Last" said that too, and it
+         * broke the moment a later change appended a field of its own -- which
+         * is the sanctioned move, so the check failed for doing the right
+         * thing. (That field, nav_down_claim, has since been removed again
+         * along with the gesture it served, which is why save_stems is once
+         * more the last one; the relative form is still what is pinned.)
          *
          * This check is purely relative (atStems > atStay) and would still
          * pass if something were inserted ahead of stay_in_shadow itself —

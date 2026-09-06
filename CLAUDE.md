@@ -652,20 +652,32 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
-### Slot buses hang below the synth box — `docs/SHADOW_UI.md`
+### Slot buses open from the slot's SETTINGS — `docs/SHADOW_UI.md`
 
-Down on the synth opens the slot's bus list, Down on a bus row opens that bus's
+A `Buses` action row opens the slot's bus list; a bus's own menu opens its
 8-position insert chain (`src/shared/bus_model.mjs` + `shadow_ui_buses.mjs`).
 
-- **The DOWN arrow is Move's octave shift and is BORROWED one cursor position at
-  a time.** `shadow_control_t.nav_down_claim` gates BOTH the forward to the
-  shadow UI and the swallow from Move, so the arrow can never be taken without
-  being delivered — and the swallow is latched across both edges, because the
-  press is what lowers the claim.
+- **It was briefly the DOWN arrow, and that broke Move's octave PAIR.** Up and
+  down are Move's octave shift and only Down was ever claimed, so on a
+  splittable synth you could shift up and not come back — at the chain editor's
+  default resting cursor position. `nav_down_claim`, the JS binding and the
+  latched both-edge swallow are all gone; removing the byte restored
+  `sizeof(shadow_control_t)` and `stay_in_shadow`'s raw offset 85, which
+  schwung-manager reads (`shmconfig.go`).
+- **THREE surfaces carry the row, because a slot's settings take three forms** —
+  `CHAIN_SETTINGS_ITEMS`, `SLOT_SETTINGS` and `SLOT_GRID_ACTIONS`. The knob grid
+  is the DEFAULT one (`enterChainSettings` gates on `paramPagesEnabled`), so a
+  row only on the two lists is unreachable for most users.
+- **Back from the bus list is a THUNK resolved once at entry**, not a view id:
+  both destinations are re-ENTERED (only `enterChainSettings` knows grid-vs-list)
+  and the thunk announces itself, so the announcement cannot disagree with the
+  destination the way `hierEditorIsMasterFx` did.
 - **A synth that publishes no `split_voices` shows NOTHING**, and that is a
-  PIXEL fact: every pre-existing `chain-editor-baseline.txt` hash is unmoved.
-  `null` from that read is a channel failure, not "cannot split" — chain_host.c
-  clamps a plugin's -1 to `""` so the two cannot collide.
+  PIXEL fact: `chain/len2/synth-splits` is byte-identical to
+  `chain/len2/sel-synth` and declared so, so a returning affordance breaks an
+  equality rather than a hash. `null` from that read is a channel failure, not
+  "cannot split" — chain_host.c clamps a plugin's -1 to `""` so the two cannot
+  collide.
 - **Orphaned voice ids are shown and are the only thing that can clear them**;
   every `bus<N>:voices` write is a whole-list replace, so the write CARRIES them.
 - **A bus insert is a THIRD CHAIN TARGET.** Its parameters were unreachable —
