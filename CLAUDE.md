@@ -629,6 +629,20 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   load, an older host and a one-strike disable. Guarding in the shared walk
   instead of the singles branch silently yields a THREE-cell envelope with a key
   orphaned.
+- **`visible_if` FAILED OPEN on the whole knob grid**, and had since the grid
+  shipped. The evaluator resolved every condition against `hierEditorSlot` —
+  the LIST editor's slot, which `enterParamPages` never sets — so from the grid
+  it read slot -1, got `null`, and took the fail-open branch: a send meant to
+  collapse to the armed type's cells showed all twenty, three pages deep, with
+  nothing logged. The three synthesised contracts were already immune by
+  overriding `io.visible`; only real modules were exposed. On `PARAM_PAGES` the
+  grid's own identity is the context now, read **cache-first** — a re-plan
+  follows every detent of a gating knob, and a blocking read per condition
+  froze the OLED. And the cache is asked with the **TEMPLATE** key, never the
+  resolved one: the controller files a child level under what it *lists*
+  (`partlevel`), so asking with `sram_part_2_partlevel` missed every time and
+  paid the read anyway — silent, because *a miss still answers correctly, only
+  slowly.*
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
