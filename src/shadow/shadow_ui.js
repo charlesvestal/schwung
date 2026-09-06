@@ -15936,25 +15936,55 @@ function wavFindRiffOffset(bytes) {
     return -1;
 }
 
-function parseWavPositionPeaks(content, width) {
-    const bytes = wavContentToBytes(content);
-    if (!bytes || bytes.length < 44) return { error: "file too small", points: [] };
+function wavReadU16BE(bytes, idx) {
+    return (wavByteAt(bytes, idx) << 8) | wavByteAt(bytes, idx + 1);
+}
 
-    const riffOffset = wavFindRiffOffset(bytes);
-    if (riffOffset < 0) return { error: "not a wav file", points: [] };
+function wavReadU32BE(bytes, idx) {
+    return ((wavByteAt(bytes, idx) << 24) |
+        (wavByteAt(bytes, idx + 1) << 16) |
+        (wavByteAt(bytes, idx + 2) << 8) |
+        wavByteAt(bytes, idx + 3)) >>> 0;
+}
 
-    let fmtOffset = -1;
-    let dataOffset = -1;
-    let dataSize = 0;
+/*
+ * One sample as a float in -1..1, for every layout the peak reader accepts:
+ * PCM 8 (unsigned in WAV, signed in AIFF), 16 and 24 in either byte order,
+ * and 32-bit float (WAV only). Kept as a table of small readers rather than a
+ * bit-twiddling generic so each format's sign convention is stated once.
+ */
+function wavSampleReader(kind) {
+    switch (kind) {
+    case "pcm8u":   return (b, i) => (wavByteAt(b, i) - 128) / 128;
+    case "pcm8s":   return (b, i) => { const v = wavByteAt(b, i); return (v > 0x7f ? v - 0x100 : v) / 128; };
+    case "pcm16le": return (b, i) => wavReadS16LE(b, i) / 32768;
+    case "pcm16be": return (b, i) => { const v = wavReadU16BE(b, i); return (v > 0x7fff ? v - 0x10000 : v) / 32768; };
+    case "pcm24le": return (b, i) => {
+        const v = wavByteAt(b, i) | (wavByteAt(b, i + 1) << 8) | (wavByteAt(b, i + 2) << 16);
+        return (v > 0x7fffff ? v - 0x1000000 : v) / 8388608;
+    };
+    case "pcm24be": return (b, i) => {
+        const v = (wavByteAt(b, i) << 16) | (wavByteAt(b, i + 1) << 8) | wavByteAt(b, i + 2);
+        return (v > 0x7fffff ? v - 0x1000000 : v) / 8388608;
+    };
+    case "f32le":   return (b, i) => wavReadF32LE(b, i);
+    default:        return null;
+    }
+}
+
+/*
+ * Locate the sample data in a RIFF/WAVE file. Returns { kind, channels,
+ * blockAlign, dataOffset, dataSize } or { error }.
+ */
+function wavLocateRiff(bytes, riffOffset) {
+    let fmtOffset = -1, dataOffset = -1, dataSize = 0;
     let cursor = riffOffset + 12;
-
     while (cursor + 8 <= bytes.length) {
         const chunkId = wavReadChunkId(bytes, cursor);
         const chunkSize = wavReadU32LE(bytes, cursor + 4);
         const chunkData = cursor + 8;
         const chunkEnd = chunkData + chunkSize;
         const available = Math.max(0, bytes.length - chunkData);
-
         if (chunkId === "fmt " && available >= 16) {
             fmtOffset = chunkData;
         } else if (chunkId === "data") {
@@ -15962,29 +15992,82 @@ function parseWavPositionPeaks(content, width) {
             dataSize = Math.min(chunkSize, available);
             break;
         }
-
         if (chunkEnd <= chunkData || chunkEnd > bytes.length) break;
         cursor = chunkEnd + (chunkSize % 2);
     }
-
-    if (fmtOffset < 0 || dataOffset < 0 || dataSize <= 0) {
-        return { error: "missing wav chunks", points: [] };
-    }
-
+    if (fmtOffset < 0 || dataOffset < 0 || dataSize <= 0) return { error: "missing wav chunks" };
     const audioFmt = wavReadU16LE(bytes, fmtOffset);
     const channels = Math.max(1, wavReadU16LE(bytes, fmtOffset + 2));
-    const bits = wavReadU16LE(bytes, fmtOffset + 14);
     const blockAlign = Math.max(1, wavReadU16LE(bytes, fmtOffset + 12));
-    if (audioFmt !== 1 && audioFmt !== 3) return { error: "unsupported wav codec", points: [] };
-    if (!((audioFmt === 1 && (bits === 8 || bits === 16)) || (audioFmt === 3 && bits === 32))) {
-        return { error: "unsupported wav format", points: [] };
-    }
+    const bits = wavReadU16LE(bytes, fmtOffset + 14);
+    /* 0xFFFE is WAVE_FORMAT_EXTENSIBLE; its sub-format GUID's first two bytes
+     * name the real codec, and 24-bit files are very often written that way. */
+    let fmt = audioFmt;
+    if (audioFmt === 0xfffe && wavReadU16LE(bytes, fmtOffset + 16) >= 22) fmt = wavReadU16LE(bytes, fmtOffset + 24);
+    if (fmt !== 1 && fmt !== 3) return { error: "unsupported wav codec" };
+    const kind = fmt === 1 && bits === 8 ? "pcm8u"
+        : fmt === 1 && bits === 16 ? "pcm16le"
+        : fmt === 1 && bits === 24 ? "pcm24le"
+        : fmt === 3 && bits === 32 ? "f32le" : null;
+    if (!kind) return { error: "unsupported wav format" };
+    return { kind, channels, blockAlign, dataOffset, dataSize, bits };
+}
 
-    const sampleBytes = bits / 8;
-    const effectiveBlockAlign = blockAlign > 0 ? blockAlign : Math.max(1, channels * sampleBytes);
-    const frameCount = Math.max(1, Math.floor(dataSize / effectiveBlockAlign));
+/*
+ * Locate the sample data in a FORM/AIFF file (also AIFC with no compression),
+ * which is what much of Move's own Core Library ships as. Big-endian
+ * throughout; SSND carries its own offset before the first frame.
+ */
+function wavLocateAiff(bytes) {
+    const form = wavReadChunkId(bytes, 8);
+    if (wavReadChunkId(bytes, 0) !== "FORM" || (form !== "AIFF" && form !== "AIFC")) return { error: "not an aiff file" };
+    let channels = 0, bits = 0, compression = "NONE", dataOffset = -1, dataSize = 0;
+    let cursor = 12;
+    while (cursor + 8 <= bytes.length) {
+        const chunkId = wavReadChunkId(bytes, cursor);
+        const chunkSize = wavReadU32BE(bytes, cursor + 4);
+        const chunkData = cursor + 8;
+        const chunkEnd = chunkData + chunkSize;
+        const available = Math.max(0, bytes.length - chunkData);
+        if (chunkId === "COMM" && available >= 18) {
+            channels = Math.max(1, wavReadU16BE(bytes, chunkData));
+            bits = wavReadU16BE(bytes, chunkData + 6);
+            if (form === "AIFC" && available >= 22) compression = wavReadChunkId(bytes, chunkData + 18);
+        } else if (chunkId === "SSND" && available >= 8) {
+            const skip = wavReadU32BE(bytes, chunkData);
+            dataOffset = chunkData + 8 + skip;
+            dataSize = Math.max(0, Math.min(chunkSize, available) - 8 - skip);
+            break;
+        }
+        if (chunkEnd <= chunkData || chunkEnd > bytes.length) break;
+        cursor = chunkEnd + (chunkSize % 2);
+    }
+    if (!channels || !bits || dataOffset < 0 || dataSize <= 0) return { error: "missing aiff chunks" };
+    if (compression !== "NONE" && compression !== "sowt") return { error: "unsupported aiff codec" };
+    const le = compression === "sowt";
+    const kind = bits === 8 ? "pcm8s"
+        : bits === 16 ? (le ? "pcm16le" : "pcm16be")
+        : bits === 24 ? (le ? "pcm24le" : "pcm24be") : null;
+    if (!kind) return { error: "unsupported aiff format" };
+    return { kind, channels, blockAlign: channels * Math.ceil(bits / 8), dataOffset, dataSize, bits };
+}
+
+function parseWavPositionPeaks(content, width) {
+    const bytes = wavContentToBytes(content);
+    if (!bytes || bytes.length < 44) return { error: "file too small", points: [] };
+
+    const riffOffset = wavFindRiffOffset(bytes);
+    const located = riffOffset >= 0 ? wavLocateRiff(bytes, riffOffset) : wavLocateAiff(bytes);
+    if (located.error) return { error: located.error, points: [] };
+
+    const read = wavSampleReader(located.kind);
+    if (!read) return { error: "unsupported format", points: [] };
+    const sampleBytes = Math.ceil(located.bits / 8);
+    const effectiveBlockAlign = located.blockAlign > 0 ? located.blockAlign : Math.max(1, located.channels * sampleBytes);
+    const frameCount = Math.max(1, Math.floor(located.dataSize / effectiveBlockAlign));
     const points = new Array(width).fill(0);
-    const dataEnd = dataOffset + dataSize;
+    const dataOffset = located.dataOffset;
+    const dataEnd = dataOffset + located.dataSize;
 
     for (let x = 0; x < width; x++) {
         const start = Math.floor((x * frameCount) / width);
@@ -15996,15 +16079,7 @@ function parseWavPositionPeaks(content, width) {
         for (let frame = start; frame < end; frame += stride) {
             const base = dataOffset + frame * effectiveBlockAlign;
             if (base + sampleBytes > dataEnd) break;
-            let sample = 0;
-            if (audioFmt === 1 && bits === 16) {
-                sample = wavReadS16LE(bytes, base) / 32768;
-            } else if (audioFmt === 1 && bits === 8) {
-                sample = (wavByteAt(bytes, base) - 128) / 128;
-            } else if (audioFmt === 3 && bits === 32) {
-                sample = wavReadF32LE(bytes, base);
-            }
-            const abs = Math.abs(sample);
+            const abs = Math.abs(read(bytes, base));
             if (abs > maxAbs) maxAbs = abs;
         }
 
