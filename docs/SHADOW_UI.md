@@ -942,7 +942,7 @@ Skipback (Shift+Capture) and Song Mode's Record button all record through the
 same `shadow_sampler.c`, so a per-surface switch would be three places to keep
 in step. Song Mode needed no new recording code at all — it already called
 `host_sampler_start(path)`; it gained only a label, because pressing Record and
-getting five files when you expected one is a surprise you can only discover
+getting seven files when you expected one is a surprise you can only discover
 after the take.
 
 **A stem is a SLOT, and the four slot stems ARE the four tracks.** Under
@@ -952,7 +952,10 @@ branch). Move's track and Schwung's synth are inseparable after that point, and
 tapping them before it would hand back stems without their FX. Under
 Move→Schwung the four stems therefore sum to the master **exactly**: the
 reconstruction is composited from those four Link Audio channels and nothing
-else — the same fact that makes Move's metronome missing there.
+else — the same fact that makes Move's metronome missing there. **Until a
+global send carries signal**: a send return belongs to no slot, which is why it
+gets a stem of its own (below). With the sends silent the four-way statement
+holds exactly as written.
 
 **The fifth stem is MOVE, and it exists for the case the other four cannot
 cover.** With Link Audio routing off there is no four-way split to be had: Move
@@ -962,8 +965,31 @@ rest of the music on the floor — silently, since the files would exist. It is
 tapped from `native_bridge_move_component` un-scaled by the same smoothed `mv`
 `unity_view` uses, so it sits at unity with the slot stems. Under
 `rebuild_from_la` it is left INVALID **on purpose**: Move's tracks are already
-inside the four slot stems, and a sixth file repeating them would double every
+inside the four slot stems, and a Move file repeating them would double every
 instrument in a stem sum.
+
+**The last two stems are the GLOBAL SEND RETURNS (`_SendA`, `_SendB`), and they
+exist for the same reason the Move stem does.** A shared return belongs to no
+slot: a slot feeds a send post-fader and the wet signal comes back on a
+device-wide bus, so without these two the reverb tail would be in the master
+file and in **none** of the stems — the exact-sum property above would break the
+moment anybody used a send, silently, with every file present and plausible.
+They are tapped inside the send loop in `schwung_shim.c`, post-send-chain and
+scaled by the return level, which is to say **the identical block
+`bus_mix_send()` adds to the master bus**, so slots 1–4 + SendA + SendB still
+sum to the master exactly. That is also why the tap recomputes `bus_mix_send`'s
+integer scaling by hand instead of handing `shadow_stem_store` a float gain: the
+float path rounds where `bus_mix_send` truncates, and the two disagree by one
+LSB on roughly half of all samples. It is emphatically **not** read from
+`native_bridge_me_component`, which is snapshotted before `fx_target` exists — a
+send return read from there would be silence in every file. An unloaded send
+writes silence and its file is deleted at finalize like any other.
+
+`SAMPLER_STEM_COUNT` is 7 and the send stems must stay **contiguous and last**:
+the tap indexes the table as `SAMPLER_STEM_SEND_A + sb`, and three
+`_Static_assert`s in `schwung_shim.c` fail the build on a send bus added without
+a stem, on a non-contiguous pair, and on the Move stem moving off the end of the
+four slots.
 
 **Stems are pre-Master-FX and pre-master-volume.** MFX processes the mixed bus;
 there is no per-stem version of it to capture. With a Master FX chain loaded the
@@ -994,7 +1020,8 @@ the two lines in `schwung_shim.c` ramps the stems by a block already spent — a
 wrong fade on the first 3 ms of every take, audible as a click and attributable
 to nothing.
 
-**A divergence is reported, not repaired.** Six streams share one ring size and
+**A divergence is reported, not repaired.** Eight streams (the master and seven
+stems) share one ring size and
 one drain pass, but each capture drops its block independently when its own ring
 is full, so sustained write backpressure could drop a block from one and not
 another — and a stem one block short is offset for the rest of the file.
@@ -1002,10 +1029,15 @@ Finalize logs the mismatch rather than padding or truncating, because either
 repair guesses *where* the gap was.
 
 **Skipback stems are capped at `SKIPBACK_STEM_MAX_SECONDS` (60 s)** while the
-master runs to 5 minutes. Five rolling buffers at that maximum is ~265 MB, which
-is not a budget this device has to spend on a feature that is off by default;
-60 s × 5 is 53 MB, the same as one master buffer at its maximum, and it covers
-the 30 s default untouched. When the master is longer the stems are a **suffix**
+master runs to 5 minutes. Seven rolling buffers at that maximum is ~370 MB,
+which is not a budget this device has to spend on a feature that is off by
+default; 60 s × 7 is ~71 MB, and that is the **cap** rather than the usual cost
+— the default Skipback length is 30 s (~35 MB), and the rings are allocated only
+while Save Stems is actually asking for stems. The original anchor here was
+"60 s × 5 is 53 MB, the same as one master buffer at its maximum"; the two send
+stems broke that arithmetic, and the cap was left at 60 s deliberately rather
+than shortened to restore it — shrinking it would silently truncate the stems of
+anyone already running a 60 s Skipback, which is a worse failure than the 18 MB. When the master is longer the stems are a **suffix**
 of it — both end at the save, so they line up with its tail. The buffers are
 allocated and freed by the worker as the setting changes, via
 `SHIM_EVT_SKIPBACK_RESIZE`; `skipback_resize`'s "length unchanged" early return
@@ -1028,6 +1060,417 @@ gate, the skipback memory bound, and the setting's declaration and
 persistence), `test_sampler_stem_path.c` (filename derivation),
 `test_global_settings_contract.sh` (the section counts, and that Audio stays one
 page while holding more than a grid page could).
+
+### The slot BUS screens, and the arrow they were briefly on
+
+A `Buses` action row on the slot's SETTINGS opens the bus list; a bus's own menu
+opens its 8-position insert chain. `src/shared/bus_model.mjs` holds every rule
+(pure, run by `tests/host/test_bus_model.sh`);
+`src/shadow/shadow_ui_buses.mjs` draws them; `shadow_ui.js` owns the state and
+the entry. Four screens: the list (buses, then Sends, then New Bus), one bus's
+menu (Voices / Inserts / Send A / Send B / Rename / Delete), the voice
+multi-select, and the insert chain with its own module picker.
+
+**The door is a ROW, and it was briefly the DOWN arrow.** Down on the chain
+editor's synth box opened the list, which took a shim change:
+`shadow_control_t.nav_down_claim`, a `host_nav_down_claim()` JS binding, a
+frame-sampled read gating a latched both-edge swallow, and a display-mode edge
+clear to unstick the latch. All of it is gone, and the reason is worse than
+"nobody would find the gesture": **up and down are Move's octave shift and only
+DOWN was ever claimed**, so on a splittable synth you could shift up an octave
+and not come back. The pair was broken, not borrowed — and it broke at the chain
+editor's default resting cursor position. Removing the claim byte also restored
+`sizeof(shadow_control_t)` and `stay_in_shadow`'s offset, which schwung-manager
+reads raw (`shmconfig.go`, offset 85).
+
+**Three surfaces carry the row, because a slot's settings take three forms.**
+`CHAIN_SETTINGS_ITEMS` (the chain editor's Settings position, as a list),
+`SLOT_SETTINGS` (the slot list's own screen) and `SLOT_GRID_ACTIONS` (the KNOB
+GRID, which is what `enterChainSettings` opens by default — a row only on the two
+lists would be unreachable for most users). It is an action row opening a
+per-slot sub-editor, which is exactly what `Knobs`, `LFO 1` and `LFO 2` already
+are on the same list, so it is that list's existing shape rather than a fourth
+kind of thing. The two lists overlap heavily by long-standing accident (Volume
+through MPE Mode are on both); that duplication is pre-existing and was MATCHED
+rather than left as an asymmetry.
+
+**Back from the bus list returns to whichever list opened it**, and it does so
+through a THUNK resolved once at entry (`busListReturn`), not a view id. Two
+reasons. Both destinations are re-entered rather than merely set —
+`enterChainSettings` is the one place that decides grid-vs-list, and setting
+`VIEWS.CHAIN_SETTINGS` from a grid session would drop you on a screen you never
+opened. And the thunk ANNOUNCES itself, so the announcement cannot disagree with
+the destination: this branch already shipped one Back that said "Chain Editor"
+and went elsewhere, from `hierEditorIsMasterFx` — a boolean that could not name
+a third chain.
+
+**A slot whose synth publishes no `split_voices` shows NOTHING** — no row on any
+of the three surfaces, and no screen. One predicate answers for all three
+(`chainSynthSplits`, cached on the module id, false for a read that did not
+complete — a stalled channel costs one draw without the row, never a row onto an
+empty screen). It is checkable rather than assertable: `chain/len2/synth-splits`
+in `tests/fixtures/chain-editor-baseline.txt` is byte-identical to
+`chain/len2/sel-synth` and declared so in that test's `SAME_ON_PURPOSE`, so a
+footer hint or a reclaimed arrow coming back breaks an EQUALITY rather than
+sitting unnoticed in a hash nobody rederives. The `settings/slot/*` and
+`settings/slotlist/*` cases render both lists with the row absent, present with
+no buses, and present with a count.
+
+The row's value is that count: a number when the slot has buses, nothing when it
+has none, and `-` for a read that did not complete — three answers, because "no
+buses" and "the channel did not answer" are different sentences (`busCount` in
+`bus_model.mjs` returns -1 for the second, never 0).
+
+**`null` from `synth:split_voices` is not "cannot split".** `chain_host.c`
+clamps a plugin's -1 to `""` in its `split_voices` branch precisely so the two
+cannot collide, which makes a `null` here a real channel failure: the list opens
+in a waiting state and the tick retries. `busConfig` and `busVoices` are only
+ever assigned from a RESOLVED parse, so a failed read empties nothing and
+latches nothing.
+
+**Orphans are shown, in three places.** A bus stores voice IDS and retains the
+ones that no longer resolve (`orphans` in `buses:config`, which is the one GET
+the UI makes — the per-bus and slot-wide `orphans` keys were a second spelling
+nothing read, and are gone). The list marks such a bus `Kick !`, the bus menu carries the
+count in its header, and the voice screen lists every unresolved id as its own
+row marked `!` — the only way to clear one. Every write to `bus<N>:voices` is a
+whole-list replace, so `toggledVoiceIds` CARRIES the orphans: a list rebuilt
+from the resolvable voices alone would erase exactly what the count reports.
+
+**A voice renders into one buffer**, so adding it to a bus removes it from
+whichever other bus holds it — two writes, and both through
+`shadowSetParamBlocking`, because under co-run a fire-and-forget pair shares one
+SHM slot and the second clobbers the first.
+
+**A bus insert is a THIRD CHAIN TARGET, and until it was one its parameters
+could not be reached at all.** Click on a populated `BUS_CHAIN` position went
+to the module picker unconditionally, there was no Shift+Click, and
+`buildKnobContextForKnob` had no `BUS_CHAIN` case — so a CloudSeed loaded on a
+bus kept its defaults for good and the eight encoders answered `null`, which is
+not "no mapping" but no feedback either. The DSP surface was already there
+(`chain_bus.c` serves `bus<N>:fx<K>:<param>`, `:chain_params`, `:ui_hierarchy`
+and `:state`); only the UI was missing. `busChainTarget(busIndex)` is that
+chain, so the knob context, the merged parameter metadata and the entry gate
+land on it by construction rather than one scope boundary at a time — the same
+argument the two chain editors' convergence note makes at length. Click now
+EDITS a loaded insert and ADDS on a `+` or a hole; Shift+Click swaps, which is
+where the slot chain has always kept it. The component key ("bus1:fx2") IS the
+DSP prefix, exactly as Master FX's is, which is what lets the existing grid
+address it with no mapping of its own. Three things needed saying separately
+though: the entry gate reads through the bus target (`slotChainTarget` answers
+`null` for a bus key, so the hierarchy read would never happen and the gate
+could only hold); `chain_params` comes from the bus target for the same reason,
+and an empty list is exactly what makes the grid invent a `float 0..1` knob for
+every parameter; and Back needed `hierEditorReturnView`, because
+`hierEditorIsMasterFx` is a BOOLEAN and a third chain cannot be named by it.
+Both destinations are wired, not just the grid — `paramPagesEnabled()` is false
+whenever the screen reader is on, so a grid-only bus insert would be uneditable
+for exactly the users who cannot see the diagram behind it. Trailing pages (My
+Presets / Module) are excluded, inside `componentParamPagesIo`, the way Master
+FX is: every action on them is slot-chain shaped.
+`tests/host/test_bus_insert_editable.sh` pins each leg, because not one of them
+is a pixel.
+
+**The send mixer is ONE PAGE PER SEND PER KIND.** The `Send Mixer` row on the
+bus list — named that, not `Sends`, because under a menu called *Buses* the
+shorter word reads as *this slot's* sends and means *a mixer for the buses'*
+sends, an ambiguity that got worse the moment the slot acquired sends of its own
+— opens a synthesised contract (`busSendGridHierarchy` in `bus_model.mjs`)
+whose pages carry every level on an encoder; the per-bus rows on that bus's own
+menu stay, because a level you have to click into, jog and click out of is not a
+level you can RIDE. **Send A** and **Send B** are the buses, and they are the
+whole mixer.
+
+**IT CARRIED TWO MORE PAGES, `Voices A` / `Voices B`, AND THEY WERE THE WRONG
+TIER.** A voice's send level belongs to the MODULE — dr32 already published
+per-pad `send1`/`send2` knobs on its own `pads` level, beside pan and cutoff —
+so the same number had two homes that did not agree, which is what this screen
+was actually showing. The faders, the `voice<V>_send<M>` grid key, the
+`buses:voice<V>:send<M>` route and the `voice_sends` array in the slot document
+are all gone; the audio path is untouched. See `docs/CHAIN.md`, "The module owns
+a voice's send level". **A level with no keys is omitted, not emitted empty**,
+and with the voice pages gone a slot with no buses declares no mixer at all —
+which is why `busListRows` offers the door only when there is a bus to ride.
+
+**`paginate` is a whole-CONTRACT switch, not a per-level one**, which is why the
+hierarchy declares none: a flag written on a level would be read by nobody.
+`enterBusSendsGrid` pins the mixer to one page (`paginate: false`) —
+`SLOT_BUSES` = 8 cells against eight knobs, so a split can never happen and the
+flag says the grouping is AUTHORED. It was conditional while the voice faders
+lived here (32 declared cells on an eight-knob page leave twenty-four
+undrawable, worse than the split the pin prevents); it is unconditional again.
+
+The ROOT level carries no knobs, deliberately — the planner names a walk root's
+grid page "Main" whatever the level declares, and "Main / Send B" is not a
+mixer — so the pages are the levels below it. The io maps a flat grid key onto
+the real spelling in one place (`busSendGridRealKey`): `bus<N>_send<M>` →
+`bus<N>:send<M>`, and nothing else. A `voice<V>_send<M>` form resolved to
+`buses:voice<V>:send<M>` while the host owned those levels; it answers `null`
+now, because `chain_bus.c` no longer serves that route and a key the host
+refuses in silence is a fader that moves and is never heard. A HOLE does not
+renumber: the second present bus is bus 3 and its key
+says 3. An unresolved `buses:config` yields a `null` contract rather than an
+empty one, because an empty one is a claim — "this slot has no buses" — drawn as
+a mixer with no faders on it.
+
+**There is no MAIN row, and the slot's own two send levels are not offered.**
+They were, and they did nothing: `inst->main_send_level` is written, serialized,
+read back and patch-applied, and **no audio path reads it** —
+`chain_drain_sends` in `chain_host.c` says so in as many words. It is inert for
+a real reason: at drain time Main's post-insert signal does not exist, because
+under the same-frame-FX mode the device always runs `render_block` returns the
+raw synth and the slot's own FX chain runs later into a different buffer, so
+draining Main there would send a PRE-FX signal while every bus sends a
+POST-insert one — two meanings behind one control. Doing it properly needs a
+second drain point after `chain_process_fx` (and under `rebuild_from_la` that
+point moves again). Until then the row is `Sends`, a door into the mixer and
+nothing else, and it is offered when the slot has at least one
+bus. (It briefly opened for a splittable module with none, because per-voice
+sends need no bus; those faders belong to the module now, so a mixer with
+nothing on it would again be a row that answers a click by doing nothing.) The C
+fields stay, with the missing drain named beside them, so wiring it later is a
+mix-path change and not a re-plumb. `busRowsNow` also drops the row when the
+knob grid is not the user's Param View — every screen-reader session — since
+the door then opens onto nothing and the same two levels are already rows on
+each bus's own menu.
+
+**Buses PERSIST, and for a while the file format had a reader and no writer.**
+`bus_parse_section` (`chain_patch.c`) has always read `buses` / `main_sends` out
+of a saved slot; nothing emitted them. That is worse than "buses do not
+persist": `patch_info_t` is zeroed before the parse, so a document without the
+key arrives at `chain_bus_apply_patch` as four absent buses and it **resets all
+four**. Build a two-bus kit, load any preset or change sets, and the buses,
+voice assignments, inserts and send levels were destroyed mid-session, in
+silence. The producer is `busPatchFields` (`bus_model.mjs`), called from
+`buildSlotPatchJson`, and it emits per-FX `state` as well — which is what makes
+`chain_bus.c`'s staged `fx_state_request` / `fx_state_pending` arm reachable at
+all, so a bus reverb comes back with its parameters and without being
+reinstantiated. Three rules ride on it: a hole is `{"present":0}` and never a
+compaction; key ORDER is load-bearing, because `bus_field` takes the first hit
+inside the object's span and an insert's opaque state is inside that span
+(`name` before `fx`, `module`/`bypassed` before `state`, and `main_sends`
+declared ahead of every component in the document); and a
+`buses:config` read
+that did not COMPLETE bails the whole save — for an explicit save too, because
+the document it would otherwise write is not missing a field, it is a document
+that deletes the user's buses on the next load.
+`tests/host/test_chain_patch_roundtrip.sh` runs the real producer under node and
+feeds what it writes to the real C parser, with the key deleted as the negative
+control; a hand-written fixture on both sides is exactly how a format with no
+writer passed its tests. Its expectation is built from the **fixture config**,
+not from the producer's output — built from the output, the diff would assert
+only that the parser echoes whatever the producer said, and a producer that
+silently dropped an entry would drop it from both sides and pass.
+
+**Per-voice sends do NOT persist in this document.** They did, as a flat
+id-keyed `voice_sends` array, for as long as the host owned them. They are the
+module's own parameters now and ride inside the synth's opaque `state` blob,
+which this same document already carries — so a slot reload restores them by the
+same route every other one of the module's parameters takes. A second copy here
+would race the state load on the way back in, and the loser would be a level the
+user cannot find. An old document's `voice_sends` key reaches nothing:
+`chain_patch.c` has no field left to parse it into.
+
+**The list value column is ~11 characters and carries three facts.** Insert
+summary plus both send levels: past two inserts the summary becomes a COUNT
+(`3 FX`), because a third abbreviation pushed both levels off the row — seen in
+the render, not reasoned about. `valueX` is 52 rather than the default 92 for
+the same reason; the eight-character label floor still protects the bus name.
+
+### The FX buses: Master FX is now one of three, and the sends are GLOBAL
+
+**Design credit: PR #121 by legsmechanical.** The send topology below — two
+post-fader send buses hosted as `master_fx_slot_t`, a `send_accum[]` in the
+shim, return levels, the feedback-safe A→B ordering, shared presets, and one
+generic FX-bus picker over all three buses — is that PR's design,
+device-verified there and documented in its own `docs/SEND_FX.md`. It is
+unmergeable (merge-base 2026-03-04; `main` is 1696 commits ahead and the branch
+carries 864 of its own), so this is a re-implementation of its design on current
+`main`. The one part not re-implemented is the shared preset store — a send
+declares `hasPresets: false` here. `send_fx_key.h` and `docs/CHAIN.md` carry the
+same credit.
+
+**Sends are GLOBAL, and that is a cost decision.** Per-slot sends mean four
+reverbs when four slots want one reverb. There are two device-wide send buses
+instead, each hosted **exactly like Master FX** — the same `master_fx_slot_t`
+array, the same "always process, then restore the dry on a bypassed position"
+discipline — so there is one piece of chain machinery in the shim, not three.
+
+**THREE TAPS FEED THEM, and only one of them needs anything of the module.** A
+per-bus send and a per-voice send both require `split_voices`; the **slot send**
+does not, so on an ordinary synth it is what feeds these buses at all. It is
+drained by `chain_drain_main_send` from the shim's MIX pass — not the render
+pass, where the slot's post-FX audio does not yet exist — and edited in Slot
+Settings, never on the bus Send Mixer, which a slot with no buses never sees.
+See `docs/CHAIN.md`, "The slot send".
+
+**Post-insert and post-fader.** A slot's per-bus buffers already carry their own
+insert chains when `chain_drain_sends` reads them, the slot send is taken after
+the slot's own 8 FX, and the slot's effective volume is passed in to both, so
+pulling a track down pulls it out of the sends the way a console does. Mute and solo live inside `shadow_effective_volume`, so a muted
+slot feeds the sends nothing, and a bypassed synth clears `bus_rendered_mask` so
+its voices cannot reach a send through the 1-in-172 probe frame. The level is
+quantised to 0..127 and applied **per block**, so it does not follow the main
+mix's per-sample fade ramp: a slot fade is a step of at most one block here.
+
+**A→B is applied between A's chain and B's, which makes feedback impossible by
+CONSTRUCTION.** There is no point at which B's output can reach A, so there is
+no loop to detect and no loop detection to go wrong. It works because A is
+processed on an earlier iteration of the same loop — `sb == 1` reads a
+`send_out[0]` that is already final for the frame — and it is scaled by A's
+*return* level as well as the feed level, because a send from A is post-A's-fader
+like every other send here. A `_Static_assert` fails the build if `SEND_BUSES`
+ever leaves 2: the A→B block names send 1 by index, and a third bus turns "the
+second of two" into "one arbitrary bus", which needs a routing matrix rather
+than a special case.
+
+**The returns sum into `fx_target`** — the bus Master FX is about to process —
+which is the whole reason the send block sits immediately *above* the MFX loop
+rather than below it, and why the send stems are pre-Master-FX like every other
+stem.
+
+**One picker, three buses.** Shift+Vol+Menu (and hold-Menu, and Shift+Menu) now
+opens `VIEWS.FX_BUS_PICKER` — Master FX, Send A, Send B — rather than the master
+bus directly. The shim flag is unchanged: it says "the user asked for the FX
+screen", and *which* FX screen that is is a UI decision. Back from a bus returns
+to the picker, and Back from the picker is what leaves shadow mode; that is a
+change of destination for the Master FX screen, so its footer's `BACK` pair is
+**derived** from the shared chrome's pairs rather than written out again, or the
+two editors drift on the one word that differs.
+
+**The editor is PARAMETERISED BY PREFIX, not triplicated.** Every key the
+Master FX editor writes is `master_fx:` + the component key; a send's is
+`send1:` / `send2:`. `FX_BUSES` is the whole table, and two things a send does
+NOT have are declared there rather than inferred at a draw site: `hasLfos`
+(false — the shim serves no send LFOs, so asking is an IPC round trip that can
+only answer `""`, and a false here keeps four reads per frame off the diagram)
+and `hasPresets` (false — a send has no preset store yet, so a future one is one
+word). `busLevelKeys` names the return level and, for A, the A→B feed, so the
+settings menu and the info band read one list instead of two copies of a
+conditional.
+
+**Everything the editor holds about "the chain" is keyed by position, not by
+bus** — `masterFxConfig`, the selection, the chain-length override — so
+switching bus drops all of it. `fxBusSwap` is the one place `currentFxBusIndex`
+changes, for that reason.
+
+**The picker's value column asks the SHIM, never the mirror**, one positional
+GET per bus, once on entry — three IPC round trips at ~2.8 ms each is already
+more than a whole page render, so they must never reach a draw path. The mirror
+only reflects a bus that has been *entered* this session, so a never-opened send
+would read `Empty` from it with a chain loaded from a previous session. A `null`
+prints `--`, not `Empty`: "Empty" is what sends someone looking for the reverb
+they just loaded.
+
+**Persistence: the shim says what is loaded, and the levels are filed under the
+BUS.** `send<N>:modules` is one positional GET returning the whole chain, never
+compacted, for the same reason `master_fx:modules` is (see "The SHIM says what
+is loaded" above). Positions restore from `send_fx_<bus>_<pos>.json` through the
+**same function** `master_fx_N.json` goes through — two copies of that JSON
+scraping is how the sends would end up restoring `state` and not `params` with
+nothing to compare against. The two return levels and the A→B amount get their
+own `send_levels.json`, because they belong to the **bus** and filing them under
+position 0 would lose them the moment that position is emptied — an empty send
+with its return up is an ordinary state. They are restored **last**, because
+`shadow_send_bus_active()` answers true on a level alone, and raising a return
+before its chain exists would put one dry frame through the master bus.
+
+### Loading an FX module happened on the SPI CALLBACK, and the editor could not see it
+
+`fx_slot_load_impl` (`src/host/shadow_chain_mgmt.c`) does a `dlopen`, a
+`create_instance` and a `module.json` read. Both `module` param writes —
+`master_fx:fxN:module` and `send<N>:fx<M>:module` — reached it from
+`shadow_inprocess_handle_param_request`, which the shim calls from
+`shim_pre_transfer`. **That is the SPI callback**: SCHED_FIFO 70, core 3,
+~2370 µs of slack for the whole device.
+
+The comment above the function said so and called it "pre-existing in kind,
+mirrors Master FX". It is not pre-existing in kind: **bus FX were deliberately
+moved to a worker for exactly this reason** (`chain_bus.c`,
+`chain_bus_worker_fn` / `bus_load_fx`), and the sends were left on the callback
+only because Master FX was. The inconsistency was the defect.
+
+**The user-visible failure is not "the device stutters".** The JS param channel
+deadline is 100 ms (`SHADOW_PARAM_DEFAULT_TIMEOUT_MS`, `shadow_ui.c`), and a
+7.7 MB CLAP bundle takes far longer than that to open. So the write **timed
+out**, and so did every read behind it while the callback was still inside the
+`dlopen` — which is the whole editor's supply of facts. Reported from hardware
+as: the screen sat on "Loading", nothing else would load afterwards, and
+`send_fx_0_0.json` still held the previous module. That last one is the
+autosave working correctly — `saveSendFxChainConfig` refuses to write on a read
+that did not complete, which is the three-answer rule doing its job.
+
+Now:
+
+- **RT records the intent and returns.** `shadow_fx_load_request` is a bounded
+  `snprintf` and three stores. The `module` SET answers **error 0 meaning
+  ACCEPTED, not loaded**; error 7 is kept for a request that can never be
+  served (bad index, no owned buffer).
+- **The worker does the expensive half** — `dlopen`, `create_instance`, the
+  `module.json` parse, and the `destroy_instance` / `dlclose` of whatever it
+  replaced. It is the **shim's existing worker** (`shim_worker.c`), which is
+  created from shim init and demotes itself to SCHED_OTHER on cores 0-2 as its
+  first action. A `pthread_create` from a module entry point would inherit
+  SCHED_FIFO 70 — above Move's own `Link Main` at 35 — and starve the audio
+  publisher, i.e. cause the dropouts going off-thread is meant to avoid.
+- **RT installs.** The worker builds into a staging `master_fx_slot_t`; the SPI
+  thread moves the pointers across and hands the outgoing module to a retire
+  ring. **That is why no reader had to change**: `shadow_master_fx_slots` and
+  `shadow_send_fx_slots` are read unguarded from the render loop, the MIDI
+  forwarder, the param handler and both snapshot serializers, and the RT thread
+  stays their only WRITER. Gating each of those instead was the alternative,
+  and it is dozens of sites that do not know a gate exists.
+- **The gate is a SEQUENCE NUMBER, not a flag** (`src/host/fx_load_gate.h`),
+  for the reason `chain_bus.c`'s is: a boolean makes "close" a store by one
+  thread and "open" a store by another, so a worker preempted between its check
+  and its store re-opens a gate the RT thread closed — putting `dlclose` in a
+  race with the render path. Here the RT thread owns **both** stores (`req_seq`
+  closes, `done_seq` opens at install) and the worker publishes only the
+  stage's own state word, which the install refuses whenever the seq it carries
+  is no longer the one being asked for.
+- **CLOSE BEFORE YOU PUBLISH.** The request has a payload the gate does not, so
+  `req_seq` is bumped *first*, the path is written, and `req_pub` catches up
+  last. Reading the path before that is a torn `dlopen` argument.
+  `tests/host/test_fx_load_off_callback.sh` fails on the reverse order, on a
+  module SET that calls a synchronous loader, and on file I/O or allocation in
+  either RT function.
+
+**The editor can now SEE all three states**, which is the half that makes the
+move worth anything: `<prefix>:is_loading` answers "1" while a request is in
+flight and `<prefix>:load_error` answers "1" when the last settled one failed.
+The component entry gate already held on an exact `is_loading == "1"`; what it
+lacked was an ending, because **a failed load leaves the position genuinely
+empty, which is byte-identical to one still arriving** — and the hold never
+gives up on purpose. `ENTRY_FAILED` (`component_load_gate.mjs`) is that ending.
+
+**A loading position names the module it is BECOMING**, not the one leaving and
+not "". Both alternatives were wrong in opposite directions: the outgoing name
+makes the entry gate open the editor of the module being replaced, and an empty
+one makes the autosave read the position as vacated and write `{}` over the
+state file. `shadow_fx_load_pending_name` is the single namer, so `:module`,
+`:name` and both `modules` snapshots cannot disagree mid-load.
+
+**A restore must WAIT; an interactive pick must not.** Every restore loop
+writes `module` and then `state`/`params`, and those used to land on a plugin
+the synchronous load had already put in place. `waitForFxPositionSettled`
+(`shadow_ui.js`) polls `is_loading` for up to 10 s before the writes that
+follow a module write in the three restore paths (set change, patch-library
+preset, send set load). The interactive picker has no state to follow it — it
+is the path that had to stop blocking, and it does not wait. Boot restore still
+uses the **synchronous** loaders (`fx_boot_restore_one`), which is correct:
+that runs at shim init, not on the callback.
+
+**A shape verb refuses while a load is in flight.** `fx:insert` / `fx:remove` /
+`fx:move` permute the position array a staged realisation is stamped against,
+so running one mid-load would install the incoming module wherever the shift
+left that index. Error 15, not a queue — the editor already reports a refused
+verb, and a queued one would reorder a chain the user has since changed.
+
+Not in scope and unchanged: the Airwindows module (`clap`) picking the first
+plugin it finds when its config names none ("No plugin in config, loading first
+available" → `ADT`). That string is in `charlesvestal/schwung-airwindows`, not
+here; the host reports the *module* the user chose and never presents a
+sub-plugin as a choice.
 
 ### Snapshot / recall: what it restores, and what it deliberately does not
 

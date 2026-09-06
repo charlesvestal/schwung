@@ -518,6 +518,23 @@ static int shadow_slot_deferred_valid[SHADOW_CHAIN_INSTANCES];
 static int16_t shadow_slot_fx_deferred[SHADOW_CHAIN_INSTANCES][FRAMES_PER_BLOCK * 2];
 static int shadow_slot_fx_deferred_valid[SHADOW_CHAIN_INSTANCES];
 
+/* Global send accumulators — ONE pair for the whole device, not one per slot.
+ * That is what makes the sends global: a single reverb every slot can feed,
+ * rather than four copies of it.
+ *
+ * They live on the same clock as shadow_slot_deferred above: cleared and filled
+ * during the post-ioctl render, consumed by the pre-ioctl mix of the following
+ * frame. Anything that changes that phase relationship for the slot buffers has
+ * to move these with it, or a send arrives a frame away from the audio it was
+ * taken from.
+ *
+ * send_out is the working copy the send FX chains process in place, kept
+ * separate so send_accum still holds exactly what the slots contributed —
+ * the A->B feed reads a chain's OUTPUT and must not be able to read a
+ * half-processed accumulator. */
+static int16_t send_accum[SEND_BUSES][FRAMES_PER_BLOCK * 2];
+static int16_t send_out[SEND_BUSES][FRAMES_PER_BLOCK * 2];
+
 /* ---- Preview player: lightweight WAV playback for file browser ---- */
 #define PREVIEW_CMD_PATH "/data/UserData/schwung/preview_cmd_path.txt"
 #define PREVIEW_WAV_FORMAT_PCM   1
@@ -1929,6 +1946,14 @@ static void shadow_inprocess_render_to_buffer(void) {
         shadow_slot_fx_deferred_valid[s] = 0;
     }
 
+    /* Clear the global send accumulators here, with the per-slot buffers they
+     * are filled from, so the two can never disagree about which frame they
+     * belong to. The pre-ioctl mix has already consumed last frame's contents
+     * by the time this runs. */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        memset(send_accum[sb], 0, sizeof(send_accum[sb]));
+    }
+
     /* Same-frame FX: render synth only into per-slot buffers.
      * FX + Link Audio inject are processed in mix_from_buffer (same frame as mailbox)
      * so the inject/subtract cancellation is sample-accurate. */
@@ -2046,6 +2071,37 @@ static void shadow_inprocess_render_to_buffer(void) {
                     shadow_deferred_dsp_buffer[i] = (int16_t)mixed;
                     if (i & 1) shadow_fade_advance(s);
                 }
+            }
+
+            /* Drain this slot's per-bus send contributions into the global
+             * accumulators, immediately after the render that filled the bus
+             * buffers.
+             *
+             * POST-INSERT and POST-FADER: the bus buffers already carry their
+             * own insert chains, and the slot's volume is passed in, so pulling
+             * a track down pulls it out of the sends the way a console does.
+             * Mute and solo live inside shadow_effective_volume, so a muted
+             * slot feeds the sends nothing.
+             *
+             * The level is quantised to 0..127 (what the whole send path works
+             * in — see bus_mix_send) and applied PER BLOCK. It does not follow
+             * the per-sample fade ramp the main mix applies, so a slot fade is
+             * a step of at most one block here rather than a ramp.
+             *
+             * This sits above slot_run_deferred_fx on purpose. The idle gate's
+             * `goto` skips it, and must: the bus buffers are cleared and
+             * refilled inside render_block, so a skipped render would otherwise
+             * re-send whatever the last probe frame left in them. */
+            if (shadow_chain_drain_sends) {
+                int16_t *send_targets[SEND_BUSES];
+                for (int sb = 0; sb < SEND_BUSES; sb++) send_targets[sb] = send_accum[sb];
+                float send_vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+                int send_vol127 = (int)lroundf(send_vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+                if (send_vol127 < 0) send_vol127 = 0;
+                if (send_vol127 > BUS_MIX_SEND_LEVEL_MAX) send_vol127 = BUS_MIX_SEND_LEVEL_MAX;
+                shadow_chain_drain_sends(shadow_chain_slots[s].instance,
+                                         send_targets, SEND_BUSES,
+                                         MOVE_FRAMES_PER_BLOCK, send_vol127);
             }
 
             /* Check if synth render output is silent */
@@ -2268,7 +2324,7 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
  *
  * One block of per-stem audio, rebuilt every frame for the Quantized Sampler
  * and Skipback. Indices match sampler_stem_names[]: 0-3 are the chain slots,
- * 4 is Move.
+ * 4 is Move, 5 and 6 are the two global send returns.
  *
  * A slot stem is that slot's output AFTER its FX chain and AT its slot volume
  * — the same signal shadow_slot_capture[] publishes to Link Audio, tapped at
@@ -2276,6 +2332,13 @@ static void shadow_latency_delay_apply(int slot, const int16_t *in,
  * deferred and inline halves of the non-rebuild branch). Under Move->Schwung
  * that already contains Move's track N, because the shim summed it in BEFORE
  * running the slot FX and there is no undoing that — see shadow_sampler.h.
+ *
+ * A send stem is that bus's return post-send-chain and at its return level —
+ * the exact block bus_mix_send() adds to the master bus — so the four slot
+ * stems plus the two sends still sum to the master. It is tapped in the send
+ * loop, NOT from native_bridge_me_component: that snapshot is taken before
+ * fx_target exists, so it does not contain the returns (nor Master FX, for the
+ * same reason).
  *
  * `valid` is per frame, not per slot lifetime: an unwritten stem captures
  * SILENCE rather than repeating last frame's block. A stale block is the
@@ -2312,6 +2375,44 @@ static inline void shadow_stem_dispatch(void (*sink)(const int16_t *const *, int
     for (int i = 0; i < SAMPLER_STEM_COUNT; i++)
         ptrs[i] = shadow_stem_valid[i] ? shadow_stem_bus[i] : NULL;
     sink(ptrs, SAMPLER_STEM_COUNT);
+}
+
+/*
+ * THE SLOT SEND — the whole slot into the global send buses, no bus required.
+ *
+ * Taken here in the MIX pass and not beside chain_drain_sends in the render
+ * pass, because the signal only exists here: under same-frame FX the render
+ * returns the raw synth (chain_host.c's external_fx_mode early return) and the
+ * slot's own 8 FX run in this pass, and under rebuild_from_la the slot is
+ * composited from Move's track before those FX run at all. `post_fx` is
+ * whichever of those two buffers this call site is holding — the same audio
+ * that is about to be added to the mix.
+ *
+ * The timing works out because send_accum is CLEARED in the render pass, which
+ * runs post-ioctl, after this one: clear -> per-bus drains -> ioctl -> this
+ * pass's slot drains -> the send-bus loop consumes. So both taps describe the
+ * same block of audio and neither is consumed twice.
+ *
+ * POST-FADER: the level passed is the slot's effective volume, which is 0 for
+ * a muted or soloed-out slot, so mute and solo silence the slot send exactly
+ * as they silence a bus send. Quantised to 0..127 and applied per block, like
+ * the per-bus drain — it does not follow the per-sample fade ramp.
+ *
+ * SPI callback: no allocation, no I/O, no locks.
+ */
+static void shim_drain_slot_send(int s, const int16_t *post_fx) {
+    if (!shadow_chain_drain_main_send || !post_fx) return;
+    if (s < 0 || s >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_chain_slots[s].instance) return;
+    int16_t *send_targets[SEND_BUSES];
+    for (int sb = 0; sb < SEND_BUSES; sb++) send_targets[sb] = send_accum[sb];
+    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+    int vol127 = (int)lroundf(vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+    if (vol127 < 0) vol127 = 0;
+    if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
+    shadow_chain_drain_main_send(shadow_chain_slots[s].instance, send_targets,
+                                 SEND_BUSES, post_fx, MOVE_FRAMES_PER_BLOCK,
+                                 vol127);
 }
 
 static void shadow_inprocess_mix_from_buffer(void) {
@@ -2643,6 +2744,12 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     }
                 }
 
+                /* Slot send, from the slot as the master bus is about to
+                 * receive it: Move's track and the synth, through the slot's
+                 * own chain. Under Move->Schwung those two are inseparable by
+                 * construction — the same reason a stem is a slot. */
+                shim_drain_slot_send(s, fx_buf);
+
                 /* Track FX output silence for phase 2 idle */
                 int fx_silent = 1;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -2737,6 +2844,10 @@ skip_la_rebuild:
 
                 int16_t *fx_buf = shadow_slot_fx_deferred[s];
 
+                /* Slot send, from the deferred FX output — the slot only, with
+                 * none of Move's audio in it on this path. */
+                shim_drain_slot_send(s, fx_buf);
+
                 /* Stem tap. Outside Move->Schwung this is the SLOT ONLY —
                  * Move's own audio never enters a slot on this path, and is
                  * captured whole as the Move stem instead. */
@@ -2772,6 +2883,10 @@ skip_la_rebuild:
                 memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
                 shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                         fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                /* Slot send. Same tap as the deferred path above; this is the
+                 * legacy branch that runs the FX inline. */
+                shim_drain_slot_send(s, fx_buf);
 
                 shadow_stem_store(s, fx_buf,
                                   shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);
@@ -2832,7 +2947,13 @@ skip_la_rebuild:
         }
     }
 
-    /* Save ME full-gain component for bridge split */
+    /* Save ME full-gain component for bridge split.
+     *
+     * This is the SLOT SUM ONLY. Everything mixed into fx_target below — the
+     * send returns first, then Master FX — happens after this snapshot and is
+     * absent from it. Any consumer that reconstructs a mix from this buffer
+     * must therefore ask shadow_me_post_snapshot_fx_active() first, or it
+     * silently produces a different mix from the one on the DAC. */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         if (me_full[i] > 32767) me_full[i] = 32767;
         if (me_full[i] < -32768) me_full[i] = -32768;
@@ -2841,7 +2962,19 @@ skip_la_rebuild:
     native_bridge_capture_mv = mv;
     native_bridge_split_valid = 1;
 
-    /* Write master mix to publisher shm (slot index LINK_AUDIO_PUB_MASTER_IDX) */
+    /* Publish the ME bus as the "Schwung-Master" Link Audio channel.
+     *
+     * It is fed from native_bridge_me_component, which is the SLOT SUM as it
+     * stands before any bus-wide processing: Master FX has never been in this
+     * channel, and the send returns are not either — both land further down,
+     * on fx_target. That is the channel's definition, not an oversight of the
+     * sends: including one and not the other would make it neither the raw
+     * slot sum nor the finished master.
+     *
+     * Moving the publish below both would also change what a listener already
+     * subscribed to this channel hears, and under rebuild_from_la fx_target is
+     * the mailbox — Move's own audio included — which would republish Move's
+     * Link Audio back onto the network. Left as the pre-bus sum deliberately. */
     if (link_audio.enabled && shadow_pub_audio_shm) {
         link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX];
         uint32_t wp = ps->write_pos;
@@ -2893,6 +3026,113 @@ skip_la_rebuild:
             if (of_us > spi_overtake_fx_max) spi_overtake_fx_max = of_us;
         }
     }
+
+    /* ---- Global send buses -------------------------------------------------
+     *
+     * Each is hosted exactly like Master FX — the same master_fx_slot_t array,
+     * the same "always process, restore the dry" bypass discipline — so there
+     * is one piece of chain machinery here, not three.
+     *
+     * The returns sum into fx_target, which is the bus Master FX is about to
+     * process, so the master chain sees the wet signal too. That ordering is
+     * the whole reason this block sits immediately above the MFX loop rather
+     * than below it.
+     *
+     * An inactive send costs one pointer scan: no memcpy, no process_block. */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        if (!shadow_send_bus_active(sb)) continue;
+
+        memcpy(send_out[sb], send_accum[sb], sizeof(send_out[sb]));
+
+        /* A -> B, applied AFTER A's chain and BEFORE B's. That ordering is what
+         * makes it feedback-safe BY CONSTRUCTION: there is no point at which
+         * B's output can reach A, so there is no loop to detect and no loop
+         * detection here to go wrong. It works because A is processed on an
+         * earlier iteration of this same loop — sb == 1 reads a send_out[0]
+         * that is already final for this frame.
+         *
+         * Scaled by A's return level as well as the feed level, because a send
+         * from A is post-A's-fader like every other send in this design: pull
+         * A's return down and it leaves B with it.
+         *
+         * The bus_active(0) test is not redundant with that scaling, even
+         * though an inactive A implies a zero return level today. It is what
+         * says out loud that send_out[0] is only THIS frame's audio when the
+         * sb == 0 iteration actually ran — a skipped bus leaves the buffer
+         * holding whatever the last active frame put there. */
+        if (sb == 1 && shadow_send_a_to_b > 0 && shadow_send_bus_active(0)) {
+            int lvl = (shadow_send_a_to_b * shadow_send_return_level[0]) /
+                      BUS_MIX_SEND_LEVEL_MAX;
+            bus_mix_send(send_out[1], send_out[0], FRAMES_PER_BLOCK * 2, lvl);
+        }
+
+        for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+            master_fx_slot_t *sfx = &shadow_send_fx_slots[sb][fx];
+            if (!(sfx->instance && sfx->api && sfx->api->process_block)) continue;
+            int16_t sfx_dry[FRAMES_PER_BLOCK * 2];
+            /* Process even when bypassed, then restore the dry: a bypassed
+             * reverb keeps its tail advancing, so un-bypassing resumes cleanly
+             * instead of bursting. Same rule as the MFX loop below. */
+            if (sfx->bypassed) {
+                memcpy(sfx_dry, send_out[sb], sizeof(sfx_dry));
+            }
+            sfx->api->process_block(sfx->instance, send_out[sb], FRAMES_PER_BLOCK);
+            if (sfx->bypassed) {
+                memcpy(send_out[sb], sfx_dry, sizeof(sfx_dry));
+            }
+        }
+
+        /* THE SEND STEM, tapped here and nowhere else.
+         *
+         * It has to be the return EXACTLY as the master bus receives it, or
+         * the stem sum stops reconstructing the master -- which is the whole
+         * reason these two stems exist. So this recomputes bus_mix_send()'s
+         * own integer scaling rather than handing shadow_stem_store() a float
+         * gain: the float path rounds (lroundf) where bus_mix_send truncates,
+         * and the two disagree by one LSB on roughly half of all samples.
+         *
+         * Post-send-chain and pre-Master-FX, like every other stem: the MFX
+         * loop is immediately below.
+         *
+         * Note this is NOT native_bridge_me_component, which is snapshotted
+         * further up, before fx_target exists -- a send return read from there
+         * would be silence in every file. */
+        /* ONE read of the volatile level, shared by the stem tap and the
+         * master add below. Reading it twice lets a param write land between
+         * them and scale the stem block differently from the block that
+         * reached the master -- which is precisely the exactness the comment
+         * above promises. */
+        int send_lvl = shadow_send_return_level[sb];
+        if (send_lvl < 0) send_lvl = 0;
+        if (send_lvl > BUS_MIX_SEND_LEVEL_MAX) send_lvl = BUS_MIX_SEND_LEVEL_MAX;
+
+        if (shadow_stems_wanted) {
+            int lvl = send_lvl;
+            int16_t send_ret[FRAMES_PER_BLOCK * 2];
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++)
+                send_ret[i] = (int16_t)(((int32_t)send_out[sb][i] * (int32_t)lvl) /
+                                        BUS_MIX_SEND_LEVEL_MAX);
+            shadow_stem_store(SAMPLER_STEM_SEND_A + sb, send_ret, 1.0f);
+        }
+
+        bus_mix_send(fx_target, send_out[sb], FRAMES_PER_BLOCK * 2, send_lvl);
+    }
+
+    /* The A->B block above names send 1 by index. Raising SEND_BUSES turns that
+     * from "the second of two" into "one arbitrary bus", which needs a routing
+     * matrix rather than a special case — so fail the build here instead of
+     * mis-routing quietly. */
+    _Static_assert(SEND_BUSES == 2, "the A->B special case assumes exactly two sends");
+
+    /* The tap above indexes the stem table as SAMPLER_STEM_SEND_A + sb, so the
+     * send stems must be contiguous and must be the LAST ones. A send bus added
+     * without a stem to put it in would write over whatever followed. */
+    _Static_assert(SAMPLER_STEM_SEND_B == SAMPLER_STEM_SEND_A + 1,
+                   "the send stems must be contiguous");
+    _Static_assert(SAMPLER_STEM_COUNT == SAMPLER_STEM_SEND_A + SEND_BUSES,
+                   "every send bus needs a stem, and the sends are the last stems");
+    _Static_assert(SAMPLER_STEM_MOVE == SHADOW_CHAIN_INSTANCES,
+                   "the Move stem sits immediately after the four slot stems");
 
     /* Apply master FX chain. Under non-rebuild, MFX processes ME only; under
      * rebuild_from_la, mailbox contains reconstructed ME tracks and MFX
@@ -2992,10 +3232,11 @@ skip_la_rebuild:
          * Without Link Audio routing there is no per-track split to be had:
          * Move hands us one mixed mailbox. Un-scaling it by the same smoothed
          * mv the unity_view above uses puts it at unity with the slot stems,
-         * so the five files still sum to the master.
+         * so it sums with the slot stems to the master (plus SendA/SendB,
+         * which carry what no slot can own).
          *
          * Under rebuild_from_la this is left INVALID on purpose. Move's tracks
-         * are inside the four slot stems there, and a sixth file repeating
+         * are inside the four slot stems there, and a Move file repeating
          * them would double every instrument in a stem sum. */
         shadow_stem_store(SAMPLER_STEM_MOVE, native_bridge_move_component, inv_mv);
     }

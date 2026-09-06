@@ -372,7 +372,16 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
                    "masterConfirmingDelete", "helpDetailScrollState", "helpNavStack",
                    "inMasterPresetPicker", "inMasterFxSettingsMenu", "selectingMasterFxModule",
                    "chainReorderJog", "MASTER_CHAIN_TARGET", "masterFxChainComponents",
-                   "announce", "announceMenuItem", "masterFxConfig"];
+                   "announce", "announceMenuItem", "masterFxConfig",
+                   /* The bus decides whether the PRESET row at -1 exists at
+                      all: a send has no preset store, so jogging left off
+                      position 0 must stop there. Master, in this block. */
+                   "fxBus",
+                   /* The jog records where each bus was left, so re-entering
+                      lands on the module you were working on rather than at
+                      the head of the row -- which is now a DOOR out of the
+                      screen. Injected so the lift can run the write. */
+                   "fxBusSummaries", "currentFxBusIndex", "lastFxBusComponent"];
     const maker = liftStateful(null, NAMES, ["selectedMasterFxComponent", "needsRedraw"],
       "var __f = function (delta, shift) { switch (1) { case 1: " + body + " } };");
 
@@ -386,7 +395,11 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
       rig.deps.helpNavStack = [];
       rig.deps.inMasterPresetPicker = false;
       rig.deps.inMasterFxSettingsMenu = false;
+      rig.deps.fxBusSummaries = [];
+      rig.deps.currentFxBusIndex = 0;
+      rig.deps.lastFxBusComponent = [];
       rig.deps.selectingMasterFxModule = false;
+      rig.deps.fxBus = () => ({ hasPresets: true });
       return rig;
     };
 
@@ -624,12 +637,19 @@ const shiftHintsFor = shiftMaker ? shiftMaker(REST_HINTS) : (() => []);
   const at = mfx.indexOf("export function drawMasterFx(");
   const shown = (shift, comp) => hintsFrom(mfx, "drawMasterFx", at,
     ["isShiftHeld", "dctx", "currentMasterPresetName", "label", "infoLine",
-     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST"],
-    [() => shift, {}, "", "", "", shiftHintsFor, comp, REST_HINTS]);
+     "shiftHintsFor", "selectedComp", "CHAIN_HINTS_AT_REST", "fxBus", "fxBusHints"],
+    [() => shift, {}, "", "", "", shiftHintsFor, comp, REST_HINTS,
+     () => ({ short: "MFX", label: "Master FX", hasPresets: true }),
+     /* The REAL rewriter, lifted from the same file, not a stub: what is under
+        test is which word Back gets, so a stub would be testing the stub. */
+     lift("fxBusHints", ["FX_BUS_BACK_LABEL"], mfx)("BUS")]);
   const FULL2 = { kind: "module", module: "cloudseed" };
   const EMPTY2 = { kind: "add", section: "fx", label: "+" };
   const rest = shown(false, FULL2);
-  if (flat(rest) !== "JOG SEL / CLK OPEN / BACK EXIT")
+  /* BUS, not EXIT: Back on an FX bus returns to the bus picker one level up,
+     so the word names where it actually goes. The other two pairs are the slot
+     editor pairs, verbatim, from the shared chrome. */
+  if (flat(rest) !== "JOG SEL / CLK OPEN / BACK BUS")
     fail("at rest the Master FX footer reads [" + flat(rest) + "]");
   fits("on Master FX at rest", rest);
   /* The SAME words as the slot chain, from the same helper. Two screens that

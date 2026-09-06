@@ -127,7 +127,7 @@ import { groupLfoTargetParams, flatLfoTargetParams, locateLfoTargetParam, indexO
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
-import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
+import { drawChainDiagram, isBusDoor, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
     from '/data/UserData/schwung/shared/chain_diagram.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
@@ -137,7 +137,7 @@ import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
-    ENTRY_ENTER, ENTRY_HOLD,
+    ENTRY_ENTER, ENTRY_HOLD, ENTRY_FAILED,
 } from '/data/UserData/schwung/shared/component_load_gate.mjs';
 import {
     formatParamValue as ufFormatParamValue,
@@ -328,6 +328,13 @@ import {
 import {
     drawNotice as _drawNotice
 } from './shadow_ui_notice.mjs';
+/* The slot buses, in two halves. The MODEL is shared/ and pure — every parser
+ * and row rule lives there so tests/host can run it under node — and the VIEWS
+ * are a sibling shadow module, which cannot be imported there because it
+ * resolves its own imports from /data/UserData/schwung. Two namespaces on
+ * purpose: the call site says which half it is using. */
+import * as BusModel from '/data/UserData/schwung/shared/bus_model.mjs';
+import * as BusViews from './shadow_ui_buses.mjs';
 import {
     drawChainSettings as _drawChainSettings,
     drawGlobalSettings as _drawGlobalSettings
@@ -452,7 +459,8 @@ const VIEWS = {
     PRESET_DETAIL: "modpresetdetail", // Load/Delete a selected module preset
     COMPONENT_SELECT: "compselect", // Select module for a component
     COMPONENT_EDIT: "compedit",  // Edit component (presets, params) via Shift+Click
-    MASTER_FX: "masterfx",    // Master FX selection
+    MASTER_FX: "masterfx",    // One FX bus's 8-position editor (master or a send)
+    FX_BUS_PICKER: "fxbuspicker", // Which FX bus to edit: Master FX, Send A, Send B
     HIERARCHY_EDITOR: "hierarch", // Hierarchy-based parameter editor
     PARAM_PAGES: "parampages", // Knob-grid parameter view (preview; Param View setting)
     CANVAS: "canvas",         // Full-screen canvas overlay/editor
@@ -490,7 +498,14 @@ const VIEWS = {
     COMPONENT_LOADING: "comploading",         // "Loading..." while a component's contract arrives
     MODULE_LISTS: "modulelists",             // Checkbox screen: which lists hold this module
     MODULE_LISTS_EDIT: "modulelistsedit",    // The list of lists, for management
-    MODULE_LISTS_ACTIONS: "modulelistsact"   // Rename / Delete / Clear for one list
+    MODULE_LISTS_ACTIONS: "modulelistsact",  // Rename / Delete / Clear for one list
+    /* The slot buses, which hang BELOW the synth box rather than along the
+     * chain row. BUS_CHAIN hosts its own module picker (selectingBusModule)
+     * the way MASTER_FX does, rather than taking a view of its own. */
+    BUS_LIST: "buslist",                     // This slot's buses, Main and New Bus
+    BUS_ACTIONS: "busactions",               // One bus: voices, inserts, sends, rename, delete
+    BUS_VOICES: "busvoices",                 // Multi-select over the synth's split_voices
+    BUS_CHAIN: "buschain"                    // One bus's 8-position insert chain
 };
 
 /* ==== CO-RUN VIEW ADDRESSING ====
@@ -508,7 +523,10 @@ const VIEWS = {
 const CORUN_ENTRIES = {
     slots:           { enter: function() { view = VIEWS.SLOTS; } },
     chain_editor:    { enter: function(a) { enterChainEdit((a && a.slot) | 0); } },
-    master_fx:       { enter: function() { enterMasterFxSettings(); } },
+    /* The MASTER bus specifically. This is a published id an overtake tool
+       names by string, so it must keep meaning one screen; the FX-bus picker is
+       reached by the gesture, not by this. */
+    master_fx:       { enter: function() { enterFxBus(0); } },
     global_settings: { enter: function() { enterGlobalSettings(); } },
 };
 
@@ -1972,14 +1990,141 @@ function setMasterFxChainConfig(cfg) {
  * ONE `+`, appended: Master FX has one section, and its `+` is the audio-FX end
  * of a slot chain wearing the same rules.
  */
+/*
+ * The two SEND ENTRIES that head the master row.
+ *
+ * They are boxes in the chain diagram, not a menu: sends land BEFORE Master FX
+ * (the shim sums the returns into fx_target and the MFX loop processes that
+ * same buffer), so the leftmost boxes in this row genuinely ARE what arrives
+ * ahead of FX position 1. The picture is the signal flow rather than an
+ * arrangement of destinations.
+ *
+ * They ride the same array as the FX positions so they scroll, select and
+ * announce through the code that already does all three -- the same reason `+`
+ * and Settings are rows here rather than special cases. `kind` is its own value
+ * so nothing that means "an FX position" (masterFxPositionOf, marks, bypass)
+ * can pick one up: all of those test `kind === "module"`.
+ */
+function masterFxSendEntries() {
+    return FX_BUSES
+        .map((bus, i) => ({ bus, i }))
+        .filter((e) => e.bus.send >= 0)
+        .map((e) => ({
+            id: `sendbus${e.i}`, key: `sendbus${e.i}`, kind: "sendbus",
+            busIndex: e.i, label: e.bus.label,
+        }));
+}
+
+/*
+ * A send heads its row with the way BACK, where the master heads its row with
+ * the two sends. Same place, same gesture, opposite direction -- and it means
+ * the head of the row always answers "where does this bus sit", on both screens
+ * rather than only on the one you happen to have entered from.
+ */
+function masterFxBackEntry() {
+    return { id: "busback", key: "busback", kind: "busback",
+             busIndex: 0, label: FX_BUSES[0].short };
+}
+
 function masterFxChainComponents() {
-    return chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
+    const rows = chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
+    /* Only the MASTER bus heads its row with the sends. A send showing its own
+     * entry would be a box that reopens the screen it is drawn on, and Send A
+     * showing Send B would claim a routing that does not exist (the A->B feed is
+     * a level on A's Settings, not a position in its chain). */
+    if (!fxBusIsMaster()) {
+        return [masterFxBackEntry()].concat(rows).map((c, i) => ({ ...c, position: i }));
+    }
+    /* `position` is the ROW and is renumbered, because chainEditorComponents
+     * assigned it before these existed. `index` -- the FX position -- is left
+     * exactly as it was; that is the whole point of telling the two apart. */
+    return masterFxSendEntries().concat(rows)
+        .map((c, i) => ({ ...c, position: i }));
 }
 
 /* Is the Master FX selection on a module POSITION — as opposed to the preset
  * row, the `+`, the Settings box, or an index left over from a chain that got
  * shorter? The gates that used to compare the index against a fixed settings
  * position ask this instead; there is no fixed settings position any more. */
+/*
+ * A master-row ROW INDEX and an FX POSITION are DIFFERENT NUMBERS.
+ *
+ * They are equal today and that is a coincidence: the row happens to begin at
+ * fx1, so row i is position i. The moment anything is drawn ahead of the first
+ * FX box -- the Send A / Send B entries -- every site that passed one where the
+ * other was wanted starts addressing the wrong module. Silently: both are small
+ * integers and both are in range, so there is no error to catch, only a click on
+ * fx1 that edits fx3.
+ *
+ * parseChainId is the authority (it already parses "fx3"). A row that is not an
+ * FX position -- `+`, Settings, a send entry -- answers -1 rather than a
+ * plausible number, so a caller cannot mistake "not a position" for position 0.
+ */
+function masterFxPositionOf(rowIndex) {
+    if (!(rowIndex >= 0)) return -1;
+    const comp = masterFxChainComponents()[rowIndex];
+    /* chainEditorComponents already carries BOTH numbers: `index` is the
+     * position within the section, `position` is the row. Reading the field
+     * rather than re-parsing the key means the two can never disagree. */
+    return (comp && comp.kind === "module") ? comp.index : -1;
+}
+
+/*
+ * WHERE THE CURSOR GOES when an FX bus editor opens.
+ *
+ * CALLED AFTER THE CHAIN IS LOADED, and that is the whole reason it is a
+ * function rather than a few lines in enterFxBus. It was written there, before
+ * enterMasterFxSettings() -- the last line of enterFxBus -- which loads the
+ * chain and then assigned `selectedMasterFxComponent = 0` unconditionally. So
+ * the landing was computed and then thrown away one call later, and row 0 is
+ * now the Send A box: entering Master FX with a full chain landed on a door out
+ * of it, whatever had been selected before. Reported from hardware twice, the
+ * second time with a module loaded, which is what ruled out the empty-chain
+ * explanation.
+ *
+ * The order is: where this bus was left, else the first MODULE, else the `+`.
+ *
+ *  - never a head door (Send A / Send B / the way back), even if that is where
+ *    the cursor was actually left. Landing on a way out of the screen you just
+ *    opened is the complaint itself, and defaultChainComponent already answers
+ *    it for the slot chain`s `+`.
+ *  - the `+` and not 0 when there is no module at all. On an empty master bus
+ *    row 0 is Send A, so falling back to 0 is the same bug in its quietest
+ *    form; the `+` is the one thing on an empty chain worth pointing at.
+ */
+function resolveFxBusLanding() {
+    const comps = masterFxChainComponents();
+    if (!comps.length) return 0;
+    const usable = (i) => i >= 0 && i < comps.length && comps[i] &&
+                          !isBusDoor(comps[i].kind);
+
+    const want = lastFxBusComponent[currentFxBusIndex];
+    if (typeof want === "number" && usable(want)) return want;
+
+    const firstFx = masterFxRowOf(0);
+    if (firstFx >= 0) return firstFx;
+
+    /* THE FIRST NON-DOOR, which on an empty chain IS the `+` box -- the one
+     * thing worth pointing at when there is nothing loaded. An explicit "find
+     * the add box" branch stood here and was deleted: for every row this code
+     * can build ([A, B, +, Settings] on the master, [back, +, Settings] on a
+     * send) the two answers are the same box, so it was a branch no test could
+     * kill. Falling back to 0 instead is the original bug in its quietest form,
+     * because row 0 is a door. */
+    const any = comps.findIndex((c) => c && !isBusDoor(c.kind));
+    return any >= 0 ? any : 0;
+}
+
+/* The inverse: which row an FX position occupies, or -1 if it is not drawn. */
+function masterFxRowOf(position) {
+    if (!(position >= 0)) return -1;
+    const comps = masterFxChainComponents();
+    for (let i = 0; i < comps.length; i++) {
+        if (comps[i].kind === "module" && comps[i].index === position) return i;
+    }
+    return -1;
+}
+
 function masterFxSelectedIsModule() {
     if (selectedMasterFxComponent < 0) return false;
     const comp = masterFxChainComponents()[selectedMasterFxComponent];
@@ -2038,7 +2183,29 @@ function masterFxComponentKey(i) {
  * which is slot 0 under a garbage param name (see shadow_chain_mgmt.c).
  */
 function masterFxIndexFromComponentKey(componentKey) {
-    const m = /^master_fx:fx(\d+)$/.exec(String(componentKey || ""));
+    /*
+     * THE PREFIX COMES FROM FX_BUSES, never from a literal here.
+     *
+     * This regex was /^master_fx:fx(\d+)$/ and its builder
+     * (enterMasterFxHierarchyEditorWith) spelled the same literal, so BOTH
+     * halves named the master bus while the editor they serve is shared by all
+     * three. Opening a position in Send A built the key "master_fx:fx1" and
+     * every read behind it asked the MASTER bus -- where nothing is loaded --
+     * so ui_hierarchy never resolved and the component gate held on "Loading"
+     * forever. Master FX worked for the one reason that made it hard to see:
+     * there the hardcoded prefix happens to be the right one.
+     *
+     * A send position addresses exactly like a master one (send_fx_key.h routes
+     * "send<N>:fx<M>:<param>" through the same handler and the same cap,
+     * SEND_FX_SLOTS == MASTER_FX_SLOTS), so the POSITION is all a caller needs
+     * from this -- the bus is currentFxBusIndex, which every consumer already
+     * reads through fxBus(). Deriving the prefixes from the table is what stops
+     * a fourth bus from silently failing to open the same way.
+     */
+    const key = String(componentKey || "");
+    const bus = FX_BUSES.find((b) => key.startsWith(b.prefix));
+    if (!bus) return -1;
+    const m = /^fx(\d+)$/.exec(key.slice(bus.prefix.length));
     if (!m) return -1;
     const i = Number(m[1]) - 1;
     return (i >= 0 && i < MASTER_FX_SLOTS) ? i : -1;
@@ -2056,6 +2223,25 @@ function masterFxIndexFromComponentKey(componentKey) {
  * the key prefix itself. See currentChrome there.
  */
 function paramPagesChromeFor(componentKey) {
+    /*
+     * A BUS INSERT names its chain "B1" and goes back to that bus's diagram.
+     *
+     * The module key is the colon form for the same reason Master FX's is: the
+     * slot chain's "<prefix>_module" underscore spelling is unserved here, and
+     * an unserved read comes back "" rather than erroring, so the header would
+     * silently lose the name. chain_bus.c answers "bus1:fx2:module" with the
+     * module ID (the request string), which is what getModuleDisplayName wants
+     * -- unlike the master bus, where ":module" is a filesystem path and ":name"
+     * is the id.
+     */
+    const busAt = BusModel.parseBusComponentKey(componentKey);
+    if (busAt) {
+        return {
+            label: busChainTarget(busAt.bus).label,
+            moduleKey: `${componentKey}:module`,
+            returnView: VIEWS.BUS_CHAIN,
+        };
+    }
     const mfx = masterFxIndexFromComponentKey(componentKey);
     if (mfx < 0) return null;
     return {
@@ -2080,6 +2266,34 @@ function paramPagesChromeFor(componentKey) {
 }
 
 /*
+ * The key that NAMES THE MODULE behind a component key -- for any of the three
+ * chains -- or null when the key addresses no module position.
+ *
+ * THE UNDERSCORE FORM IS THE SLOT CHAIN'S ALONE. `${prefix}_module` is correct
+ * for "fx1" and for nothing else: getComponentParamPrefix returns a prefixed
+ * key verbatim, so a Master FX or send position produced "master_fx:fx1_module"
+ * / "send1:fx1_module", which nobody serves. Three call sites took their key
+ * from the KNOB GRID, which stores whichever chain it was opened on, and so
+ * asked the malformed form on every tick -- reconcileCcClaim returns on a
+ * failed read to retry next tick, so it re-asked at the full frame rate. That
+ * was measured on the device at 61 errored round trips per second against a
+ * ~2.8 ms param read: about a sixth of the channel, burned, starving the reads
+ * an entry gate is waiting on.
+ *
+ * paramPagesChromeFor already resolves the spelling for the two prefixed
+ * chains (":name" for an FX bus, ":module" for a bus insert -- both serve the
+ * module ID, as the underscore form does), so this reuses that answer rather
+ * than restating it. The sites that reach here only AFTER those branches have
+ * returned keep the bare underscore form and are unaffected.
+ */
+function componentModuleIdKey(componentKey) {
+    const chrome = paramPagesChromeFor(componentKey);
+    if (chrome) return chrome.moduleKey;
+    const prefix = getComponentParamPrefix(componentKey);
+    return prefix ? `${prefix}_module` : null;
+}
+
+/*
  * The io a knob-grid COMPONENT page gets for its trailing pages ("My
  * Presets", "Module") — or null for a Master FX target, which has none.
  *
@@ -2099,6 +2313,12 @@ function paramPagesChromeFor(componentKey) {
  */
 function componentParamPagesIo(slotIndex, componentKey) {
     if (masterFxIndexFromComponentKey(componentKey) >= 0) return null;
+    /* A bus insert inherits the same gap, and for the same reason: every
+     * action on those pages is slot-chain shaped (Swap re-enters the slot
+     * chain's picker, the preset store is keyed off the slot chain's
+     * component). Excluded HERE so a future call site cannot opt it in by
+     * omission -- the property this helper exists for. */
+    if (BusModel.parseBusComponentKey(componentKey)) return null;
     const prefix = getComponentParamPrefix(componentKey);
     return {
         trailingMenus: () => componentTrailingMenus(slotIndex, componentKey, prefix),
@@ -2306,7 +2526,7 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
         { label: "Preset", value: presetRowValue(record, liveBlob), action: "up_load" },
     ];
     /* Save and Delete both target the LOADED preset, so both are meaningless
-     * with none loaded — same always-or-hasPreset filter SLOT_GRID_ACTIONS
+     * with none loaded — the same conditional-row filter SLOT_GRID_ACTIONS
      * applies for the slot settings menu. Save As stays unconditional: it
      * goes straight to the keyboard where Save offers a generated name. */
     if (hasRecord) presetEntries.push({ label: "Save", action: "up_save" });
@@ -3206,17 +3426,801 @@ function slotChainTarget(slotIndex) {
     };
 }
 
-/* The master bus chain. One section, no synth, addressed at slot 0 under the
- * "master_fx:" prefix. */
+/*
+ * THE THREE FX BUSES, and why there is still only one chain TARGET.
+ *
+ * Master FX, Send A and Send B are the same machinery: 8 positions of
+ * master_fx_slot_t in the shim, one editor, one diagram, one picker. What
+ * separates them on the wire is a key PREFIX and nothing else — "master_fx:",
+ * "send1:", "send2:" — so the editor is parameterised by that prefix rather
+ * than triplicated. `currentFxBusIndex` is the one piece of state the FX-bus
+ * picker sets.
+ *
+ * Two things a send does NOT have, and both are declared here rather than
+ * inferred at the draw site:
+ *   hasLfos  — the shim serves no send LFOs at all, so asking for one is an
+ *              IPC round trip that can only answer "". A false here is what
+ *              keeps four reads per frame off a send's diagram.
+ *   presets  — a send has no preset store yet; the settings menu is built from
+ *              this flag rather than from a `kind === "send"` at the menu, so
+ *              a future send preset store is one word here.
+ * A send DOES have a return level, and Send A additionally has the A->B feed;
+ * `busLevelKeys` names them so the settings menu and the info band read one
+ * list instead of two copies of the same conditional.
+ */
+const FX_BUSES = [
+    { id: "master", label: "Master FX", short: "MFX",  prefix: "master_fx:",
+      send: -1, hasLfos: true,  hasPresets: true,  hasShapeVerbs: true,
+      busLevelKeys: [] },
+    /* hasShapeVerbs TRUE: the shim serves send<N>:fx:insert / :remove / :move
+     * now, through the same permutation the master uses. It served none, while
+     * the editor -- which is shared -- offered Shift+jog anyway: the model
+     * reordered, the verb was dropped on the floor, and the audio kept the old
+     * order. A capability flag that lies is worse than a missing feature. */
+    { id: "send1",  label: "Send A",    short: "SNDA", prefix: "send1:",
+      send: 0,  hasLfos: false, hasPresets: false, hasShapeVerbs: true,
+      busLevelKeys: ["return", "to_send2"] },
+    { id: "send2",  label: "Send B",    short: "SNDB", prefix: "send2:",
+      send: 1,  hasLfos: false, hasPresets: false, hasShapeVerbs: true,
+      busLevelKeys: ["return"] },
+];
+let currentFxBusIndex = 0;
+function fxBus() { return FX_BUSES[currentFxBusIndex] || FX_BUSES[0]; }
+function fxBusIsMaster() { return fxBus().send < 0; }
+
+/* Send levels are 0..127 so they survive a CC round trip and need no float in
+ * the shim's audio path — the same range BUS_MIX_SEND_LEVEL_MAX names on the C
+ * side, mirrored here the way MASTER_FX_SLOTS is. A detent per unit would make
+ * a full sweep 127 turns of the jog, so the row steps by four. */
+const SEND_LEVEL_MAX = 127;
+const SEND_LEVEL_STEP = 4;
+
+/* Which row the FX-bus picker is on. Seeded from the bus you are already in,
+ * so opening the picker from Send B puts the cursor on Send B rather than
+ * making you jog back to where you were. */
+let selectedFxBusRow = 0;
+
+/*
+ * WHERE EACH BUS WAS LEFT, so re-entering puts you back on the module you were
+ * working on rather than at the start of the row.
+ *
+ * Per bus, because enterFxBus deliberately drops everything the editor holds
+ * about "the chain" -- all of it is keyed by position, not by bus -- so a single
+ * remembered index would be Send B's position applied to the master. The slot
+ * chain has had this as lastChainComponent[] all along; the FX buses simply
+ * never did, and reset to the head of the row on every entry.
+ */
+const lastFxBusComponent = [];
+
+/*
+ * Open one bus's editor. THE ONE PLACE currentFxBusIndex changes.
+ *
+ * Everything the editor holds about "the chain" is keyed by position, not by
+ * bus — masterFxConfig, the selection, the chain length override — so switching
+ * bus must drop all of it. It is dropped rather than stashed per bus because
+ * the shim is the authority on what is loaded (`<prefix>modules`) and
+ * loadMasterFxChainConfig re-reads it on entry: a stashed mirror could only be
+ * staler than that read, never fresher.
+ */
+function enterFxBus(index) {
+    fxBusSwap((index >= 0 && index < FX_BUSES.length) ? index : 0);
+    selectedFxBusRow = currentFxBusIndex;
+    invalidateMasterFxConfig();
+    masterFxChainLength = -1;
+    selectedMasterFxComponent = 0;
+    inMasterFxSettingsMenu = false;
+    editingMasterFxSetting = false;
+    inMasterPresetPicker = false;
+    selectingMasterFxModule = false;
+    /* A preset name belongs to the master bus's preset store; a send has none,
+     * so carrying the name across would put Master FX's preset in a send's
+     * header band. */
+    if (!fxBusIsMaster()) currentMasterPresetName = "";
+    /* The bands under the boxes name what is in each send; read ONCE here, on a
+     * screen change, never on the draw path. */
+    fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
+    fxBusReturns = FX_BUSES.map((_, i) => fxBusReturnNow(i));
+    enterMasterFxSettings();
+}
+
+/*
+ * ONE mirror per bus, and the swap that keeps them apart.
+ *
+ * `masterFxConfig` follows the EDITOR — it is the mirror of whichever bus is
+ * open. Several master-bus writers run whatever screen is up, though: the
+ * periodic autosave, the slot list's "Master FX" row, Shift+Copy, boot restore,
+ * a set change. Without a per-bus mirror those would read Send A's positions
+ * while writing master_fx_N.json, and adopt the master chain's ids INTO Send
+ * A's mirror on the way — a screen showing the wrong modules and files written
+ * from the wrong chain, from one shared variable.
+ *
+ * A mirror is a cache of what the shim already knows, so a missing one is
+ * always recoverable: loadMasterFxChainConfig re-reads the bus on entry.
+ */
+const fxBusMirrors = [null, null, null];
+
+function fxBusSwap(index) {
+    fxBusMirrors[currentFxBusIndex] = masterFxConfig;
+    currentFxBusIndex = index;
+    masterFxConfig = fxBusMirrors[index] || makeEmptyMasterFxConfig();
+}
+
+/*
+ * Run `fn` as though the editor were on bus `index`, then put the editor back.
+ *
+ * This is what every master-bus writer that can run from another screen is
+ * wrapped in. It swaps BOTH halves — the index the key rule reads and the
+ * mirror the config reads — because swapping one without the other is exactly
+ * the mixture described above. `finally`, so a throw inside fn cannot leave the
+ * editor pointing at a bus the user is not looking at.
+ */
+function withFxBus(index, fn) {
+    const prev = currentFxBusIndex;
+    if (prev === index) return fn();
+    fxBusSwap(index);
+    try { return fn(); }
+    finally { fxBusSwap(prev); }
+}
+
+/* A one-line summary of what a bus holds, for the picker's value column. It
+ * always asks the SHIM (never the masterFxConfig mirror, even for the bus you
+ * are in) — one positional GET per bus, once per picker entry, never per
+ * frame — because the mirror only reflects a bus that has actually been
+ * entered this session; a never-opened send would read as Empty from the
+ * mirror even with a chain loaded from a previous session. */
+function fxBusSummary(index) {
+    const bus = FX_BUSES[index];
+    if (typeof shadow_get_param !== "function") return "";
+    let raw;
+    try { raw = shadow_get_param(0, bus.prefix + "modules"); } catch (e) { return "--"; }
+    /* Branch on the RAW value: null is "the read did not complete" and must not
+     * be drawn as "Empty", which is what would send someone looking for the
+     * reverb they just loaded. */
+    if (raw === null || raw === undefined) return "--";
+    if (raw === "") return "Empty";
+    let arr;
+    try { arr = JSON.parse(raw); } catch (e) { return "--"; }
+    if (!Array.isArray(arr)) return "--";
+    const ids = arr.map(e => (e && e.id) || "").filter(s => s);
+    /* A bare count reads as a number of nothing in a value column. "Empty" is
+       the other half of the same sentence, so the unit belongs on both. */
+    return ids.length ? `${ids.length} FX` : "Empty";
+}
+
+let fxBusSummaries = ["", "", ""];
+/* The RETURN level of each bus, read beside the summaries and on the same
+ * schedule. -1 means "not read" and draws as a dial at zero rather than as a
+ * confident full one; the master bus has no return and keeps it. */
+let fxBusReturns = [-1, -1, -1];
+
+function fxBusReturnNow(index) {
+    const bus = FX_BUSES[index];
+    if (!bus || bus.send < 0) return -1;
+    if (typeof shadow_get_param !== "function") return -1;
+    let raw;
+    try { raw = shadow_get_param(0, bus.prefix + "return"); } catch (e) { return -1; }
+    /* Branch on the RAW value: null is "the read did not complete". */
+    if (raw === null || raw === undefined || raw === "") return -1;
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? -1 : n;
+}
+
+function enterFxBusPicker() {
+    selectedFxBusRow = currentFxBusIndex;
+    /* Read the three summaries ONCE, on entry. Three IPC round trips at ~2.8 ms
+     * each is already more than a whole page render, so they must never land on
+     * the draw path of a screen that redraws every frame. */
+    fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
+    setView(VIEWS.FX_BUS_PICKER);
+    needsRedraw = true;
+    announce(`FX Buses, ${FX_BUSES[selectedFxBusRow].label}`);
+}
+
+function drawFxBusPicker() {
+    clear_screen();
+    drawHeader("FX Buses");
+    drawMenuList({
+        items: FX_BUSES,
+        selectedIndex: selectedFxBusRow,
+        getLabel: (item) => item.label,
+        getValue: (item) => fxBusSummaries[FX_BUSES.indexOf(item)] || "",
+        listArea: { topY: LIST_TOP_Y, bottomY: FOOTER_RULE_Y },
+        valueAlignRight: true
+    });
+    /* The verb of the row under the CURSOR, and only two pairs — drawFooter
+     * drops a pair that does not fit along with every pair after it, so the
+     * primary action goes FIRST. */
+    drawFooter(["Click: open", "Back: exit"]);
+}
+
+/* ==========================================================================
+ * SLOT BUSES — a slot's split-voice buses and their inserts
+ *
+ * The door is a `Buses` ACTION ROW on the slot's settings, beside Knobs and the
+ * two LFOs — every one of which is a row that opens a per-slot sub-editor, so
+ * this is that list's existing shape rather than a fourth kind of thing. It was
+ * briefly the DOWN arrow on the chain editor's synth box, which is wrong for a
+ * reason worth recording: Up and Down are Move's octave shift and only Down was
+ * ever claimed, so the pair broke — you could shift up and not come back, at the
+ * chain editor's default resting cursor position.
+ *
+ * Everything drawn lives in shadow_ui_buses.mjs; what lives here is the state,
+ * the reads and the entry — the same split every other view module in this
+ * directory has.
+ *
+ * THE AFFORDANCE IS A READ, and the read has three answers. A slot whose synth
+ * publishes no `split_voices` offers NOTHING: the row is not in the list
+ * (chainSynthSplits, below, is what both settings lists ask). A read that did
+ * not COMPLETE is not that answer — it answers false for that frame and is not
+ * cached, so the row appears as soon as the channel does.
+ * ========================================================================== */
+
+let busSlot = -1;              /* which slot's buses are open */
+/* null until a read has ANSWERED. A failed read leaves the previous value in
+ * place — it empties nothing and latches nothing — so this is only ever
+ * assigned from a resolved parse. */
+let busConfig = null;
+let busVoices = null;          /* {unresolved, voices[]} — same rule */
+/* True whenever the LAST attempt to read config/voices did not answer —
+ * distinct from busConfig/busVoices being null, which is also true before the
+ * first attempt. `!busConfig` alone stops asking again forever the moment one
+ * read has ever succeeded: busCreate/busDelete/writeBusSend/busPickModule all
+ * call refreshBusConfig() and ignore its return, so a stall on any of those
+ * calls (after an earlier success) would never retry. Set to true at
+ * declaration because there has been no successful read yet either. */
+let busConfigStale = true;
+let busVoicesStale = true;
+let busListIndex = 0;
+let busActionsRow = -1;        /* index into busListRows(), not a bus index:
+                                * Main is a row and is not a bus */
+let busActionsIndex = 0;
+let busActionsEditing = false;
+let busConfirmingDelete = false;
+let busConfirmIndex = 0;
+let busVoicesBus = -1;
+let busVoicesIndex = 0;
+let busChainBus = -1;
+let busChainPos = 0;
+let selectingBusModule = false;
+let busPickerItems = [];
+let busPickerIndex = 0;
+
+/* Ticks between retries while a bus read has not answered. The bus screens are
+ * not the knob grid — nothing here reads per frame — so this is the only thing
+ * that keeps asking, and it must keep asking or a stalled channel would leave
+ * the waiting screen up for good. */
+const BUS_RETRY_INTERVAL = 20;
+let _busRetryTickCounter = 0;
+
+/* The primitive set the chain diagram and its bands draw through — the SAME
+ * object drawChainEdit builds, now the one place that builds it. Probed,
+ * because the harness and older host builds do not have every one of them.
+ * (This was a verbatim third copy of the literal below, comment included —
+ * extracted once both sites in this file are shown to want the identical
+ * object.) */
+function movyPrimitives() {
+    return {
+        fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
+        line: typeof draw_line === "function" ? draw_line : undefined,
+        fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
+        drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
+        drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
+    };
+}
+
+/* One GET for the whole slot: every bus, positional, plus Main's send levels.
+ * Returns true when it ANSWERED. */
+function refreshBusConfig() {
+    if (busSlot < 0) return false;
+    const parsed = BusModel.parseBusesConfig(getSlotParam(busSlot, "buses:config"));
+    if (parsed.unresolved) { busConfigStale = true; return false; }
+    busConfig = parsed;
+    busConfigStale = false;
+    return true;
+}
+
+function refreshBusVoices() {
+    if (busSlot < 0) return false;
+    const parsed = BusModel.parseSplitVoices(getSlotParam(busSlot, "synth:split_voices"));
+    if (parsed.unresolved) { busVoicesStale = true; return false; }
+    busVoices = parsed;
+    busVoicesStale = false;
+    return true;
+}
+
+/* Both reads, for the retry tick and after a write. Kept as one call so a
+ * screen can never be redrawn from a config that has moved on without the
+ * voice list that resolves its ids. */
+function refreshBuses() {
+    const a = refreshBusConfig();
+    const b = refreshBusVoices();
+    return a && b;
+}
+
+/*
+ * THE one row list. Both the input paths and shadow_ui_buses.mjs go through
+ * this (the views read it as ctx.busRows), so nothing can index a list the
+ * other half did not draw.
+ *
+ * The Send Mixer row is dropped when the knob grid is not the user's Param View —
+ * which is every screen-reader session. It is a door into the send MIXER and
+ * the mixer is a grid; with no grid to open, the row would answer a click by
+ * doing nothing, and the same two levels are already rows on each bus's own
+ * menu.
+ */
+function busRowsNow() {
+    /* Buses and New Bus, and nothing else: the Send Mixer moved out to its own
+     * `Sends` row on Slot Settings, so there is no longer a grid-only row here
+     * to filter out for List view. */
+    return BusModel.busListRows(busConfig, getModuleAbbrev);
+}
+
+/*
+ * WHERE BACK GOES, resolved ONCE at entry.
+ *
+ * THREE surfaces carry a `Buses` row, but they are only TWO destinations: a
+ * slot's Settings position is reached as the knob grid or as the list, and
+ * enterChainSettings is the one place that decides which — while the older slot
+ * list's own settings screen (VIEWS.SLOT_SETTINGS) is a third door onto the same
+ * slot. Back has to land on whichever was actually used.
+ *
+ * A THUNK rather than a view id, for two reasons. Both destinations are
+ * re-ENTERED rather than merely set: setting VIEWS.CHAIN_SETTINGS directly from
+ * a grid session would drop you on a screen you never opened. And the thunk
+ * ANNOUNCES itself, so the announcement cannot disagree with the destination —
+ * this branch has already shipped one Back that said "Chain Editor" and went
+ * elsewhere (hierEditorIsMasterFx, a boolean that could not name a third chain),
+ * and sharing a string between two switches is how that happens again.
+ *
+ * null only before the first entry; the Back handler falls back to the slot's
+ * settings rather than assuming a view.
+ */
+let busListReturn = null;
+
+/*
+ * Open the bus list for `slot`.
+ *
+ * `back` is the thunk described above; omitted, Back goes to the slot's
+ * settings, which is where every door onto this screen lives today.
+ *
+ * The voices are read HERE, uncached: the row that opened this screen was gated
+ * on a CACHED answer to a different question ("does this synth split at all"),
+ * and the multi-select behind it needs the real list. One round trip, once, on a
+ * screen change.
+ */
+function enterBusList(slot, back) {
+    busListReturn = (typeof back === "function") ? back : (() => enterChainSettings(slot));
+    if (busSlot !== slot) { busConfig = null; busVoices = null; busListIndex = 0; }
+    busSlot = slot;
+    refreshBusVoices();
+    refreshBusConfig();
+    const rows = busRowsNow();
+    busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex));
+    setView(VIEWS.BUS_LIST);
+    needsRedraw = true;
+    const row = rows[busListIndex];
+    if (!row) announce("Buses, reading");
+    else announceMenuItem(BusModel.busRowLabel(row), BusModel.busRowValue(row));
+}
+
+/*
+ * Does the synth in `slot` publish voices to split? — the ONE gate on whether
+ * the `Buses` row exists at all, asked by both settings lists and by the knob
+ * grid's action menu.
+ *
+ * CACHED (getSlotParamCached, keyed on the loaded module id) because a settings
+ * list re-derives its rows on every draw, and an uncached read there would be
+ * ~2.8ms per frame for an answer that cannot change without a module swap.
+ *
+ * A failed read is not cached and answers false HERE, which is the conservative
+ * half of the tri-state for a per-draw question: no row for that frame, rather
+ * than a row for a module that may not split. It costs nothing, because the row
+ * appears on the next draw the channel answers on — unlike the irreversible
+ * "this position is empty" latch the same failure caused elsewhere.
+ */
+function chainSynthSplits(slot) {
+    const cfg = chainConfigs[slot];
+    const mid = cfg && cfg.synth && cfg.synth.module;
+    if (!mid) return false;
+    const sv = BusModel.parseSplitVoices(getSlotParamCached(slot, "synth:split_voices", mid));
+    return !sv.unresolved && sv.voices.length > 0;
+}
+
+/*
+ * What the `Buses` settings row prints beside its label: how many buses this
+ * slot has, or nothing when it has none.
+ *
+ * CACHED for the same reason chainSynthSplits is — a settings list asks per
+ * draw. Three answers, kept distinct: a count, "" for a slot with no buses yet
+ * (an honest, complete answer, and a "0" beside a door reads as broken), and
+ * "-" for a read that did not complete, which is what every other unread value
+ * on these two lists already prints.
+ */
+function slotBusCountLabel(slot) {
+    const cfg = chainConfigs[slot];
+    const mid = cfg && cfg.synth && cfg.synth.module;
+    if (!mid) return "-";
+    /* The OPEN config wins when it is this slot's. Every write path
+     * (busCreate / busDelete / the voice writer) calls refreshBusConfig, so
+     * returning here from the bus list shows the count that screen just left
+     * you with — where the 500ms cached read would print the old one for
+     * half a second, on precisely the transition where it is most obviously
+     * wrong. */
+    const parsed = (busSlot === slot && busConfig && !busConfig.unresolved)
+        ? busConfig
+        : BusModel.parseBusesConfig(getSlotParamCached(slot, "buses:config", mid));
+    const n = BusModel.busCount(parsed);
+    if (n < 0) return "-";
+    return n > 0 ? String(n) : "";
+}
+
+/* `Inserts` on the bus menu: that bus's own 8 positions. */
+function enterBusChain(busIndex) {
+    busChainBus = busIndex;
+    busChainPos = 0;
+    selectingBusModule = false;
+    setView(VIEWS.BUS_CHAIN);
+    needsRedraw = true;
+    const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busIndex] : null;
+    announce(bus ? `${bus.name} inserts` : "Inserts");
+}
+
+function enterBusVoices(busIndex) {
+    busVoicesBus = busIndex;
+    busVoicesIndex = 0;
+    refreshBuses();
+    setView(VIEWS.BUS_VOICES);
+    needsRedraw = true;
+    announce("Voices");
+}
+
+function enterBusActions(rowIndex) {
+    busActionsRow = rowIndex;
+    busActionsIndex = 0;
+    busActionsEditing = false;
+    busConfirmingDelete = false;
+    setView(VIEWS.BUS_ACTIONS);
+    needsRedraw = true;
+    const row = busRowsNow()[rowIndex];
+    announce(row ? row.name : "Bus");
+}
+
+/* The key a row's send level is written to. One place, because a spelling
+ * differing at four call sites is how a level silently edits the wrong bus.
+ * There is no Main form: the slot's own two levels have no reader in the audio
+ * path and are not offered (see busListRows in bus_model.mjs). */
+function busSendKey(row, which) {
+    const n = which === "send2" ? 2 : 1;
+    return `bus${row.index + 1}:send${n}`;
+}
+
+function writeBusSend(row, which, value) {
+    const v = Math.max(0, Math.min(BusModel.SEND_LEVEL_MAX, Math.round(value)));
+    setSlotParam(busSlot, busSendKey(row, which), String(v));
+    /* The config is the model AND the display, so re-read rather than patch it
+     * locally: the DSP clamps, and a screen showing a value the DSP refused is
+     * the same lie as a cached failed read. */
+    refreshBusConfig();
+    needsRedraw = true;
+    return v;
+}
+
+function busCreate() {
+    const free = BusModel.firstFreeBus(busConfig);
+    if (free < 0) { announce("No free bus"); return; }
+    setSlotParam(busSlot, `bus${free + 1}:create`, "1");
+    refreshBusConfig();
+    const rows = busRowsNow();
+    const at = rows.findIndex((r) => r.kind === "bus" && r.index === free);
+    if (at >= 0) busListIndex = at;
+    needsRedraw = true;
+    announce("Bus created");
+}
+
+function busDelete(busIndex) {
+    setSlotParam(busSlot, `bus${busIndex + 1}:delete`, "1");
+    refreshBusConfig();
+    const rows = busRowsNow();
+    busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex));
+    setView(VIEWS.BUS_LIST);
+    needsRedraw = true;
+    announce("Bus deleted");
+}
+
+/*
+ * Toggle one voice's membership of `busVoicesBus`.
+ *
+ * A voice renders into exactly ONE buffer, so adding it here also removes it
+ * from whichever other bus held it — two writes rather than one, and the other
+ * bus is written FIRST so there is no frame in which the id is listed twice.
+ */
+function busToggleVoice(row) {
+    if (!row || busVoicesBus < 0) return;
+    const adding = !row.mine;
+    /* BLOCKING, because this is a discrete multi-field commit: under co-run
+     * shadow_set_param is fire-and-forget over ONE shared SHM slot, so the
+     * second write clobbers the first before the host drains it — and the two
+     * halves of a move are exactly a pair that must both land, or the voice is
+     * listed on two buses or on none. Same reason the LFO target/param pair
+     * uses it. */
+    if (adding) {
+        for (const w of BusModel.voiceMoveWrites(busConfig, busVoicesBus, row.id))
+            shadowSetParamBlocking(busSlot, `bus${w.bus + 1}:voices`, w.ids.join(","));
+    }
+    const ids = BusModel.toggledVoiceIds(busConfig, busVoicesBus, row.id);
+    shadowSetParamBlocking(busSlot, `bus${busVoicesBus + 1}:voices`, ids.join(","));
+    refreshBusConfig();
+    needsRedraw = true;
+    announceMenuItem(row.label, adding ? "added" : "removed");
+}
+
+function enterBusModuleSelect() {
+    /* The audio-FX scan the slot chain and Master FX both use. No Move Left /
+     * Move Right rows: the chain host serves no bus insert/remove/move verb, so
+     * offering them would be a row that answers a click by doing nothing. */
+    busPickerItems = scanModulesForType("fx1");
+    const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
+    const comps = BusModel.busChainComponents(bus ? bus.fx : []);
+    const comp = comps[busChainPos];
+    const loadedId = comp && comp.module;
+    const at = loadedId ? busPickerItems.findIndex((m) => m.id === loadedId) : -1;
+    busPickerIndex = at >= 0 ? at : 0;
+    selectingBusModule = true;
+    needsRedraw = true;
+    announce("Select module");
+}
+
+/*
+ * Open the bus picker on ONE named position, from outside BUS_CHAIN.
+ *
+ * enterBusModuleSelect picks whatever busChainPos already points at, which is
+ * right when the click came from the diagram and wrong when it came from the
+ * insert's own editor (Swap) — the grid can open that editor with BUS_CHAIN
+ * never having been the screen behind it. So the cursor is re-derived from the
+ * bus's component list: `fx` is a POSITION INDEX and busChainPos is a ROW, and
+ * they differ the moment a hole sits ahead of it.
+ */
+function openBusModuleSelectAt(busIndex, fxIndex) {
+    if (busIndex < 0) return;
+    busChainBus = busIndex;
+    const target = busChainTarget(busIndex);
+    const comps = target.components();
+    const row = comps.findIndex((c) => c.kind === "module" && c.index === fxIndex);
+    busChainPos = row >= 0 ? row : 0;
+    setView(VIEWS.BUS_CHAIN);
+    enterBusModuleSelect();
+}
+
+/*
+ * THE SEND MIXER, on the encoders.
+ *
+ * The component name is not a module and not a position: it names the
+ * SYNTHESISED contract, the way "slot" and "master_settings" do, so
+ * headerTitle and the hand-off refusal can tell it apart without asking which
+ * screen it came from.
+ */
+const BUS_SENDS_COMPONENT = "bus_sends";
+
+/*
+ * The accessors the grid drives the slot's sends through.
+ *
+ * The contract itself is in bus_model.mjs (pure, and therefore testable); this
+ * is only the wiring, exactly as slotGridIoFor is to shadow_ui_slot_grid.mjs.
+ * Reads go straight to the REAL key rather than through `buses:config`: one
+ * key per cell is what the controller's own read budget is built around, and
+ * re-reading the whole document per cell would be five copies of one answer.
+ */
+function busSendsGridIo() {
+    const slot = busSlot;
+    const bare = (fullKey) => String(fullKey || "").replace(/^[^:]*:/, "");
+    return {
+        getParam(fullKey) {
+            const k = bare(fullKey);
+            if (k === "ui_hierarchy" || k === "chain_params") {
+                /*
+                 * NULL, not "[]" and not "null", while the config has not
+                 * answered. The controller treats a null contract as "the read
+                 * did not complete" — it plans nothing and retries — where an
+                 * empty answer is a CLAIM, and the claim it would make here is
+                 * "this slot has no buses": a mixer drawn with no faders on it.
+                 */
+                if (!busConfig || busConfig.unresolved) return null;
+                return JSON.stringify(k === "ui_hierarchy"
+                    ? BusModel.busSendGridHierarchy(busConfig)
+                    : BusModel.busSendGridParams(busConfig));
+            }
+            const real = BusModel.busSendGridRealKey(k);
+            /* The RAW answer, null included: it is the wire value, and only the
+             * caller that saw the wire can tell a stalled channel from a zero. */
+            return real ? getSlotParam(slot, real) : "";
+        },
+        setParam(fullKey, value) {
+            const real = BusModel.busSendGridRealKey(bare(fullKey));
+            if (!real) return false;
+            const ok = setSlotParam(slot, real, value);
+            /* The list behind this screen prints these same two numbers per
+             * row. Marked stale rather than re-read: a read per detent is
+             * ~2.8ms spent on a screen nobody is looking at, and the bus views'
+             * retry tick picks it up on the way back. */
+            busConfigStale = true;
+            return ok;
+        },
+        /*
+         * FALSE, and now only MOSTLY true. A per-BUS send level is still not a
+         * modulation target -- the chain host serves no bus LFO -- but the Main
+         * row this mixer gained can be driven by a slot LFO (target "buses",
+         * param "main_send<N>"). It is answered false anyway because the chain
+         * host publishes no `:modulated` for these keys, so the honest answer
+         * would cost up to three IPC round trips per tick to fetch, and the
+         * only cost of saying no is a missing dot rather than a wrong value:
+         * the cell still shows the BASE, which is what the user set and what is
+         * saved. If those keys ever publish `:modulated`, this is the line.
+         */
+        isModulated: () => false,
+    };
+}
+
+/*
+ * Open it. Falls back to the bus menu's list rows when the grid is not the
+ * user's Param View — which includes every screen-reader session, where a grid
+ * has nothing selected to read out. Same gate enterChainSettings uses.
+ */
+function enterBusSendsGrid(slot) {
+    /* Unreachable in List view -- getChainSettingsItems offers the two plain
+     * `Send A` / `Send B` rows there instead -- and kept as the total answer for
+     * any other caller, since the row it would open has no menu of its own. */
+    if (!paramPagesEnabled()) { announce("Send Mixer unavailable in List view"); return; }
+    /* Opened from Slot Settings now, so it is handed the slot rather than
+     * inheriting whichever one the bus list was last pointed at. */
+    if (slot >= 0 && slot < SHADOW_UI_SLOTS) busSlot = slot;
+    refreshBusConfig();
+    enterParamPages(busSlot, BUS_SENDS_COMPONENT, BUS_SENDS_COMPONENT, null,
+                    busSendsGridIo(), {
+        label: `S${busSlot + 1}`,
+        name: "Send Mixer",
+        returnView: VIEWS.CHAIN_SETTINGS,
+        /*
+         * CONDITIONAL AGAIN, because Main is a cell now.
+         *
+         * A send page is Main plus one fader per present bus, so at the bus cap
+         * it is SLOT_BUSES + 1 = 9 against 8 knobs and one page cannot hold it.
+         * Pinning it anyway is not a cosmetic choice -- the ninth fader is the
+         * one that would silently have nowhere to go.
+         *
+         * It was conditional once before, while the mixer carried a fader per
+         * voice (32 cells), and was pinned when those moved to the module. So
+         * the rule is not "buses fit" but "ask whether they do": below the cap
+         * this still returns false and the page keeps its authored grouping.
+         */
+        paginate: (BusModel.busCount(busConfig) + 1) > NUM_KNOBS,
+    });
+    announce("Send Mixer");
+}
+
+/*
+ * Open the KNOB GRID (or the list, per Param View) on the selected insert.
+ *
+ * Returns false when the position holds no module — the `+` box and a hole
+ * left by a removed insert — and the caller opens the picker instead. It is
+ * the only answer this can give: chain_bus.c serves `bus<N>:fx<K>:` off a
+ * loaded plugin, so there is nothing behind an empty position to edit.
+ */
+function enterBusComponentEdit() {
+    if (busSlot < 0 || busChainBus < 0) return false;
+    const target = busChainTarget(busChainBus);
+    const comp = target.components()[busChainPos];
+    if (!comp || comp.kind !== "module" || !comp.module) return false;
+    const componentKey = BusModel.busComponentKey(busChainBus, comp.index);
+    if (!componentKey) return false;
+    /* Through the same gate both chain editors enter by: a module that has not
+     * finished coming up must WAIT rather than have its absence turned into a
+     * verdict. */
+    openComponentEditor(busSlot, componentKey, -1);
+    return true;
+}
+
+function busChainPositionIndex() {
+    const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
+    const comps = BusModel.busChainComponents(bus ? bus.fx : []);
+    const comp = comps[busChainPos];
+    if (!comp) return -1;
+    /* The `+` box IS the next free position — it has no index of its own, so it
+     * is resolved to one here rather than materialised in a model the DSP has
+     * never heard of. */
+    if (comp.kind === "add") return comps.length - 1;
+    return comp.index;
+}
+
+function busPickModule() {
+    const k = busChainPositionIndex();
+    if (k < 0 || k >= BusModel.BUS_FX_SLOTS) { selectingBusModule = false; return; }
+    const item = busPickerItems[busPickerIndex];
+    if (!item) { selectingBusModule = false; return; }
+    setSlotParam(busSlot, `bus${busChainBus + 1}:fx${k + 1}:module`, item.id || "none");
+    selectingBusModule = false;
+    refreshBusConfig();
+    needsRedraw = true;
+    announceMenuItem("Module", item.name || item.id || "None");
+}
+
+/*
+ * ONE SLOT BUS's insert chain, as a chain target.
+ *
+ * A third chain, and it is a chain target rather than a screen of its own for
+ * the reason the two-editor note above gives at length: everything downstream
+ * of a target — the knob context, the merged parameter metadata, the entry
+ * gate — lands here by construction instead of one scope boundary at a time.
+ * The bus screens shipped without any of it, which is what this target is
+ * closing: a loaded insert kept its defaults for good.
+ *
+ * `slot` is `busSlot` — the real instrument slot, unlike Master FX's 0 — and
+ * `busIndex` is captured rather than read from busChainBus, so a target built
+ * for one bus keeps addressing that bus.
+ */
+function busChainTarget(busIndex, slotIndex) {
+    const slot = (slotIndex === undefined) ? busSlot : slotIndex;
+    const bus = () => (busConfig && !busConfig.unresolved ? busConfig.buses[busIndex] : null);
+    return {
+        kind: "bus",
+        /* Per bus AND per slot: the caches keyed by target.id would otherwise
+         * serve slot 2's Bus 1 from slot 1's entries. */
+        id: `slot${slot}bus${busIndex}`,
+        slot,
+        /* How this chain names itself in a knob title — "B1: CloudSeed Mix".
+         * The bus's own name is on the screen behind the card; this says which
+         * CHAIN, the way "S2" and "MFX" do. */
+        label: `B${busIndex + 1}`,
+        /*
+         * chain_bus.c serves exactly "bus<N>:fx<K>:<suffix>".
+         *
+         * `componentKey` is the BARE position id ("fx2"), as it is for Master
+         * FX — the prefixed form ("bus1:fx2") is what the hierarchy editor and
+         * the knob grid carry, and it is built by busComponentKey. The `+` box
+         * and anything outside the caps produce null, which is what stops a
+         * non-position costing an IPC round trip that can only answer "".
+         */
+        key: (componentKey, suffix) => {
+            const m = /^fx(\d+)$/.exec(String(componentKey || ""));
+            const full = m ? BusModel.busComponentKey(busIndex, Number(m[1]) - 1) : null;
+            return full ? `${full}:${suffix}` : null;
+        },
+        chainKey: (suffix) => `bus${busIndex + 1}:${suffix}`,
+        /* busChainComponents' entries carry `id`; the shared chain code reads
+         * `key`. Named here rather than in the model because `key` is the
+         * EDITOR's word for a position and bus_model draws no editor. */
+        components: () => BusModel.busChainComponents(bus() ? bus().fx : [])
+            .map((c) => Object.assign({ key: c.id }, c)),
+        /* A bus chain has no LFOs — the chain host serves no bus<N>:lfoN key —
+         * so a diagram of it must not spend two reads a frame asking. */
+        hasLfos: false,
+        hasSynth: false,
+        hasMidiFx: false,
+        cap: () => BusModel.BUS_FX_SLOTS,
+    };
+}
+
+/* The FX bus chain the editor is pointing at. One section, no synth, addressed
+ * at slot 0 under the current bus's prefix.
+ *
+ * `id` and `label` are GETTERS, not constants, and that is load-bearing:
+ * several caches downstream are keyed by target.id (display names, component
+ * errors), so a fixed "master" would have Send A serving Master FX's cached
+ * module name at the same position. Making them follow the bus makes every one
+ * of those caches per-bus for free. Nothing branches on `kind`. */
 const MASTER_CHAIN_TARGET = {
     kind: "master",
     /* See slotChainTarget.id. */
-    id: "master",
+    get id() { return fxBus().id; },
     slot: 0,
-    /* See slotChainTarget.label. "MFX", never "S1" — Master FX is addressed at
-     * slot 0 but it is not instrument slot 1, and a title that said so would be
-     * the conflation that comment warns about. */
-    label: "MFX",
+    /* See slotChainTarget.label. "MFX", never "S1" — the master bus is
+     * addressed at slot 0 but it is not instrument slot 1, and a title that
+     * said so would be the conflation that comment warns about. A send says
+     * SNDA / SNDB for the same reason. */
+    get label() { return fxBus().short; },
+    /* False on a send, so chainLfoTargetMap skips two reads per frame rather
+     * than asking for a key the shim does not serve. */
+    get hasLfos() { return fxBus().hasLfos; },
+    get hasShapeVerbs() { return fxBus().hasShapeVerbs !== false; },
     key: (componentKey, suffix) => {
         /* "settings" is a box in the list but not a module position, so it has
          * no params — same rule chainComponentParamKey applies for the slot
@@ -3224,9 +4228,9 @@ const MASTER_CHAIN_TARGET = {
         if (!componentKey || componentKey === "settings") return null;
         const at = parseChainId(componentKey);
         if (!at || at.section !== "fx" || at.index >= MASTER_FX_SLOTS) return null;
-        return `master_fx:${componentKey}:${suffix}`;
+        return `${fxBus().prefix}${componentKey}:${suffix}`;
     },
-    chainKey: (suffix) => `master_fx:${suffix}`,
+    chainKey: (suffix) => `${fxBus().prefix}${suffix}`,
     components: () => masterFxChainComponents(),
     config: () => masterFxChainConfig(),
     setConfig: (cfg) => { setMasterFxChainConfig(cfg); },
@@ -3373,6 +4377,17 @@ function chainEditorFocus() {
  */
 function chainLfoTargetMap(target) {
     const out = {};
+    /* A chain that says it has no LFOs is answered without asking. The send
+     * buses say so — the shim serves no send<N>:lfoN key at all — and this
+     * would otherwise be two IPC reads per frame that can only come back empty,
+     * on a screen where a round trip already costs more than the whole page
+     * render.
+     *
+     * Asked of the TARGET, not of the bus, for the same reason hasMidiFx is
+     * below: a `kind === "master"` here drifts from the draw site. And tested
+     * for `=== false` specifically — an absent flag keeps today's behaviour, so
+     * a target that never heard of this question still gets its LFOs. */
+    if (target.hasLfos === false) return out;
     for (let li = 1; li <= 2; li++) {
         if (getSlotParam(target.slot, target.chainKey(`lfo${li}:enabled`)) !== "1") continue;
         let t = getSlotParam(target.slot, target.chainKey(`lfo${li}:target`)) || "";
@@ -4170,8 +5185,35 @@ function parseResampleBridgeMode(raw) {
     return 0;
 }
 
+/* The two level rows a send has and the master bus does not: how much of the
+ * send comes back into the mix, and (Send A only) how much of A is fed into B.
+ *
+ * Built from fxBus().busLevelKeys rather than from a `kind === "send"` here,
+ * so the A-only A->B row is declared once, beside the bus it belongs to. */
+const SEND_LEVEL_ROW_LABELS = { return: "Return", to_send2: "-> Send B" };
+
+function sendBusLevelItems() {
+    return fxBus().busLevelKeys.map(k => ({
+        key: "send_level:" + k,
+        label: SEND_LEVEL_ROW_LABELS[k] || k,
+        /* "int", not a new type: the settings menu's jog-adjust and its
+         * click-to-edit toggle are both gated on the existing type names, so a
+         * fresh one would draw correctly and respond to nothing. The rows are
+         * told apart by busKey. */
+        type: "int",
+        busKey: k,
+    }));
+}
+
 /* Get dynamic settings items based on whether preset is loaded */
 function getMasterFxSettingsItems() {
+    if (!fxBusIsMaster()) {
+        /* A send's settings are its levels and its MIDI channel is the master
+         * bus's, not its own — the shim serves no send<N>:midi_channel. No LFO
+         * rows (hasLfos) and no preset rows (hasPresets): both would be menu
+         * entries whose only possible outcome is an unserved key. */
+        return sendBusLevelItems();
+    }
     if (currentMasterPresetName) {
         /* Existing preset: show all items */
         return MASTER_FX_SETTINGS_ITEMS_BASE;
@@ -4339,6 +5381,17 @@ function exitConnect() {
 /* Chain settings (shown when Settings component is selected) */
 const CHAIN_SETTINGS_ITEMS = [
     { key: "knobs", label: "Knobs", type: "action" },  // Opens knob assignment editor
+    /* The door onto this slot's split-voice buses. An ACTION ROW opening a
+     * per-slot sub-editor, which is what Knobs and both LFOs already are —
+     * hidden entirely when the synth publishes no `split_voices`, so a module
+     * that cannot split shows no row rather than a row onto an empty screen.
+     * See getChainSettingsItems.
+     *
+     * `showsValue` is opt-in because an action row draws no value by default,
+     * and that default is load-bearing: getChainSettingValue's fallback is an
+     * IPC read of the row's key, so asking every action row for a value would
+     * spend a ~2.8ms round trip per row per draw to print "-" beside Save. */
+    { key: "buses", label: "Buses", type: "action", showsValue: true },
     /* 2.0 is +6 dB. It was 4.0 (+12 dB), which is more headroom than a slot
      * has any use for and reads as an alarming 400% now that the knob grid
      * shows it as a percentage. Capped in BOTH places or the two surfaces
@@ -4346,6 +5399,26 @@ const CHAIN_SETTINGS_ITEMS = [
      * its stored gain until something turns the knob, which then pulls it into
      * range. */
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
+    /*
+     * THE SEND MIXER'S DOOR -- one row for every level into A and B.
+     *
+     * These were two rows, `Send A` and `Send B`, writing the slot Main levels,
+     * while a `Send Mixer` sat one screen deeper under `Buses` carrying the
+     * per-BUS levels and not these. So the sends were split across two screens
+     * filed under two different ideas, and the screen that called itself the
+     * mixer was missing the source most slots actually use.
+     *
+     * One door, and the mixer carries Main. Buses is left meaning exactly one
+     * thing: making and filling containers.
+     *
+     * IN LIST VIEW THE TWO ROWS COME BACK -- see getChainSettingsItems. The
+     * mixer is a knob grid and a grid has nothing for a screen reader to read
+     * out, so a screen-reader session would otherwise lose the slot sends
+     * entirely, which is worse than the split this replaces.
+     */
+    { key: "sends", label: "Sends", type: "action" },
+    { key: "buses:main_send1", label: "Send A", type: "int", min: 0, max: 127, step: 4 },
+    { key: "buses:main_send2", label: "Send B", type: "int", min: 0, max: 127, step: 4 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
@@ -4650,6 +5723,77 @@ function getPhysKnobState(fullKey, currentValue) {
 /* Master FX flag - when true, exit returns to MASTER_FX view instead of CHAIN_EDIT */
 let hierEditorIsMasterFx = false;
 let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0..MASTER_FX_SLOTS-1) we're editing
+/*
+ * Where Back goes, when it is neither of the two the flag above can name.
+ *
+ * A third chain arrived (a slot bus's inserts) and hierEditorIsMasterFx is a
+ * BOOLEAN — so without this the bus editor would eject into the slot chain
+ * editor, which is the same "identity lost, params still right" failure
+ * enterHierarchyEditor's Master FX note describes. Null means the flag decides,
+ * which is every pre-existing caller.
+ */
+let hierEditorReturnView = null;
+
+/*
+ * WHICH CHAIN THE LIST EDITOR IS ON, as a chain target plus the position key in
+ * that target's own spelling. Resolved from the editor's state on every call,
+ * so it can never disagree with it.
+ *
+ * THIS EXISTS BECAUSE A BOOLEAN CANNOT NAME THREE CHAINS. The shape
+ * `hierEditorIsMasterFx ? getMasterFxX(...) : getComponentX(...)` was written at
+ * seven sites while there were two chains, and every one of them is a place a
+ * BUS insert falls into the SLOT arm -- where slotChainTarget.key("bus1:fx2")
+ * is null, chain_params comes back `[]`, and an empty chain_params is exactly
+ * what makes the editor invent a `float 0..1 step 0.01` knob for every
+ * parameter and write 0.058750 into an enum. Adding a third arm at each site
+ * would put the same latent bug in front of the fourth chain, so the branch is
+ * resolved ONCE here and the sites ask the target instead.
+ *
+ * The two things the chains genuinely disagree about, both absorbed here:
+ *   - the POSITION SPELLING. hierEditorComponent holds the EDITOR key, which is
+ *     bare for a slot chain ("fx2"), prefixed for Master FX ("master_fx:fx2")
+ *     and prefixed for a bus ("bus1:fx2"), while both of the latter targets'
+ *     key() takes the bare position. A conversion, not a pass-through.
+ *   - WHICH SLOT it is addressed at. Master FX is slot 0; a bus is the real
+ *     instrument slot, like the slot chain.
+ *
+ * tests/host/test_hier_editor_chain_target.sh fails if a `hierEditorIsMasterFx`
+ * two-way reappears around any of the chain_params / ui_hierarchy / swap /
+ * return-destination sites this replaced.
+ */
+function hierEditorChainAt() {
+    if (hierEditorIsMasterFx) {
+        return {
+            target: MASTER_CHAIN_TARGET,
+            position: masterFxComponentKey(hierEditorMasterFxSlot),
+        };
+    }
+    const busAt = BusModel.parseBusComponentKey(hierEditorComponent);
+    if (busAt) {
+        return {
+            target: busChainTarget(busAt.bus, hierEditorSlot),
+            position: `fx${busAt.fx + 1}`,
+        };
+    }
+    return { target: slotChainTarget(hierEditorSlot), position: hierEditorComponent };
+}
+
+/* The editor's chain_params, from whichever chain it is on. `[]` on a failed or
+ * unserved read, which is the shape every call site already handles. */
+function hierEditorChainParamsNow() {
+    if (hierEditorSlot < 0 && !hierEditorIsMasterFx) return [];
+    const at = hierEditorChainAt();
+    return chainTargetChainParams(at.target, at.position);
+}
+
+/* The editor's ui_hierarchy, from whichever chain it is on. null when the read
+ * did not answer -- every caller keeps the hierarchy it already has in that
+ * case, which is the tri-state rule, not a convenience. */
+function hierEditorHierarchyNow() {
+    if (hierEditorSlot < 0 && !hierEditorIsMasterFx) return null;
+    const at = hierEditorChainAt();
+    return chainTargetHierarchy(at.target, at.position);
+}
 
 /* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
  * here because the grid handed off a non-grid page (preset browser, items
@@ -8121,18 +9265,32 @@ function isExistingPreset(slotIndex) {
     return name && name !== "" && name !== "Untitled";
 }
 
-/* Get dynamic settings items (excludes Delete for new presets) */
+/*
+ * Get dynamic settings items.
+ *
+ * Two rows are conditional, and they are conditional on unrelated things:
+ * DELETE needs a preset to delete (Save As stays even with nothing saved — see
+ * the Master FX twin of this filter; the two chains must offer the same entries
+ * or their settings screens drift again), and BUSES needs a synth that
+ * publishes voices to split.
+ *
+ * chainSynthSplits is cached and answers false on a read that did not complete,
+ * so a stalled channel costs one draw without the row rather than a row that
+ * opens nothing.
+ */
 function getChainSettingsItems(slotIndex) {
-    if (isExistingPreset(slotIndex)) {
-        /* Existing preset: show all items (Save, Save As, Delete) */
-        return CHAIN_SETTINGS_ITEMS;
-    }
-    /* New preset: hide DELETE, but keep Save As — see the Master FX twin of
-     * this filter. Save suggests a name, Save As asks for one; both are
-     * meaningful before anything is saved, and the two chains must offer the
-     * same entries or their settings screens drift again. */
+    const hasPreset = isExistingPreset(slotIndex);
+    const splits = chainSynthSplits(slotIndex);
+    /* The Send Mixer is a grid; a screen reader gets the two plain rows instead.
+     * EXACTLY ONE of the two forms is ever present, so neither view shows the
+     * same two levels twice. */
+    const grid = paramPagesEnabled();
     return CHAIN_SETTINGS_ITEMS.filter(function(item) {
-        return item.key !== "delete";
+        if (item.key === "delete") return hasPreset;
+        if (item.key === "buses") return splits;
+        if (item.key === "sends") return grid;
+        if (item.key === "buses:main_send1" || item.key === "buses:main_send2") return !grid;
+        return true;
     });
 }
 
@@ -8238,6 +9396,16 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     const patch = {
         custom_name: name,
         input: "both",
+        /* DECLARED HERE, filled in below, and the position is the point: an
+         * object keeps a key's insertion position when it is reassigned, so
+         * naming them ahead of every component puts them ahead of every opaque
+         * `state` blob in the stringified document. bus_parse_section scans the
+         * WHOLE document for "buses" and "main_sends" and takes the first hit,
+         * so a module that stores a key by either name cannot answer for the
+         * slot. JSON.stringify drops an undefined value, so a slot with no
+         * buses still writes neither key. */
+        main_sends: undefined,
+        buses: undefined,
         synth: null,
         audio_fx: []
     };
@@ -8349,6 +9517,59 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
             }
         } catch (e) {
             /* Ignore parse errors */
+        }
+    }
+
+    /*
+     * ---- BUSES ------------------------------------------------------------
+     *
+     * The producer half of the bus file format. chain_patch.c has read "buses"
+     * and "main_sends" since the feature landed and NOTHING WROTE THEM, which
+     * is worse than "buses do not persist": patch_info_t is zeroed before the
+     * parse, so a document without the key arrives at chain_bus_apply_patch as
+     * four absent buses and it RESETS all four. Loading any preset, or changing
+     * sets, destroyed a live bus kit mid-session and said nothing.
+     *
+     * A FAILED READ BAILS THE WHOLE SAVE. Everywhere else in this function that
+     * is the bail-if-empty rule for autosave only; here it applies to an
+     * explicit save too, because the document we would otherwise write is not
+     * merely missing a field — it is a document that DELETES the user's buses
+     * the next time it is loaded. `""` is different and is not a failure: it is
+     * a chain host that serves no bus keys at all, and it emits nothing.
+     */
+    const busRaw = getSlotStateWithRetry(slotIndex, "buses:config", stateRetries);
+    if (busRaw !== "") {
+        const busCfg = BusModel.parseBusesConfig(busRaw);
+        if (busCfg.unresolved) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " buses:config read FAILED — bailing (a document with no " +
+                     "\"buses\" key WIPES them on load)");
+            return null;
+        }
+        let busStateFailed = false;
+        const fields = BusModel.busPatchFields(busCfg, (b, k) => {
+            const raw = getSlotStateWithRetry(slotIndex, `bus${b + 1}:fx${k + 1}:state`,
+                                              stateRetries);
+            if (raw === null) {
+                /* Same tri-state rule as componentEntry: null is a read that did
+                 * not complete, "" is an insert that serves no state. Only the
+                 * first may cost us the save. */
+                if (bailIfEmpty) busStateFailed = true;
+                return undefined;
+            }
+            if (!raw) return undefined;
+            try { return JSON.parse(raw); } catch (e) { return raw; }
+        });
+        if (busStateFailed) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " bus insert state read FAILED — bailing");
+            return null;
+        }
+        if (fields) {
+            /* main_sends FIRST: bus_parse_section scans the whole document for
+             * it, and an insert's opaque state could carry the same key. */
+            patch.main_sends = fields.main_sends;
+            patch.buses = fields.buses;
         }
     }
 
@@ -8613,8 +9834,12 @@ function snapshotLiveIds() {
         for (let k = 0; k < cfg.fx.length; k++)
             live[i + ":fx" + (k + 1)] = (cfg.fx[k] && cfg.fx[k].module) || "";
     }
-    for (let i = 1; i <= MASTER_FX_SLOTS; i++)
-        live["master_fx:fx" + i] = (masterFxConfig["fx" + i] || {}).module || "";
+    /* Wrapped for the same reason the display name is: masterFxConfig follows
+     * the editor, and Shift+Copy works from any screen. */
+    withFxBus(0, () => {
+        for (let i = 1; i <= MASTER_FX_SLOTS; i++)
+            live["master_fx:fx" + i] = (masterFxConfig["fx" + i] || {}).module || "";
+    });
     return live;
 }
 
@@ -9067,7 +10292,11 @@ function generateMasterPresetName() {
     return parts.length > 0 ? parts.join(" + ") : "Master FX";
 }
 
-function clearMasterFx() {
+/* Wrapped in withFxBus(0): this writes the MASTER bus and runs whatever screen
+ * is up, so it must not read or adopt into whichever bus the editor happens to
+ * be on. See withFxBus. */
+function clearMasterFx() { return withFxBus(0, clearMasterFxOnMaster); }
+function clearMasterFxOnMaster() {
     /* Clear every FX slot */
     for (let i = 0; i < MASTER_FX_SLOTS; i++) {
         setMasterFxSlotModule(i, "");
@@ -9108,6 +10337,9 @@ function loadMasterPreset(index, presetName) {
                     delete fxDisplayNameSkip[`master:${key}`];
                     delete fxDisplayNameBackoff[`master:${key}`];
 
+                    /* The load is asynchronous now, so the params below need
+                     * somewhere to land — see waitForFxPositionSettled. */
+                    if (opt.dspPath) waitForFxPositionSettled("master_fx:", key);
                     /* Restore plugin_id first (CLAP sub-plugin selection) */
                     if (fxConfig.params && typeof shadow_set_param === "function") {
                         if (fxConfig.params.plugin_id) {
@@ -10696,8 +11928,18 @@ function setMasterFxSlotModule(slotIndex, dspPath) {
 let masterFxPickerItems = [];
 
 /* Enter module selection for a Master FX position */
-function enterMasterFxModuleSelect(componentIndex) {
-    const comp = masterFxChainComponents()[componentIndex];
+/*
+ * TAKES AN FX POSITION, like getMasterFxHierarchy, getMasterFxParam and
+ * enterMasterFxHierarchyEditor.
+ *
+ * It took a ROW while the two were the same number, so it was the one of the
+ * four with a different convention and nothing said so. Once the row began with
+ * two send entries, callers handing it a position resolved to row 0 -- Send A --
+ * failed `kind !== "module"` and returned silently: Shift+Click to swap or
+ * remove a Master FX module did NOTHING AT ALL. Reported from hardware.
+ */
+function enterMasterFxModuleSelect(fxSlot) {
+    const comp = masterFxChainComponents()[masterFxRowOf(fxSlot)];
     if (!comp || comp.kind !== "module") return;
 
     /*
@@ -10812,12 +12054,24 @@ function applyMasterFxModuleSelection() {
      * the edit is renumbered — which one `<id>:module` write cannot say. One
      * verb, and the DSP permutes rather than reloading. A removal is COMPLETE
      * here; an insert only opens the hole and the module write below fills it. */
-    if (choice.shape) writeChainShape(MASTER_CHAIN_TARGET, choice.shape);
-    if (!(choice.shape && choice.shape.kind === "remove")) {
+    /* A shape verb only exists where the shim serves one. Master FX has
+     * fx:insert / fx:remove / fx:move; a SEND has none — Task 6 left them out
+     * deliberately, "a send position is emptied by writing "" into it".
+     *
+     * So `remove is COMPLETE` below is true for the master and false for a
+     * send, and taking it on faith is what made picking None on a loaded send
+     * position do NOTHING AT ALL: the verb went nowhere and the module write
+     * that would have emptied the position was skipped as redundant. Reported
+     * from hardware twice, the first time unreadable because the editor was
+     * also announcing the wrong bus. */
+    const shapeVerbs = MASTER_CHAIN_TARGET.hasShapeVerbs;
+    if (choice.shape && shapeVerbs) writeChainShape(MASTER_CHAIN_TARGET, choice.shape);
+    if (!(shapeVerbs && choice.shape && choice.shape.kind === "remove")) {
         if (pickerReplacedModule(choice.replaced, picked)) {
             clearLfoRoutingForComponent(MASTER_CHAIN_TARGET, comp.key);
         }
-        setMasterFxSlotModule(selectedMasterFxComponent, (selected && selected.dspPath) || "");
+        /* comp.index is the FX POSITION; selectedMasterFxComponent is the ROW. */
+        setMasterFxSlotModule(comp.index, (selected && selected.dspPath) || "");
     }
 
     resetLfoTargetLabels();
@@ -10829,7 +12083,11 @@ function applyMasterFxModuleSelection() {
 }
 
 /* Save master FX chain configuration */
-function saveMasterFxChainConfig() {
+/* Wrapped in withFxBus(0): this writes the MASTER bus and runs whatever screen
+ * is up, so it must not read or adopt into whichever bus the editor happens to
+ * be on. See withFxBus. */
+function saveMasterFxChainConfig() { return withFxBus(0, saveMasterFxChainConfigOnMaster); }
+function saveMasterFxChainConfigOnMaster() {
     /* The shim persists the state, but we also save to shadow config */
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -11049,6 +12307,280 @@ function saveMasterFxChainConfig() {
     }
 }
 
+/*
+ * The two send buses' state, per set: one file per position plus one for the
+ * three scalars.
+ *
+ * A SEPARATE writer from saveMasterFxChainConfig, deliberately, and this is the
+ * reasoning so it is not "simplified" into a parameterised copy of it. That
+ * function does five things a send has none of — the shadow_config.json
+ * master_fx_chain section, the preset name, the LFO snapshot filed under
+ * position 0, the resample/link/usbc cached scalars, and the display-name cache
+ * eviction that goes with adopting into masterFxConfig. Threading a bus through
+ * all of it would put a `if (master)` at each. What DOES have to agree between
+ * the two is the FILE SHAPE, and that agreement is enforced on the C side,
+ * where one function (fx_boot_restore_one) reads both families.
+ *
+ * THE SHIM SAYS WHAT IS LOADED. `send<N>:modules` is one positional GET
+ * returning the whole chain, never compacted, for the same reason
+ * master_fx:modules is: an in-file mirror that never saw a write made straight
+ * to the shim — an overtake tool, a Remote UI client — wrote {} over it and
+ * lost the entire master chain on the next boot. There is no send mirror at all
+ * here; the shim's answer IS the source, and a read that does not complete
+ * leaves every file alone rather than writing an empty one over it.
+ */
+function saveSendFxChainConfig() {
+    if (typeof shadow_get_param !== "function") return;
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+
+        let raw;
+        try { raw = shadow_get_param(0, bus.prefix + "modules"); } catch (e) { raw = null; }
+        /* Branch on the RAW value. null is "the read did not complete" —
+         * writing "{}" over eight positions on the strength of it is exactly
+         * the erase this path exists to prevent — while "" would be a served
+         * answer, which this key never gives (it refuses rather than truncate).
+         * Either way: write nothing, try again on the next autosave. */
+        if (raw === null || raw === undefined || raw === "") continue;
+        let arr;
+        try { arr = JSON.parse(raw); } catch (e) { continue; }
+        if (!Array.isArray(arr)) continue;
+
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+            const entry = arr[i];
+            const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
+            const moduleId = (entry && entry.id) || "";
+            const dspPath = (entry && entry.path) || "";
+            if (!moduleId || !dspPath) {
+                /* An empty position is written as "{}" rather than skipped, so
+                 * a position emptied in this set does not restore from the file
+                 * the previous occupant left. A position the shim named without
+                 * a path is a HALF answer and is skipped instead — the boot
+                 * loader restores by path, so a file without one restores
+                 * nothing and would be the same erase. */
+                if (!moduleId) host_write_file(path, "{}\n");
+                continue;
+            }
+
+            const key = `fx${i + 1}`;
+            const stateFile = { module_path: dspPath, module_id: moduleId };
+            let snapshotOk = false;
+            try {
+                const stateJson = shadow_get_param(0, `${bus.prefix}${key}:state`);
+                if (stateJson) {
+                    try { stateFile.state = JSON.parse(stateJson); }
+                    catch (e) { stateFile.state = stateJson; }
+                    snapshotOk = true;
+                }
+            } catch (e) {}
+            if (!snapshotOk) {
+                /* No opaque state blob: fall back to the declared params, the
+                 * same order the master saver uses. */
+                const params = {};
+                try {
+                    const pluginId = shadow_get_param(0, `${bus.prefix}${key}:plugin_id`);
+                    if (pluginId) params["plugin_id"] = pluginId;
+                } catch (e) {}
+                let chainParams = [];
+                try {
+                    const cp = shadow_get_param(0, `${bus.prefix}${key}:chain_params`);
+                    if (cp) chainParams = JSON.parse(cp);
+                } catch (e) {}
+                if (Array.isArray(chainParams)) {
+                    for (const cp of chainParams) {
+                        if (!cp || !cp.key) continue;
+                        let v = null;
+                        try { v = shadow_get_param(0, `${bus.prefix}${key}:${cp.key}`); } catch (e) {}
+                        if (v !== null && v !== undefined && v !== "") params[cp.key] = v;
+                    }
+                }
+                const real = Object.keys(params).filter(k => k !== "plugin_id");
+                if (real.length > 0) { stateFile.params = params; snapshotOk = true; }
+            }
+            if (!snapshotOk) {
+                /* Same guard the slot and master autosaves carry: a module that
+                 * answered nothing (still loading, shim stalled) must not
+                 * overwrite the good file it already has. */
+                continue;
+            }
+            let bypassed = 0;
+            try {
+                bypassed = parseInt(shadow_get_param(0, `${bus.prefix}${key}:bypassed`) || "0", 10);
+            } catch (e) {}
+            if (bypassed === 1) stateFile.bypassed = 1;
+            host_write_file(path, JSON.stringify(stateFile, null, 2) + "\n");
+        }
+    }
+
+    saveSendLevels();
+}
+
+/*
+ * THE THREE SCALARS ALONE — the levels file, and nothing else.
+ *
+ * Split out of saveSendFxChainConfig because a LEVEL CHANGE IS NOT A CHAIN
+ * CHANGE, and the full save is enormous: it walks both send buses, reads
+ * `modules` and a `:bypassed` per position, and writes up to sixteen
+ * send_fx_<bus>_<i>.json files. That is ~18 IPC round trips at ~2.8 ms plus
+ * seventeen flash writes.
+ *
+ * The settings LIST called it on every jog detent and got away with it, because
+ * the jog steps by SEND_LEVEL_STEP and a hand turns it slowly. The knob grid
+ * does not: a knob emits a burst of detents, each one paying the whole cost,
+ * and the return took two to three seconds to catch up with the hand. Reported
+ * from hardware.
+ *
+ * They belong to the BUS and not to any position in it, so filing them under
+ * position 0 would lose them the moment that position was emptied. This file is
+ * a MERGE onto whatever is already on disk, never a fresh object: a failed read
+ * is skipped rather than written as 0, and skipping a key from a WHOLE-FILE
+ * rewrite is writing 0 for it on the next boot (loadSendFxChainConfigForSet
+ * treats an absent field as 0). So a failed read for Send A must not erase Send
+ * B's last-known-good value just because this pass rewrote the file — start
+ * from the existing file and only overwrite the keys that read successfully.
+ */
+function saveSendLevels() {
+    if (typeof shadow_get_param !== "function") return;
+    const levels = {};
+    try {
+        const raw = host_read_file(activeSlotStateDir + "/send_levels.json");
+        if (raw) Object.assign(levels, JSON.parse(raw) || {});
+    } catch (e) {}
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        for (const k of bus.busLevelKeys) {
+            let v = null;
+            try { v = shadow_get_param(0, bus.prefix + k); } catch (e) {}
+            if (v === null || v === undefined || v === "") continue;
+            const n = parseInt(v, 10);
+            if (!Number.isFinite(n)) continue;
+            levels[(k === "return") ? `send${bus.send + 1}_return` : "send1_to_send2"] = n;
+        }
+    }
+    if (Object.keys(levels).length > 0) {
+        host_write_file(activeSlotStateDir + "/send_levels.json",
+                        JSON.stringify(levels, null, 2) + "\n");
+    }
+}
+
+/*
+ * Bring both send chains up from the set that has just been loaded.
+ *
+ * The shim restores these at BOOT from the same files (fx_boot_restore_one);
+ * this is the set-CHANGE path, where the shim is already running and holds the
+ * previous set's chains. An absent file therefore has to UNLOAD, not be
+ * skipped — that is what stops the outgoing set's reverb staying in Send A.
+ * Same rule the Master FX set-change loop follows.
+ */
+/*
+ * Wait out a position's load before writing its restored state into it.
+ *
+ * NEEDED BECAUSE THE LOAD IS NO LONGER SYNCHRONOUS. A `module` write used to
+ * dlopen on the SPI callback and return with the module in place, so the
+ * `state` / `params` writes that follow it in every restore loop landed on a
+ * live plugin. The dlopen happens on the shim worker now (shadow_chain_mgmt.c,
+ * shadow_fx_load_request), so those writes would otherwise arrive at a position
+ * that is still empty and be answered emptily — a restore that silently loses
+ * every parameter, which is worse than the stall it was meant to fix.
+ *
+ * Only the RESTORE loops need this. An interactive pick has no state to follow
+ * it, which is the whole reason it is the path that had to stop blocking.
+ *
+ * Bounded, and a timeout is not an error: the writes below go out anyway, since
+ * a module that is merely slower than this is better served late than not at
+ * all. `is_loading` answering anything but "1" — including null, a read that
+ * did not complete — ends the wait; a channel that cannot answer cannot be
+ * waited on either.
+ *
+ * Each poll is one param round trip (~2.8 ms), most of it asleep inside the
+ * claim, so this paces itself without a timer the JS side does not have.
+ */
+const FX_LOAD_SETTLE_TIMEOUT_MS = 10000;
+function waitForFxPositionSettled(prefix, key) {
+    if (typeof shadow_get_param !== "function") return;
+    const deadline = Date.now() + FX_LOAD_SETTLE_TIMEOUT_MS;
+    for (;;) {
+        let v = null;
+        try { v = shadow_get_param(0, `${prefix}${key}:is_loading`); } catch (e) {}
+        if (v !== "1") return;
+        if (Date.now() >= deadline) {
+            debugLog(`FX load: ${prefix}${key} still loading after ${FX_LOAD_SETTLE_TIMEOUT_MS}ms`);
+            return;
+        }
+    }
+}
+
+function loadSendFxChainConfigForSet() {
+    if (typeof shadow_set_param !== "function") return;
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        for (let i = 0; i < MASTER_FX_SLOTS; i++) {
+            const path = activeSlotStateDir + "/send_fx_" + bus.send + "_" + i + ".json";
+            let data = null;
+            if (host_file_exists(path)) {
+                try {
+                    const rawFile = host_read_file(path);
+                    if (rawFile && rawFile.length > 10) data = JSON.parse(rawFile);
+                } catch (e) {}
+            }
+            const key = `fx${i + 1}`;
+            const dspPath = (data && data.module_path) || "";
+            shadow_set_param(0, `${bus.prefix}${key}:module`, dspPath);
+            if (!dspPath || !data) continue;
+            /* The module write is ACCEPTED, not completed — the state below has
+             * to have somewhere to land. */
+            waitForFxPositionSettled(bus.prefix, key);
+            try {
+                if (data.state !== undefined) {
+                    const s = (typeof data.state === "string") ? data.state
+                                                               : JSON.stringify(data.state);
+                    shadow_set_param(0, `${bus.prefix}${key}:state`, s);
+                } else if (data.params) {
+                    for (const [pk, pv] of Object.entries(data.params)) {
+                        shadow_set_param(0, `${bus.prefix}${key}:${pk}`, String(pv));
+                    }
+                }
+                if (data.bypassed === 1) {
+                    shadow_set_param(0, `${bus.prefix}${key}:bypassed`, "1");
+                }
+            } catch (e) {}
+        }
+    }
+
+    /* Levels LAST, so a STORED level — including a stored, deliberate 0 — wins
+     * over anything the module writes above set on its own. That ordering is
+     * half of send_return_level_on_load's contract (src/host/send_fx_key.h).
+     *
+     * An ABSENT field is NOT a stored 0 and must not be written as one. It used
+     * to be, reasoned as "a set with no send_levels.json is a set with the
+     * sends down" — but the module writes above have just opened the return of
+     * any send this set fills, and writing 0 over that puts the set straight
+     * back into the silent state that default exists to prevent. A set whose
+     * file predates the field, or has none at all, keeps what the load decided.
+     * Absent is not zero, here for the same reason a null param read is not an
+     * empty one.
+     *
+     * Inheriting the PREVIOUS set's return is not a risk this reopens: every
+     * send position is written above (an empty one with ""), so a set that
+     * fills no send bus leaves that bus empty, and an empty bus is inaudible
+     * whatever its return says. */
+    let levels = {};
+    try {
+        const rawFile = host_read_file(activeSlotStateDir + "/send_levels.json");
+        if (rawFile) levels = JSON.parse(rawFile) || {};
+    } catch (e) {}
+    for (const bus of FX_BUSES) {
+        if (bus.send < 0) continue;
+        for (const k of bus.busLevelKeys) {
+            const field = (k === "return") ? `send${bus.send + 1}_return` : "send1_to_send2";
+            if (!(field in levels)) continue;
+            const n = parseInt(levels[field], 10);
+            if (!Number.isFinite(n)) continue;
+            shadow_set_param(0, bus.prefix + k, String(n));
+        }
+    }
+}
+
 function saveBrowserPreviewConfig() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
@@ -11155,6 +12687,11 @@ let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
 
 let _feedbackHoldTickCounter = 0;
+/* ~4x/sec at 60Hz, the same order as the feedback guard beside it. Small enough
+ * that letting go of the knob and reaching for Back cannot outrun the write. */
+const SEND_LEVELS_FLUSH_INTERVAL = 15;
+let _sendLevelsTickCounter = 0;
+let sendLevelsDirty = false;
 const FEEDBACK_HOLD_CHECK_INTERVAL = 10; /* ~4x/sec — run the continuous feedback guard */
 let _upgradeOverlayText = null; /* Web-initiated upgrade status for OLED display */
 
@@ -11198,7 +12735,11 @@ function loadTextPreviewConfig() {
  * The shim handles actual module loading + state restore from
  * slot_state/master_fx_N.json files at boot. This function just
  * syncs the JS-side masterFxConfig to reflect what the shim loaded. */
-function loadMasterFxChainFromConfig() {
+/* Wrapped in withFxBus(0): this writes the MASTER bus and runs whatever screen
+ * is up, so it must not read or adopt into whichever bus the editor happens to
+ * be on. See withFxBus. */
+function loadMasterFxChainFromConfig() { return withFxBus(0, loadMasterFxChainFromConfigOnMaster); }
+function loadMasterFxChainFromConfigOnMaster() {
     try {
         const configPath = "/data/UserData/schwung/shadow_config.json";
         const content = host_read_file(configPath);
@@ -11897,6 +13438,20 @@ function runChainSettingAction(slot, key) {
         return;
     }
 
+    if (key === "buses") {
+        /* Back comes straight back HERE, whichever form of this screen was
+         * open: enterChainSettings is the one place that decides grid vs list,
+         * so the same thunk serves both. Same shape as the knob editor's own
+         * Back (VIEWS.KNOB_EDITOR -> enterChainSettings). */
+        enterBusList(slot, () => enterChainSettings(slot));
+        return;
+    }
+
+    if (key === "sends") {
+        enterBusSendsGrid(slot);
+        return;
+    }
+
     if (key === "save") {
         /* Start save flow */
         const currentName = slots[slot] ? slots[slot].name : "";
@@ -12072,6 +13627,9 @@ function slotGridIoFor(slotIndex) {
          * and only acts when the state actually differs. */
         setMpeMode: (on) => adjustChainSetting(slotIndex, { key: "mpe_mode" }, on ? 1 : -1),
         hasPreset: () => isExistingPreset(slotIndex),
+        /* Gates the Buses action. Cached and conservative on a failed read —
+         * see chainSynthSplits. */
+        hasSplitVoices: () => chainSynthSplits(slotIndex),
         /* An LFO's target reads as a name, not as "fx1" — see
          * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
          * editor uses, so the grid and the list can never describe the same
@@ -12155,6 +13713,107 @@ function masterGridIoFor() {
     io.visible = (condition, levelDef) =>
         evaluateVisibilityConditionForContext(0, "master_fx", condition, levelDef, -1);
     return io;
+}
+
+/*
+ * A SEND'S Settings, as the knob grid.
+ *
+ * It stayed on the list for two stated reasons and neither survived. The first
+ * was that MASTER_GRID_PARAMS names "master_fx:" keys directly -- true, and
+ * fixed by building the send's own contract from its busLevelKeys rather than
+ * by reusing the master's. The second was that "two rows is not a grid's
+ * worth", which the master bus itself contradicts: its own settings grid has
+ * ONE knob param (MIDI Ch), so a send with Return and -> Send B is the larger
+ * page of the two.
+ *
+ * The real argument is what Return IS. It is a continuous 0..127 level, and on
+ * the list you jog to the row, click into edit mode, then jog. On a knob you
+ * turn it -- while listening, which is the whole use of a return. It is also
+ * drawn as a DIAL on the master row now, and a dial you cannot turn with a knob
+ * is a readout pretending to be a control.
+ *
+ * STEP 1, not SEND_LEVEL_STEP. The list steps by four because a detent per unit
+ * makes a full sweep 127 turns of the jog; a knob has the travel, and this is
+ * the same split slot Volume already makes between its list row and its cell.
+ */
+const SEND_SETTINGS_COMPONENT = "send_settings";
+
+function sendSettingsGridParams() {
+    const bus = fxBus();
+    return bus.busLevelKeys.map((k) => ({
+        key: bus.prefix + k,
+        name: SEND_LEVEL_ROW_LABELS[k] || k,
+        type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
+    }));
+}
+
+function sendSettingsGridIo() {
+    /* The declared keys already carry their own "send1:" prefix, so the reads
+     * and writes are pass-throughs at IPC slot 0 exactly as the master's are. */
+    const params = sendSettingsGridParams();
+    /*
+     * THE COMPONENT PREFIX COMES OFF FIRST, and it is not optional.
+     *
+     * The controller composes every read as `${prefix}:${key}`, and the prefix
+     * here is the synthesised component name -- so a declared key arrives as
+     * "send_settings:send1:return". Passing that through would ask the shim for
+     * a key nobody serves, which answers "" rather than erroring, so every cell
+     * would have drawn a confident zero and every turn would have written to
+     * nothing.
+     *
+     * BY NAME rather than by the first colon. The generic /^[^:]*:/ that
+     * busSendsGridIo uses is equivalent here -- it takes "send_settings" and
+     * leaves "send1:return" intact, since the declared key's own colon is not
+     * the first. What the named form buys is the case where the prefix is
+     * ABSENT: a bare "send1:return" survives it, where the generic strip would
+     * quietly turn it into "return". That does not arise today, because the
+     * controller always prefixes; it is one less thing that has to stay true.
+     */
+    const bare = (fullKey) => {
+        const k = String(fullKey || "");
+        return k.startsWith(SEND_SETTINGS_COMPONENT + ":")
+            ? k.slice(SEND_SETTINGS_COMPONENT.length + 1) : k;
+    };
+    return {
+        getParam(fullKey) {
+            const k = bare(fullKey);
+            if (k === "ui_hierarchy") {
+                if (!params.length) return null;
+                return JSON.stringify({ modes: null, levels: { root: {
+                    label: "Settings",
+                    knobs: params.map((p) => p.key),
+                    params: params.map((p) => ({ key: p.key })),
+                } } });
+            }
+            if (k === "chain_params") {
+                return params.length ? JSON.stringify(params) : null;
+            }
+            /* The RAW answer, null included: only the caller that saw the wire
+             * can tell a stalled channel from a zero. */
+            return getSlotParam(0, k);
+        },
+        setParam(fullKey, value) {
+            const ok = setSlotParam(0, bare(fullKey), String(value));
+            /* MARKED DIRTY, NOT SAVED. The write itself must still persist --
+             * dropping it is the "takes effect now, gone on reboot" failure
+             * documented on masterGridIoFor -- but a knob emits a burst of
+             * detents and the save is file I/O, so doing it here put two to
+             * three seconds between the hand and the value. The tick flushes it
+             * on a divider; see sendLevelsDirty. */
+            if (ok) sendLevelsDirty = true;
+            return ok;
+        },
+        /* No send level is a modulation target: a send bus has no LFOs, so the
+         * generic oracle would spend IPC round trips per tick to answer no. */
+        isModulated: () => false,
+    };
+}
+
+function enterSendSettingsGrid() {
+    enterParamPages(0, SEND_SETTINGS_COMPONENT, SEND_SETTINGS_COMPONENT, null,
+                    sendSettingsGridIo(),
+                    { label: MASTER_CHAIN_TARGET.label, name: "Settings",
+                      returnView: VIEWS.MASTER_FX });
 }
 
 function enterMasterFxSettingsGrid() {
@@ -12575,6 +14234,7 @@ function getChainSettingValue(slot, setting) {
     if (setting.key === "mpe_mode") {
         return isSlotMpeMode(slot) ? "On" : "Off";
     }
+    if (setting.key === "buses") return slotBusCountLabel(slot);
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";
 
@@ -13455,14 +15115,42 @@ let componentLoadHold = null;
  * exactly the bug this gate exists to stop repeating — so it is not used here.
  */
 function componentEntryReader(slotIndex, componentKey, mfxIndex) {
+    /*
+     * A BUS INSERT, addressed under its own prefix at the instrument slot.
+     *
+     * First, because the key is self-describing: "bus1:fx2" parses, and
+     * nothing else here does.
+     *
+     * `is_loading` DOES reach a plugin here: chain_bus.c gates on
+     * bus_fx_ready() — answering -1, i.e. null, until the worker has the
+     * instance — and otherwise delegates an unknown suffix straight to the
+     * module's get_param. So the answer is `null`, or whatever the module says,
+     * and rarely "". The gate holds only on an exact "1", which is what makes
+     * all three of those mean "not loading" without a special case.
+     */
+    const busAt = BusModel.parseBusComponentKey(componentKey);
+    if (busAt) {
+        const target = busChainTarget(busAt.bus, slotIndex);
+        const fxKey = `fx${busAt.fx + 1}`;
+        return {
+            hierarchy: () => chainTargetGetParam(target, fxKey, "ui_hierarchy"),
+            module: () => chainTargetGetParam(target, fxKey, "module"),
+            isLoading: () => chainTargetGetParam(target, fxKey, "is_loading"),
+        };
+    }
     if (mfxIndex >= 0) {
         const fxKey = masterFxComponentKey(mfxIndex);
         return {
             hierarchy: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "ui_hierarchy"),
             /* The get spelling, which for Master FX is the colon form — see
              * getHierarchyActiveModuleId, whose two spellings these mirror. */
-            module: () => getSlotParam(MASTER_CHAIN_TARGET.slot, `master_fx:${fxKey}:module`),
+            module: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "module"),
             isLoading: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "is_loading"),
+            /* A Master FX / send position loads on the shim's worker now, so
+             * it has a third state the slot chain's components do not: a load
+             * that FAILED leaves the position empty, which is indistinguishable
+             * from one still arriving unless somebody asks. See ENTRY_FAILED. */
+            loadError: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "load_error"),
         };
     }
     const target = slotChainTarget(slotIndex);
@@ -13496,10 +15184,33 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
         return;
     }
 
+    /*
+     * The module did not load. Say so and leave — the hold above never gives
+     * up by design, so without this branch a failed dlopen would spin the
+     * "Loading..." screen for the rest of the session, which is the exact
+     * symptom reported from hardware when the load still ran on the SPI
+     * callback. The position is empty and pickable, so the way forward is the
+     * picker the empty box already opens.
+     */
+    if (decision.action === ENTRY_FAILED) {
+        const failedLabel = componentLoadHoldLabel() ||
+                            (mfxIndex >= 0 ? `FX ${mfxIndex + 1}` : String(componentKey));
+        componentLoadHold = null;
+        announce(`${failedLabel}, failed to load`);
+        if (view === VIEWS.COMPONENT_LOADING) {
+            setView(mfxIndex >= 0 ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+        }
+        needsRedraw = true;
+        return;
+    }
+
     componentLoadHold = null;
+
+    const busEntry = BusModel.parseBusComponentKey(componentKey);
 
     if (decision.action === ENTRY_ENTER) {
         if (mfxIndex >= 0) enterMasterFxHierarchyEditorWith(mfxIndex, decision.hierarchy);
+        else if (busEntry) enterBusHierarchyEditorWith(slotIndex, componentKey, decision.hierarchy);
         else enterHierarchyEditorWith(slotIndex, componentKey, decision.hierarchy);
         return;
     }
@@ -13508,6 +15219,22 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
      * behaviour for both editors, including Master FX's "do nothing, the
      * module selection is still available". */
     if (mfxIndex >= 0) return;
+    /*
+     * A bus insert takes Master FX's ending rather than the slot chain's.
+     *
+     * enterComponentEditFallback is slot-chain shaped throughout — it resolves
+     * the module through chainConfigs (which holds no buses), and the preset
+     * browser it lands in exits to VIEWS.CHAIN_EDIT. The announcement is what
+     * keeps the click from being silent, which is the one thing the Master FX
+     * ending gets wrong.
+     */
+    if (busEntry) {
+        announce("No parameters");
+        /* Reached from the hold, the loading screen is still up and nothing
+         * else would take it down. */
+        if (view === VIEWS.COMPONENT_LOADING) { setView(VIEWS.BUS_CHAIN); needsRedraw = true; }
+        return;
+    }
     enterComponentEditFallback(slotIndex, componentKey);
 }
 
@@ -13515,6 +15242,16 @@ function componentLoadHoldLabel() {
     if (!componentLoadHold) return "";
     const h = componentLoadHold;
     if (h.mfxIndex >= 0) return `MFX ${h.mfxIndex + 1}`;
+    /* A bus insert is not in chainConfigs — that model holds the slot chain
+     * only — so it is named from the bus config the screen behind is drawn
+     * from, and from no fresh read: the channel this screen is waiting on is
+     * the one that would have to serve it. */
+    const busAt = BusModel.parseBusComponentKey(h.componentKey);
+    if (busAt) {
+        const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busAt.bus] : null;
+        const entry = bus && bus.fx && bus.fx[busAt.fx];
+        return entry && entry.module ? getModuleAbbrev(entry.module) : `FX ${busAt.fx + 1}`;
+    }
     const cfg = chainConfigs[h.slot];
     const moduleData = cfg ? getChainComponentModule(cfg, h.componentKey) : null;
     /* From the in-memory config, never a fresh read: the channel this screen is
@@ -13558,12 +15295,21 @@ function serviceComponentLoadHold() {
 }
 
 /* Back out of the wait. The component is left exactly as it was — nothing has
- * been written, and nothing was loaded on the way in. */
+ * been written, and nothing was loaded on the way in.
+ *
+ * RETURNS THE NAME of where it sent you, because the caller has to say it and
+ * cannot work it out afterwards — the hold is cleared here. A separate
+ * `wasMasterFx ? ... : ...` at the call site is what announced "Chain Editor"
+ * to a user standing on the bus diagram. */
 function cancelComponentLoadHold() {
     const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
+    const wasBus = !!(componentLoadHold &&
+                      BusModel.parseBusComponentKey(componentLoadHold.componentKey));
     componentLoadHold = null;
-    setView(wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+    setView(wasBus ? VIEWS.BUS_CHAIN
+                   : wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
     needsRedraw = true;
+    return wasBus ? "Inserts" : wasMasterFx ? fxBus().label : "Chain Editor";
 }
 
 function drawComponentLoading() {
@@ -13640,6 +15386,7 @@ function enterHierarchyEditorFromParamPages() {
      */
     if (componentKey === GLOBAL_SETTINGS_COMPONENT ||
         componentKey === MASTER_SETTINGS_COMPONENT ||
+        componentKey === BUS_SENDS_COMPONENT ||
         componentKey === "slot") {
         exitParamPages();
         return false;
@@ -13756,6 +15503,9 @@ function resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, isMasterFx,
     resetHierarchyEditState();
     hierEditorIsMasterFx = isMasterFx;
     hierEditorMasterFxSlot = masterFxSlot;
+    /* Cleared on every entry, so a bus session cannot leave its destination
+     * behind for the next slot-chain one. The bus entry sets it AFTER this. */
+    hierEditorReturnView = null;
     resetDynamicParamPickerState();
 }
 
@@ -13853,7 +15603,10 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
      * instrument slot 0), and hierEditorComponent carries the prefixed form
      * "master_fx:fxN" so params become "master_fx:fxN:param". */
     const fxKey = masterFxComponentKey(fxSlot);
-    const componentKey = `master_fx:${fxKey}`;
+    /* fxBus().prefix, NOT a "master_fx:" literal -- this entry point serves
+     * Master FX, Send A and Send B, and the literal pointed every send's editor
+     * at the master bus. See masterFxIndexFromComponentKey, the inverse. */
+    const componentKey = `${fxBus().prefix}${fxKey}`;
 
     /*
      * Param View = Knobs opens the grid HERE TOO.
@@ -13899,6 +15652,64 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
 
     /* Announce menu title + initial selection */
     const moduleName = getMasterFxParam(fxSlot, "name") || `FX ${fxSlot + 1}`;
+    announceHierarchyEditorEntry(moduleName);
+}
+
+/*
+ * A BUS INSERT's editor — the third entry point, and the same two destinations.
+ *
+ * It is a copy of enterMasterFxHierarchyEditorWith's shape for the same reason
+ * that one is a copy of the slot's: the entry points differ in how they resolve
+ * the hierarchy and in nothing else, and a bus branch bolted into either of
+ * them would have to keep saying which chain it is on. What differs here is
+ * only the three things a chain has to say — the component key spelling, where
+ * chain_params comes from, and where Back goes.
+ *
+ * BOTH destinations are wired, not just the grid: paramPagesEnabled() is false
+ * whenever the screen reader is on, so a grid-only bus insert would be
+ * uneditable for exactly the users who cannot see the diagram behind it.
+ */
+function enterBusHierarchyEditorWith(slotIndex, componentKey, hierarchy) {
+    const at = BusModel.parseBusComponentKey(componentKey);
+    if (!at || !hierarchy) return;
+
+    dismissOverlayForHierarchyEntry();
+
+    if (paramPagesEnabled() && !suppressParamPagesOnce) {
+        /* getComponentParamPrefix, not the bare key it happens to equal: the
+         * prefix is a mapping and this is the site that has to keep asking for
+         * it, so a component-site enterParamPages call is recognisable as one
+         * (test_trailing_pages_wiring.sh filters on exactly this). */
+        enterParamPages(slotIndex, componentKey, getComponentParamPrefix(componentKey), null,
+                        componentParamPagesIo(slotIndex, componentKey),
+                        paramPagesChromeFor(componentKey));
+        return;
+    }
+    suppressParamPagesOnce = false;
+
+    resetHierarchyEditorFor(slotIndex, componentKey, hierarchy, false, -1);
+    /* Back goes to the bus's insert chain. exitHierarchyEditor's own branch
+     * knows two chains; this is the third and it says so rather than being
+     * inferred from the component key at the exit. */
+    hierEditorReturnView = VIEWS.BUS_CHAIN;
+    filepathBrowserState = null;
+    filepathBrowserParamKey = "";
+
+    /* THROUGH THE BUS TARGET. getComponentChainParams asks slotChainTarget,
+     * whose key rule answers null for "bus1:fx2" — so it would hand back an
+     * empty list, and an empty list is exactly what makes the editor invent a
+     * float 0..1 knob for every parameter. */
+    hierEditorChainParams = chainTargetChainParams(
+        busChainTarget(at.bus, slotIndex), `fx${at.fx + 1}`);
+    ensureComponentWidgets(getHierarchyActiveModuleId(), hierEditorChainParams);
+
+    setupModuleParamShims(slotIndex, componentKey);
+    loadHierarchyLevel();
+
+    setView(VIEWS.HIERARCHY_EDITOR);
+    needsRedraw = true;
+
+    const moduleName = getSlotParam(slotIndex, `${componentKey}:module`) || `FX ${at.fx + 1}`;
     announceHierarchyEditorEntry(moduleName);
 }
 
@@ -14145,21 +15956,12 @@ function changeHierPreset(delta) {
     announce(`${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
 
     /* Re-fetch chain_params for new preset/plugin and invalidate knob cache */
-    if (hierEditorIsMasterFx) {
-        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-    } else {
-        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-    }
+    hierEditorChainParams = hierEditorChainParamsNow();
     /* Re-fetch ui_hierarchy too — plugins (e.g. schwung-sfz xsynth fork)
      * emit a different param/knob set per preset. Without this the menu
      * keeps the previous preset's slot list with stale labels until the
      * user exits and re-enters. */
-    let newHierarchy = null;
-    if (hierEditorIsMasterFx) {
-        newHierarchy = getMasterFxHierarchy(hierEditorMasterFxSlot);
-    } else {
-        newHierarchy = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-    }
+    const newHierarchy = hierEditorHierarchyNow();
     if (newHierarchy) {
         hierEditorHierarchy = newHierarchy;
         /* Rebuild the visible param list from the new hierarchy. */
@@ -14174,6 +15976,38 @@ function changeHierPreset(delta) {
      * the refetch above may have read the contract of the preset we just
      * LEFT. See armHierEditorContractSettle. */
     armHierEditorContractSettle();
+}
+
+/*
+ * WHERE BACK GOES from the list editor, and what to CALL it.
+ *
+ * One resolver for both, because the two were separate and disagreed: the exit
+ * honoured hierEditorReturnView (so a bus insert landed on its bus diagram)
+ * while the announcement asked hierEditorIsMasterFx and said "Chain Editor".
+ * An explicit destination wins; the flag decides for every pre-existing caller.
+ */
+function hierEditorReturnDestination() {
+    if (hierEditorReturnView) return hierEditorReturnView;
+    return hierEditorIsMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
+}
+
+function hierEditorReturnDestinationName() {
+    switch (hierEditorReturnDestination()) {
+        case VIEWS.MASTER_FX:
+            /* The FX-bus label, not a hardcoded "Master FX": Shift+Vol+Menu
+             * opens a picker over three buses now and Send A is not Master FX. */
+            return fxBus().label;
+        case VIEWS.BUS_CHAIN: {
+            const busAt = BusModel.parseBusComponentKey(hierEditorComponent);
+            const bus = (busAt && busConfig && !busConfig.unresolved)
+                ? busConfig.buses[busAt.bus] : null;
+            /* The same sentence enterBusChain announces, so arriving by Back
+             * and arriving from the bus menu sound alike. */
+            return bus ? `${bus.name} inserts` : "Inserts";
+        }
+        default:
+            return "Chain Editor";
+    }
 }
 
 /* Exit hierarchy editor */
@@ -14193,8 +16027,13 @@ function exitHierarchyEditor() {
     clearModuleParamShims();
     clearWavZoomStates();
 
-    /* Determine return view based on whether we're editing Master FX */
-    const returnToMasterFx = hierEditorIsMasterFx;
+    /* Where Back goes. Resolved through the one helper the ANNOUNCEMENT also
+     * uses, so a chain cannot be sent one place and named another — a bus
+     * insert landed on the bus diagram while saying "Chain Editor". Read
+     * BEFORE the reset below, like every other piece of state this function
+     * carries across its own teardown. */
+    const returnView = hierEditorReturnDestination();
+    hierEditorReturnView = null;
 
     hierEditorSlot = -1;
     hierEditorComponent = "";
@@ -14220,22 +16059,21 @@ function exitHierarchyEditor() {
     filepathBrowserParamKey = "";
     resetDynamicParamPickerState();
 
-    view = returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
+    view = returnView;
     needsRedraw = true;
 }
 
 /* Refresh chain_params metadata for dynamic filepath fields (e.g. start_path). */
 function refreshHierarchyChainParams() {
+    /* The two guards the two arms used to carry separately. Master FX is
+     * addressed by INDEX and a slot chain by component key, so neither guard
+     * subsumes the other and both still have to be asked. */
     if (hierEditorIsMasterFx) {
-        if (hierEditorMasterFxSlot >= 0) {
-            hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-        }
+        if (hierEditorMasterFxSlot < 0) return;
+    } else if (hierEditorSlot < 0 || !hierEditorComponent) {
         return;
     }
-
-    if (hierEditorSlot >= 0 && hierEditorComponent) {
-        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-    }
+    hierEditorChainParams = hierEditorChainParamsNow();
 }
 
 /* Open generic file browser for a filepath parameter */
@@ -15004,9 +16842,29 @@ function buildKnobContextForKnob(knobIndex) {
         if (comp && comp.kind === "module") {
             /* The shim answers ":name" with the module id, so this one read is
              * both the identity and the display name. */
-            const pluginName = getMasterFxParam(selectedMasterFxComponent, "name");
+            const pluginName = getMasterFxParam(masterFxPositionOf(selectedMasterFxComponent), "name");
             return buildChainKnobContext(MASTER_CHAIN_TARGET, comp, knobIndex,
                                          pluginName, !!(pluginName && pluginName.length));
+        }
+    }
+
+    /*
+     * A SLOT BUS's insert chain, with a position selected. Same builder again.
+     *
+     * Without this the eight encoders answered null on the bus screen, which is
+     * not "no mapping" — it is no context at all, so a knob did nothing and
+     * said nothing. Gated on the picker being down, because while it is up the
+     * selected position is behind a modal the knobs must not reach into.
+     */
+    if (view === VIEWS.BUS_CHAIN && !selectingBusModule && busChainBus >= 0) {
+        const target = busChainTarget(busChainBus);
+        const comp = target.components()[busChainPos];
+        if (comp && comp.kind === "module") {
+            /* chain_bus.c answers ":module" with the module ID, so this one
+             * read is both the identity and the display name. */
+            const pluginName = chainTargetGetParam(target, comp.key, "module") || "";
+            return buildChainKnobContext(target, comp, knobIndex,
+                                         pluginName, pluginName.length > 0);
         }
     }
 
@@ -15035,6 +16893,11 @@ function rebuildKnobContextCache() {
  * Uses caching to avoid IPC calls on every CC message
  */
 let cachedKnobContextsMasterFxComp = -1;  /* Track Master FX component for cache */
+/* The bus screen's cursor, as one comparable value. BOTH halves: a cache keyed
+ * on the position alone would serve Bus 2's FX 1 from Bus 1's entries. "" when
+ * the bus screen is not up, which is what keeps every other view's cache
+ * comparison unchanged. */
+let cachedKnobContextsBusCell = "";
 
 function getKnobContext(knobIndex) {
     /* Check if cache is valid */
@@ -15043,6 +16906,8 @@ function getKnobContext(knobIndex) {
     const currentLevel = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorLevel : "";
     const currentChildIndex = (view === VIEWS.HIERARCHY_EDITOR) ? hierEditorChildIndex : -1;
     const currentMasterFxComp = (view === VIEWS.MASTER_FX) ? selectedMasterFxComponent : -1;
+    const currentBusCell = (view === VIEWS.BUS_CHAIN)
+        ? `${busChainBus}:${busChainPos}:${selectingBusModule ? 1 : 0}` : "";
 
     const cacheValid = (
         cachedKnobContexts.length === NUM_KNOBS &&
@@ -15051,12 +16916,14 @@ function getKnobContext(knobIndex) {
         cachedKnobContextsComp === currentComp &&
         cachedKnobContextsLevel === currentLevel &&
         cachedKnobContextsChildIndex === currentChildIndex &&
-        cachedKnobContextsMasterFxComp === currentMasterFxComp
+        cachedKnobContextsMasterFxComp === currentMasterFxComp &&
+        cachedKnobContextsBusCell === currentBusCell
     );
 
     if (!cacheValid) {
         rebuildKnobContextCache();
         cachedKnobContextsMasterFxComp = currentMasterFxComp;
+        cachedKnobContextsBusCell = currentBusCell;
     }
 
     return cachedKnobContexts[knobIndex] || null;
@@ -16362,6 +18229,13 @@ function hierarchyActiveModuleIdRaw() {
     if (hierEditorIsMasterFx) {
         return getSlotParam(0, `${hierEditorComponent}:module`);
     }
+    /* A bus insert spells it the colon way too — chain_bus.c answers
+     * "bus1:fx2:module" with the module id. The underscore form below is the
+     * slot chain's alone and is unserved here, and an unserved read comes back
+     * "" rather than erroring, so the wrong spelling loses it silently. */
+    if (BusModel.parseBusComponentKey(hierEditorComponent)) {
+        return getSlotParam(hierEditorSlot, `${hierEditorComponent}:module`) || "";
+    }
 
     const prefix = getComponentParamPrefix(hierEditorComponent);
     if (!prefix) return "";
@@ -16503,9 +18377,9 @@ function tickComponentWidgets() {
     const comp = paramPagesComponent();
     if (slot < 0 || !comp) return;
 
-    const prefix = getComponentParamPrefix(comp);
-    if (!prefix) return;
-    const id = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleKey = componentModuleIdKey(comp);
+    if (!moduleKey) return;
+    const id = getSlotParam(slot, moduleKey) || "";
     ensureComponentWidgets(id, getComponentChainParams(slot, comp));
 
     /*
@@ -16780,9 +18654,9 @@ function reconcileCcClaim() {
      * leaves it alone and the next tick asks again. */
     let moduleId = "";
     if (onScreen && onGrid) {
-        const prefix = getComponentParamPrefix(comp);
-        if (prefix) {
-            const raw = getSlotParam(slot, `${prefix}_module`);
+        const moduleKey = componentModuleIdKey(comp);
+        if (moduleKey) {
+            const raw = getSlotParam(slot, moduleKey);
             if (raw === null || raw === undefined) return;   /* retry next tick */
             moduleId = raw;
         }
@@ -17013,9 +18887,9 @@ function resolveCardScriptPath(slot, component, scriptRef) {
      * worked in one consumer and not the other for exactly this reason, which
      * is what a single-host test would have missed.
      */
-    const prefix = getComponentParamPrefix(component);
-    if (!prefix || slot < 0) return "";
-    const moduleId = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleKey = componentModuleIdKey(component);
+    if (!moduleKey || slot < 0) return "";
+    const moduleId = getSlotParam(slot, moduleKey) || "";
     const moduleDir = getModuleBasePath(moduleId);
     if (!moduleDir) return "";
     const scriptPath = `${moduleDir}/${scriptRef}`;
@@ -17425,14 +19299,8 @@ function armHierEditorContractSettle() {
 function serviceHierEditorContractSettle() {
     if (!hierEditorContractDueMs || Date.now() < hierEditorContractDueMs) return;
     hierEditorContractDueMs = 0;
-    let newHier = null;
-    if (hierEditorIsMasterFx) {
-        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-        newHier = getMasterFxHierarchy(hierEditorMasterFxSlot);
-    } else {
-        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-        newHier = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-    }
+    hierEditorChainParams = hierEditorChainParamsNow();
+    const newHier = hierEditorHierarchyNow();
     if (newHier) {
         hierEditorHierarchy = newHier;
         loadHierarchyLevel();
@@ -17459,14 +19327,8 @@ function drawHierarchyEditor() {
         const loadingStr = getSlotParam(hierEditorSlot, `${prefix2}:is_loading`);
         const loadingNow = loadingStr === "1";
         if (hierEditorPrevLoading && !loadingNow) {
-            let newHier = null;
-            if (hierEditorIsMasterFx) {
-                hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-                newHier = getMasterFxHierarchy(hierEditorMasterFxSlot);
-            } else {
-                hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-                newHier = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-            }
+            hierEditorChainParams = hierEditorChainParamsNow();
+            const newHier = hierEditorHierarchyNow();
             if (newHier) {
                 hierEditorHierarchy = newHier;
                 loadHierarchyLevel();
@@ -17787,7 +19649,36 @@ function getMasterFxSettingValue(setting) {
         if (raw === null || raw === "") return "--";
         return MFX_MIDI_CHANNEL_OPTIONS[mfxMidiChannelToIndex(raw)];
     }
+    if (setting.busKey) {
+        /* Same three-answer rule: "--" is "the read did not complete", not a
+         * level of zero. Writing a zero back from a failed read would silence a
+         * send the user had turned up. */
+        const raw = sendBusLevelRead(setting.busKey);
+        return (raw === null) ? "--" : String(raw);
+    }
     return "-";
+}
+
+/* Read / write one bus-level scalar of the CURRENT bus ("return", "to_send2").
+ *
+ * Returns null when the read did not complete or the key was not served, so
+ * every caller has to decide what to do about it rather than inheriting a
+ * silent 0. */
+function sendBusLevelRead(busKey) {
+    if (typeof shadow_get_param !== "function") return null;
+    let raw;
+    try { raw = shadow_get_param(0, fxBus().prefix + busKey); } catch (e) { return null; }
+    if (raw === null || raw === undefined || raw === "") return null;
+    const n = parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+}
+
+function sendBusLevelWrite(busKey, value) {
+    if (typeof shadow_set_param !== "function") return false;
+    let v = value | 0;
+    if (v < 0) v = 0;
+    if (v > SEND_LEVEL_MAX) v = SEND_LEVEL_MAX;
+    return shadow_set_param(0, fxBus().prefix + busKey, String(v));
 }
 
 function adjustMasterFxSetting(setting, delta) {
@@ -17812,6 +19703,22 @@ function adjustMasterFxSetting(setting, delta) {
         shadow_set_param(0, "master_fx:midi_channel", String(newVal));
         cachedMasterFxMidiChannel = newVal;
         saveMasterFxChainConfig();
+        return;
+    }
+
+    if (setting.busKey) {
+        const cur = sendBusLevelRead(setting.busKey);
+        /* A failed read must not produce a write — see the MIDI Ch branch
+         * above. Stepping from a value nobody saw is how a send ends up at a
+         * level the user did not choose, and it would then be persisted. */
+        if (cur === null) return;
+        /* SEND_LEVEL_STEP, not 1: the range is 0..127 and a detent per unit
+         * makes a full sweep 127 turns of the jog. */
+        sendBusLevelWrite(setting.busKey, cur + delta * SEND_LEVEL_STEP);
+        /* The LEVELS file only: a level change never moves a module, so the
+         * sixteen per-position writes the full save makes are all rewrites of
+         * bytes that did not change. */
+        saveSendLevels();
         return;
     }
 }
@@ -17901,6 +19808,13 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.SLOTS:
             handleSlotsJog(delta);
             break;
+        case VIEWS.FX_BUS_PICKER: {
+            selectedFxBusRow = Math.max(0, Math.min(FX_BUSES.length - 1,
+                                                    selectedFxBusRow + delta));
+            const bus = FX_BUSES[selectedFxBusRow];
+            announceMenuItem(bus.label, fxBusSummaries[selectedFxBusRow] || "");
+            break;
+        }
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
                 /* Navigate Edit/OK */
@@ -17958,12 +19872,23 @@ function handleJog(delta, shift = isShiftHeld()) {
                  * Bounded by the list's own length, which is the LOADED chain
                  * plus its `+` and Settings — never by the cap. */
                 const comps = masterFxChainComponents();
-                selectedMasterFxComponent = Math.max(-1, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
+                /* -1 is the PRESET row, and it exists only on a bus that HAS
+                 * a preset store. On a send there is none, so jogging left off
+                 * position 0 must stop there rather than land on a row that
+                 * would open the MASTER bus's preset picker. */
+                const floor = fxBus().hasPresets ? -1 : 0;
+                selectedMasterFxComponent = Math.max(floor, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
+                /* Remembered per bus, so coming back lands here. */
+                lastFxBusComponent[currentFxBusIndex] = selectedMasterFxComponent;
                 if (selectedMasterFxComponent === -1) {
                     announce("Preset Selection");
                 } else {
                     const comp = comps[selectedMasterFxComponent];
-                    if (comp.kind === "add") {
+                    if (comp.kind === "sendbus") {
+                        announceMenuItem(comp.label, fxBusSummaries[comp.busIndex] || "");
+                    } else if (comp.kind === "busback") {
+                        announce(`Back to ${FX_BUSES[comp.busIndex].label}`);
+                    } else if (comp.kind === "add") {
                         /* "+, Empty" says nothing. The label already is the
                          * whole instruction. */
                         announce(comp.label);
@@ -17992,6 +19917,65 @@ function handleJog(delta, shift = isShiftHeld()) {
         case VIEWS.PRESET_DETAIL:
             handlePresetDetailJog(delta);
             break;
+        case VIEWS.BUS_LIST: {
+            const rows = busRowsNow();
+            busListIndex = Math.max(0, Math.min(rows.length - 1, busListIndex + delta));
+            const row = rows[busListIndex];
+            if (row) announceMenuItem(BusModel.busRowLabel(row), BusModel.busRowValue(row));
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.BUS_ACTIONS: {
+            const row = busRowsNow()[busActionsRow];
+            const items = BusModel.busActionItems(row);
+            if (busConfirmingDelete) {
+                /* WHATEVER IS DRAWN LAST IS FED FIRST: the confirm is painted
+                 * over this menu, so it takes the jog before the menu sees it. */
+                busConfirmIndex = busConfirmIndex === 0 ? 1 : 0;
+                announce(busConfirmIndex === 0 ? "No" : "Yes");
+                needsRedraw = true;
+            } else if (busActionsEditing) {
+                /* A level, not a cursor. Four per detent — 127 detents for a
+                 * full sweep is a control nobody rides. */
+                const item = items[busActionsIndex];
+                if (item && item.type === "int") {
+                    const now = BusModel.busSendValue(row, item.id);
+                    const next = writeBusSend(row, item.id, now + delta * BusModel.SEND_LEVEL_STEP);
+                    announceParameter(item.label, String(next));
+                }
+            } else {
+                busActionsIndex = Math.max(0, Math.min(items.length - 1, busActionsIndex + delta));
+                const item = items[busActionsIndex];
+                if (item) announceMenuItem(item.label,
+                    item.type === "int" ? String(BusModel.busSendValue(row, item.id)) : "");
+            }
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.BUS_VOICES: {
+            const rows = BusModel.voiceRows(busConfig, busVoices ? busVoices.voices : [], busVoicesBus);
+            busVoicesIndex = Math.max(0, Math.min(rows.length - 1, busVoicesIndex + delta));
+            const row = rows[busVoicesIndex];
+            if (row) announceMenuItem(row.label, BusModel.voiceRowValue(row, busConfig));
+            needsRedraw = true;
+            break;
+        }
+        case VIEWS.BUS_CHAIN: {
+            if (selectingBusModule) {
+                busPickerIndex = Math.max(0, Math.min(busPickerItems.length - 1,
+                                                      busPickerIndex + delta));
+                const m = busPickerItems[busPickerIndex];
+                if (m) announceMenuItem("Module", m.name || m.id || "None");
+            } else {
+                const bus = busConfig && !busConfig.unresolved ? busConfig.buses[busChainBus] : null;
+                const comps = BusModel.busChainComponents(bus ? bus.fx : []);
+                busChainPos = Math.max(0, Math.min(comps.length - 1, busChainPos + delta));
+                const comp = comps[busChainPos];
+                if (comp) announceMenuItem(comp.label, comp.module || "Empty");
+            }
+            needsRedraw = true;
+            break;
+        }
         case VIEWS.CHAIN_EDIT:
             /* Navigate horizontally through chain components (-1 = chain/patch selection) */
             {
@@ -18296,6 +20280,71 @@ function handleSelect() {
         case VIEWS.SLOTS:
             handleSlotsSelect();
             break;
+        case VIEWS.FX_BUS_PICKER:
+            enterFxBus(selectedFxBusRow);
+            break;
+        case VIEWS.BUS_LIST: {
+            const rows = busRowsNow();
+            const row = rows[busListIndex];
+            if (!row) break;
+            if (row.kind === "new") busCreate();
+            /* A bus row opens its own menu: voices, inserts, a name and a
+             * delete. The Send Mixer is no longer a row here -- it is the
+             * `Sends` row on Slot Settings, beside the one that opened this. */
+            else enterBusActions(busListIndex);
+            break;
+        }
+        case VIEWS.BUS_ACTIONS: {
+            const row = busRowsNow()[busActionsRow];
+            const items = BusModel.busActionItems(row);
+            /* The confirm is fed FIRST, before the row under it is even looked
+             * up — it is what the screen is showing. */
+            if (busConfirmingDelete) {
+                if (busConfirmIndex === 1 && row && row.kind === "bus") busDelete(row.index);
+                else { busConfirmingDelete = false; needsRedraw = true; }
+                break;
+            }
+            const item = items[busActionsIndex];
+            if (!item) break;
+            if (item.type === "int") { busActionsEditing = !busActionsEditing; needsRedraw = true; }
+            else if (item.id === "voices") enterBusVoices(row.index);
+            else if (item.id === "chain") enterBusChain(row.index);
+            else if (item.id === "rename") {
+                openTextEntry({
+                    title: "Bus Name",
+                    initialText: row.name,
+                    onAnnounce: announce,
+                    onConfirm: (name) => {
+                        setSlotParam(busSlot, `bus${row.index + 1}:name`, String(name || ""));
+                        refreshBusConfig();
+                        needsRedraw = true;
+                    }
+                });
+            } else if (item.id === "delete") {
+                busConfirmingDelete = true;
+                busConfirmIndex = 0;
+                needsRedraw = true;
+                announce("Delete bus?");
+            }
+            break;
+        }
+        case VIEWS.BUS_VOICES: {
+            const rows = BusModel.voiceRows(busConfig, busVoices ? busVoices.voices : [], busVoicesBus);
+            busToggleVoice(rows[busVoicesIndex]);
+            break;
+        }
+        case VIEWS.BUS_CHAIN:
+            if (selectingBusModule) { busPickModule(); break; }
+            /*
+             * Click EDITS a loaded insert and ADDS on anything else — the
+             * chain editor's split, and the reason this screen now has it:
+             * Click was unconditionally the module picker, so a bus insert's
+             * parameters could not be reached at all and every CloudSeed on a
+             * bus kept its defaults. Swap moved to Shift+Click, which is where
+             * the slot chain has always kept it.
+             */
+            if (!enterBusComponentEdit()) enterBusModuleSelect();
+            break;
         case VIEWS.MASTER_FX:
             if (masterShowingNamePreview) {
                 /* Name preview: Edit or OK */
@@ -18438,13 +20487,22 @@ function handleSelect() {
                      * outlive the position it named. Nothing to open. */
                     break;
                 }
+                if (selectedComp.kind === "sendbus" || selectedComp.kind === "busback") {
+                    /* A door, drawn where the signal actually enters -- or, on a
+                     * send, where it goes. */
+                    enterFxBus(selectedComp.busIndex);
+                    break;
+                }
                 if (selectedComp.kind === "add") {
                     /* The `+`: same gesture, same helper, same rules as the slot
                      * chain's audio-FX `+`. */
                     const at = beginChainInsertFromAddBox(MASTER_CHAIN_TARGET, selectedComp);
                     if (at >= 0) {
+                        /* beginChainInsertFromAddBox answers a ROW (it is a
+                         * findIndex over components()), and the picker wants a
+                         * POSITION. */
                         selectedMasterFxComponent = at;
-                        enterMasterFxModuleSelect(at);
+                        enterMasterFxModuleSelect(masterFxPositionOf(at));
                     }
                     break;
                 }
@@ -18455,8 +20513,14 @@ function handleSelect() {
                      * Settings position gets. The screen reader still gets the
                      * list (paramPagesEnabled returns false for it): a grid has
                      * eight cells and nothing selected to read out. */
+                    /* Each bus builds its OWN contract: the master's names
+                     * master_fx: keys directly (MASTER_GRID_PARAMS) and would
+                     * otherwise draw the master bus's rows under a send's
+                     * title. See enterSendSettingsGrid for why a send is a grid
+                     * at all now. */
                     if (paramPagesEnabled() && !suppressMasterGridOnce) {
-                        enterMasterFxSettingsGrid();
+                        if (fxBusIsMaster()) enterMasterFxSettingsGrid();
+                        else enterSendSettingsGrid();
                         break;
                     }
                     suppressMasterGridOnce = false;
@@ -18469,7 +20533,7 @@ function handleSelect() {
                     if (items.length > 0) {
                         const item = items[0];
                         const value = getMasterFxSettingValue(item);
-                        announce(`Master FX Settings, ${item.label}: ${value}`);
+                        announce(`${fxBus().label} Settings, ${item.label}: ${value}`);
                     }
                 } else {
                     /* FX slot - check if module is loaded with hierarchy */
@@ -18484,16 +20548,17 @@ function handleSelect() {
 
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
-                        const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
+                        const fxAt = masterFxPositionOf(selectedMasterFxComponent);
+                        const hierarchy = getMasterFxHierarchy(fxAt);
                         if (hierarchy) {
-                            enterMasterFxHierarchyEditor(selectedMasterFxComponent);
+                            enterMasterFxHierarchyEditor(fxAt);
                         } else {
                             /* No hierarchy - enter module selection to swap */
-                            enterMasterFxModuleSelect(selectedMasterFxComponent);
+                            enterMasterFxModuleSelect(fxAt);
                         }
                     } else {
                         /* No module loaded - enter module selection */
-                        enterMasterFxModuleSelect(selectedMasterFxComponent);
+                        enterMasterFxModuleSelect(masterFxPositionOf(selectedMasterFxComponent));
                     }
                 }
             }
@@ -18794,11 +20859,7 @@ function handleSelect() {
                     hierEditorPresetEditMode = true;
                     hierEditorSelectedIdx = 0;
                     /* Re-fetch chain_params now that a preset/plugin is selected */
-                    if (hierEditorIsMasterFx) {
-                        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-                    } else {
-                        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-                    }
+                    hierEditorChainParams = hierEditorChainParamsNow();
                     /* Invalidate knob context cache to use new chain_params */
                     invalidateKnobContextCache();
                 }
@@ -18872,14 +20933,8 @@ function handleSelect() {
                      * rebuilding the level so the next param list shows
                      * the freshly-loaded preset's knobs instead of the
                      * previous one's stale slots. */
-                    let newHierarchy = null;
-                    if (hierEditorIsMasterFx) {
-                        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-                        newHierarchy = getMasterFxHierarchy(hierEditorMasterFxSlot);
-                    } else {
-                        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-                        newHierarchy = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-                    }
+                    hierEditorChainParams = hierEditorChainParamsNow();
+                    const newHierarchy = hierEditorHierarchyNow();
                     if (newHierarchy) hierEditorHierarchy = newHierarchy;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
@@ -18890,14 +20945,32 @@ function handleSelect() {
                     break;
                 }
                 if (selectedParam === SWAP_MODULE_ACTION) {
-                    /* Swap module - handle Master FX vs regular chain slots */
+                    /*
+                     * Swap module - one arm per CHAIN, and the bus arm is not
+                     * optional. SWAP_MODULE_ACTION is appended to every
+                     * top-level list, so without it a bus insert's Swap row
+                     * resolves slotChainComponentIndex("bus1:fx2") to -1 and
+                     * ANSWERS A CLICK BY DOING NOTHING -- the same dead row
+                     * enterBusModuleSelect's own comment refuses to draw.
+                     */
+                    const swapBusAt = BusModel.parseBusComponentKey(hierEditorComponent);
                     if (hierEditorIsMasterFx) {
                         /* Master FX: use Master FX module select */
                         const fxSlot = hierEditorMasterFxSlot;
                         exitHierarchyEditor();
                         /* Restore Master FX component selection and enter module select */
-                        selectedMasterFxComponent = fxSlot;
+                        const mfxRow = masterFxRowOf(fxSlot);
+                        if (mfxRow >= 0) selectedMasterFxComponent = mfxRow;
                         enterMasterFxModuleSelect(fxSlot);
+                    } else if (swapBusAt) {
+                        /* A bus insert: back to that bus's diagram, with its own
+                         * picker open on the position we were editing. The
+                         * cursor is re-derived from the bus's component list
+                         * rather than assumed still to be where we left it —
+                         * the grid can hand this editor a component key without
+                         * BUS_CHAIN ever having been the screen behind it. */
+                        exitHierarchyEditor();
+                        openBusModuleSelectAt(swapBusAt.bus, swapBusAt.fx);
                     } else {
                         /* Regular chain slot: find component index and enter module select */
                         const compIndex = slotChainComponentIndex(hierEditorSlot, hierEditorComponent);
@@ -19286,21 +21359,28 @@ function handleBack() {
             handlePresetDetailBack();
             break;
         case VIEWS.MASTER_FX:
+            /* fxBus().label, never a hardcoded "Master FX": this view is the
+             * editor for THREE buses. The drawn header was made bus-aware and
+             * these announcements were not, so with the screen reader on every
+             * send editor called itself Master FX. Reported from hardware as
+             * "removing an effect from the send didn't clear it" — by a user
+             * who had been told he was somewhere else. Third time on this
+             * branch a DRAWN value was scoped and its SPOKEN twin was not. */
             if (masterShowingNamePreview) {
                 /* Cancel name preview */
                 masterShowingNamePreview = false;
                 needsRedraw = true;
-                announce("Master FX Settings");
+                announce(fxBus().label + " Settings");
             } else if (masterConfirmingOverwrite) {
                 /* Cancel overwrite - return to settings */
                 masterConfirmingOverwrite = false;
                 needsRedraw = true;
-                announce("Master FX Settings");
+                announce(fxBus().label + " Settings");
             } else if (masterConfirmingDelete) {
                 /* Cancel delete */
                 masterConfirmingDelete = false;
                 needsRedraw = true;
-                announce("Master FX Settings");
+                announce(fxBus().label + " Settings");
             } else if (helpDetailScrollState) {
                 helpDetailScrollState = null;
                 needsRedraw = true;
@@ -19316,18 +21396,18 @@ function handleBack() {
                     helpReturnView = null;
                     enterGlobalSettings();
                 } else {
-                    announce("Master FX Settings");
+                    announce(fxBus().label + " Settings");
                 }
             } else if (inMasterPresetPicker) {
                 /* Exit preset picker, return to FX list */
                 exitMasterPresetPicker();
-                announce("Master FX");
+                announce(fxBus().label);
             } else if (inMasterFxSettingsMenu) {
                 /* Exit settings menu */
                 inMasterFxSettingsMenu = false;
                 editingMasterFxSetting = false;
                 needsRedraw = true;
-                announce("Master FX");
+                announce(fxBus().label);
             } else if (selectingMasterFxModule) {
                 /* Cancel module selection, return to chain view. Backing out of
                  * a `+` picker WRITES NOTHING AT ALL — the position it opened
@@ -19335,12 +21415,26 @@ function handleBack() {
                 cancelPendingChainInsert();
                 selectingMasterFxModule = false;
                 needsRedraw = true;
-                announce("Master FX");
+                announce(fxBus().label);
+            } else if (!fxBusIsMaster()) {
+                /* A SEND is entered from a box at the head of the master row, so
+                 * that is where Back goes -- the level above is the screen you
+                 * came from, which is now a diagram rather than a list. */
+                enterFxBus(0);
             } else {
-                /* Exit shadow mode and return to Move */
+                /* The master bus IS the top of this branch now, so Back leaves,
+                 * exactly as the chain editor does from its own top. The picker
+                 * it used to return to is no longer a landing. */
                 if (typeof shadow_request_exit === "function") {
                     shadow_request_exit();
                 }
+            }
+            break;
+        case VIEWS.FX_BUS_PICKER:
+            /* The top of this branch of the tree — dismiss, as the chain editor
+             * does from its own top. */
+            if (typeof shadow_request_exit === "function") {
+                shadow_request_exit();
             }
             break;
         case VIEWS.CHAIN_EDIT:
@@ -19348,6 +21442,33 @@ function handleBack() {
             if (typeof shadow_request_exit === "function") {
                 shadow_request_exit();
             }
+            break;
+        case VIEWS.BUS_LIST:
+            /* Back to the list this was opened FROM — see busListReturn. The
+             * destination announces itself, so there is no second copy of it
+             * here to fall out of step. */
+            if (busListReturn) busListReturn();
+            else enterChainSettings(busSlot >= 0 ? busSlot : selectedSlot);
+            break;
+        case VIEWS.BUS_ACTIONS:
+            if (busConfirmingDelete) { busConfirmingDelete = false; needsRedraw = true; break; }
+            if (busActionsEditing) { busActionsEditing = false; needsRedraw = true; break; }
+            setView(VIEWS.BUS_LIST);
+            needsRedraw = true;
+            announce("Buses");
+            break;
+        case VIEWS.BUS_VOICES:
+            setView(VIEWS.BUS_ACTIONS);
+            needsRedraw = true;
+            announce("Bus");
+            break;
+        case VIEWS.BUS_CHAIN:
+            if (selectingBusModule) { selectingBusModule = false; needsRedraw = true; break; }
+            /* The bus menu is the only door into an insert chain, so Back goes
+             * back to it. */
+            setView(VIEWS.BUS_ACTIONS);
+            needsRedraw = true;
+            announce("Bus");
             break;
         case VIEWS.COMPONENT_SELECT:
             /* Return to chain edit. A picker opened from a `+` box leaves with
@@ -19416,11 +21537,7 @@ function handleBack() {
         case VIEWS.COMPONENT_LOADING:
             /* Stop waiting. Nothing was written on the way in, so there is
              * nothing to unwind — the module carries on loading regardless. */
-            {
-                const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
-                cancelComponentLoadHold();
-                announce(wasMasterFx ? "Master FX" : "Chain Editor");
-            }
+            announce(cancelComponentLoadHold());
             break;
         case VIEWS.FILEPATH_BROWSER:
             closeHierarchyFilepathBrowser();
@@ -19526,10 +21643,16 @@ function handleBack() {
                     announceHierLevel();
                 }
             } else {
-                /* At root level - exit hierarchy editor */
-                const wasMasterFx = hierEditorIsMasterFx;
+                /* At root level - exit hierarchy editor.
+                 *
+                 * The announcement names where Back ACTUALLY goes, so it is
+                 * read from the same state exitHierarchyEditor decides on
+                 * rather than from a boolean beside it — a bus insert said
+                 * "Chain Editor" while landing on the bus diagram. Read before
+                 * the exit, which clears both. */
+                const backTo = hierEditorReturnDestinationName();
                 exitHierarchyEditor();
-                announce(wasMasterFx ? "Master FX" : "Chain Editor");
+                announce(backTo);
             }
             break;
         }
@@ -19830,13 +21953,7 @@ function drawChainEdit() {
      * draw_arc is there and a slow JS fallback when it is not. Each is probed
      * because the harness and the older host builds do not have all of them.
      */
-    const movy = {
-        fillRect: fill_rect, print, textWidth: text_width, setPixel: set_pixel,
-        line: typeof draw_line === "function" ? draw_line : undefined,
-        fillCircle: typeof fill_circle === "function" ? fill_circle : undefined,
-        drawCircle: typeof draw_circle === "function" ? draw_circle : undefined,
-        drawArc: typeof draw_arc === "function" ? draw_arc : undefined,
-    };
+    const movy = movyPrimitives();
 
     /* The chain config, reloaded from the DSP only when something has made it
      * stale — see chainConfigFresh. This was an unconditional reload per frame,
@@ -19972,8 +22089,7 @@ function drawChainEdit() {
         headerRight,
         label,
         info: infoLine,
-        hints: isShiftHeld() ? shiftHintsFor(selectedComp)
-                             : CHAIN_HINTS_AT_REST,
+        hints: isShiftHeld() ? shiftHintsFor(selectedComp) : CHAIN_HINTS_AT_REST,
     });
 
     /*
@@ -20482,6 +22598,46 @@ function drawHelpDetail() {
      * view module draws its diagram markers from the SAME code the slot chain
      * editor does, so an LFO marker or a bypass "B" cannot appear on one
      * screen and not the other. */
+    /* ---- SLOT BUSES ----------------------------------------------------
+     * Everything shadow_ui_buses.mjs draws from. Getters rather than a
+     * snapshot, for the same reason MASTER_FX_CHAIN_COMPONENTS is one: every
+     * one of these changes under a gesture, and a value captured at init would
+     * draw the state the UI had when it started. */
+    _ctx.clearScreen = () => clear_screen();
+    _ctx.print = (...args) => print(...args);
+    _ctx.movyCtx = () => movyPrimitives();
+    _ctx.getModuleAbbrev = (m) => getModuleAbbrev(m);
+    /* busSlot, not selectedSlot: Track buttons stay live on the bus screens
+     * and move selectedSlot without leaving the list (they jump the OTHER
+     * chain editor's slot for when Back eventually lands there), so the
+     * header must follow the slot whose buses are actually on screen. */
+    _ctx.slotLabel = () => `S${busSlot + 1}`;
+    /* Read-only, and spelled out one by one: a loop over names would have to
+     * reach these module-scoped `let`s through `new Function`, which evaluates
+     * in GLOBAL scope and would see none of them. The module draws, this file
+     * decides — a setter here would be a second place a gesture can change the
+     * state, which is what the view-module split exists to prevent. */
+    Object.defineProperty(_ctx, 'busConfig', { get() { return busConfig; }, enumerable: true });
+    /* The ROW LIST, not a second call to busListRows: the views used to build
+     * their own and would then disagree with the input paths about which rows
+     * exist (busRowsNow drops the Send Mixer row in List view), which is an index
+     * mismatch between what is drawn and what a click acts on. */
+    _ctx.busRows = () => busRowsNow();
+    Object.defineProperty(_ctx, 'busVoices', { get() { return busVoices; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busListIndex', { get() { return busListIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busActionsRow', { get() { return busActionsRow; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busActionsIndex', { get() { return busActionsIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busActionsEditing', { get() { return busActionsEditing; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busConfirmingDelete', { get() { return busConfirmingDelete; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busConfirmIndex', { get() { return busConfirmIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busVoicesBus', { get() { return busVoicesBus; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busVoicesIndex', { get() { return busVoicesIndex; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busChainBus', { get() { return busChainBus; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busChainPos', { get() { return busChainPos; }, enumerable: true });
+    Object.defineProperty(_ctx, 'selectingBusModule', { get() { return selectingBusModule; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busPickerItems', { get() { return busPickerItems; }, enumerable: true });
+    Object.defineProperty(_ctx, 'busPickerIndex', { get() { return busPickerIndex; }, enumerable: true });
+
     _ctx.MASTER_CHAIN_TARGET = MASTER_CHAIN_TARGET;
     _ctx.chainLfoTargetMap = (...args) => chainLfoTargetMap(...args);
     _ctx.chainComponentBypassed = (...args) => chainComponentBypassed(...args);
@@ -20496,7 +22652,10 @@ function drawHelpDetail() {
     _ctx.getSlotParam = getSlotParam;
     _ctx.setSlotParam = setSlotParam;
     _ctx.updateFocusedSlot = updateFocusedSlot;
-    _ctx.getMasterFxDisplayName = () => getMasterFxDisplayName();
+    /* The slot list's Master FX row. Wrapped, because it reads the mirror and
+     * the mirror follows the editor: with Send A open it would label the master
+     * bus with Send A's modules. */
+    _ctx.getMasterFxDisplayName = () => withFxBus(0, () => getMasterFxDisplayName());
     _ctx.saveSlotsToConfig = (...args) => saveSlotsToConfig(...args);
     _ctx.fetchKnobMappings = (...args) => fetchKnobMappings(...args);
     _ctx.invalidateKnobContextCache = (...args) => invalidateKnobContextCache(...args);
@@ -20512,6 +22671,18 @@ function drawHelpDetail() {
     _ctx.userPresetHeaderMark = (...args) => userPresetHeaderMark(...args);
 
     /* Master FX functions */
+    /* Which of the three FX buses the editor is on. A FUNCTION, not the
+     * descriptor itself: the view module draws every frame and the bus changes
+     * underneath it when the picker is used, so a snapshotted object would keep
+     * drawing the bus you left. */
+    _ctx.fxBus = () => fxBus();
+    /* The CACHED summary, refreshed on entry to a bus editor. Never a live read:
+     * this is consulted by the info band of a screen that redraws every frame,
+     * and a ~2.8ms round trip there is more than a whole page render. */
+    _ctx.fxBusSummary = (i) => fxBusSummaries[i] || "";
+    _ctx.resolveFxBusLanding = () => resolveFxBusLanding();
+    _ctx.fxBusReturn = (i) => (fxBusReturns[i] >= 0 ? fxBusReturns[i] : 0);
+    _ctx.sendBusLevelRead = (...args) => sendBusLevelRead(...args);
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
     _ctx.ensureMasterFxConfigFresh = () => ensureMasterFxConfigFresh();
@@ -20758,8 +22929,18 @@ function drawHelpDetail() {
     /* View transitions - bound lazily since some may be defined after this block */
     _ctx.enterChainEdit = (...args) => enterChainEdit(...args);
     _ctx.enterPatchBrowser = (...args) => _enterPatchBrowser(...args);
-    _ctx.enterMasterFxSettings = (...args) => enterMasterFxSettings(...args);
+    /* The slot list's Master FX row (handleSlotsSelect). Bound to bus 0
+     * explicitly, the same way CORUN_ENTRIES.master_fx is: currentFxBusIndex
+     * is module-level and survives a dismiss, so a bare enterMasterFxSettings()
+     * would open whichever bus the editor last pointed at, not the master. */
+    _ctx.enterMasterFxSettings = (...args) => enterFxBus(0);
     _ctx.enterSlotSettings = (...args) => _enterSlotSettings(...args);
+    /* The slot list's own settings screen carries a `Buses` row too, and asks
+     * the host the same two questions its twin in this file does — whether the
+     * synth splits, and how many buses it has — so ONE cache answers both. */
+    _ctx.enterBusList = (...args) => enterBusList(...args);
+    _ctx.chainSynthSplits = (slot) => chainSynthSplits(slot);
+    _ctx.slotBusCountLabel = (slot) => slotBusCountLabel(slot);
 })();
 
 /* Delegate draw/enter functions to extracted modules */
@@ -20976,6 +23157,11 @@ function makeSlotLfoCtx(slot, lfoIdx) {
             /* Add the other LFO as a target (skip self) */
             const otherIdx = lfoIdx === 0 ? 1 : 0;
             comps.push({ key: "lfo" + (otherIdx + 1), label: "LFO " + (otherIdx + 1) });
+            /* The slot's own send amounts. Offered UNCONDITIONALLY: the two Main
+             * sends exist on every slot whether or not it has buses or anything
+             * loaded in Send A, so there is no state to test and no way for this
+             * row to answer a click by doing nothing. */
+            comps.push({ key: SENDS_LFO_TARGET_KEY, label: "Sends" });
             comps.push({ key: "__clear__", label: "[Clear Target]" });
             return comps;
         },
@@ -21000,6 +23186,28 @@ const LFO_TARGET_PARAMS = [
 ];
 
 /*
+ * THE SLOT'S SEND AMOUNTS, as an LFO target.
+ *
+ * A synthesised list, exactly as LFO_TARGET_PARAMS is: these are not a
+ * component's chain_params, so the generic read cannot answer for them --
+ * chainComponentParamKey refuses a key that is not a chain position, which is
+ * why an LFO could already target another LFO only by the same short-circuit.
+ *
+ * Keyed "main_send<N>" under the target "buses", which is the namespace the
+ * param already uses (`buses:main_send1`), so the stored routing reads as the
+ * key it drives rather than as a second name for it.
+ *
+ * The LABELS are Send A / Send B -- what the Sends screen calls them. The keys
+ * are what the DSP calls them. Those two have to be allowed to differ here or
+ * the picker starts teaching people the wire format.
+ */
+const SEND_TARGET_PARAMS = [
+    { key: "main_send1", label: "Send A" },
+    { key: "main_send2", label: "Send B" },
+];
+const SENDS_LFO_TARGET_KEY = "buses";
+
+/*
  * What a component offers an LFO to modulate — for EITHER chain.
  *
  * The slot and Master FX LFO editors held two copies of this that differed
@@ -21011,6 +23219,9 @@ const LFO_TARGET_PARAMS = [
 function lfoTargetParamsFor(target, compKey, logLabel) {
     /* LFO-to-LFO: return hardcoded LFO params */
     if (compKey === "lfo1" || compKey === "lfo2") return LFO_TARGET_PARAMS.slice();
+    /* The slot's send amounts, for the same reason: not a component, so
+     * chain_params cannot answer for them. */
+    if (compKey === SENDS_LFO_TARGET_KEY) return SEND_TARGET_PARAMS.slice();
     try {
         const json = chainTargetGetParam(target, compKey, "chain_params");
         if (json) return flatLfoTargetParams(JSON.parse(json));
@@ -21037,6 +23248,11 @@ function lfoTargetParamsFor(target, compKey, logLabel) {
 function lfoTargetGroupsFor(target, compKey, logLabel) {
     if (compKey === "lfo1" || compKey === "lfo2") {
         return { grouped: false, flat: LFO_TARGET_PARAMS.slice(), groups: [] };
+    }
+    if (compKey === SENDS_LFO_TARGET_KEY) {
+        /* Two rows never need grouping, and a group step over two entries is a
+         * screen you have to click through to reach a screen. */
+        return { grouped: false, flat: SEND_TARGET_PARAMS.slice(), groups: [] };
     }
 
     /* chain_params is read ONCE here and both halves come out of it — the flat
@@ -21766,6 +23982,7 @@ globalThis.init = function() {
 globalThis.shadow_save_state_now = function() {
     autosaveAllSlots();
     saveMasterFxChainConfig();
+    saveSendFxChainConfig();
     /* Also persist volumes/channels/mute/solo — otherwise the set's
      * shadow_chain_config.json drifts from slot_N.json across reboots,
      * e.g. toggling MPE (recv=All) before shutdown would revert on boot. */
@@ -21813,6 +24030,11 @@ function dispatchCoRunDraw() {
          * must render these too, not just the chain-editor subtree. */
         case VIEWS.SLOTS:                drawSlots(); break;
         case VIEWS.MASTER_FX:            drawMasterFx(); break;
+        case VIEWS.FX_BUS_PICKER:        drawFxBusPicker(); break;
+        case VIEWS.BUS_LIST:             BusViews.drawBusList(); break;
+        case VIEWS.BUS_ACTIONS:          BusViews.drawBusActions(); break;
+        case VIEWS.BUS_VOICES:           BusViews.drawBusVoices(); break;
+        case VIEWS.BUS_CHAIN:            BusViews.drawBusChain(); break;
         case VIEWS.GLOBAL_SETTINGS:      drawGlobalSettings(); break;
         case VIEWS.CHAIN_EDIT:           drawChainEdit(); break;
         case VIEWS.PATCHES:              drawPatches(); break;
@@ -22025,6 +24247,16 @@ globalThis.tick = function() {
         }
     }
 
+    /* Send levels, flushed off the knob. Marked dirty by the grid write and
+     * written here at most a few times a second: the file I/O is what put
+     * seconds between the hand and the value when it ran per detent. A pending
+     * write is never dropped -- the flag survives until a flush succeeds. */
+    if (sendLevelsDirty && ++_sendLevelsTickCounter >= SEND_LEVELS_FLUSH_INTERVAL) {
+        _sendLevelsTickCounter = 0;
+        sendLevelsDirty = false;
+        saveSendLevels();
+    }
+
     /* Continuous feedback guard: bypass Line In slots while speaker-feedback risk
      * is present (boot or headphones unplugged), un-bypass when safe, and raise
      * the modal when the shadow UI is on screen. Throttled to a few times/sec. */
@@ -22053,6 +24285,35 @@ globalThis.tick = function() {
     if (++_voiceFollowTickCounter >= VOICE_FOLLOW_CHECK_INTERVAL) {
         _voiceFollowTickCounter = 0;
         try { syncHierEditorVoice(); } catch (e) { debugLog("syncHierEditorVoice error: " + e); }
+    }
+
+    /*
+     * A bus read that did not COMPLETE is asked again. This is the only thing
+     * that keeps asking — the bus screens read on entry and after a write, not
+     * per frame — so without it a single stalled channel would leave the
+     * waiting screen up until the user backed out and came in again. It costs
+     * nothing once the reads have answered, and nothing at all off these
+     * screens.
+     *
+     * Gated on busConfigStale/busVoicesStale — the LAST attempt's outcome —
+     * not on `!busConfig || !busVoices`. Every write path
+     * (busCreate/busDelete/writeBusSend/busPickModule, the voice-toggle
+     * writer) calls refreshBusConfig() and drops the return value, trusting
+     * it to leave the previous config in place on a failed read. That part is
+     * right, but `!busConfig` alone is true only until the FIRST read ever
+     * succeeds — after that, a stall on any of those calls announced its
+     * write ("Bus created") and then asked nothing ever again, in this
+     * function or on re-entry.
+     */
+    if (view === VIEWS.BUS_LIST || view === VIEWS.BUS_ACTIONS ||
+        view === VIEWS.BUS_VOICES || view === VIEWS.BUS_CHAIN) {
+        if (busConfigStale || busVoicesStale) {
+            if (++_busRetryTickCounter >= BUS_RETRY_INTERVAL) {
+                _busRetryTickCounter = 0;
+                try { if (refreshBuses()) needsRedraw = true; }
+                catch (e) { debugLog("refreshBuses error: " + e); }
+            }
+        }
     }
 
     /* Draw upgrade overlay if active (takes priority over normal UI) */
@@ -22142,8 +24403,16 @@ globalThis.tick = function() {
                 }
             }
             if (flags & SHADOW_UI_FLAG_JUMP_TO_MASTER_FX) {
-                /* Always jump to Master FX view */
-                enterMasterFxSettings();
+                /* The gesture (Shift+Vol+Menu, hold-Menu) lands on the MASTER
+                 * bus -- the thing that was actually asked for -- with Send A and
+                 * Send B as the first two boxes of its row, one jog to the left.
+                 * It briefly opened a three-row picker instead, which made every
+                 * route to Master FX pay for a list nobody wanted to read; the
+                 * sends are reachable from the diagram now, so the level above
+                 * has nothing left to offer. The shim flag is unchanged -- it
+                 * says "the user asked for the FX screen", and which screen that
+                 * is stays a UI decision. */
+                enterFxBus(0);
                 /* Clear the flag */
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);
@@ -22367,7 +24636,12 @@ globalThis.tick = function() {
              * overwrite the freshly-written slot files */
             autosaveSuppressUntil = 150; /* ~5 seconds at 30fps */
 
-            /* 7. Reload master FX modules from per-set state files */
+            /* 7. Reload master FX modules from per-set state files.
+             *
+             * On the MASTER bus explicitly: setMasterFxSlotModule addresses the
+             * chain through MASTER_CHAIN_TARGET, whose key rule is the current
+             * bus's prefix, and a set can be changed from any screen. */
+            withFxBus(0, () => {
             for (let mfxi = 0; mfxi < MASTER_FX_SLOTS; mfxi++) {
                 const mfxPath = activeSlotStateDir + "/master_fx_" + mfxi + ".json";
                 let mfxDspPath = "";
@@ -22394,6 +24668,7 @@ globalThis.tick = function() {
                 delete fxDisplayNameBackoff[`master:${key}`];
 
                 /* Restore plugin state/params if available */
+                if (mfxDspPath) waitForFxPositionSettled("master_fx:", key);
                 if (mfxData) {
                     try {
                         if (mfxDspPath && mfxData.state) {
@@ -22418,6 +24693,9 @@ globalThis.tick = function() {
                 }
                 debugLog("SET_CHANGED: MFX " + mfxi + " -> " + (mfxModuleId || "(none)"));
             }
+            });
+            /* 7b. And both send buses, from this set's own files. */
+            loadSendFxChainConfigForSet();
             /* 8. Refresh slot names from new autosave files */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 slots[i].name = "";
@@ -22703,10 +24981,17 @@ globalThis.tick = function() {
         if (isOvertakeActive) {
             autosaveJob = null;          /* overtake owns the surface; abandon */
         } else {
+            /* One job per tick: the four slots, then Master FX, then the two
+             * send buses. The sends are their OWN job rather than a tail on the
+             * Master FX one because each is a positional GET plus a state read
+             * per loaded position — at ~2.8 ms a round trip that is more than a
+             * whole page render, and the split is the whole reason this
+             * schedule exists. */
             if (autosaveJob < SHADOW_UI_SLOTS) autosaveOneSlot(autosaveJob);
-            else saveMasterFxChainConfig();
+            else if (autosaveJob === SHADOW_UI_SLOTS) saveMasterFxChainConfig();
+            else saveSendFxChainConfig();
             autosaveJob++;
-            if (autosaveJob > SHADOW_UI_SLOTS) autosaveJob = null;
+            if (autosaveJob > SHADOW_UI_SLOTS + 1) autosaveJob = null;
         }
     }
     /* Refresh dirty cache frequently for responsive UI */
@@ -22743,21 +25028,29 @@ globalThis.tick = function() {
                 }
             }
         }
-        /* Master FX */
-        for (const { key } of masterFxChainComponents()) {
-            if (key === "settings") continue;
-            if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
-            const cacheKey = `master:${key}`;
-            const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
-            if (name && name !== fxDisplayNameCache[cacheKey]) {
-                const prev = fxDisplayNameCache[cacheKey];
-                fxDisplayNameCache[cacheKey] = name;
-                if (prev) {
-                    announce(name);
-                    needsRedraw = true;
+        /* Master FX. Wrapped for the same reason the other master-bus readers
+         * are: masterFxConfig follows the EDITOR, and this poll runs from
+         * tick() on any screen. Without withFxBus(0, ...), a send bus left
+         * open would have this poll master_fx:<key>:display_name gated on
+         * masterFxConfig — i.e. the SEND's positions — so it would poll
+         * whatever master slots the send happens to occupy and skip whatever
+         * master slots the send leaves empty. */
+        withFxBus(0, () => {
+            for (const { key } of masterFxChainComponents()) {
+                if (key === "settings") continue;
+                if (!masterFxConfig[key] || !masterFxConfig[key].module) continue;
+                const cacheKey = `master:${key}`;
+                const name = pollFxDisplayName(0, `master_fx:${key}:display_name`, cacheKey);
+                if (name && name !== fxDisplayNameCache[cacheKey]) {
+                    const prev = fxDisplayNameCache[cacheKey];
+                    fxDisplayNameCache[cacheKey] = name;
+                    if (prev) {
+                        announce(name);
+                        needsRedraw = true;
+                    }
                 }
             }
-        }
+        });
     }
 
     let currentTargetSlot = 0;
@@ -23025,6 +25318,21 @@ globalThis.tick = function() {
             break;
         case VIEWS.MASTER_FX:
             drawMasterFx();
+            break;
+        case VIEWS.FX_BUS_PICKER:
+            drawFxBusPicker();
+            break;
+        case VIEWS.BUS_LIST:
+            BusViews.drawBusList();
+            break;
+        case VIEWS.BUS_ACTIONS:
+            BusViews.drawBusActions();
+            break;
+        case VIEWS.BUS_VOICES:
+            BusViews.drawBusVoices();
+            break;
+        case VIEWS.BUS_CHAIN:
+            BusViews.drawBusChain();
             break;
         case VIEWS.CHAIN_EDIT:
             drawChainEdit();
@@ -23550,7 +25858,9 @@ globalThis.onMidiMessageInternal = function(data) {
                     if (hostShiftHeld && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                         handleShiftSelect();
                     } else if (hostShiftHeld && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
-                        enterMasterFxModuleSelect(selectedMasterFxComponent);
+                        enterMasterFxModuleSelect(masterFxPositionOf(selectedMasterFxComponent));
+                    } else if (hostShiftHeld && view === VIEWS.BUS_CHAIN && !selectingBusModule) {
+                        enterBusModuleSelect();
                     } else {
                         handleSelect();
                     }
@@ -23793,7 +26103,11 @@ globalThis.onMidiMessageInternal = function(data) {
                 handleShiftSelect();
             } else if (isShiftHeld() && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
-                enterMasterFxModuleSelect(selectedMasterFxComponent);
+                enterMasterFxModuleSelect(masterFxPositionOf(selectedMasterFxComponent));
+            } else if (isShiftHeld() && view === VIEWS.BUS_CHAIN && !selectingBusModule) {
+                /* ...and on a bus insert, for the same reason: plain Click now
+                 * edits the module, so Shift is what swaps it. */
+                enterBusModuleSelect();
             } else {
                 handleSelect();
             }

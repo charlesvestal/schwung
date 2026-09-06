@@ -114,6 +114,19 @@ int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name) {
 }
 void v2_unload_all_midi_fx(chain_instance_t *inst) { inst->midi_fx_count = 0; }
 
+/* Bus apply is chain_bus.c's, which dlopens and cannot be built natively. The
+ * stub records what the PARSER handed it — the parse is what this file tests,
+ * and the split means a bus that failed to parse is visible here as an absent
+ * bus rather than as a load that quietly did nothing. */
+static patch_info_t applied_buses;
+static int applied_bus_calls;
+int chain_bus_apply_patch(chain_instance_t *inst, const patch_info_t *patch) {
+    (void)inst;
+    applied_buses = *patch;
+    applied_bus_calls++;
+    return 0;
+}
+
 /* The units under test. chain_params.c supplies find_param_by_key,
  * dsp_value_to_float, knob_find_param and knob_forward_value; chain_json.c the
  * json_* helpers. */
@@ -809,6 +822,215 @@ static void test_master_preset(void) {
     }
 }
 
+
+/*
+ * Buses round-trip out of a patch file: POSITIONAL, ids not indices, and the
+ * two shapes an opaque FX state can take on disk.
+ *
+ * The load is stubbed (chain_bus.c dlopens), so what this pins is the parser —
+ * which is the half that silently drops things. A bus whose entry did not parse
+ * arrives at the loader as `present = 0`, indistinguishable from a bus the user
+ * never made, so an unparsed bus is a SILENT loss of a whole sub-mix.
+ */
+static void test_buses_parse(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    applied_bus_calls = 0;
+    write_patch(
+        "{\n"
+        "  \"name\": \"Kit\",\n"
+        "  \"synth\": {\"module\": \"mrdrums\"},\n"
+        "  \"main_sends\": [5, 30],\n"
+        "  \"buses\": [\n"
+        "    {\"name\": \"Kick\", \"voices\": [\"kick\"], \"sends\": [20, 0],\n"
+        "     \"fx\": [{\"module\": \"tapescam\", \"bypassed\": 1,\n"
+        "               \"state\": {\"drive\": 0.5}}]},\n"
+        "    {\"present\": 0},\n"
+        "    {\"name\": \"Hats\", \"voices\": [\"chh\", \"ohh\"], \"sends\": [0, 15],\n"
+        "     \"fx\": [{\"module\": \"chorus\", \"state\": \"{\\\"rate\\\":2}\"},\n"
+        "              {\"module\": \"phaser\"}]}\n"
+        "  ]\n"
+        "}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "buses patch parsed");
+
+    CHECK(patch->main_sends[0] == 5 && patch->main_sends[1] == 30,
+          "main_sends %d,%d", patch->main_sends[0], patch->main_sends[1]);
+
+    /* Bus 0 */
+    CHECK(patch->buses[0].present == 1, "bus 0 present");
+    CHECK(strcmp(patch->buses[0].name, "Kick") == 0, "bus 0 name '%s'", patch->buses[0].name);
+    CHECK(patch->buses[0].voice_id_count == 1, "bus 0 voice count %d",
+          patch->buses[0].voice_id_count);
+    CHECK(strcmp(patch->buses[0].voice_ids[0], "kick") == 0,
+          "bus 0 voice '%s'", patch->buses[0].voice_ids[0]);
+    CHECK(patch->buses[0].sends[0] == 20 && patch->buses[0].sends[1] == 0,
+          "bus 0 sends %d,%d", patch->buses[0].sends[0], patch->buses[0].sends[1]);
+    CHECK(patch->buses[0].fx_count == 1, "bus 0 fx count %d", patch->buses[0].fx_count);
+    CHECK(strcmp(patch->buses[0].fx[0].module, "tapescam") == 0,
+          "bus 0 fx module '%s'", patch->buses[0].fx[0].module);
+    CHECK(patch->buses[0].fx[0].bypassed == 1, "bus 0 fx bypassed");
+    /* Stored COMPACT, never the pretty-printed file slice: a module parses what
+     * it emitted, and a `"key":"` matcher misses the stored `"key": "` form. */
+    CHECK(strcmp(patch->buses[0].fx[0].state, "{\"drive\":0.5}") == 0,
+          "bus 0 fx state '%s'", patch->buses[0].fx[0].state);
+
+    /* Bus 1 is a HOLE, and bus 2 must still be bus 2 — a compacting parser
+     * would put "Hats" here and renumber every bus behind it. */
+    CHECK(patch->buses[1].present == 0, "bus 1 absent");
+    CHECK(patch->buses[2].present == 1, "bus 2 present");
+    CHECK(strcmp(patch->buses[2].name, "Hats") == 0, "bus 2 name '%s'", patch->buses[2].name);
+    CHECK(patch->buses[2].voice_id_count == 2 &&
+          strcmp(patch->buses[2].voice_ids[0], "chh") == 0 &&
+          strcmp(patch->buses[2].voice_ids[1], "ohh") == 0,
+          "bus 2 voices %d", patch->buses[2].voice_id_count);
+    CHECK(patch->buses[2].sends[1] == 15, "bus 2 send2 %d", patch->buses[2].sends[1]);
+    CHECK(patch->buses[2].fx_count == 2, "bus 2 fx count %d", patch->buses[2].fx_count);
+    CHECK(strcmp(patch->buses[2].fx[1].module, "phaser") == 0,
+          "bus 2 fx2 '%s'", patch->buses[2].fx[1].module);
+    /* The other legal state form: JSON.stringify'd, so it must be DECODED. */
+    CHECK(strcmp(patch->buses[2].fx[0].state, "{\"rate\":2}") == 0,
+          "bus 2 fx1 state '%s'", patch->buses[2].fx[0].state);
+
+    CHECK(patch->buses[3].present == 0, "bus 3 absent");
+
+    /* And the loader is actually handed all of it. */
+    v2_load_from_patch_info(inst, patch);
+    CHECK(applied_bus_calls == 1, "bus apply called once (%d)", applied_bus_calls);
+    CHECK(applied_buses.buses[2].fx_count == 2 && applied_buses.main_sends[1] == 30,
+          "the loader received the parsed buses");
+}
+
+/* A patch with no bus section at all must leave every bus absent and every
+ * send at zero — the state every patch written before this feature is in. */
+static void test_buses_absent(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"name\": \"Old\", \"synth\": {\"module\": \"braids\"}}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "legacy patch parsed");
+    for (int b = 0; b < SLOT_BUSES; b++)
+        CHECK(patch->buses[b].present == 0, "bus %d absent in a legacy patch", b);
+    CHECK(patch->main_sends[0] == 0 && patch->main_sends[1] == 0, "no main sends");
+}
+
+/* A "buses" array whose bracket never closes must yield NOTHING, matching the
+ * audio_fx scan: refusing nonsense beats inventing sub-mixes from it. */
+static void test_buses_unterminated(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"buses\": [{\"name\": \"Kick\", \"voices\": [\"kick\"]}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "hostile patch parsed");
+    for (int b = 0; b < SLOT_BUSES; b++)
+        CHECK(patch->buses[b].present == 0, "bus %d not invented from a truncated array", b);
+}
+
+/*
+ * PRODUCER -> CONSUMER, the span nothing covered.
+ *
+ * Every other bus assertion in this file feeds the parser a HAND-WRITTEN
+ * document, which is exactly how a feature with a reader and no writer passed
+ * its tests: chain_patch.c has read "buses"/"main_sends" since the feature
+ * landed and nothing in the tree emitted them, so every load reset all four
+ * buses and destroyed a live kit in silence.
+ *
+ * The document read here is written by the REAL producer — busPatchFields in
+ * src/shared/bus_model.mjs, run under node by this test's .sh, fed a
+ * bus_emit_config-shaped config so the whole chain is covered: C emits the live
+ * config, JS parses it, JS produces the file, C parses the file. Both sides
+ * print the same flattened summary and the .sh diffs them, so neither half can
+ * hold the expectation on its own.
+ *
+ * The NEGATIVE CONTROL is the other half of the point: the same producer output
+ * with "buses" deleted must parse to four absent buses, i.e. the assertions
+ * above would fail. The .sh requires that summary to DIFFER from the expected
+ * one, so a producer that stops emitting the key cannot pass.
+ */
+static void bus_summary(const patch_info_t *p, FILE *f) {
+    fprintf(f, "main_sends=");
+    for (int i = 0; i < BUS_MIX_SENDS; i++)
+        fprintf(f, "%s%d", i ? "," : "", p->main_sends[i]);
+    fprintf(f, "\n");
+    /* NO PER-VOICE SENDS. A document carried a `voice_sends` array while the
+     * HOST owned those levels; the module owns them now and they ride in its
+     * own `state` blob. A stale key in an old document must reach nothing —
+     * there is no field left for it to land in. */
+    for (int b = 0; b < SLOT_BUSES; b++) {
+        const bus_config_t *c = &p->buses[b];
+        if (!c->present) { fprintf(f, "bus%d present=0\n", b); continue; }
+        fprintf(f, "bus%d present=1 name=%s voices=", b, c->name);
+        for (int i = 0; i < c->voice_id_count; i++)
+            fprintf(f, "%s%s", i ? "," : "", c->voice_ids[i]);
+        fprintf(f, " sends=");
+        for (int i = 0; i < BUS_MIX_SENDS; i++)
+            fprintf(f, "%s%d", i ? "," : "", c->sends[i]);
+        fprintf(f, " fx=");
+        for (int i = 0; i < c->fx_count; i++)
+            fprintf(f, "%s%s:%d:%s", i ? "|" : "", c->fx[i].module,
+                    c->fx[i].bypassed, c->fx[i].state);
+        fprintf(f, "\n");
+    }
+}
+
+static void summarise_file(chain_instance_t *inst, patch_info_t *patch,
+                           const char *in_path, const char *out_path,
+                           const char *what) {
+    reset_state(inst);
+    CHECK(v2_parse_patch_file(inst, in_path, patch) == 0, "%s parsed", what);
+    FILE *f = fopen(out_path, "w");
+    if (!f) { CHECK(0, "cannot write %s", out_path); return; }
+    bus_summary(patch, f);
+    fclose(f);
+}
+
+static void test_buses_from_producer(chain_instance_t *inst, patch_info_t *patch,
+                                     const char *work) {
+    char in[512], out[512];
+    snprintf(in, sizeof(in), "%s/producer.json", work);
+    snprintf(out, sizeof(out), "%s/parsed.txt", work);
+    summarise_file(inst, patch, in, out, "producer document");
+    /* It must not merely parse: a producer that emitted an empty array would
+     * round-trip four holes past a diff of two identical "present=0" files. */
+    int present = 0;
+    for (int b = 0; b < SLOT_BUSES; b++) present += patch->buses[b].present;
+    CHECK(present >= 2, "the producer document carries buses (%d present)", present);
+
+    /* The VALUES, against the live config the .sh handed the producer. The diff
+     * cannot see these — both of its sides are derived from the producer's own
+     * output — so a producer that emitted the right shape with the wrong
+     * numbers would round-trip cleanly. These are what fail then. */
+    CHECK(patch->buses[0].present == 1 && strcmp(patch->buses[0].name, "Kick") == 0,
+          "producer bus 0 is Kick ('%s')", patch->buses[0].name);
+    CHECK(patch->buses[0].sends[0] == 20 && patch->buses[0].sends[1] == 0,
+          "producer bus 0 sends %d,%d", patch->buses[0].sends[0], patch->buses[0].sends[1]);
+    CHECK(patch->buses[0].voice_id_count == 1 &&
+          strcmp(patch->buses[0].voice_ids[0], "kick") == 0,
+          "producer bus 0 voices (%d)", patch->buses[0].voice_id_count);
+    CHECK(patch->buses[0].fx_count == 1 &&
+          strcmp(patch->buses[0].fx[0].module, "tapescam") == 0 &&
+          patch->buses[0].fx[0].bypassed == 1,
+          "producer bus 0 insert '%s'", patch->buses[0].fx[0].module);
+    /* The staged-state arm is only reachable because the producer emits this. */
+    CHECK(strcmp(patch->buses[0].fx[0].state, "{\"drive\":0.5}") == 0,
+          "producer bus 0 insert state '%s'", patch->buses[0].fx[0].state);
+    /* THE HOLE. Bus 1 was never made and bus 2 must still be bus 2. */
+    CHECK(patch->buses[1].present == 0, "producer bus 1 is a hole");
+    CHECK(patch->buses[2].present == 1 && strcmp(patch->buses[2].name, "Hats") == 0,
+          "producer bus 2 is Hats ('%s')", patch->buses[2].name);
+    CHECK(patch->buses[2].sends[1] == 15, "producer bus 2 send B %d",
+          patch->buses[2].sends[1]);
+    CHECK(patch->buses[2].fx_count == 2 &&
+          strcmp(patch->buses[2].fx[1].module, "phaser") == 0,
+          "producer bus 2 second insert");
+    CHECK(strcmp(patch->buses[2].fx[0].state, "{\"rate\":2}") == 0,
+          "producer bus 2 insert state '%s'", patch->buses[2].fx[0].state);
+    CHECK(patch->buses[3].present == 0, "producer bus 3 is a hole");
+    CHECK(patch->main_sends[0] == 5 && patch->main_sends[1] == 30,
+          "producer main_sends %d,%d", patch->main_sends[0], patch->main_sends[1]);
+
+    snprintf(in, sizeof(in), "%s/producer_omitted.json", work);
+    snprintf(out, sizeof(out), "%s/parsed_omitted.txt", work);
+    summarise_file(inst, patch, in, out, "producer document without \"buses\"");
+    for (int b = 0; b < SLOT_BUSES; b++)
+        CHECK(patch->buses[b].present == 0,
+              "bus %d absent when the producer omits the key", b);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <tmpdir>\n", argv[0]);
@@ -836,6 +1058,10 @@ int main(int argc, char **argv) {
     /* Reuses the chain test_target_lookup just populated. */
     test_id_parser_divergence_fixture(inst);
     test_master_preset();
+    test_buses_parse(inst, patch);
+    test_buses_absent(inst, patch);
+    test_buses_unterminated(inst, patch);
+    test_buses_from_producer(inst, patch, argv[1]);
 
     free(inst);
     free(patch);

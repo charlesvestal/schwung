@@ -21,9 +21,12 @@
  * and no framebuffer. The host supplies the accessors; nothing here reads a
  * global.
  *
- * The eight values fill one page exactly. The actions become a menu page, the
- * page kind that exists for entries with a name, a consequence and nothing to
- * show.
+ * The eight values fill one page exactly, and the slot sends are a PAGE OF
+ * THEIR OWN rather than the ninth and tenth cell of that one. Nine params chunk
+ * to 8 + 1 and the overflow page is titled "Main - 2", which names nothing; an
+ * authored level is a page called "Sends" and costs the same flip. The actions
+ * become a menu page, the page kind that exists for entries with a name, a
+ * consequence and nothing to show.
  */
 
 /** 1..16 as strings, for the channel enums. */
@@ -93,6 +96,30 @@ export const SLOT_GRID_PARAMS = [
       options: ["Off", "On"], short_options: ["OFF", "ON"], default: 0 },
     { key: "mpe_mode", name: "MPE", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"],
       default: 0 },
+];
+
+/*
+ * THE SLOT SENDS, and on almost every module the only send that is reachable
+ * at all.
+ *
+ * A per-bus send needs the module to publish `split_voices`, which one module
+ * in the fleet does; these two need nothing of it. Post-fader and post-slot-FX
+ * — the drain is chain_drain_main_send, taken in the shim's mix pass, which is
+ * the only point at which the slot's finished audio exists.
+ *
+ * 0..127 step 1, the same range and grain as every other send in this design
+ * (BUS_MIX_SEND_LEVEL_MAX), because a knob can cross it in one gesture. The two
+ * settings LISTS declare step 4, because a jog cannot.
+ *
+ * Their own level, not two more cells on the values page: that page is eight
+ * params against eight knobs, and a ninth chunks to 8 + 1 with the overflow
+ * titled "Main - 2". A level is a page with a NAME for the same flip.
+ */
+export const SLOT_SEND_PARAMS = [
+    { key: "send_a", name: "Send A", short_name: "SndA", type: "int",
+      min: 0, max: 127, step: 1, default: 0 },
+    { key: "send_b", name: "Send B", short_name: "SndB", type: "int",
+      min: 0, max: 127, step: 1, default: 0 },
 ];
 
 /*
@@ -276,28 +303,43 @@ export function lfoLevels(indices, keyPrefix = "") {
     return levels;
 }
 
-/** Actions, in the order they appear on the menu page. */
+/*
+ * Actions, in the order they appear on the menu page.
+ *
+ * `when` names which of the two facts this entry needs, or null for always.
+ * Two of them are conditional on unrelated things -- Delete needs a preset to
+ * delete, Buses needs a synth that publishes voices to split -- and a shared
+ * `always` boolean could only ever have expressed one of them.
+ */
 export const SLOT_GRID_ACTIONS = [
-    { label: "Knob Mapping", action: "knobs", always: true },
+    { label: "Knob Mapping", action: "knobs", when: null },
     /* LFO 1 and LFO 2 are PAGES now, not menu entries — eight of their nine
      * params are turnable and the widgets draw the thing itself. */
-    { label: "Save", action: "save", always: true },
+    /* Buses is a DOOR, not a page: it opens a list of this slot's split-voice
+     * buses, each with its own voices, inserts and sends. It is here as well as
+     * on the two settings LISTS because this menu is what the grid shows in
+     * their place, and the grid is the default Param View — a row only on the
+     * lists would be a feature most users could not reach. */
+    { label: "Buses", action: "buses", when: "splits" },
+    { label: "Save", action: "save", when: null },
     /* Save As stays even with nothing saved: it goes straight to the keyboard
      * where Save offers a generated name. Only DELETE is meaningless. Same
      * filter getChainSettingsItems applies to the list. */
-    { label: "Save As", action: "save_as", always: true },
-    { label: "Delete", action: "delete", always: false },
+    { label: "Save As", action: "save_as", when: null },
+    { label: "Delete", action: "delete", when: "preset" },
 ];
 
 /**
  * @param {boolean} hasPreset  whether this slot already holds a saved preset
+ * @param {boolean} [hasSplits] whether this slot's synth publishes split_voices
  */
-export function slotGridHierarchy(hasPreset) {
+export function slotGridHierarchy(hasPreset, hasSplits) {
+    const have = { preset: !!hasPreset, splits: !!hasSplits };
     const menu = SLOT_GRID_ACTIONS
-        .filter((a) => a.always || hasPreset)
+        .filter((a) => !a.when || have[a.when])
         .map((a) => ({ label: a.label, action: a.action }));
     /*
-     * Page order is Main, LFO 1, LFO 2, Actions.
+     * Page order is Main, Sends, LFO 1, LFO 2, Actions.
      *
      * The menu therefore lives on its OWN level rather than on root: a level
      * emits its menu straight after its own grids, before any level it
@@ -310,9 +352,17 @@ export function slotGridHierarchy(hasPreset) {
             label: "Slot",
             knobs: SLOT_GRID_PARAMS.map((p) => p.key),
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
-                .concat([{ level: "lfo1", label: "LFO 1" },
+                .concat([{ level: "sends", label: "Sends" },
+                         { level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
                          { level: "actions", label: "Actions" }]),
+        },
+        /* Before the LFOs: a send is a mix decision and belongs beside the
+         * values, where a modulation source does not. */
+        sends: {
+            label: "Sends",
+            knobs: SLOT_SEND_PARAMS.map((p) => p.key),
+            params: SLOT_SEND_PARAMS.map((p) => ({ key: p.key })),
         },
     };
     Object.assign(levels, lfoLevels([1, 2]));
@@ -322,7 +372,8 @@ export function slotGridHierarchy(hasPreset) {
 
 /** Every declared param across the slot page and both LFO pages. */
 export function allSlotGridParams() {
-    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2));
+    return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS)
+                           .concat(lfoParams(1)).concat(lfoParams(2));
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
@@ -333,6 +384,13 @@ export function realKeyFor(gridKey) {
      * the same one makeSlotLfoCtx uses, so they pass straight through. Adding
      * "slot:" would address a param that does not exist and read empty. */
     if (/^lfo[12]:/.test(gridKey)) return gridKey;
+    /* The slot sends are stored by the CHAIN, not by the slot: "buses:" is the
+     * chain host's slot-level route (a bare "send_a" would be handed to the
+     * synth plugin, i.e. a write to somebody else's parameter) and
+     * "main_send<N>" is the spelling chain_bus.c already reads and persists.
+     * One-indexed on the wire, lettered on the screen. */
+    if (gridKey === "send_a") return "buses:main_send1";
+    if (gridKey === "send_b") return "buses:main_send2";
     return "slot:" + gridKey;
 }
 
@@ -343,6 +401,7 @@ export function realKeyFor(gridKey) {
  * actually stores:
  *
  *   volume, muted, soloed, transpose, receive_channel  ->  "slot:<key>"
+ *   send_a, send_b                                     ->  "buses:main_send<N>"
  *   midi_fx_pre_mode                                   ->  bare key
  *   forward_channel                                    ->  "slot:*", offset
  *   mpe_mode                                           ->  DERIVED
@@ -358,6 +417,10 @@ export function realKeyFor(gridKey) {
  * @param {()=>boolean}            io.isMpeMode
  * @param {(on:boolean)=>void}     io.setMpeMode
  * @param {()=>boolean}            io.hasPreset
+ * @param {()=>boolean}            [io.hasSplitVoices]  whether the loaded synth
+ *   publishes `split_voices`. Omitted, the Buses action is absent -- which is
+ *   the right answer for a caller that cannot tell, since the screen behind it
+ *   would have nothing to list.
  * @param {(lfoIndex:number)=>object} [io.describeTarget]  resolve LFO N's
  *   routing to {short, header, long} — see shared/lfo_target_label.mjs. The
  *   host owns it because it costs IPC and therefore wants caching; omitted,
@@ -369,7 +432,11 @@ export function createSlotGridIo(io) {
     return {
         getParam(fullKey) {
             const k = bare(fullKey);
-            if (k === "ui_hierarchy") return JSON.stringify(slotGridHierarchy(!!io.hasPreset()));
+            if (k === "ui_hierarchy") {
+                return JSON.stringify(slotGridHierarchy(
+                    !!io.hasPreset(),
+                    io.hasSplitVoices ? !!io.hasSplitVoices() : false));
+            }
             if (k === "chain_params") return JSON.stringify(allSlotGridParams());
             if (k === "mpe_mode") return io.isMpeMode() ? "1" : "0";
             if (k === "forward_channel") {

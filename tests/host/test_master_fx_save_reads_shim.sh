@@ -93,7 +93,11 @@ function world(answers, mirror, opts) {
 
   const masterFxModuleWriteAt = Object.assign({}, opts.writeAt || {});
 
-  const save = lift("saveMasterFxChainConfig", [
+  /* The BODY, not the exported name: saveMasterFxChainConfig is now a one-line
+     wrapper that runs this on the master bus (withFxBus) — masterFxConfig
+     follows whichever FX bus the editor is on, and this writer runs whatever
+     screen is up. The wrapper itself is pinned by the source check below. */
+  const save = lift("saveMasterFxChainConfigOnMaster", [
     "activeSlotStateDir", "adoptMasterFxShimModule", "cachedLatencyCompEnabled",
     "cachedLinkAudioPublish", "cachedLinkAudioRouting", "cachedMasterFxMidiChannel",
     "cachedResampleBridgeMode", "cachedUsbcOutPersist", "CONTRACT_SETTLE_MS",

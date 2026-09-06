@@ -88,13 +88,22 @@ const chainEditorComponents = new Function("chainComponents",
     "\nreturn chainEditorComponents;")(model.chainComponents);
 
 const decls = new Function("parseChainId", "chainEditorComponents", block + `
-    return { MASTER_FX_SLOTS, masterFxChainComponents, masterFxChainConfig,
+    return { MASTER_FX_SLOTS, masterFxChainComponents, masterFxChainConfig, FX_BUSES,
+             masterFxPositionOf, masterFxRowOf,
              setMasterFxChainConfig, masterFxConfig, makeEmptyMasterFxConfig,
              masterFxComponentKey, MASTER_CHAIN_TARGET,
              setConfig: (c) => { masterFxConfig = c; } };
 `)(parseChainId, chainEditorComponents);
 
 check(decls.MASTER_FX_SLOTS === cap, "evaluated MASTER_FX_SLOTS !== parsed cap");
+
+/* ---- the SEND ENTRIES that head the master row ------------------------- */
+/* Derived from FX_BUSES, never a literal 2: the row heads must stay exactly the
+ * buses that ARE sends, so adding a third send adds a box without an edit here,
+ * and turning one into something else removes it. */
+const SENDS = decls.FX_BUSES.filter((b) => b.send >= 0);
+check(SENDS.length >= 2, "FX_BUSES declares " + SENDS.length + " sends, expected at least 2");
+const HEAD = SENDS.length;
 
 /* ---- 3. the component list is the CHAIN, not the cap ------------------ */
 
@@ -103,16 +112,16 @@ check(decls.MASTER_FX_SLOTS === cap, "evaluated MASTER_FX_SLOTS !== parsed cap")
  * communicates nothing, and at the 8 cap it is eight boxes of nothing. */
 {
     const comps = decls.masterFxChainComponents();
-    check(comps.length === 2,
-        "an EMPTY Master FX draws " + comps.length + " boxes; it must draw two — " +
-        "the `+` and Settings");
-    check(comps[0] && comps[0].kind === "add",
-        "the first box of an empty Master FX is " + JSON.stringify(comps[0] && comps[0].kind) +
+    check(comps.length === HEAD + 2,
+        "an EMPTY Master FX draws " + comps.length + " boxes; it must draw " + (HEAD + 2) +
+        " — the send entries, the `+` and Settings");
+    check(comps[HEAD] && comps[HEAD].kind === "add",
+        "the first box after the send entries is " + JSON.stringify(comps[HEAD] && comps[HEAD].kind) +
         ", expected the `+`");
-    check(comps[0] && comps[0].label === "Add FX",
-        "the `+` announces as " + JSON.stringify(comps[0] && comps[0].label) +
+    check(comps[HEAD] && comps[HEAD].label === "Add FX",
+        "the `+` announces as " + JSON.stringify(comps[HEAD] && comps[HEAD].label) +
         " — `+` read aloud is nothing at all");
-    check(comps[1] && comps[1].key === "settings", "the second box is not Settings");
+    check(comps[HEAD + 1] && comps[HEAD + 1].key === "settings", "the last box is not Settings");
 }
 
 /* And a FULL one is cap modules then Settings, with NO `+`.
@@ -128,26 +137,70 @@ decls.setConfig((() => {
     return c;
 })());
 const comps = decls.masterFxChainComponents();
-check(comps.length === cap + 1,
-    "a full Master FX has " + comps.length + " boxes, expected cap+1 = " + (cap + 1) +
-    " (the modules and Settings, with no `+`)");
+
+for (let i = 0; i < HEAD; i++) {
+    const c = comps[i] || {};
+    check(c.kind === "sendbus", "row " + i + " kind is " + JSON.stringify(c.kind) + ", expected sendbus");
+    check(c.label === SENDS[i].label, "row " + i + " label is " + JSON.stringify(c.label));
+    check(c.position === i, "row " + i + " position is " + c.position);
+    /* A send entry is NOT an FX position. Anything that means "a position in the
+     * master chain" tests kind === "module", and a send entry answering to that
+     * is what would make clicking Send A edit fx1. */
+    check(c.index === undefined, "a send entry carries an FX index (" + c.index + ")");
+}
+check(comps.length === HEAD + cap + 1,
+    "a full Master FX has " + comps.length + " boxes, expected " + (HEAD + cap + 1) +
+    " (two send entries, the modules, and Settings, with no `+`)");
 
 for (let i = 0; i < cap; i++) {
-    const c = comps[i] || {};
+    const c = comps[HEAD + i] || {};
     check(c.key === "fx" + (i + 1),
         "component " + i + " key is " + JSON.stringify(c.key) + ", expected fx" + (i + 1));
     check(c.label === "FX " + (i + 1),
         "component " + i + " label is " + JSON.stringify(c.label));
-    check(c.position === i, "component " + i + " position is " + c.position);
+    /* THE TWO NUMBERS, asserted apart. `position` is the ROW and is shifted by
+     * the send entries; `index` is the FX POSITION and is not. They were equal
+     * for as long as the row began at fx1, and nine call sites passed one where
+     * the other was wanted and were right by coincidence. */
+    check(c.position === HEAD + i, "component " + i + " row position is " + c.position);
+    check(c.index === i, "component " + i + " FX index is " + c.index + ", expected " + i);
     check(c.kind === "module", "component " + i + " kind is " + JSON.stringify(c.kind));
     /* NEVER "synth": the diagram paints a filled band across the top of a synth
      * box as the landmark its scroll leans on, and Master FX has none. */
     check(c.kind !== "synth", "component " + i + " claims to be a synth");
 }
 
+/* ---- ROW <-> POSITION, the conversion itself --------------------------- */
+/*
+ * Asserting the row LAYOUT is not enough: the bug this pair exists to prevent is
+ * a send entry answering to "which FX position is this", which leaves the layout
+ * completely correct and edits fx1 when you click Send A. Both directions are
+ * driven here, including the answers for rows that are not positions at all.
+ */
+for (let i = 0; i < HEAD; i++) {
+    check(decls.masterFxPositionOf(i) === -1,
+        "masterFxPositionOf(" + i + ") = " + decls.masterFxPositionOf(i) +
+        " for a SEND ENTRY, expected -1 — a send box answering as a position is " +
+        "how clicking Send A edits fx1");
+}
+for (let i = 0; i < cap; i++) {
+    check(decls.masterFxPositionOf(HEAD + i) === i,
+        "masterFxPositionOf(row " + (HEAD + i) + ") = " + decls.masterFxPositionOf(HEAD + i) +
+        ", expected FX position " + i);
+    check(decls.masterFxRowOf(i) === HEAD + i,
+        "masterFxRowOf(position " + i + ") = " + decls.masterFxRowOf(i) +
+        ", expected row " + (HEAD + i));
+}
+/* Settings is a row and not a position; so is a negative or absent row. */
+check(decls.masterFxPositionOf(HEAD + cap) === -1, "Settings answered as an FX position");
+check(decls.masterFxPositionOf(-1) === -1, "row -1 (the preset row) answered as an FX position");
+check(decls.masterFxPositionOf(999) === -1, "an out-of-range row answered as an FX position");
+check(decls.masterFxRowOf(cap) === -1, "a position past the cap resolved to a row");
+check(decls.masterFxRowOf(-1) === -1, "position -1 resolved to a row");
+
 const last = comps[comps.length - 1] || {};
 check(last.key === "settings", "last component key is " + JSON.stringify(last.key) + ", expected settings");
-check(last.position === cap, "settings component position is " + last.position);
+check(last.position === HEAD + cap, "settings component position is " + last.position);
 check(!comps.some((c) => c && c.kind === "add"),
     "a full Master FX still draws a `+` — there is nowhere for it to add to");
 
@@ -174,10 +227,10 @@ check(!comps.some(c => c.key === "fx" + (cap + 1)),
     c.fx3 = { module: "cloudseed" };
     decls.setConfig(c);
     const held = decls.masterFxChainComponents();
-    check(held.length === 5,
-        "a chain with a hole at fx2 draws " + held.length + " boxes, expected 5");
-    check(held[1] && !held[1].module, "the hole at fx2 was compacted away on READ");
-    check(held[2] && held[2].key === "fx3", "the module after the hole is not fx3");
+    check(held.length === HEAD + 5,
+        "a chain with a hole at fx2 draws " + held.length + " boxes, expected " + (HEAD + 5));
+    check(held[HEAD + 1] && !held[HEAD + 1].module, "the hole at fx2 was compacted away on READ");
+    check(held[HEAD + 2] && held[HEAD + 2].key === "fx3", "the module after the hole is not fx3");
 }
 decls.setConfig(decls.makeEmptyMasterFxConfig());
 

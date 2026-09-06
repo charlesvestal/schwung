@@ -24,111 +24,205 @@
 # Step 4f ADDED the six settings/ cases -- the Master FX Settings position
 # as the knob grid, a screen this harness had never rendered -- and moved NONE.
 #
+# The 28 bus/ cases ADDED the four SLOT BUS screens -- the bus list, one
+# bus`s menu, the voice multi-select and a bus`s insert chain -- and moved
+# NOTHING. The three chain/*splits cases were added with them and moved
+# nothing either, which is the POINT: a synth that publishes no
+# split_voices renders byte for byte as it did before buses existed, so
+# "a module that cannot split shows no bus affordance" is a pixel fact,
+# not a claim.
+#
+# MOVING THE BUS DOOR off the DOWN arrow and onto a settings row moved six
+# hashes and added eight cases. Up and Down are Move`s octave shift and only
+# Down was ever claimed, so the pair broke at the chain editor`s resting
+# cursor -- the gesture and the two footer hints that named it are gone.
+# chain/len2/synth-splits lost `DN BUS` and now equals chain/len2/sel-synth,
+# and the five bus/list rows lost `Dn: fx`; both are declared in
+# SAME_ON_PURPOSE or visible in the render. The eight new settings/slot and
+# settings/slotlist cases are the two settings LISTS, which this harness had
+# never drawn, with the `Buses` row absent, present-with-no-buses and
+# present-with-a-count.
+#
 # Step 4e made Master FX a variable-length chain: every master/ hash moved,
 # two cases naming an empty position past the end of the chain were deleted,
 # and eight were added for the `+` box and the Shift footer. Reviewed case by
 # case, and NO chain/ hash moved with them.
 #
+# RETIERING PER-VOICE SENDS onto the MODULE deleted five bus/sends cases --
+# the four `Voices` pages and the mixed slot -- and moved NOTHING. The mixer
+# rides buses again; a voice`s send level is one of the module`s own
+# parameters, on its own pages (src/host/voice_send_source.h). The bus pages
+# rendering byte for byte as they did is the point: the audio machinery and
+# the bus half of the screen were not supposed to change, and did not.
+#
 # A mismatch names which case moved, and the runner prints the render.
 #
 # Regenerate with:
 #     UPDATE_CHAIN_EDITOR_BASELINE=1 bash tests/host/test_chain_editor_snapshot.sh
-chain/full/lfo-midi-fx1 c704713d2e633816a2b61eaa2a9c38e0064a7e93
-chain/full/sel-add-fx 854848130dec41e955bf4d0c3cad3b622d998ae0
-chain/full/sel-add-midi 755dc87883c2d7e53b4bbd56710dfc529b33b880
-chain/full/sel-fx8 b8fedc1cb3e699045b5bc23e3d3e74fd136a5053
-chain/full/sel-midiFx d591c62655631f76e2a8f1d5eb13540f2fc1fb6f
-chain/full/sel-patch 00589659c4c3ef5d208fb3e747aefee8bf2a5c2a
-chain/full/sel-settings 2fb748c61aea3a417d643fba38d1f500c6a67c61
-chain/full/sel-synth 2d88d07a9ff5990df0dbc8a7e2d13294f1754fb1
-chain/full/shift a668c9c2c29b203ade7a8b4595e7c73acfb9e504
-chain/len0/no-synth 2966d91115cef2ee098413f5dc27a014a5318092
-chain/len0/sel-add-fx cd8a8fbff607e0a8270ae13315579a39486ea5a4
-chain/len0/sel-add-midi 5f1bc0c1bebc8dc6a459aa6af484eaffff15d174
-chain/len0/sel-patch f5f338a122e1cd27dcd494384d48ee6795273bb1
-chain/len0/sel-settings b2143198ae108d1fde980c7a0bda3348842aa026
-chain/len0/sel-synth a1c3d9d872a4676cdcc1d67a64c4ed84c224ed3a
-chain/len0/shift 8269361d405dff7f85daa7a0ed5c0d881cfbb0e3
-chain/len1/knob-card f7ffff45bd3e9fa5f32f3eb098aa2c33fb797628
-chain/len1/sel-first 13fdae33d5a8181a10cb9c8f116df9909a054488
-chain/len1/sel-fx1 691dc7303c162e8c71d2d5f93053fa33ac8a1ca6
-chain/len2/bypassed 30c1896dab84b66a326e215ebcd40606a25abb64
-chain/len2/bypassed-selected b5718b23f85257c6622a1b1bb3af345ca8dbc9ac
-chain/len2/bypassed-synth 1f853942139dff3647b5597cc17748b0b4efadad
-chain/len2/info-preset 31d76021b0ea2b02aa4170c4cf0b0bdeb81b80e6
-chain/len2/info-rnbo d3341c89ef5b39d6c2f1d394713f7a9b43c90356
+bus/actions/confirm b93b44f77314a76cc91262e7427d7c37d8e541e4
+bus/actions/delete-row 070b8d7b8860a7f6a6509bf70115d2c235967521
+bus/actions/editing 0a888a7ea14b72bc1618ca09c33d20dfd45c512a
+bus/actions/orphans df1ae1b7580239875a423dc7323bb3055eb241ff
+bus/actions/send-a 2144f658801b87208275475c66ba469fdc1f479e
+bus/actions/voices 55bccef27b7bb0d1330f8e3a58eff2af1a207340
+bus/chain/0 7e6ac10d4f414b7676d99522a28072f704263db7
+bus/chain/1 874cbae0a0853ed97b88c40fd7de56fcaae5dfff
+bus/chain/1-add 6f752b0bff86d480477c6c893b18c69d8bf00f67
+bus/chain/8 900ec8a271c77431e3ce018ba897811e106e01e8
+bus/chain/8-first 49db3c379fec3411eb4cd8a8293713d776e39b9a
+bus/chain/bypassed f00a47689e9cb6c87eaf8c172d47944c20d65d46
+bus/chain/hole bc5b5a878fa947f47afc7f4eee970da10b380664
+bus/chain/hole-selected bf0ddd82f9742203608a22b8b5fa352b984b64e0
+bus/chain/picker 5a63d5d3f976121fea2e2390b1b28d60b45cb273
+bus/list/1 59f62f9ac8c9c5cf94d2ff67ce7f6aa0a06b0b66
+bus/list/3 2e5713ff0679ede49b67e9eadb748482ad32612e
+bus/list/4 f8e002dc8e7f80c09fd85c8c2ae108a6485ce396
+bus/list/full c527560f811e28d68eb3df3679c8329087a70567
+bus/list/hole 7ae800901ccbf708413f7f48830e729bc0bfd849
+bus/list/new-row 376aa51ec7d8ee1c5ee8bc14c93ba9f9b053f90e
+bus/list/orphans e0330036abc9baf152801c9521f51d0660c9df11
+bus/list/sends-row 772d61ffabe48ea7ff54c8560144306ae13e6cf0
+bus/list/waiting 37a558383876cd4d396a5e5e0dc9ccbd03ba6168
+bus/sends/2-send-a f86561293f2edfeba1090049b96956b83bad0ccd
+bus/sends/2-send-b 4bf4935db69869858df3cb1f10b0f34e26828a6d
+bus/sends/full-send-a aef4655f75c94bce5b02212f5258a09e8fa88158
+bus/sends/hole-send-a 137648e0a8af454969e67221e97ae2c1ab8fcfd5
+bus/voices/16-scrolled f7c3b804e7a755a24ba7e28403c723cd87814cb5
+bus/voices/16-top 568376be1a7317c074fcbabb652f8d38b3c2d6d1
+bus/voices/orphans ed3210cb3d7e4db1b4fa9d0fc0834211c1e7c712
+bus/voices/other-bus 413d4e279f18cac23beb89fa5b34aa3c56cf4bff
+bus/voices/waiting 39d08a411e8248215877625be2c486ea4f212e06
+buspicker/row-master 5335729d968e37e857ced8e65c2b70ff984b7d14
+buspicker/row-send-a 637983dfa433a15df84119e44339e85f7c05f715
+buspicker/row-send-b eadd8eb167b01188a5f750e4352f0476ab938bf7
+buspicker/unread 3c7d2763224673241106be8858b8068f5f0feb86
+chain/full/lfo-midi-fx1 f487b39b373960ccccc25428817c840a677b7fde
+chain/full/sel-add-fx 5fe5a294f9a27a774666abdd7f90d3dc7b5c3181
+chain/full/sel-add-midi 0ab79f5b2eeeb2b8ca6da936adc3ec3a778fb9c2
+chain/full/sel-fx8 edb87d7ba39ea6d663075f826fcafecc78150144
+chain/full/sel-midiFx 047eb318ab1a99cd5dc6d62977ad4f698da727c1
+chain/full/sel-patch 08b93a1cb3096f18b4e9507b0fdac7b8fcc74e64
+chain/full/sel-settings 6034f5d3610be735772743dd87ed1bba71dd2f59
+chain/full/sel-synth 479e0885d624bc9b267a95efa5749925265b5be7
+chain/full/shift 7997e71ac36232aa7d1cbce84e00a67938b127a1
+chain/len0/no-synth 7424aa5bfcc1f8272785001568ac5fde6f027809
+chain/len0/sel-add-fx 16ab23fd8316c30d1450c4db6ec126e9fc715aba
+chain/len0/sel-add-midi 683579ba4dfaa8f3a7b94e6f24dc0770cb2145c7
+chain/len0/sel-patch 110afceb43840d365ef3116491b48f71d10792b6
+chain/len0/sel-settings 5456f980cbfdaefead6928b0ca3c018dba399d27
+chain/len0/sel-synth 2314dd390a946020abffc690211bdd9fcfe9c88a
+chain/len0/shift 1d372e44c15c7cbfd67ddd8e84193739ab04cf12
+chain/len1/knob-card 06934f120a3feb9d697ae0fe02fb281f605a6c88
+chain/len1/sel-first 4614679caebcb15cc733cbe50ae10125dcf0169e
+chain/len1/sel-fx1 19a6bc09b1e6daf9f429d3d2a949bbf7c9b33fde
+chain/len2/bypassed ee5f0f93a2add952ded84c8cbff44214f3bde0ed
+chain/len2/bypassed-selected e291b6ef9aff49959e4f695783252a71b2dcc1c7
+chain/len2/bypassed-synth eae10890e182f4c6557deb3928082fb5774c3484
+chain/len2/fx1-splits dc7a4aa9c3229af79dbe6ae40a485768e85c0965
+chain/len2/info-preset 6125e75a4953177be58a35cf4a481ad98a99c391
+chain/len2/info-rnbo 2594544192d7b98a21b0176ea241b76a3831e628
 chain/len2/knob-card-strip ab078fd619ae0dae8e00d9f07810c516bdc41de7
-chain/len2/lfo1 c126e8a01836bd62c37e1784a22b192111764dee
-chain/len2/lfo1+2 17552d1adfba55acdfbacb5600e2278821a04011
-chain/len2/lfo2 e38460131e3d8229f9b247a6cef084ace82f65db
-chain/len2/patch-dirty 9153b6174646ac16d52069285e83e1cfaa435901
-chain/len2/patch-named 29ab15393646f69c8e81dbfb05d2ddb2b72af6b9
-chain/len2/patch-selected-named 6cba2679a8acfbe5c2cd894c39ebba654c7981af
-chain/len2/sel-fx1 5d302318f8719e2f920c9fdcb75e1d3c655a8355
-chain/len2/sel-fx2 4b3605925e8099a467eca3fccd8abf7fd65c55ab
-chain/len2/sel-settings 70ba521f14edc1e23d3f20a1fa17636f5eb315cf
-chain/len2/sel-synth 71de3d3eda2fd4fc89b06307ddfc3dbb824f2fd4
-chain/len2/shift 4769e400ec5d84b394285d8e031e50fef657a81d
-chain/len5/bypassed+lfo1+2 e88ec5ea8916eb72c9865c3b8511ab1f69909002
-chain/len5/knob-card 9421ab068a7ab7643887483afadf344aa407a499
-chain/len5/sel-add-fx db9b29012bb9d2bd64f42c0b0d979a1edccba650
-chain/len5/sel-fx4 f58fc6c6cba287c19704a4e19656b47eae707a08
-chain/len5/sel-synth fd923ce5be7ca7882d4fc21599a2d66d67e66c93
-chain/len5/shift 9637d1633f013572a54ff29b396357b8aec3dd57
-chain/len8/sel-add-midi 7a5a27588ab17c5fd663df9b666dbf381a564027
-chain/len8/sel-fx4 d5d3067a298c0e99665eebf4e6b84c5c5d7075d8
-chain/len8/sel-fx8 d0b13083ff5a0ed369c96a67697c7f499585475a
-chain/len8/sel-patch fd86521a0f65f3e8c3be538ec93e2816b21d8548
-chain/len8/sel-settings 1970163ad3298f03ce83319278f32a4c50c3210a
-master/hole/sel-fx3 868368767c75b463587c442b0db0c897fa8f1709
-master/len0/sel-add-fx d712382914948d009782f2158fa4411ed5e86d11
-master/len0/sel-preset fe375bf4dd2b6ea90b3c351740df967748279e59
-master/len0/sel-settings da619fc998a85f24c7a972c594b9340e1081fc1c
-master/len0/shift d712382914948d009782f2158fa4411ed5e86d11
-master/len1/knob-card 8a4adeb6e588d028700a1e6231740570a920334d
-master/len1/preset-named 2c96a2d6b39aad02da2a12849d33701ba2d15488
-master/len1/sel-add-fx a97b1ac4ad4d437ce977807451a6a67563222264
-master/len1/sel-fx1 8348cff238e12999438666ddefcc5481cd16bfd0
-master/len2/bypassed d39882f381002d4b13dd67859c2a260d7d1d985f
-master/len2/bypassed-selected 36c8ca73f7fc014e9fbe4c57fd18810c5eb6e18f
-master/len2/info-optname ef0ffdb45a0947c44939d8c79291e5d811e6ad6c
-master/len2/info-preset 443009ac9970876d616b8bc4ca415155d2e68095
-master/len2/knob-card-strip 8d2b175c575df3646585777b1c0a04ca512c2ccc
-master/len2/lfo1 5a683c7bff6693c9123303e3fd69ade2d43010c5
-master/len2/lfo1+2 e4b5daa12bc3afded1f2f9a187786a083aafbaea
-master/len2/lfo2 396e56b5eb5bfa2c9f854dfefd03cad4db3458e5
-master/len2/sel-add-fx 3abc0c08d9fcaaf41ee1d56fa8ed9063ef8a0312
-master/len2/sel-fx1 2ff06dd6de1408fc4dfe4e4ff5ca3b9c724c7229
-master/len2/sel-fx2 479571ede1204ca4fe10e90903d666838338b0cd
-master/len2/shift 71432beb460a172713985dee933a6fc0300e8232
-master/len5/bypassed+lfo1+2 8980afef3275ae439ff33223a4276099772ff4e1
-master/len5/knob-card 610243ce41bb41ecdbdcdc484e9aea203f962180
-master/len5/sel-fx1 592e1813a4eb1931e50b41fe4d83e66db07d2f69
-master/len5/sel-fx3 9edf6261b2836f6318749a1443d6ff1f33e621eb
-master/len5/sel-fx5 8febe41fa16c3412839934b41fa37bc6dc4fc9ca
-master/len5/shift 4f29c946381d12737a1a07f07b91575c1e543bf1
-master/len8/sel-add-fx fe104b8d48d0d369f95b387449397189c342f223
-master/len8/sel-fx1 b37842270a376fb59d69b5b7118b8be0ee30ae88
-master/len8/sel-fx4 8165d68c93e365293fd82617d2f0a7717102872b
-master/len8/sel-fx8 fa3adbfea2b88607e1bcafe8dce5e8e6d5d154a9
-master/len8/sel-preset a3317a26ffdc7697f52613b47378ba942fbfd8a3
-master/len8/sel-settings e5773656a8d452d85a9f5e0a450427b87bbdad0f
-master/len8/shift 7e53f21016f114c499055e9f7e6fe1b23f7fd1ef
+chain/len2/lfo1 df44206880054791dc5aa75a3b19524dc3f81799
+chain/len2/lfo1+2 70e378eedc648733af2215cb04132c256e15b924
+chain/len2/lfo2 d857c30735fb4131b52d3b83ca531969d1f6524e
+chain/len2/patch-dirty a53c98bca78c85c1a5b498584ea527e10dd078f6
+chain/len2/patch-named 8c381ea079b895b365fc5cc0d9362bea767cc142
+chain/len2/patch-selected-named ac763ac36ba356929e8c7460c3e9f6ad3bc9c75d
+chain/len2/sel-fx1 dc7a4aa9c3229af79dbe6ae40a485768e85c0965
+chain/len2/sel-fx2 bbdecc8b5b61f31c24fc5cb8dfff906cd9499254
+chain/len2/sel-settings c01d109c9dbafe0be25ae4144d95fe9c12081158
+chain/len2/sel-synth 7b408ef1a7e72b2cc5494454c2f1e35428b53541
+chain/len2/shift 2f8b2500a60524d60f582f8322cf0072746f9201
+chain/len2/synth-splits 7b408ef1a7e72b2cc5494454c2f1e35428b53541
+chain/len2/synth-splits-shift 8f83c965ed8222c9ea7d5021e025a25c5cae8ef5
+chain/len5/bypassed+lfo1+2 4552ae32fccc26c4fe498eeb5367c0ba27c725dd
+chain/len5/knob-card f3569f05ec731c30eaeb3a4865530baae6f23b27
+chain/len5/sel-add-fx 155bacde5ba7ee65fd5cdd916bb9c2275cddce62
+chain/len5/sel-fx4 63969214e081cf6507d84de9681ace3359fe98b1
+chain/len5/sel-synth b13bc75a19d1b3e731e74380d3b32c9ece83410f
+chain/len5/shift 6b15fab05300af9afea850af7571e871f10012ee
+chain/len8/sel-add-midi cd3c575a62f9be6d6202b90c7d4782ec0eeb0835
+chain/len8/sel-fx4 c0fdefe9b9c9f6a98c308f69f4b7620bbb46aa2d
+chain/len8/sel-fx8 f78e0b76866f52c522913b0acae0cb2c4fba0a60
+chain/len8/sel-patch 2915b10c36d08d2a88f13f485231d2459ff039ff
+chain/len8/sel-settings 86f8a87f47aaa5e66760332bb945acebe1dfb174
+master/hole/sel-fx3 a94fa76bcbf502adcb189dc5558d93414cf7eecb
+master/len0/sel-add-fx 07324f0342f227ab1b33e2d6864620aebd3c7b61
+master/len0/sel-preset 92d1115e444173bd3adad0ae590ef7620d18a7a1
+master/len0/sel-settings 0d77756d96e692c9d018e51b298407c7995d5c4f
+master/len0/shift 07324f0342f227ab1b33e2d6864620aebd3c7b61
+master/len1/knob-card 30415455e77957114f8fdfd1e6790c65dac1af28
+master/len1/preset-named a373c6344dcc0e687a6606075bb5fa5329250225
+master/len1/sel-add-fx 05316d1d2addc4af868dd8435b80cc8a062d97c7
+master/len1/sel-fx1 244db887eb05df5f10580695ca5907bed6074741
+master/len2/bypassed 60f1e7be895863abb122150ccee20a5de48664b1
+master/len2/bypassed-selected 7d2c922612bd47e554e6f473f3c4a42043969adc
+master/len2/info-optname d519fd12927bcf15d1da44a4082a6bfee8866266
+master/len2/info-preset ce1e413219c20ed11b61af8f1c77326e417182cc
+master/len2/knob-card-strip 6338f6b20c269db9b34fd87f3ac257fdd7d2f604
+master/len2/lfo1 fc315cb5474975415709e2f15d17a8a254e6d733
+master/len2/lfo1+2 21a5b958f4ed34dec7665ac594a2d7cb8d638e6a
+master/len2/lfo2 1195355a22f417d46ed1d56940ba281800c551a8
+master/len2/sel-add-fx 37c79dda5f6e7bcc4e5002840f01b77c16c89337
+master/len2/sel-fx1 c836842855ef12b0321a8e18ab36fbe75964995c
+master/len2/sel-fx2 9b76a83cb404e5c597175dd36e94778c0e575b5b
+master/len2/shift 7273afee3310f7fbc8b7bd1ff5785388e16e7f6b
+master/len5/bypassed+lfo1+2 1622e400e87c429efd78bd362911c63f05a52fd9
+master/len5/knob-card 2cfa488e5010b444199d32f6331049b462eb56e9
+master/len5/sel-fx1 63cd0ddca0f083b95080eeeae228b328d81931fa
+master/len5/sel-fx3 a4a835976308ba4e5c1676536fbacfa3d42eec52
+master/len5/sel-fx5 94ac17f51de338acf029f3f954f82a8385e1ab8b
+master/len5/shift 43ba4241ab6f6d6f267bdcf03bb64bf0bd1ea37a
+master/len8/sel-add-fx 9eef23ddd6e11be585a8886c19d8579939c8a117
+master/len8/sel-fx1 67cbd0a144e8b6b8ae233c51ed1df1bc3303d7d4
+master/len8/sel-fx4 d51cfe8be3d15683f9325fbf8d788868f5d1d196
+master/len8/sel-fx8 5b598f1556040947c9fa7e794e980d4c54542879
+master/len8/sel-preset 52890478dbb4664d15a070355cc9cad05baa47ff
+master/len8/sel-settings 535bafd799f6eb0cd387ac8dcf6cdaeadb2e1b82
+master/len8/shift 3f4060493658e69b0decb589aee937dd9f8aafc7
+master/sends/a-full f2b1af99492b1c2f635a111f2bcba31a3838c66e
+master/sends/a-mid-unselected 1a52f2badb821f05ddeda66b1f10011dcd5b444b
+master/sends/a-zero e1e21d73c3f8c517ba66285d719b2c6ab7d6aeda
+master/sends/b-selected 24a866b97471e80f5ecd29e4bbf27422862fce1e
+master/sends/gap-with-settings e17e26c8cdb62b0491275357f153e71693f89d8e
 picker/master/empty a13da4acff9c335b43f9324280277f1571b05ffd
 picker/master/loaded-last 708b4b4dade2311e94e547e2aed6d29dfbcc9445
 picker/master/long-name 716bfee01f5aa9fb3ebb1180fd4fc1f436acbb38
 picker/master/moves-both 5bb075a61566dec5ff59438657a65cd87d36cbbd
 picker/master/moves-right f02c760fe1a4e894e3d281200326b4f5279901c2
 picker/master/scrolled 3c4ef7fb906486124166e3a9c497678cd830eefa
+picker/master/send-header fa209fb20c87d27b04ed6eddf602f74e2aad8e54
 picker/slot/empty 97fcf5e2cebd9a5f4aab60bb3653636f08ee5da9
 picker/slot/loaded-last 6bb5370fb70c44018a44c0c2a5a87b94b2f1f4d5
 picker/slot/long-name 7c0b5dc674dfca00acdd2d0066fd4279ce7a138d
 picker/slot/moves-both 3584e1c2e6a61d97cd5acfec136a56b0b91ea4b6
 picker/slot/moves-right 49fa2843fdb72a0d5911fde8d76c6f12595b22ac
 picker/slot/scrolled 7bbbcee17492d5ffc668e58040390fd1725d7bc4
+picker/slot/send-header 6922185df8dde57cd1f14b04827eb8488daef572
+send/a/len0/sel-add-fx 673aac93aaa036dcc85eb380ff5a190405de74e8
+send/a/len2/bypassed-no-lfo bb72e5e8aec919d445f2462cc138a91c4e9dddb6
+send/a/len2/sel-fx1 932b5db9de6dfb6bbf993ece8075ccd6dd0bd36d
+send/a/len2/sel-fx2 ac505068ca9e4ec7a391e0ab02413695e29cc6c2
+send/a/len2/sel-settings f2bdd64db86ec4684a2e317d6b372382e75e1531
+send/a/len2/sel-settings-unread ee75c4d1f16e694d90f4cad889b581456989b38b
+send/a/len5/sel-fx3 5bb21da650a93e46564fe106317e9575901bca58
+send/b/len2/sel-fx1 8671d317947e6f7f07510b24328b34fe3fca331d
+send/b/len2/sel-settings 23d13b687d448ce3bbfe4df594bc58126fd423ca
 settings/master/actions 05bb4a938ed639d6c6f04ad71129f335524a9d9e
 settings/master/actions-nopreset 045aa30be0bc9e14f8e9b3ba1bcd06578463bee6
 settings/master/lfo1-free 1ca97f188d7cb3d0bb2fc2007ea2bdfd258752b3
 settings/master/lfo2-sync a75c29f62e026915f937c4c52c4f87146c993f7c
 settings/master/main-all b35018c7d75091e4f1050c94815acff69c415744
 settings/master/main-ch10 a54ed9fc14076d01d3be216c3c07411057820759
+settings/send1/sel-return f0047eb3ae8c654f7b550c9c20eeecc06bf8ab31
+settings/send1/sel-to-send2 d835eb7b81d908ecaa6a0bdc74986f4bad660222
+settings/send1/unread f9a92aac78f1789f6d4c8ac457011f72296a2da4
+settings/send2/sel-return dd8286804f682d07ee32add3dddf4c2a883b9703
+settings/slot/buses-2 f2f8a377ca45ca25a7bed698dfaf30c04625b18c
+settings/slot/buses-cursor 60fdd89dbc4ac2b9c8b319ab77b8771701e6c52c
+settings/slot/buses-none badba9b67ea07cb5bd506ffebf3ffbf5fc6583e3
+settings/slot/buses-nopreset 08fa3a8ab89c6a4cf5909a9bf3ff7de21c3da5a5
+settings/slot/no-buses 56d75f10ccad2d4e3ac3d58ebe3fddaa0a52c4ed
+settings/slotlist/buses-2 a530a3e2c68bfaa4f6cf525acf04cee5f766ba17
+settings/slotlist/buses-cursor 8b83868ed7ab981491eed1906fc259e5014d08f7
+settings/slotlist/no-buses d3f7c8f56cdbc7db5cce2174fd2353d5cc05e6a4

@@ -14,6 +14,7 @@
 
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
+#include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module */
 #include "master_fx_key.h"    /* master_fx_route_* — header-only so tests/host can run it */
 #include "master_fx_snapshot.h" /* master_fx_snapshot_* — likewise */
@@ -67,8 +68,22 @@ void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) 
 void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 int (*shadow_chain_fx_requires_continuous)(void *instance) = NULL;
+void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
+                                 int n_sends, int frames,
+                                 int slot_volume_0_127) = NULL;
+void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
+                                     int n_sends, const int16_t *post_fx,
+                                     int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
 host_api_v1_t shadow_host_api;
+
+/* Global send buses. Zero-initialised BSS: every position empty, both returns
+ * down, no A->B. That resting state is what makes shadow_send_bus_active()
+ * false for both buses until something is actually configured, which is what
+ * keeps an unused send free in the mix path. */
+master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
+volatile int shadow_send_return_level[SEND_BUSES];
+volatile int shadow_send_a_to_b;
 
 /* Look up the slot owning a chain plugin instance and return its live
  * receive channel. Used by chain MIDI FX in Pre mode to address Move
@@ -189,6 +204,14 @@ void chain_mgmt_init(const chain_mgmt_host_t *h) {
      * Master FX position gets its owned param caches here, before anything can
      * load a module or read one. */
     (void)shadow_master_fx_storage_ensure();
+    /* And every send position's, for the same reason and at the same moment:
+     * the only other point a send buffer could be allocated is its load, which
+     * runs on the SPI callback. */
+    (void)shadow_send_fx_storage_ensure();
+    /* And the async loader's staging buffer, at the same moment and for the
+     * same reason: the alternative moment is the load, which is served from
+     * the SPI callback. */
+    (void)shadow_fx_load_storage_ensure();
     chain_mgmt_initialized = 1;
 }
 
@@ -553,6 +576,10 @@ void shadow_chain_defaults(void) {
         unified_log("shim", LOG_LEVEL_ERROR,
                     "Master FX: no param cache storage; slots stay unloadable");
     }
+    /* Anything the loader has in flight is for the chain that is being thrown
+     * away. Cancel before the unloads, so a realisation cannot land in a
+     * position this loop has just emptied. */
+    shadow_fx_load_cancel_all();
     for (int i = 0; i < MASTER_FX_SLOTS; i++) {
         shadow_master_fx_slot_unload(i);
         shadow_master_fx_slots[i].chain_params_cached = 0;
@@ -561,6 +588,26 @@ void shadow_chain_defaults(void) {
         }
     }
     mfx_fx_count = 0;
+
+    /* The send buses reset with the rest of the chain state: both chains
+     * vacated, both returns down, no A->B. That resting state is what
+     * shadow_send_bus_active() reads to keep an unused send out of the mix
+     * path entirely. */
+    if (!shadow_send_fx_storage_ensure()) {
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "Send FX: no param cache storage; send positions stay unloadable");
+    }
+    shadow_send_fx_unload_all();
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        shadow_send_return_level[sb] = 0;
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            shadow_send_fx_slots[sb][i].chain_params_cached = 0;
+            if (shadow_send_fx_slots[sb][i].chain_params_cache) {
+                shadow_send_fx_slots[sb][i].chain_params_cache[0] = '\0';
+            }
+        }
+    }
+    shadow_send_a_to_b = 0;
 }
 
 void shadow_chain_load_config(void) {
@@ -774,10 +821,21 @@ void shadow_toggle_solo(int slot) {
  * Master FX
  * ============================================================================ */
 
-void shadow_master_fx_slot_unload(int slot) {
-    if (slot < 0 || slot >= MASTER_FX_SLOTS) return;
-    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
-
+/* The vacate, in a form that names no array.
+ *
+ * Everything here is a property of the POSITION and means the same thing
+ * whichever chain it sits in — destroy the instance, dlclose, forget the
+ * identity and the capture rules. That is what the shared master_fx_slot_t
+ * type buys, and this is the first thing to actually collect on it.
+ *
+ * What deliberately stays with the callers: the LFO runtime caches and
+ * mfx_fx_count, both of which are Master FX's alone. A send bus has no LFOs
+ * and publishes no length.
+ *
+ * It does NOT clear chain_params_cached or the buffer's contents, matching
+ * what this code did before the split: the loader clears them, and
+ * shadow_chain_defaults() clears them explicitly after unloading. */
+static void fx_slot_unload_impl(master_fx_slot_t *s) {
     if (s->instance && s->api && s->api->destroy_instance) {
         s->api->destroy_instance(s->instance);
     }
@@ -792,6 +850,11 @@ void shadow_master_fx_slot_unload(int slot) {
     s->module_id[0] = '\0';
     s->bypassed = 0;
     capture_clear(&s->capture);
+}
+
+void shadow_master_fx_slot_unload(int slot) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return;
+    fx_slot_unload_impl(&shadow_master_fx_slots[slot]);
     mfx_runtime_chain_params_cached[slot] = 0;
     /* Clear the CONTENTS, keep the buffer. The pointer belongs to the position
      * for the life of the process; a permutation rotates it. */
@@ -979,6 +1042,97 @@ int shadow_master_fx_move(int from, int to) {
     return 1;
 }
 
+/* ============================================================================
+ * Send bus shape edits
+ * ============================================================================
+ *
+ * The SAME permutation, aimed at shadow_send_fx_slots[send][] instead. It is
+ * genuinely simpler than the master's rather than a trimmed copy of it, and the
+ * two things it does not do are the two things fx_slot_unload_impl already
+ * documents as Master FX's alone:
+ *
+ *   - NO LFO RETARGET. A send bus has no LFOs, so there is no table naming a
+ *     position by string and nothing to re-aim.
+ *   - NO LENGTH. A send publishes none; its chain is SEND_FX_SLOTS positions
+ *     with holes, and the editor derives what to draw from `modules`. So the
+ *     permutation is bounded by the array itself, which also means a module can
+ *     be moved into a trailing empty position -- correct here, where the master
+ *     would be extending a length it publishes.
+ *
+ * There were deliberately no verbs here at all ("a send position is emptied by
+ * writing an empty string into it"). That was fine while nothing offered to
+ * reorder one -- but the editor is shared, and its Shift+jog moved the model
+ * and emitted a verb the shim dropped on the floor, so the picture reordered
+ * and the audio did not. Reported from hardware.
+ *
+ * Runs on the SPI callback, like the master's: no allocation, no I/O, and the
+ * caller refuses while a staged load is in flight for the same reason.
+ */
+#define SEND_PERM_MAX_ARRAYS 8
+
+static int send_perm_collect(int send, chain_perm_array_t *out, char **owned_ptrs) {
+    int n = 0;
+    for (int i = 0; i < SEND_FX_SLOTS; i++) {
+        owned_ptrs[i] = shadow_send_fx_slots[send][i].chain_params_cache;
+        shadow_send_fx_slots[send][i].chain_params_cache = NULL;
+    }
+    /* Two arrays where the master collects five: the three it adds are its own
+     * runtime chain_params caches, which live in parallel arrays there and are
+     * plain FIELDS of the shared struct here -- so they rotate with it. */
+    out[n++] = (chain_perm_array_t)MFX_PERM_FIELD(shadow_send_fx_slots[send]);
+    out[n++] = (chain_perm_array_t)MFX_PERM_OWNED(owned_ptrs);
+    return n;
+}
+
+static void send_perm_restore_owned(int send, char **owned_ptrs) {
+    for (int i = 0; i < SEND_FX_SLOTS; i++) {
+        shadow_send_fx_slots[send][i].chain_params_cache = owned_ptrs[i];
+    }
+}
+
+static int send_perm_ok(int send) {
+    return send >= 0 && send < SEND_BUSES;
+}
+
+int shadow_send_fx_insert(int send, int at) {
+    if (!send_perm_ok(send)) return 0;
+    chain_perm_array_t arrays[SEND_PERM_MAX_ARRAYS];
+    char *owned[SEND_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+    int n = send_perm_collect(send, arrays, owned);
+    int now = chain_perm_insert(arrays, n, SEND_FX_SLOTS, SEND_FX_SLOTS, at, map);
+    send_perm_restore_owned(send, owned);
+    return now < 0 ? 0 : 1;
+}
+
+int shadow_send_fx_remove(int send, int at) {
+    if (!send_perm_ok(send)) return 0;
+    if (at < 0 || at >= SEND_FX_SLOTS) return 0;
+    chain_perm_array_t arrays[SEND_PERM_MAX_ARRAYS];
+    char *owned[SEND_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+
+    /* Through the unload, never a memset: the struct holds a live instance AND
+     * a dlopen handle, and zeroing it leaks both silently. */
+    shadow_send_fx_slot_unload(send, at);
+
+    int n = send_perm_collect(send, arrays, owned);
+    int now = chain_perm_remove(arrays, n, SEND_FX_SLOTS, at, map);
+    send_perm_restore_owned(send, owned);
+    return now < 0 ? 0 : 1;
+}
+
+int shadow_send_fx_move(int send, int from, int to) {
+    if (!send_perm_ok(send)) return 0;
+    chain_perm_array_t arrays[SEND_PERM_MAX_ARRAYS];
+    char *owned[SEND_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+    int n = send_perm_collect(send, arrays, owned);
+    int now = chain_perm_move(arrays, n, SEND_FX_SLOTS, from, to, map);
+    send_perm_restore_owned(send, owned);
+    return now < 0 ? 0 : 1;
+}
+
 int shadow_master_fx_count(void) {
     return mfx_fx_count_effective();
 }
@@ -987,39 +1141,37 @@ int shadow_master_fx_slot_load(int slot, const char *dsp_path) {
     return shadow_master_fx_slot_load_with_config(slot, dsp_path, NULL);
 }
 
-int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json) {
-    if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
-    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
-
-    if (!dsp_path || !dsp_path[0]) {
-        shadow_master_fx_slot_unload(slot);
-        return 0;
-    }
-
-    /* This runs on the SPI callback, so it cannot allocate. If startup failed
-     * to give this position its owned caches, refuse rather than load a module
-     * whose param readers would then dereference NULL on the audio thread.
-     * Cheap pointer test, not a retry. */
-    if (!s->chain_params_cache || !mfx_runtime_chain_params_cache[slot]) {
-        return -1;
-    }
-
-    /* Already loaded? (skip check if config_json provided) */
-    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
-        return 0;
-    }
-
-    shadow_master_fx_slot_unload(slot);
-
+/* The load, in a form that names no array — the same split as
+ * fx_slot_unload_impl above, and for the same reason.
+ *
+ * The caller has already vacated the position and checked that its owned
+ * chain_params buffer exists. What is left is the dlopen, the v2 handshake,
+ * create_instance and the module.json parse, none of which has an opinion
+ * about which chain the position belongs to.
+ *
+ * `what` and `idx` name the caller in the diagnostics only, so a send-bus
+ * failure does not report itself as a Master FX one. Returns 0 or -1.
+ *
+ * DOES FILE I/O, ALLOCATES AND dlopens, so it must NOT run on the SPI
+ * callback. Two callers may reach it: the shim worker
+ * (shadow_fx_load_worker_tick, which is where every param-driven load goes
+ * now) and boot restore / tests/host, both of which run on a thread that may
+ * block. The comment here used to say it ran on the callback and call that
+ * "pre-existing"; on hardware it cost ~708 dropped SPI frames on one 7.7 MB
+ * bundle and timed out every param round trip on the device while it ran.
+ * tests/host/test_fx_load_off_callback.sh fails if a param handler calls a
+ * synchronous loader again. */
+static int fx_slot_load_impl(master_fx_slot_t *s, const char *what, int idx,
+                             const char *dsp_path, const char *config_json) {
     s->handle = dlopen(dsp_path, RTLD_NOW | RTLD_LOCAL);
     if (!s->handle) {
-        fprintf(stderr, "Shadow master FX[%d]: failed to load %s: %s\n", slot, dsp_path, dlerror());
+        fprintf(stderr, "Shadow %s[%d]: failed to load %s: %s\n", what, idx, dsp_path, dlerror());
         return -1;
     }
 
     audio_fx_init_v2_fn init_fn = (audio_fx_init_v2_fn)dlsym(s->handle, AUDIO_FX_INIT_V2_SYMBOL);
     if (!init_fn) {
-        fprintf(stderr, "Shadow master FX[%d]: %s not found in %s\n", slot, AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
+        fprintf(stderr, "Shadow %s[%d]: %s not found in %s\n", what, idx, AUDIO_FX_INIT_V2_SYMBOL, dsp_path);
         dlclose(s->handle);
         s->handle = NULL;
         return -1;
@@ -1027,7 +1179,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
 
     s->api = init_fn(&shadow_host_api);
     if (!s->api || !s->api->create_instance) {
-        fprintf(stderr, "Shadow master FX[%d]: init failed for %s\n", slot, dsp_path);
+        fprintf(stderr, "Shadow %s[%d]: init failed for %s\n", what, idx, dsp_path);
         dlclose(s->handle);
         s->handle = NULL;
         s->api = NULL;
@@ -1045,7 +1197,7 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
 
     s->instance = s->api->create_instance(module_dir, config_json);
     if (!s->instance) {
-        fprintf(stderr, "Shadow master FX[%d]: create_instance failed for %s\n", slot, dsp_path);
+        fprintf(stderr, "Shadow %s[%d]: create_instance failed for %s\n", what, idx, dsp_path);
         dlclose(s->handle);
         s->handle = NULL;
         s->api = NULL;
@@ -1069,9 +1221,6 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
     snprintf(module_json_path, sizeof(module_json_path), "%s/module.json", module_dir);
     s->chain_params_cached = 0;
     s->chain_params_cache[0] = '\0';
-    mfx_runtime_chain_params_cached[slot] = 0;
-    mfx_runtime_chain_params_cache[slot][0] = '\0';
-    mfx_runtime_chain_params_last_fetch_ms[slot] = 0;
     FILE *f = fopen(module_json_path, "r");
     if (f) {
         fseek(f, 0, SEEK_END);
@@ -1144,6 +1293,45 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
         s->on_midi = (fx_on_midi_fn)dlsym(s->handle, "move_audio_fx_on_midi");
     }
 
+
+    return 0;
+}
+
+int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const char *config_json) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
+    master_fx_slot_t *s = &shadow_master_fx_slots[slot];
+
+    if (!dsp_path || !dsp_path[0]) {
+        shadow_master_fx_slot_unload(slot);
+        return 0;
+    }
+
+    /* If startup failed to give this position its owned caches, refuse rather
+     * than load a module whose param readers would then dereference NULL on
+     * the audio thread. Cheap pointer test, not a retry. (This function no
+     * longer runs on the callback — see the header — but the readers it would
+     * be arming still do, so the refusal stands for their sake.) */
+    if (!s->chain_params_cache || !mfx_runtime_chain_params_cache[slot]) {
+        return -1;
+    }
+
+    /* Already loaded? (skip check if config_json provided) */
+    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+        return 0;
+    }
+
+    shadow_master_fx_slot_unload(slot);
+    /* The LFO runtime cache is Master FX's alone, so it is reset here rather
+     * than inside the shared loader. Redundant with the unload above, and kept
+     * as the belt to its braces — the LFO refresh parses a param table through
+     * these buffers. */
+    mfx_runtime_chain_params_cached[slot] = 0;
+    mfx_runtime_chain_params_cache[slot][0] = '\0';
+    mfx_runtime_chain_params_last_fetch_ms[slot] = 0;
+
+    int rc = fx_slot_load_impl(s, "master FX", slot, dsp_path, config_json);
+    if (rc != 0) return rc;
+
     /* A load can extend the chain, and two paths get here without a shape edit
      * to set the length: boot restore and a patch/config load. Raising the
      * count here is what stops a running module being invisible to an editor
@@ -1152,6 +1340,614 @@ int shadow_master_fx_slot_load_with_config(int slot, const char *dsp_path, const
 
     fprintf(stderr, "Shadow master FX[%d]: loaded %s\n", slot, dsp_path);
     return 0;
+}
+
+/* --- Global send bus FX positions ----------------------------------------
+ *
+ * The same two operations against shadow_send_fx_slots[][]. Separate entry
+ * points rather than an array parameter on the Master FX pair, because the two
+ * chains differ in what they carry EITHER SIDE of the shared middle: Master FX
+ * has the LFO runtime caches and a published fx_count, a send has neither.
+ * Threading both through as nullable parameters would put that difference at
+ * every call site instead of in these two short functions. */
+
+/* Every send position's owned module.json chain_params buffer.
+ *
+ * SEND_BUSES * SEND_FX_SLOTS * 64 KB = 1 MB, allocated once at shim startup
+ * and never freed, exactly like the Master FX pair. Eagerly, even though most
+ * devices will load nothing into a send: the only moment that could trigger a
+ * lazy allocation is the load itself, and that runs on the SPI callback where
+ * a failed malloc has nowhere to go. So it is allocated off the callback or
+ * not at all.
+ *
+ * There is deliberately no send equivalent of mfx_runtime_chain_params_cache.
+ * That second buffer exists to serve the LFO base-value refresh, and a send
+ * has no LFOs — so sends cost 1 MB, not the 2 MB the plan quoted for the
+ * mirrored pair.
+ *
+ * Idempotent and gap-filling, same contract as shadow_master_fx_storage_ensure. */
+int shadow_send_fx_storage_ensure(void) {
+    int all_present = 1;
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            master_fx_slot_t *s = &shadow_send_fx_slots[sb][i];
+            if (!s->chain_params_cache) {
+                s->chain_params_cache = calloc(1, MASTER_FX_CHAIN_PARAMS_MAX);
+            }
+            if (!s->chain_params_cache) all_present = 0;
+        }
+    }
+    if (!all_present) {
+        /* Not fatal and not rolled back: whatever was allocated stays, a later
+         * call fills the gaps, and shadow_send_fx_slot_load_with_config refuses
+         * to bring a position up meanwhile — so no reader can reach a missing
+         * buffer. */
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "Send FX: chain_params cache allocation failed; sends stay unloadable");
+    }
+    return all_present;
+}
+
+void shadow_send_fx_slot_unload(int send, int pos) {
+    if (send < 0 || send >= SEND_BUSES) return;
+    if (pos < 0 || pos >= SEND_FX_SLOTS) return;
+    fx_slot_unload_impl(&shadow_send_fx_slots[send][pos]);
+}
+
+int shadow_send_fx_slot_load_with_config(int send, int pos, const char *dsp_path,
+                                         const char *config_json) {
+    if (send < 0 || send >= SEND_BUSES) return -1;
+    if (pos < 0 || pos >= SEND_FX_SLOTS) return -1;
+    master_fx_slot_t *s = &shadow_send_fx_slots[send][pos];
+
+    if (!dsp_path || !dsp_path[0]) {
+        shadow_send_fx_slot_unload(send, pos);
+        return 0;
+    }
+
+    /* Same refusal as Master FX: no owned buffer, no load. Without it the
+     * module.json parse inside the shared loader would write through a NULL
+     * chain_params_cache on the SPI callback — which is the whole reason
+     * shadow_send_fx_storage_ensure exists. */
+    if (!s->chain_params_cache) return -1;
+
+    if (!config_json && strcmp(s->module_path, dsp_path) == 0 && s->instance) {
+        return 0;
+    }
+
+    /* Read the OCCUPANCY BEFORE the unload below, or the answer is always
+     * "empty" -- this position is about to be emptied by us. It is the whole
+     * bus, not this position: see send_return_level_on_load. */
+    int bus_was_empty = 1;
+    for (int i = 0; i < SEND_FX_SLOTS; i++) {
+        if (shadow_send_fx_slots[send][i].instance) { bus_was_empty = 0; break; }
+    }
+
+    shadow_send_fx_slot_unload(send, pos);
+
+    int rc = fx_slot_load_impl(s, "send FX", send * SEND_FX_SLOTS + pos,
+                               dsp_path, config_json);
+    if (rc != 0) return rc;
+
+    /* The first effect in an empty send opens its return. A failed load does
+     * not reach here, so a send that stayed empty keeps its silent return. */
+    shadow_send_return_level[send] =
+        send_return_level_on_load(bus_was_empty, shadow_send_return_level[send]);
+
+    fprintf(stderr, "Shadow send FX[%d][%d]: loaded %s\n", send, pos, dsp_path);
+    return 0;
+}
+
+int shadow_send_fx_slot_load(int send, int pos, const char *dsp_path) {
+    return shadow_send_fx_slot_load_with_config(send, pos, dsp_path, NULL);
+}
+
+void shadow_send_fx_unload_all(void) {
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) shadow_send_fx_slot_unload(sb, i);
+    }
+}
+
+/* ============================================================================
+ * Async FX position loading — the expensive half, off the SPI callback
+ * ============================================================================
+ *
+ * fx_slot_load_impl above dlopens a shared object, runs create_instance and
+ * reads module.json. All three are file I/O and allocation, and both `module`
+ * param writes reached it from shadow_inprocess_handle_param_request — i.e.
+ * from the SPI callback, at SCHED_FIFO 70 on core 3, inside a ~2370 us frame
+ * budget shared with the whole device. Loading a 7.7 MB CLAP bundle there was
+ * measured on hardware at ~708 dropped SPI frames (~2 s) in one write, during
+ * which every param round trip on the device timed out at its 100 ms deadline
+ * — including the ones the editor needed to draw, which is why the screen sat
+ * on "Loading" and why the state file kept the previous module (the saver
+ * refuses to write on a failed read, correctly).
+ *
+ * BUS FX ALREADY DO THIS. chain_bus.c moved exactly this work to a worker, and
+ * the send positions were left on the callback only because Master FX was.
+ * Everything below is that mechanism transplanted, not a second one:
+ *
+ *   RT     records the request and returns. It never dlopens, never allocates
+ *          and never opens a file.
+ *   WORKER (the shim's existing SCHED_OTHER thread on cores 0-2 — see
+ *          shim_worker.c; NOT a new pthread_create from the callback, which
+ *          would inherit SCHED_FIFO 70 and starve Move's own Link Main at 35)
+ *          does the dlopen, create_instance and module.json parse into a
+ *          STAGING master_fx_slot_t.
+ *   RT     INSTALLS the staged realisation into the live position — pointer
+ *          stores and two small memcpys, no allocation — and hands the
+ *          outgoing module's instance and handle to the worker to destroy.
+ *
+ * WHY A STAGE AND NOT A GATE OVER THE LIVE STRUCT. shadow_master_fx_slots and
+ * shadow_send_fx_slots are read unguarded from the render loop, the MIDI
+ * forwarder, the param handler and the two snapshot serializers — dozens of
+ * sites, none of which knows about a gate. Keeping the RT thread the ONLY
+ * WRITER of those fields means not one of them has to change, which is the
+ * whole reason this shape was chosen over gating each reader.
+ *
+ * The gate that does exist (fx_load_gate.h) guards the HANDOVER, and it is a
+ * sequence number for the reason chain_bus.c's is: a boolean lets a preempted
+ * worker re-open a gate the RT thread has closed, which puts dlclose() in a
+ * race with the render path. Here the RT thread owns BOTH stores — the close
+ * (req_seq) and the open (done_seq) — and the worker's only publication is the
+ * stage's own state word, which the install refuses whenever the seq it
+ * carries is no longer the one being asked for.
+ */
+
+/* Every Master FX and send position, in one flat index space, because the
+ * loader has nothing to say about which chain a position belongs to — the same
+ * reason fx_slot_load_impl takes a master_fx_slot_t and not an array. Master
+ * positions come first so a master index IS its flat index. */
+#define FX_LOAD_POSITIONS (MASTER_FX_SLOTS + SEND_BUSES * SEND_FX_SLOTS)
+
+int shadow_fx_load_flat_master(int slot) {
+    if (slot < 0 || slot >= MASTER_FX_SLOTS) return -1;
+    return slot;
+}
+
+int shadow_fx_load_flat_send(int send, int pos) {
+    if (send < 0 || send >= SEND_BUSES) return -1;
+    if (pos < 0 || pos >= SEND_FX_SLOTS) return -1;
+    return MASTER_FX_SLOTS + send * SEND_FX_SLOTS + pos;
+}
+
+static master_fx_slot_t *fx_load_live(int flat) {
+    if (flat < 0 || flat >= FX_LOAD_POSITIONS) return NULL;
+    if (flat < MASTER_FX_SLOTS) return &shadow_master_fx_slots[flat];
+    int f = flat - MASTER_FX_SLOTS;
+    return &shadow_send_fx_slots[f / SEND_FX_SLOTS][f % SEND_FX_SLOTS];
+}
+
+/* Per-position request. See fx_load_gate.h for what each counter means and for
+ * why there are three of them rather than one. */
+typedef struct {
+    volatile unsigned req_seq;    /* RT only. THE CLOSE. */
+    volatile unsigned req_pub;    /* RT only. Catches up with req_seq once the
+                                   * path below is fully written. */
+    volatile unsigned done_seq;   /* RT only, at install. THE OPEN. */
+    volatile int failed;          /* RT only, at install: outcome of done_seq. */
+    char req_path[256];           /* RT writes between the close and the publish;
+                                   * the worker reads it only while
+                                   * fx_load_request_readable() says so. */
+    /*
+     * The module id the path names, derived on the RT side at request time.
+     *
+     * IT IS WHAT THE POSITION ANSWERS WITH WHILE IT LOADS. The alternatives
+     * are both wrong and both were tried: naming the OUTGOING module makes the
+     * component entry gate open the editor of the module being replaced, and
+     * answering EMPTY makes the autosave read the position as vacated and
+     * write "{}" over the state file — the erase every `modules` snapshot in
+     * this file exists to prevent. Naming the module that is arriving is the
+     * only answer that is true, and it is the one the entry gate is built for:
+     * a named module whose ui_hierarchy is still "" asks is_loading, gets "1",
+     * and holds.
+     */
+    char req_id[64];
+} fx_load_req_t;
+
+static fx_load_req_t fx_load_reqs[FX_LOAD_POSITIONS];
+
+/* The single in-flight realisation.
+ *
+ * ONE, not a queue: a load is a user gesture and they do not overlap in
+ * practice, and one stage is one 64 KB buffer instead of FX_LOAD_POSITIONS of
+ * them. A second request while one is in flight simply waits — its position
+ * reads as LOADING throughout, which is exactly what the UI needs to show.
+ */
+#define FX_STAGE_IDLE    0   /* the worker may take the next request */
+#define FX_STAGE_WORKING 1   /* worker-owned; RT must not look */
+#define FX_STAGE_READY   2   /* a realisation is waiting to be installed */
+#define FX_STAGE_FAILED  3   /* the load did not produce a module */
+
+static struct {
+    volatile int state;
+    int flat;                 /* which position; worker writes before READY */
+    unsigned seq;             /* the req_seq this realisation answers */
+    master_fx_slot_t staged;  /* fx_slot_load_impl fills this, unchanged */
+} fx_stage;
+
+/*
+ * Instances and dlopen handles on their way out.
+ *
+ * destroy_instance and dlclose are the teardown half of the same expense, so
+ * they go to the worker too. The RT thread only ever moves three pointers into
+ * this ring; the worker drains it.
+ *
+ * A FULL RING DEFERS THE INSTALL rather than freeing on the callback or
+ * leaking: the stage stays READY and the next frame tries again. Sixteen is
+ * far past what a human can queue at ~200 ms of worker cadence.
+ */
+#define FX_RETIRE_SLOTS 16
+typedef struct {
+    void *handle;
+    audio_fx_api_v2_t *api;
+    void *instance;
+} fx_retire_t;
+static fx_retire_t fx_retire_ring[FX_RETIRE_SLOTS];
+static volatile unsigned fx_retire_head;   /* RT produces */
+static volatile unsigned fx_retire_tail;   /* worker consumes */
+
+static int fx_retire_full(void) {
+    return (fx_retire_head - __atomic_load_n(&fx_retire_tail, __ATOMIC_ACQUIRE))
+           >= FX_RETIRE_SLOTS;
+}
+
+/* RT. Caller has already checked fx_retire_full(). */
+static void fx_retire_push(master_fx_slot_t *s) {
+    if (!s->handle && !s->instance) return;
+    unsigned h = fx_retire_head;
+    fx_retire_ring[h & (FX_RETIRE_SLOTS - 1)].handle = s->handle;
+    fx_retire_ring[h & (FX_RETIRE_SLOTS - 1)].api = s->api;
+    fx_retire_ring[h & (FX_RETIRE_SLOTS - 1)].instance = s->instance;
+    __atomic_store_n(&fx_retire_head, h + 1u, __ATOMIC_RELEASE);
+    s->handle = NULL;
+    s->api = NULL;
+    s->instance = NULL;
+    s->on_midi = NULL;
+}
+
+/* Worker. */
+static void fx_retire_drain(void) {
+    for (;;) {
+        unsigned t = fx_retire_tail;
+        if (t == __atomic_load_n(&fx_retire_head, __ATOMIC_ACQUIRE)) return;
+        fx_retire_t r = fx_retire_ring[t & (FX_RETIRE_SLOTS - 1)];
+        if (r.api && r.instance && r.api->destroy_instance) {
+            r.api->destroy_instance(r.instance);
+        }
+        if (r.handle) dlclose(r.handle);
+        __atomic_store_n(&fx_retire_tail, t + 1u, __ATOMIC_RELEASE);
+    }
+}
+
+/*
+ * The stage's own owned chain_params buffer.
+ *
+ * fx_slot_load_impl writes the module.json snapshot through
+ * staged.chain_params_cache, so the stage needs the same
+ * MASTER_FX_CHAIN_PARAMS_MAX buffer every real position has — and the install
+ * SWAPS the two pointers rather than memcpying 64 KB on the callback. A swap
+ * keeps the "OWNED BUFFER, NEVER NULL" invariant on both sides by
+ * construction: each side still holds exactly one buffer of exactly that size,
+ * only a different one.
+ *
+ * Allocated here for the same reason the two storage_ensure functions are:
+ * the only other moment is the load itself, and a failed malloc there has
+ * nowhere to go. While it is missing, shadow_fx_load_request refuses, so no
+ * position can be brought up without it.
+ */
+int shadow_fx_load_storage_ensure(void) {
+    if (!fx_stage.staged.chain_params_cache) {
+        fx_stage.staged.chain_params_cache = calloc(1, MASTER_FX_CHAIN_PARAMS_MAX);
+    }
+    if (!fx_stage.staged.chain_params_cache) {
+        unified_log("shim", LOG_LEVEL_ERROR,
+                    "FX loader: no staging param cache; FX positions stay unloadable");
+        return 0;
+    }
+    return 1;
+}
+
+/*
+ * RT: record the intent and return. Nothing here allocates, opens a file or
+ * dlopens; the whole cost is a bounded strncpy and three stores.
+ *
+ * Returns 0 if the request was ACCEPTED — which is not the same as loaded.
+ * The caller must not report a load; shadow_fx_load_state() is what the UI
+ * reads, and it says LOADING until the install lands. Returns -1 only for a
+ * request that can never be served (bad index, no owned buffer), which is a
+ * real error 7 and not a wait.
+ *
+ * An empty path is an UNLOAD, and it goes through the worker too — the
+ * destroy_instance and dlclose it ends in are the same expense as the load.
+ */
+/*
+ * The module id ".../audio_fx/<id>/<id>.so" names — the same derivation
+ * fx_slot_load_impl makes (dirname, then basename of that), restated here
+ * because the pending answer has to be available before the worker has run.
+ * RT-safe: one bounded copy and two strrchr on the stack.
+ */
+static void fx_load_id_from_path(const char *path, char *out, size_t out_len) {
+    char dir[256];
+    snprintf(dir, sizeof(dir), "%s", path ? path : "");
+    char *slash = strrchr(dir, '/');
+    if (slash) *slash = '\0';
+    const char *id = strrchr(dir, '/');
+    snprintf(out, out_len, "%s", id ? id + 1 : dir);
+}
+
+int shadow_fx_load_request(int flat, const char *dsp_path) {
+    master_fx_slot_t *s = fx_load_live(flat);
+    if (!s) return -1;
+    /* Same refusal the synchronous loaders make, and for the same reason: the
+     * module.json parse writes through chain_params_cache, so a position
+     * without one must never come up. Checked on BOTH buffers because the
+     * install swaps them. */
+    if (!s->chain_params_cache || !fx_stage.staged.chain_params_cache) return -1;
+    if (flat < MASTER_FX_SLOTS && !mfx_runtime_chain_params_cache[flat]) return -1;
+
+    const char *path = dsp_path ? dsp_path : "";
+    if (strlen(path) >= sizeof(fx_load_reqs[0].req_path)) return -1;
+
+    fx_load_req_t *r = &fx_load_reqs[flat];
+
+    /* Already exactly this, settled and not failed? Nothing to do — the same
+     * short-circuit the synchronous loaders make, kept so a redundant write
+     * does not tear down and rebuild a running module. */
+    if (fx_load_state(r->req_seq, r->done_seq, r->failed) == FX_LOAD_SETTLED &&
+        strcmp(s->module_path, path) == 0 && (s->instance || !path[0])) {
+        return 0;
+    }
+
+    /* THE CLOSE FIRST, ALWAYS. Bumping req_seq invalidates any realisation the
+     * worker is already carrying for this position and makes the position read
+     * as LOADING from this instruction on. Writing the path first and bumping
+     * afterwards is the ordering bug tests/host/test_bus_gate_ordering.sh was
+     * written for on the bus side: the worker would read a path belonging to
+     * the request it had just been told to abandon.
+     * tests/host/test_fx_load_gate_ordering.sh pins it here. */
+    __atomic_store_n(&r->req_seq, fx_load_next_seq(r->req_seq), __ATOMIC_RELEASE);
+
+    snprintf(r->req_path, sizeof(r->req_path), "%s", path);
+    if (path[0]) fx_load_id_from_path(path, r->req_id, sizeof(r->req_id));
+    else r->req_id[0] = '\0';
+
+    /* THE PUBLISH, last: only now may the worker read req_path. */
+    __atomic_store_n(&r->req_pub, r->req_seq, __ATOMIC_RELEASE);
+    return 0;
+}
+
+/*
+ * What this position is doing right now — FX_LOAD_SETTLED / LOADING / FAILED.
+ *
+ * This is the whole of what the editor needs and it is why the load had to
+ * become asynchronous rather than merely slow: a load that fails must not look
+ * identical to one still running, and neither may look identical to a loaded
+ * module. Served on the param surface as `<prefix>:is_loading` and
+ * `<prefix>:load_error`.
+ */
+/*
+ * What this position should CALL ITSELF right now: the module that is arriving
+ * while one is, otherwise the module that is there. `want_path` picks the DSP
+ * path over the module id.
+ *
+ * Every place that names a position goes through here — `:module`, `:name` and
+ * both `modules` snapshots — so the three cannot disagree about which module a
+ * loading position belongs to, which is the pairing failure the one-read
+ * snapshot was introduced to remove.
+ */
+const char *shadow_fx_load_pending_name(int flat, int want_path) {
+    if (flat < 0 || flat >= FX_LOAD_POSITIONS) return "";
+    const fx_load_req_t *r = &fx_load_reqs[flat];
+    if (shadow_fx_load_state(flat) != FX_LOAD_LOADING) {
+        const master_fx_slot_t *s = fx_load_live(flat);
+        if (!s) return "";
+        return want_path ? s->module_path : s->module_id;
+    }
+    return want_path ? r->req_path : r->req_id;
+}
+
+int shadow_fx_load_state(int flat) {
+    if (flat < 0 || flat >= FX_LOAD_POSITIONS) return FX_LOAD_SETTLED;
+    const fx_load_req_t *r = &fx_load_reqs[flat];
+    return fx_load_state(__atomic_load_n(&r->req_seq, __ATOMIC_ACQUIRE),
+                         r->done_seq, r->failed);
+}
+
+/*
+ * RT: abandon whatever is in flight for `flat`, without loading anything.
+ *
+ * Used by the paths that tear a chain down synchronously (shadow_chain_defaults,
+ * the unload-alls). Advancing done_seq to the closed seq is what stops the
+ * worker's in-flight realisation being installed into a position that has since
+ * been emptied — the install still sees it, but as STALE, and retires it.
+ */
+void shadow_fx_load_cancel_all(void) {
+    for (int i = 0; i < FX_LOAD_POSITIONS; i++) {
+        fx_load_req_t *r = &fx_load_reqs[i];
+        __atomic_store_n(&r->req_seq, fx_load_next_seq(r->req_seq), __ATOMIC_RELEASE);
+        r->req_path[0] = '\0';
+        __atomic_store_n(&r->req_pub, r->req_seq, __ATOMIC_RELEASE);
+        r->done_seq = r->req_seq;
+        r->failed = 0;
+    }
+}
+
+/* Is anything at all in flight? The Master FX shape verbs refuse while there
+ * is: insert/remove/move PERMUTE the position array, and a realisation stamped
+ * with a flat index would land in whatever moved into it. */
+int shadow_fx_load_any_in_flight(void) {
+    for (int i = 0; i < FX_LOAD_POSITIONS; i++) {
+        if (shadow_fx_load_state(i) == FX_LOAD_LOADING) return 1;
+    }
+    return 0;
+}
+
+/*
+ * RT, once per SPI frame: install a finished realisation.
+ *
+ * Runs on the same thread as the render and every other reader of these
+ * structs, which is what makes the field-by-field copy below safe with no gate
+ * over them. Nothing here allocates, opens a file or logs — the worker does
+ * the logging, because it may.
+ */
+void shadow_fx_load_install_tick(void) {
+    int st = __atomic_load_n(&fx_stage.state, __ATOMIC_ACQUIRE);
+    if (st != FX_STAGE_READY && st != FX_STAGE_FAILED) return;
+
+    int flat = fx_stage.flat;
+    master_fx_slot_t *live = fx_load_live(flat);
+    if (!live) {                       /* unreachable; refuse rather than write */
+        __atomic_store_n(&fx_stage.state, FX_STAGE_IDLE, __ATOMIC_RELEASE);
+        return;
+    }
+    fx_load_req_t *r = &fx_load_reqs[flat];
+
+    /* The outgoing module, and possibly a stale incoming one, both have to fit.
+     * Deferring is free — the stage stays READY and we are called every frame. */
+    if (fx_retire_full()) return;
+
+    /* STALE: the request moved on while the worker worked. Retire what it
+     * built and leave done_seq alone, so the worker comes back for the newer
+     * request. This is the branch the sequence number exists for. */
+    if (!fx_load_stage_current(fx_stage.seq,
+                               __atomic_load_n(&r->req_seq, __ATOMIC_ACQUIRE))) {
+        fx_retire_push(&fx_stage.staged);
+        fx_stage.staged.module_path[0] = '\0';
+        fx_stage.staged.module_id[0] = '\0';
+        fx_stage.staged.chain_params_cached = 0;
+        __atomic_store_n(&fx_stage.state, FX_STAGE_IDLE, __ATOMIC_RELEASE);
+        return;
+    }
+
+    /* Read the send bus's occupancy BEFORE the position is vacated, exactly as
+     * the synchronous loader does — see send_return_level_on_load. */
+    int send_bus = (flat >= MASTER_FX_SLOTS) ? (flat - MASTER_FX_SLOTS) / SEND_FX_SLOTS : -1;
+    int bus_was_empty = 1;
+    if (send_bus >= 0) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            if (shadow_send_fx_slots[send_bus][i].instance) { bus_was_empty = 0; break; }
+        }
+    }
+
+    /* Vacate. Everything expensive about this is the worker's; what is left
+     * here is what fx_slot_unload_impl does minus the destroy and the dlclose,
+     * which fx_retire_push has just taken. */
+    fx_retire_push(live);
+    live->module_path[0] = '\0';
+    live->module_id[0] = '\0';
+    live->bypassed = 0;
+    capture_clear(&live->capture);
+    if (flat < MASTER_FX_SLOTS) {
+        mfx_runtime_chain_params_cached[flat] = 0;
+        if (mfx_runtime_chain_params_cache[flat]) mfx_runtime_chain_params_cache[flat][0] = '\0';
+        mfx_runtime_chain_params_last_fetch_ms[flat] = 0;
+    }
+    live->chain_params_cached = 0;
+    live->chain_params_cache[0] = '\0';
+
+    if (st == FX_STAGE_READY && fx_stage.staged.instance) {
+        master_fx_slot_t *sg = &fx_stage.staged;
+        /* SWAP the owned buffers rather than memcpy 64 KB on the callback.
+         * Each side keeps exactly one MASTER_FX_CHAIN_PARAMS_MAX buffer. */
+        char *mine = live->chain_params_cache;
+        live->chain_params_cache = sg->chain_params_cache;
+        sg->chain_params_cache = mine;
+
+        live->handle = sg->handle;
+        live->api = sg->api;
+        live->instance = sg->instance;
+        live->on_midi = sg->on_midi;
+        live->capture = sg->capture;
+        live->chain_params_cached = sg->chain_params_cached;
+        memcpy(live->module_path, sg->module_path, sizeof(live->module_path));
+        memcpy(live->module_id, sg->module_id, sizeof(live->module_id));
+
+        sg->handle = NULL;
+        sg->api = NULL;
+        sg->instance = NULL;
+        sg->on_midi = NULL;
+        sg->module_path[0] = '\0';
+        sg->module_id[0] = '\0';
+        sg->chain_params_cached = 0;
+
+        if (flat < MASTER_FX_SLOTS && flat >= mfx_fx_count) mfx_fx_count = flat + 1;
+        if (send_bus >= 0) {
+            shadow_send_return_level[send_bus] =
+                send_return_level_on_load(bus_was_empty, shadow_send_return_level[send_bus]);
+        }
+    }
+
+    /* THE OPEN, and the outcome it carries. A staged UNLOAD ("" was asked for)
+     * arrives as READY with no instance and is not a failure. */
+    r->failed = (st == FX_STAGE_FAILED) ? 1 : 0;
+    __atomic_store_n(&r->done_seq, fx_stage.seq, __ATOMIC_RELEASE);
+    __atomic_store_n(&fx_stage.state, FX_STAGE_IDLE, __ATOMIC_RELEASE);
+}
+
+/*
+ * WORKER (shim_worker.c, SCHED_OTHER on cores 0-2), ~5 Hz.
+ *
+ * Everything RT-unsafe in an FX position's lifetime happens here and nowhere
+ * else on the load path: dlopen, dlsym, create_instance, the module.json read
+ * and parse, destroy_instance, dlclose and the logging about all of them.
+ *
+ * It does NOT demote itself — it does not have to, because it is not its own
+ * thread. shim_worker.c's worker_main is created from shim init (not from the
+ * SPI callback) and demotes to SCHED_OTHER and pins to cores 0-2 as its first
+ * action. Adding a pthread_create here instead would inherit the callback's
+ * SCHED_FIFO 70, above Move's own Link Main at 35, and starve the audio
+ * publisher — the exact dropouts going off-thread is meant to avoid.
+ */
+void shadow_fx_load_worker_tick(void) {
+    fx_retire_drain();
+
+    if (__atomic_load_n(&fx_stage.state, __ATOMIC_ACQUIRE) != FX_STAGE_IDLE) return;
+    if (!fx_stage.staged.chain_params_cache) return;
+
+    for (int flat = 0; flat < FX_LOAD_POSITIONS; flat++) {
+        fx_load_req_t *r = &fx_load_reqs[flat];
+        unsigned pub = __atomic_load_n(&r->req_pub, __ATOMIC_ACQUIRE);
+        unsigned seq = __atomic_load_n(&r->req_seq, __ATOMIC_ACQUIRE);
+        if (!fx_load_request_readable(seq, pub, r->done_seq)) continue;
+
+        char path[sizeof(r->req_path)];
+        snprintf(path, sizeof(path), "%s", r->req_path);
+        /* The path is only written between a close and its publish, so a
+         * req_seq that has moved since means this copy may be torn. Leave it;
+         * the newer request is picked up on the next pass. */
+        if (__atomic_load_n(&r->req_seq, __ATOMIC_ACQUIRE) != pub) continue;
+
+        fx_stage.flat = flat;
+        fx_stage.seq = pub;
+        __atomic_store_n(&fx_stage.state, FX_STAGE_WORKING, __ATOMIC_RELEASE);
+
+        int rc = 0;
+        if (path[0]) {
+            const char *what = (flat < MASTER_FX_SLOTS) ? "master FX" : "send FX";
+            shim_rt_audit_note_module(path);
+            rc = fx_slot_load_impl(&fx_stage.staged, what, flat, path, NULL);
+            shim_rt_audit_note_module(NULL);
+        } else {
+            /* An unload has nothing to build. The install still runs, and it is
+             * what retires the outgoing module. */
+            fx_stage.staged.module_path[0] = '\0';
+            fx_stage.staged.module_id[0] = '\0';
+            fx_stage.staged.chain_params_cached = 0;
+        }
+
+        __atomic_store_n(&fx_stage.state,
+                         rc == 0 ? FX_STAGE_READY : FX_STAGE_FAILED,
+                         __ATOMIC_RELEASE);
+        {
+            char msg[320];
+            snprintf(msg, sizeof(msg), "FX loader: %s[%d] %s %s",
+                     (flat < MASTER_FX_SLOTS) ? "master" : "send", flat,
+                     rc == 0 ? (path[0] ? "loaded" : "unloaded") : "FAILED", path);
+            unified_log("shim", rc == 0 ? LOG_LEVEL_DEBUG : LOG_LEVEL_ERROR, msg);
+        }
+        return;   /* one position per pass; the install has to run in between */
+    }
 }
 
 int shadow_master_fx_load(const char *dsp_path) {
@@ -1340,6 +2136,245 @@ static void shadow_slot_apply_boot_feedback_hold(int i) {
     }
 }
 
+/* ---- Per-position FX state files, restored at boot -----------------------
+ *
+ * Master FX and the two send buses write the SAME file shape — the JS saver is
+ * one function parameterised by bus — so they are restored by one function
+ * parameterised the same way. Two copies of this JSON scraping is how the
+ * sends would end up restoring `state` and not `params`, or the other way
+ * round, with nothing to compare against.
+ *
+ * `send` is -1 for Master FX, else the bus index. `what` names the chain in
+ * the log lines only. */
+typedef struct { int send; int pos; } fx_boot_target_t;
+
+static int fx_boot_load(const fx_boot_target_t *t, const char *dsp_path,
+                        const char *config_json) {
+    return (t->send < 0)
+        ? shadow_master_fx_slot_load_with_config(t->pos, dsp_path, config_json)
+        : shadow_send_fx_slot_load_with_config(t->send, t->pos, dsp_path, config_json);
+}
+
+static master_fx_slot_t *fx_boot_slot(const fx_boot_target_t *t) {
+    return (t->send < 0) ? &shadow_master_fx_slots[t->pos]
+                         : &shadow_send_fx_slots[t->send][t->pos];
+}
+
+static void fx_boot_restore_one(const char *state_path, const fx_boot_target_t *t,
+                                const char *what) {
+    FILE *mf = fopen(state_path, "r");
+    if (!mf) return;
+
+    fseek(mf, 0, SEEK_END);
+    long msize = ftell(mf);
+    fseek(mf, 0, SEEK_SET);
+
+    if (msize <= 10) {
+        fclose(mf);
+        return;
+    }
+
+    char *mjson = malloc(msize + 1);
+    if (!mjson) { fclose(mf); return; }
+    size_t mnread = fread(mjson, 1, msize, mf);
+    mjson[mnread] = '\0';
+    fclose(mf);
+
+    /* Extract module_path */
+    char dsp_path[256] = "";
+    {
+        char *mp = strstr(mjson, "\"module_path\":");
+        if (mp) {
+            mp = strchr(mp, ':');
+            if (mp) {
+                mp++;
+                while (*mp == ' ' || *mp == '"') mp++;
+                char *end = mp;
+                while (*end && *end != '"') end++;
+                int len = end - mp;
+                if (len > 0 && len < (int)sizeof(dsp_path) - 1) {
+                    strncpy(dsp_path, mp, len);
+                    dsp_path[len] = '\0';
+                }
+            }
+        }
+    }
+
+    if (!dsp_path[0]) {
+        free(mjson);
+        return;
+    }
+
+    /* Extract plugin_id from params */
+    char config_json_buf[512] = "";
+    char *params_start = strstr(mjson, "\"params\":");
+    if (params_start) {
+        char *pid_key = strstr(params_start, "\"plugin_id\"");
+        if (pid_key) {
+            char *pc = strchr(pid_key + 11, ':');
+            if (pc) {
+                pc++;
+                while (*pc == ' ') pc++;
+                if (*pc == '"') {
+                    pc++;
+                    char *pe = strchr(pc, '"');
+                    if (pe) {
+                        int plen = pe - pc;
+                        if (plen > 0 && plen < 256) {
+                            char pid_val[256];
+                            strncpy(pid_val, pc, plen);
+                            pid_val[plen] = '\0';
+                            snprintf(config_json_buf, sizeof(config_json_buf),
+                                     "{\"plugin_id\":\"%s\"}", pid_val);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    int load_result = fx_boot_load(t, dsp_path,
+        config_json_buf[0] ? config_json_buf : NULL);
+    if (load_result != 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s boot: failed to load %s", what, dsp_path);
+        shadow_log(msg);
+        free(mjson);
+        return;
+    }
+
+    master_fx_slot_t *s = fx_boot_slot(t);
+
+    /* Restore structured or opaque-string state. The saved file can be no
+     * larger than msize, so one bounded buffer covers either representation. */
+    int state_restored = 0;
+    if (s->api && s->instance && s->api->set_param) {
+        char *state_buf = malloc((size_t)msize + 1);
+        if (state_buf) {
+            int state_len = master_fx_saved_state_copy(
+                mjson, state_buf, (size_t)msize + 1);
+            if (state_len > 0) {
+                s->api->set_param(s->instance, "state", state_buf);
+                state_restored = 1;
+            }
+            free(state_buf);
+        }
+    }
+    if (!state_restored && params_start && s->api && s->instance && s->api->set_param) {
+        /* Fall back to individual params */
+        char *obj_start = strchr(params_start, '{');
+        if (obj_start) {
+            int depth = 1;
+            char *obj_end = obj_start + 1;
+            while (*obj_end && depth > 0) {
+                if (*obj_end == '{') depth++;
+                else if (*obj_end == '}') depth--;
+                obj_end++;
+            }
+            char *p = obj_start + 1;
+            while (p < obj_end - 1) {
+                char *kstart = strchr(p, '"');
+                if (!kstart || kstart >= obj_end) break;
+                kstart++;
+                char *kend = strchr(kstart, '"');
+                if (!kend || kend >= obj_end) break;
+
+                char param_key[128];
+                int klen = kend - kstart;
+                if (klen >= (int)sizeof(param_key)) { p = kend + 1; continue; }
+                strncpy(param_key, kstart, klen);
+                param_key[klen] = '\0';
+
+                char *colon = strchr(kend, ':');
+                if (!colon || colon >= obj_end) break;
+                colon++;
+                while (*colon == ' ') colon++;
+
+                char param_val[256];
+                if (*colon == '"') {
+                    colon++;
+                    char *vend = strchr(colon, '"');
+                    if (!vend || vend >= obj_end) break;
+                    int vlen = vend - colon;
+                    if (vlen >= (int)sizeof(param_val)) { p = vend + 1; continue; }
+                    strncpy(param_val, colon, vlen);
+                    param_val[vlen] = '\0';
+                    p = vend + 1;
+                } else {
+                    char *vend = colon;
+                    while (*vend && *vend != ',' && *vend != '}' && *vend != '\n') vend++;
+                    int vlen = vend - colon;
+                    if (vlen >= (int)sizeof(param_val)) { p = vend; continue; }
+                    strncpy(param_val, colon, vlen);
+                    param_val[vlen] = '\0';
+                    while (vlen > 0 && (param_val[vlen-1] == ' ' || param_val[vlen-1] == '\r')) {
+                        param_val[--vlen] = '\0';
+                    }
+                    p = vend;
+                }
+
+                if (strcmp(param_key, "plugin_id") != 0) {
+                    s->api->set_param(s->instance, param_key, param_val);
+                }
+            }
+        }
+    }
+
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "%s boot: loaded %s%s",
+                 what, s->module_id,
+                 state_restored ? " (with state)" : (params_start ? " (with params)" : ""));
+        shadow_log(msg);
+    }
+    free(mjson);
+}
+
+/* The two return levels and the A->B amount.
+ *
+ * They live in their own file rather than in a position's, because they belong
+ * to the BUS and not to any position in it — filing them under position 0 (the
+ * way the Master FX LFO snapshot is filed under fx1) would lose them the moment
+ * that position is emptied, and an empty send with a return level up is a
+ * perfectly ordinary state.
+ *
+ * Absent file, unparseable file and absent key all leave the BSS zero standing.
+ * That is the only safe reading: a level this function invented would be a
+ * level nobody set, on a bus that may have a reverb in it. */
+static void shadow_send_levels_restore(const char *state_dir) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/send_levels.json", state_dir);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        char key[32];
+        snprintf(key, sizeof(key), "\"send%d_return\"", sb + 1);
+        const char *k = strstr(buf, key);
+        if (!k) continue;
+        const char *c = strchr(k, ':');
+        if (!c) continue;
+        int v = atoi(c + 1);
+        if (v < 0) v = 0;
+        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+        shadow_send_return_level[sb] = v;
+    }
+    {
+        const char *k = strstr(buf, "\"send1_to_send2\"");
+        const char *c = k ? strchr(k, ':') : NULL;
+        if (c) {
+            int v = atoi(c + 1);
+            if (v < 0) v = 0;
+            if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+            shadow_send_a_to_b = v;
+        }
+    }
+}
+
 int shadow_inprocess_load_chain(void) {
     if (shadow_inprocess_ready) return 0;
 
@@ -1397,6 +2432,13 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_process_fx");
     shadow_chain_fx_requires_continuous = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_fx_requires_continuous");
+    /* Optional, and NULL on any chain built before the send buses landed: the
+     * shim null-checks it and the sends simply receive nothing. */
+    shadow_chain_drain_sends = (void (*)(void *, int16_t *const *, int, int, int))
+        dlsym(shadow_dsp_handle, "chain_drain_sends");
+    shadow_chain_drain_main_send =
+        (void (*)(void *, int16_t *const *, int, const int16_t *, int, int))
+        dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
 
@@ -1407,6 +2449,9 @@ int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous,
             (void*)shadow_chain_take_midi_tick_wake);
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
+            (void*)shadow_chain_drain_sends,
+            (void*)shadow_chain_drain_main_send);
 
     /* Set pages: read persisted page on boot */
     set_page_current = set_page_read_persisted();
@@ -1553,177 +2598,35 @@ int shadow_inprocess_load_chain(void) {
         }
     }
 
-    /* Load master FX slots from state files */
+    /* Restore Master FX and both send buses from their per-position state
+     * files. One function serves all three chains — see fx_boot_restore_one. */
     for (int mfx = 0; mfx < MASTER_FX_SLOTS; mfx++) {
-        char mfx_path[256];
-        snprintf(mfx_path, sizeof(mfx_path), "%s/master_fx_%d.json", boot_state_dir, mfx);
-        FILE *mf = fopen(mfx_path, "r");
-        if (!mf) continue;
-
-        fseek(mf, 0, SEEK_END);
-        long msize = ftell(mf);
-        fseek(mf, 0, SEEK_SET);
-
-        if (msize <= 10) {
-            fclose(mf);
-            continue;
-        }
-
-        char *mjson = malloc(msize + 1);
-        if (!mjson) { fclose(mf); continue; }
-        size_t mnread = fread(mjson, 1, msize, mf);
-        mjson[mnread] = '\0';
-        fclose(mf);
-
-        /* Extract module_path */
-        char dsp_path[256] = "";
-        {
-            char *mp = strstr(mjson, "\"module_path\":");
-            if (mp) {
-                mp = strchr(mp, ':');
-                if (mp) {
-                    mp++;
-                    while (*mp == ' ' || *mp == '"') mp++;
-                    char *end = mp;
-                    while (*end && *end != '"') end++;
-                    int len = end - mp;
-                    if (len > 0 && len < (int)sizeof(dsp_path) - 1) {
-                        strncpy(dsp_path, mp, len);
-                        dsp_path[len] = '\0';
-                    }
-                }
-            }
-        }
-
-        if (!dsp_path[0]) {
-            free(mjson);
-            continue;
-        }
-
-        /* Extract plugin_id from params */
-        char config_json_buf[512] = "";
-        char *params_start = strstr(mjson, "\"params\":");
-        if (params_start) {
-            char *pid_key = strstr(params_start, "\"plugin_id\"");
-            if (pid_key) {
-                char *pc = strchr(pid_key + 11, ':');
-                if (pc) {
-                    pc++;
-                    while (*pc == ' ') pc++;
-                    if (*pc == '"') {
-                        pc++;
-                        char *pe = strchr(pc, '"');
-                        if (pe) {
-                            int plen = pe - pc;
-                            if (plen > 0 && plen < 256) {
-                                char pid_val[256];
-                                strncpy(pid_val, pc, plen);
-                                pid_val[plen] = '\0';
-                                snprintf(config_json_buf, sizeof(config_json_buf),
-                                         "{\"plugin_id\":\"%s\"}", pid_val);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        int load_result = shadow_master_fx_slot_load_with_config(mfx, dsp_path,
-            config_json_buf[0] ? config_json_buf : NULL);
-        if (load_result != 0) {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "MFX boot: slot %d failed to load %s", mfx, dsp_path);
-            shadow_log(msg);
-            free(mjson);
-            continue;
-        }
-
-        master_fx_slot_t *s = &shadow_master_fx_slots[mfx];
-
-        /* Restore structured or opaque-string state. The saved file can be no
-         * larger than msize, so one bounded buffer covers either representation. */
-        int state_restored = 0;
-        if (s->api && s->instance && s->api->set_param) {
-            char *state_buf = malloc((size_t)msize + 1);
-            if (state_buf) {
-                int state_len = master_fx_saved_state_copy(
-                    mjson, state_buf, (size_t)msize + 1);
-                if (state_len > 0) {
-                    s->api->set_param(s->instance, "state", state_buf);
-                    state_restored = 1;
-                }
-                free(state_buf);
-            }
-        }
-        if (!state_restored && params_start && s->api && s->instance && s->api->set_param) {
-            /* Fall back to individual params */
-            char *obj_start = strchr(params_start, '{');
-            if (obj_start) {
-                int depth = 1;
-                char *obj_end = obj_start + 1;
-                while (*obj_end && depth > 0) {
-                    if (*obj_end == '{') depth++;
-                    else if (*obj_end == '}') depth--;
-                    obj_end++;
-                }
-                char *p = obj_start + 1;
-                while (p < obj_end - 1) {
-                    char *kstart = strchr(p, '"');
-                    if (!kstart || kstart >= obj_end) break;
-                    kstart++;
-                    char *kend = strchr(kstart, '"');
-                    if (!kend || kend >= obj_end) break;
-
-                    char param_key[128];
-                    int klen = kend - kstart;
-                    if (klen >= (int)sizeof(param_key)) { p = kend + 1; continue; }
-                    strncpy(param_key, kstart, klen);
-                    param_key[klen] = '\0';
-
-                    char *colon = strchr(kend, ':');
-                    if (!colon || colon >= obj_end) break;
-                    colon++;
-                    while (*colon == ' ') colon++;
-
-                    char param_val[256];
-                    if (*colon == '"') {
-                        colon++;
-                        char *vend = strchr(colon, '"');
-                        if (!vend || vend >= obj_end) break;
-                        int vlen = vend - colon;
-                        if (vlen >= (int)sizeof(param_val)) { p = vend + 1; continue; }
-                        strncpy(param_val, colon, vlen);
-                        param_val[vlen] = '\0';
-                        p = vend + 1;
-                    } else {
-                        char *vend = colon;
-                        while (*vend && *vend != ',' && *vend != '}' && *vend != '\n') vend++;
-                        int vlen = vend - colon;
-                        if (vlen >= (int)sizeof(param_val)) { p = vend; continue; }
-                        strncpy(param_val, colon, vlen);
-                        param_val[vlen] = '\0';
-                        while (vlen > 0 && (param_val[vlen-1] == ' ' || param_val[vlen-1] == '\r')) {
-                            param_val[--vlen] = '\0';
-                        }
-                        p = vend;
-                    }
-
-                    if (strcmp(param_key, "plugin_id") != 0) {
-                        s->api->set_param(s->instance, param_key, param_val);
-                    }
-                }
-            }
-        }
-
-        {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "MFX boot: slot %d loaded %s%s",
-                     mfx, s->module_id,
-                     state_restored ? " (with state)" : (params_start ? " (with params)" : ""));
-            shadow_log(msg);
-        }
-        free(mjson);
+        char path[256];
+        snprintf(path, sizeof(path), "%s/master_fx_%d.json", boot_state_dir, mfx);
+        char what[24];
+        snprintf(what, sizeof(what), "MFX[%d]", mfx);
+        fx_boot_target_t t = { -1, mfx };
+        fx_boot_restore_one(path, &t, what);
     }
+
+    /* The send chains, and then the three scalars that make them audible.
+     *
+     * Levels LAST, deliberately: shadow_send_bus_active() is what keeps an
+     * unused send out of the mix path, and it answers true on a level alone.
+     * Raising a return before its chain exists would put one frame of dry
+     * accumulator through the master bus. */
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        for (int i = 0; i < SEND_FX_SLOTS; i++) {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/send_fx_%d_%d.json", boot_state_dir, sb, i);
+            char what[24];
+            snprintf(what, sizeof(what), "Send%c[%d]", (char)('A' + sb), i);
+            fx_boot_target_t t = { sb, i };
+            fx_boot_restore_one(path, &t, what);
+        }
+    }
+    shadow_send_levels_restore(boot_state_dir);
+
 
     shadow_ui_state_refresh();
 
@@ -2829,6 +3732,14 @@ static void pserve_emit(pserve_span_t *ps) {
 }
 
 void shadow_inprocess_handle_param_request(void) {
+    /* FIRST, and unconditionally: a finished FX load is installed here because
+     * this is the one chain-manager function the shim calls every SPI frame,
+     * and the install must happen on the SPI thread — it is the only writer of
+     * the live position structs, which is what lets every reader of them stay
+     * unguarded. It is a handful of pointer stores; there is no request to
+     * serve for it and nothing below may gate it. */
+    shadow_fx_load_install_tick();
+
     shadow_param_t *shadow_param = host.shadow_param_ptr ? *host.shadow_param_ptr : NULL;
     if (!shadow_param) return;
 
@@ -2871,6 +3782,346 @@ void shadow_inprocess_handle_param_request(void) {
             strcmp(key, "suspend_overtake") == 0 ||
             strcmp(key, "passthrough") == 0) {
             if (host.handle_param_special(req_type, req_id)) {
+                shadow_param_publish_response(req_id);
+                return;
+            }
+        }
+    }
+
+    /* ---- Global send buses: "send<N>:fx<M>:<param>" and "send<N>:<param>" --
+     *
+     * Routed through send_fx_key.h with both caps passed in, so this handler
+     * holds no copy of either and raising one widens it automatically. An
+     * unmatched key falls THROUGH to the handlers below with nothing written —
+     * the opposite of the master_fx block's else-branch, which assigns slot 0
+     * and is why an out-of-range "fx5:cutoff" used to be written into a
+     * different running module under a garbage key.
+     *
+     * SHAPE: `send<N>:fx<M>:module` loads and unloads a position, through the
+     * same fx_slot_load_impl the Master FX loader uses. There are deliberately
+     * no insert / remove / move verbs: a send position is emptied by writing
+     * "" into it, exactly as a Master FX position is emptied by picking None,
+     * and until a send editor offers reordering there is no permutation to get
+     * wrong. `send<N>:fx<M>:name` stays read-only for the same reason
+     * `master_fx:fxN:name` is — the identity is a consequence of the module
+     * write, not a thing to assign. */
+    {
+        int send_idx = -1, send_fx = -1;
+        const char *send_param = NULL;
+        if (send_fx_route(shadow_param->key, SEND_BUSES, SEND_FX_SLOTS,
+                          &send_idx, &send_fx, &send_param)) {
+            int is_set = (req_type == 1);
+            int handled = 1;
+
+            if (send_fx < 0) {
+                /* Bus-level keys. */
+                if (strcmp(send_param, "return") == 0) {
+                    if (is_set) {
+                        int v = atoi(shadow_param->value);
+                        if (v < 0) v = 0;
+                        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+                        shadow_send_return_level[send_idx] = v;
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 0;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 shadow_send_return_level[send_idx]);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (send_idx == 0 && strcmp(send_param, "to_send2") == 0) {
+                    /* The A->B feed, named from its SOURCE end because that is
+                     * where it is taken — post send A's chain, at A's return
+                     * level. The _Static_assert beside the mix-path special
+                     * case is what stops this key quietly meaning something
+                     * else if SEND_BUSES is ever raised past two. */
+                    if (is_set) {
+                        int v = atoi(shadow_param->value);
+                        if (v < 0) v = 0;
+                        if (v > BUS_MIX_SEND_LEVEL_MAX) v = BUS_MIX_SEND_LEVEL_MAX;
+                        shadow_send_a_to_b = v;
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 0;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 shadow_send_a_to_b);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (strcmp(send_param, "fx_count") == 0) {
+                    /* A send publishes no dynamic length -- its chain is the
+                     * full array with holes -- but the editor asks, so answer
+                     * the cap rather than let the key fall through unserved and
+                     * be read as a failure. Read-only, as the master's is. */
+                    if (is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 SEND_FX_SLOTS);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (strcmp(send_param, "fx:insert") == 0 ||
+                           strcmp(send_param, "fx:remove") == 0 ||
+                           strcmp(send_param, "fx:move") == 0) {
+                    /* THE SHAPE VERBS, spelled and behaving exactly as the
+                     * master's so the editor's one shared emitter differs
+                     * between the two targets only in the prefix its key()
+                     * adds. Ids are 1-BASED on the wire; the C is 0-based.
+                     *
+                     * Refused (error 15), never queued, while a staged load is
+                     * in flight: a permutation moves the positions a staged
+                     * realisation is stamped against, so the install would put
+                     * the incoming module wherever the shift had left that
+                     * index. Same rule, same code, as the master block. */
+                    if (!is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else if (shadow_fx_load_any_in_flight()) {
+                        shadow_param->error = 15;
+                        shadow_param->result_len = 0;
+                    } else {
+                        int ok = 0;
+                        if (send_param[3] == 'm') {          /* fx:move */
+                            const char *arrow = strchr(shadow_param->value, '>');
+                            if (arrow) {
+                                int from = atoi(shadow_param->value);
+                                int to = atoi(arrow + 1);
+                                if (from >= 1 && to >= 1) {
+                                    ok = shadow_send_fx_move(send_idx, from - 1, to - 1);
+                                }
+                            }
+                        } else {
+                            int at = atoi(shadow_param->value);
+                            if (at >= 1) {
+                                ok = (send_param[3] == 'i')
+                                     ? shadow_send_fx_insert(send_idx, at - 1)
+                                     : shadow_send_fx_remove(send_idx, at - 1);
+                            }
+                        }
+                        shadow_param->error = ok ? 0 : 15;
+                        shadow_param->result_len = 0;
+                    }
+                } else if (strcmp(send_param, "modules") == 0) {
+                    /* The whole send chain's ids and paths in ONE answer, the
+                     * same shape and the same serializer as master_fx:modules.
+                     *
+                     * THE SHIM SAYS WHAT IS LOADED, and it says it once. The
+                     * Master FX in-file mirror never saw a write made straight
+                     * to the shim — an overtake tool, a Remote UI client — and
+                     * wrote {} over it, losing the whole master chain on the
+                     * next boot. A send chain is written to by exactly the same
+                     * routes, so it gets exactly the same answer.
+                     *
+                     * Positional and never compacted: entry i IS position i,
+                     * holes included. Read-only, because what is loaded is a
+                     * consequence of the module writes. */
+                    if (is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else {
+                        size_t len = 0;
+                        int ok = master_fx_snapshot_begin(shadow_param->value,
+                                                          SHADOW_PARAM_VALUE_LEN, &len);
+                        for (int i = 0; ok && i < SEND_FX_SLOTS; i++) {
+                            /* Through the pending namer, so a position mid-load
+                             * is reported as the module it is BECOMING. Naming
+                             * the outgoing one puts the previous module back in
+                             * the state file on the very next autosave, which
+                             * is the shape of the bug reported from hardware. */
+                            int f = shadow_fx_load_flat_send(send_idx, i);
+                            ok = master_fx_snapshot_append(shadow_param->value,
+                                                           SHADOW_PARAM_VALUE_LEN, &len, i,
+                                                           shadow_fx_load_pending_name(f, 0),
+                                                           shadow_fx_load_pending_name(f, 1));
+                        }
+                        if (ok) ok = master_fx_snapshot_end(shadow_param->value,
+                                                            SHADOW_PARAM_VALUE_LEN, &len);
+                        if (ok) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = (int)len;
+                        } else {
+                            /* Refuse rather than truncate. A short array parses
+                             * fine and reads as "these positions are empty",
+                             * which is the erase this path exists to prevent. */
+                            shadow_param->value[0] = '\0';
+                            shadow_param->error = 12;
+                            shadow_param->result_len = -1;
+                        }
+                    }
+                } else {
+                    handled = 0;
+                }
+            } else {
+                master_fx_slot_t *sfx = &shadow_send_fx_slots[send_idx][send_fx];
+                /* Where this position is in the async loader. A module write is
+                 * accepted and served later (see shadow_fx_load_request), so
+                 * every other key has to be able to say "not yet" rather than
+                 * describe the outgoing module as though it were the incoming
+                 * one. */
+                const int send_flat = shadow_fx_load_flat_send(send_idx, send_fx);
+                const int send_lstate = shadow_fx_load_state(send_flat);
+
+                if (strcmp(send_param, "bypassed") == 0) {
+                    /* Host-side at the render loop, exactly as Master FX does
+                     * it, so the key never reaches the sub-plugin. */
+                    if (is_set) {
+                        sfx->bypassed = (shadow_param->value[0] &&
+                                         atoi(shadow_param->value)) ? 1 : 0;
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 0;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 sfx->bypassed ? 1 : 0);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (strcmp(send_param, "is_loading") == 0 ||
+                           strcmp(send_param, "load_error") == 0) {
+                    /* THE THREE STATES, and the reason the load had to move off
+                     * the callback rather than merely get faster: a failed load
+                     * must not look like one still running, and neither may look
+                     * like a module that is there. The component entry gate
+                     * (src/shared/component_load_gate.mjs) already holds on an
+                     * exact "1" from is_loading; load_error is what turns the
+                     * hold into a report instead of a wait that never ends.
+                     *
+                     * Answered HERE and never delegated to the plugin: a
+                     * position mid-load has no plugin to ask. */
+                    if (is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else {
+                        int on = (send_param[0] == 'i')
+                                 ? (send_lstate == FX_LOAD_LOADING)
+                                 : (send_lstate == FX_LOAD_FAILED);
+                        shadow_param->value[0] = on ? '1' : '0';
+                        shadow_param->value[1] = '\0';
+                        shadow_param->error = 0;
+                        shadow_param->result_len = 1;
+                    }
+                } else if (strcmp(send_param, "module") == 0 ||
+                           strcmp(send_param, "name") == 0) {
+                    if (is_set) {
+                        if (send_param[0] == 'm') {
+                            /* An empty value unloads, which is how the editor
+                             * spells None — see the loader.
+                             *
+                             * ACCEPTED, NOT LOADED. This is the SPI callback,
+                             * so the dlopen happens on the worker; error 0 here
+                             * means the request was taken, and `is_loading`
+                             * above is what says whether it has landed. Error 7
+                             * is kept for a request that can never be served —
+                             * the same code master_fx:fxN:module answers with,
+                             * so one shared emitter still reports one thing. */
+                            int r = shadow_fx_load_request(send_flat,
+                                                           shadow_param->value);
+                            shadow_param->error = (r == 0) ? 0 : 7;
+                            shadow_param->result_len = 0;
+                        } else {
+                            /* :name is READ-ONLY, as master_fx:fxN:name is. */
+                            shadow_param->error = 14;
+                            shadow_param->result_len = -1;
+                        }
+                    } else {
+                        /* The module ARRIVING, not the one on its way out and
+                         * not "" — see shadow_fx_load_pending_name and the
+                         * comment on fx_load_req_t::req_id. */
+                        const char *v = shadow_fx_load_pending_name(
+                            send_flat, send_param[0] == 'm');
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%s", v);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (send_lstate == FX_LOAD_LOADING) {
+                    /* Everything else, while the module is arriving: SERVED AND
+                     * EMPTY. Not null — the channel answered — and not the
+                     * outgoing module's value, which is what would let a stale
+                     * contract be believed and latched. */
+                    shadow_param->value[0] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                } else if (!is_set && strcmp(send_param, "chain_params") == 0) {
+                    /* The knob grid's param metadata, asked of the plugin first
+                     * and answered from the module.json snapshot when it has
+                     * none — the same order master_fx:fxN:chain_params uses,
+                     * because the editor is the same editor.
+                     *
+                     * chain_params_cache IS guarded here (chain_params_cached &&
+                     * chain_params_cache && chain_params_cache[0]) for the same
+                     * reason it is on the Master FX path: no position can be
+                     * loaded while its buffer is missing (the loader refuses)
+                     * and chain_params_cached is only ever set by that loader —
+                     * so the guard is defensive, not load-bearing, but it stays. */
+                    if (sfx->api && sfx->instance && sfx->api->get_param) {
+                        int len = sfx->api->get_param(sfx->instance, "chain_params",
+                                                      shadow_param->value,
+                                                      SHADOW_PARAM_VALUE_LEN);
+                        if (len > 2) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = len;
+                            shadow_param_publish_response(req_id);
+                            return;
+                        }
+                    }
+                    if (sfx->chain_params_cached && sfx->chain_params_cache &&
+                        sfx->chain_params_cache[0]) {
+                        int len = (int)strlen(sfx->chain_params_cache);
+                        if (len < SHADOW_PARAM_VALUE_LEN - 1) {
+                            memcpy(shadow_param->value, sfx->chain_params_cache, len + 1);
+                            shadow_param->error = 0;
+                            shadow_param->result_len = len;
+                            shadow_param_publish_response(req_id);
+                            return;
+                        }
+                    }
+                    /* "[]" is SERVED-BUT-EMPTY, not a failed read — an empty
+                     * position has no params and that is a real answer. */
+                    shadow_param->value[0] = '[';
+                    shadow_param->value[1] = ']';
+                    shadow_param->value[2] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 2;
+                } else if (sfx->instance && sfx->api) {
+                    if (is_set) {
+                        if (sfx->api->set_param) {
+                            sfx->api->set_param(sfx->instance, send_param,
+                                                shadow_param->value);
+                            shadow_param->error = 0;
+                            shadow_param->result_len = 0;
+                        } else {
+                            shadow_param->error = 14;
+                            shadow_param->result_len = -1;
+                        }
+                    } else {
+                        int n = sfx->api->get_param
+                              ? sfx->api->get_param(sfx->instance, send_param,
+                                                    shadow_param->value,
+                                                    SHADOW_PARAM_VALUE_LEN)
+                              : -1;
+                        if (n >= 0) {
+                            shadow_param->error = 0;
+                            shadow_param->result_len = (int)strlen(shadow_param->value);
+                        } else {
+                            /* Served, produced nothing. "" is a real answer and
+                             * must not be confused with a read that never
+                             * completed — see the three-answer rule. */
+                            shadow_param->value[0] = '\0';
+                            shadow_param->error = 0;
+                            shadow_param->result_len = 0;
+                        }
+                    }
+                } else {
+                    /* An empty position. Answer emptily rather than reach into
+                     * a NULL instance. */
+                    shadow_param->value[0] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                }
+            }
+
+            if (handled) {
                 shadow_param_publish_response(req_id);
                 return;
             }
@@ -3030,6 +4281,61 @@ void shadow_inprocess_handle_param_request(void) {
             return;
         }
 
+        /* ---- Where this position is in the async loader ---------------------
+         *
+         * The mirror of the send block above, key for key, because the editor
+         * is the same editor. `module` writes are ACCEPTED and served on the
+         * worker (shadow_fx_load_request), so while one is in flight this
+         * position must not describe the module that is on its way OUT: a
+         * named module with a hierarchy is what makes the component entry gate
+         * open an editor for the wrong contract, and then latch it. */
+        if (has_slot_prefix) {
+            const int mfx_flat = shadow_fx_load_flat_master(mfx_slot);
+            const int mfx_lstate = shadow_fx_load_state(mfx_flat);
+            int is_state_key = (strcmp(param_key, "is_loading") == 0 ||
+                                strcmp(param_key, "load_error") == 0);
+            if (is_state_key) {
+                if (req_type == 1) {
+                    shadow_param->error = 14;
+                    shadow_param->result_len = -1;
+                } else {
+                    int on = (param_key[0] == 'i')
+                             ? (mfx_lstate == FX_LOAD_LOADING)
+                             : (mfx_lstate == FX_LOAD_FAILED);
+                    shadow_param->value[0] = on ? '1' : '0';
+                    shadow_param->value[1] = '\0';
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 1;
+                }
+                shadow_param_publish_response(req_id);
+                return;
+            }
+            if (mfx_lstate == FX_LOAD_LOADING) {
+                int is_name = (strcmp(param_key, "name") == 0);
+                int is_module = (strcmp(param_key, "module") == 0);
+                /* A module write is the one thing that may still LAND mid-load:
+                 * it replaces the request. */
+                if (!(req_type == 1 && is_module)) {
+                    if (req_type == 2 && (is_name || is_module)) {
+                        /* The module ARRIVING — see shadow_fx_load_pending_name. */
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%s",
+                                 shadow_fx_load_pending_name(mfx_flat, is_module));
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    } else {
+                        /* Everything else: SERVED AND EMPTY. Not null — the
+                         * channel answered — and not the outgoing module's
+                         * value, which is a contract that would be believed
+                         * and then latched. */
+                        shadow_param->value[0] = '\0';
+                        shadow_param->result_len = 0;
+                    }
+                    shadow_param->error = 0;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
+            }
+        }
+
         /* ---- Shape: the length, and the three verbs that change it ----------
          *
          * Spelled to match the slot chain's `fx:insert` / `fx:remove` /
@@ -3086,10 +4392,11 @@ void shadow_inprocess_handle_param_request(void) {
                          * and fxN:module answer them — slot_unload clears both,
                          * so `instance` adds nothing here except a second
                          * definition of "loaded" that could drift from theirs. */
-                        const master_fx_slot_t *s = &shadow_master_fx_slots[i];
+                        int f = shadow_fx_load_flat_master(i);
                         ok = master_fx_snapshot_append(shadow_param->value,
-                                                       SHADOW_PARAM_VALUE_LEN, &len,
-                                                       i, s->module_id, s->module_path);
+                                                       SHADOW_PARAM_VALUE_LEN, &len, i,
+                                                       shadow_fx_load_pending_name(f, 0),
+                                                       shadow_fx_load_pending_name(f, 1));
                     }
                     if (ok) ok = master_fx_snapshot_end(shadow_param->value,
                                                         SHADOW_PARAM_VALUE_LEN, &len);
@@ -3119,7 +4426,19 @@ void shadow_inprocess_handle_param_request(void) {
                     shadow_param_publish_response(req_id);
                     return;
                 }
+                /* A PERMUTATION MOVES THE POSITIONS a staged realisation is
+                 * stamped against, so it cannot run while one is in flight —
+                 * the install would put the incoming module wherever the shift
+                 * had left that index. Refused (error 15) rather than queued:
+                 * the editor already reports a refused verb, and a queued one
+                 * would reorder a chain the user has since changed. */
                 int ok = 0;
+                if (shadow_fx_load_any_in_flight()) {
+                    shadow_param->error = 15;
+                    shadow_param->result_len = 0;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
                 if (is_move) {
                     /* "1>3" — one write, because two (remove then insert)
                      * would be two permutations with a torn chain between
@@ -3148,7 +4467,12 @@ void shadow_inprocess_handle_param_request(void) {
 
         if (req_type == 1) {  /* SET */
             if (strcmp(param_key, "module") == 0) {
-                int result = shadow_master_fx_slot_load(mfx_slot, shadow_param->value);
+                /* ACCEPTED, NOT LOADED — see the send block and
+                 * shadow_fx_load_request. This handler runs on the SPI
+                 * callback; the dlopen does not. Error 7 stays for a request
+                 * that can never be served. */
+                int result = shadow_fx_load_request(
+                    shadow_fx_load_flat_master(mfx_slot), shadow_param->value);
                 shadow_param->error = (result == 0) ? 0 : 7;
                 shadow_param->result_len = 0;
             } else if (strcmp(param_key, "param") == 0 && mfx->api && mfx->instance) {

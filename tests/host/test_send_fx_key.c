@@ -1,0 +1,211 @@
+/*
+ * Unit test for send_fx_key.h — "send<N>:fx<M>:<param>" and "send<N>:<param>".
+ *
+ * The caps are passed in by the build (from shadow_chain_mgmt.h) rather than
+ * restated here, so raising SEND_BUSES or SEND_FX_SLOTS widens the coverage
+ * automatically. A test that hard-coded 2 and 8 would go on passing while
+ * covering a fraction of the range — which is the exact failure master_fx_key.h
+ * exists to prevent.
+ */
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "send_fx_key.h"
+
+#ifndef TEST_SEND_BUSES
+#error "TEST_SEND_BUSES must be defined by the build"
+#endif
+#ifndef TEST_SEND_FX_SLOTS
+#error "TEST_SEND_FX_SLOTS must be defined by the build"
+#endif
+
+static void test_full_range(void) {
+    for (int s = 1; s <= TEST_SEND_BUSES; s++) {
+        for (int f = 1; f <= TEST_SEND_FX_SLOTS; f++) {
+            char key[48];
+            snprintf(key, sizeof(key), "send%d:fx%d:cutoff", s, f);
+            int send = -99, slot = -99;
+            const char *param = NULL;
+            assert(send_fx_route(key, TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                                 &send, &slot, &param) == 1);
+            assert(send == s - 1);
+            assert(slot == f - 1);
+            assert(param && strcmp(param, "cutoff") == 0);
+        }
+    }
+    printf("  full range: ok\n");
+}
+
+static void test_bus_level_keys(void) {
+    for (int s = 1; s <= TEST_SEND_BUSES; s++) {
+        char key[48];
+        snprintf(key, sizeof(key), "send%d:return", s);
+        int send = -99, slot = -99;
+        const char *param = NULL;
+        assert(send_fx_route(key, TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 1);
+        assert(send == s - 1);
+        assert(slot == -1);                    /* a bus-level key, not an FX */
+        assert(param && strcmp(param, "return") == 0);
+    }
+    printf("  bus-level keys: ok\n");
+}
+
+static void test_past_caps_rejected(void) {
+    int send = -99, slot = -99;
+    const char *param = (const char *)0x1;
+    char key[48];
+
+    snprintf(key, sizeof(key), "send%d:return", TEST_SEND_BUSES + 1);
+    assert(send_fx_route(key, TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                         &send, &slot, &param) == 0);
+    assert(send == -99 && slot == -99 && param == (const char *)0x1);
+
+    snprintf(key, sizeof(key), "send1:fx%d:cutoff", TEST_SEND_FX_SLOTS + 1);
+    assert(send_fx_route(key, TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                         &send, &slot, &param) == 0);
+    assert(send == -99 && slot == -99 && param == (const char *)0x1);
+
+    /* An absurd digit run must not wrap into a plausible index. 4294967297 is
+     * chosen, not arbitrary: unclamped int accumulation wraps it to exactly 1
+     * on two's-complement, so a missing clamp is a silent MISROUTE into send 1
+     * / position 1 rather than a visibly wrong number. Anything less specific
+     * lands out of range by luck and pins nothing. */
+    assert(send_fx_route("send4294967297:return", TEST_SEND_BUSES,
+                         TEST_SEND_FX_SLOTS, &send, &slot, &param) == 0);
+    assert(send_fx_route("send1:fx4294967297:cutoff", TEST_SEND_BUSES,
+                         TEST_SEND_FX_SLOTS, &send, &slot, &param) == 0);
+    assert(send == -99 && slot == -99 && param == (const char *)0x1);
+    printf("  past caps rejected: ok\n");
+}
+
+static void test_malformed(void) {
+    int send = -99, slot = -99;
+    const char *param = (const char *)0x1;
+
+#define REJECT(k) do { \
+    assert(send_fx_route((k), TEST_SEND_BUSES, TEST_SEND_FX_SLOTS, \
+                         &send, &slot, &param) == 0); \
+    assert(send == -99 && slot == -99 && param == (const char *)0x1); \
+} while (0)
+
+    REJECT("send0:return");      /* 1-based on the wire; there is no send 0 */
+    REJECT("send01:return");     /* leading zero is not an id we emit */
+    REJECT("send1");             /* no colon, so it names no param */
+    REJECT("send1:");            /* colon but nothing after it */
+    REJECT("send1x:return");     /* junk between the index and the colon */
+    REJECT("sendA:return");
+    REJECT("send:return");
+    REJECT("fx1:cutoff");        /* a Master FX key, not a send key */
+    /* Another key with a digit at byte 4: without the "send" prefix test this
+     * parses as send 1, so it is what makes that guard load-bearing. */
+    REJECT("slot1:volume");
+    REJECT("sendo:off");         /* shares the "send" prefix, nothing more */
+    REJECT("");
+    REJECT(NULL);
+
+    /* fx-SHAPED but not an in-range position: rejected, never handed back as
+     * a bus-level param whose name happens to start with "fx". */
+    REJECT("send1:fx0:cutoff");
+    REJECT("send1:fx01:cutoff");
+    REJECT("send1:fx1");         /* no colon after the position */
+    REJECT("send1:fx");
+
+#undef REJECT
+    printf("  malformed: ok\n");
+}
+
+/* NULL out-params must be tolerated: a caller that only wants to know whether
+ * a key is a send key passes none of them. */
+static void test_null_outparams(void) {
+    assert(send_fx_route("send1:fx1:cutoff", TEST_SEND_BUSES,
+                         TEST_SEND_FX_SLOTS, NULL, NULL, NULL) == 1);
+    assert(send_fx_route("send1:return", TEST_SEND_BUSES,
+                         TEST_SEND_FX_SLOTS, NULL, NULL, NULL) == 1);
+    printf("  null out-params: ok\n");
+}
+
+static void test_return_level_on_first_load(void) {
+    /* The bug this rule exists for: a reverb loaded into Send A and a voice's
+     * send raised produced SILENCE, because the return defaulted to 0 and lives
+     * one box further along than the picker walks. Reported off hardware —
+     * send_levels.json read `send1_return: 0` with freeverb loaded. */
+    assert(send_return_level_on_load(1, 0) == SEND_RETURN_DEFAULT_ON_FIRST_LOAD);
+
+    /* Must not stomp a return the user deliberately set, at any value... */
+    assert(send_return_level_on_load(1, 40) == 40);
+    assert(send_return_level_on_load(1, SEND_RETURN_DEFAULT_ON_FIRST_LOAD)
+           == SEND_RETURN_DEFAULT_ON_FIRST_LOAD);
+
+    /* ...and must not fire for the SECOND effect in a send. A user who pulled
+     * the return down after loading a delay must not have it pushed back up
+     * when they add a reverb behind it. */
+    assert(send_return_level_on_load(0, 0) == 0);
+    assert(send_return_level_on_load(0, 40) == 40);
+
+    printf("  return level on first load: ok\n");
+}
+
+/*
+ * THE THREE SHAPE VERBS reach the bus level.
+ *
+ * They are fx-SHAPED and name no position, so the guard that rejects
+ * "fx0:cutoff" swallowed them whole: "send1:fx:move" routed nowhere, the shim
+ * never saw it, and the editor reordered its own model against a chain that had
+ * not moved. The picture changed and the audio did not.
+ */
+static void test_shape_verbs_route(void) {
+    static const char *verbs[] = { "fx:insert", "fx:remove", "fx:move", "fx_count" };
+    for (unsigned v = 0; v < sizeof(verbs) / sizeof(verbs[0]); v++) {
+        char key[64];
+        snprintf(key, sizeof(key), "send1:%s", verbs[v]);
+        int send = -9, slot = -9;
+        const char *param = NULL;
+        assert(send_fx_route(key, TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 1);
+        assert(send == 0);
+        /* -1 is the BUS, not a position: a caller must branch on the slot before
+         * indexing the FX array, or a verb would be written into fx1. */
+        assert(slot == -1);
+        assert(strcmp(param, verbs[v]) == 0);
+    }
+
+    /* Every send bus, not just the first. */
+    {
+        int send = -9, slot = -9; const char *param = NULL;
+        assert(send_fx_route("send2:fx:move", TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 1);
+        assert(send == 1 && slot == -1 && strcmp(param, "fx:move") == 0);
+    }
+
+    /* AND THE GUARD STILL HOLDS for everything else fx-shaped. These must not
+     * become bus-level params now that three of their neighbours do. */
+    static const char *still_rejected[] = {
+        "send1:fx0:cutoff", "send1:fx01:cutoff", "send1:fx9:cutoff",
+        "send1:fx:", "send1:fx", "send1:fx:moves", "send1:fx:mov",
+        "send1:fxmove", "send1:fx_counts",
+    };
+    for (unsigned i = 0; i < sizeof(still_rejected) / sizeof(still_rejected[0]); i++) {
+        int send = -9, slot = -9; const char *param = NULL;
+        assert(send_fx_route(still_rejected[i], TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 0);
+        /* NOTHING written on a rejection -- the whole contract of this header. */
+        assert(send == -9 && slot == -9 && param == NULL);
+    }
+
+    printf("  shape verbs route to the bus level, guard intact: ok\n");
+}
+
+int main(void) {
+    printf("test_send_fx_key (buses=%d slots=%d):\n",
+           TEST_SEND_BUSES, TEST_SEND_FX_SLOTS);
+    test_full_range();
+    test_bus_level_keys();
+    test_past_caps_rejected();
+    test_malformed();
+    test_return_level_on_first_load();
+    test_shape_verbs_route();
+    test_null_outparams();
+    printf("PASS\n");
+    return 0;
+}

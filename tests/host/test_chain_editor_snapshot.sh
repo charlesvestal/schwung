@@ -117,9 +117,20 @@ import { drawHeader as drawMovyHeader, drawFooter as drawMovyFooter,
   from "./src/shared/param_pages/render_page_movy.mjs";
 import { drawKnobCard } from "./src/shared/param_pages/knob_card.mjs";
 import { buildMetaIndex } from "./src/shared/param_pages/param_meta.mjs";
-import { drawMenuHeader } from "./src/shared/menu_layout.mjs";
+import { drawMenuHeader, drawMenuList, drawMenuFooter }
+  from "./src/shared/menu_layout.mjs";
+/* The list rect the FX-bus picker hands drawMenuList, from the same module the
+   device reads it from. */
+import { LIST_TOP_Y, FOOTER_RULE_Y } from "./src/shared/chain_ui_views.mjs";
 import { truncateText } from "./src/shared/chain_ui_views.mjs";
 import { drawChainEditorBands, drawChainPicker } from "./src/shared/chain_editor_chrome.mjs";
+/* The bus MODEL — pure, and the same module shadow_ui.js and
+   shadow_ui_buses.mjs both import. The views file cannot be imported (it
+   resolves /data/UserData/schwung paths), so its four screens are LIFTED
+   below; the model is the half that can just be used. */
+import * as BusModel from "./src/shared/bus_model.mjs";
+import { drawConfirmModal } from "./src/shared/menu_layout.mjs";
+import { ctx as BUS_CTX } from "./src/shadow/shadow_ui_ctx.mjs";
 
 const BASELINE_PATH = "tests/fixtures/chain-editor-baseline.txt";
 const SCREEN_WIDTH = 128;
@@ -134,6 +145,7 @@ const fail = (m) => { console.error("FAIL: " + m); failures++; };
 
 const uiSrc = readFileSync("src/shadow/shadow_ui.js", "utf8");
 const mfxSrc = readFileSync("src/shadow/shadow_ui_master_fx.mjs", "utf8");
+const busSrc = readFileSync("src/shadow/shadow_ui_buses.mjs", "utf8");
 
 /* Same lift as test_chain_edit_read_budget.sh: pull a top-level function out of
    a device UI module -- which cannot be imported, being full of host globals --
@@ -236,7 +248,17 @@ function chainWorld(state) {
   const chainComponentBypassed = lift("chainComponentBypassed",
     ["chainTargetGetParam"])(chainTargetGetParam);
 
-  return { getSlotParam, getSlotParamCached, chainConfigs, chainConfigFresh,
+  /* The REAL one, lifted: it is the rule that decides whether the `Buses` row
+     exists at all, and it reads through the same cached-read helper the device
+     uses. Not a dependency of drawChainEdit -- the chain editor has no bus
+     affordance -- but the settings-list cases below drive their row filter
+     through it. BusModel is a free identifier under the lift (shadow_ui.js
+     imports it) and is supplied from the shared module itself. */
+  const chainSynthSplits = lift("chainSynthSplits",
+    ["chainConfigs", "getSlotParamCached", "BusModel"])(
+    chainConfigs, getSlotParamCached, BusModel);
+
+  return { getSlotParam, getSlotParamCached, chainSynthSplits, chainConfigs, chainConfigFresh,
            createEmptyChainConfig, ensureChainConfigFresh, chainComponentParamKey,
            getChainComponentModule, getComponentParamPrefix, getModuleAbbrev,
            slotChainComponents, slotChainTarget, chainTargetGetParam,
@@ -263,6 +285,11 @@ const CHAIN_DRAW_DEPS = [
      a noop here would empty three of the four bands the content floor checks,
      which is the whole point of checking them. */
   "drawChainEditorBands",
+  /* The knob-card / diagram primitive set, extracted to its own top-level
+     function so the bus screens (shadow_ui_buses.mjs, via ctx.movyCtx) and
+     drawChainEdit stopped carrying two copies of the same literal. A free
+     identifier under the lift, same as every other dep here. */
+  "movyPrimitives",
 ];
 const mkChainDraw = lift("drawChainEdit", CHAIN_DRAW_DEPS);
 
@@ -283,7 +310,8 @@ function renderChain(c) {
     CHROME_REST_HINTS, w.ensureChainConfigFresh,
     () => (c.card || null), drawKnobCard,
     w.slotChainTarget, w.chainLfoTargetMap, w.chainComponentBypassed,
-    drawChainEditorBands);
+    drawChainEditorBands,
+    () => ({ fillRect: g.fill_rect, print: g.print, textWidth: g.text_width, setPixel: g.set_pixel }));
   draw();
   clearGlobals();
   return fb;
@@ -304,13 +332,35 @@ const MASTER_FX_SLOTS = 8;
  * to remove.
  */
 const chainEditorComponents = lift("chainEditorComponents", ["chainComponents"])(chainComponents);
-function masterComponents(config) {
+/* The REAL send entries, lifted rather than restated: the master row heads are
+   derived from FX_BUSES, and a stub here would let the harness baseline a row
+   the device does not draw. */
+const masterFxSendEntries = (() => {
+  const busAt = uiSrc.indexOf("const FX_BUSES = [");
+  const busEnd = uiSrc.indexOf("\n];", busAt);
+  const fnAt = uiSrc.indexOf("function masterFxSendEntries(");
+  const fnEnd = uiSrc.indexOf("\n}\n", fnAt);
+  if (busAt < 0 || fnAt < 0) { fail("could not lift masterFxSendEntries/FX_BUSES"); return () => []; }
+  return new Function(uiSrc.slice(busAt, busEnd + 3) + uiSrc.slice(fnAt, fnEnd + 2) +
+    "\nreturn masterFxSendEntries;")();
+})();
+
+/* `isMaster` false for a SEND case: only the master bus heads its row with the
+   send entries, so a send editor showing its own box would be a box that
+   reopens the screen it is drawn on. */
+function masterComponents(config, isMaster = true) {
   const held = { c: config };
   const decls = new Function("masterFxConfig", "MASTER_FX_SLOTS",
     uiSrc.slice(uiSrc.indexOf("let masterFxChainLength = -1;"),
                 uiSrc.indexOf("\n}\n", uiSrc.indexOf("function masterFxChainConfig("))) +
     "\n}\nreturn masterFxChainConfig;")(held.c, MASTER_FX_SLOTS);
-  return chainEditorComponents(decls(), { hasSynth: false, hasMidiFx: false });
+  const rows = chainEditorComponents(decls(), { hasSynth: false, hasMidiFx: false });
+  /* A SEND heads its row with the way back, where the master heads its row with
+     the two sends -- so neither case is a bare chain, and a harness that built
+     one would baseline a row the device does not draw. */
+  const head = isMaster ? masterFxSendEntries()
+    : [{ id: "busback", key: "busback", kind: "busback", busIndex: 0, label: "MFX" }];
+  return head.concat(rows).map((c, i) => ({ ...c, position: i }));
 }
 
 /* drawMasterFx takes its shared state through ctx, so the state goes in
@@ -346,7 +396,33 @@ const MFX_DRAW_DEPS = ["ctx", "drawHeader", "drawChainDiagram", "DIAGRAM_W",
      knobCardDrawState is deliberately NOT here: drawMasterFx destructures it
      from ctx, and a const cannot shadow a parameter of the same name. It is
      supplied on mfxCtx below instead, where a missing one is a TypeError. */
+  /* fxBusHints, the file own Back-word rewriter. REAL, lifted from the same
+     file: what it changes is a word in the footer, and a stub would baseline a
+     footer nobody draws. */
+  "fxBusHints",
   "drawKnobCard"];
+/* The real rewriter, from the same file, applied to whatever pairs the
+   chrome hands it. */
+const FX_BUS_HINTS = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "fxBusHints",
+                              ["FX_BUS_BACK_LABEL"])("BUS");
+/* The three FX buses, as shadow_ui.js declares them. Written out here rather
+   than lifted because FX_BUSES sits inside a 1500-line declaration block that
+   this harness has no other reason to evaluate; test_fx_bus_contract.sh is what
+   fails if the two drift. */
+/* Which bus renderMaster is currently drawing. A CELL, not a captured value:
+   the lifted target and its key rule are built once and every case changes the
+   bus underneath them. */
+let mBusCell = { cur: null };
+const FX_BUS_STUBS = {
+  master: { id: "master", label: "Master FX", short: "MFX", prefix: "master_fx:",
+            send: -1, hasLfos: true,  hasPresets: true,  busLevelKeys: [] },
+  send1:  { id: "send1",  label: "Send A",    short: "SNDA", prefix: "send1:",
+            send: 0,  hasLfos: false, hasPresets: false,
+            busLevelKeys: ["return", "to_send2"] },
+  send2:  { id: "send2",  label: "Send B",    short: "SNDB", prefix: "send2:",
+            send: 1,  hasLfos: false, hasPresets: false, busLevelKeys: ["return"] },
+};
+
 const mkMasterDraw = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs", "drawMasterFx", MFX_DRAW_DEPS);
 
 function renderMaster(c) {
@@ -357,10 +433,16 @@ function renderMaster(c) {
      bypass markers through them, so this harness must supply the REAL ones or
      it would be snapshotting a screen the device never draws. */
   const mGetSlotParam = (slot, key) => (c.state[key] !== undefined ? c.state[key] : "");
-  const mTarget = new Function("parseChainId", "MASTER_FX_SLOTS",
+  mBusCell.cur = c.bus || FX_BUS_STUBS.master;
+  const mTarget = new Function("parseChainId", "MASTER_FX_SLOTS", "fxBus",
     uiSrc.slice(uiSrc.indexOf("const MASTER_CHAIN_TARGET = {"),
                 uiSrc.indexOf("\n};\n", uiSrc.indexOf("const MASTER_CHAIN_TARGET = {")) + 4) +
-    "\nreturn MASTER_CHAIN_TARGET;")(parseChainId, MASTER_FX_SLOTS);
+    "\nreturn MASTER_CHAIN_TARGET;")(parseChainId, MASTER_FX_SLOTS,
+    /* Which FX bus the target addresses — its whole key rule is the bus prefix,
+       so this MUST follow the case or a send case would silently read the
+       master bus keys and render identically to it. Held in a cell rather
+       than captured, because the target is built once and the case changes. */
+    () => mBusCell.cur);
   const mChainTargetGetParam = lift("chainTargetGetParam", ["getSlotParam"])(mGetSlotParam);
   const mLfoMap = lift("chainLfoTargetMap", ["getSlotParam"])(mGetSlotParam);
   const mBypassed = lift("chainComponentBypassed",
@@ -368,7 +450,11 @@ function renderMaster(c) {
   const mfxCtx = {
     MASTER_CHAIN_TARGET: mTarget,
     /* Derived per case, from that case`s config. */
-    MASTER_FX_CHAIN_COMPONENTS: masterComponents(c.config),
+    MASTER_FX_CHAIN_COMPONENTS: masterComponents(c.config, !c.bus),
+    /* Cached on entry on the device; fixed per case here. A send box draws its
+       RETURN as a dial and names what is in the bus on the info band. */
+    fxBusSummary: (i) => (c.busSummaries || {})[i] || "",
+    fxBusReturn: (i) => ((c.busReturns || {})[i] || 0),
     ensureMasterFxConfigFresh: () => {},
     isShiftHeld: () => !!c.shift,
     chainLfoTargetMap: mLfoMap,
@@ -392,13 +478,23 @@ function renderMaster(c) {
     /* Same shape renderChain passes drawChainEdit, so a card case on one
        screen and a card case on the other are driven from identical data. */
     knobCardDrawState: () => (c.card || null),
+    /* WHICH FX bus this case is. drawMasterFx is parameterised by it — the key
+       prefix, the header text and side, whether a preset name may appear, and
+       whether the LFO markers are asked for at all — so a case that does not
+       say defaults to the master bus and the send cases say so explicitly.
+       These stubs mirror FX_BUSES in shadow_ui.js. */
+    fxBus: () => (c.bus || FX_BUS_STUBS.master),
+    /* The bus-level scalars the settings band prints for a send. null is "the
+       read did not complete" and must print as "--", which is one of the
+       cases below. */
+    sendBusLevelRead: (k) => (c.levels && (k in c.levels)) ? c.levels[k] : null,
   };
   const draw = mkMasterDraw(mfxCtx, drawMenuHeader, drawChainDiagram, DIAGRAM_W,
     DIAGRAM_Y, SCREEN_WIDTH, truncateText, boom("drawMasterNamePreview"),
     boom("drawMasterConfirmOverwrite"), boom("drawMasterConfirmDelete"),
     boom("drawMasterPresetPicker"), boom("drawMasterFxSettingsMenu"),
     boom("drawMasterFxModuleSelect"), drawChainEditorBands, CHROME_SHIFT_HINTS,
-    CHROME_REST_HINTS, drawKnobCard);
+    CHROME_REST_HINTS, FX_BUS_HINTS, drawKnobCard);
   draw();
   clearGlobals();
   return fb;
@@ -480,11 +576,54 @@ function renderMasterPicker(c) {
     masterFxPickerItems: c.entries,
     selectedMasterFxModuleIndex: c.index,
     masterFxConfig: c.config,
+    /* The picker header names the bus -- master unless the case says
+       otherwise. Every case before the sends existed left this unset and
+       keeps meaning "Master FX". */
+    fxBus: () => (c.bus ? FX_BUS_STUBS[c.bus] : FX_BUS_STUBS.master),
   }, drawChainPicker);
   draw();
   clearGlobals();
   return fb;
 }
+
+/* ======================================================================== */
+/* THE FX-BUS PICKER                                                         */
+/* ======================================================================== */
+/*
+ * The screen Shift+Vol+Menu and hold-Menu now open: three rows, Master FX,
+ * Send A and Send B, on the ONE list engine (drawMenuHeader / drawMenuList /
+ * drawMenuFooter). Rendered here because it is the only way into the sends and
+ * because the module pickers already proved what an unrendered screen does —
+ * they diverged completely and a user found it before any test did.
+ *
+ * drawFxBusPicker is lifted out of shadow_ui.js with its free identifiers
+ * supplied. FX_BUSES is supplied as the same stub table the send editor cases
+ * use, so a row label that changed in one place and not the other is a diff in
+ * a picture.
+ */
+const mkBusPicker = lift("drawFxBusPicker",
+  ["clear_screen", "drawHeader", "drawMenuList", "drawFooter", "FX_BUSES",
+   "selectedFxBusRow", "fxBusSummaries", "LIST_TOP_Y", "FOOTER_RULE_Y"]);
+
+function renderBusPicker(c) {
+  const fb = createFramebuffer();
+  installGlobals(fb, () => "");
+  mkBusPicker(fb.clearScreen, drawMenuHeader, drawMenuList, drawMenuFooter,
+              [FX_BUS_STUBS.master, FX_BUS_STUBS.send1, FX_BUS_STUBS.send2],
+              c.row, c.summaries, LIST_TOP_Y, FOOTER_RULE_Y)();
+  clearGlobals();
+  return fb;
+}
+
+const busPickerCases = [
+  /* Every row, so the highlight and the value column are pinned on each. */
+  { id: "buspicker/row-master", row: 0, summaries: ["2 FX", "Empty", "Empty"] },
+  { id: "buspicker/row-send-a", row: 1, summaries: ["2 FX", "1 FX", "Empty"] },
+  { id: "buspicker/row-send-b", row: 2, summaries: ["2 FX", "1 FX", "3 FX"] },
+  /* A summary read that did not complete prints "--", never "Empty" — that is
+     what would send someone looking for the reverb they just loaded. */
+  { id: "buspicker/unread",     row: 0, summaries: ["--", "--", "--"] },
+];
 
 /* ======================================================================== */
 /* MASTER FX SETTINGS, AS THE KNOB GRID                                      */
@@ -635,6 +774,74 @@ addSettings("settings/master/actions", { page: "Actions", presetName: "Glue Bus"
 addSettings("settings/master/actions-nopreset", { page: "Actions" });
 
 /* ======================================================================== */
+/* THE SEND SETTINGS MENU                                                    */
+/* ======================================================================== */
+/*
+ * A send Settings box does NOT open the knob grid above -- getMasterFxSettingsItems
+ * takes the `!fxBusIsMaster()` branch and returns sendBusLevelItems(), which
+ * drawMasterFxSettingsMenu (shadow_ui_master_fx.mjs) still draws as the plain
+ * scrolling list: Return / -> Send B, "int" rows, click-to-edit in place. That
+ * function is ALSO one of the six fail-if-reached stubs renderMaster supplies
+ * (boom("drawMasterFxSettingsMenu")) -- so this screen, the one a send actually
+ * shows for its Settings box, had never been rendered here at all. The knob-grid
+ * cases above cover the master REPLACEMENT for this screen, not this screen.
+ *
+ * Driven through the REAL sendBusLevelItems / getMasterFxSettingValue, lifted
+ * from shadow_ui.js the same way FX_BUS_HINTS is lifted from the master file --
+ * so the row labels and the "--" for an unread level come from the actual
+ * source, not a hand-typed guess that could drift from it.
+ *
+ * getMasterFxSettingsItems itself is NOT lifted: its master branch touches
+ * currentMasterPresetName and MASTER_FX_SETTINGS_ITEMS_BASE, free identifiers
+ * this harness has no reason to supply for a screen that never takes that
+ * branch, and fxBusIsMaster is a one-line function liftFrom cannot isolate (no
+ * "\n}\n" of its own -- it would swallow everything up to the next one). The
+ * dispatch this file needs is the one line the send branch actually is:
+ * `return sendBusLevelItems();`, called directly.
+ */
+const mkSendBusLevelItems = lift("sendBusLevelItems", ["fxBus", "SEND_LEVEL_ROW_LABELS"]);
+const mkGetMasterFxSettingValue = lift("getMasterFxSettingValue", ["sendBusLevelRead"]);
+const mkSendSettingsMenu = liftFrom(mfxSrc, "shadow_ui_master_fx.mjs",
+  "drawMasterFxSettingsMenu",
+  ["ctx", "drawHeader", "truncateText", "drawMenuList", "LIST_TOP_Y", "FOOTER_RULE_Y", "drawFooter"]);
+/* Mirrors SEND_LEVEL_ROW_LABELS in shadow_ui.js, the way FX_BUS_STUBS mirrors
+   FX_BUSES -- a label that changes in one and not the other is a picture that
+   stops meaning what its row name says. */
+const SEND_LEVEL_ROW_LABELS_STUB = { return: "Return", to_send2: "-> Send B" };
+
+const sendSettingsCases = [];
+const addSendSettings = (id, o) => sendSettingsCases.push({
+  id, bus: FX_BUS_STUBS[o.bus], sel: o.sel, levels: o.levels || null,
+});
+/* Send A: both rows, cursor on each in turn. */
+addSendSettings("settings/send1/sel-return",     { bus: "send1", sel: 0, levels: { return: 100, to_send2: 40 } });
+addSendSettings("settings/send1/sel-to-send2",   { bus: "send1", sel: 1, levels: { return: 100, to_send2: 40 } });
+/* Send B: one row only -- it has no -> Send C, so its list is shorter. */
+addSendSettings("settings/send2/sel-return",     { bus: "send2", sel: 0, levels: { return: 64 } });
+/* A level whose read did not complete prints "--", never a zero -- same rule
+   the settings BAND on the chain diagram follows for the same key. */
+addSendSettings("settings/send1/unread",         { bus: "send1", sel: 0, levels: null });
+
+function renderSendSettings(c) {
+  const fb = createFramebuffer();
+  installGlobals(fb, () => "");
+  const fxBusFn = () => c.bus;
+  const sendBusLevelReadStub = (k) => (c.levels && (k in c.levels)) ? c.levels[k] : null;
+  const menuCtx = {
+    currentMasterPresetName: "",
+    selectedMasterFxSetting: c.sel,
+    getMasterFxSettingsItems: mkSendBusLevelItems(fxBusFn, SEND_LEVEL_ROW_LABELS_STUB),
+    getMasterFxSettingValue: mkGetMasterFxSettingValue(sendBusLevelReadStub),
+    fxBus: fxBusFn,
+  };
+  const draw = mkSendSettingsMenu(menuCtx, drawMenuHeader, truncateText, drawMenuList,
+                                   LIST_TOP_Y, FOOTER_RULE_Y, drawMenuFooter);
+  draw();
+  clearGlobals();
+  return fb;
+}
+
+/* ======================================================================== */
 /* THE CASE MATRIX                                                           */
 /* ======================================================================== */
 
@@ -729,6 +936,28 @@ addChain("chain/len5/bypassed+lfo1+2", Object.assign({ selKey: "fx1",
   extra: { "fx2:bypassed": "1", "lfo1:enabled": "1", "lfo1:target": "fx2",
            "lfo2:enabled": "1", "lfo2:target": "fx2" } }, FIVE));
 
+/* --- a splittable synth changes NOTHING on the chain editor --------------- *
+ *
+ * The bus door is a row on the slot`s SETTINGS, not a gesture here. Down was
+ * briefly it, and it was wrong for a reason worth keeping a test for: up and
+ * down are Move`s octave shift, and only Down was ever claimed -- so the pair
+ * broke, at the chain editor`s default resting cursor position.
+ *
+ * These three cases are what says the gesture and its footer hint are really
+ * gone. Each is byte-identical to its twin with no `split_voices` at all, and
+ * the two that HAVE a twin are declared in SAME_ON_PURPOSE below: a footer hint
+ * or a claimed arrow coming back would break that equality rather than sitting
+ * unnoticed in a hash nobody rederives.
+ */
+const SPLITS = { "synth:split_voices": JSON.stringify(
+  [{ id: "kick", label: "Kick" }, { id: "chh", label: "Closed Hat" }]) };
+addChain("chain/len2/synth-splits", Object.assign({ selKey: "synth",
+  extra: SPLITS }, SHORT));
+addChain("chain/len2/synth-splits-shift", Object.assign({ selKey: "synth",
+  shift: true, extra: SPLITS }, SHORT));
+addChain("chain/len2/fx1-splits", Object.assign({ selKey: "fx1",
+  extra: SPLITS }, SHORT));
+
 /* --- header and info line ----------------------------------------------- */
 addChain("chain/len2/patch-named", Object.assign({ selKey: "fx1",
   patchName: "Deep Pad" }, SHORT));
@@ -794,7 +1023,7 @@ const addMaster = (id, o) => {
      as the chain: `settings` is at index 2 on an empty Master FX and at index 9
      on a full one. An index baked into a case name would drift with it. */
   if (typeof sel === "string") {
-    sel = masterComponents(config).findIndex((c) => c.key === sel);
+    sel = masterComponents(config, !o.bus).findIndex((c) => c.key === sel);
     /* -1 is the PRESET row, so a key that resolves to it is a case naming a box
        that is not there -- which is how "sel-fx1 on an empty chain" would have
        gone on quietly snapshotting the preset row instead. */
@@ -803,8 +1032,14 @@ const addMaster = (id, o) => {
   if (sel === undefined || sel < -1)
     fail("master case " + id + " has no selection");
   masterCases.push({ id, sel, config, state: o.extra || {},
+                     busSummaries: o.busSummaries || {},
+                     busReturns: o.busReturns || {},
                      card: o.card || null, shift: !!o.shift,
                      presetName: o.presetName || "",
+                     /* Which FX bus. Absent means the master bus, so every case
+                        written before the sends existed keeps its meaning. */
+                     bus: o.bus ? FX_BUS_STUBS[o.bus] : null,
+                     levels: o.levels || null,
                      options: o.options || [{ id: "cloudseed", name: "CloudSeed" }] });
 };
 
@@ -817,6 +1052,21 @@ const M8 = rep(8, "cloudseed");
    chain, which is exactly what step 4e removed: a Master FX holding one module
    has one module box and a `+`, not eight boxes with seven of them blank. Their
    replacements are the sel-add-fx cases below. */
+/* THE SEND ENTRIES. Nothing covered them at all: masterComponents called
+   chainEditorComponents directly, so the harness never built a row that had
+   one, and every send-box pixel was unbaselined while the suite was green.
+   Selected and not, at three levels, because the dial is the whole point. */
+addMaster("master/sends/a-zero", { modules: ["freeverb"], sel: "sendbus1",
+  busSummaries: { 1: "Empty" }, busReturns: { 1: 0 } });
+addMaster("master/sends/a-full", { modules: ["freeverb"], sel: "sendbus1",
+  busSummaries: { 1: "2 FX" }, busReturns: { 1: 127 } });
+addMaster("master/sends/a-mid-unselected", { modules: ["freeverb"], sel: "fx1",
+  busSummaries: { 1: "1 FX", 2: "3 FX" }, busReturns: { 1: 64, 2: 100 } });
+addMaster("master/sends/b-selected", { modules: ["freeverb"], sel: "sendbus2",
+  busSummaries: { 2: "3 FX" }, busReturns: { 2: 40 } });
+addMaster("master/sends/gap-with-settings", { modules: [], sel: "settings",
+  busReturns: { 1: 20, 2: 90 } });
+
 addMaster("master/len0/sel-settings", { modules: [], sel: "settings" });
 addMaster("master/len0/sel-preset",   { modules: [], sel: -1 });
 addMaster("master/len1/sel-fx1",      { modules: ["freeverb"], sel: "fx1" });
@@ -852,6 +1102,35 @@ addMaster("master/len2/info-preset",  { modules: M2, sel: "fx2",
   extra: { "master_fx:fx2:preset_name": "Cathedral" } });
 addMaster("master/len2/info-optname", { modules: M2, sel: "fx2",
   options: [{ id: "cloudseed", name: "CloudSeed Reverb" }] });
+
+/* --- THE TWO SEND BUSES, through the same editor -------------------------
+ *
+ * The whole point of the FX-bus work is that these are not a second screen:
+ * every case here is renderMaster with a different `bus`, so a difference
+ * between a send and the master bus can only come from something that reads
+ * fxBus(). What SHOULD differ, and what these cases pin:
+ *   - the header names the bus (SNDA / SNDB, and no preset name),
+ *   - the settings band prints the LEVELS instead of a verb,
+ *   - Send A has a -> Send B row and Send B does not,
+ *   - no LFO markers, ever, even with the master LFO keys set in `extra`.
+ */
+addMaster("send/a/len0/sel-add-fx", { bus: "send1", modules: [], sel: "add_fx" });
+addMaster("send/a/len2/sel-fx1",    { bus: "send1", modules: M2, sel: "fx1" });
+addMaster("send/a/len2/sel-fx2",    { bus: "send1", modules: M2, sel: "fx2" });
+addMaster("send/b/len2/sel-fx1",    { bus: "send2", modules: M2, sel: "fx1" });
+addMaster("send/a/len5/sel-fx3",    { bus: "send1", modules: M5, sel: "fx3" });
+/* The settings box: Send A shows BOTH levels, Send B shows one. */
+addMaster("send/a/len2/sel-settings", { bus: "send1", modules: M2, sel: "settings",
+  levels: { return: 100, to_send2: 40 } });
+addMaster("send/b/len2/sel-settings", { bus: "send2", modules: M2, sel: "settings",
+  levels: { return: 64 } });
+/* A level whose read did not complete prints "--", never a zero. */
+addMaster("send/a/len2/sel-settings-unread", { bus: "send1", modules: M2, sel: "settings" });
+/* Bypass still marks a box; the LFO keys are set and must mark NOTHING,
+   because a send has no LFOs and is never asked. */
+addMaster("send/a/len2/bypassed-no-lfo", { bus: "send1", modules: M2, sel: "fx2",
+  extra: { "send1:fx1:bypassed": "1",
+           "send1:lfo1:enabled": "1", "send1:lfo1:target": "fx1" } });
 
 /* --- the knob card, over the Master FX diagram (4b) ---------------------- *
  *
@@ -922,7 +1201,12 @@ const addPicker = (id, o) => {
   const entries = o.entries !== undefined ? o.entries
     : pickerEntries(w.chainConfigs[0], o.selKey, o.options || PICKER_OPTIONS, loadedId);
   pickerCases.push({ id, selKey: o.selKey, state, config, entries,
-                     index: o.index === undefined ? 0 : o.index });
+                     index: o.index === undefined ? 0 : o.index,
+                     /* Which bus renderMasterPicker draws the header for.
+                        Absent means the master bus, so every case above keeps
+                        its meaning. renderChainPicker ignores it -- the slot
+                        picker has no bus concept. */
+                     bus: o.bus || null });
 };
 
 /* Nothing installed at all -- the one branch that draws no list, and the one
@@ -944,6 +1228,528 @@ addPicker("picker/long-name", { modules: ["cloudseed"], selKey: "fx1", index: 1,
 /* More rows than fit, so the window scrolls and the selection centres. */
 addPicker("picker/scrolled", { modules: ["freeverb"], selKey: "fx1", index: 8,
   options: Array.from({ length: 12 }, (_, i) => ({ id: "m" + i, name: "Module " + i })) });
+/* The header names the bus: "SNDA > FX 3" here, against "MFX > FX 3" for the
+   same payload above. renderMasterPicker hardcoded the master bus for every
+   case until now, so a send picker header -- new copy this task added -- had
+   never been rendered here. Only run through renderMasterPicker: the slot
+   picker (renderChainPicker) has no bus concept, and this payload does not
+   collide with the six slot payloads above so it still gets its own render
+   under "picker/slot/...". */
+addPicker("picker/send-header", { modules: ["freeverb", "cloudseed", "tapescam"],
+  selKey: "fx3", index: 2, bus: "send1" });
+
+
+/* ======================================================================== */
+/* THE SLOT BUS SCREENS                                                      */
+/* ======================================================================== */
+/*
+ * The four screens that hang BELOW the synth box: the bus list, one bus`s menu,
+ * the voice multi-select and a bus`s insert chain (with its own module picker).
+ * Rendered here for the reason the two module pickers taught: a screen this
+ * harness cannot see is a screen free to drift, and these four are the only way
+ * a user reaches buses at all.
+ *
+ * Lifted out of shadow_ui_buses.mjs the way drawMasterFx is lifted out of
+ * shadow_ui_master_fx.mjs -- it resolves its imports from
+ * /data/UserData/schwung and cannot be imported here -- and driven through the
+ * REAL shared ctx object, the same one the device populates, plus the REAL
+ * bus_model.mjs. So a rule that changes in the model moves a picture here.
+ *
+ * drawWaiting is lifted too and passed in: it is a module-scope helper, so
+ * under the lift it is a free identifier, and stubbing it would blank the one
+ * screen state a failed read is allowed to produce.
+ */
+const liftBus = (name, deps) => liftFrom(busSrc, "shadow_ui_buses.mjs", name, deps);
+const BUS_WAITING = liftBus("drawWaiting",
+  ["ctx", "drawHeader", "drawFooter", "LIST_TOP_Y"])(
+  BUS_CTX, drawMenuHeader, drawMenuFooter, LIST_TOP_Y);
+
+const mkBusList = liftBus("drawBusList",
+  ["ctx", "drawWaiting", "drawHeader", "drawMenuList", "drawFooter",
+   "LIST_TOP_Y", "FOOTER_RULE_Y", "busListRows", "busRowLabel", "busRowValue"]);
+const mkBusActions = liftBus("drawBusActions",
+  ["ctx", "drawWaiting", "drawHeader", "drawMenuList", "drawFooter",
+   "drawConfirmModal", "truncateText", "LIST_TOP_Y", "FOOTER_RULE_Y",
+   "busListRows", "busActionItems", "busSendValue"]);
+const mkBusVoices = liftBus("drawBusVoices",
+  ["ctx", "drawWaiting", "drawHeader", "drawMenuList", "drawFooter",
+   "truncateText", "LIST_TOP_Y", "FOOTER_RULE_Y", "voiceRows", "voiceRowValue"]);
+const mkBusChain = liftBus("drawBusChain",
+  ["ctx", "drawBusModuleSelect", "drawWaiting", "drawChainDiagram",
+   "drawChainEditorBands", "truncateText", "busChainComponents"]);
+const mkBusPicker2 = liftBus("drawBusModuleSelect",
+  ["ctx", "drawChainPicker", "truncateText", "busChainComponents"]);
+
+/* A `buses:config` document, as bus_emit_config writes it -- positional, four
+   entries always, present or not. Built here rather than hand-written per case
+   so a case says only what it varies. */
+function busesConfig(o) {
+  const buses = [];
+  for (let b = 0; b < BusModel.SLOT_BUSES; b++) {
+    const d = (o.buses || [])[b];
+    buses.push(d
+      ? { present: 1, name: d.name, orphans: d.orphans || 0,
+          voices: d.voices || [],
+          sends: d.sends || [0, 0],
+          fx: Array.from({ length: BusModel.BUS_FX_SLOTS }, (_, k) =>
+            ({ module: (d.fx || [])[k] || "", bypassed: !!((d.bypassed || [])[k]) })) }
+      : { present: 0, name: "Bus " + (b + 1), orphans: 0, voices: [],
+          sends: [0, 0],
+          fx: Array.from({ length: BusModel.BUS_FX_SLOTS }, () => ({ module: "", bypassed: 0 })) });
+  }
+  return JSON.stringify({ buses, main_sends: o.mainSends || [0, 0] });
+}
+
+const voicesJson = (n) => JSON.stringify(
+  Array.from({ length: n }, (_, i) => ({ id: "v" + i, label: "Voice " + (i + 1) })));
+
+/* The ctx the device populates, populated with one case`s state. Assigned
+   directly onto the REAL shared object: a private stand-in would let a screen
+   read a property this file happens to define and the device does not. */
+function installBusCtx(fb, c) {
+  const g = installGlobals(fb, () => "");
+  const movy = {
+    fillRect: g.fill_rect, print: g.print, textWidth: g.text_width,
+    setPixel: g.set_pixel, line: g.draw_line, fillCircle: g.fill_circle,
+    drawCircle: g.draw_circle, drawArc: g.draw_arc,
+  };
+  Object.assign(BUS_CTX, {
+    clearScreen: () => fb.clearScreen(),
+    print: g.print,
+    movyCtx: () => movy,
+    getModuleAbbrev: (m) => (!m ? "--" :
+      (ABBREV_CACHE[String(m).toLowerCase()] || String(m).substring(0, 2).toUpperCase())),
+    slotLabel: () => c.slotLabel || "S1",
+    /* `unresolved` is the whole point of one of the cases below: a read that
+       did not complete must draw the waiting screen, never an empty list. */
+    busConfig: c.config === null ? null : BusModel.parseBusesConfig(c.config),
+    /* THE ROW LIST, as the device supplies it (busRowsNow): one list for the
+       draw and for the input paths, so a screen cannot be drawn from rows a
+       click would not find. The device also drops the Sends row when the knob
+       grid is not the Param View; that is an input-path fact and these are
+       pictures, so the grid form is what is rendered here. */
+    busRows: () => BusModel.busListRows(
+      c.config === null ? null : BusModel.parseBusesConfig(c.config),
+      BUS_CTX.getModuleAbbrev),
+    busVoices: c.voices === undefined ? { unresolved: false, voices: [] }
+                                      : BusModel.parseSplitVoices(c.voices),
+    busListIndex: c.index || 0,
+    busActionsRow: c.actionsRow === undefined ? 0 : c.actionsRow,
+    busActionsIndex: c.index || 0,
+    busActionsEditing: !!c.editing,
+    busConfirmingDelete: !!c.confirming,
+    busConfirmIndex: c.confirmIndex || 0,
+    busVoicesBus: c.bus === undefined ? 0 : c.bus,
+    busVoicesIndex: c.index || 0,
+    busChainBus: c.bus === undefined ? 0 : c.bus,
+    busChainPos: c.pos || 0,
+    selectingBusModule: !!c.picking,
+    busPickerItems: c.entries || [],
+    busPickerIndex: c.pickIndex || 0,
+  });
+  return movy;
+}
+
+function renderBusScreen(c) {
+  const fb = createFramebuffer();
+  installBusCtx(fb, c);
+  const draw = c.screen === "list" ? mkBusList(BUS_CTX, BUS_WAITING, drawMenuHeader,
+      drawMenuList, drawMenuFooter, LIST_TOP_Y, FOOTER_RULE_Y,
+      BusModel.busListRows, BusModel.busRowLabel, BusModel.busRowValue)
+    : c.screen === "actions" ? mkBusActions(BUS_CTX, BUS_WAITING, drawMenuHeader,
+      drawMenuList, drawMenuFooter, drawConfirmModal, truncateText,
+      LIST_TOP_Y, FOOTER_RULE_Y, BusModel.busListRows, BusModel.busActionItems,
+      BusModel.busSendValue)
+    : c.screen === "voices" ? mkBusVoices(BUS_CTX, BUS_WAITING, drawMenuHeader,
+      drawMenuList, drawMenuFooter, truncateText, LIST_TOP_Y, FOOTER_RULE_Y,
+      BusModel.voiceRows, BusModel.voiceRowValue)
+    : mkBusChain(BUS_CTX,
+      mkBusPicker2(BUS_CTX, drawChainPicker, truncateText, BusModel.busChainComponents),
+      BUS_WAITING, drawChainDiagram, drawChainEditorBands, truncateText,
+      BusModel.busChainComponents);
+  draw();
+  clearGlobals();
+  return fb;
+}
+
+const busCases = [];
+const addBus = (id, o) => busCases.push(Object.assign({ id }, o));
+
+const KICK = { name: "Kick", voices: ["v0"], sends: [20, 0], fx: ["tapescam"] };
+const HATS = { name: "Hats", voices: ["v1", "v2"], sends: [0, 15],
+               fx: ["cloudseed", "psxverb"] };
+const SNARE = { name: "Snare", voices: ["v3"], sends: [5, 5], fx: [] };
+const TOMS = { name: "Toms", voices: ["v4"], sends: [40, 40], fx: ["freeverb"] };
+
+/* Extra buses so the list and the mixer can be shown AT THE CAP. Derived from
+   SLOT_BUSES rather than written out, so raising the cap again widens these
+   cases instead of quietly leaving them short of it. */
+const EXTRA_BUSES = Array.from({ length: Math.max(0, BusModel.SLOT_BUSES - 4) },
+  (_, i) => ({ name: "Aux " + (i + 1), voices: ["x" + i], sends: [10 + i, 0],
+               fx: [] }));
+const ALL_BUSES = [KICK, HATS, SNARE, TOMS].concat(EXTRA_BUSES);
+
+/* THE LIST AT EVERY LENGTH IT CAN HAVE. One bus is three rows (it, Send Mixer,
+   New Bus); SLOT_BUSES buses is SLOT_BUSES + 1, and there is no more -- the New
+   Bus row is gone once none is free, so that is the maximum this screen can ever
+   draw. It SCROLLS well before then: the list shows five rows. */
+addBus("bus/list/1", { screen: "list", config: busesConfig({ buses: [KICK] }), index: 0 });
+addBus("bus/list/3", { screen: "list",
+  config: busesConfig({ buses: [KICK, HATS, SNARE], mainSends: [5, 30] }), index: 1 });
+addBus("bus/list/4", { screen: "list",
+  config: busesConfig({ buses: [KICK, HATS, SNARE, TOMS], mainSends: [5, 30] }), index: 3 });
+/* AT THE CAP: every bus present, so no New Bus row, and the cursor on the last
+   one -- the scrolled end of the longest list this screen can hold. */
+addBus("bus/list/full", { screen: "list",
+  config: busesConfig({ buses: ALL_BUSES, mainSends: [5, 30] }),
+  index: BusModel.SLOT_BUSES });
+/* The Send Mixer row and the New Bus row, each under the cursor: the footer
+   names the verb of the row it is ON, and these are the two rows whose verb
+   differs from a bus`s. The Send Mixer row carries no level of its own -- the
+   slot`s own two sends are real, but they belong to the SLOT and are edited in
+   Slot Settings, not on this screen. */
+addBus("bus/list/sends-row", { screen: "list",
+  config: busesConfig({ buses: [KICK, HATS], mainSends: [5, 30] }), index: 2 });
+addBus("bus/list/new-row", { screen: "list",
+  config: busesConfig({ buses: [KICK, HATS], mainSends: [5, 30] }), index: 3 });
+/* ORPHANS. The count is the whole reason ids are retained, so a bus carrying
+   them must be visibly different from one that is not. */
+addBus("bus/list/orphans", { screen: "list",
+  config: busesConfig({ buses: [Object.assign({}, KICK, { orphans: 2,
+    voices: ["v0", "gone1", "gone2"] })] }), index: 0 });
+/* A HOLE: bus 2 deleted, bus 3 still there. The config is positional and never
+   compacted, so the list must show two buses and offer a New Bus that fills the
+   hole rather than renumbering behind it. */
+addBus("bus/list/hole", { screen: "list",
+  config: busesConfig({ buses: [KICK, null, SNARE] }), index: 1 });
+/* THE READ THAT DID NOT COMPLETE. Not an empty list -- an empty list is a claim
+   about the slot and a failed read makes none. */
+addBus("bus/list/waiting", { screen: "list", config: null });
+
+/* The bus menu, one case per row kind, plus the two modes a row can be in. */
+const CFG3 = busesConfig({ buses: [KICK, HATS, SNARE], mainSends: [5, 30] });
+addBus("bus/actions/voices", { screen: "actions", config: CFG3, actionsRow: 0, index: 0 });
+addBus("bus/actions/send-a", { screen: "actions", config: CFG3, actionsRow: 0, index: 2 });
+addBus("bus/actions/editing", { screen: "actions", config: CFG3, actionsRow: 0, index: 2,
+  editing: true });
+addBus("bus/actions/delete-row", { screen: "actions", config: CFG3, actionsRow: 0, index: 5 });
+addBus("bus/actions/confirm", { screen: "actions", config: CFG3, actionsRow: 0,
+  confirming: true, confirmIndex: 1 });
+/* There is no menu for the Sends row -- it opens the MIXER -- so the only
+   actions screen is a bus`s, covered by the cases above. */
+/* The orphan count rides the HEADER of this menu, so it is on screen whichever
+   row the cursor is on. */
+addBus("bus/actions/orphans", { screen: "actions",
+  config: busesConfig({ buses: [Object.assign({}, KICK, { orphans: 2,
+    voices: ["v0", "gone1", "gone2"] })] }), actionsRow: 0, index: 0 });
+
+/* SIXTEEN VOICES, which is a drum rack, scrolling. Two are on this bus, one is
+   on another (and says which, so moving it is an informed choice) and the rest
+   are on Main. */
+const CFG_VOICES = busesConfig({ buses: [
+  { name: "Kick", voices: ["v0", "v5"], sends: [20, 0], fx: ["tapescam"] },
+  { name: "Hats", voices: ["v1"], sends: [0, 15], fx: [] }] });
+addBus("bus/voices/16-top", { screen: "voices", config: CFG_VOICES,
+  voices: voicesJson(16), bus: 0, index: 0 });
+addBus("bus/voices/16-scrolled", { screen: "voices", config: CFG_VOICES,
+  voices: voicesJson(16), bus: 0, index: 9 });
+/* A voice owned by ANOTHER bus, under the cursor: the footer says `add`, and
+   the value column says whose it is. */
+addBus("bus/voices/other-bus", { screen: "voices", config: CFG_VOICES,
+  voices: voicesJson(16), bus: 0, index: 1 });
+/* ORPHANS AS ROWS. The ids are all that is left of them, so they are printed,
+   and clearing one is the only thing that clears the count. */
+addBus("bus/voices/orphans", { screen: "voices",
+  config: busesConfig({ buses: [{ name: "Kick", orphans: 2,
+    voices: ["v0", "gone1", "gone2"], sends: [20, 0], fx: [] }] }),
+  voices: voicesJson(4), bus: 0, index: 4 });
+/* The voice list read did not complete. Same rule as the bus list. */
+addBus("bus/voices/waiting", { screen: "voices", config: CFG_VOICES,
+  voices: null, bus: 0, index: 0 });
+
+/* A bus`s inserts at 0, 1 and 8 positions. Zero is ONE box -- the `+` -- not
+   eight empty ones, which is the shape Master FX settled on for the same
+   reason. */
+addBus("bus/chain/0", { screen: "chain",
+  config: busesConfig({ buses: [SNARE] }), bus: 0, pos: 0 });
+addBus("bus/chain/1", { screen: "chain",
+  config: busesConfig({ buses: [KICK] }), bus: 0, pos: 0 });
+addBus("bus/chain/1-add", { screen: "chain",
+  config: busesConfig({ buses: [KICK] }), bus: 0, pos: 1 });
+addBus("bus/chain/8", { screen: "chain",
+  config: busesConfig({ buses: [{ name: "Kick", sends: [20, 0],
+    fx: rep(8, "cloudseed") }] }), bus: 0, pos: 7 });
+addBus("bus/chain/8-first", { screen: "chain",
+  config: busesConfig({ buses: [{ name: "Kick", sends: [20, 0],
+    fx: rep(8, "cloudseed") }] }), bus: 0, pos: 0 });
+/* A HOLE mid-chain draws as `--`, because bus_emit_config never compacts one
+   away and neither may the picture of it. */
+addBus("bus/chain/hole", { screen: "chain",
+  config: busesConfig({ buses: [{ name: "Kick", sends: [20, 0],
+    fx: ["tapescam", "", "cloudseed"] }] }), bus: 0, pos: 2 });
+/* Bypass marks a box here exactly as it does on the slot chain. */
+addBus("bus/chain/bypassed", { screen: "chain",
+  config: busesConfig({ buses: [{ name: "Hats", sends: [0, 15],
+    fx: ["cloudseed", "psxverb"], bypassed: [1, 0] }] }), bus: 0, pos: 1 });
+/* THE HOLE UNDER THE CURSOR. Its footer must say ADD, not EDIT: an empty
+   position holds no plugin, so there is nothing behind it to open -- and the
+   verb is the only thing on screen that distinguishes it from the loaded box
+   beside it. */
+addBus("bus/chain/hole-selected", { screen: "chain",
+  config: busesConfig({ buses: [{ name: "Kick", sends: [20, 0],
+    fx: ["tapescam", "", "cloudseed"] }] }), bus: 0, pos: 1 });
+/* And the picker this screen opens on a position. */
+addBus("bus/chain/picker", { screen: "chain", picking: true,
+  config: busesConfig({ buses: [KICK] }), bus: 0, pos: 0, pickIndex: 1,
+  entries: [{ id: "", name: "None" }, { id: "cloudseed", name: "CloudSeed" },
+            { id: "psxverb", name: "PSX Reverb" }] });
+
+/* ======================================================================== */
+/* THE BUS SEND MIXER, AS THE KNOB GRID                                      */
+/* ======================================================================== */
+/*
+ * Main`s row on the bus list opens a two-page grid -- Send A, Send B -- with
+ * every bus`s level on an encoder. Rendered here for the same reason the
+ * Master FX settings pages are: it is a synthesised contract driven through
+ * the REAL controller and the REAL bus_model.mjs, so a change to the contract
+ * (a row that stops appearing, a name that stops fitting) moves a picture.
+ *
+ * busSendsGridIo is LIFTED out of shadow_ui.js rather than restated: the
+ * mapping from a grid key to the two real spellings is the whole of what this
+ * io does, and a hand-typed copy of it would baseline a mapping nobody runs.
+ */
+const mkBusSendsIo = lift("busSendsGridIo",
+  ["busSlot", "busConfig", "busVoices", "BusModel", "getSlotParam", "setSlotParam",
+   "busConfigStale"]);
+
+const busSendsCases = [];
+const addBusSends = (id, o) => busSendsCases.push(Object.assign({ id }, o));
+
+/* Two buses, and the CAP -- SLOT_BUSES cells, the widest this page can ever be
+   and exactly the number of knobs. (There is no Main cell: the slot`s own two
+   send levels are real but belong to the slot, and are edited in Slot Settings.)
+   Both pages of each, because the two levels are built from the same rows and a
+   mapping that lost the send index would draw them identically. */
+addBusSends("bus/sends/2-send-a", { page: "Send A",
+  buses: [KICK, HATS], mainSends: [5, 30] });
+addBusSends("bus/sends/2-send-b", { page: "Send B",
+  buses: [KICK, HATS], mainSends: [5, 30] });
+addBusSends("bus/sends/full-send-a", { page: "Send A",
+  buses: ALL_BUSES, mainSends: [5, 30] });
+/* A HOLE: bus 2 deleted. The rows are the LIST`s rows, so the page must show
+   two faders and no third -- and the one that is there must still be bus 3`s
+   own level, not the second row`s. */
+addBusSends("bus/sends/hole-send-a", { page: "Send A",
+  buses: [KICK, null, SNARE], mainSends: [5, 30] });
+
+/* NO VOICE PAGES. The mixer carried a fader per voice for a while ("Voices A" /
+   "Voices B", paginated because a rack can declare 32 of them); those levels
+   are the module`s own parameters now — its pages, its state blob — so the
+   mixer is the buses again and its pages are pinned. See
+   src/host/voice_send_source.h. */
+
+function renderBusSends(c) {
+  const fb = createFramebuffer();
+  const cfg = BusModel.parseBusesConfig(busesConfig(
+    { buses: c.buses, mainSends: c.mainSends }));
+  /* null, not [], for a slot with no voices: that is what refreshBusVoices
+     leaves behind, and the io has to survive it. */
+  const voices = c.voices
+    ? BusModel.parseSplitVoices(JSON.stringify(c.voices))
+    : null;
+  /* The store, keyed by the REAL spelling -- "busN:sendM". Seeded from the
+     same config the rows come from, so a case says its levels once. A key the
+     mixer must never ask for is seeded with a value it would be obvious about:
+     "buses:main_send1" is the SLOT`s send, edited in Slot Settings and never on
+     this mixer, and a cell reading 99 would say so. */
+  const store = { "buses:main_send1": "99", "buses:main_send2": "99" };
+  cfg.buses.forEach((b) => {
+    if (!b.present) return;
+    store[`bus${b.index + 1}:send1`] = String(b.sends[0]);
+    store[`bus${b.index + 1}:send2`] = String(b.sends[1]);
+  });
+  installGlobals(fb, (slot, key) => (store[key] !== undefined ? store[key] : ""));
+  const io = mkBusSendsIo(0, cfg, voices, BusModel,
+    (slot, k) => (store[k] !== undefined ? store[k] : ""),
+    (slot, k, v) => { store[k] = String(v); return true; },
+    false)();
+  const ctl = createController(Object.assign({ announce: noop }, io));
+  ctl.load({ slot: 0, component: "bus_sends", prefix: "bus_sends",
+             /* THE SAME VALUE enterBusSendsGrid passes. A bus page is at most
+                SLOT_BUSES cells against eight knobs, so it never has to split
+                and the grouping is AUTHORED. */
+             paginate: false });
+  ctl.setLayout(LAYOUT_MOVY);
+  const names = ctl.pages.map((p) => p.name);
+  const at = names.indexOf(c.page);
+  if (at < 0) fail(c.id + " names a page that does not exist: " + c.page +
+                   " (pages: " + names.join(", ") + ")");
+  ctl.goToPage(at);
+  /* One read per tick, as on the device: wound forward until every cell has a
+     value, exactly as renderSettings does. */
+  for (let i = 0; i < 400; i++) ctl.tick();
+  ctl.render(drawContext(fb), {
+    title: "S1 > Send Mixer",
+    footer: SETTINGS_FOOTER[ctl.page.kind] || SETTINGS_FOOTER.knobs,
+  });
+  clearGlobals();
+  return fb;
+}
+
+/* ======================================================================== */
+/* THE TWO SLOT SETTINGS LISTS                                               */
+/* ======================================================================== */
+/*
+ * A slot has two settings screens -- CHAIN_SETTINGS (the chain editor`s
+ * Settings position, as a list) and SLOT_SETTINGS (the slot list`s own) -- and
+ * they overlap heavily by long-standing accident. The `Buses` door is a row on
+ * BOTH, so it is rendered down both, the way the two module pickers are: a row
+ * that appeared on one and not the other is exactly the drift this harness
+ * exists to catch.
+ *
+ * The ROW LISTS are the real ones. getChainSettingsItems and slotSettingsItems
+ * are lifted, and the predicate that hides the row (chainSynthSplits) is lifted
+ * too and reads through the same cached-read helper the device uses -- so a
+ * case that sets no `synth:split_voices` gets "" (served, does not split) and
+ * no row, which is what makes "a module that cannot split shows no bus
+ * affordance" a PIXEL claim rather than a written one.
+ *
+ * The VALUE of the Buses row is real as well (slotBusCountLabel, over the real
+ * bus_model.mjs parse), because the count is the half of this row that can be
+ * silently wrong.
+ */
+const settingsSrc = readFileSync("src/shadow/shadow_ui_settings.mjs", "utf8");
+const slotsSrc = readFileSync("src/shadow/shadow_ui_slots.mjs", "utf8");
+
+/* An exported const ARRAY, evaluated out of its own source rather than retyped:
+   a mirrored copy that drifted would baseline a list the device does not draw. */
+function liftArray(src, what, name) {
+  const at = src.indexOf("const " + name + " = [");
+  if (at < 0) { fail(name + " is gone from " + what); return []; }
+  const end = src.indexOf("\n];", at);
+  if (end < 0) { fail("could not find the end of " + name + " in " + what); return []; }
+  return new Function(src.slice(at, end + 3) + "\nreturn " + name + ";")();
+}
+const CHAIN_SETTINGS_ITEMS = liftArray(uiSrc, "shadow_ui.js", "CHAIN_SETTINGS_ITEMS");
+const SLOT_SETTINGS = liftArray(slotsSrc, "shadow_ui_slots.mjs", "SLOT_SETTINGS");
+
+const mkChainSettingsDraw = liftFrom(settingsSrc, "shadow_ui_settings.mjs",
+  "drawChainSettings",
+  ["ctx", "drawNamePreview", "drawConfirmModal", "drawHeader", "drawMenuList",
+   "LIST_TOP_Y", "FOOTER_RULE_Y"]);
+const mkSlotSettingsDraw = liftFrom(slotsSrc, "shadow_ui_slots.mjs",
+  "drawSlotSettings",
+  ["ctx", "drawHeader", "drawMenuList", "drawFooter", "truncateText",
+   "LIST_TOP_Y", "FOOTER_RULE_Y", "slotSettingsItems", "getSlotSettingValue",
+   "selectedSetting", "editingSettingValue"]);
+const mkSlotSettingsItems = liftFrom(slotsSrc, "shadow_ui_slots.mjs",
+  "slotSettingsItems", ["ctx", "SLOT_SETTINGS"]);
+const mkIsSlotMpe = liftFrom(slotsSrc, "shadow_ui_slots.mjs", "isSlotMpe", ["ctx"]);
+const mkGetSlotSettingValue = liftFrom(slotsSrc, "shadow_ui_slots.mjs",
+  "getSlotSettingValue", ["ctx", "isSlotMpe"]);
+
+const settingsListCases = [];
+const addSettingsList = (id, o) => settingsListCases.push(Object.assign({ id }, o));
+
+/* Two voices is a splittable synth; absent, the key reads "" and the row is
+   gone. The bus config is the same document bus_emit_config writes. */
+/* `synth_module`, underscored: that is the GET spelling (set_param uses
+   `synth:module`), and it is what loadChainConfigFromSlot reads. */
+const SPLIT_STATE = { "synth_module": "sf2",
+  "synth:split_voices": JSON.stringify([{ id: "kick", label: "Kick" },
+                                        { id: "snare", label: "Snare" }]) };
+const NOSPLIT_STATE = { "synth_module": "sf2" };
+const SLOT_VALUES = {
+  "slot:volume": "1.00", "slot:muted": "0", "slot:soloed": "0",
+  "slot:receive_channel": "1", "slot:forward_channel": "-1",
+  "slot:transpose": "0", "midi_fx_pre_mode": "0",
+  /* The slot sends, stored by the CHAIN under the slot-level "buses:" route --
+     not "slot:", which is why they are spelled out here rather than picked up
+     by a prefix. One non-zero so the render shows a level and not just a zero
+     column: a row whose value is always 0 cannot show that it is drawn wrong. */
+  "buses:main_send1": "40", "buses:main_send2": "0",
+};
+
+/* THE THREE STATES OF THE ROW, down both lists: absent (the synth cannot
+   split), present with no buses yet, and present with a count. */
+addSettingsList("settings/slot/no-buses",
+  { screen: "chain", state: NOSPLIT_STATE, sel: 0, preset: "Deep Pad" });
+addSettingsList("settings/slot/buses-none",
+  { screen: "chain", state: SPLIT_STATE, buses: [], sel: 0, preset: "Deep Pad" });
+addSettingsList("settings/slot/buses-2",
+  { screen: "chain", state: SPLIT_STATE, buses: [KICK, HATS], sel: 0, preset: "Deep Pad" });
+/* The cursor ON the row. The list draws the caret and the value together, so
+   this is the only case that shows the row as the user activates it. */
+addSettingsList("settings/slot/buses-cursor",
+  { screen: "chain", state: SPLIT_STATE, buses: [KICK, HATS], sel: 1, preset: "Deep Pad" });
+/* A slot with nothing saved drops Delete and keeps Buses: the two conditions
+   are unrelated, and one filter answering both is the mistake being avoided. */
+addSettingsList("settings/slot/buses-nopreset",
+  { screen: "chain", state: SPLIT_STATE, buses: [KICK], sel: 1, preset: "" });
+
+addSettingsList("settings/slotlist/no-buses",
+  { screen: "slots", state: NOSPLIT_STATE, sel: 0 });
+addSettingsList("settings/slotlist/buses-2",
+  { screen: "slots", state: SPLIT_STATE, buses: [KICK, HATS], sel: 0 });
+/* On the row, so the FOOTER is drawn beside it: drawFooter drops a pair that
+   does not fit and every pair after it, silently. */
+addSettingsList("settings/slotlist/buses-cursor",
+  { screen: "slots", state: SPLIT_STATE, buses: [KICK, HATS], sel: 2 });
+
+function renderSettingsList(c) {
+  const fb = createFramebuffer();
+  const state = Object.assign({}, SLOT_VALUES, c.state);
+  if (c.buses) state["buses:config"] = busesConfig({ buses: c.buses });
+  const g = installGlobals(fb, (slot, key) => (state[key] !== undefined ? state[key] : ""));
+  const w = chainWorld(state);
+  w.ensureChainConfigFresh(0);
+
+  /* The count, over the REAL parse. busSlot is -1 and busConfig null, which is
+     the state a settings list is actually in: the bus screens have not been
+     opened, so the cached read is the only source. */
+  const slotBusCountLabel = lift("slotBusCountLabel",
+    ["chainConfigs", "busSlot", "busConfig", "BusModel", "getSlotParamCached"])(
+    w.chainConfigs, -1, null, BusModel, w.getSlotParamCached);
+  const isSlotMpeMode = lift("isSlotMpeMode", ["getSlotParam"])(w.getSlotParam);
+  const getChainSettingValue = lift("getChainSettingValue",
+    ["isSlotMpeMode", "slotBusCountLabel", "getSlotParam"])(
+    isSlotMpeMode, slotBusCountLabel, w.getSlotParam);
+  const isExistingPreset = lift("isExistingPreset", ["slots"])([{ name: c.preset || "" }]);
+  /* FALSE, because this harness renders the LIST form of the settings screen.
+   * That is the branch that carries the two plain `Send A` / `Send B` rows: the
+   * Send Mixer they replace is a knob grid, and a grid has nothing for a screen
+   * reader to read out, so the list must keep a way to reach the slot sends. */
+  const getChainSettingsItems = lift("getChainSettingsItems",
+    ["isExistingPreset", "chainSynthSplits", "CHAIN_SETTINGS_ITEMS", "paramPagesEnabled"])(
+    isExistingPreset, w.chainSynthSplits, CHAIN_SETTINGS_ITEMS, () => false);
+
+  Object.assign(BUS_CTX, {
+    slots: [{ name: c.preset || "Untitled" }],
+    selectedSlot: 0,
+    getSlotParam: w.getSlotParam,
+    chainSynthSplits: w.chainSynthSplits,
+    slotBusCountLabel,
+    showingNamePreview: false, confirmingOverwrite: false, confirmingDelete: false,
+    confirmIndex: 0, pendingSaveName: "", namePreviewIndex: 0,
+    selectedChainSetting: c.sel || 0,
+    editingChainSettingValue: false,
+    getChainSettingsItems, getChainSettingValue,
+  });
+
+  if (c.screen === "chain") {
+    mkChainSettingsDraw(BUS_CTX, noop, noop, drawMenuHeader, drawMenuList,
+      LIST_TOP_Y, FOOTER_RULE_Y)();
+  } else {
+    const isSlotMpe = mkIsSlotMpe(BUS_CTX);
+    const getSlotSettingValue = mkGetSlotSettingValue(BUS_CTX, isSlotMpe);
+    const slotSettingsItems = mkSlotSettingsItems(BUS_CTX, SLOT_SETTINGS);
+    mkSlotSettingsDraw(BUS_CTX, drawMenuHeader, drawMenuList, drawMenuFooter,
+      truncateText, LIST_TOP_Y, FOOTER_RULE_Y, slotSettingsItems,
+      getSlotSettingValue, c.sel || 0, false)();
+  }
+  clearGlobals();
+  return fb;
+}
 
 /* ======================================================================== */
 /* RENDER, FLOOR, HASH                                                       */
@@ -994,8 +1800,25 @@ const SETTINGS_BANDS = [
   ["body", MOVY_HEADER_H, MOVY_RULE_Y - 1],
   ["footer", MOVY_RULE_Y, 63],
 ];
+/*
+ * The two settings LISTS. drawChainSettings draws no footer at all -- it never
+ * has -- so its list band runs to the bottom of the screen; drawSlotSettings
+ * draws one, and gets the three-band form. Two lists rather than one, because a
+ * band list that demanded a footer of both would either fail every chain case
+ * or have to be weakened for both.
+ */
+const LIST_BANDS = [
+  ["header", 0, LIST_TOP_Y - 1],
+  ["list", LIST_TOP_Y, 63],
+];
+const FOOTED_LIST_BANDS = [
+  ["header", 0, LIST_TOP_Y - 1],
+  ["list", LIST_TOP_Y, FOOTER_RULE_Y - 1],
+  ["footer", FOOTER_RULE_Y, 63],
+];
 const BANDS = { chain: EDITOR_BANDS, master: EDITOR_BANDS, picker: PICKER_BANDS,
-                settings: SETTINGS_BANDS };
+                settings: SETTINGS_BANDS, list: LIST_BANDS,
+                footedlist: FOOTED_LIST_BANDS };
 const MIN_LIT = 120;
 
 function inkInBand(fb, y0, y1) {
@@ -1046,6 +1869,18 @@ run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/slot/" + c.id.slic
 run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/master/" + c.id.slice(7) })),
     renderMasterPicker, "picker");
 run(settingsCases, renderSettings, "settings");
+run(sendSettingsCases, renderSendSettings, "picker");
+run(busPickerCases, renderBusPicker, "picker");
+/* The bus screens: the three lists wear the list bands, the insert chain wears
+   the editor bands -- it IS the chain editor`s diagram and its four bands. */
+run(busCases.filter((c) => c.screen !== "chain"), renderBusScreen, "picker");
+run(busCases.filter((c) => c.screen === "chain" && !c.picking), renderBusScreen, "chain");
+run(busCases.filter((c) => c.screen === "chain" && c.picking), renderBusScreen, "picker");
+/* The send mixer wears the knob grid`s three bands, like every other page the
+   controller draws. */
+run(busSendsCases, renderBusSends, "settings");
+run(settingsListCases.filter((c) => c.screen === "chain"), renderSettingsList, "list");
+run(settingsListCases.filter((c) => c.screen === "slots"), renderSettingsList, "footedlist");
 
 const ids = Object.keys(current);
 if (ids.length < 50) fail("only " + ids.length + " cases -- the matrix has collapsed");
@@ -1083,7 +1918,13 @@ if (process.env.DUMP_CASE) {
    footer rule is that an action Shift does not change keeps its place, so the
    two renders are supposed to match, and that is worth pinning rather than
    working around by pointing the case at a different cell. */
-const SAME_ON_PURPOSE = [["master/len0/sel-add-fx", "master/len0/shift"]];
+const SAME_ON_PURPOSE = [["master/len0/sel-add-fx", "master/len0/shift"],
+  /* A splittable synth draws the chain editor EXACTLY as an unsplittable one
+     does -- there is no bus affordance on this screen at all. Both pairs are
+     the claim those cases exist to make, so matching is the PASS, not a
+     collision; a footer hint or a reclaimed arrow would break the equality. */
+  ["chain/len2/sel-fx1", "chain/len2/fx1-splits"],
+  ["chain/len2/sel-synth", "chain/len2/synth-splits"]];
 const sameAllowed = (a, b) =>
   SAME_ON_PURPOSE.some((p) => p.indexOf(a) >= 0 && p.indexOf(b) >= 0);
 {
@@ -1125,10 +1966,36 @@ if (process.env.UPDATE_CHAIN_EDITOR_BASELINE) {
     "# Step 4f ADDED the six settings/ cases -- the Master FX Settings position",
     "# as the knob grid, a screen this harness had never rendered -- and moved NONE.",
     "#",
+    "# The 28 bus/ cases ADDED the four SLOT BUS screens -- the bus list, one",
+    "# bus`s menu, the voice multi-select and a bus`s insert chain -- and moved",
+    "# NOTHING. The three chain/*splits cases were added with them and moved",
+    "# nothing either, which is the POINT: a synth that publishes no",
+    "# split_voices renders byte for byte as it did before buses existed, so",
+    "# \"a module that cannot split shows no bus affordance\" is a pixel fact,",
+    "# not a claim.",
+    "#",
+    "# MOVING THE BUS DOOR off the DOWN arrow and onto a settings row moved six",
+    "# hashes and added eight cases. Up and Down are Move`s octave shift and only",
+    "# Down was ever claimed, so the pair broke at the chain editor`s resting",
+    "# cursor -- the gesture and the two footer hints that named it are gone.",
+    "# chain/len2/synth-splits lost `DN BUS` and now equals chain/len2/sel-synth,",
+    "# and the five bus/list rows lost `Dn: fx`; both are declared in",
+    "# SAME_ON_PURPOSE or visible in the render. The eight new settings/slot and",
+    "# settings/slotlist cases are the two settings LISTS, which this harness had",
+    "# never drawn, with the `Buses` row absent, present-with-no-buses and",
+    "# present-with-a-count.",
+    "#",
     "# Step 4e made Master FX a variable-length chain: every master/ hash moved,",
     "# two cases naming an empty position past the end of the chain were deleted,",
     "# and eight were added for the `+` box and the Shift footer. Reviewed case by",
     "# case, and NO chain/ hash moved with them.",
+    "#",
+    "# RETIERING PER-VOICE SENDS onto the MODULE deleted five bus/sends cases --",
+    "# the four `Voices` pages and the mixed slot -- and moved NOTHING. The mixer",
+    "# rides buses again; a voice`s send level is one of the module`s own",
+    "# parameters, on its own pages (src/host/voice_send_source.h). The bus pages",
+    "# rendering byte for byte as they did is the point: the audio machinery and",
+    "# the bus half of the screen were not supposed to change, and did not.",
     "#",
     "# A mismatch names which case moved, and the runner prints the render.",
     "#",
@@ -1170,9 +2037,12 @@ if (!failures) {
 
 if (failures) process.exit(1);
 console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chain, " +
-            masterCases.length + " Master FX, " + (pickerCases.length * 2) +
-            " module-picker and " + settingsCases.length +
-            " Master FX settings renders match the baseline, " +
+            masterCases.length + " FX-bus (master and send), " +
+            (pickerCases.length * 2) + " module-picker, " + busPickerCases.length +
+            " FX-bus-picker, " + settingsCases.length + " Master FX settings and " +
+            sendSettingsCases.length + " send settings-menu and " +
+            busCases.length + " slot-bus and " + settingsListCases.length +
+            " slot-settings-list renders match the baseline, " +
             "every one of them inside the display, in the device font, and with ink in " +
             "each band");
 '

@@ -14,6 +14,8 @@
 #include "audio_fx_api_v2.h"
 #include "lfo_common.h"
 #include "master_fx_key.h"
+#include "send_fx_key.h"
+#include "bus_mix.h"          /* BUS_MIX_SENDS, the one name both sides share */
 #include "fx_midi_filter.h"   /* FX_MIDI_CHANNEL_ALL, for master_fx_midi_channel below */
 
 /* ============================================================================
@@ -34,6 +36,39 @@
  * than discover it at slot 10000. */
 _Static_assert(MASTER_FX_SLOTS > 0 && MASTER_FX_SLOTS <= 9999,
                "MASTER_FX_SLOTS must fit \"fx%d\" in MASTER_FX_TARGET_KEY_LEN");
+
+/* Global send buses, and the depth of each one's FX chain.
+ *
+ * Eight positions, the same as Master FX, and deliberately the same TYPE: every
+ * chain in Schwung is 8 positions, so Master, Send A and Send B are one piece
+ * of machinery and one editor rather than three. Raising either cap should be
+ * a one-line change — all "send<N>:fx<M>:" routing goes through send_fx_key.h
+ * with these passed in, and every loop is bounded by these names.
+ *
+ * Design credit: PR #121 (legsmechanical), which established the send topology,
+ * the post-fader rule, the return levels and the feedback-safe A->B, and
+ * device-verified all of it. Re-implemented here rather than merged because
+ * that branch's merge-base is 2026-03-04, ~1700 commits behind main. */
+#define SEND_BUSES BUS_MIX_SENDS
+#define SEND_FX_SLOTS MASTER_FX_SLOTS
+
+/* The chain sizes its per-bus send-level arrays from BUS_MIX_SENDS and CANNOT
+ * include this header — it is a dlopen'd module, and a module reaching into a
+ * shim header is the coupling that produced breakbeat's ABI drift. So the two
+ * names must not drift: one number, one definition, a build failure otherwise. */
+_Static_assert(SEND_BUSES == BUS_MIX_SENDS,
+               "SEND_BUSES must equal BUS_MIX_SENDS -- the chain sizes from bus_mix.h");
+
+/* send_fx_key.h is dependency-free and so cannot say "unity" in bus_mix.h's
+ * words. It is unity, and this is where the two headers meet. */
+_Static_assert(SEND_RETURN_DEFAULT_ON_FIRST_LOAD == BUS_MIX_SEND_LEVEL_MAX,
+               "the return a first load opens must be UNITY, not merely 127");
+
+/* "send%d" keys are formatted into SEND_TARGET_KEY_LEN buffers; same digit
+ * budget as MASTER_FX_SLOTS above, for the same reason. */
+_Static_assert(SEND_BUSES > 0 && SEND_BUSES <= 9999,
+               "SEND_BUSES must fit \"send%d\" in SEND_TARGET_KEY_LEN");
+
 #define SHADOW_CHAIN_MODULE_DIR "/data/UserData/schwung/modules/chain"
 #define SHADOW_CHAIN_DSP_PATH "/data/UserData/schwung/modules/chain/dsp.so"
 
@@ -67,15 +102,24 @@ typedef struct {
     shadow_capture_rules_t capture;  /* Capture rules for this FX */
     /* Cached chain_params to avoid file I/O in the audio thread.
      *
-     * OWNED BUFFER, NEVER NULL. MASTER_FX_CHAIN_PARAMS_MAX bytes, allocated
-     * once per position by shadow_master_fx_storage_ensure() and never freed.
-     * It is a pointer rather than an inline array because Master FX is
-     * becoming a list with insert/remove/move, and that reordering is a
-     * PERMUTATION executed on the SPI callback (~900 us of budget after the
-     * transfer). Rotating a pointer is free; memmoving 64 KB per position is
-     * not. Nothing about this is a memory saving — the allocation is the same
-     * bytes in a different place — so do not "simplify" it back to an inline
-     * array without first moving the permutation off the audio thread.
+     * OWNED BUFFER, NEVER NULL — but only for shadow_master_fx_slots[].
+     * MASTER_FX_CHAIN_PARAMS_MAX bytes, allocated once per position by
+     * shadow_master_fx_storage_ensure() and never freed. It is a pointer
+     * rather than an inline array because Master FX is becoming a list with
+     * insert/remove/move, and that reordering is a PERMUTATION executed on
+     * the SPI callback (~900 us of budget after the transfer). Rotating a
+     * pointer is free; memmoving 64 KB per position is not. Nothing about
+     * this is a memory saving — the allocation is the same bytes in a
+     * different place — so do not "simplify" it back to an inline array
+     * without first moving the permutation off the audio thread.
+     *
+     * shadow_send_fx_slots[][] uses this SAME struct and gets the same
+     * guarantee, from shadow_send_fx_storage_ensure() rather than from
+     * shadow_master_fx_storage_ensure(). It costs 1 MB, not 2: a send has no
+     * LFOs, so it needs no second mirrored runtime cache. Both ensures run at
+     * shim startup, and both loaders refuse a position whose buffer is
+     * missing, so no reader can reach a NULL one — which is the only reason
+     * the readers below may dereference it unguarded.
      *
      * Vacating a position must ROTATE this pointer (hand it the buffer
      * displaced off the end of the shift) and clear its CONTENTS. Nulling it
@@ -167,6 +211,155 @@ extern int shadow_inprocess_ready;
 /* Master FX slots */
 extern master_fx_slot_t shadow_master_fx_slots[MASTER_FX_SLOTS];
 
+/* --- Global send buses ---------------------------------------------------
+ *
+ * A send chain is a master_fx_slot_t array, so what is REUSED from Master FX
+ * is the struct TYPE, the bypass discipline (process-then-restore-dry, so
+ * tails advance even bypassed) and the mix-loop IDIOM the shim's audio
+ * callback follows for both arrays. That is genuinely shared and worth
+ * naming, because it is the reason a send slot's fields mean the same thing
+ * a Master FX slot's do.
+ *
+ * What is NOT shared, despite the common type: shadow_master_fx_slots is
+ * named directly, with no array parameter, by
+ * shadow_master_fx_slot_load_with_config, shadow_master_fx_slot_unload,
+ * mfx_fx_count_effective, shadow_master_fx_lfo_tick, the fx:insert/:remove/
+ * :move shape verbs. None of those operate on shadow_send_fx_slots.
+ *
+ * What IS shared as code, since send FX became loadable: the middle of the
+ * loader and the whole of the unload (fx_slot_load_impl / fx_slot_unload_impl
+ * in the .c). Master FX keeps the LFO runtime caches and mfx_fx_count on its
+ * side of that line, a send keeps nothing on its own — which is why the two
+ * are separate entry points rather than one function with an array parameter.
+ * Sends still have no LFOs, no shape verbs (insert/remove/move) and no
+ * presets; a send position is emptied by loading "" into it, exactly as a
+ * Master FX position is emptied by picking None.
+ *
+ * Levels are 0..BUS_MIX_SEND_LEVEL_MAX (127) so they survive a CC round trip
+ * and need no float in the audio path — see bus_mix_send(), which is the only
+ * thing that scales by them.
+ *
+ * shadow_send_a_to_b is the A->B feed. It is applied in the shim AFTER send A's
+ * chain and BEFORE send B's, which is what makes it feedback-safe by
+ * construction: there is no point in the ordering at which B's output can reach
+ * A, so no loop detection exists or is needed. */
+extern master_fx_slot_t shadow_send_fx_slots[SEND_BUSES][SEND_FX_SLOTS];
+extern volatile int shadow_send_return_level[SEND_BUSES];  /* 0..127 */
+extern volatile int shadow_send_a_to_b;                    /* 0..127 */
+
+/* Drain each slot's per-bus send contributions into the shim's accumulators.
+ * NULL until a chain DSP that exports chain_drain_sends is loaded, so every
+ * caller must null-check — an older chain simply feeds nothing to the sends. */
+extern void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
+                                        int n_sends, int frames,
+                                        int slot_volume_0_127);
+
+/* Drain the WHOLE SLOT's post-FX audio into the same accumulators — the slot
+ * send, which needs no bus and therefore no split_voices from the module. The
+ * signal is passed IN because the chain does not hold it: the slot's FX chain
+ * runs in the shim's mix pass, one pass after the render chain_drain_sends is
+ * taken from. NULL until a chain DSP that exports chain_drain_main_send is
+ * loaded; an older chain simply has no slot send. */
+extern void (*shadow_chain_drain_main_send)(void *instance,
+                                            int16_t *const *accum, int n_sends,
+                                            const int16_t *post_fx, int frames,
+                                            int slot_volume_0_127);
+
+/* --- Send bus FX: storage, load and unload -------------------------------
+ *
+ * The Master FX pair with the two Master-FX-only halves removed. Sends have no
+ * LFOs, so no runtime param cache; sends publish no length, so no fx_count.
+ * The dlopen / v2 handshake / create_instance / module.json parse in the
+ * middle is literally shared code (fx_slot_load_impl in the .c), which is what
+ * makes a send position mean the same thing a Master FX position does — the
+ * comment on shadow_send_fx_slots above described that sharing as aspirational
+ * and this is the part of it that is now real.
+ *
+ * shadow_send_fx_storage_ensure() gives every send position the owned
+ * chain_params buffer master_fx_slot_t's comment describes — 1 MB across both
+ * buses, allocated at shim startup because the only other trigger would be the
+ * load itself, which runs on the SPI callback. While it returns 0 the loader
+ * refuses, so no reader can reach a NULL buffer. */
+int shadow_send_fx_storage_ensure(void);
+void shadow_send_fx_slot_unload(int send, int pos);
+void shadow_send_fx_unload_all(void);
+int shadow_send_fx_slot_load(int send, int pos, const char *dsp_path);
+int shadow_send_fx_slot_load_with_config(int send, int pos, const char *dsp_path,
+                                         const char *config_json);
+
+/* --- Async FX position loading -------------------------------------------
+ *
+ * The two loaders above are SYNCHRONOUS and do a dlopen, a create_instance and
+ * a module.json read. They are for BOOT and for tests/host, both of which run
+ * on a thread that may block. THE PARAM SURFACE MUST NOT CALL THEM: it is
+ * served from shim_pre_transfer, i.e. the SPI callback, where one 7.7 MB
+ * bundle cost ~708 dropped frames on hardware. It calls
+ * shadow_fx_load_request() instead, which records the intent and returns, and
+ * tests/host/test_fx_load_off_callback.sh fails if that ever changes back.
+ *
+ * The split is the one chain_bus.c already makes for bus FX; see the block
+ * comment above shadow_fx_load_request in the .c, and fx_load_gate.h for the
+ * sequence gate that joins the two threads.
+ *
+ * Flat index space: master positions are 0..MASTER_FX_SLOTS-1 (a master index
+ * IS its flat index), sends follow. Use the two helpers rather than restating
+ * the arithmetic.
+ */
+int shadow_fx_load_flat_master(int slot);
+int shadow_fx_load_flat_send(int send, int pos);
+
+/* Allocate the loader's staging param cache. Idempotent; call off the
+ * callback (chain_mgmt_init does). While it has not succeeded every request is
+ * refused, so no position can come up without one. */
+int shadow_fx_load_storage_ensure(void);
+
+/* RT-SAFE. Records the request and returns 0 — ACCEPTED, not loaded. -1 means
+ * the request can never be served (bad index, no owned buffer, path too long),
+ * which is the only case a caller may report as an error. An empty path is an
+ * unload and goes the same way. */
+int shadow_fx_load_request(int flat, const char *dsp_path);
+
+/* FX_LOAD_SETTLED / FX_LOAD_LOADING / FX_LOAD_FAILED (fx_load_gate.h). This is
+ * what lets the editor tell a load in progress from one that failed. */
+int shadow_fx_load_state(int flat);
+
+/* What a position calls itself: the module ARRIVING while one is, otherwise the
+ * module that is there. `want_path` picks the DSP path over the module id.
+ * Every namer of a position — `:module`, `:name`, and both `modules` snapshots
+ * — goes through this, so they cannot disagree mid-load. Never NULL. */
+const char *shadow_fx_load_pending_name(int flat, int want_path);
+
+/* Is any position mid-load? The Master FX shape verbs refuse while one is,
+ * because insert/remove/move permute the array a staged realisation is stamped
+ * against. */
+int shadow_fx_load_any_in_flight(void);
+
+/* RT-SAFE. Abandon every in-flight request without loading anything — for the
+ * paths that tear the chains down synchronously. */
+void shadow_fx_load_cancel_all(void);
+
+/* RT-SAFE, once per SPI frame: install a finished realisation into its live
+ * position. Called from shadow_inprocess_handle_param_request. */
+void shadow_fx_load_install_tick(void);
+
+/* WORKER ONLY (shim_worker.c). Does the dlopen / create_instance / parse and
+ * the destroy_instance / dlclose of whatever the install retired. Never call
+ * it from the SPI callback. */
+void shadow_fx_load_worker_tick(void);
+
+/* Is there anything for send bus `sb` to do this frame? False means the shim
+ * skips it entirely — no memcpy, no process_block. A send with nothing loaded
+ * and no return level costs one pointer scan per frame and nothing else. */
+static inline int shadow_send_bus_active(int sb) {
+    if (sb < 0 || sb >= SEND_BUSES) return 0;
+    if (shadow_send_return_level[sb] > 0) return 1;
+    for (int fx = 0; fx < SEND_FX_SLOTS; fx++) {
+        const master_fx_slot_t *s = &shadow_send_fx_slots[sb][fx];
+        if (s->instance && s->api && s->api->process_block) return 1;
+    }
+    return 0;
+}
+
 /* Master FX LFOs */
 #define MASTER_FX_LFO_COUNT 2
 extern lfo_state_t shadow_master_fx_lfos[MASTER_FX_LFO_COUNT];
@@ -223,6 +416,27 @@ static inline int shadow_master_fx_chain_active(void) {
         if (s->instance && s->api && s->api->process_block) {
             return 1;
         }
+    }
+    return 0;
+}
+
+/* Does anything add to the ME bus AFTER native_bridge_me_component is
+ * snapshotted?
+ *
+ * The shim snapshots that buffer while the ME bus is still the plain sum of
+ * the four slots, and then keeps mixing into `fx_target`: first the send
+ * returns, then Master FX. Anything the native resample bridge reconstructs
+ * from the snapshot is therefore missing whatever those two added, which is
+ * why the bridge falls back to the already-summed unity_view snapshot instead
+ * of the split when this answers true.
+ *
+ * It is one predicate rather than two call sites because the two processors
+ * land at the same point in the block for the same reason — a caller that
+ * asked only about Master FX is the defect this exists to prevent. */
+static inline int shadow_me_post_snapshot_fx_active(void) {
+    if (shadow_master_fx_chain_active()) return 1;
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        if (shadow_send_bus_active(sb)) return 1;
     }
     return 0;
 }
@@ -316,6 +530,14 @@ void shadow_master_fx_unload(void);
 int shadow_master_fx_insert(int at);
 int shadow_master_fx_remove(int at);
 int shadow_master_fx_move(int from, int to);
+
+/* The same three verbs for a global send bus. Simpler than the master's: a send
+ * has no LFOs to re-aim and publishes no length, so the permutation is bounded
+ * by SEND_FX_SLOTS itself. Return 1 on success, 0 if refused before anything
+ * moved. SPI callback, like the master's. */
+int shadow_send_fx_insert(int send, int at);
+int shadow_send_fx_remove(int send, int at);
+int shadow_send_fx_move(int send, int from, int to);
 
 /* How long the Master FX chain is, holes included — NOT the cap. Published as
  * `master_fx:fx_count`. Once a position can be removed, the cap no longer says

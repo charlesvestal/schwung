@@ -947,7 +947,10 @@ For audio synthesis/processing, create a native plugin implementing the C API.
 ### Threading: there is no control thread
 
 **Read this before writing a line of DSP.** Every plugin entry point runs on the
-SPI audio callback — SCHED_FIFO 90, core 3, ~900 µs of budget per block:
+SPI audio callback — SCHED_FIFO 70, core 3, ~2370 µs of slack per block
+(both measured: the RT-thread audit found nothing in MoveOriginal above 70, and
+the SPI frame tally found the transfer is 389 µs, not the ~2 ms once assumed —
+the remainder of the ioctl is idle IRQ wait you may spend):
 
 | Entry point | Runs on the SPI callback? |
 |---|---|
@@ -979,7 +982,7 @@ The symptom is not a glitch in your module: it is a **device-wide** audio
 dropout, because you are holding the thread that services every other module's
 audio and Move's own.
 
-#### Threads inherit SCHED_FIFO 90
+#### Threads inherit SCHED_FIFO 70
 
 `pthread_create()` from any of those entry points gives your worker the audio
 callback's realtime priority. Move's own `Link Main` publisher runs at **FIFO
@@ -1011,6 +1014,167 @@ audio thread **once per repaint**, not once per click, so it is worse than the
 equivalent `set_param`. Seven modules in the audit had exactly that bug.
 
 See `docs/REALTIME_SAFETY.md` for the measurements.
+
+#### One qualification: a BUS insert is constructed off the callback
+
+An audio FX loaded into a chain **slot** is created, configured and processed on
+the callback, exactly as the table above says. An audio FX loaded into a chain
+**bus insert position** is loaded by the chain's bus worker (`chain_bus.c`,
+`SCHED_OTHER` on cores 0–2): its `dlopen`, `create_instance`, `destroy_instance`
+and the `set_param` that restores its saved state run **there**, while
+`process_block`, `on_midi` and every live `set_param` / `get_param` still run on
+the callback.
+
+This is not permission to relax anything:
+
+- **You still may not do the forbidden things at create time.** You have no way
+  to know which of the two you were loaded as, and the slot case — the common
+  one — is the callback.
+- **Process-global initialisation must be thread-safe.** The same module can be
+  constructed on the worker for a bus and on the callback for a slot **at the
+  same time**. Per-instance state is unaffected; a shared static table, a lazily
+  built wavetable, or a library init that is not reentrant is not.
+
+There is also a **priority inversion** on the loader lock that nothing here
+fixes: `dlopen` now runs on two threads, and glibc serialises them on
+`_dl_load_lock`, which has no priority inheritance. A FIFO-70 load on the
+callback can therefore wait behind the `SCHED_OTHER` worker's for as long as
+anything on cores 0–2 keeps the worker off the CPU. The comment in
+`v2_destroy_instance` (`chain_host.c`) is the record of it; serialising the two
+would be a real design change and has not been attempted.
+
+**"There is no control thread" remains the rule to write code against.** This is
+the one place the host does not hold still, and it buys you nothing. The same
+qualification is in `src/host/plugin_api_v1.h` and in rule 4 of
+`docs/REALTIME_SAFETY.md` — all three must move together.
+
+### Rendering voices apart: `split_voices` and `move_plugin_render_split`
+
+**Optional.** A sound generator can offer to render named voices into separate
+buffers, so Signal Chain can put a kick and a snare on different insert chains
+and different sends. A module that also declares `voice_send_params` (step 3
+below) keeps ownership of each voice's own send LEVEL, on its own pages. A module that does not opt in is rendered exactly as
+before and the shadow UI shows no bus affordance at all.
+
+**1. Answer `get_param("split_voices")` with a flat ordered array:**
+
+```c
+if (strcmp(key, "split_voices") == 0)
+    return snprintf(buf, buf_len,
+        "[{\"id\":\"kick\",\"label\":\"Kick\"},"
+        " {\"id\":\"snare\",\"label\":\"Snare\"}]");
+```
+
+**Entry *i* is buffer *i*, and the ORDER is the contract.** The host resolves
+the bus→voice map in C on the SPI callback, and its JSON helpers are flat key
+scans that cannot walk `ui_hierarchy`'s `levels` in order — so this list is flat
+and is never reconciled against your hierarchy. A bus stores voice **ids**, so
+adding a voice at the **end** is safe and *inserting* one is not: existing buses
+keep pointing at the same ids, and an id that no longer resolves is reported to
+the user as an orphan rather than silently re-pointed.
+
+Return `-1` (or do not handle the key) if you cannot split — the chain host
+clamps that to `""`, "served, produced nothing", so it can never be confused
+with a param read that failed. Keep the answer under **4096 bytes**: that is the
+buffer the chain host parses your id table out of.
+
+**2. Export `move_plugin_render_split` — a separate symbol, not a struct field:**
+
+```c
+void move_plugin_render_split(void *instance, int16_t *const *voice_out,
+                              int n_voices, int16_t *main_out, int frames)
+{
+    my_instance_t *inst = instance;
+    for (int v = 0; v < n_voices; v++)
+        render_voice_accumulating(inst, v, voice_out[v], frames);
+    /* Anything that belongs to no voice — a drum bus, a mix compressor, an
+     * internal reverb return — accumulates into main_out. Omit this if your
+     * module has no master section. */
+    render_master_section_accumulating(inst, main_out, frames);
+}
+```
+
+It is dlsym'd off your `.so`, deliberately: appending a field to
+`plugin_api_v2_t` is what boot-looped a device via breakbeat's header drift — a
+module cannot extend the ABI from its side, and a guarded read of a field the
+host does not have tests memory belonging to somebody else.
+
+**`main_out` is where audio that belongs to no voice goes.** If you have a
+master section — a drum bus, a mix compressor, a global filter, an internal
+reverb return — it has no voice to attribute it to and, in split mode, no
+single output buffer to land in. `main_out` is that buffer. It is the *same*
+pointer an unassigned voice is handed, so it is usually reachable through
+`voice_out[]` too; it is passed explicitly because **it is not reachable that
+way when every one of your voices is on a bus**. If you have no master section,
+ignore the argument. `frames` is last, as in `render_block`.
+
+**It ACCUMULATES, and `voice_out[]` entries ALIAS.** The host clears every
+destination first — `main_out` included — then hands you one pointer per voice.
+Two voices routed to the same bus get **the same pointer**, so their sum happens
+inside your own render loop with no mixing pass at all, and a voice on no bus
+gets the main output buffer, so the sparse case costs nothing. So:
+
+- **Accumulate** (`out[i] += sample`, saturating). Overwriting turns two voices
+  on one bus into whichever one wrote last.
+- **Never `memset` any destination.** The host cleared them already, and they
+  alias, so zeroing one zeroes another voice's audio for that frame. Watch for
+  this when porting: a single-buffer `render_block` usually clears its own
+  output first, and carrying that line over silently deletes a bus.
+- **Never write more than `frames` frames** into any entry. The buffers are
+  shared, so an overrun is a *different bus's* audio, not your own tail, and
+  nothing checks this for you.
+- **Both entry points must be state-compatible.** The host switches between
+  `render_split` and `render_block` at runtime, **per frame**, on whether any of
+  your voices is currently assigned to a bus. Assigning one voice on the shadow
+  UI flips your active entry point mid-stream with no reload — same voice
+  allocator, same envelope / LFO / phase state, or the flip is audible.
+- `n_voices` is what the host parsed from your own list, clamped to its maximum
+  (32), so it can be **shorter** than what you published. Index only `[0,
+  n_voices)`.
+
+**3. Optional: declare where YOUR per-voice send levels live.**
+
+A voice's send level is yours. The host reads it; it does not own it, does not
+draw a fader for it and does not save it — your levels are already in your own
+`state` blob. Publish a key TEMPLATE per send beside your voices:
+
+```c
+if (strcmp(key, "voice_send_params") == 0)
+    return snprintf(buf, buf_len, "[\"{id}_send1\",\"{id}_send2\"]");
+```
+
+`{id}` is replaced with each voice id, **verbatim**, so the host reads
+`kick_send1`, `kick_send2`, `snare_send1`, … off your normal parameter surface.
+Rules, all of which fail LOUDLY rather than quietly:
+
+- **Array position is the send index.** `[0]` is Send A, `[1]` is Send B. A
+  shorter array declares fewer sends. **More than two is an error and the whole
+  declaration is refused** — silently keeping the first two would leave you with
+  a control that writes into nothing.
+- **Every entry must contain `{id}`.** One without it would be a single key for
+  every voice, i.e. every pad sharing one level.
+- **Your ids must address your own params when substituted.** The host will not
+  adjust them. If `split_voices` publishes `pad1`…`pad32` while your params are
+  `pad0_…`…`pad31_…`, every level is off by one and the last one is
+  unaddressable — that is yours to reconcile, not the host's to guess.
+- **Declare the parameter in your `ui_hierarchy`** — once, on the child level,
+  focus-addressed (`send1`), which is how a per-voice control is normally
+  authored. The host reads `min` / `max` / `unit` from there to map your value
+  onto its own 0..127: `unit: "dB"` takes the dB law (0 dB is exactly unity),
+  anything else is linear over `min`..`max`, and a value at or below `min` is
+  exactly off. **If the host cannot find that metadata it refuses the send
+  rather than guessing a scale** — nothing will be heard, and nothing will be
+  mis-scaled.
+- Answering nothing is fine and is the default. A module with no
+  `voice_send_params` simply has no per-voice sends; put the voice in a bus and
+  ride the bus's send.
+- The host asks you for these keys on the audio callback, a few per frame, so
+  keep their `get_param` cheap — no allocation, no file I/O. (That is the rule
+  for every entry point; it is just more visible here.)
+
+Full contract and the host side: `src/host/plugin_api_v1.h`,
+`src/host/bus_mix.h`, `src/host/voice_send_source.h`, and `docs/CHAIN.md`
+("Buses", "The module owns a voice's send level").
 
 ### Plugin API v2 (Recommended)
 

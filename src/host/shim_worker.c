@@ -23,6 +23,7 @@
 #include "ui_midi_out_carry.h" /* UI_MIDI_CARRY_PACKETS */
 #include "perf_snapshot.h"
 #include "shadow_shm_util.h"
+#include "shadow_chain_mgmt.h"  /* shadow_fx_load_worker_tick */
 
 volatile uint32_t shim_debug_flags = 0;
 volatile int shim_pending_sysex_inject = -1;
@@ -679,6 +680,16 @@ static void *worker_main(void *arg) {
     for (;;) {
         usleep(200 * 1000);             /* 200 ms cadence */
         drain_events();                 /* event latency ≤ ~200 ms */
+        /* Master FX / send FX module loading: the dlopen, create_instance and
+         * module.json parse of a picked module, plus the destroy_instance and
+         * dlclose of the one it replaced. All of it used to run on the SPI
+         * callback — one 7.7 MB CLAP bundle cost ~708 dropped frames. The RT
+         * side only records the request; see shadow_fx_load_request. This
+         * thread is already SCHED_OTHER on cores 0-2 and is created from shim
+         * init, which is why the loader needs no thread of its own: a
+         * pthread_create from a module entry point inherits SCHED_FIFO 70 and
+         * starves Move's own Link Main at 35. */
+        shadow_fx_load_worker_tick();
         shim_touch_trace_drain();       /* file I/O for the SPI callback */
 
         /* Persist jack state when the RT path reports a new CC 115 value. */

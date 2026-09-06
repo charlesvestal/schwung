@@ -89,7 +89,11 @@ const here = () => MODULES[`${slot}:${comp}`] || { id: "", params: [] };
 
 const make = new Function(
   "paramPagesSlot", "paramPagesComponent", "getSlotParam",
-  "getComponentParamPrefix", "getComponentChainParams",
+  /* componentModuleIdKey, not getComponentParamPrefix: the key that NAMES the
+     module differs per chain -- a slot chain says "fx1_module", an FX bus says
+     "master_fx:fx1:name" -- and the grid may be on any of them, so the spelling
+     is resolved rather than composed at the call site. */
+  "componentModuleIdKey", "getComponentChainParams",
   "WIDGET_RETRY_TICKS", "registry", "debugLog",
   preamble + stub + src +
   "; return { tickComponentWidgets, ensureComponentWidgets, latch: () => widgetModuleLoaded };");
@@ -98,7 +102,7 @@ const api = make(
   () => slot,
   () => comp,
   () => { moduleReads++; return here().id; },
-  () => "synth",
+  () => "synth_module",
   () => here().params,
   RETRY, registry, () => {});
 

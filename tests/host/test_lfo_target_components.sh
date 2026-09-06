@@ -43,7 +43,9 @@ const VIEWS = { CHAIN_SETTINGS: "chain_settings" };
 
 const makeCtx = lift("makeSlotLfoCtx",
   ["getSlotParam", "setSlotParam", "shadowSetParamBlocking", "CHAIN_CAP",
-   "LFO_TARGET_PARAMS", "VIEWS", "debugLog"]);
+   /* The slot LFO picker offers the send amounts of the slot as a target, so
+      the constant naming that component has to come across or the lift throws. */
+   "LFO_TARGET_PARAMS", "SENDS_LFO_TARGET_KEY", "VIEWS", "debugLog"]);
 if (!makeCtx) process.exit(1);
 
 /* A fake slot that answers only what it was given. An unserved key answers ""
@@ -57,7 +59,7 @@ function device(state) {
 const targetsOf = (state) => {
   const d = device(state);
   const ctx = makeCtx(d.get, () => true, () => true, CHAIN_CAP,
-                      LFO_TARGET_PARAMS, VIEWS, () => {})(0, 0);
+                      LFO_TARGET_PARAMS, "buses", VIEWS, () => {})(0, 0);
   return { comps: ctx.getTargetComponents(), reads: d.reads };
 };
 const labelFor = (comps, key) => {

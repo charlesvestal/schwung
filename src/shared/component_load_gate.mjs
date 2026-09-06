@@ -40,6 +40,19 @@
 export const ENTRY_ENTER = "enter";
 export const ENTRY_HOLD = "hold";
 export const ENTRY_FALLBACK = "fallback";
+/*
+ * The module never arrived, and it never will.
+ *
+ * A FOURTH ANSWER, because with the FX load moved off the SPI callback there
+ * is now a state that is neither "here" nor "on its way": a dlopen or a
+ * create_instance that failed leaves the position genuinely EMPTY, which reads
+ * exactly like a position whose module has not landed yet — and the hold above
+ * never gives up on purpose, so that would wait forever on a module that is
+ * not coming. The shim answers `<prefix>:load_error` with "1" for exactly that
+ * case (shadow_chain_mgmt.c, shadow_fx_load_state), and it is the only thing
+ * that can tell the two apart from out here.
+ */
+export const ENTRY_FAILED = "failed";
 
 /*
  * Probe cadence while held.
@@ -81,6 +94,17 @@ export function holdProbeIntervalTicks(attempts) {
  * Returns { action, hierarchy?, reason }.
  */
 export function decideComponentEntry(read, parse) {
+    /*
+     * ASKED FIRST, and only where the caller supplies it: a position that has
+     * just failed to load answers "" to everything else, so every branch below
+     * would read it as "still coming" and hold. Optional because the slot
+     * chain's components have no such key — a reader without loadError behaves
+     * exactly as it did before this existed.
+     */
+    if (read.loadError && read.loadError() === "1") {
+        return { action: ENTRY_FAILED, reason: "load-failed" };
+    }
+
     const rawHierarchy = read.hierarchy();
 
     if (rawHierarchy === null || rawHierarchy === undefined) {

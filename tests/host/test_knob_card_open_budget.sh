@@ -112,8 +112,11 @@ Promise.all([
   if (!mfxCapM) { fail("could not read MASTER_FX_SLOTS"); process.exit(1); }
   const mAt = src.indexOf("const MASTER_CHAIN_TARGET = {");
   const MASTER_TARGET = new Function("parseChainId", "MASTER_FX_SLOTS", "MASTER_FX_CHAIN_COMPONENTS",
+    "fxBus",
     src.slice(mAt, src.indexOf("\n};\n", mAt) + 4) + "\nreturn MASTER_CHAIN_TARGET;")(
-    CM.parseId, parseInt(mfxCapM[1], 10), null);
+    CM.parseId, parseInt(mfxCapM[1], 10), null,
+    /* Which FX bus the target addresses. Master, here. */
+    () => ({ id: "master", label: "Master FX", short: "MFX", prefix: "master_fx:", send: -1, hasLfos: true, hasPresets: true, busLevelKeys: [] }));
   const MASTER_COMPS = [{ key: "fx1", label: "FX 1" }, { key: "fx2", label: "FX 2" },
                         { key: "settings", label: "Settings" }];
   MASTER_TARGET.components = () => MASTER_COMPS;

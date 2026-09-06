@@ -56,6 +56,13 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
+	$(BUILD_DIR)/test_bus_mix \
+	$(BUILD_DIR)/test_bus_route \
+	$(BUILD_DIR)/test_send_fx_key \
+	$(BUILD_DIR)/test_fx_load_gate \
+	$(BUILD_DIR)/test_split_voices_parse \
+	$(BUILD_DIR)/test_voice_send_source \
+	$(BUILD_DIR)/test_me_post_snapshot_fx \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id
@@ -75,6 +82,31 @@ endif
 PERF_MFX_SLOTS := $(shell awk '/^\#define PERF_MASTER_FX_SLOTS /{print $$3}' ../../src/host/perf_snapshot.h)
 ifneq ($(strip $(PERF_MFX_SLOTS)),$(strip $(MASTER_FX_SLOTS)))
 $(error PERF_MASTER_FX_SLOTS ($(PERF_MFX_SLOTS)) != MASTER_FX_SLOTS ($(MASTER_FX_SLOTS)) - update src/host/perf_snapshot.h)
+endif
+
+# The send caps, same reasoning again — but these are DEFINED FROM other names
+# (SEND_BUSES from BUS_MIX_SENDS, SEND_FX_SLOTS from MASTER_FX_SLOTS), which is
+# the point: one number, one definition. So resolve one hop rather than assume a
+# literal, and fail the build if the value is not a number afterwards, instead
+# of compiling the test with an empty -D and covering nothing.
+SEND_BUSES_RAW := $(shell awk '/^\#define SEND_BUSES /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
+SEND_SLOTS_RAW := $(shell awk '/^\#define SEND_FX_SLOTS /{print $$3}' ../../src/host/shadow_chain_mgmt.h)
+BUS_MIX_SENDS := $(shell awk '/^\#define BUS_MIX_SENDS /{print $$3}' ../../src/host/bus_mix.h)
+SEND_BUSES := $(if $(filter BUS_MIX_SENDS,$(SEND_BUSES_RAW)),$(BUS_MIX_SENDS),$(SEND_BUSES_RAW))
+SEND_FX_SLOTS := $(if $(filter MASTER_FX_SLOTS,$(SEND_SLOTS_RAW)),$(MASTER_FX_SLOTS),$(SEND_SLOTS_RAW))
+ifeq ($(shell echo $(SEND_BUSES) | grep -c '^[0-9][0-9]*$$'),0)
+$(error could not resolve SEND_BUSES to a number (raw "$(SEND_BUSES_RAW)"))
+endif
+ifeq ($(shell echo $(SEND_FX_SLOTS) | grep -c '^[0-9][0-9]*$$'),0)
+$(error could not resolve SEND_FX_SLOTS to a number (raw "$(SEND_SLOTS_RAW)"))
+endif
+
+# Same reasoning as MASTER_FX_SLOTS above, for the bus cap: bus_route.h takes
+# bus_count as a runtime parameter and holds no copy of SLOT_BUSES, so this is
+# the one place the test's range is tied to the shipped cap.
+SLOT_BUSES := $(shell awk '/^\#define SLOT_BUSES /{print $$3}' ../../src/modules/chain/dsp/chain_internal.h)
+ifeq ($(strip $(SLOT_BUSES)),)
+$(error could not read SLOT_BUSES from ../../src/modules/chain/dsp/chain_internal.h)
 endif
 
 .DEFAULT_GOAL := all
@@ -154,6 +186,26 @@ $(BUILD_DIR)/test_relative_cc: test_relative_cc.c ../../src/modules/chain/dsp/re
 $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_MASTER_FX_SLOTS=$(MASTER_FX_SLOTS) $< -o $@ $(LDFLAGS)
 
+$(BUILD_DIR)/test_send_fx_key: test_send_fx_key.c ../../src/host/send_fx_key.h ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h ../../src/host/bus_mix.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SEND_BUSES=$(SEND_BUSES) -DTEST_SEND_FX_SLOTS=$(SEND_FX_SLOTS) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_fx_load_gate: test_fx_load_gate.c ../../src/host/fx_load_gate.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../src/modules/chain/dsp/chain_internal.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SLOT_BUSES=$(SLOT_BUSES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/split_voices_parse.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_voice_send_source: test_voice_send_source.c ../../src/host/voice_send_source.h ../../src/host/bus_mix.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_me_post_snapshot_fx: test_me_post_snapshot_fx.c ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 $(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_select_core.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 

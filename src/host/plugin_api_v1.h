@@ -9,8 +9,17 @@
  * ===========================================================================
  *
  * THERE IS NO CONTROL THREAD. Every entry point below runs on the SPI audio
- * callback: SCHED_FIFO 90, pinned to core 3, with roughly 900 microseconds of
- * budget per 128-frame block after the ~2 ms transfer.
+ * callback: SCHED_FIFO 70, pinned to core 3, with roughly 2370 microseconds
+ * of slack per 128-frame block.
+ *
+ * Both numbers were measured and both replace older ones that are still
+ * quoted in places. FIFO 70: the 2026-08-22 RT-thread audit found nothing
+ * anywhere in the MoveOriginal process above 70 (the SPI *driver* is a
+ * separate kernel thread and is a different question). 2370 us: the
+ * 2026-08-26 SPI frame tally found the transfer itself is 389 us, not the
+ * ~2 ms long assumed -- the rest of the ioctl is idle IRQ wait, which is
+ * slack you may spend. Arm them yourself rather than trusting this comment:
+ * `rt_thread_audit_on` and `spi_tally_on`.
  *
  *      create_instance     <- yes, this one too
  *      destroy_instance
@@ -44,7 +53,7 @@
  * dropout, because you are holding the thread that services every other
  * module's audio and Move's own.
  *
- * THREADS INHERIT SCHED_FIFO 90. pthread_create() called from any of the
+ * THREADS INHERIT SCHED_FIFO 70. pthread_create() called from any of the
  * above hands your worker the callback's realtime priority. Move's own
  * `Link Main` thread runs at SCHED_FIFO 35, so an inherited-priority worker
  * starves Move's audio publisher and produces exactly the dropouts you were
@@ -69,6 +78,25 @@
  * directory is served on this thread once per repaint, not once per click.
  * If you must do work at create time, prefer doing it lazily on the worker and
  * rendering silence until it lands.
+ *
+ * ONE QUALIFICATION, and it does not weaken any rule above. An audio FX loaded
+ * into a chain SLOT is created, configured and processed on the callback, as
+ * described. An audio FX loaded into a chain BUS insert position is loaded by
+ * the chain's bus worker (SCHED_OTHER, cores 0-2): its dlopen, create_instance,
+ * destroy_instance and the set_param that restores its saved state run THERE,
+ * while process_block, on_midi and every live set_param/get_param still run on
+ * the callback. So:
+ *
+ *   - You still may not do any of the forbidden things above at create time.
+ *     You have no way to know which of the two you were loaded as, and the slot
+ *     case — the common one — is the callback.
+ *   - Process-global initialisation must be thread-safe. The same module can be
+ *     constructed on the worker for a bus and on the callback for a slot AT THE
+ *     SAME TIME. Per-instance state is unaffected; a shared static table, a
+ *     lazily-built wavetable or a library init that is not reentrant is not.
+ *
+ * "There is no control thread" remains the rule to write code against. This is
+ * the one place the host does not hold still, and it buys you nothing.
  *
  * See docs/REALTIME_SAFETY.md for the measurements behind all of this.
  * ===========================================================================
@@ -370,5 +398,79 @@ typedef struct plugin_api_v2 {
 typedef plugin_api_v2_t* (*move_plugin_init_v2_fn)(const host_api_v1_t *host);
 
 #define MOVE_PLUGIN_INIT_V2_SYMBOL "move_plugin_init_v2"
+
+/*
+ * ===========================================================================
+ * OPTIONAL: PER-VOICE RENDER (move_plugin_render_split)
+ * ===========================================================================
+ *
+ * A sound generator can offer to render named voices into SEPARATE buffers, so
+ * the Signal Chain can put a kick and a snare on different insert chains and
+ * different sends. Two things opt in, and both are optional -- a module that
+ * does neither is rendered exactly as it always was.
+ *
+ *   1. get_param("split_voices") answers a FLAT ORDERED JSON array:
+ *
+ *          [{"id":"kick","label":"Kick"},{"id":"snare","label":"Snare"}]
+ *
+ *      ENTRY i IS BUFFER i. The host resolves the bus->voice map in C on the
+ *      SPI callback and its JSON helpers cannot walk ui_hierarchy's `levels`
+ *      in order, so this list is flat and its ORDER is the contract. Never
+ *      reorder it between versions: a bus stores voice IDS, and an id that no
+ *      longer resolves is reported as an orphan rather than silently
+ *      re-pointed. Adding a voice at the END is safe; inserting one is not.
+ *      Answer "" (or do not serve the key) to say "I cannot split".
+ *
+ *   2. Export this symbol -- NOT a field on plugin_api_v2_t:
+ *
+ *          void move_plugin_render_split(void *instance,
+ *                                        int16_t *const *voice_out,
+ *                                        int n_voices,
+ *                                        int16_t *main_out, int frames);
+ *
+ *      A SEPARATE EXPORTED SYMBOL ON PURPOSE. Appending to plugin_api_v2_t is
+ *      what boot-looped a device via breakbeat's header drift: a module cannot
+ *      extend the ABI from its side, and a guarded read of a field the host
+ *      does not have tests memory belonging to somebody else. A dlsym'd symbol
+ *      is absent-or-present, with no offset to get wrong.
+ *
+ * IT ACCUMULATES -- the opposite of render_block, which overwrites. The host
+ * clears every destination before the call, main_out included. NEVER memset a
+ * destination yourself: main_out and the voice_out[] entries alias each other,
+ * so clearing one of them is clearing somebody else's audio for that frame.
+ *
+ * main_out IS FOR AUDIO THAT BELONGS TO NO VOICE -- a drum bus, a mix
+ * compressor, a global filter, an internal reverb return. It is the same
+ * buffer an unassigned voice is handed, so it is usually reachable through
+ * voice_out[] as well; it is passed explicitly so that it is reachable even
+ * when EVERY voice is on a bus and no voice_out[] entry points at main. A
+ * module with no master section simply ignores it. Accumulate into it under
+ * exactly the same rules as voice_out[]: never more than `frames` frames, and
+ * never an overwrite.
+ *
+ * ITS voice_out[] ENTRIES ALIAS. Two voices routed to the same bus are handed
+ * the SAME pointer, so their sum happens inside your own render loop with no
+ * mixing pass at all, and a voice on no bus is handed the main output buffer,
+ * so the sparse case costs nothing. Therefore:
+ *
+ *   - ACCUMULATE (out[i] += sample, saturating). Overwriting turns two voices
+ *     on one bus into whichever one wrote last.
+ *   - NEVER write more than `frames` frames (frames * 2 samples) into any
+ *     voice_out[] entry. Those buffers are shared, so an overrun is a
+ *     different bus's audio, not your own tail. Nothing checks this for you.
+ *   - Both entry points must be STATE-COMPATIBLE. The host switches between
+ *     render_split and render_block AT RUNTIME, PER FRAME, on whether any of
+ *     your voices is currently assigned to a bus -- assigning one voice on the
+ *     shadow UI flips your active entry point mid-stream with no reload. Same
+ *     voice allocator, same envelope/LFO/phase state, or the flip is audible.
+ *
+ * n_voices is what the host parsed from your own list (clamped to its own
+ * maximum), so it can be SHORTER than the list you published. Index
+ * voice_out[] only in [0, n_voices).
+ *
+ * Runs on the SPI callback, under every rule at the top of this header.
+ * See docs/CHAIN.md ("Buses") and src/host/bus_mix.h.
+ * ===========================================================================
+ */
 
 #endif /* MOVE_PLUGIN_API_V1_H */

@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <math.h>
 #include "shadow_resample.h"
-#include "shadow_chain_mgmt.h"  /* for shadow_master_fx_chain_active() */
+#include "shadow_chain_mgmt.h"  /* for shadow_me_post_snapshot_fx_active() */
 
 /* ============================================================================
  * Static host callbacks
@@ -447,13 +447,13 @@ static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
     if (host.log) {
         char msg[512];
         snprintf(msg, sizeof(msg),
-                 "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f split=%d mfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
+                 "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f split=%d postfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
                  native_resample_bridge_mode_name(mode),
                  native_sampler_source_name(native_sampler_source),
                  native_sampler_source_name(native_sampler_source_last_known),
                  (double)(host.shadow_master_volume ? *host.shadow_master_volume : 0.0f),
                  (int)native_bridge_split_valid,
-                 shadow_master_fx_chain_active(),
+                 shadow_me_post_snapshot_fx_active(),
                  native_bridge_makeup_desired_gain,
                  native_bridge_makeup_applied_gain,
                  (int)native_bridge_makeup_limited,
@@ -508,7 +508,20 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
     float inv_mv = 1.0f / mv;
     float max_makeup = 50.0f;
 
-    if (!shadow_master_fx_chain_active() && native_bridge_split_valid) {
+    /* The split reconstruction (Move component re-scaled to unity + the ME
+     * component) is only equal to what the user hears while nothing has been
+     * added to the ME bus since native_bridge_me_component was snapshotted.
+     * Master FX and the send returns both land after that snapshot, so either
+     * one makes the reconstruction a DIFFERENT mix from the DAC and from the
+     * sampler/skipback captures — a resample that quietly records something
+     * else. shadow_me_post_snapshot_fx_active() answers for both.
+     *
+     * The fallback is not a degradation of correctness: `src` is the
+     * unity_view snapshot, which is the whole post-FX mix already at unity.
+     * What is lost is only the split's headroom advantage — it reconstructs
+     * from the un-clamped components rather than from an already-summed and
+     * clamped buffer. */
+    if (!shadow_me_post_snapshot_fx_active() && native_bridge_split_valid) {
         float native_gain = (inv_mv < max_makeup) ? inv_mv : max_makeup;
         int limiter_hit = 0;
 
@@ -524,12 +537,10 @@ static void native_resample_bridge_apply_overwrite_makeup(const int16_t *src,
         native_bridge_makeup_desired_gain = inv_mv;
         native_bridge_makeup_applied_gain = native_gain;
         native_bridge_makeup_limited = limiter_hit;
-    } else if (shadow_master_fx_chain_active()) {
-        memcpy(dst, src, samples * sizeof(int16_t));
-        native_bridge_makeup_desired_gain = 1.0f;
-        native_bridge_makeup_applied_gain = 1.0f;
-        native_bridge_makeup_limited = 0;
     } else {
+        /* One branch for both reasons to refuse the split — post-snapshot FX,
+         * or a snapshot that was never taken. They took separate branches with
+         * identical bodies, which read as though they differed. */
         memcpy(dst, src, samples * sizeof(int16_t));
         native_bridge_makeup_desired_gain = 1.0f;
         native_bridge_makeup_applied_gain = 1.0f;
