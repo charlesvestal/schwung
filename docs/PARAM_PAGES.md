@@ -448,6 +448,52 @@ again. Without the count, hit kick → jog to Reverb → hit kick leaves you on
 Reverb, because the answer never changed. 9W9 shipped a counter for this before
 the contract existed; see `focusToken` in `voices.mjs`.
 
+### Hold Copy or Delete, then pick an instance — and the POLL is the hard part
+
+A drum rack's oldest gesture, offered by the grid to any child level: the
+instance focused when **Copy** goes down is the source, every instance focused
+while it is held is pasted into, **Delete** clears them instead, and **Undo**
+restores the last one overwritten (one level). `onEditCc` /
+`serviceEditGesture` in `page_controller.mjs`; the buttons reach the grid only
+for a module declaring `capabilities.claims_edit_ccs`, so opting in to the
+buttons IS opting in to the gesture. What is copied is `child_copy_keys` in
+declared order — see `docs/MODULES.md`, which is where a module author looks.
+
+**The gesture reads `child_index_param` ITSELF, once per tick, while a button
+is held.** Everything else on the grid takes the focus from `s.childIndex`,
+which `syncChildIndexFromModule` refreshes on **one stop of the read rotation**
+— every `keys.length + 1` ticks, ~150 ms on an eight-key drum page. That
+cadence is exactly right for following a played pad onto the page and wrong for
+this gesture in two ways at once, both reproduced against the controller before
+they were fixed:
+
+- the SOURCE was the pad focused *before* the one you just hit, because Copy
+  went down inside the window — hit a pad, hold Copy, copy the wrong pad, no
+  indication;
+- a second pad tapped inside the same window was **invisible**, because the
+  poll only ever sees where the focus ended up. "Hold Copy and tap four pads"
+  pasted into the fourth one only, silently. `test_child_copy_gesture.sh` taps
+  one tick apart and asserts all three targets.
+
+The extra read costs a round-trip per tick *for the duration of a hold* and
+nothing at all otherwise — the poll returns on `!s.editGesture` first. The
+answer is adopted into `s.childIndex` rather than kept beside it: without that,
+`dropChildLevelCache` re-warms the instance the cache still believed in and
+paints the wrong pad's values over the write just made.
+
+**A read that did not complete voids the whole snapshot** — the tri-state, and
+it bites harder here than anywhere. Dropping a failed key left the target's own
+value in place: a pad copied without its sample, reported as `PASTED`. So a
+source that cannot be read arms nothing, and an undo snapshot that cannot be
+read skips that instance rather than overwriting something it cannot put back.
+`""` stays a value (a filepath with no file); only `null` is a failure.
+
+The notice is a `prompt` (dropped when the button comes up) or a RESULT (not).
+Clearing every notice on the release meant `PASTED PAD 2` was only ever visible
+while you kept holding the button — and the release is how the gesture ends. It
+is centred in `s.frameRect`, the same rect a floating card is centred in, so an
+embedded consumer does not get it on its own chrome.
+
 ### The header pad minimap
 
 A component declaring `pad_layout: "drums"` gets a 6px box in the header with

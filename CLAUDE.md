@@ -660,6 +660,15 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   your hand. A map matching the page order would be a second bank bar. Move's
   rack counts up from the BOTTOM-LEFT; off-rack draws the empty box rather than
   the nearest cell.
+- **Hold Copy or Delete, then pick an instance** — copy, clear and one-level
+  undo for any child level, opted into by `capabilities.claims_edit_ccs`. It
+  is the one thing on the grid that reads `child_index_param` **itself, every
+  tick, while a button is held**: the rotation refreshes that focus once every
+  `keys.length + 1` ticks, which made the SOURCE the pad before the one you
+  hit and made a second tap inside the window invisible — four pads tapped,
+  one pasted, silently. And a failed read voids the whole snapshot rather than
+  dropping a key, or a pad is copied without its sample and still reported as
+  `PASTED`.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.

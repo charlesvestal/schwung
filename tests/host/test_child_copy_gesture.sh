@@ -53,9 +53,11 @@ import("./src/shared/param_pages/page_controller.mjs").then((PC) => {
   for (let i = 0; i < 4; i++) { dev[`pad${i}_sample`] = `/s/${i}.wav`; dev[`pad${i}_vol`] = String((i + 1) / 10); dev[`pad${i}_tune`] = String(i); dev[`pad${i}_gain`] = String(1 + i); }
   dev.verb = "0.3"; dev.ui_current_pad = "0";
   const writes = [];
+  let failKey = null;                       /* a read that does not complete */
   const io = {
     getParam: (k) => {
       const key = k.replace(/^synth:/, "");
+      if (failKey && key === failKey) return null;
       if (key === "ui_hierarchy") return JSON.stringify(HIER);
       if (key === "chain_params") return JSON.stringify(CP);
       if (key === "preset_name") return "";
@@ -121,8 +123,62 @@ import("./src/shared/param_pages/page_controller.mjs").then((PC) => {
   if (writes.some(([k]) => k.startsWith("pad1_"))) fail("returning to the source pasted onto it");
   c.onEditCc(60, false);
 
+  /* ---- 5. taps faster than the read rotation ---------------------------- */
+  focus(0); writes.length = 0;
+  c.onEditCc(60, true);
+  dev.ui_current_pad = "1"; c.tick();
+  dev.ui_current_pad = "2"; c.tick();
+  dev.ui_current_pad = "3"; spin(5);
+  const hit = [...new Set(writes.map(([k]) => k.slice(0, 4)))].sort();
+  if (JSON.stringify(hit) !== JSON.stringify(["pad1", "pad2", "pad3"]))
+    fail("quick picks were dropped: pasted into " + JSON.stringify(hit) + ", want pad1, pad2, pad3");
+  c.onEditCc(60, false);
+
+  /* ---- 6. the source is the instance focused NOW ------------------------ */
+  focus(0);
+  dev.pad3_sample = "/s/three.wav";            /* case 5 pasted over it */
+  dev.ui_current_pad = "3";                    /* hit a pad and hold Copy at once: */
+                                               /* no tick, so the cache is a pad behind */
+  writes.length = 0;
+  c.onEditCc(60, true);
+  if (!c.editGesture || c.editGesture.from !== 3) fail("Copy snapshotted instance " + (c.editGesture && c.editGesture.from) + ", want the one focused now (3)");
+  dev.ui_current_pad = "1"; spin(5);
+  const src = writes.filter(([k]) => k === "pad1_sample").map(([, v]) => v);
+  if (JSON.stringify(src) !== JSON.stringify(["/s/three.wav"])) fail("pasted from the wrong source: " + JSON.stringify(src));
+  c.onEditCc(60, false);
+
+  /* ---- 7. a read that did not complete -------------------------------- */
+  focus(0);
+  failKey = "pad0_sample";
+  writes.length = 0;
+  c.onEditCc(60, true);
+  if (c.editGesture) fail("a gesture was armed from a source that could not be read");
+  dev.ui_current_pad = "2"; spin(5);
+  if (writes.length) fail("a failed source read still wrote: " + JSON.stringify(writes));
+  c.onEditCc(60, false);
+  failKey = null;
+
+  /* ---- 8. the notice outlives the release, inside the page frame -------- */
+  focus(0);
+  c.onEditCc(60, true);
+  dev.ui_current_pad = "2"; spin(5);
+  /* Deliberately a frame whose centre is NOT the panel centre, so a notice
+   * that ignored the rect lands outside it and the assertion can fail. */
+  const RECT = { x: 4, y: 2, w: 70, h: 16 };
+  const prints = [];
+  const gctx = { fillRect: () => {}, print: (x, y, t) => { prints.push([x, y, String(t)]); }, textWidth: (t) => t.length * 6 };
+  c.onEditCc(60, false);
+  c.render(gctx, { title: "t", rect: RECT });
+  prints.length = 0;
+  c.renderOverlays(gctx, { clearScreen: () => {} });
+  const said = prints.filter(([, , t]) => t.indexOf("PASTED") === 0);
+  if (!said.length) fail("the result notice did not survive the release");
+  const [nx, ny] = said[0];
+  if (nx < RECT.x || nx > RECT.x + RECT.w || ny < RECT.y || ny > RECT.y + RECT.h)
+    fail("the notice was drawn at " + nx + "," + ny + ", outside the frame it was given " + JSON.stringify(RECT));
+
   if (bad) process.exit(1);
-  console.log("  ok  copy pastes the declared keys in order into each picked instance; undo restores; clear writes defaults; nothing without an instance");
+  console.log("  ok  copy pastes the declared keys in order into each picked instance; undo restores; clear writes defaults; quick picks are all taken; a failed read writes nothing; the notice outlives the release");
 }).catch((e) => { console.log("FAIL: " + (e && e.stack || e)); process.exit(1); });
 ' || fail "controller half"
 

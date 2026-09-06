@@ -3774,11 +3774,55 @@ export function createController(io = {}) {
         return keys.filter((k) => typeof k === "string" && k.length);
     }
     function wireFor(def, index, key) { return resolveChildKey(def, index, key) || key; }
+    /*
+     * WHICH INSTANCE THE MODULE IS ON *NOW*, not which one the rotation last
+     * heard about.
+     *
+     * `childIndexFor` answers from `s.childIndex`, which syncChildIndexFromModule
+     * refreshes on ONE stop of the read rotation -- once every keys.length + 1
+     * ticks, ~150 ms on an eight-key drum page. That cadence is right for
+     * following a played pad on the page and wrong for this gesture twice over:
+     * the SOURCE would be the pad focused before the one you just hit, and a
+     * second tap inside the same window would be invisible, so "hold Copy and
+     * tap four pads" pasted into the last one only. Both were reproduced against
+     * this controller.
+     *
+     * So the gesture reads the selector itself: one round-trip per tick, and
+     * ONLY while a button is held -- the poll below returns before this on every
+     * other tick of the session. A level with no `child_index_param` (the picker
+     * is the only way in) has nothing to read and keeps the cache, which the
+     * picker writes synchronously.
+     *
+     * The answer is adopted into `s.childIndex` so the page follows it too:
+     * without that, dropChildLevelCache would re-warm the instance the cache
+     * still believed in and show the wrong pad's values over the write we just
+     * made.
+     */
+    function liveChildIndex(def, level) {
+        const idxParam = childIndexParam(def);
+        if (!idxParam) return childIndexFor(level);
+        const raw = getParam(`${s.prefix}:${idxParam}`);
+        const i = childIndexFromWire(def, raw);
+        if (i === null) return childIndexFor(level);   /* tri-state: not an answer */
+        if (i !== childIndexFor(level)) s.childIndex[level] = i;
+        return i;
+    }
+    /*
+     * A snapshot, or NULL if any key's read did not complete.
+     *
+     * The tri-state again, and it is load-bearing here: dropping a failed key
+     * silently produced a paste that left the target's own value in place --
+     * a pad copied without its sample -- while the notice still said PASTED.
+     * `""` is a VALUE (a filepath with no file) and is kept; only null/undefined
+     * is a read that did not answer, and one of those voids the whole snapshot,
+     * because a partial copy is indistinguishable from a whole one afterwards.
+     */
     function readInstance(def, index, keys) {
         const snap = Object.create(null);
         for (const k of keys) {
             const v = getParam(`${s.prefix}:${wireFor(def, index, k)}`);
-            if (v !== null && v !== undefined) snap[k] = String(v);
+            if (v === null || v === undefined) return null;
+            snap[k] = String(v);
         }
         return snap;
     }
@@ -3794,7 +3838,16 @@ export function createController(io = {}) {
         }
         return snap;
     }
-    function notice(text, ms) { s.notice = { text, until: now() + (ms || 1200) }; }
+    /*
+     * `prompt: true` marks the "PICK A TARGET" line, which belongs to the HOLD
+     * and is dropped when the button comes up. A RESULT ("PASTED PAD 2") must
+     * outlive the release -- the release is how you finish the gesture, so
+     * clearing every notice there meant the confirmation was only ever visible
+     * while you kept the button down.
+     */
+    function notice(text, ms, prompt) {
+        s.notice = { text, until: now() + (ms || 1200), prompt: !!prompt };
+    }
 
     /** Copy (60) / Delete (119) / Undo (56). Returns whether the event was taken. */
     function onEditCc(cc, down) {
@@ -3812,20 +3865,28 @@ export function createController(io = {}) {
         if (cc !== 60 && cc !== 119) return false;
         const kind = cc === 60 ? "copy" : "clear";
         if (!down) {
-            if (s.editGesture && s.editGesture.kind === kind) { s.editGesture = null; s.notice = null; }
+            if (s.editGesture && s.editGesture.kind === kind) {
+                s.editGesture = null;
+                if (s.notice && s.notice.prompt) s.notice = null;
+            }
             return true;
         }
         const lvl = instanceLevel();
         if (!lvl) return false;                      /* not on an instance page: Move keeps it? no -- claimed; just inert */
         const keys = copyKeysFor(lvl.def);
         if (!keys.length) return false;
-        const from = childIndexFor(lvl.name);
-        s.editGesture = {
-            kind, level: lvl.name, def: lvl.def, keys, from, last: from,
-            snap: kind === "copy" ? readInstance(lvl.def, from, keys) : null,
-        };
+        const from = liveChildIndex(lvl.def, lvl.name);
+        let snap = null;
+        if (kind === "copy") {
+            snap = readInstance(lvl.def, from, keys);
+            /* Nothing is armed from a source we could not read. Arming anyway
+             * would paste whatever partial answer arrived into every instance
+             * picked afterwards, and report each one as a copy. */
+            if (!snap) { notice("READ FAILED"); announce("read failed"); return true; }
+        }
+        s.editGesture = { kind, level: lvl.name, def: lvl.def, keys, from, last: from, snap };
         const label = childLabel(lvl.def, from).toUpperCase();
-        notice(kind === "copy" ? `COPY ${label}: PICK A TARGET` : "CLEAR: PICK A TARGET", 4000);
+        notice(kind === "copy" ? `COPY ${label}: PICK A TARGET` : "CLEAR: PICK A TARGET", 4000, true);
         announce(kind === "copy" ? `copy ${childLabel(lvl.def, from)}, pick a target` : "clear, pick a target");
         return true;
     }
@@ -3834,15 +3895,20 @@ export function createController(io = {}) {
     function serviceEditGesture() {
         const g = s.editGesture;
         if (!g) return;
-        const idx = childIndexFor(g.level);
+        const idx = liveChildIndex(g.def, g.level);
         if (idx === g.last) return;
         g.last = idx;
         if (g.kind === "copy" && idx === g.from) return;   /* pasting onto the source is a no-op */
+        /* The undo snapshot is taken FIRST and the write only happens if it
+         * came back whole: an overwrite we cannot put back is the one outcome
+         * this gesture must not produce silently. The instance is skipped and
+         * named, and the gesture stays armed for the next pick. */
         const before = readInstance(g.def, idx, g.keys);
+        const label = childLabel(g.def, idx).toUpperCase();
+        if (!before) { notice(label + ": READ FAILED", 4000); announce("read failed"); return; }
         writeInstance(g.def, idx, g.kind === "copy" ? g.snap : clearedInstance(g.keys));
         s.editUndo = { level: g.level, def: g.def, index: idx, snap: before };
         dropChildLevelCache(g.level);               /* the grid is showing the instance just written */
-        const label = childLabel(g.def, idx).toUpperCase();
         notice((g.kind === "copy" ? "PASTED " : "CLEARED ") + label, 4000);
         announce((g.kind === "copy" ? "pasted " : "cleared ") + childLabel(g.def, idx));
     }
@@ -3853,11 +3919,20 @@ export function createController(io = {}) {
         if (!n) return false;
         if (now() >= n.until) { s.notice = null; return false; }
         if (!ctx || typeof ctx.fillRect !== "function" || typeof ctx.print !== "function") return false;
-        const W = ctx.width || 128, H = ctx.height || 64;
+        /* Centred in the PAGE'S FRAME, the same rect a floating card is centred
+         * in: an embedded consumer (a module binding this controller from its
+         * own ui_chain.js) draws the grid into a region and owns the chrome
+         * around it, so a notice centred on the panel lands on somebody else's
+         * pixels. Defaults to the whole panel for the full-screen host. */
+        const fr = s.frameRect;
+        const fx = fr && Number.isFinite(fr.x) ? fr.x : 0;
+        const fy = fr && Number.isFinite(fr.y) ? fr.y : 0;
+        const W = fr && fr.w > 0 ? fr.w : (ctx.width || 128);
+        const H = fr && fr.h > 0 ? fr.h : (ctx.height || 64);
         const text = String(n.text);
         const tw = (typeof ctx.textWidth === "function") ? ctx.textWidth(text) : text.length * 6;
         const w = Math.min(W - 4, tw + 8), h = 13;
-        const x = Math.floor((W - w) / 2), y = Math.floor((H - h) / 2);
+        const x = fx + Math.floor((W - w) / 2), y = fy + Math.floor((H - h) / 2);
         ctx.fillRect(x, y, w, h, 0);
         ctx.fillRect(x, y, w, 1, 1); ctx.fillRect(x, y + h - 1, w, 1, 1);
         ctx.fillRect(x, y, 1, h, 1); ctx.fillRect(x + w - 1, y, 1, h, 1);
