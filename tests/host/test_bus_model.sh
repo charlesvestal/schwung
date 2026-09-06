@@ -477,3 +477,24 @@ check BUS_SENDS      BUS_MIX_SENDS          src/host/bus_mix.h
 check SEND_LEVEL_MAX BUS_MIX_SEND_LEVEL_MAX src/host/bus_mix.h
 [ "$fail" = 0 ] || exit 1
 echo "PASS: bus model caps match the C constants they mirror"
+
+# The producer's OUTPUT must reach the document, not merely be computed.
+#
+# This branch shipped a file format with a reader and no writer: chain_patch.c
+# parsed "buses", nothing emitted it, and every patch load therefore reset all
+# four buses and zeroed the send levels — a two-bus kit silently destroyed by
+# loading any preset. The unit tests above did not catch it because they
+# exercise busPatchFields in ISOLATION, and a source pin on the CALL does not
+# either: discarding the result (`const fields = {}` while still calling) is
+# byte-for-byte the original bug and leaves both suites green.
+#
+# So pin the assignments, not the call.
+src=src/shadow/shadow_ui.js
+for f in main_sends buses; do
+  if ! grep -qE "patch\.$f = fields\.$f;" "$src"; then
+    echo "FAIL: buildSlotPatchJson does not write patch.$f from the producer's result" >&2
+    echo "      (a computed-but-discarded producer is exactly the bug this pins)" >&2
+    exit 1
+  fi
+done
+echo "PASS: the bus producer output reaches the saved document"
