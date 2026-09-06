@@ -2374,6 +2374,14 @@ Then on hardware, with a splittable module in a slot:
 - **Any CPU throttle or dynamic cap.** The ceiling was chosen deliberately; the
   mitigation is visibility on `/system/cpu`, not enforcement.
 
+> **One more of the same class, flagged not swept (Task 11's fix).** Three
+> `hierEditorIsMasterFx` guards remain in `buildModulePickerOptions`,
+> `buildParameterPickerOptions` and `openDynamicParamPicker`. They are
+> "this feature is slot-chain-only" early-outs, NOT chain-params corruption —
+> a bus insert with a `picker_type` param would be offered the SLOT's knob
+> targets. Arguably it should be excluded the way Master FX is, but that is a
+> behaviour question about a feature nothing in the fleet uses.
+
 ## Defects found while documenting — reported, not fixed
 
 Task 12 surfaced these; none is caused by this branch and none blocks it.

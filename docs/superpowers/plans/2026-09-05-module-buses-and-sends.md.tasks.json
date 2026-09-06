@@ -93,7 +93,7 @@
     {
       "id": 10,
       "subject": "Task 11: Send levels on the knob grid",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Send levels are rideable on the encoders, not only settable in a list.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui_buses.mjs` (a synthesised contract for the bus mixer page)\n- Modify: `src/shadow/shadow_ui_param_pages.mjs` (page registration)\n\n**Acceptance Criteria:**\n- [ ] A \"Bus Sends\" page exposes each bus's A and B level on an encoder\n- [ ] The page is handed `paginate: false` if it is one authored grouping, per the Global Settings rule \u2014 one section, one page, however long\n- [ ] Values arrive on touch-down / on the rotation / in the entry warm, NEVER on the draw path (an IPC read is ~2.8 ms; a whole page render is 1.68 ms)\n- [ ] A read that did not answer draws no picture \u2014 no placeholder frame\n\n**Verify:** render the page; confirm through the read-budget test (`tests/host/test_chain_edit_read_budget.sh`) that the draw path adds no reads\n\n**Steps:**\n- Step 1: Synthesise the contract\n- Step 2: Render the page and look\n- Step 3: Verify the read budget\n- Step 4: Commit\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui_buses.mjs\", \"src/shadow/shadow_ui_param_pages.mjs\"], \"verifyCommand\": \"bash tests/host/test_chain_edit_read_budget.sh\", \"acceptanceCriteria\": [\"A \\\"Bus Sends\\\" page exposes each bus's A and B level on an encoder\", \"The page is handed `paginate: false` if it is one authored grouping, per the Global Settings rule \\u2014 one section, one page, however long\", \"Values arrive on touch-down / on the rotation / in the entry warm, NEVER on the draw path (an IPC read is ~2.8 ms; a whole page render is 1.68 ms)\", \"A read that did not answer draws no picture \\u2014 no placeholder frame\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         9
@@ -109,5 +109,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-06T02:05:49.806812"
+  "lastUpdated": "2026-09-06T02:12:35.014561"
 }
