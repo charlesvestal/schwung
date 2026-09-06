@@ -64,6 +64,7 @@
 extern align_capture_t g_align_capture;
 #include "host/shadow_process.h"
 #include "host/shadow_resample.h"
+#include "host/audio_in_restore.h"
 #include "host/shadow_overlay.h"
 #include "host/shadow_pin_scanner.h"
 #include "host/shadow_led_queue.h"
@@ -2223,8 +2224,18 @@ static void shadow_inprocess_render_to_buffer(void) {
      * whole mix) read whatever the bridge had left in the region instead of
      * the jack. Restoring here lets such a module offer both inputs -- the
      * mix in place through process_block, the jack through audio_in_offset --
-     * as one module with an input-source setting, rather than shipping as two. */
-    if ((overtake_dsp_gen_inst || overtake_dsp_fx_inst) && hardware_mmap_addr) {
+     * as one module with an input-source setting, rather than shipping as two.
+     *
+     * ...unless the native resample bridge is the one that wrote it. It runs
+     * earlier in this same post-ioctl pass, so an unguarded restore silently
+     * beats it and Move's Resample captures the jack instead of Schwung's mix
+     * for as long as any overtake module is loaded. The bridge is the opt-in
+     * setting, so it wins; see src/host/audio_in_restore.h. */
+    if (shadow_audio_in_restore_allowed(
+            (overtake_dsp_gen_inst || overtake_dsp_fx_inst) ? 1 : 0,
+            hardware_mmap_addr ? 1 : 0,
+            native_resample_bridge_mode != NATIVE_RESAMPLE_BRIDGE_OFF,
+            native_resample_bridge_source_allows_apply(native_resample_bridge_mode))) {
         int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
         int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
         /* Log once to verify hardware audio levels */
@@ -2239,7 +2250,7 @@ static void shadow_inprocess_render_to_buffer(void) {
             }
             char msg[256];
             snprintf(msg, sizeof(msg),
-                     "SampleRobot: audio_in restore - hw_peak=%d sh_peak=%d hw[0..3]=%d,%d,%d,%d",
+                     "shim: audio_in restore - hw_peak=%d sh_peak=%d hw[0..3]=%d,%d,%d,%d",
                      hw_peak, sh_peak, hw_ain[0], hw_ain[1], hw_ain[2], hw_ain[3]);
             shadow_log(msg);
             ain_log_count++;
