@@ -2321,12 +2321,16 @@ declare it with `extra_keys`. Those values are added to the page's staggered
 read rotation without becoming visible or turnable cells:
 
 ```json
-{ "key": "activity", "name": "Activity", "type": "string",
-  "access": "read", "hidden": true }
+{ "key": "activity", "name": "Activity", "type": "string", "access": "read" }
 { "key": "face", "name": "Face", "type": "canvas",
   "canvas_script": "canvas.js", "as_page": true,
   "show_value": false, "extra_keys": ["activity"] }
 ```
+
+**Nothing hides `activity` and nothing needs to.** A param earns a cell by being
+in a level's `knobs`; one that is only ever named by `extra_keys` has no cell to
+suppress. (There is no `hidden` field — the planner honours `visible_if` and
+nothing else, so a `"hidden": true` would be read by no one.)
 
 ```javascript
 globalThis.canvas_overlay = {
@@ -2349,8 +2353,11 @@ globalThis.canvas_overlay = {
   and you should not draw any of your own.
 - `values` carries live values merged over the base; `base` is the knob
   positions, for a page that wants to show both.
-- `extra_keys` is capped by the same bounded read rotation as other visual
-  dependencies. Use it for compact state snapshots, not high-volume data.
+- `extra_keys` is **capped at four**, the same cap and the same reason as a
+  widget's `viz.extra_keys` above: one read per stop, so a page asking for
+  twenty would spend its whole read budget here and starve the knobs it is
+  drawn beside. A key that already has a cell on the page costs nothing extra —
+  it is already in the rotation and is skipped.
 - **One strike**, as everywhere else: a `drawPage` that throws is retired for
   the session and the body is left empty under a normal page.
 
