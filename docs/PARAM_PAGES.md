@@ -409,6 +409,57 @@ level. The one sanctioned divergence is the root's name — the walker calls its
 root "Main", and the picker overrides that with the mode's own name when
 `modes` gives it more than one root.
 
+### `visible_if` on the grid failed OPEN, against the LIST editor's slot
+
+`page_plan.mjs` calls the caller's `visible` hook for a level's `visible_if`
+and for a param entry's, and the shadow UI wires that to
+`evaluateVisibilityCondition` (`shadow_ui_param_pages.mjs`, the `io.visible`
+fallback). That function resolved every condition against `hierEditorSlot` /
+`hierEditorComponent` — **the list editor's identity, which `enterParamPages`
+never sets.** From the grid that is slot `-1`: the read answers `null`, the
+evaluator's `// fail-open` fires, and **every `visible_if` on the knob grid was
+true.** A send level meant to collapse to the armed type's cells — a reverb
+*or* a delay — showed all twenty, three pages deep, with nothing logged.
+Reported from the device on schwung-dr32 0.2.0; it affected every module in the
+fleet that declares one.
+
+The three synthesised contracts were already immune, and said so: `io.visible`
+is overridden in `createSlotGridIo` under a comment naming this exact staleness
+(*"they belong to the list editor and are stale while the grid is up"*). Only
+real module components were exposed. On `PARAM_PAGES` the evaluator now takes
+the grid's own slot and component; the hand-off to the list editor calls
+`exitParamPages()` first, so the list can never fall into that branch.
+
+**Cache-first, because the naive fix froze the OLED.** `replanIfCondition` runs
+a full re-plan on every detent of a gating knob, and a plan evaluates every
+condition on the level — forty blocking ~2.8 ms reads per detent on a gated
+send page. The controller's own `state.values` answers first (it carries every
+write the grid made and every key its read cursor has landed on, condition keys
+included, so a fresh write is seen by the very next plan) and the TTL'd
+`getSlotParamCached` answers a miss. A miss on a *failed* read returns the last
+known-good value rather than `null`, so a channel stall no longer flashes every
+gated cell back in — the fail-open path is reached only when nothing has ever
+been read.
+
+**And the cache is asked with the TEMPLATE key, never the resolved one.** The
+key the evaluator holds has been through `hierChildKeyFor`, so on a child level
+it is concrete (`sram_part_2_partlevel`), while the controller files its values
+under what the level *lists* (`partlevel`) — the same dialect split
+`hierGenericKeyFor` exists to bridge, and the reason
+`openParamEditorFromGrid`'s owner search once missed. Asking with the concrete
+key missed **every time**, so a per-instance condition never hit the cache and
+paid the blocking read the branch is there to avoid — precisely the case the
+level-name lookup was added to serve. It was silent, because *a miss still
+answers correctly, only slowly*: a cache that cannot hit reports nothing. The
+invert uses the same level and index as the resolve, and the controller drops a
+level's values when its child index moves, so there is never a second
+instance's value under that key to find.
+
+`tests/host/test_grid_visible_if_context.sh` pins the call site and then drives
+a real controller through choosing a child, asserting `state.values` really is
+keyed by templates — if the controller ever files resolved keys, the inversion
+becomes wrong and that half fails.
+
 ### The grid FOLLOWS the focused voice, and writes no LEDs doing it
 
 A module can declare what its performance surface is — `pad_layout`, and a `note`
