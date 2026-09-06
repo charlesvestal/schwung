@@ -875,7 +875,10 @@ For audio synthesis/processing, create a native plugin implementing the C API.
 ### Threading: there is no control thread
 
 **Read this before writing a line of DSP.** Every plugin entry point runs on the
-SPI audio callback — SCHED_FIFO 90, core 3, ~900 µs of budget per block:
+SPI audio callback — SCHED_FIFO 70, core 3, ~2370 µs of slack per block
+(both measured: the RT-thread audit found nothing in MoveOriginal above 70, and
+the SPI frame tally found the transfer is 389 µs, not the ~2 ms once assumed —
+the remainder of the ioctl is idle IRQ wait you may spend):
 
 | Entry point | Runs on the SPI callback? |
 |---|---|
@@ -907,7 +910,7 @@ The symptom is not a glitch in your module: it is a **device-wide** audio
 dropout, because you are holding the thread that services every other module's
 audio and Move's own.
 
-#### Threads inherit SCHED_FIFO 90
+#### Threads inherit SCHED_FIFO 70
 
 `pthread_create()` from any of those entry points gives your worker the audio
 callback's realtime priority. Move's own `Link Main` publisher runs at **FIFO

@@ -9,8 +9,17 @@
  * ===========================================================================
  *
  * THERE IS NO CONTROL THREAD. Every entry point below runs on the SPI audio
- * callback: SCHED_FIFO 90, pinned to core 3, with roughly 900 microseconds of
- * budget per 128-frame block after the ~2 ms transfer.
+ * callback: SCHED_FIFO 70, pinned to core 3, with roughly 2370 microseconds
+ * of slack per 128-frame block.
+ *
+ * Both numbers were measured and both replace older ones that are still
+ * quoted in places. FIFO 70: the 2026-08-22 RT-thread audit found nothing
+ * anywhere in the MoveOriginal process above 70 (the SPI *driver* is a
+ * separate kernel thread and is a different question). 2370 us: the
+ * 2026-08-26 SPI frame tally found the transfer itself is 389 us, not the
+ * ~2 ms long assumed -- the rest of the ioctl is idle IRQ wait, which is
+ * slack you may spend. Arm them yourself rather than trusting this comment:
+ * `rt_thread_audit_on` and `spi_tally_on`.
  *
  *      create_instance     <- yes, this one too
  *      destroy_instance
@@ -44,7 +53,7 @@
  * dropout, because you are holding the thread that services every other
  * module's audio and Move's own.
  *
- * THREADS INHERIT SCHED_FIFO 90. pthread_create() called from any of the
+ * THREADS INHERIT SCHED_FIFO 70. pthread_create() called from any of the
  * above hands your worker the callback's realtime priority. Move's own
  * `Link Main` thread runs at SCHED_FIFO 35, so an inherited-priority worker
  * starves Move's audio publisher and produces exactly the dropouts you were

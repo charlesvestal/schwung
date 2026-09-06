@@ -348,7 +348,7 @@ half an event, and never stabilised for reasons it recorded as unknown.
 
 ## Realtime Safety
 
-SPI callback runs on core 3. Budget ~900µs/frame after the ~2ms transfer.
+SPI callback runs on core 3. Slack ~2370µs/frame — the transfer is 389µs, not the ~2ms long assumed; the rest of the ioctl is idle IRQ wait (measured 2026-08-26, `spi_tally_on`).
 
 **Priority: FIFO 70, not 90.** Measured 2026-08-22 with the RT-thread audit —
 nothing anywhere in the MoveOriginal process is above 70. This file said 90
