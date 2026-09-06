@@ -1965,7 +1965,9 @@ ssh_ableton_with_retry "test -x /opt/move/Move" || fail "Missing /opt/move/Move"
 # target, no MoveOriginal, no shim, and the check reports a phantom failure;
 # hit in the field with default=dronage). Payload verification happened above;
 # skip the shim probe and say why.
-boot_default=$($ssh_ableton "head -n 1 /data/UserData/boot-targets/default 2>/dev/null" 2>/dev/null | tr -d '[:space:]')
+# Pre-selector payloads do not create boot-targets/default.  With pipefail,
+# the expected non-zero `head` status must not abort the installer here.
+boot_default=$($ssh_ableton "head -n 1 /data/UserData/boot-targets/default 2>/dev/null" 2>/dev/null | tr -d '[:space:]' || true)
 if [ -n "$boot_default" ] && [ "$boot_default" != "schwung" ]; then
   iecho "Boot default is '$boot_default' (not Schwung) — rebooting without the shim check."
   iecho "  The update is installed; it activates next time Schwung boots."
