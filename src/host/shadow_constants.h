@@ -420,6 +420,25 @@ typedef struct shadow_control_t {
      * writes features.json and JS pushes it back down at startup.
      */
     volatile uint8_t save_stems;
+    /*
+     * Runtime button claim: one bit per CC number (bit cc&7 of byte cc>>3).
+     * A set bit withholds that CC from Move firmware and forwards it to the
+     * shadow UI instead, so a module can build its own gestures on a button
+     * without a press ALSO firing Move's action behind the screen.
+     *
+     * Opt-in on purpose. #154 blocked Undo/Copy/Delete unconditionally whenever
+     * the shadow display was up and was reverted in #175 because it stole
+     * Move's native Undo during ordinary chain use. This is the runtime
+     * complement to the STATIC capabilities.claims_ccs / claims_edit_ccs:
+     * shadow_ui reconciles it from whichever module's UI is actually on
+     * screen, so Move keeps its own buttons everywhere else. The shim refuses
+     * bits for the controls the host itself owns (Shift, Menu, Back, jog,
+     * knobs, Mute, tracks) whatever is set here. Same shape as pad_block.
+     *
+     * APPENDED, like save_stems above: sizeof is a contract between two
+     * binaries. Appending is free; inserting is not.
+     */
+    volatile uint8_t claim_cc_bits[16];
 } shadow_control_t;
 
 /* Values for shadow_control_t.save_stems. */

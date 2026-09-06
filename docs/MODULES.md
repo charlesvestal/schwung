@@ -86,6 +86,8 @@ for keys anywhere in `module.json`).
 | `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
+| `claims_ccs` | A list of CC numbers the module handles while its UI is on screen; they are withheld from Move firmware for that window. See "Claiming buttons" below. |
+| `claims_edit_ccs` | Shorthand for `claims_ccs: [56, 60, 119]` — Undo, Copy and Delete. Default off. |
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
@@ -646,23 +648,57 @@ Only consume Back while you actually have somewhere to go back *to*. If `handleB
 always returns truthy the user can never leave your module via Back — it is the only
 host-processed exit in this screen, so the sole remaining way out is to exit shadow mode.
 
-#### Copy / Delete / Undo (`ui_chain.js`)
+#### Claiming buttons (`capabilities.claims_ccs`, `claims_edit_ccs`)
 
-While the shadow UI is on screen, CC 56 (Undo), CC 60 (Copy), and CC 119
-(Delete) are delivered exclusively to the loaded module's `ui_chain.js` via
-`onMidiMessageInternal` — they are blocked from reaching Move firmware for
-the duration, so a press can never double-fire into Move's own undo/copy/
-delete while you're editing a module (e.g. a Delete press won't also delete
-a Move clip in the background).
+Move's buttons reach Move firmware by default and are **not** forwarded to
+modules. A module that wants some of them for its own gestures opts in:
 
-This makes the three buttons safe to repurpose for module-specific gestures
-— e.g. hold Copy/Delete + tap a pad to target it, tap Undo to revert the
-last such operation. They join the existing forwarded set (jog wheel/click,
-Back, track buttons, knobs, Mute) that a chain module already receives in
-this screen.
+```json
+{
+  "capabilities": {
+    "claims_edit_ccs": true,
+    "claims_ccs": [85, 58]
+  }
+}
+```
 
-Outside shadow display (or outside COMPONENT_EDIT), these CCs behave as
-normal Move hardware buttons and are not intercepted.
+`claims_edit_ccs: true` is shorthand for Undo (CC 56), Copy (CC 60) and
+Delete (CC 119) — the drum-rack trio. `claims_ccs` lists any others by CC
+number; the two combine.
+
+While that module's UI is on screen, a claimed button is delivered to the
+module (a `type: "canvas"` UI receives it in `onMidi`; on the knob grid Undo,
+Copy and Delete drive the instance copy/clear gesture under *Child Selectors*)
+**and withheld from Move firmware**, so a press cannot double-fire into Move's
+own action — hold Copy and tap a pad without also copying the Move clip behind
+the screen. The claim applies on the knob grid, the hierarchy editor, the
+component edit/params screens, and a canvas UI (fullscreen or co-run overlay).
+Leave any of those and the buttons return to Move immediately; the shim also
+drops every claim on its own when the shadow display closes, so a shadow UI
+that exits without reconciling cannot strand one.
+
+> **Opt-in is the whole point.** #154 withheld Undo/Copy/Delete unconditionally
+> whenever the shadow display was up, and #175 reverted it: it stole Move's
+> native Undo during ordinary chain use, so you could not undo a note edit
+> while any Schwung module was on screen. Modules that declare no claim are
+> unaffected, and Move keeps its own buttons everywhere else.
+
+**What cannot be claimed.** The controls the host itself owns are refused by
+the shim whatever a module lists, and the shadow UI logs the refusal: Shift,
+Menu and Back (how you leave a screen), the jog wheel and click, the eight
+knobs and the master knob, the four track buttons, Mute (Move-native Mute+Pad
+depends on it reaching firmware), and the two jack-detect CCs. Everything
+else is the module's to claim, transport included: a module that claims Play
+(CC 85) takes Move's transport button away while its UI is up, which is what
+a claim means.
+
+**Shift is the host's.** A press with Shift held is never claimed:
+Shift+Copy / Shift+Delete stay the host's snapshot and recall over a claiming
+module, and a module gets the bare buttons only.
+
+Press/release pairing is latched per button: whoever receives the press also
+receives the release, even if the claim changes mid-hold. Neither Move nor the
+module can be left believing a button is still held.
 
 ### Menu Layout Helpers
 
