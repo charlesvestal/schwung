@@ -164,6 +164,35 @@ echo "$mcc" | command grep -q 'not cached' \
   || fail "a THROWN metadata read is cached -- one bad read then answers \"no claim\" for the rest of the session"
 echo "  ok  a read that did not answer produces no claim, no cache entry and no latch"
 
+# ---- the claim key survives a shim-side drop ---------------------------------
+# The SHIM clears claim_cc_bits when the shadow display closes, from four sites
+# in the SPI callback that run no JS (Menu tap, Track tap, Shift+Track,
+# Shift+Step). `ccClaimed` is therefore a mirror of state another process owns,
+# and the key gate above it is what decides whether the claim is ever restated.
+#
+# So the display mode must be PART OF THAT KEY. Without it the save is
+# incidental: most re-entries raise a jump flag that lands on a non-claim view
+# and empties the key, but Shift+Vol+Step2 lands on VIEWS.PARAM_PAGES -- a
+# claim view -- and only the slot/component halves of the tuple made it differ.
+echo "$rec" | command grep -q 'shadow_get_display_mode' \
+  || fail "reconcileCcClaim's key does not include the display mode -- the shim clears claim_cc_bits on the display-close edge without telling JS, so the claim is never restated on the way back in"
+# grep is line-based and the key spans three lines, so match the assignment and
+# the two lines under it rather than writing a regex that cannot see a newline.
+echo "$rec" | command grep -A2 'const key = onScreen' | command grep -q 'displayOn' \
+  || fail "the display mode is read in reconcileCcClaim but not folded into the key -- reading it changes nothing on its own"
+
+# And the reason it is needed at all: a CC_CLAIM_VIEW that a jump flag lands on
+# directly. Asserted rather than described, so that the day PARAM_PAGES stops
+# being one (or another claim view becomes one) the comment above does not
+# quietly become fiction.
+claim_views=$(command grep -c '^CC_CLAIM_VIEWS\[' "$ui_js")
+[ "$claim_views" -ge 1 ] || fail "CC_CLAIM_VIEWS is empty -- the claim can never be armed"
+command grep -q '^CC_CLAIM_VIEWS\[VIEWS.PARAM_PAGES\]' "$ui_js" \
+  || fail "PARAM_PAGES is no longer a claim view -- re-check the display-mode key above, which exists because a jump flag (Shift+Vol+Step2 -> enterGlobalSettings -> enterParamPages) lands straight on it"
+sed -n '/^function enterGlobalSettings()/,/^}/p' "$ui_js" | command grep -q 'enterGlobalSettingsGrid' \
+  || fail "enterGlobalSettings no longer routes through the grid -- the jump-flag-onto-a-claim-view case this guards may have moved"
+echo "  ok  the claim key turns on the display mode, the flag the shim actually clears"
+
 # ---- docs say what the code does ---------------------------------------------
 command grep -q '| `claims_ccs` |' "$docs" || fail "docs/MODULES.md capability table has no claims_ccs row"
 command grep -q '| `claims_edit_ccs` |' "$docs" || fail "docs/MODULES.md capability table has no claims_edit_ccs row"

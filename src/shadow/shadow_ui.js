@@ -16654,8 +16654,39 @@ function reconcileCcClaim() {
     const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
     const slot = onGrid ? paramPagesSlot() : hierEditorSlot;
     const comp = onGrid ? paramPagesComponent() : hierEditorComponent;
+    /*
+     * THE DISPLAY MODE IS PART OF THE IDENTITY, because the SHIM CLEARS THE
+     * CLAIM AND DOES NOT TELL US.
+     *
+     * shadow_display_mode drops from four sites in the SPI callback -- Menu
+     * tap, Track tap, Shift+Track, Shift+Step -- and the shim memsets
+     * claim_cc_bits on that edge. None of them runs any JS. So `ccClaimed`
+     * below is a MIRROR OF STATE ANOTHER PROCESS OWNS, and after a dismiss it
+     * says "claimed" while the shim holds nothing: the claim is not restated
+     * on the way back in, and the module's buttons go to Move for the rest of
+     * the session.
+     *
+     * Without this the save was incidental. Every re-entry raises a jump flag,
+     * and those mostly land on a NON-claim view (CHAIN_EDIT, MASTER_FX,
+     * TOOLS), which empties the key and re-arms. But Shift+Vol+Step2 lands on
+     * VIEWS.PARAM_PAGES -- a claim view -- via enterGlobalSettings ->
+     * enterGlobalSettingsGrid -> enterParamPages, and it was only the SLOT and
+     * COMPONENT halves of this tuple (Global Settings carries a synthesised
+     * component of its own) that made the key differ anyway. That is a real
+     * invariant resting on a coincidence, and nothing at either site said so.
+     *
+     * Reading it is an SHM byte, not an IPC round-trip, so it costs nothing on
+     * the gate it guards. The flag the shim clears is now the flag this key
+     * turns on, which is the fact itself rather than a proxy for it.
+     *
+     * The pad_observe register next to it (#426) had no key at all and could
+     * only be fixed by restating it every tick; the read behind THIS gate is
+     * ~2.8 ms and must stay memoised, so the gate is widened instead.
+     */
+    const displayOn = (typeof shadow_get_display_mode === "function")
+        ? shadow_get_display_mode() : 1;
     const key = onScreen
-        ? (view + "|" + coRunView + "|" + slot + "|" + comp)
+        ? (view + "|" + coRunView + "|" + slot + "|" + comp + "|" + displayOn)
         : "";
     if (key === ccClaimKey) return;
     /* THE READ COMES FIRST, AND null IS NOT AN ANSWER.
