@@ -397,8 +397,11 @@ export function parseBusComponentKey(componentKey) {
 
 /* The grid key for one row's send. Flat — the mapping back to the two
  * real spellings ("buses:main_send1" for the slot, "bus2:send1" for a bus)
- * is busSendGridRealKey, and it is the only place that knows them. */
-function sendGridKey(row, send) {
+ * is busSendGridRealKey, and it is the only place that knows them.
+ *
+ * EXPORTED for the pin below: comparing the grid path against the list path
+ * needs a row and a send to produce a grid key outside this module. */
+export function sendGridKey(row, send) {
     return row.kind === "main" ? `main_send${send}` : `bus${row.index + 1}_send${send}`;
 }
 
@@ -409,7 +412,12 @@ function sendGridKey(row, send) {
  * unassigned voices' sends are the SLOT's, a bus's are its own. Same rule as
  * busSendKey in shadow_ui.js, which the list path uses — and the reason both
  * exist rather than one is that the list addresses a ROW object and the grid
- * addresses a KEY. They must agree; test_bus_model.sh is where that is pinned.
+ * addresses a KEY.
+ *
+ * THEY MUST AGREE, and test_bus_model.sh pins it by LIFTING busSendKey out of
+ * shadow_ui.js and running the two against every row of a slot — a comment
+ * saying they must agree, with nothing joining them, is the duplication it
+ * claims to have closed.
  */
 export function busSendGridRealKey(gridKey) {
     const main = /^main_send(\d+)$/.exec(String(gridKey || ""));
@@ -435,7 +443,14 @@ export function busSendGridRealKey(gridKey) {
  */
 export function busSendGridParams(config) {
     const out = [];
-    if (!config || config.unresolved) return out;
+    /*
+     * NO UNRESOLVED GUARD OF ITS OWN. busListRows already answers no rows for a
+     * read that did not complete, and a second copy of that test here was a
+     * guard no test could kill: mutating it away changed nothing, so
+     * "an unresolved config declares no params" passed for a reason other than
+     * the one it named. One refusal, in busListRows, where mutating it does
+     * kill the assertion.
+     */
     const rows = busListRows(config).filter((r) => r.kind !== "new");
     for (let send = 1; send <= BUS_SENDS; send++) {
         for (const row of rows) {
@@ -463,6 +478,14 @@ export function busSendGridParams(config) {
  * Answers null for an unresolved config. A read that did not complete is not
  * "this slot has no buses", and a contract built from one would draw a mixer
  * with only Main on it — a picture of a claim nothing made.
+ *
+ * ASSUMES BUS_SENDS === 2, deliberately and not by oversight. The levels are
+ * named send_a / send_b and the split is a HALF, so a third send would build
+ * one page of N and one of 2N. It is not generalised because the DSP side is
+ * not: `BUS_MIX_SENDS` is 2 under a `_Static_assert`, and this file's own cap
+ * test derives from it. If that ever moves, this function is rewritten rather
+ * than parameterised in place — test_bus_model.sh's `[3, 3]` fails loudly
+ * first, so it cannot ship quietly.
  */
 export function busSendGridHierarchy(config) {
     if (!config || config.unresolved) return null;

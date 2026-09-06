@@ -3726,6 +3726,27 @@ function enterBusModuleSelect() {
 }
 
 /*
+ * Open the bus picker on ONE named position, from outside BUS_CHAIN.
+ *
+ * enterBusModuleSelect picks whatever busChainPos already points at, which is
+ * right when the click came from the diagram and wrong when it came from the
+ * insert's own editor (Swap) — the grid can open that editor with BUS_CHAIN
+ * never having been the screen behind it. So the cursor is re-derived from the
+ * bus's component list: `fx` is a POSITION INDEX and busChainPos is a ROW, and
+ * they differ the moment a hole sits ahead of it.
+ */
+function openBusModuleSelectAt(busIndex, fxIndex) {
+    if (busIndex < 0) return;
+    busChainBus = busIndex;
+    const target = busChainTarget(busIndex);
+    const comps = target.components();
+    const row = comps.findIndex((c) => c.kind === "module" && c.index === fxIndex);
+    busChainPos = row >= 0 ? row : 0;
+    setView(VIEWS.BUS_CHAIN);
+    enterBusModuleSelect();
+}
+
+/*
  * THE SEND MIXER, on the encoders.
  *
  * The component name is not a module and not a position: it names the
@@ -5411,6 +5432,67 @@ let hierEditorMasterFxSlot = -1;      // Which Master FX slot (0..MASTER_FX_SLOT
  * which is every pre-existing caller.
  */
 let hierEditorReturnView = null;
+
+/*
+ * WHICH CHAIN THE LIST EDITOR IS ON, as a chain target plus the position key in
+ * that target's own spelling. Resolved from the editor's state on every call,
+ * so it can never disagree with it.
+ *
+ * THIS EXISTS BECAUSE A BOOLEAN CANNOT NAME THREE CHAINS. The shape
+ * `hierEditorIsMasterFx ? getMasterFxX(...) : getComponentX(...)` was written at
+ * seven sites while there were two chains, and every one of them is a place a
+ * BUS insert falls into the SLOT arm -- where slotChainTarget.key("bus1:fx2")
+ * is null, chain_params comes back `[]`, and an empty chain_params is exactly
+ * what makes the editor invent a `float 0..1 step 0.01` knob for every
+ * parameter and write 0.058750 into an enum. Adding a third arm at each site
+ * would put the same latent bug in front of the fourth chain, so the branch is
+ * resolved ONCE here and the sites ask the target instead.
+ *
+ * The two things the chains genuinely disagree about, both absorbed here:
+ *   - the POSITION SPELLING. hierEditorComponent holds the EDITOR key, which is
+ *     bare for a slot chain ("fx2"), prefixed for Master FX ("master_fx:fx2")
+ *     and prefixed for a bus ("bus1:fx2"), while both of the latter targets'
+ *     key() takes the bare position. A conversion, not a pass-through.
+ *   - WHICH SLOT it is addressed at. Master FX is slot 0; a bus is the real
+ *     instrument slot, like the slot chain.
+ *
+ * tests/host/test_hier_editor_chain_target.sh fails if a `hierEditorIsMasterFx`
+ * two-way reappears around any of the chain_params / ui_hierarchy / swap /
+ * return-destination sites this replaced.
+ */
+function hierEditorChainAt() {
+    if (hierEditorIsMasterFx) {
+        return {
+            target: MASTER_CHAIN_TARGET,
+            position: masterFxComponentKey(hierEditorMasterFxSlot),
+        };
+    }
+    const busAt = BusModel.parseBusComponentKey(hierEditorComponent);
+    if (busAt) {
+        return {
+            target: busChainTarget(busAt.bus, hierEditorSlot),
+            position: `fx${busAt.fx + 1}`,
+        };
+    }
+    return { target: slotChainTarget(hierEditorSlot), position: hierEditorComponent };
+}
+
+/* The editor's chain_params, from whichever chain it is on. `[]` on a failed or
+ * unserved read, which is the shape every call site already handles. */
+function hierEditorChainParamsNow() {
+    if (hierEditorSlot < 0 && !hierEditorIsMasterFx) return [];
+    const at = hierEditorChainAt();
+    return chainTargetChainParams(at.target, at.position);
+}
+
+/* The editor's ui_hierarchy, from whichever chain it is on. null when the read
+ * did not answer -- every caller keeps the hierarchy it already has in that
+ * case, which is the tri-state rule, not a convenience. */
+function hierEditorHierarchyNow() {
+    if (hierEditorSlot < 0 && !hierEditorIsMasterFx) return null;
+    const at = hierEditorChainAt();
+    return chainTargetHierarchy(at.target, at.position);
+}
 
 /* Set by enterHierarchyEditorFromParamPages(): the list editor is only open
  * here because the grid handed off a non-grid page (preset browser, items
@@ -14376,9 +14458,14 @@ function componentEntryReader(slotIndex, componentKey, mfxIndex) {
      * A BUS INSERT, addressed under its own prefix at the instrument slot.
      *
      * First, because the key is self-describing: "bus1:fx2" parses, and
-     * nothing else here does. `is_loading` is not served by chain_bus.c and
-     * reads "" — which the gate treats as "not loading", the same answer it
-     * gets from the many modules that do not implement it.
+     * nothing else here does.
+     *
+     * `is_loading` DOES reach a plugin here: chain_bus.c gates on
+     * bus_fx_ready() — answering -1, i.e. null, until the worker has the
+     * instance — and otherwise delegates an unknown suffix straight to the
+     * module's get_param. So the answer is `null`, or whatever the module says,
+     * and rarely "". The gate holds only on an exact "1", which is what makes
+     * all three of those mean "not loading" without a special case.
      */
     const busAt = BusModel.parseBusComponentKey(componentKey);
     if (busAt) {
@@ -14522,7 +14609,12 @@ function serviceComponentLoadHold() {
 }
 
 /* Back out of the wait. The component is left exactly as it was — nothing has
- * been written, and nothing was loaded on the way in. */
+ * been written, and nothing was loaded on the way in.
+ *
+ * RETURNS THE NAME of where it sent you, because the caller has to say it and
+ * cannot work it out afterwards — the hold is cleared here. A separate
+ * `wasMasterFx ? ... : ...` at the call site is what announced "Chain Editor"
+ * to a user standing on the bus diagram. */
 function cancelComponentLoadHold() {
     const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
     const wasBus = !!(componentLoadHold &&
@@ -14531,6 +14623,7 @@ function cancelComponentLoadHold() {
     setView(wasBus ? VIEWS.BUS_CHAIN
                    : wasMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
     needsRedraw = true;
+    return wasBus ? "Inserts" : wasMasterFx ? fxBus().label : "Chain Editor";
 }
 
 function drawComponentLoading() {
@@ -15174,21 +15267,12 @@ function changeHierPreset(delta) {
     announce(`${presetName}, Preset ${hierEditorPresetIndex + 1} of ${hierEditorPresetCount}`);
 
     /* Re-fetch chain_params for new preset/plugin and invalidate knob cache */
-    if (hierEditorIsMasterFx) {
-        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-    } else {
-        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-    }
+    hierEditorChainParams = hierEditorChainParamsNow();
     /* Re-fetch ui_hierarchy too — plugins (e.g. schwung-sfz xsynth fork)
      * emit a different param/knob set per preset. Without this the menu
      * keeps the previous preset's slot list with stale labels until the
      * user exits and re-enters. */
-    let newHierarchy = null;
-    if (hierEditorIsMasterFx) {
-        newHierarchy = getMasterFxHierarchy(hierEditorMasterFxSlot);
-    } else {
-        newHierarchy = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-    }
+    const newHierarchy = hierEditorHierarchyNow();
     if (newHierarchy) {
         hierEditorHierarchy = newHierarchy;
         /* Rebuild the visible param list from the new hierarchy. */
@@ -15203,6 +15287,38 @@ function changeHierPreset(delta) {
      * the refetch above may have read the contract of the preset we just
      * LEFT. See armHierEditorContractSettle. */
     armHierEditorContractSettle();
+}
+
+/*
+ * WHERE BACK GOES from the list editor, and what to CALL it.
+ *
+ * One resolver for both, because the two were separate and disagreed: the exit
+ * honoured hierEditorReturnView (so a bus insert landed on its bus diagram)
+ * while the announcement asked hierEditorIsMasterFx and said "Chain Editor".
+ * An explicit destination wins; the flag decides for every pre-existing caller.
+ */
+function hierEditorReturnDestination() {
+    if (hierEditorReturnView) return hierEditorReturnView;
+    return hierEditorIsMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT;
+}
+
+function hierEditorReturnDestinationName() {
+    switch (hierEditorReturnDestination()) {
+        case VIEWS.MASTER_FX:
+            /* The FX-bus label, not a hardcoded "Master FX": Shift+Vol+Menu
+             * opens a picker over three buses now and Send A is not Master FX. */
+            return fxBus().label;
+        case VIEWS.BUS_CHAIN: {
+            const busAt = BusModel.parseBusComponentKey(hierEditorComponent);
+            const bus = (busAt && busConfig && !busConfig.unresolved)
+                ? busConfig.buses[busAt.bus] : null;
+            /* The same sentence enterBusChain announces, so arriving by Back
+             * and arriving by Down sound alike. */
+            return bus ? `${bus.name} inserts` : "Inserts";
+        }
+        default:
+            return "Chain Editor";
+    }
 }
 
 /* Exit hierarchy editor */
@@ -15222,12 +15338,12 @@ function exitHierarchyEditor() {
     clearModuleParamShims();
     clearWavZoomStates();
 
-    /* Determine return view based on whether we're editing Master FX */
-    const returnToMasterFx = hierEditorIsMasterFx;
-    /* ...or an explicit one, for a chain the boolean cannot name. Read BEFORE
-     * the reset below, like every other piece of state this function carries
-     * across its own teardown. */
-    const returnView = hierEditorReturnView;
+    /* Where Back goes. Resolved through the one helper the ANNOUNCEMENT also
+     * uses, so a chain cannot be sent one place and named another — a bus
+     * insert landed on the bus diagram while saying "Chain Editor". Read
+     * BEFORE the reset below, like every other piece of state this function
+     * carries across its own teardown. */
+    const returnView = hierEditorReturnDestination();
     hierEditorReturnView = null;
 
     hierEditorSlot = -1;
@@ -15253,22 +15369,21 @@ function exitHierarchyEditor() {
     filepathBrowserParamKey = "";
     resetDynamicParamPickerState();
 
-    view = returnView || (returnToMasterFx ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+    view = returnView;
     needsRedraw = true;
 }
 
 /* Refresh chain_params metadata for dynamic filepath fields (e.g. start_path). */
 function refreshHierarchyChainParams() {
+    /* The two guards the two arms used to carry separately. Master FX is
+     * addressed by INDEX and a slot chain by component key, so neither guard
+     * subsumes the other and both still have to be asked. */
     if (hierEditorIsMasterFx) {
-        if (hierEditorMasterFxSlot >= 0) {
-            hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-        }
+        if (hierEditorMasterFxSlot < 0) return;
+    } else if (hierEditorSlot < 0 || !hierEditorComponent) {
         return;
     }
-
-    if (hierEditorSlot >= 0 && hierEditorComponent) {
-        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-    }
+    hierEditorChainParams = hierEditorChainParamsNow();
 }
 
 /* Open generic file browser for a filepath parameter */
@@ -18327,14 +18442,8 @@ function armHierEditorContractSettle() {
 function serviceHierEditorContractSettle() {
     if (!hierEditorContractDueMs || Date.now() < hierEditorContractDueMs) return;
     hierEditorContractDueMs = 0;
-    let newHier = null;
-    if (hierEditorIsMasterFx) {
-        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-        newHier = getMasterFxHierarchy(hierEditorMasterFxSlot);
-    } else {
-        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-        newHier = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-    }
+    hierEditorChainParams = hierEditorChainParamsNow();
+    const newHier = hierEditorHierarchyNow();
     if (newHier) {
         hierEditorHierarchy = newHier;
         loadHierarchyLevel();
@@ -18361,14 +18470,8 @@ function drawHierarchyEditor() {
         const loadingStr = getSlotParam(hierEditorSlot, `${prefix2}:is_loading`);
         const loadingNow = loadingStr === "1";
         if (hierEditorPrevLoading && !loadingNow) {
-            let newHier = null;
-            if (hierEditorIsMasterFx) {
-                hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-                newHier = getMasterFxHierarchy(hierEditorMasterFxSlot);
-            } else {
-                hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-                newHier = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-            }
+            hierEditorChainParams = hierEditorChainParamsNow();
+            const newHier = hierEditorHierarchyNow();
             if (newHier) {
                 hierEditorHierarchy = newHier;
                 loadHierarchyLevel();
@@ -19882,11 +19985,7 @@ function handleSelect() {
                     hierEditorPresetEditMode = true;
                     hierEditorSelectedIdx = 0;
                     /* Re-fetch chain_params now that a preset/plugin is selected */
-                    if (hierEditorIsMasterFx) {
-                        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-                    } else {
-                        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-                    }
+                    hierEditorChainParams = hierEditorChainParamsNow();
                     /* Invalidate knob context cache to use new chain_params */
                     invalidateKnobContextCache();
                 }
@@ -19960,14 +20059,8 @@ function handleSelect() {
                      * rebuilding the level so the next param list shows
                      * the freshly-loaded preset's knobs instead of the
                      * previous one's stale slots. */
-                    let newHierarchy = null;
-                    if (hierEditorIsMasterFx) {
-                        hierEditorChainParams = getMasterFxChainParams(hierEditorMasterFxSlot);
-                        newHierarchy = getMasterFxHierarchy(hierEditorMasterFxSlot);
-                    } else {
-                        hierEditorChainParams = getComponentChainParams(hierEditorSlot, hierEditorComponent);
-                        newHierarchy = getComponentHierarchy(hierEditorSlot, hierEditorComponent);
-                    }
+                    hierEditorChainParams = hierEditorChainParamsNow();
+                    const newHierarchy = hierEditorHierarchyNow();
                     if (newHierarchy) hierEditorHierarchy = newHierarchy;
                     loadHierarchyLevel();
                     invalidateKnobContextCache();
@@ -19978,7 +20071,15 @@ function handleSelect() {
                     break;
                 }
                 if (selectedParam === SWAP_MODULE_ACTION) {
-                    /* Swap module - handle Master FX vs regular chain slots */
+                    /*
+                     * Swap module - one arm per CHAIN, and the bus arm is not
+                     * optional. SWAP_MODULE_ACTION is appended to every
+                     * top-level list, so without it a bus insert's Swap row
+                     * resolves slotChainComponentIndex("bus1:fx2") to -1 and
+                     * ANSWERS A CLICK BY DOING NOTHING -- the same dead row
+                     * enterBusModuleSelect's own comment refuses to draw.
+                     */
+                    const swapBusAt = BusModel.parseBusComponentKey(hierEditorComponent);
                     if (hierEditorIsMasterFx) {
                         /* Master FX: use Master FX module select */
                         const fxSlot = hierEditorMasterFxSlot;
@@ -19986,6 +20087,15 @@ function handleSelect() {
                         /* Restore Master FX component selection and enter module select */
                         selectedMasterFxComponent = fxSlot;
                         enterMasterFxModuleSelect(fxSlot);
+                    } else if (swapBusAt) {
+                        /* A bus insert: back to that bus's diagram, with its own
+                         * picker open on the position we were editing. The
+                         * cursor is re-derived from the bus's component list
+                         * rather than assumed still to be where we left it —
+                         * the grid can hand this editor a component key without
+                         * BUS_CHAIN ever having been the screen behind it. */
+                        exitHierarchyEditor();
+                        openBusModuleSelectAt(swapBusAt.bus, swapBusAt.fx);
                     } else {
                         /* Regular chain slot: find component index and enter module select */
                         const compIndex = slotChainComponentIndex(hierEditorSlot, hierEditorComponent);
@@ -20542,11 +20652,7 @@ function handleBack() {
         case VIEWS.COMPONENT_LOADING:
             /* Stop waiting. Nothing was written on the way in, so there is
              * nothing to unwind — the module carries on loading regardless. */
-            {
-                const wasMasterFx = componentLoadHold && componentLoadHold.mfxIndex >= 0;
-                cancelComponentLoadHold();
-                announce(wasMasterFx ? "Master FX" : "Chain Editor");
-            }
+            announce(cancelComponentLoadHold());
             break;
         case VIEWS.FILEPATH_BROWSER:
             closeHierarchyFilepathBrowser();
@@ -20652,10 +20758,16 @@ function handleBack() {
                     announceHierLevel();
                 }
             } else {
-                /* At root level - exit hierarchy editor */
-                const wasMasterFx = hierEditorIsMasterFx;
+                /* At root level - exit hierarchy editor.
+                 *
+                 * The announcement names where Back ACTUALLY goes, so it is
+                 * read from the same state exitHierarchyEditor decides on
+                 * rather than from a boolean beside it — a bus insert said
+                 * "Chain Editor" while landing on the bus diagram. Read before
+                 * the exit, which clears both. */
+                const backTo = hierEditorReturnDestinationName();
                 exitHierarchyEditor();
-                announce(wasMasterFx ? "Master FX" : "Chain Editor");
+                announce(backTo);
             }
             break;
         }

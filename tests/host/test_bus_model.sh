@@ -31,6 +31,7 @@ if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 
 
 node --input-type=module -e '
 import * as M from "./src/shared/bus_model.mjs";
+import fs from "node:fs";
 
 let failures = 0;
 const fail = (m) => { console.error("FAIL: " + m); failures++; };
@@ -274,11 +275,62 @@ eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), nul
      M.busSendGridHierarchy(full).levels.send_a.knobs.length, M.SLOT_BUSES + 1);
 }
 /* AND THE READ THAT DID NOT COMPLETE MAKES NO CONTRACT. An empty one would be
-   a claim -- "this slot has no buses" -- drawn as a mixer with only Main. */
+   a claim -- "this slot has no buses" -- drawn as a mixer with only Main.
+
+   The PARAMS half is upheld by busListRows` refusal, not by a second copy of it
+   inside busSendGridParams: a duplicate guard there was unkillable, because the
+   rows were already empty when it ran, so this assertion passed for a reason
+   other than the one it names. Mutating busListRows` `|| config.unresolved`
+   away now kills BOTH lines below. */
 eq("an unresolved config declares no hierarchy",
    M.busSendGridHierarchy({ unresolved: true }), null);
 eq("an unresolved config declares no params",
    M.busSendGridParams({ unresolved: true }).length, 0);
+eq("an unresolved config lists no rows either -- the one refusal",
+   M.busListRows({ unresolved: true }).length, 0);
+
+/* ---- THE TWO SPELLINGS OF A SEND KEY --------------------------------- */
+
+/* busSendKey (shadow_ui.js, the LIST path) and busSendGridRealKey (here, the
+   GRID path) produce the same two real keys from different arguments -- a row
+   object and a flat grid key. A comment saying they must agree, with nothing
+   joining them, is the duplication it claims to have closed, so busSendKey is
+   LIFTED out of shadow_ui.js and the two are run against every row of a slot.
+   Getting this wrong edits the wrong bus, silently. */
+{
+  const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
+  const at = src.indexOf("function busSendKey(");
+  if (at < 0) fail("busSendKey is gone from shadow_ui.js");
+  else {
+    const end = src.indexOf("\n}\n", at);
+    const busSendKey = new Function(
+      "return " + src.slice(at, end + 2))();
+    const cfg = M.parseBusesConfig(JSON.stringify({
+      buses: [
+        { present: 1, name: "Kick", orphans: 0, voices: [], sends: [0, 0], fx: [] },
+        { present: 0, name: "Bus 2", orphans: 0, voices: [], sends: [0, 0], fx: [] },
+        { present: 1, name: "Hats", orphans: 0, voices: [], sends: [0, 0], fx: [] },
+        { present: 1, name: "Perc", orphans: 0, voices: [], sends: [0, 0], fx: [] }],
+      main_sends: [0, 0] }));
+    const rows = M.busListRows(cfg).filter((r) => r.kind !== "new");
+    let checked = 0;
+    for (const row of rows) {
+      for (let n = 1; n <= M.BUS_SENDS; n++) {
+        const viaGrid = M.busSendGridRealKey(M.sendGridKey(row, n));
+        const viaList = busSendKey(row, "send" + n);
+        eq("the two paths agree on " + row.name + " send " + n, viaGrid, viaList);
+        checked++;
+      }
+    }
+    /* Every present bus plus Main, both sends -- and the HOLE at bus 2 is what
+       makes this worth running: a path that renumbered would send Hats` level
+       to bus 2. */
+    eq("every row of a holed slot was compared", checked,
+       (rows.length) * M.BUS_SENDS);
+    eq("...and the hole did not renumber",
+       M.busSendGridRealKey(M.sendGridKey(rows[1], 1)), "bus3:send1");
+  }
+}
 
 if (failures) process.exit(1);
 console.log("PASS: bus model — the tri-state read, positional buses, retained " +
