@@ -57,7 +57,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
 	$(BUILD_DIR)/test_boot_select_core \
-	$(BUILD_DIR)/test_chain_idle_tick
+	$(BUILD_DIR)/test_chain_idle_tick \
+	$(BUILD_DIR)/test_heal_tool_id
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -108,6 +109,12 @@ $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUI
 # Header-only unit: link_audio_in_trim_pos lives in link_audio.h, so the
 # DEPFLAGS header tracking above is what keeps this honest when it changes.
 $(BUILD_DIR)/test_link_audio_backlog_trim: test_link_audio_backlog_trim.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Header-only unit: heal_tool_id_is_safe lives in heal_tool_id.h. schwung-heal
+# itself cannot be exercised here (it setuid(0)s and bails when not root), so
+# the filter is only testable as long as it stays out of the binary.
+$(BUILD_DIR)/test_heal_tool_id: test_heal_tool_id.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_capture.c | $(BUILD_DIR)
