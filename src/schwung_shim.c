@@ -6882,6 +6882,32 @@ static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in,
     }
 }
 
+/* Button-claim press latch -- see the filter site in shim_post_transfer.
+ * Records, per CC, whether the module received its PRESS, so the same consumer
+ * receives its RELEASE even if the claim (capabilities.claims_ccs) changes
+ * mid-hold. Read by both the Move-firmware filter and the forward-to-shadow_ui
+ * site; the filter runs first in the frame, so the forward site sees this
+ * frame's decision. Touched only from the SPI callback -- no locking. */
+static uint8_t claim_press_blocked[128];
+
+/* Controls the host owns and a module may NEVER claim: how you leave the
+ * screen (Menu, Back, Shift), what the host routes itself (jog, the eight
+ * knobs, the master knob, the track buttons), and Mute, on which Move-native
+ * Mute+Pad depends. A claim on one of these is ignored here whatever shadow_ui
+ * wrote, so the shim stays correct even against a UI that forgot the list. */
+static int claim_denied_cc(uint8_t cc) {
+    if (cc == CC_SHIFT || cc == CC_MENU || cc == CC_BACK) return 1;
+    if (cc == CC_JOG_WHEEL || cc == CC_JOG_CLICK) return 1;
+    if (cc >= CC_KNOB1 && cc <= CC_KNOB8) return 1;
+    if (cc == CC_MASTER_KNOB || cc == CC_MUTE) return 1;
+    if (cc >= 40 && cc <= 43) return 1;                 /* track buttons */
+    if (cc == CC_MIC_IN_DETECT || cc == CC_LINE_OUT_DETECT) return 1;
+    return 0;
+}
+static inline int claim_cc_set(uint8_t cc) {
+    return shadow_control && ((shadow_control->claim_cc_bits[cc >> 3] >> (cc & 7)) & 1);
+}
+
 static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, int size)
 {
     (void)ctx;
@@ -7144,6 +7170,24 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
         prev_overtake_mode = overtake_mode;
     }
 
+    /* Drop any edit-CC claim when the shadow display goes away. The claim only
+     * means anything while a module's UI is on screen, and a shadow_ui that
+     * exited (or crashed) before reconciling it to 0 would otherwise leave
+     * Move's Undo / Copy / Delete captured with nothing left to deliver them
+     * to. Same reasoning as the runtime-claim drops on overtake exit above:
+     * this edge covers EVERY exit path. Also disarms the press latch so a
+     * release arriving after the display closed is routed to Move, matching
+     * where its press went. Runs unconditionally -- the filter itself is inside
+     * the shadow_display_mode branch below, so this must not be. */
+    {
+        static int prev_display_mode = 0;
+        if (prev_display_mode && !shadow_display_mode) {
+            if (shadow_control) memset((void *)shadow_control->claim_cc_bits, 0, sizeof(shadow_control->claim_cc_bits));
+            memset(claim_press_blocked, 0, sizeof(claim_press_blocked));
+        }
+        prev_display_mode = shadow_display_mode;
+    }
+
     /* Boot jack-state re-assert: worker arms shim_inject_boot_jack ~5 s after
      * start (Move firmware is up by then). Inject a CC 115 into Move's MIDI_IN
      * via the safe MPSC inject ring so Move's speaker enhancer corrects when
@@ -7313,6 +7357,40 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (cin == 0x0B && type == 0xB0) {
                         if (d1 == CC_JOG_WHEEL || d1 == CC_JOG_CLICK || d1 == CC_BACK) {
                             filter = 1;
+                        }
+                        /* A CLAIMED button: withheld from Move firmware ONLY while
+                         * the module on screen has claimed it
+                         * (shadow_control->claim_cc_bits, reconciled by shadow_ui
+                         * from capabilities.claims_ccs / claims_edit_ccs). Unclaimed
+                         * it passes through untouched, so Move keeps its native
+                         * Undo during ordinary chain use -- precisely what the
+                         * unconditional version (#154) broke and why it was
+                         * reverted (#175). Forwarded to the shadow UI under the
+                         * same latch by the post-ioctl loop. The host-owned
+                         * controls (claim_denied_cc) can never be claimed. */
+                        if (d1 < 128) {
+                            /* Latch per button so a claim that changes MID-HOLD
+                             * cannot desync Move's view of the button: whoever
+                             * received the PRESS also receives the RELEASE.
+                             * Without this, a claim engaging between press and
+                             * release leaves Move believing the button is still
+                             * held, and a claim dropping mid-hold delivers Move an
+                             * orphan release. */
+                            if (d2 > 0) {
+                                /* Shift+<button> is the host's own vocabulary
+                                 * (Shift+Copy / Shift+Delete = snapshot and
+                                 * recall, handled and swallowed in the post-ioctl
+                                 * loop). A press with Shift held is never claimed:
+                                 * the module gets the BARE buttons only. */
+                                claim_press_blocked[d1] =
+                                    (claim_cc_set(d1) && !claim_denied_cc(d1) && !shadow_shift_held) ? 1 : 0;
+                            }
+                            if (claim_press_blocked[d1]) filter = 1;
+                            /* Deliberately NOT cleared on release: the latch is
+                             * re-armed by the next press, which keeps it valid
+                             * for the forward-to-shadow_ui site that runs LATER
+                             * in this same frame and must route the release the
+                             * same way it routed the press. */
                         }
                         /* Filter Menu unless long-press mode dismisses shadow on tap */
                         if (d1 == CC_MENU && !LONG_PRESS_ACTIVE()) {
@@ -8584,10 +8662,16 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * - CC 14 (jog wheel), CC 3 (jog click), CC 51 (back)
                  * - CC 40-43 (track buttons)
                  * - CC 71-78 (knobs)
-                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass */
+                 * - CC 88 (mute) — used as a modifier for Mute+JogClick module bypass
+                 * - any CC the module on screen has CLAIMED (capabilities.claims_ccs
+                 *   / claims_edit_ccs), by the latch the firmware filter above set
+                 *   on its press -- so a claimed press drives the module and
+                 *   nothing else. Unclaimed, a button is not forwarded and reaches
+                 *   Move unchanged. */
                 int forward_to_shadow = (d1 == 14 || d1 == 3 || d1 == 51 ||
                                          (d1 >= 40 && d1 <= 43) || (d1 >= 71 && d1 <= 78) ||
-                                         d1 == 88);
+                                         d1 == 88 ||
+                                         (d1 < 128 && claim_press_blocked[d1]));
 
                 if (forward_to_shadow && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish(0x0B, status, d1, d2);
