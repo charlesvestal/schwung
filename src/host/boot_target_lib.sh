@@ -1,12 +1,12 @@
 #!/bin/sh
 # boot_target_lib.sh — boot-selector decision logic: target resolution plus a
-# two-strike boot watchdog. Sourced by shim-entrypoint.sh (the boot selector
+# strike-counting boot watchdog. Sourced by shim-entrypoint.sh (the boot selector
 # that replaces /opt/move/Move) and by tests/host/test_boot_*.sh.
 #
 # BusyBox-sh compatible: no arrays, no [[ ]], no top-level `local`. Every path
 # is derived from BOOT_TARGETS_DIR so a test can point this at a fixture
 # directory. Sourcing this file must have NO side effects — it only defines
-# functions and one variable default.
+# functions and two variable defaults.
 #
 # Registry shape:
 #   $BOOT_TARGETS_DIR/default              bare target id, one line
@@ -16,6 +16,18 @@
 #   "stock" is a built-in id with no directory ever.
 
 BOOT_TARGETS_DIR="${BOOT_TARGETS_DIR:-/data/UserData/boot-targets}"
+
+# How many consecutive failed attempts at the same target force the picker.
+#
+# This was 2, and 2 was too tight: a power cycle inside the liveness window
+# looks exactly like a failed boot, so two ordinary human power cycles — or an
+# installer's reboot followed by one of yours — put a forced picker on the next
+# boot of a perfectly healthy device. Observed in the field twice, most
+# recently 2026-09-06 during a routine deploy. 3 costs a real crash-loop
+# nothing (it dies in seconds and reaches 3 just as fast) and stops the false
+# positive that made the watchdog look broken. Overridable so a test can pin
+# the boundary from either side.
+BT_STRIKE_LIMIT="${BT_STRIKE_LIMIT:-3}"
 
 # bt_json_field FILE KEY — echo the value of the first `"KEY" : "value"`
 # occurrence in FILE. rc 1 (nothing echoed) if the file is missing or the key
@@ -132,7 +144,8 @@ bt_watchdog_enter() {
 }
 
 # bt_watchdog_forced ID — rc 0 iff the stamp exists, names ID, and its count
-# is >= 2 (two failed attempts at ID with no intervening healthy boot).
+# has reached $BT_STRIKE_LIMIT (that many failed attempts at ID in a row, with
+# no intervening healthy boot).
 bt_watchdog_forced() {
     id="$1"
     stamp="$(bt_stamp_file)"
@@ -150,5 +163,5 @@ bt_watchdog_forced() {
     case "$want_count" in
         ''|*[!0-9]*) want_count=0 ;;
     esac
-    [ "$want_count" -ge 2 ] 2>/dev/null
+    [ "$want_count" -ge "$BT_STRIKE_LIMIT" ] 2>/dev/null
 }

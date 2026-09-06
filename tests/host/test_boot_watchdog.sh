@@ -3,9 +3,9 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# boot_target_lib.sh also implements a two-strike boot watchdog: two failed
-# attempts at the same target in a row (no intervening "healthy" mark) trips
-# bt_watchdog_forced, which shim-entrypoint.sh (a separate task) uses to force
+# boot_target_lib.sh also implements a strike-counting boot watchdog:
+# $BT_STRIKE_LIMIT failed attempts at the same target in a row (no intervening
+# "healthy" mark) trips bt_watchdog_forced, which shim-entrypoint.sh (a separate task) uses to force
 # a fallback boot target rather than looping forever on a broken one. This
 # test drives that state machine directly against a fixture registry.
 
@@ -47,15 +47,44 @@ else
     pass "not forced after 1 attempt"
 fi
 
-# ---- 2. second enter -> echoes 2, forced now ------------------------------
+# ---- 2. the limit is the boundary, and 2 is BELOW it ----------------------
+# The limit was 2, and 2 counted an ordinary power cycle inside the liveness
+# window as a failure: two human power cycles (or an installer reboot plus one
+# of yours) forced the picker on a healthy device. Pin the boundary from BOTH
+# sides so a change to BT_STRIKE_LIMIT cannot pass this test by accident.
 got=$(bt_watchdog_enter schwung)
 [ "$got" = "2" ] && pass "second enter echoes 2" \
     || fail "second enter echoed [$got], expected 2"
 if bt_watchdog_forced schwung; then
-    pass "forced after 2 attempts"
+    fail "forced after 2 attempts — a power cycle must not force the picker"
 else
-    fail "not forced after 2 attempts at the same target"
+    pass "not forced after 2 attempts (a power cycle is not a crash)"
 fi
+
+got=$(bt_watchdog_enter schwung)
+[ "$got" = "3" ] && pass "third enter echoes 3" \
+    || fail "third enter echoed [$got], expected 3"
+if bt_watchdog_forced schwung; then
+    pass "forced after 3 attempts"
+else
+    fail "not forced after 3 attempts at the same target"
+fi
+
+# The limit is a knob, not a hardcoded 3: drive it from both sides.
+( BT_STRIKE_LIMIT=4
+  if bt_watchdog_forced schwung; then
+      fail "forced at count 3 with BT_STRIKE_LIMIT=4 — the limit is ignored"
+  else
+      pass "BT_STRIKE_LIMIT=4 is honoured (count 3 does not force)"
+  fi
+  exit $fails ) || fails=$((fails + $?))
+( BT_STRIKE_LIMIT=2
+  if bt_watchdog_forced schwung; then
+      pass "BT_STRIKE_LIMIT=2 is honoured (count 3 forces)"
+  else
+      fail "not forced at count 3 with BT_STRIKE_LIMIT=2"
+  fi
+  exit $fails ) || fails=$((fails + $?))
 
 # ---- 3. a healthy mark clears the strikes before the next enter ----------
 touch "$fixture/schwung/healthy"
@@ -92,8 +121,9 @@ else
     pass "entering stock creates no boot-attempt stamp"
 fi
 
-# ---- 6. stamp names a DIFFERENT id at count 2 -> not forced for this id ---
+# ---- 6. stamp names a DIFFERENT id at the limit -> not forced for this id -
 bt_watchdog_clear
+bt_watchdog_enter v > /dev/null
 bt_watchdog_enter v > /dev/null
 bt_watchdog_enter v > /dev/null
 if bt_watchdog_forced schwung; then

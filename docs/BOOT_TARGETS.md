@@ -95,9 +95,15 @@ main binary. Rules:
 ## Watchdog
 
 The selector counts boot attempts per target and clears the count when the
-boot looks good. Two un-cleared attempts in a row → the picker opens
+boot looks good. **Three** un-cleared attempts in a row → the picker opens
 unconditionally with `<name> failed to start`, defaulting to Stock Move. Your
 platform can never boot-loop the device.
+
+Three, not two, because a power cycle inside the liveness window is
+indistinguishable from a failed boot: at two, an installer's reboot plus one
+human power cycle forced the picker on a device that was working perfectly. A
+real crash-loop reaches three in seconds, so the extra strike costs it nothing.
+The limit lives in one place, `BT_STRIKE_LIMIT` in `boot_target_lib.sh`.
 
 Two ways your boot counts as good — pick either:
 
@@ -111,13 +117,13 @@ Two ways your boot counts as good — pick either:
    working state for tens of seconds, not merely started — a first-frame or
    first-callback touch defeats the watchdog entirely: a build that crashes
    seconds into the session would still mark every boot healthy, and the
-   attempt count could never reach two.
+   attempt count could never reach the strike limit.
 
 A target whose entry script is permanently missing or broken (so its process
 never starts, and neither the liveness fallback nor a `healthy` touch can ever
 fire) accumulates strikes with no decay: the forced picker appears on **every**
-boot from then on, not just the first two, until the target is repaired or
-another default is chosen. This is deliberate — the alternative is a watchdog
+boot from then on, not just the first time it trips, until the target is
+repaired or another default is chosen. This is deliberate — the alternative is a watchdog
 that quietly stops warning you.
 
 ## Installing / uninstalling your platform
