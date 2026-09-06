@@ -2845,7 +2845,13 @@ skip_la_rebuild:
         }
     }
 
-    /* Save ME full-gain component for bridge split */
+    /* Save ME full-gain component for bridge split.
+     *
+     * This is the SLOT SUM ONLY. Everything mixed into fx_target below — the
+     * send returns first, then Master FX — happens after this snapshot and is
+     * absent from it. Any consumer that reconstructs a mix from this buffer
+     * must therefore ask shadow_me_post_snapshot_fx_active() first, or it
+     * silently produces a different mix from the one on the DAC. */
     for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
         if (me_full[i] > 32767) me_full[i] = 32767;
         if (me_full[i] < -32768) me_full[i] = -32768;
@@ -2854,7 +2860,19 @@ skip_la_rebuild:
     native_bridge_capture_mv = mv;
     native_bridge_split_valid = 1;
 
-    /* Write master mix to publisher shm (slot index LINK_AUDIO_PUB_MASTER_IDX) */
+    /* Publish the ME bus as the "Schwung-Master" Link Audio channel.
+     *
+     * It is fed from native_bridge_me_component, which is the SLOT SUM as it
+     * stands before any bus-wide processing: Master FX has never been in this
+     * channel, and the send returns are not either — both land further down,
+     * on fx_target. That is the channel's definition, not an oversight of the
+     * sends: including one and not the other would make it neither the raw
+     * slot sum nor the finished master.
+     *
+     * Moving the publish below both would also change what a listener already
+     * subscribed to this channel hears, and under rebuild_from_la fx_target is
+     * the mailbox — Move's own audio included — which would republish Move's
+     * Link Audio back onto the network. Left as the pre-bus sum deliberately. */
     if (link_audio.enabled && shadow_pub_audio_shm) {
         link_audio_pub_slot_t *ps = &shadow_pub_audio_shm->slots[LINK_AUDIO_PUB_MASTER_IDX];
         uint32_t wp = ps->write_pos;

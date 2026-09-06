@@ -337,6 +337,27 @@ static inline int shadow_master_fx_chain_active(void) {
     return 0;
 }
 
+/* Does anything add to the ME bus AFTER native_bridge_me_component is
+ * snapshotted?
+ *
+ * The shim snapshots that buffer while the ME bus is still the plain sum of
+ * the four slots, and then keeps mixing into `fx_target`: first the send
+ * returns, then Master FX. Anything the native resample bridge reconstructs
+ * from the snapshot is therefore missing whatever those two added, which is
+ * why the bridge falls back to the already-summed unity_view snapshot instead
+ * of the split when this answers true.
+ *
+ * It is one predicate rather than two call sites because the two processors
+ * land at the same point in the block for the same reason — a caller that
+ * asked only about Master FX is the defect this exists to prevent. */
+static inline int shadow_me_post_snapshot_fx_active(void) {
+    if (shadow_master_fx_chain_active()) return 1;
+    for (int sb = 0; sb < SEND_BUSES; sb++) {
+        if (shadow_send_bus_active(sb)) return 1;
+    }
+    return 0;
+}
+
 /* ============================================================================
  * Public functions
  * ============================================================================ */

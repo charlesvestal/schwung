@@ -58,7 +58,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
-	$(BUILD_DIR)/test_split_voices_parse
+	$(BUILD_DIR)/test_split_voices_parse \
+	$(BUILD_DIR)/test_me_post_snapshot_fx
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -180,6 +181,9 @@ $(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../s
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SLOT_BUSES=$(SLOT_BUSES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/split_voices_parse.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_me_post_snapshot_fx: test_me_post_snapshot_fx.c ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
