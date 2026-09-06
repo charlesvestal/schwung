@@ -108,4 +108,55 @@ static inline int send_fx_route(const char *key, int send_count, int slot_count,
     return 1;
 }
 
+/*
+ * ================= THE RETURN LEVEL A NEW SEND BUS GETS =====================
+ *
+ * A send bus has TWO levels between a voice and the speaker: how much is sent
+ * (per bus, per voice) and how much comes back (this one). Both default to
+ * zero, and the second one has no row on any screen the picker walks through
+ * on the way to loading an effect -- it lives on the send editor's Settings
+ * box, one box further along. So the whole gesture "put a reverb on Send A and
+ * turn a send up" produced SILENCE, with nothing on screen saying a second
+ * control existed. That was reported off hardware: send_levels.json read
+ * `send1_return: 0` with a reverb loaded and a voice's send raised.
+ *
+ * A send with an effect in it and its return at zero is never what anyone
+ * wants, so loading the FIRST effect into an EMPTY send bus opens the return.
+ *
+ * THE VALUE IS UNITY (BUS_MIX_SEND_LEVEL_MAX), not a cautious fraction. The
+ * return is not a "how loud is the reverb" control in its own right -- the
+ * SEND levels are, and they are still zero, so nothing becomes audible until
+ * the user asks for it. A return below unity would only make every send level
+ * mean less than it says, i.e. it would move the mis-calibration rather than
+ * remove it. This follows Master FX's MIDI-channel default (All), chosen the
+ * same way: a defaults question settled by asking which wrong answer is
+ * SILENT, because a silent wrong answer is the one nobody can diagnose.
+ *
+ * THREE THINGS IT MUST NOT DO, which is why it is a function and not a literal
+ * at the call site:
+ *
+ *  - not stomp a return the user deliberately set. `current_return != 0` is
+ *    kept, whatever it is.
+ *  - not fire again for the SECOND effect in the same send. That is what
+ *    `bus_was_empty` is: the whole BUS, not this position -- loading into
+ *    position 3 while position 1 holds a delay is not an empty send, and a
+ *    user who pulled the return down after loading the delay must not have it
+ *    pushed back up.
+ *  - not fight persistence. Both restore paths write the levels AFTER the
+ *    modules (C: shadow_send_levels_restore; JS: loadSendFxChainConfigForSet),
+ *    so a stored return -- including a stored, deliberate 0 -- lands last and
+ *    wins. This only decides what an unwritten one is.
+ *
+ * Returns the level the caller should now hold, so `= send_return_level_on_load(...)`
+ * is total: there is no "leave it alone" sentinel to get wrong.
+ */
+#define SEND_RETURN_DEFAULT_ON_FIRST_LOAD 127
+
+static inline int send_return_level_on_load(int bus_was_empty, int current_return)
+{
+    if (!bus_was_empty) return current_return;
+    if (current_return != 0) return current_return;
+    return SEND_RETURN_DEFAULT_ON_FIRST_LOAD;
+}
+
 #endif /* SEND_FX_KEY_H */

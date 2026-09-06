@@ -125,6 +125,27 @@ static void test_null_outparams(void) {
     printf("  null out-params: ok\n");
 }
 
+static void test_return_level_on_first_load(void) {
+    /* The bug this rule exists for: a reverb loaded into Send A and a voice's
+     * send raised produced SILENCE, because the return defaulted to 0 and lives
+     * one box further along than the picker walks. Reported off hardware —
+     * send_levels.json read `send1_return: 0` with freeverb loaded. */
+    assert(send_return_level_on_load(1, 0) == SEND_RETURN_DEFAULT_ON_FIRST_LOAD);
+
+    /* Must not stomp a return the user deliberately set, at any value... */
+    assert(send_return_level_on_load(1, 40) == 40);
+    assert(send_return_level_on_load(1, SEND_RETURN_DEFAULT_ON_FIRST_LOAD)
+           == SEND_RETURN_DEFAULT_ON_FIRST_LOAD);
+
+    /* ...and must not fire for the SECOND effect in a send. A user who pulled
+     * the return down after loading a delay must not have it pushed back up
+     * when they add a reverb behind it. */
+    assert(send_return_level_on_load(0, 0) == 0);
+    assert(send_return_level_on_load(0, 40) == 40);
+
+    printf("  return level on first load: ok\n");
+}
+
 int main(void) {
     printf("test_send_fx_key (buses=%d slots=%d):\n",
            TEST_SEND_BUSES, TEST_SEND_FX_SLOTS);
@@ -132,6 +153,7 @@ int main(void) {
     test_bus_level_keys();
     test_past_caps_rejected();
     test_malformed();
+    test_return_level_on_first_load();
     test_null_outparams();
     printf("PASS\n");
     return 0;

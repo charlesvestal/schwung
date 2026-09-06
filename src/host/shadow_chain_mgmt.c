@@ -1305,11 +1305,24 @@ int shadow_send_fx_slot_load_with_config(int send, int pos, const char *dsp_path
         return 0;
     }
 
+    /* Read the OCCUPANCY BEFORE the unload below, or the answer is always
+     * "empty" -- this position is about to be emptied by us. It is the whole
+     * bus, not this position: see send_return_level_on_load. */
+    int bus_was_empty = 1;
+    for (int i = 0; i < SEND_FX_SLOTS; i++) {
+        if (shadow_send_fx_slots[send][i].instance) { bus_was_empty = 0; break; }
+    }
+
     shadow_send_fx_slot_unload(send, pos);
 
     int rc = fx_slot_load_impl(s, "send FX", send * SEND_FX_SLOTS + pos,
                                dsp_path, config_json);
     if (rc != 0) return rc;
+
+    /* The first effect in an empty send opens its return. A failed load does
+     * not reach here, so a send that stayed empty keeps its silent return. */
+    shadow_send_return_level[send] =
+        send_return_level_on_load(bus_was_empty, shadow_send_return_level[send]);
 
     fprintf(stderr, "Shadow send FX[%d][%d]: loaded %s\n", send, pos, dsp_path);
     return 0;

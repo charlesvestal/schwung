@@ -59,6 +59,11 @@ _Static_assert(MASTER_FX_SLOTS > 0 && MASTER_FX_SLOTS <= 9999,
 _Static_assert(SEND_BUSES == BUS_MIX_SENDS,
                "SEND_BUSES must equal BUS_MIX_SENDS -- the chain sizes from bus_mix.h");
 
+/* send_fx_key.h is dependency-free and so cannot say "unity" in bus_mix.h's
+ * words. It is unity, and this is where the two headers meet. */
+_Static_assert(SEND_RETURN_DEFAULT_ON_FIRST_LOAD == BUS_MIX_SEND_LEVEL_MAX,
+               "the return a first load opens must be UNITY, not merely 127");
+
 /* "send%d" keys are formatted into SEND_TARGET_KEY_LEN buffers; same digit
  * budget as MASTER_FX_SLOTS above, for the same reason. */
 _Static_assert(SEND_BUSES > 0 && SEND_BUSES <= 9999,

@@ -12153,9 +12153,23 @@ function loadSendFxChainConfigForSet() {
         }
     }
 
-    /* Levels LAST, and an absent value writes 0 — a set with no send_levels.json
-     * is a set with the sends down, and inheriting the previous set's return
-     * would leave a bus audible that this set never asked for. */
+    /* Levels LAST, so a STORED level — including a stored, deliberate 0 — wins
+     * over anything the module writes above set on its own. That ordering is
+     * half of send_return_level_on_load's contract (src/host/send_fx_key.h).
+     *
+     * An ABSENT field is NOT a stored 0 and must not be written as one. It used
+     * to be, reasoned as "a set with no send_levels.json is a set with the
+     * sends down" — but the module writes above have just opened the return of
+     * any send this set fills, and writing 0 over that puts the set straight
+     * back into the silent state that default exists to prevent. A set whose
+     * file predates the field, or has none at all, keeps what the load decided.
+     * Absent is not zero, here for the same reason a null param read is not an
+     * empty one.
+     *
+     * Inheriting the PREVIOUS set's return is not a risk this reopens: every
+     * send position is written above (an empty one with ""), so a set that
+     * fills no send bus leaves that bus empty, and an empty bus is inaudible
+     * whatever its return says. */
     let levels = {};
     try {
         const rawFile = host_read_file(activeSlotStateDir + "/send_levels.json");
@@ -12165,8 +12179,10 @@ function loadSendFxChainConfigForSet() {
         if (bus.send < 0) continue;
         for (const k of bus.busLevelKeys) {
             const field = (k === "return") ? `send${bus.send + 1}_return` : "send1_to_send2";
+            if (!(field in levels)) continue;
             const n = parseInt(levels[field], 10);
-            shadow_set_param(0, bus.prefix + k, String(Number.isFinite(n) ? n : 0));
+            if (!Number.isFinite(n)) continue;
+            shadow_set_param(0, bus.prefix + k, String(n));
         }
     }
 }
