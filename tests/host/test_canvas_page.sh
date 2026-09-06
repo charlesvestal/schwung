@@ -57,7 +57,7 @@ const CP = [
   { key: "b", name: "B", type: "float", min: 0, max: 1, step: 0.01 },
   { key: "c", name: "C", type: "float", min: 0, max: 1, step: 0.01 },
   { key: "face", name: "Face", type: "canvas", canvas_script: "canvas.js",
-    canvas_overlay: "face_page", as_page: true },
+    canvas_overlay: "face_page", as_page: true, extra_keys: ["activity"] },
 ];
 
 /* ---- planning ---- */
@@ -72,6 +72,8 @@ ok(cp && JSON.stringify(cp.keys) === JSON.stringify(["a", "b", "c"]),
    "it carries the levels own knobs, so the encoders do what they do on the grid");
 ok(cp && cp.canvas.script === "canvas.js" && cp.canvas.overlay === "face_page",
    "the script and overlay travel with the page");
+ok(cp && JSON.stringify(cp.canvas.extraKeys) === JSON.stringify(["activity"]),
+   "read-only canvas dependencies travel with the page without becoming cells");
 
 /* The canvas key must NOT also be a cell anywhere. */
 const celled = plan.pages.some((p) => (p.keys || []).indexOf("face") >= 0);
@@ -117,7 +119,7 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
 /* ---- the controller reaches it, and knobs still work ---- */
 {
   const store = { ui_hierarchy: JSON.stringify(HIER), chain_params: JSON.stringify(CP),
-                  a: "0.25", b: "0.5", c: "0.75" };
+                  a: "0.25", b: "0.5", c: "0.75", activity: "frame-1" };
   const writes = [];
   let t = 0;
   const ctrl = createController({
@@ -142,9 +144,16 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
 
   /* Turning knob 0 on the custom page must write the levels first knob. */
   for (let i = 0; i < 10; i++) ctrl.tick();
+  ctrl.render(drawContext(createFramebuffer(128, 64)), {
+    title: "M", footer: null,
+  });
   ctrl.onKnobTurn(0, 1);
   ok(writes.some((w) => w[0] === "a"),
      "an encoder on the custom page writes the levels own param");
+  /* It is fetched only while the custom page is current and never appears in
+   * cp.keys, so it does not consume a knob/cell. */
+  ok(ctrl.state.values.activity === "frame-1",
+     "the canvas extra key is fetched by the staggered value rotation");
 }
 
 /* ---- a thrower is retired, not fatal ---- */
