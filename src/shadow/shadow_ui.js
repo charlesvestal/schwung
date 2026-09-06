@@ -5046,7 +5046,9 @@ function evaluateVisibilityCondition(condition, levelDef) {
     if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
         const comp = paramPagesComponent();
         const slot = paramPagesSlot();
+        const gridPrefix = getComponentParamPrefix(comp);
         const lvlName = paramPagesLevelNameOf(levelDef);
+        const childIdx = lvlName ? paramPagesChildIndex(lvlName) : -1;
         /* Cache-first. A re-plan follows every detent of a gating knob and
          * evaluates every condition on the level; a blocking read per
          * condition (~2.8 ms each, forty on a gated send page) froze the OLED
@@ -5055,16 +5057,37 @@ function evaluateVisibilityCondition(condition, levelDef) {
          * the TTL cache answers a miss, so a plan costs IPC only for a key
          * nothing has touched yet. */
         const read = (s, k) => {
-            const held = paramPagesCachedValue(k);
+            /*
+             * ...and the cache is asked with the TEMPLATE key, never the one
+             * that arrived.
+             *
+             * `k` has been through hierChildKeyFor, so on a child level it is
+             * CONCRETE ("pad3_type"), while the controller keys its values by
+             * what the level LISTS ("type") -- see the dialect split
+             * hierGenericKeyFor exists for. Asking with the concrete key
+             * missed every single time, so a per-instance condition never hit
+             * the cache and paid the blocking read this branch is here to
+             * avoid: exactly the case paramPagesLevelNameOf was added to
+             * serve, and silent, because a miss still answers CORRECTLY --
+             * only slowly. A cache that cannot hit reports nothing.
+             *
+             * The invert uses the same level and index as the resolve did, so
+             * the value it finds belongs to the instance the grid is showing;
+             * the controller drops a level's values when its child index
+             * moves, so there is never a second instance's value under that
+             * key to find.
+             */
+            const bare = k.startsWith(`${gridPrefix}:`) ? k.slice(gridPrefix.length + 1) : k;
+            const held = paramPagesCachedValue(hierGenericKeyFor(levelDef, childIdx, bare));
             if (held !== undefined) return held;
             return getSlotParamCached(s, k, `grid:${s}:${comp}`);
         };
         return evaluateVisibilityConditionForContext(
             slot,
-            getComponentParamPrefix(comp),
+            gridPrefix,
             condition,
             levelDef,
-            lvlName ? paramPagesChildIndex(lvlName) : -1,
+            childIdx,
             read
         );
     }
