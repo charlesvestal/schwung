@@ -282,6 +282,39 @@ export function validateContract({ id, hierarchy, chainParams, capabilities } = 
         }
     }
 
+    /* ---- a gate declared where nothing reads it ---------------------------- */
+
+    /*
+     * `visible_if` is a LEVEL-entry field. The planner reads it off the level's
+     * own `params` (isHiddenParam in page_plan.mjs) and nowhere else, so the
+     * same key carrying `visible_if` in chain_params and not on the level
+     * hides nothing -- every gated cell is drawn, with no error and nothing in
+     * a log.
+     *
+     * It is an easy mistake because chain_params is where a param's other
+     * metadata lives. It cost a microQ editor a day: eight FX types' controls
+     * all on screen at once, and three LFO pages holding one knob each.
+     */
+    {
+        const gatedInLevels = new Set();
+        for (const lvl of Object.values((hierarchy && hierarchy.levels) || {})) {
+            for (const item of (lvl && lvl.params) || []) {
+                const key = item && (item.key || item.param);
+                if (key && item.visible_if) gatedInLevels.add(String(key));
+            }
+        }
+        const orphaned = cp
+            .filter((p) => p && p.key && p.visible_if && !gatedInLevels.has(String(p.key)))
+            .map((p) => p.key);
+        if (orphaned.length) {
+            add("warn", "visible-if-not-on-level",
+                `${orphaned.length} chain_params declare visible_if that no level entry ` +
+                `mirrors, so nothing is hidden: ` +
+                `${orphaned.slice(0, 6).join(", ")}${orphaned.length > 6 ? ", …" : ""}. ` +
+                `The planner reads visible_if from the level's params entries.`);
+        }
+    }
+
     /* ---- metadata gaps ---------------------------------------------------- */
 
     const index = buildMetaIndex({ hierarchy, chainParams: cp });
