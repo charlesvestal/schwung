@@ -398,6 +398,12 @@ typedef struct chain_instance {
      * events — not our own injection echoes — affect it. */
     uint8_t pre_pad_held[128];
 
+    /* The shim advances LFO/MIDI timers through "mod:tick" while an idle
+     * synth render is skipped. If a MIDI FX emits, it must wake that same
+     * block; idle_tick_advanced then prevents render_block ticking twice. */
+    int idle_tick_advanced;
+    int midi_tick_wake;
+
     /* Pre-mode inject-only record-align. Clock-driven generator output
      * (Beat Bank etc.) must reach Move's track AFTER the 0xF8 that advances
      * its step, or Move records it one 16th early. We can't delay the note
@@ -597,7 +603,7 @@ CHAIN_INTERNAL int chain_get_clock_status(void);
 CHAIN_INTERNAL int v2_load_midi_fx(chain_instance_t *inst, const char *fx_name);
 CHAIN_INTERNAL int v2_load_midi_fx_slot(chain_instance_t *inst, int slot, const char *fx_name);
 CHAIN_INTERNAL void v2_on_midi(void *instance, const uint8_t *msg, int len, int source);
-CHAIN_INTERNAL void v2_tick_midi_fx(chain_instance_t *inst, int frames);
+CHAIN_INTERNAL int v2_tick_midi_fx(chain_instance_t *inst, int frames);
 CHAIN_INTERNAL void v2_unload_all_midi_fx(chain_instance_t *inst);
 CHAIN_INTERNAL void v2_unload_midi_fx_slot(chain_instance_t *inst, int slot);
 

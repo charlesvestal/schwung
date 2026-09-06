@@ -154,6 +154,8 @@ extern void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames)
  * silence-skip via capabilities.requires_continuous_processing. NULL when the
  * loaded chain DSP is older than v0.3.12 — caller must null-check. */
 extern int (*shadow_chain_fx_requires_continuous)(void *instance);
+/* Optional one-shot wake after the idle path advances MIDI FX timers. */
+extern int (*shadow_chain_take_midi_tick_wake)(void *instance);
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 
