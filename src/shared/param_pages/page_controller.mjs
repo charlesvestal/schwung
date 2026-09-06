@@ -30,7 +30,7 @@
 import { planPages, pickMode, PAGE_KNOBS, PAGE_MENU, PAGE_PRESET, PAGE_ITEMS,
          buildTrailingPages, makeClaimer } from "./page_plan.mjs";
 import { resolveChildKey, childIndexParam, childIndexToWire, childIndexFromWire,
-         childName } from "./child_key.mjs";
+         childName, childLabel } from "./child_key.mjs";
 import { focusParamOf, voicesOf, voiceIndexFromLevel,
          voiceIndexFromWire, padLayoutOf, focusToken } from "./voices.mjs";
 import { buildMetaIndex, inferFromValue, isTurnable, flipsOnClick, enumIndexOf, KIND_ENUM, KIND_OPAQUE
@@ -670,6 +670,11 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* Instance copy / clear gesture (hold Copy or Delete, then pick an
+         * instance) -- see onEditCc. `editUndo` is the one-level undo. */
+        editGesture: null,
+        editUndo: null,
+        notice: null,
         /* Per-section memory of the sub-page you were last on. Naming a
          * section returns you to the page of it you were using, not to its
          * first page — a jump is a request for a PLACE, and the place you mean
@@ -1941,6 +1946,7 @@ export function createController(io = {}) {
         s.tickCount++;
         flushDueWrites();
         expireTurnClaim();
+        serviceEditGesture();
 
         /*
          * Re-try an unresolved contract BEFORE the page guards below: an
@@ -3648,6 +3654,135 @@ export function createController(io = {}) {
         return true;
     }
 
+    /* -------------------------------------------------- instance copy/clear */
+
+    /*
+     * HOLD COPY (or DELETE), THEN PICK AN INSTANCE.
+     *
+     * A drum rack's oldest gesture: hold Copy, hit a pad, hit another -- the
+     * second now sounds like the first. Generic here, for any child level: the
+     * SOURCE is the instance focused when Copy goes down; every instance that
+     * becomes focused while it is held is PASTED into (Delete: CLEARED). Focus
+     * moves however it moves for this module -- a pad hit through
+     * child_index_param, or the picker -- so the gesture never needs to know
+     * what a pad is. Undo (once) restores the last instance overwritten.
+     *
+     * WHAT IS COPIED. The level's `child_copy_keys` in declared order, else the
+     * level's own params. An explicit list exists because "what the page shows"
+     * is a weak default: a pad's level-affecting params with no cell (a gain, a
+     * velocity depth) would be silently skipped and the copy would be quieter
+     * than its source, and a key that is a POINTER (a position in this pad's
+     * folder) would be copied as a number and point somewhere else. Order is
+     * write order, so a module lists the sample first.
+     *
+     * CLEAR writes each key's declared `default`; a key with none is left
+     * alone, and a filepath with none is written "" (no file is its empty).
+     *
+     * The buttons reach the grid only for a module declaring
+     * capabilities.claims_edit_ccs -- Move keeps them otherwise -- so a module
+     * opts in to this exactly by opting in to those buttons.
+     */
+    function instanceLevel() {
+        const p = page();
+        return (p && p.childLevel && p.level) ? { name: p.level, def: p.childLevel } : null;
+    }
+    function copyKeysFor(def) {
+        const declared = Array.isArray(def.child_copy_keys) ? def.child_copy_keys : null;
+        const keys = declared || (def.params || []).map((p) => (typeof p === "string" ? p : (p && p.key)));
+        return keys.filter((k) => typeof k === "string" && k.length);
+    }
+    function wireFor(def, index, key) { return resolveChildKey(def, index, key) || key; }
+    function readInstance(def, index, keys) {
+        const snap = Object.create(null);
+        for (const k of keys) {
+            const v = getParam(`${s.prefix}:${wireFor(def, index, k)}`);
+            if (v !== null && v !== undefined) snap[k] = String(v);
+        }
+        return snap;
+    }
+    function writeInstance(def, index, snap) {
+        for (const k of Object.keys(snap)) setParam(`${s.prefix}:${wireFor(def, index, k)}`, snap[k]);
+    }
+    function clearedInstance(keys) {
+        const snap = Object.create(null);
+        for (const k of keys) {
+            const m = s.metaIndex ? s.metaIndex.getOrGuess(k) : null;
+            if (m && m.default !== undefined && m.default !== null) snap[k] = String(m.default);
+            else if (m && (m.type === "filepath" || m.type === "file")) snap[k] = "";
+        }
+        return snap;
+    }
+    function notice(text, ms) { s.notice = { text, until: now() + (ms || 1200) }; }
+
+    /** Copy (60) / Delete (119) / Undo (56). Returns whether the event was taken. */
+    function onEditCc(cc, down) {
+        if (cc === 56) {
+            if (!down) return true;
+            const u = s.editUndo;
+            if (!u) { notice("NOTHING TO UNDO"); return true; }
+            writeInstance(u.def, u.index, u.snap);
+            s.editUndo = null;
+            if (childIndexFor(u.level) === u.index) dropChildLevelCache(u.level);
+            notice("UNDONE " + childLabel(u.def, u.index).toUpperCase());
+            announce("undone");
+            return true;
+        }
+        if (cc !== 60 && cc !== 119) return false;
+        const kind = cc === 60 ? "copy" : "clear";
+        if (!down) {
+            if (s.editGesture && s.editGesture.kind === kind) { s.editGesture = null; s.notice = null; }
+            return true;
+        }
+        const lvl = instanceLevel();
+        if (!lvl) return false;                      /* not on an instance page: Move keeps it? no -- claimed; just inert */
+        const keys = copyKeysFor(lvl.def);
+        if (!keys.length) return false;
+        const from = childIndexFor(lvl.name);
+        s.editGesture = {
+            kind, level: lvl.name, def: lvl.def, keys, from, last: from,
+            snap: kind === "copy" ? readInstance(lvl.def, from, keys) : null,
+        };
+        const label = childLabel(lvl.def, from).toUpperCase();
+        notice(kind === "copy" ? `COPY ${label}: PICK A TARGET` : "CLEAR: PICK A TARGET", 4000);
+        announce(kind === "copy" ? `copy ${childLabel(lvl.def, from)}, pick a target` : "clear, pick a target");
+        return true;
+    }
+
+    /** Once per tick: a focus change while Copy/Delete is held applies the gesture. */
+    function serviceEditGesture() {
+        const g = s.editGesture;
+        if (!g) return;
+        const idx = childIndexFor(g.level);
+        if (idx === g.last) return;
+        g.last = idx;
+        if (g.kind === "copy" && idx === g.from) return;   /* pasting onto the source is a no-op */
+        const before = readInstance(g.def, idx, g.keys);
+        writeInstance(g.def, idx, g.kind === "copy" ? g.snap : clearedInstance(g.keys));
+        s.editUndo = { level: g.level, def: g.def, index: idx, snap: before };
+        dropChildLevelCache(g.level);               /* the grid is showing the instance just written */
+        const label = childLabel(g.def, idx).toUpperCase();
+        notice((g.kind === "copy" ? "PASTED " : "CLEARED ") + label, 4000);
+        announce((g.kind === "copy" ? "pasted " : "cleared ") + childLabel(g.def, idx));
+    }
+
+    /** A one-line floating notice, drawn over the page while it lasts. */
+    function drawNotice(ctx) {
+        const n = s.notice;
+        if (!n) return false;
+        if (now() >= n.until) { s.notice = null; return false; }
+        if (!ctx || typeof ctx.fillRect !== "function" || typeof ctx.print !== "function") return false;
+        const W = ctx.width || 128, H = ctx.height || 64;
+        const text = String(n.text);
+        const tw = (typeof ctx.textWidth === "function") ? ctx.textWidth(text) : text.length * 6;
+        const w = Math.min(W - 4, tw + 8), h = 13;
+        const x = Math.floor((W - w) / 2), y = Math.floor((H - h) / 2);
+        ctx.fillRect(x, y, w, h, 0);
+        ctx.fillRect(x, y, w, 1, 1); ctx.fillRect(x, y + h - 1, w, 1, 1);
+        ctx.fillRect(x, y, 1, h, 1); ctx.fillRect(x + w - 1, y, 1, h, 1);
+        ctx.print(x + 4, y + 3, text, 1);
+        return true;
+    }
+
     /* --------------------------------------------------------- presentation */
 
     /** Arm the first-run hint. Ignored once it has been shown and dismissed. */
@@ -4100,7 +4235,7 @@ export function createController(io = {}) {
      */
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
-        if (!peek) return drawDeclaredCard(ctx);
+        if (!peek) { const r = drawDeclaredCard(ctx); drawNotice(ctx); return r; }
         /*
          * No clear, no overlay. Drawing the list into a frame we may not blank
          * would leave it interleaved with the grid underneath -- two screens at
@@ -4488,6 +4623,10 @@ export function createController(io = {}) {
          *  hand-off needs it: without it the editor re-asks which child,
          *  when the grid already knows. */
         childIndexOf: (level) => childIndexFor(level),
+        /** Copy (CC 60) / Delete (CC 119) / Undo (CC 56) -- the instance
+         *  copy/clear gesture. See onEditCc. */
+        onEditCc,
+        get editGesture() { return s.editGesture; },
         get metaIndex() { return s.metaIndex; },
         /** True while `<prefix>:ui_hierarchy` could not be READ. The page set,
          *  if any, is the previous one — nothing here was planned from the
