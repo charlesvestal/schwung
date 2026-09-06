@@ -563,8 +563,9 @@ static int v2_run_midi_fx_from(chain_instance_t *inst, int from,
                                scratch, scratch_lens, MIDI_FX_MAX_OUT_MSGS);
 }
 
-void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
-    if (!inst) return;
+int v2_tick_midi_fx(chain_instance_t *inst, int frames) {
+    if (!inst) return 0;
+    int emitted = 0;
 
     for (int fx = 0; fx < inst->midi_fx_count; fx++) {
         if (fx < MAX_MIDI_FX && inst->midi_fx_bypassed[fx]) continue;
@@ -582,6 +583,7 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
          * ran in parallel off the same input instead of feeding each other.
          * Downstream only (fx + 1), so a stage can never feed itself. */
         count = v2_run_midi_fx_from(inst, fx + 1, out_msgs, out_lens, count);
+        if (count > 0) emitted = 1;
 
         /* Send generated messages to synth */
         for (int i = 0; i < count; i++) {
@@ -644,6 +646,7 @@ void v2_tick_midi_fx(chain_instance_t *inst, int frames) {
             }
         }
     }
+    return emitted;
 }
 
 /* ==========================================================================
@@ -1007,4 +1010,3 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
 }
 
 /* V2 set_param handler */
-

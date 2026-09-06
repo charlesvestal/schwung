@@ -758,7 +758,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
      * frame: no allocation, no logging, no file I/O on this path.
      */
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
-        lfo_tick(inst, val ? atoi(val) : 128);
+        int frames = val ? atoi(val) : 128;
+        lfo_tick(inst, frames);
+        inst->midi_tick_wake = v2_tick_midi_fx(inst, frames);
+        inst->idle_tick_advanced = 1;
         return;
     }
 
@@ -2066,11 +2069,14 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         }
     }
 
-    /* Tick LFOs — emit modulation before audio render */
-    lfo_tick(inst, frames);
-
-    /* Process MIDI FX tick (for arpeggiator timing) */
-    v2_tick_midi_fx(inst, frames);
+    /* A silent-slot mod:tick may already have advanced both timers and woken
+     * this exact block with a generated note. Never advance it twice. */
+    if (inst->idle_tick_advanced) {
+        inst->idle_tick_advanced = 0;
+    } else {
+        lfo_tick(inst, frames);
+        v2_tick_midi_fx(inst, frames);
+    }
 
     /* Always render so synth state advances (envelopes, LFOs, phases).
      * If bypassed, zero the buffer afterward — downstream FX still see
@@ -2203,4 +2209,19 @@ int chain_fx_requires_continuous(void *instance) {
         if (inst->fx_requires_continuous[i]) return 1;
     }
     return 0;
+}
+
+/* Called by the shim immediately after its silent-slot mod:tick. A true result
+ * means a timer-generated MIDI message has already reached the synth, so the
+ * current audio block must render instead of remaining parked. If no message
+ * was generated there will be no render, hence clear the double-tick guard
+ * here ready for the next block. */
+__attribute__((visibility("default")))
+int chain_take_midi_tick_wake(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return 0;
+    int wake = inst->midi_tick_wake;
+    inst->midi_tick_wake = 0;
+    if (!wake) inst->idle_tick_advanced = 0;
+    return wake;
 }
