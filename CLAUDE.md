@@ -611,6 +611,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   needs no `clearScreen` while the enum peek does. Same `frameCtx` contract as a
   widget, for a second reason: `card_w`/`card_h` are declared **per parameter**,
   so coordinates authored against one card are wrong on the next.
+- **The sample CELL and the fullscreen EDITOR share one format table** —
+  `wav_format.mjs`. They stream and sweep respectively, but "which bytes are
+  the samples" was answered twice and drifted four ways, each reading as a
+  broken file: the editor knowing only 8/16-bit RIFF (a Core Library kit drew
+  in the cell and then said "unsupported" in the editor), the cell missing
+  `WAVE_FORMAT_EXTENSIBLE` — which is **every** 24-bit WAV ffmpeg or sox
+  writes — the cell reading signed AIFF 8-bit as unsigned, and both rejecting
+  AIFC `twos`, the tag macOS's own `afconvert` emits for plain big-endian PCM.
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.

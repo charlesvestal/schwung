@@ -682,6 +682,41 @@ The envelope is the file's real peaks (`wav_peaks.mjs`, streamed and bounded,
 advanced from the tick — never from the draw path). When there are none there
 is no envelope, just the baseline, the cursor and the brackets.
 
+**The CELL and the fullscreen EDITOR read one file format table, and for a
+while they read two.** The jobs are genuinely different — the cell streams a
+block per tick and never holds the file (`wav_peaks.mjs`), the fullscreen
+`wav_position` editor has the whole thing in memory and sweeps it once
+(`parseWavPositionPeaks` in `shadow_ui.js`) — but both must first answer the
+same question, *which bytes are the samples and how are they encoded*. Answered
+twice, the two answers drifted, and every symptom read as "that file is
+broken":
+
+- The editor knew only 8- and 16-bit RIFF, so a Core Library kit (largely
+  24-bit and AIFF) **drew in the cell and then said "unsupported wav format"
+  the moment you clicked into it** (#428).
+- The cell had no `WAVE_FORMAT_EXTENSIBLE` (0xFFFE) branch — and **every**
+  24-bit WAV that ffmpeg or sox writes is extensible, so after #428 the
+  divergence simply pointed the other way.
+- The cell read AIFF 8-bit as UNSIGNED. AIFF 8-bit is signed, so a quiet sample
+  drew full-scale.
+- Both rejected AIFC `twos`, which is byte-identical to `NONE` and is what
+  macOS's own `afconvert` writes.
+
+`wav_format.mjs` is that one answer: `locateAudioData` finds the data in
+RIFF/WAVE (including extensible) or FORM/AIFF-AIFC (`NONE`/`twos` big-endian,
+`sowt` little-endian, `raw ` unsigned 8-bit, `fl32` float), and `sampleReader`
+returns one small decoder per layout, **hoisted out of the sample loop by both
+callers** — picking the format per sample cost the cell a chain of string
+compares on its hot path. `dataSize` is reported as the file DECLARES it and is
+never clamped to the buffer, because the streaming caller needs the real length
+and the caller holding the whole file can clamp in one line.
+
+`tests/host/test_wav_format_readers.sh` drives **both** readers over one corpus
+— 17 layouts — and asserts they report the same peak. The corpus samples
+alternate SIGN frame by frame: a positive-only ramp decodes perfectly through a
+reader that treats signed samples as unsigned, so the first version of it
+missed exactly the bug class it was written for.
+
 There used to be a fallback shape, `sin(t*PI)*(0.55+0.35*sin(t*23))`, drawn
 whenever the peaks were missing. It is the tri-state read rule in a different
 costume — **a read that did not answer must never become a picture** — and it
