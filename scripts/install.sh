@@ -967,6 +967,49 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 # Re-enable mode: root partition operations only (after firmware update)
 # ═══════════════════════════════════════════════════════════════════════════════
+boot_selector_state=""   # set by the rule below; read under `set -u`
+
+# ---- Boot-selector payload rule (BOOT_SELECTOR_PAYLOAD_RULE) --------------
+#
+# The boot selector adds three files to the payload. Asserting all three
+# unconditionally made this installer unable to install ANY release older than
+# the selector: install.sh on a v1.2.0 tarball died with
+# "Payload missing: schwung-entry.sh" -- and died AFTER extraction, so it left
+# a half-installed tree whose /opt/move/Move was still the newer selector with
+# no boot_target_lib.sh under /data, i.e. the lib-missing fallback: Schwung up,
+# no sidecars, no manager on :7700. Rolling back to a known-good release is
+# exactly what you want an installer for when a release goes bad.
+#
+# A pre-selector tarball legitimately has NONE of the three and brings its own
+# shim-entrypoint.sh, which is the launcher of its era and self-consistent. So
+# the rule is all-or-nothing: none = an older payload, install it; all = a
+# selector payload; SOME = genuinely corrupt, and that is the case worth
+# failing on. The state is computed from the TARBALL LISTING and checked
+# BEFORE extraction, so a bad payload never lands half-written.
+BOOT_SELECTOR_FILES="schwung-entry.sh host/boot_target_lib.sh bin/boot-select"
+
+# boot_selector_payload_state <present-path>... -> "full" | "none" | "partial <missing>..."
+# Paths are relative to the tarball's schwung/ root (or to /data/UserData/schwung).
+boot_selector_payload_state() {
+  bsp_present=" $* "
+  bsp_missing=""
+  bsp_found=0
+  for bsp_f in $BOOT_SELECTOR_FILES; do
+    case "$bsp_present" in
+      *" $bsp_f "*) bsp_found=$((bsp_found + 1)) ;;
+      *) bsp_missing="$bsp_missing $bsp_f" ;;
+    esac
+  done
+  if [ "$bsp_found" -eq 0 ]; then
+    echo "none"
+  elif [ -z "$bsp_missing" ]; then
+    echo "full"
+  else
+    echo "partial$bsp_missing"
+  fi
+}
+# ---- end BOOT_SELECTOR_PAYLOAD_RULE ---------------------------------------
+
 if [ "$use_reenable" = true ]; then
   echo
   echo "Re-enable mode: restoring root partition hooks..."
@@ -979,15 +1022,23 @@ if [ "$use_reenable" = true ]; then
   if ! $ssh_ableton "test -f /data/UserData/schwung/shim-entrypoint.sh" 2>/dev/null; then
     fail "Entrypoint not found on data partition. Run a full install instead."
   fi
-  if ! $ssh_ableton "test -f /data/UserData/schwung/schwung-entry.sh" 2>/dev/null; then
-    fail "schwung-entry.sh not found on data partition. Run a full install instead."
-  fi
-  if ! $ssh_ableton "test -f /data/UserData/schwung/host/boot_target_lib.sh" 2>/dev/null; then
-    fail "host/boot_target_lib.sh not found on data partition. Run a full install instead."
-  fi
-  if ! $ssh_ableton "test -f /data/UserData/schwung/bin/boot-select" 2>/dev/null; then
-    fail "bin/boot-select not found on data partition. Run a full install instead."
-  fi
+  # Boot-selector trio: all three, or none (a pre-selector payload on disk).
+  # Some-but-not-all is the corrupt case. See BOOT_SELECTOR_PAYLOAD_RULE.
+  reenable_present=""
+  for f in $BOOT_SELECTOR_FILES; do
+    if $ssh_ableton "test -f /data/UserData/schwung/$f" 2>/dev/null; then
+      reenable_present="$reenable_present $f"
+    fi
+  done
+  boot_selector_state=$(boot_selector_payload_state $reenable_present)
+  case "$boot_selector_state" in
+    partial*)
+      fail "Incomplete boot-selector payload on data partition (missing:${boot_selector_state#partial}). Run a full install instead."
+      ;;
+    none)
+      iecho "No boot-selector payload on the data partition — re-enabling the pre-selector entrypoint it shipped with."
+      ;;
+  esac
 
   # Clean stale ld.so.preload entries
   ssh_root_with_retry "if [ -f /etc/ld.so.preload ] && grep -q 'schwung-shim.so' /etc/ld.so.preload; then ts=\$(date +%Y%m%d-%H%M%S); cp /etc/ld.so.preload /etc/ld.so.preload.bak-schwung-\$ts; grep -v 'schwung-shim.so' /etc/ld.so.preload > /tmp/ld.so.preload.new || true; if [ -s /tmp/ld.so.preload.new ]; then cat /tmp/ld.so.preload.new > /etc/ld.so.preload; else rm -f /etc/ld.so.preload; fi; rm -f /tmp/ld.so.preload.new; fi" || true
@@ -1012,7 +1063,9 @@ if [ "$use_reenable" = true ]; then
 
   # Ensure entrypoint is executable
   ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
+  if [ "$boot_selector_state" = "full" ]; then
   ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
+fi
 
   # Install schwung-heal as setuid root (re-enable path mirror of full
   # install). Without this the entrypoint's boot-time heal silently
@@ -1116,6 +1169,22 @@ ssh_ableton_with_retry "tar -tzf ./$remote_filename | grep -qx 'schwung/schwung-
 # the raw (mangled) names, so this catches what host-side bsdtar hides.
 ssh_ableton_with_retry "! tar -tzf ./$remote_filename | grep -q 'GNUSparseFile'" || \
     fail "Invalid tar payload: contains GNU sparse entries BusyBox cannot extract (repackage with sparse-safe tar)"
+# Boot-selector trio, judged from the tarball and BEFORE extraction so a
+# corrupt payload never half-lands. See BOOT_SELECTOR_PAYLOAD_RULE.
+# `|| true`: a pre-selector tarball makes grep exit 1, and under `set -e` a
+# failing command substitution in an assignment aborts the script -- which
+# would kill the installer on precisely the payload this rule exists to accept.
+tarball_present=$($ssh_ableton "tar -tzf ./$remote_filename | sed -n 's|^schwung/||p' | grep -x -e schwung-entry.sh -e host/boot_target_lib.sh -e bin/boot-select" 2>/dev/null | tr '\n' ' ' || true)
+boot_selector_state=$(boot_selector_payload_state $tarball_present)
+case "$boot_selector_state" in
+  partial*)
+    fail "Invalid tar payload: incomplete boot-selector payload (missing:${boot_selector_state#partial})"
+    ;;
+  none)
+    iecho "This payload predates the boot selector — installing it as-is (its own shim-entrypoint.sh becomes /opt/move/Move)."
+    ;;
+esac
+
 # Use verbose tar only in non-quiet mode (screen reader friendly)
 if [ "$quiet_mode" = true ]; then
     ssh_ableton_with_retry "tar -xzof ./$remote_filename" || fail "Failed to extract tarball"
@@ -1126,9 +1195,11 @@ fi
 # Verify expected payload exists before making system changes
 ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-shim.so" || fail "Payload missing: schwung-shim.so"
 ssh_ableton_with_retry "test -f /data/UserData/schwung/shim-entrypoint.sh" || fail "Payload missing: shim-entrypoint.sh"
-ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-entry.sh" || fail "Payload missing: schwung-entry.sh"
-ssh_ableton_with_retry "test -f /data/UserData/schwung/host/boot_target_lib.sh" || fail "Payload missing: host/boot_target_lib.sh"
-ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/boot-select" || fail "Payload missing: bin/boot-select"
+if [ "$boot_selector_state" = "full" ]; then
+  ssh_ableton_with_retry "test -f /data/UserData/schwung/schwung-entry.sh" || fail "Payload missing: schwung-entry.sh"
+  ssh_ableton_with_retry "test -f /data/UserData/schwung/host/boot_target_lib.sh" || fail "Payload missing: host/boot_target_lib.sh"
+  ssh_ableton_with_retry "test -f /data/UserData/schwung/bin/boot-select" || fail "Payload missing: bin/boot-select"
+fi
 
 # Verify modules directory exists
 if ssh_ableton_with_retry "test -d /data/UserData/schwung/modules"; then
@@ -1213,7 +1284,9 @@ fi
 
 # Ensure the replacement Move script exists and is executable
 ssh_root_with_retry "chmod +x /data/UserData/schwung/shim-entrypoint.sh" || fail "Failed to set entrypoint permissions"
-ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
+if [ "$boot_selector_state" = "full" ]; then
+  ssh_root_with_retry "chmod +x /data/UserData/schwung/schwung-entry.sh" || fail "Failed to set entry permissions"
+fi
 
 # Install schwung-heal as setuid root. This is the only privileged code
 # path on the device for ableton-context callers (entrypoint, schwung-
