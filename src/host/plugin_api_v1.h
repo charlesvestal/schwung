@@ -425,7 +425,8 @@ typedef plugin_api_v2_t* (*move_plugin_init_v2_fn)(const host_api_v1_t *host);
  *
  *          void move_plugin_render_split(void *instance,
  *                                        int16_t *const *voice_out,
- *                                        int n_voices, int frames);
+ *                                        int n_voices,
+ *                                        int16_t *main_out, int frames);
  *
  *      A SEPARATE EXPORTED SYMBOL ON PURPOSE. Appending to plugin_api_v2_t is
  *      what boot-looped a device via breakbeat's header drift: a module cannot
@@ -434,7 +435,18 @@ typedef plugin_api_v2_t* (*move_plugin_init_v2_fn)(const host_api_v1_t *host);
  *      is absent-or-present, with no offset to get wrong.
  *
  * IT ACCUMULATES -- the opposite of render_block, which overwrites. The host
- * clears every destination before the call.
+ * clears every destination before the call, main_out included. NEVER memset a
+ * destination yourself: main_out and the voice_out[] entries alias each other,
+ * so clearing one of them is clearing somebody else's audio for that frame.
+ *
+ * main_out IS FOR AUDIO THAT BELONGS TO NO VOICE -- a drum bus, a mix
+ * compressor, a global filter, an internal reverb return. It is the same
+ * buffer an unassigned voice is handed, so it is usually reachable through
+ * voice_out[] as well; it is passed explicitly so that it is reachable even
+ * when EVERY voice is on a bus and no voice_out[] entry points at main. A
+ * module with no master section simply ignores it. Accumulate into it under
+ * exactly the same rules as voice_out[]: never more than `frames` frames, and
+ * never an overwrite.
  *
  * ITS voice_out[] ENTRIES ALIAS. Two voices routed to the same bus are handed
  * the SAME pointer, so their sum happens inside your own render loop with no

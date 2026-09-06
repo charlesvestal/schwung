@@ -1009,11 +1009,15 @@ buffer the chain host parses your id table out of.
 
 ```c
 void move_plugin_render_split(void *instance, int16_t *const *voice_out,
-                              int n_voices, int frames)
+                              int n_voices, int16_t *main_out, int frames)
 {
     my_instance_t *inst = instance;
     for (int v = 0; v < n_voices; v++)
         render_voice_accumulating(inst, v, voice_out[v], frames);
+    /* Anything that belongs to no voice — a drum bus, a mix compressor, an
+     * internal reverb return — accumulates into main_out. Omit this if your
+     * module has no master section. */
+    render_master_section_accumulating(inst, main_out, frames);
 }
 ```
 
@@ -1022,14 +1026,27 @@ It is dlsym'd off your `.so`, deliberately: appending a field to
 module cannot extend the ABI from its side, and a guarded read of a field the
 host does not have tests memory belonging to somebody else.
 
+**`main_out` is where audio that belongs to no voice goes.** If you have a
+master section — a drum bus, a mix compressor, a global filter, an internal
+reverb return — it has no voice to attribute it to and, in split mode, no
+single output buffer to land in. `main_out` is that buffer. It is the *same*
+pointer an unassigned voice is handed, so it is usually reachable through
+`voice_out[]` too; it is passed explicitly because **it is not reachable that
+way when every one of your voices is on a bus**. If you have no master section,
+ignore the argument. `frames` is last, as in `render_block`.
+
 **It ACCUMULATES, and `voice_out[]` entries ALIAS.** The host clears every
-destination first, then hands you one pointer per voice. Two voices routed to
-the same bus get **the same pointer**, so their sum happens inside your own
-render loop with no mixing pass at all, and a voice on no bus gets the main
-output buffer, so the sparse case costs nothing. So:
+destination first — `main_out` included — then hands you one pointer per voice.
+Two voices routed to the same bus get **the same pointer**, so their sum happens
+inside your own render loop with no mixing pass at all, and a voice on no bus
+gets the main output buffer, so the sparse case costs nothing. So:
 
 - **Accumulate** (`out[i] += sample`, saturating). Overwriting turns two voices
   on one bus into whichever one wrote last.
+- **Never `memset` any destination.** The host cleared them already, and they
+  alias, so zeroing one zeroes another voice's audio for that frame. Watch for
+  this when porting: a single-buffer `render_block` usually clears its own
+  output first, and carrying that line over silently deletes a bus.
 - **Never write more than `frames` frames** into any entry. The buffers are
   shared, so an overrun is a *different bus's* audio, not your own tail, and
   nothing checks this for you.

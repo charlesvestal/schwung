@@ -197,7 +197,7 @@ is rendered exactly as before, and the shadow UI offers no bus affordance at all
 ```c
 /* Exported alongside move_plugin_init_v2. NOT a field on plugin_api_v2_t. */
 void move_plugin_render_split(void *instance, int16_t *const *voice_out,
-                              int n_voices, int frames);
+                              int n_voices, int16_t *main_out, int frames);
 ```
 
 **`split_voices` is FLAT AND ORDERED, and entry *i* is buffer *i*.** The
@@ -227,15 +227,30 @@ absent-or-present with no offset to get wrong. `v2_load_synth` resolves it on
 the synth handle and clears it on unload — the pointer is resolved against a
 handle that is about to be `dlclose`d.
 
+**`main_out` is the audio that belongs to NO voice.** A drum bus, a mix
+compressor, a global filter, an internal reverb return — any master section has
+audio that is not attributable to one voice, and in split mode there is no
+single `out` for it to land in. It is the *same* pointer an unassigned voice is
+handed, so it is usually reachable through `voice_out[]` as well; it is passed
+explicitly because **it is not reachable that way when every voice is on a
+bus** — assign all 32 pads of a rack and no entry points at main. A module with
+no master section ignores the argument. `frames` stays last, as in
+`render_block(inst, out, frames)`.
+
 **It ACCUMULATES, and `voice_out[]` entries ALIAS.** `v2_render_block` clears
 the main buffer and the *distinct* bus buffers named by `bus_mix_active_mask`,
 then hands `voice_out[i]` to the module for voice *i*. Two voices assigned to
 one bus get **the same pointer**, so their sum happens inside the module's own
 render with no mixing pass of ours; a voice on no bus gets the main buffer, so
-the sparse case costs nothing at all. Three consequences a module author owns:
+the sparse case costs nothing at all. Four consequences a module author owns:
 
 - **Accumulate, never overwrite** — the opposite of `render_block`. Overwriting
   makes two voices on one bus into "whichever wrote last".
+- **Never `memset` a destination.** The chain has already cleared main and the
+  bus buffers before the call, and the buffers alias, so zeroing one is zeroing
+  another voice's audio for that frame. This is the exact carry-over mistake a
+  module ported from a single-`out` render is set up to make: its old entry
+  point almost certainly cleared its own output first.
 - **Never write more than `frames` frames** into any `voice_out[]` entry. These
   point at shared bus buffers, so an overrun is another bus's audio, not your
   own tail. Nothing checks this.

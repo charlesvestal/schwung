@@ -752,15 +752,23 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * and not the other manifests as an intermittent synthesis bug that only
      * appears once a bus is used, not as a load-time failure.
      *
-     * This entry point ACCUMULATES into voice_out[] (v2_render_block clears
-     * the destinations first) — the opposite of render_block, which
-     * overwrites. It may be called on some frames and render_block on others
-     * for the very same instance. It must never write more than the `frames`
-     * argument's worth of samples into any voice_out[] entry — those pointers
-     * alias the shared bus buffers, sized to BUS_BUF_SAMPLES
-     * (chain_internal.h), not to n_voices. */
-    void (*render_split_fn)(void *, int16_t *const *, int, int) =
-        (void (*)(void *, int16_t *const *, int, int))
+     * This entry point ACCUMULATES into voice_out[] and into main_out
+     * (v2_render_block clears the destinations first) — the opposite of
+     * render_block, which overwrites. It may be called on some frames and
+     * render_block on others for the very same instance. It must never write
+     * more than the `frames` argument's worth of samples into any voice_out[]
+     * entry or into main_out — those pointers alias the shared bus buffers and
+     * the caller's own output, sized to BUS_BUF_SAMPLES (chain_internal.h),
+     * not to n_voices.
+     *
+     * main_out is the slot's main output buffer — where a module puts audio
+     * belonging to NO voice (a drum bus, a mix compressor, a global filter, an
+     * internal send return). It is the SAME pointer an unassigned voice is
+     * handed, so it is usually reachable through voice_out[] too; passing it
+     * explicitly is what makes it reachable when EVERY voice is on a bus and
+     * no entry points at main. A module with no master section ignores it. */
+    void (*render_split_fn)(void *, int16_t *const *, int, int16_t *, int) =
+        (void (*)(void *, int16_t *const *, int, int16_t *, int))
             dlsym(handle, "move_plugin_render_split");
 
     /* V2 API required */
@@ -2561,7 +2569,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
                                   BUS_BUF_SAMPLES);
 
         inst->synth_render_split(inst->synth_instance, voice_out,
-                                 nv, frames);
+                                 nv, out_interleaved_lr, frames);
 
         /*
          * Fold each solo-buffered voice back into the destination it would have

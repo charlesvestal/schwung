@@ -560,9 +560,16 @@ typedef struct chain_instance {
      *
      * It ACCUMULATES — the chain clears the buffers first — which is the
      * opposite of render_block, and is what makes two voices sharing one bus
-     * cost no mixing pass at all. */
+     * cost no mixing pass at all.
+     *
+     * main_out is the slot's main output buffer, for audio belonging to no
+     * voice (a drum bus, a mix compressor, an internal send return). It is the
+     * same pointer an unassigned voice is handed, so it is only UNREACHABLE
+     * through voice_out[] when every voice is on a bus — which is exactly the
+     * case it exists for. `frames` is last, as in every other audio call
+     * here. */
     void (*synth_render_split)(void *instance, int16_t *const *voice_out,
-                               int n_voices, int frames);
+                               int n_voices, int16_t *main_out, int frames);
 
     /* voice index -> bus index, or BUS_MIX_MAIN. Indexed by the SAME index as
      * synth_split_voice_ids, holes included: a hole never matches a bus

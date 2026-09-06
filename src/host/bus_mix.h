@@ -29,10 +29,20 @@
  * assigned to a bus. Assigning a single voice on the shadow UI flips the
  * module's active entry point mid-stream with no reload, so both must be
  * state-compatible — same voice allocator, same envelope/LFO/phase state.
- * render_split ACCUMULATES into voice_out[] (the caller clears destinations
- * first), the opposite of render_block's overwrite, and must never write more
- * than the `frames` argument's worth of samples into any voice_out[] entry —
- * those pointers alias the shared bus buffers.
+ * render_split ACCUMULATES into voice_out[] and into main_out (the caller
+ * clears destinations first), the opposite of render_block's overwrite, and
+ * must never write more than the `frames` argument's worth of samples into any
+ * voice_out[] entry or into main_out — those pointers alias the shared bus
+ * buffers and the caller's own output. A module must never memset a
+ * destination itself, for the same reason: the buffers alias, so clearing one
+ * clears another voice's audio.
+ *
+ * main_out is the trailing-but-one argument
+ * (..., int n_voices, int16_t *main_out, int frames) and carries audio
+ * belonging to NO voice — a drum bus, a mix compressor, an internal send
+ * return. It is the same buffer an unassigned voice is handed, so it is only
+ * unreachable through voice_out[] when every voice is on a bus, which is the
+ * case it exists for.
  */
 #ifndef BUS_MIX_H
 #define BUS_MIX_H
