@@ -97,7 +97,6 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     inst->synth_split_voice_count = 0;
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
-
     /* Set up host API for sub-plugins */
     if (g_host) {
         inst->host = g_host;
@@ -409,6 +408,13 @@ void v2_unload_synth(chain_instance_t *inst) {
      * function pointer into a dlclose'd mapping. */
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
+    /* AND THE ORPHAN COUNTS WITH IT. They are a fact about resolving a bus's
+     * stored ids AGAINST A MODULE, and there is no module now — leaving them
+     * meant "buses:config" reported the departed module's counts, so the bus
+     * list drew a "!" for a mismatch nothing could still be measuring. They are
+     * recomputed for every bus by chain_bus_rebuild_voice_map as soon as a
+     * synth loads. */
+    for (int b = 0; b < SLOT_BUSES; b++) inst->buses[b].orphan_count = 0;
     /* BUSES SURVIVE A SYNTH SWAP, deliberately. They are keyed to the SLOT:
      * a bus's name, insert chain and send levels are the user's routing for
      * this slot, not a property of whichever synth is loaded into it, and

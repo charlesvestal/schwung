@@ -674,10 +674,29 @@ Down on the synth opens the slot's bus list, Down on a bus row opens that bus's
   Shift+Click swaps. Read `chain_params` and the entry gate's hierarchy through
   the BUS target: `slotChainTarget` answers null for "bus1:fx2", and an empty
   `chain_params` is what invents a `float 0..1` knob for every parameter.
-- **The send mixer is ONE PAGE PER SEND** (Main's row on the bus list), bounded
-  at five cells by `SLOT_BUSES + 1` and handed `paginate: false`. Its ROOT level
+- **The send mixer is ONE PAGE PER SEND** (the `Sends` row on the bus list),
+  bounded at `SLOT_BUSES` cells and handed `paginate: false`. Its ROOT level
   carries no knobs on purpose — the planner names a walk root's page "Main"
   whatever it declares, and "Main / Send B" is not a mixer.
+- **There is no MAIN row: the slot's own two sends are WIRED AND INERT.**
+  `main_send_level` is written, serialized and patch-applied, and
+  `chain_drain_sends` reads it nowhere — Main's post-insert signal does not
+  exist at drain time, so sending it there would be PRE-FX while every bus is
+  POST-insert. The knob is off the screen until a second drain point exists.
+- **The bus file format had a READER AND NO WRITER, and every load WIPED it.**
+  `patch_info_t` is zeroed, so a document with no `"buses"` reached
+  `chain_bus_apply_patch` as four absent buses and it reset all four —
+  loading any preset destroyed a live kit in silence. `busPatchFields`
+  (`bus_model.mjs`) is the producer; key ORDER is load-bearing (`bus_field`
+  takes the first hit in the object's span, and an insert's opaque `state` is
+  inside it), and a failed `buses:config` read bails the save rather than
+  writing a document that deletes the buses.
+- **Close the FX gate BEFORE posting the worker.** `chain_bus_request_alloc`
+  posts; it ran one statement ahead of the `fx_req_seq` bump in
+  `chain_bus_apply_patch`, so a reconcile could `dlclose` an instance the RT
+  side still saw the gate open over. `bus_close_fx_gate` is split out from
+  `bus_post_work` for that, and `tests/host/test_bus_gate_ordering.sh` fails on
+  a post that precedes its close.
 - **Sends are GLOBAL, and that is a cost decision.** Per-slot sends mean four
   reverbs when four slots want one. Two device-wide buses instead, hosted as
   `master_fx_slot_t` like Master FX, **post-insert and post-fader**, with A→B

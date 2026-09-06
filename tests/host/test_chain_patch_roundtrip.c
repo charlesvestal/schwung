@@ -920,6 +920,113 @@ static void test_buses_unterminated(chain_instance_t *inst, patch_info_t *patch)
         CHECK(patch->buses[b].present == 0, "bus %d not invented from a truncated array", b);
 }
 
+/*
+ * PRODUCER -> CONSUMER, the span nothing covered.
+ *
+ * Every other bus assertion in this file feeds the parser a HAND-WRITTEN
+ * document, which is exactly how a feature with a reader and no writer passed
+ * its tests: chain_patch.c has read "buses"/"main_sends" since the feature
+ * landed and nothing in the tree emitted them, so every load reset all four
+ * buses and destroyed a live kit in silence.
+ *
+ * The document read here is written by the REAL producer — busPatchFields in
+ * src/shared/bus_model.mjs, run under node by this test's .sh, fed a
+ * bus_emit_config-shaped config so the whole chain is covered: C emits the live
+ * config, JS parses it, JS produces the file, C parses the file. Both sides
+ * print the same flattened summary and the .sh diffs them, so neither half can
+ * hold the expectation on its own.
+ *
+ * The NEGATIVE CONTROL is the other half of the point: the same producer output
+ * with "buses" deleted must parse to four absent buses, i.e. the assertions
+ * above would fail. The .sh requires that summary to DIFFER from the expected
+ * one, so a producer that stops emitting the key cannot pass.
+ */
+static void bus_summary(const patch_info_t *p, FILE *f) {
+    fprintf(f, "main_sends=");
+    for (int i = 0; i < BUS_MIX_SENDS; i++)
+        fprintf(f, "%s%d", i ? "," : "", p->main_sends[i]);
+    fprintf(f, "\n");
+    for (int b = 0; b < SLOT_BUSES; b++) {
+        const bus_config_t *c = &p->buses[b];
+        if (!c->present) { fprintf(f, "bus%d present=0\n", b); continue; }
+        fprintf(f, "bus%d present=1 name=%s voices=", b, c->name);
+        for (int i = 0; i < c->voice_id_count; i++)
+            fprintf(f, "%s%s", i ? "," : "", c->voice_ids[i]);
+        fprintf(f, " sends=");
+        for (int i = 0; i < BUS_MIX_SENDS; i++)
+            fprintf(f, "%s%d", i ? "," : "", c->sends[i]);
+        fprintf(f, " fx=");
+        for (int i = 0; i < c->fx_count; i++)
+            fprintf(f, "%s%s:%d:%s", i ? "|" : "", c->fx[i].module,
+                    c->fx[i].bypassed, c->fx[i].state);
+        fprintf(f, "\n");
+    }
+}
+
+static void summarise_file(chain_instance_t *inst, patch_info_t *patch,
+                           const char *in_path, const char *out_path,
+                           const char *what) {
+    reset_state(inst);
+    CHECK(v2_parse_patch_file(inst, in_path, patch) == 0, "%s parsed", what);
+    FILE *f = fopen(out_path, "w");
+    if (!f) { CHECK(0, "cannot write %s", out_path); return; }
+    bus_summary(patch, f);
+    fclose(f);
+}
+
+static void test_buses_from_producer(chain_instance_t *inst, patch_info_t *patch,
+                                     const char *work) {
+    char in[512], out[512];
+    snprintf(in, sizeof(in), "%s/producer.json", work);
+    snprintf(out, sizeof(out), "%s/parsed.txt", work);
+    summarise_file(inst, patch, in, out, "producer document");
+    /* It must not merely parse: a producer that emitted an empty array would
+     * round-trip four holes past a diff of two identical "present=0" files. */
+    int present = 0;
+    for (int b = 0; b < SLOT_BUSES; b++) present += patch->buses[b].present;
+    CHECK(present >= 2, "the producer document carries buses (%d present)", present);
+
+    /* The VALUES, against the live config the .sh handed the producer. The diff
+     * cannot see these — both of its sides are derived from the producer's own
+     * output — so a producer that emitted the right shape with the wrong
+     * numbers would round-trip cleanly. These are what fail then. */
+    CHECK(patch->buses[0].present == 1 && strcmp(patch->buses[0].name, "Kick") == 0,
+          "producer bus 0 is Kick ('%s')", patch->buses[0].name);
+    CHECK(patch->buses[0].sends[0] == 20 && patch->buses[0].sends[1] == 0,
+          "producer bus 0 sends %d,%d", patch->buses[0].sends[0], patch->buses[0].sends[1]);
+    CHECK(patch->buses[0].voice_id_count == 1 &&
+          strcmp(patch->buses[0].voice_ids[0], "kick") == 0,
+          "producer bus 0 voices (%d)", patch->buses[0].voice_id_count);
+    CHECK(patch->buses[0].fx_count == 1 &&
+          strcmp(patch->buses[0].fx[0].module, "tapescam") == 0 &&
+          patch->buses[0].fx[0].bypassed == 1,
+          "producer bus 0 insert '%s'", patch->buses[0].fx[0].module);
+    /* The staged-state arm is only reachable because the producer emits this. */
+    CHECK(strcmp(patch->buses[0].fx[0].state, "{\"drive\":0.5}") == 0,
+          "producer bus 0 insert state '%s'", patch->buses[0].fx[0].state);
+    /* THE HOLE. Bus 1 was never made and bus 2 must still be bus 2. */
+    CHECK(patch->buses[1].present == 0, "producer bus 1 is a hole");
+    CHECK(patch->buses[2].present == 1 && strcmp(patch->buses[2].name, "Hats") == 0,
+          "producer bus 2 is Hats ('%s')", patch->buses[2].name);
+    CHECK(patch->buses[2].sends[1] == 15, "producer bus 2 send B %d",
+          patch->buses[2].sends[1]);
+    CHECK(patch->buses[2].fx_count == 2 &&
+          strcmp(patch->buses[2].fx[1].module, "phaser") == 0,
+          "producer bus 2 second insert");
+    CHECK(strcmp(patch->buses[2].fx[0].state, "{\"rate\":2}") == 0,
+          "producer bus 2 insert state '%s'", patch->buses[2].fx[0].state);
+    CHECK(patch->buses[3].present == 0, "producer bus 3 is a hole");
+    CHECK(patch->main_sends[0] == 5 && patch->main_sends[1] == 30,
+          "producer main_sends %d,%d", patch->main_sends[0], patch->main_sends[1]);
+
+    snprintf(in, sizeof(in), "%s/producer_omitted.json", work);
+    snprintf(out, sizeof(out), "%s/parsed_omitted.txt", work);
+    summarise_file(inst, patch, in, out, "producer document without \"buses\"");
+    for (int b = 0; b < SLOT_BUSES; b++)
+        CHECK(patch->buses[b].present == 0,
+              "bus %d absent when the producer omits the key", b);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s <tmpdir>\n", argv[0]);
@@ -950,6 +1057,7 @@ int main(int argc, char **argv) {
     test_buses_parse(inst, patch);
     test_buses_absent(inst, patch);
     test_buses_unterminated(inst, patch);
+    test_buses_from_producer(inst, patch, argv[1]);
 
     free(inst);
     free(patch);

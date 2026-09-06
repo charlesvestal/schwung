@@ -1296,6 +1296,14 @@ function installBusCtx(fb, c) {
     /* `unresolved` is the whole point of one of the cases below: a read that
        did not complete must draw the waiting screen, never an empty list. */
     busConfig: c.config === null ? null : BusModel.parseBusesConfig(c.config),
+    /* THE ROW LIST, as the device supplies it (busRowsNow): one list for the
+       draw and for the input paths, so a screen cannot be drawn from rows a
+       click would not find. The device also drops the Sends row when the knob
+       grid is not the Param View; that is an input-path fact and these are
+       pictures, so the grid form is what is rendered here. */
+    busRows: () => BusModel.busListRows(
+      c.config === null ? null : BusModel.parseBusesConfig(c.config),
+      BUS_CTX.getModuleAbbrev),
     busVoices: c.voices === undefined ? { unresolved: false, voices: [] }
                                       : BusModel.parseSplitVoices(c.voices),
     busListIndex: c.index || 0,
@@ -1346,7 +1354,7 @@ const HATS = { name: "Hats", voices: ["v1", "v2"], sends: [0, 15],
 const SNARE = { name: "Snare", voices: ["v3"], sends: [5, 5], fx: [] };
 const TOMS = { name: "Toms", voices: ["v4"], sends: [40, 40], fx: ["freeverb"] };
 
-/* THE LIST AT EVERY LENGTH IT CAN HAVE. One bus is three rows (it, Main, New
+/* THE LIST AT EVERY LENGTH IT CAN HAVE. One bus is three rows (it, Sends, New
    Bus); four buses is FIVE, and there is no sixth -- SLOT_BUSES is 4 and the
    New Bus row is gone once none is free, so five rows is the maximum this
    screen can ever draw. */
@@ -1355,10 +1363,11 @@ addBus("bus/list/3", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS, SNARE], mainSends: [5, 30] }), index: 1 });
 addBus("bus/list/full", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS, SNARE, TOMS], mainSends: [5, 30] }), index: 3 });
-/* The Main row and the New Bus row, each under the cursor: the footer names
+/* The Sends row and the New Bus row, each under the cursor: the footer names
    the verb of the row it is ON, and these are the two rows whose verb differs
-   from a bus`s. */
-addBus("bus/list/main-row", { screen: "list",
+   from a bus`s. The Sends row carries no level of its own -- the slot`s two
+   main sends were a control no audio path read, and are gone. */
+addBus("bus/list/sends-row", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS], mainSends: [5, 30] }), index: 2 });
 addBus("bus/list/new-row", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS], mainSends: [5, 30] }), index: 3 });
@@ -1385,10 +1394,8 @@ addBus("bus/actions/editing", { screen: "actions", config: CFG3, actionsRow: 0, 
 addBus("bus/actions/delete-row", { screen: "actions", config: CFG3, actionsRow: 0, index: 5 });
 addBus("bus/actions/confirm", { screen: "actions", config: CFG3, actionsRow: 0,
   confirming: true, confirmIndex: 1 });
-/* MAIN has no voices, no inserts and no name: its menu is the two sends and
-   nothing else, which is a shorter list and must still draw as one. */
-addBus("bus/actions/main", { screen: "actions",
-  config: busesConfig({ buses: [KICK], mainSends: [5, 30] }), actionsRow: 1, index: 0 });
+/* There is no menu for the Sends row -- it opens the MIXER -- so the only
+   actions screen is a bus`s, covered by the cases above. */
 /* The orphan count rides the HEADER of this menu, so it is on screen whichever
    row the cursor is on. */
 addBus("bus/actions/orphans", { screen: "actions",
@@ -1476,11 +1483,11 @@ const mkBusSendsIo = lift("busSendsGridIo",
 const busSendsCases = [];
 const addBusSends = (id, o) => busSendsCases.push(Object.assign({ id }, o));
 
-/* Two buses -- three cells, which is a page with room to spare -- and four,
-   which is FIVE cells and the widest this page can ever be (SLOT_BUSES is 4
-   and Main is one row). Both pages of each, because the two levels are built
-   from the same rows and a mapping that lost the send index would draw them
-   identically. */
+/* Two buses, and four -- which is SLOT_BUSES cells and the widest this page
+   can ever be. (There is no Main cell: the slot`s own two send levels are a
+   control no audio path reads, so they are not offered.) Both pages of each,
+   because the two levels are built from the same rows and a mapping that lost
+   the send index would draw them identically. */
 addBusSends("bus/sends/2-send-a", { page: "Send A",
   buses: [KICK, HATS], mainSends: [5, 30] });
 addBusSends("bus/sends/2-send-b", { page: "Send B",
@@ -1497,11 +1504,11 @@ function renderBusSends(c) {
   const fb = createFramebuffer();
   const cfg = BusModel.parseBusesConfig(busesConfig(
     { buses: c.buses, mainSends: c.mainSends }));
-  /* The store, keyed by the REAL spellings -- "buses:main_sendN" for the slot
-     and "busN:sendM" for a bus. Seeded from the same config the rows come
-     from, so a case says its levels once. */
-  const store = { "buses:main_send1": String(c.mainSends[0]),
-                  "buses:main_send2": String(c.mainSends[1]) };
+  /* The store, keyed by the REAL spelling -- "busN:sendM". Seeded from the
+     same config the rows come from, so a case says its levels once. A key the
+     mixer must never ask for is seeded with a value it would be obvious about:
+     "buses:main_send1" is retired, and a cell reading 99 would say so. */
+  const store = { "buses:main_send1": "99", "buses:main_send2": "99" };
   cfg.buses.forEach((b) => {
     if (!b.present) return;
     store[`bus${b.index + 1}:send1`] = String(b.sends[0]);

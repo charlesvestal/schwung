@@ -56,9 +56,9 @@
  * only one of them may include that header: the chain is a MODULE, dlopen'd
  * through plugin_api_v2, and a module reaching into a shim header is exactly
  * the coupling that produced breakbeat's ABI drift. bus_mix.h is the one
- * header both the chain and the shim include. shadow_chain_mgmt.h will define
- * SEND_BUSES from this and static-assert they agree; until that lands, this
- * constant has no consumer and nothing enforces the agreement. */
+ * header both the chain and the shim include. shadow_chain_mgmt.h defines
+ * SEND_BUSES from this name and static-asserts the two agree, so the shim
+ * cannot grow a third send bus the chain does not know about. */
 #define BUS_MIX_SENDS 2
 
 /*

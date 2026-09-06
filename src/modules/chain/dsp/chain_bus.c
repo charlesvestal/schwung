@@ -83,40 +83,62 @@ static int bus_suffix_index(const char *sub, const char *prefix, int max)
 }
 
 /*
- * Hand a bus to the worker.
- *
- * THE BUMP IS THE CLOSE. Advancing fx_req_seq makes bus_fx_ready() false from
- * the very next frame, because whatever the worker last published no longer
- * equals it — and this is the same thread the render runs on, so there is no
- * in-flight reader to wait for. Nothing writes fx_ready here: a single store
- * that only the worker makes, carrying the seq it answered, is what stops a
- * preempted worker re-opening a gate this call closed.
+ * THE CLOSE. Advancing fx_req_seq makes bus_fx_ready() false from the very next
+ * frame, because whatever the worker last published no longer equals it — and
+ * this is the same thread the render runs on, so there is no in-flight reader
+ * to wait for. Nothing writes fx_ready here: a single store that only the
+ * worker makes, carrying the seq it answered, is what stops a preempted worker
+ * re-opening a gate this call closed.
  *
  * 0 is skipped on wrap so it keeps meaning "the worker has published nothing",
  * which is what makes a freshly constructed (calloc'd) bus read as NOT ready.
  *
- * RT-safe: one store and a sem_post.
+ * IT IS SPLIT OUT FROM THE POST FOR ONE REASON: **CLOSE BEFORE ANY POST**. A
+ * caller that also wakes the worker for some other errand — an allocation —
+ * must close first, or the worker can read the seq, start a reconcile, and
+ * dlclose an instance the RT side still sees the gate as OPEN over. That is
+ * exactly the use-after-free the sequence number replaced the boolean to
+ * prevent, and chain_bus_apply_patch had it: chain_bus_request_alloc (which
+ * posts) ran one statement BEFORE the bump. Any new caller pairing these two
+ * halves by hand must keep that order; tests/host/test_bus_gate_ordering.sh
+ * fails on a post that precedes its close.
+ *
+ * RT-safe: one store.
  */
-static void bus_request_work(chain_instance_t *inst, int b)
+static void bus_close_fx_gate(slot_bus_t *bus)
 {
-    slot_bus_t *bus = &inst->buses[b];
     unsigned next = bus->fx_req_seq + 1u;
     if (next == 0u) next = 1u;
     __atomic_store_n(&bus->fx_req_seq, next, __ATOMIC_RELEASE);
-    /*
-     * A slot with no buses must still cost NO THREAD. chain_bus_post_work
-     * starts the worker lazily, so posting from here unconditionally would
-     * spawn one on every patch load — chain_bus_apply_patch resets all
-     * SLOT_BUSES positions whether or not the file mentioned any. Flag the
-     * request and leave: a bus that has never existed has nothing to
-     * reconcile, and the flag is still set when some other bus does start the
-     * worker.
-     */
-    if (!inst->bus_worker_started && !bus->in_use) {
+}
+
+/*
+ * Wake the worker for `b`, WITHOUT touching the gate.
+ *
+ * A slot with no buses must still cost NO THREAD. chain_bus_post_work starts
+ * the worker lazily, so posting unconditionally would spawn one on every patch
+ * load — chain_bus_apply_patch resets all SLOT_BUSES positions whether or not
+ * the file mentioned any. Flag the request and leave: a bus that has never
+ * existed has nothing to reconcile, and the flag is still set when some other
+ * bus does start the worker.
+ *
+ * RT-safe: one store and a sem_post.
+ */
+static void bus_post_work(chain_instance_t *inst, int b)
+{
+    if (!inst->bus_worker_started && !inst->buses[b].in_use) {
         __atomic_store_n(&inst->bus_alloc_pending[b], 1, __ATOMIC_RELEASE);
         return;
     }
     chain_bus_post_work(inst, b);
+}
+
+/* Hand a bus to the worker: the close, then the post, in that order and never
+ * the other. Every caller that changes the FX REQUEST uses this. */
+static void bus_request_work(chain_instance_t *inst, int b)
+{
+    bus_close_fx_gate(&inst->buses[b]);
+    bus_post_work(inst, b);
 }
 
 /* ============================================================================
@@ -250,7 +272,13 @@ int chain_bus_set_param(chain_instance_t *inst, int b, const char *sub, const ch
                 snprintf(bus->name, sizeof(bus->name), "Bus %d", b + 1);
             /* The allocation is a REQUEST — nothing is allocated on this
              * thread. chain_bus_request_alloc also starts the worker lazily,
-             * so a slot with no buses costs no thread. */
+             * so a slot with no buses costs no thread.
+             *
+             * No FX change here, so the gate is not closed: this bus was just
+             * reset, every fx_request is empty, and there is no instance a
+             * reconcile could destroy under a reader. (The phrase is what
+             * test_bus_gate_ordering.sh looks for — every posting call site
+             * either closes first or says here why it need not.) */
             chain_bus_request_alloc(inst, b);
         } else if (!__atomic_load_n(&bus->buf, __ATOMIC_RELAXED)) {
             /* IN USE BUT UNALLOCATED: the worker's calloc failed. The reconcile
@@ -360,7 +388,10 @@ int chain_bus_slot_set_param(chain_instance_t *inst, const char *sub, const char
         inst->dirty = 1;
         return 0;
     }
-    if (strcmp(sub, "clear") == 0) { chain_bus_clear_all(inst); return 0; }
+    /* There is no "clear" verb. chain_bus_clear_all is real and called (from
+     * the slot teardown in chain_host.c) — what was dead is the param KEY
+     * nothing ever wrote, and a verb that erases four sub-mixes is the last one
+     * to leave lying around untested. */
     return -1;
 }
 
@@ -440,11 +471,16 @@ int chain_bus_get_param(chain_instance_t *inst, int b, const char *sub,
         return snprintf(buf, buf_len, "%d", bus->in_use ? 1 : 0);
     if (strcmp(sub, "name") == 0)
         return snprintf(buf, buf_len, "%s", bus->name);
-    /* The count, not the ids: a partial restore that reports nothing is
-     * indistinguishable from a working one. The ids themselves are still in
-     * "voices" below, because they are RETAINED rather than dropped. */
-    if (strcmp(sub, "orphans") == 0)
-        return snprintf(buf, buf_len, "%d", bus->orphan_count);
+    /* No per-bus "orphans" key, and no slot-wide one either. The COUNT still
+     * matters — a partial restore that reports nothing is indistinguishable
+     * from a working one, which is why bus_voice_apply returns it — but
+     * "buses:config" already carries `orphans` for every bus in the one GET the
+     * UI actually makes (busRowLabel draws the "!" from it). A second spelling
+     * served nobody and cost a round trip to find out.
+     *
+     * The ids themselves are in "voices" below, because they are RETAINED
+     * rather than dropped, and toggling one off is the only thing that clears
+     * the count. */
     if (strcmp(sub, "voices") == 0) {
         int o = 0;
         for (int i = 0; i < bus->voice_id_count && i < SPLIT_VOICES_MAX; i++) {
@@ -513,11 +549,6 @@ int chain_bus_slot_get_param(chain_instance_t *inst, const char *sub, char *buf,
     if (strcmp(sub, "config") == 0) return bus_emit_config(inst, buf, buf_len);
     int s = bus_suffix_index(sub, "main_send", BUS_MIX_SENDS);
     if (s > 0) return snprintf(buf, buf_len, "%d", inst->main_send_level[s - 1]);
-    if (strcmp(sub, "orphans") == 0) {
-        int total = 0;
-        for (int b = 0; b < SLOT_BUSES; b++) total += inst->buses[b].orphan_count;
-        return snprintf(buf, buf_len, "%d", total);
-    }
     return -1;
 }
 
@@ -576,11 +607,22 @@ int chain_bus_apply_patch(chain_instance_t *inst, const patch_info_t *patch)
                 __atomic_store_n(&bus->fx_state_pending[i], 1, __ATOMIC_RELEASE);
             }
         }
-        /* One request per bus, after every field is written: the worker's
-         * ACQUIRE of fx_req_seq is what makes all of the above visible to it. */
+        /*
+         * One request per bus, after every field is written: the worker's
+         * ACQUIRE of fx_req_seq is what makes all of the above visible to it.
+         *
+         * CLOSE FIRST. chain_bus_request_alloc POSTS the worker, and it used to
+         * run one statement ahead of the bump — so a worker that read the seq
+         * in that window ran its whole reconcile, destroy_instance and dlclose
+         * included, while the RT side still saw fx_ready == fx_req_seq and
+         * called process_block on the instance being torn down. Narrow (it
+         * needs buf == NULL with live FX) and exactly the use-after-free the
+         * sequence gate exists to prevent.
+         */
+        bus_close_fx_gate(bus);
         if (!__atomic_load_n(&bus->buf, __ATOMIC_RELAXED))
             chain_bus_request_alloc(inst, b);
-        bus_request_work(inst, b);
+        bus_post_work(inst, b);
     }
 
     for (int i = 0; i < BUS_MIX_SENDS; i++)
@@ -625,10 +667,13 @@ static void bus_unload_fx(slot_bus_t *bus, int pos)
  * worker exists — chain_host.c's v2_load_audio_fx_slot does all of this on the
  * SPI callback, so the surrounding code is not a guide here.
  *
- * Pointers are stored AS SOON AS THEY EXIST rather than at the end, so a
- * teardown that interrupts this leaves chain_bus_release_all something it can
- * free. Nothing published here is legible to the render path until the caller
- * stores fx_ready.
+ * The handle, the api and the instance are stored TOGETHER, once all three
+ * exist — every failure before that point dlcloses on its own way out, so
+ * there is nothing half-stored for a teardown to find. (The comment here used
+ * to claim each pointer was stored as soon as it existed, which the stores
+ * below have never done.) After that point chain_bus_release_all owns them,
+ * including the metadata blocks allocated further down. Nothing published here
+ * is legible to the render path until the caller stores fx_ready.
  */
 static int bus_load_fx(chain_instance_t *inst, slot_bus_t *bus, int pos, const char *name)
 {

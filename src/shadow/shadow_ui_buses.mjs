@@ -30,7 +30,7 @@ import {
 import { drawChainEditorBands, drawChainPicker }
     from '/data/UserData/schwung/shared/chain_editor_chrome.mjs';
 import {
-    busListRows, busRowLabel, busRowValue, busActionItems, busSendValue,
+    busRowLabel, busRowValue, busActionItems, busSendValue,
     voiceRows, voiceRowValue, busChainComponents
 } from '/data/UserData/schwung/shared/bus_model.mjs';
 
@@ -53,11 +53,15 @@ function drawWaiting(title) {
 }
 
 export function drawBusList() {
-    const { busConfig, busListIndex, getModuleAbbrev, slotLabel } = ctx;
+    const { busConfig, busListIndex, slotLabel } = ctx;
     if (!busConfig || busConfig.unresolved) { drawWaiting("Buses"); return; }
     ctx.clearScreen();
     drawHeader("Buses", slotLabel());
-    const rows = busListRows(busConfig, getModuleAbbrev);
+    /* ctx.busRows(), never a second busListRows call: the input paths index
+     * THAT list, and it drops the Sends row when the knob grid is not the
+     * user's Param View. Two lists is a click acting on a row that was not
+     * drawn. */
+    const rows = ctx.busRows();
     drawMenuList({
         items: rows,
         selectedIndex: busListIndex,
@@ -81,18 +85,17 @@ export function drawBusList() {
      * pairs that do not fit, silently, so the longer word cost this row the
      * hint for its own second gesture. Measured in the render, not guessed. */
     else if (row && row.kind === "bus") drawFooter(["Clk: edit", "Dn: fx", "Back: out"]);
-    /* Main opens the send MIXER, not a menu — the verb names what the click
-     * does, and it is the same word whichever of the two screens Param View
-     * puts in front of it, because both edit the sends and nothing else. */
-    else if (row && row.kind === "main") drawFooter(["Clk: sends", "Back: out"]);
+    /* The Sends row opens the send MIXER, not a menu — the verb names what the
+     * click does. */
+    else if (row && row.kind === "sends") drawFooter(["Clk: sends", "Back: out"]);
     else drawFooter(["Clk: edit", "Back: out"]);
 }
 
 export function drawBusActions() {
     const { busConfig, busActionsRow, busActionsIndex, busActionsEditing,
-            busConfirmingDelete, busConfirmIndex, getModuleAbbrev } = ctx;
+            busConfirmingDelete, busConfirmIndex } = ctx;
     if (!busConfig || busConfig.unresolved) { drawWaiting("Bus"); return; }
-    const rows = busListRows(busConfig, getModuleAbbrev);
+    const rows = ctx.busRows();
     const row = rows[busActionsRow];
     if (!row) { drawWaiting("Bus"); return; }
     if (busConfirmingDelete) {

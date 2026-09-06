@@ -103,8 +103,12 @@ const A2 = (m) => String(m).slice(0, 2).toUpperCase();
      chain. */
   eq("a hole does not renumber", rows.filter((r) => r.kind === "bus").map((r) => r.index),
      [0, 2]);
-  eq("Main is a row", rows[rows.length - 2].kind, "main");
-  eq("Main carries the slot sends", rows[rows.length - 2].sends, [1, 2]);
+  /* THERE IS NO MAIN ROW. Its two send levels were a wired, persisted,
+     documented control that NO AUDIO PATH READ (chain_drain_sends says so), so
+     the row is the door into the send mixer and carries no level of its own. */
+  eq("no Main row", rows.some((r) => r.kind === "main"), false);
+  eq("the Sends row is the door", rows[rows.length - 2].kind, "sends");
+  eq("the Sends row carries no level", M.busRowValue(rows[rows.length - 2]), "");
   eq("a free bus offers New Bus", rows[rows.length - 1].kind, "new");
   eq("the hole is the next bus made", M.firstFreeBus(cfg), 1);
 }
@@ -117,6 +121,15 @@ const A2 = (m) => String(m).slice(0, 2).toUpperCase();
   eq("no New Bus at the cap", rows.some((r) => r.kind === "new"), false);
   eq("no free bus at the cap", M.firstFreeBus(cfg), -1);
   eq("the list is as long as it can get", rows.length, M.SLOT_BUSES + 1);
+}
+
+{
+  /* A mixer with no faders is a row that answers a click by doing nothing, so
+     an empty slot offers only New Bus. */
+  const empty = M.parseBusesConfig(cfgJson([]));
+  const rows = M.busListRows(empty, A2);
+  eq("no buses, no Sends row", rows.map((r) => r.kind), ["new"]);
+  eq("no buses, no mixer params", M.busSendGridParams(empty).length, 0);
 }
 
 /* The summary is COUNTED past two, because the value column carries both send
@@ -183,11 +196,11 @@ eq("the bus does not free itself", M.voiceMoveWrites(VCFG, 0, "kick"), []);
   const busItems = M.busActionItems(rows[0]).map((i) => i.id);
   eq("a bus offers everything", busItems,
      ["voices", "chain", "send1", "send2", "rename", "delete"]);
-  /* MAIN has no voices of its own, no insert chain and no name: offering any
-     of them would be a row that does nothing. */
-  const mainRow = rows.find((r) => r.kind === "main");
-  eq("Main offers only its sends", M.busActionItems(mainRow).map((i) => i.id),
-     ["send1", "send2"]);
+  /* ONLY a bus has a menu. The Sends row opens the mixer and New Bus creates;
+     an action list for either would be rows that do nothing. */
+  const sendsRow = rows.find((r) => r.kind === "sends");
+  eq("the Sends row has no menu", M.busActionItems(sendsRow).length, 0);
+  eq("New Bus has no menu", M.busActionItems({ kind: "new" }).length, 0);
   eq("send A reads the first level", M.busSendValue({ sends: [7, 9] }, "send1"), 7);
   eq("send B reads the second", M.busSendValue({ sends: [7, 9] }, "send2"), 9);
 }
@@ -241,18 +254,23 @@ eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), nul
       { present: 0, name: "Bus 4", orphans: 0, voices: [], sends: [0, 0], fx: [] }],
     main_sends: [3, 4] }));
   const params = M.busSendGridParams(cfg);
-  /* Present buses plus Main, times the two sends. A hole is not a row. */
-  eq("a send mixer has one cell per source per send", params.length, 6);
-  eq("Main is a row and the hole is not",
-     params.slice(0, 3).map((p) => p.name), ["Kick", "Hats", "Main"]);
+  /* The present buses, times the two sends. A hole is not a row, and neither
+     is Main: the slot`s own two levels have no reader in the audio path. */
+  eq("a send mixer has one cell per bus per send", params.length, 4);
+  eq("only the present buses are faders",
+     params.slice(0, 2).map((p) => p.name), ["Kick", "Hats"]);
+  eq("no main_send key is offered",
+     params.some((p) => /main/.test(p.key)), false);
   eq("every cell is an int over the real range",
      params.every((p) => p.type === "int" && p.min === 0 && p.max === M.SEND_LEVEL_MAX),
      true);
   /* THE HOLE DOES NOT RENUMBER: the second present bus is bus 3, and its key
      must say 3. This is the one that edits the wrong bus when it is wrong. */
   eq("a bus keeps its own number", M.busSendGridRealKey(params[1].key), "bus3:send1");
-  eq("Main is the slot own key", M.busSendGridRealKey(params[2].key), "buses:main_send1");
-  eq("send B is a different key", M.busSendGridRealKey(params[4].key), "bus3:send2");
+  eq("send B is a different key", M.busSendGridRealKey(params[3].key), "bus3:send2");
+  /* And the retired spelling maps to nothing at all: a grid key that still
+     said "main_send1" would write a level nothing reads. */
+  eq("the retired Main spelling is gone", M.busSendGridRealKey("main_send1"), null);
   eq("a key naming no send maps to nothing", M.busSendGridRealKey("volume"), null);
   eq("a bus past the cap maps to nothing", M.busSendGridRealKey("bus9_send1"), null);
   eq("a send past the cap maps to nothing", M.busSendGridRealKey("bus1_send3"), null);
@@ -263,19 +281,19 @@ eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), nul
   eq("the root page is empty", h.levels.root.knobs.length, 0);
   eq("one level per send", [h.levels.send_a.label, h.levels.send_b.label],
      ["Send A", "Send B"]);
-  eq("each send page is one knob per source",
-     [h.levels.send_a.knobs.length, h.levels.send_b.knobs.length], [3, 3]);
-  /* Bounded BY CONSTRUCTION at five cells, which is why the page is handed
-     paginate:false rather than being allowed to split. */
+  eq("each send page is one knob per bus",
+     [h.levels.send_a.knobs.length, h.levels.send_b.knobs.length], [2, 2]);
+  /* Bounded BY CONSTRUCTION at SLOT_BUSES cells, which is why the page is
+     handed paginate:false rather than being allowed to split. */
   const full = M.parseBusesConfig(JSON.stringify({
     buses: [0, 1, 2, 3].map((i) => (
       { present: 1, name: "B" + i, orphans: 0, voices: [], sends: [0, 0], fx: [] })),
     main_sends: [0, 0] }));
-  eq("a full slot is five cells a page",
-     M.busSendGridHierarchy(full).levels.send_a.knobs.length, M.SLOT_BUSES + 1);
+  eq("a full slot is one cell per bus",
+     M.busSendGridHierarchy(full).levels.send_a.knobs.length, M.SLOT_BUSES);
 }
 /* AND THE READ THAT DID NOT COMPLETE MAKES NO CONTRACT. An empty one would be
-   a claim -- "this slot has no buses" -- drawn as a mixer with only Main.
+   a claim -- "this slot has no buses" -- drawn as a mixer with no faders.
 
    The PARAMS half is upheld by busListRows` refusal, not by a second copy of it
    inside busSendGridParams: a duplicate guard there was unkillable, because the
@@ -312,7 +330,7 @@ eq("an unresolved config lists no rows either -- the one refusal",
         { present: 1, name: "Hats", orphans: 0, voices: [], sends: [0, 0], fx: [] },
         { present: 1, name: "Perc", orphans: 0, voices: [], sends: [0, 0], fx: [] }],
       main_sends: [0, 0] }));
-    const rows = M.busListRows(cfg).filter((r) => r.kind !== "new");
+    const rows = M.busListRows(cfg).filter((r) => r.kind === "bus");
     let checked = 0;
     for (const row of rows) {
       for (let n = 1; n <= M.BUS_SENDS; n++) {
@@ -330,6 +348,104 @@ eq("an unresolved config lists no rows either -- the one refusal",
     eq("...and the hole did not renumber",
        M.busSendGridRealKey(M.sendGridKey(rows[1], 1)), "bus3:send1");
   }
+}
+
+
+/* ---- A DUPLICATE VOICE ID: THE HIGHEST BUS WINS ----------------------- */
+
+/* Reachable whenever a voiceMoveWrites removal fails (it is a blocking write
+   that can be refused) or from an externally authored patch. The screen said
+   one bus and the audio used another, silently, because voiceRows took the
+   FIRST claimant while the C applies every bus in ascending order into one map
+   with an unconditional store -- so the LAST one wins. Pinned here against the
+   C, not against itself. */
+{
+  const dup = M.parseBusesConfig(cfgJson([
+    { name: "Kick", voices: ["kick"] }, null,
+    { name: "Hats", voices: ["kick"] }]));
+  const rows = M.voiceRows(dup, VOICES, 0);
+  const kick = rows.find((r) => r.id === "kick");
+  eq("a duplicated voice belongs to the HIGHEST bus", kick.on, 2);
+  eq("...so it is not this bus`s", kick.mine, false);
+  eq("...and the row names the bus that has it", M.voiceRowValue(kick, dup), "Hats");
+  eq("the bus that does have it says so", M.voiceRows(dup, VOICES, 2)
+     .find((r) => r.id === "kick").mine, true);
+}
+{
+  /* THE C RULE THIS MIRRORS. bus_voice_apply stores unconditionally and
+     chain_bus_rebuild_voice_map applies the buses ascending, so the last write
+     stands. Either half changing turns the JS rule above into a lie. */
+  const apply = fs.readFileSync("src/host/bus_voice_apply.h", "utf8");
+  if (!/voice_bus\[idx\] = \(int8_t\)bus;/.test(apply))
+    fail("bus_voice_apply no longer stores the bus index the way this mirrors");
+  if (/if\s*\(\s*voice_bus\[idx\]/.test(apply))
+    fail("bus_voice_apply now branches on the existing owner -- the JS rule (highest wins) must move with it");
+  const cbus = fs.readFileSync("src/modules/chain/dsp/chain_bus.c", "utf8");
+  const at = cbus.indexOf("void chain_bus_rebuild_voice_map(");
+  const body = cbus.slice(at, cbus.indexOf("\n}\n", at));
+  if (!/for \(int b = 0; b < SLOT_BUSES; b\+\+\)/.test(body))
+    fail("chain_bus_rebuild_voice_map no longer walks the buses ASCENDING -- which bus wins a duplicate id changes with it");
+}
+
+/* ---- THE PRODUCER: the half of the file format that did not exist ------ */
+
+/* chain_patch.c has read "buses"/"main_sends" out of a saved slot since the
+   feature landed and NOTHING EMITTED THEM, so every load reset all four buses
+   and destroyed a live kit in silence. The end-to-end assertion (this producer
+   feeding the real C parser) is tests/host/test_chain_patch_roundtrip.sh; what
+   is pinned here is the SHAPE and the WIRING. */
+{
+  eq("an unresolved config produces no document", M.busPatchFields({ unresolved: true }), null);
+
+  const cfg = M.parseBusesConfig(cfgJson(
+    [{ name: "Kick", voices: ["kick"], sends: [20, 0], fx: ["tapescam"] }, null,
+     { name: "Hats", voices: ["chh"], sends: [0, 15], fx: ["chorus"] }], [5, 30]));
+  const f = M.busPatchFields(cfg, (b, k) => (b === 0 && k === 0 ? { drive: 0.5 } : undefined));
+
+  /* POSITIONAL. A hole is {"present":0} and never a compaction: bus 2 must
+     still parse back as bus 2. */
+  eq("every bus has an entry", f.buses.length, M.SLOT_BUSES);
+  eq("a hole is present:0 and nothing else", f.buses[1], { present: 0 });
+  eq("the buses keep their positions", f.buses.map((b) => b.present), [1, 0, 1, 0]);
+  eq("the slot sends ride along", f.main_sends, [5, 30]);
+
+  /* KEY ORDER IS LOAD-BEARING: bus_field takes the FIRST hit inside the
+     object`s span, and an insert`s opaque state is inside that span. "name"
+     before "fx", and "module"/"bypassed" before "state". */
+  eq("a bus names itself before its inserts", Object.keys(f.buses[0]),
+     ["present", "name", "voices", "sends", "fx"]);
+  eq("an insert names itself before its state", Object.keys(f.buses[0].fx[0]),
+     ["module", "bypassed", "state"]);
+  eq("the state is carried", f.buses[0].fx[0].state, { drive: 0.5 });
+  /* ABSENT, not null or "": the parser reads a state that is neither an object
+     nor a string as no state, and an empty one staged over a running insert
+     would wipe its parameters on the next load. */
+  eq("no state, no key", "state" in f.buses[2].fx[0], false);
+  eq("the trailing holes are not emitted", f.buses[0].fx.length, 1);
+}
+
+/* AND IT IS WIRED. bus_model can be perfect and unreferenced -- which is the
+   exact shape of the defect this fixes, a reader with no writer. */
+{
+  const src = fs.readFileSync("src/shadow/shadow_ui.js", "utf8");
+  const at = src.indexOf("function buildSlotPatchJson(");
+  const body = at < 0 ? "" : src.slice(at, src.indexOf("\n}\n", at));
+  if (at < 0) fail("buildSlotPatchJson is gone");
+  if (!/BusModel\.busPatchFields\(/.test(body))
+    fail("buildSlotPatchJson does not call busPatchFields -- a saved slot with no \"buses\" key WIPES the buses on load");
+  if (!/patch\.buses\s*=/.test(body) || !/patch\.main_sends\s*=/.test(body))
+    fail("buildSlotPatchJson does not assign patch.buses / patch.main_sends");
+  /* Both keys are DECLARED in the initial literal so they stringify AHEAD of
+     every opaque state blob: bus_parse_section scans the whole document and
+     takes the first hit. */
+  const lit = body.slice(body.indexOf("const patch = {"), body.indexOf("audio_fx: []"));
+  if (!/main_sends: undefined/.test(lit) || !/buses: undefined/.test(lit))
+    fail("patch.buses/main_sends are no longer declared ahead of the components -- a module state carrying either key would answer for the slot");
+  /* A FAILED READ MUST NOT PRODUCE A DOCUMENT. It is not a missing field, it
+     is a document that deletes the user`s buses on the next load. */
+  const guard = body.indexOf("busCfg.unresolved");
+  if (guard < 0 || body.indexOf("return null", guard) < 0)
+    fail("an unresolved buses:config no longer bails the save");
 }
 
 if (failures) process.exit(1);

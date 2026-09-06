@@ -151,13 +151,25 @@ export function insertSummary(fx, abbrev) {
 }
 
 /*
- * The rows of the bus list: every PRESENT bus, then Main, then New Bus if a
- * free bus is left.
+ * The rows of the bus list: every PRESENT bus, then the Sends row, then New Bus
+ * if a free bus is left.
  *
- * Main is last and always present: it is where every unassigned voice already
- * plays, so it is the row you compare the others against, and its send levels
- * are the slot's own. It is a row rather than a header because it has the same
- * two send values as any bus — `main_sends` in the same config document.
+ * THERE IS NO "MAIN" ROW, AND ITS TWO SEND LEVELS ARE NOT OFFERED. They were,
+ * and they did nothing: `inst->main_send_level` is written, serialized, read
+ * back and patch-applied, and NO AUDIO PATH READS IT (chain_host.c's
+ * chain_drain_sends says so in as many words). It is inert for a real reason —
+ * at drain time Main's post-insert signal does not exist, because under the
+ * same-frame-FX mode the device always runs render_block returns the raw synth
+ * and the slot's own FX chain runs later into a different buffer, so draining
+ * Main there would send a PRE-FX signal while every bus sends a POST-insert
+ * one. Two meanings behind one control. Until there is a second drain point
+ * after the slot FX, a knob that reads back its own value and changes nothing
+ * must not be on the screen.
+ *
+ * The row survives as `Sends`, because it is also the only way into the send
+ * MIXER — every bus's A and B on an encoder — and those levels do work. It is
+ * offered only when there is at least one bus to ride: a mixer with no faders
+ * is a row that answers a click by doing nothing.
  */
 export function busListRows(config, abbrev) {
     const rows = [];
@@ -169,10 +181,10 @@ export function busListRows(config, abbrev) {
             summary: insertSummary(b.fx, abbrev), sends: b.sends,
         });
     }
-    rows.push({
-        kind: "main", index: -1, name: "Main", orphans: 0,
-        summary: "--", sends: config.mainSends,
-    });
+    if (rows.length) {
+        rows.push({ kind: "sends", index: -1, name: "Sends", orphans: 0,
+                    summary: "", sends: [] });
+    }
     if (config.buses.some((b) => !b.present)) rows.push({ kind: "new", name: "New Bus" });
     return rows;
 }
@@ -196,7 +208,9 @@ export function busRowLabel(row) {
 }
 
 export function busRowValue(row) {
-    if (!row || row.kind === "new") return "";
+    /* The Sends row carries no value of its own: it is a door, and the levels
+     * behind it belong to the buses listed above it. */
+    if (!row || row.kind === "new" || row.kind === "sends") return "";
     const [a, b] = row.sends || [0, 0];
     /* "A/B", not "A B": the slash is what says these are two values rather than
      * one number the eye has to split. */
@@ -220,10 +234,17 @@ export function busRowValue(row) {
 export function voiceRows(config, voices, busIndex) {
     const rows = [];
     if (!config || config.unresolved) return rows;
+    /* THE HIGHEST BUS WINS, and that is not a preference — it is what the audio
+     * does. chain_bus_rebuild_voice_map applies the buses in ascending order
+     * into one voice_bus[] table and bus_voice_apply only ever WRITES, so a
+     * voice listed on two buses renders into the LAST one that claimed it.
+     * Taking the first here instead made the screen name one bus while the
+     * audio used another, silently — reachable whenever a voiceMoveWrites
+     * removal fails, or from an externally authored patch. */
     const owner = {};
     for (const b of config.buses) {
         if (!b.present) continue;
-        for (const id of b.voices) if (owner[id] === undefined) owner[id] = b.index;
+        for (const id of b.voices) owner[id] = b.index;
     }
     for (const v of voices || []) {
         if (!v.id) continue;   /* a hole in the module's own list */
@@ -290,24 +311,20 @@ export function voiceMoveWrites(config, busIndex, id) {
 }
 
 /*
- * One bus's action menu. Filtered by what the row IS: Main has no chain, no
- * voices of its own and no name, so it is offered neither — a list must never
- * carry a row that answers a click by doing nothing.
+ * One bus's action menu. ONLY a bus has one: the Sends row opens the mixer and
+ * New Bus creates, and a list must never carry a row that answers a click by
+ * doing nothing.
  */
 export function busActionItems(row) {
-    if (!row) return [];
-    const items = [];
-    if (row.kind === "bus") {
-        items.push({ id: "voices", label: "Voices" });
-        items.push({ id: "chain", label: "Inserts" });
-    }
-    items.push({ id: "send1", label: "Send A", type: "int" });
-    items.push({ id: "send2", label: "Send B", type: "int" });
-    if (row.kind === "bus") {
-        items.push({ id: "rename", label: "Rename" });
-        items.push({ id: "delete", label: "Delete" });
-    }
-    return items;
+    if (!row || row.kind !== "bus") return [];
+    return [
+        { id: "voices", label: "Voices" },
+        { id: "chain", label: "Inserts" },
+        { id: "send1", label: "Send A", type: "int" },
+        { id: "send2", label: "Send B", type: "int" },
+        { id: "rename", label: "Rename" },
+        { id: "delete", label: "Delete" },
+    ];
 }
 
 /* The positions of a bus's insert chain, as chain_diagram components: every
@@ -384,8 +401,8 @@ export function parseBusComponentKey(componentKey) {
  * encoder here.
  *
  * ONE PAGE PER SEND, not one page per bus. Both groupings are authored, and
- * this one is bounded by construction: a page is Main plus the present buses,
- * so at most SLOT_BUSES + 1 = 5 cells against the eight knobs, and the
+ * this one is bounded by construction: a page is the present buses, so at most
+ * SLOT_BUSES = 4 cells against the eight knobs, and the
  * planner is handed `paginate: false` because a mixer split across "Send A"
  * and "Send A - 2" would put two of its faders on a page you cannot see while
  * turning the others. The per-bus grouping is 2 cells a page and ten pages.
@@ -396,23 +413,22 @@ export function parseBusComponentKey(componentKey) {
  */
 
 /* The grid key for one row's send. Flat — the mapping back to the two
- * real spellings ("buses:main_send1" for the slot, "bus2:send1" for a bus)
- * is busSendGridRealKey, and it is the only place that knows them.
+ * real spelling ("bus2:send1") is busSendGridRealKey, and it is the only place
+ * that knows it.
  *
  * EXPORTED for the pin below: comparing the grid path against the list path
  * needs a row and a send to produce a grid key outside this module. */
 export function sendGridKey(row, send) {
-    return row.kind === "main" ? `main_send${send}` : `bus${row.index + 1}_send${send}`;
+    return `bus${row.index + 1}_send${send}`;
 }
 
 /**
  * The real DSP key a grid key reads and writes, or null when it names no send.
  *
- * The two spellings differ because the levels belong to different owners: the
- * unassigned voices' sends are the SLOT's, a bus's are its own. Same rule as
- * busSendKey in shadow_ui.js, which the list path uses — and the reason both
- * exist rather than one is that the list addresses a ROW object and the grid
- * addresses a KEY.
+ * There is one spelling left ("bus2:send1"). Same rule as busSendKey in
+ * shadow_ui.js, which the list path uses — and the reason both exist rather
+ * than one is that the list addresses a ROW object and the grid addresses a
+ * KEY.
  *
  * THEY MUST AGREE, and test_bus_model.sh pins it by LIFTING busSendKey out of
  * shadow_ui.js and running the two against every row of a slot — a comment
@@ -420,11 +436,9 @@ export function sendGridKey(row, send) {
  * claims to have closed.
  */
 export function busSendGridRealKey(gridKey) {
-    const main = /^main_send(\d+)$/.exec(String(gridKey || ""));
-    if (main) {
-        const n = Number(main[1]);
-        return (n >= 1 && n <= BUS_SENDS) ? `buses:main_send${n}` : null;
-    }
+    /* No "main_send" form. The slot's own two levels have no reader in the
+     * audio path (see busListRows), so there is no key here that would write
+     * them and nothing on the mixer that would name one. */
     const bus = /^bus(\d+)_send(\d+)$/.exec(String(gridKey || ""));
     if (!bus) return null;
     const b = Number(bus[1]);
@@ -451,7 +465,9 @@ export function busSendGridParams(config) {
      * the one it named. One refusal, in busListRows, where mutating it does
      * kill the assertion.
      */
-    const rows = busListRows(config).filter((r) => r.kind !== "new");
+    /* BUSES ONLY. The list also carries the door into this very mixer and, when
+     * there is a free bus, New Bus — neither of which is a fader. */
+    const rows = busListRows(config).filter((r) => r.kind === "bus");
     for (let send = 1; send <= BUS_SENDS; send++) {
         for (const row of rows) {
             out.push({
@@ -471,7 +487,8 @@ export function busSendGridParams(config) {
  * The planner names the walk root's grid page "Main" whatever the level
  * declares — deliberately, so 16 modules do not each open on their own word
  * for "where you land". That is the wrong name for half a mixer, and a root
- * holding Send A would have paged "Main / Send B". A root with no keys emits
+ * holding Send A would have paged "Main / Send B" (a word that means the
+ * planner's landing page here, and no longer a send destination). A root with no keys emits
  * no grid page at all, so the pages are the two levels below it and each is
  * named for the send it is.
  *
@@ -514,4 +531,87 @@ export function busSendGridHierarchy(config) {
             },
         },
     };
+}
+
+/* ==========================================================================
+ * THE PRODUCER — the half of the file format that did not exist
+ *
+ * bus_parse_section (chain_patch.c) reads "buses" and "main_sends" out of a
+ * saved slot document, and for a while NOTHING IN THE TREE WROTE THEM. That is
+ * not "buses do not persist": patch_info_t is zeroed before the parse and the
+ * section early-returns on a document without the key, so every bus arrived
+ * `present == 0` and chain_bus_apply_patch RESET all four. Building a kit and
+ * then loading any preset — or changing sets — destroyed it, mid-session and
+ * silently. This function is the missing half, and
+ * tests/host/test_chain_patch_roundtrip.sh now feeds what it emits to the real
+ * C parser rather than to a hand-written fixture.
+ * ========================================================================== */
+
+/*
+ * The `buses` / `main_sends` fields of a slot patch document, from a parsed
+ * `buses:config` and a per-position state reader.
+ *
+ * `fxState(busIndex, fxIndex)` answers that insert's opaque state — an object,
+ * a string, or undefined for "none". It is a callback because reading it is one
+ * IPC round-trip per OCCUPIED position (~2.8 ms each) and only the caller knows
+ * how to spend those; nothing here reads anything.
+ *
+ * Returns null for an unresolved config. A document built from a read that did
+ * not complete would claim the slot has no buses, and the loader believes it.
+ *
+ * SHAPE, matched to bus_parse_section field by field:
+ *
+ *   { "main_sends": [a, b],
+ *     "buses": [ {"present":0},                       <- a HOLE, never compacted
+ *                {"present":1, "name":"Hats",
+ *                 "voices":["chh","ohh"],
+ *                 "sends":[20,0],
+ *                 "fx":[{"module":"tapescam","bypassed":0,"state":{...}},
+ *                       {"module":"","bypassed":0}]}, <- a hole IN the chain
+ *                ... SLOT_BUSES entries ... ] }
+ *
+ * Key ORDER is load-bearing and not cosmetic. bus_field() finds the FIRST
+ * occurrence of a key inside the object's span, and an insert's opaque state is
+ * inside that span — so "name" must precede "fx", and inside an fx entry
+ * "module" and "bypassed" must precede "state", or a module that happens to
+ * store a key called "name" answers for the bus. `main_sends` is emitted before
+ * `buses` for the same reason: bus_parse_section scans the WHOLE document for
+ * it.
+ */
+export function busPatchFields(config, fxState) {
+    if (!config || config.unresolved || !Array.isArray(config.buses)) return null;
+    const out = { main_sends: normaliseSends(config.mainSends), buses: [] };
+    for (let b = 0; b < SLOT_BUSES; b++) {
+        const bus = config.buses[b];
+        if (!bus || !bus.present) { out.buses.push({ present: 0 }); continue; }
+        /* Positional up to the last occupied insert, then stop: the tail is all
+         * holes and the parser treats an absent entry exactly as an empty
+         * module, so emitting eight `{"module":""}` objects per bus would be
+         * four times the document for no information. */
+        let last = -1;
+        for (let k = 0; k < BUS_FX_SLOTS; k++)
+            if (bus.fx && bus.fx[k] && bus.fx[k].module) last = k;
+        const fx = [];
+        for (let k = 0; k <= last; k++) {
+            const e = (bus.fx && bus.fx[k]) || {};
+            const entry = { module: String(e.module || ""), bypassed: e.bypassed ? 1 : 0 };
+            if (entry.module) {
+                const st = fxState ? fxState(b, k) : undefined;
+                /* Absent, never null or "": the parser reads a `state` whose
+                 * value is neither an object nor a string as no state at all,
+                 * and writing one anyway would stage an empty blob over a
+                 * running FX's parameters on the next load. */
+                if (st !== undefined && st !== null && st !== "") entry.state = st;
+            }
+            fx.push(entry);
+        }
+        out.buses.push({
+            present: 1,
+            name: String(bus.name || `Bus ${b + 1}`),
+            voices: (bus.voices || []).map(String),
+            sends: normaliseSends(bus.sends),
+            fx,
+        });
+    }
+    return out;
 }

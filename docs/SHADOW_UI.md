@@ -1069,8 +1069,9 @@ ever assigned from a RESOLVED parse, so a failed read empties nothing and
 latches nothing.
 
 **Orphans are shown, in three places.** A bus stores voice IDS and retains the
-ones that no longer resolve (`bus<N>:orphans`, and `orphans` in
-`buses:config`). The list marks such a bus `Kick !`, the bus menu carries the
+ones that no longer resolve (`orphans` in `buses:config`, which is the one GET
+the UI makes — the per-bus and slot-wide `orphans` keys were a second spelling
+nothing read, and are gone). The list marks such a bus `Kick !`, the bus menu carries the
 count in its header, and the voice screen lists every unresolved id as its own
 row marked `!` — the only way to clear one. Every write to `bus<N>:voices` is a
 whole-list replace, so `toggledVoiceIds` CARRIES the orphans: a list rebuilt
@@ -1110,23 +1111,64 @@ FX is: every action on them is slot-chain shaped.
 `tests/host/test_bus_insert_editable.sh` pins each leg, because not one of them
 is a pixel.
 
-**The send mixer is ONE PAGE PER SEND, not one per bus.** Main's row on the bus
-list opens a synthesised contract (`busSendGridHierarchy` in `bus_model.mjs`)
-whose two pages — Send A and Send B — carry every source's level on an encoder;
-the per-bus rows on that bus's own menu stay, because a level you have to click
-into, jog and click out of is not a level you can RIDE. Main is the row that
-opens it because Main's menu IS its two sends and nothing else. The grouping is
-bounded by construction at `SLOT_BUSES + 1` = five cells against eight knobs, so
-it is handed `paginate: false`: a mixer split across "Send A" and "Send A - 2"
-would put two faders on a page you cannot see while turning the others. The
-ROOT level carries no knobs, deliberately — the planner names a walk root's grid
-page "Main" whatever the level declares, and "Main / Send B" is not a mixer — so
-the pages are the two levels below it. The io maps a flat grid key onto the two
-real spellings (`buses:main_sendN` for the slot, `bus<N>:sendM` for a bus) in
-one place, and a HOLE does not renumber: the second present bus is bus 3 and its
-key says 3. An unresolved `buses:config` yields a `null` contract rather than an
-empty one, because an empty one is a claim — "this slot has no buses" — drawn as
-a mixer with only Main on it.
+**The send mixer is ONE PAGE PER SEND, not one per bus.** The `Sends` row on
+the bus list opens a synthesised contract (`busSendGridHierarchy` in
+`bus_model.mjs`) whose two pages — Send A and Send B — carry every bus's level
+on an encoder; the per-bus rows on that bus's own menu stay, because a level you
+have to click into, jog and click out of is not a level you can RIDE. The
+grouping is bounded by construction at `SLOT_BUSES` = four cells against eight
+knobs, so it is handed `paginate: false`: a mixer split across "Send A" and
+"Send A - 2" would put two faders on a page you cannot see while turning the
+others. The ROOT level carries no knobs, deliberately — the planner names a walk
+root's grid page "Main" whatever the level declares, and "Main / Send B" is not
+a mixer — so the pages are the two levels below it. The io maps a flat grid key
+onto the one real spelling (`bus<N>:sendM`) in one place, and a HOLE does not
+renumber: the second present bus is bus 3 and its key says 3. An unresolved
+`buses:config` yields a `null` contract rather than an empty one, because an
+empty one is a claim — "this slot has no buses" — drawn as a mixer with no
+faders on it.
+
+**There is no MAIN row, and the slot's own two send levels are not offered.**
+They were, and they did nothing: `inst->main_send_level` is written, serialized,
+read back and patch-applied, and **no audio path reads it** —
+`chain_drain_sends` in `chain_host.c` says so in as many words. It is inert for
+a real reason: at drain time Main's post-insert signal does not exist, because
+under the same-frame-FX mode the device always runs `render_block` returns the
+raw synth and the slot's own FX chain runs later into a different buffer, so
+draining Main there would send a PRE-FX signal while every bus sends a
+POST-insert one — two meanings behind one control. Doing it properly needs a
+second drain point after `chain_process_fx` (and under `rebuild_from_la` that
+point moves again). Until then the row is `Sends`, a door into the mixer and
+nothing else, and it is offered only when the slot has at least one bus. The C
+fields stay, with the missing drain named beside them, so wiring it later is a
+mix-path change and not a re-plumb. `busRowsNow` also drops the row when the
+knob grid is not the user's Param View — every screen-reader session — since
+the door then opens onto nothing and the same two levels are already rows on
+each bus's own menu.
+
+**Buses PERSIST, and for a while the file format had a reader and no writer.**
+`bus_parse_section` (`chain_patch.c`) has always read `buses` / `main_sends` out
+of a saved slot; nothing emitted them. That is worse than "buses do not
+persist": `patch_info_t` is zeroed before the parse, so a document without the
+key arrives at `chain_bus_apply_patch` as four absent buses and it **resets all
+four**. Build a two-bus kit, load any preset or change sets, and the buses,
+voice assignments, inserts and send levels were destroyed mid-session, in
+silence. The producer is `busPatchFields` (`bus_model.mjs`), called from
+`buildSlotPatchJson`, and it emits per-FX `state` as well — which is what makes
+`chain_bus.c`'s staged `fx_state_request` / `fx_state_pending` arm reachable at
+all, so a bus reverb comes back with its parameters and without being
+reinstantiated. Three rules ride on it: a hole is `{"present":0}` and never a
+compaction; key ORDER is load-bearing, because `bus_field` takes the first hit
+inside the object's span and an insert's opaque state is inside that span
+(`name` before `fx`, `module`/`bypassed` before `state`, and `main_sends`
+declared ahead of every component in the document); and a `buses:config` read
+that did not COMPLETE bails the whole save — for an explicit save too, because
+the document it would otherwise write is not missing a field, it is a document
+that deletes the user's buses on the next load.
+`tests/host/test_chain_patch_roundtrip.sh` runs the real producer under node and
+feeds what it writes to the real C parser, with the key deleted as the negative
+control; a hand-written fixture on both sides is exactly how a format with no
+writer passed its tests.
 
 **The list value column is ~11 characters and carries three facts.** Insert
 summary plus both send levels: past two inserts the summary becomes a COUNT

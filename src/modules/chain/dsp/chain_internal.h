@@ -342,11 +342,18 @@ typedef struct {
  * bus can be configured before it is allocated without ever dropping audio.
  */
 typedef struct {
-    /* RT-thread bookkeeping ONLY. The render path's "does this bus exist"
+    /* Written by the RT thread ONLY. The render path's "does this bus exist"
      * test is `buf != NULL`, not this — buf is the one that fails safe, since
      * a bus awaiting its buffer routes through Main. Do not start branching on
      * in_use in the render path: it is written without a release and would
-     * become a second, unsynchronised cross-thread signal. */
+     * become a second, unsynchronised cross-thread signal.
+     *
+     * THE WORKER DOES READ IT, in exactly two places, and both are the
+     * allocation decision rather than an audio one: chain_bus_worker_reconcile
+     * allocates `buf` only while in_use, and bus_post_work asks it whether a
+     * bus that has never existed is worth starting a thread for. A stale read
+     * there costs one wasted (idempotent) pass or one deferred allocation the
+     * next request retries — never a pointer the render path can follow. */
     int   in_use;
     char  name[MAX_NAME_LEN];
     /* BUS_BUF_SAMPLES int16_t's (stereo interleaved) when non-NULL. The

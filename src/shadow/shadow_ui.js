@@ -3511,8 +3511,21 @@ function refreshBuses() {
     return a && b;
 }
 
+/*
+ * THE one row list. Both the input paths and shadow_ui_buses.mjs go through
+ * this (the views read it as ctx.busRows), so nothing can index a list the
+ * other half did not draw.
+ *
+ * The Sends row is dropped when the knob grid is not the user's Param View —
+ * which is every screen-reader session. It is a door into the send MIXER and
+ * the mixer is a grid; with no grid to open, the row would answer a click by
+ * doing nothing, and the same two levels are already rows on each bus's own
+ * menu.
+ */
 function busRowsNow() {
-    return BusModel.busListRows(busConfig, getModuleAbbrev);
+    const rows = BusModel.busListRows(busConfig, getModuleAbbrev);
+    if (paramPagesEnabled()) return rows;
+    return rows.filter((r) => r.kind !== "sends");
 }
 
 /*
@@ -3640,12 +3653,12 @@ function enterBusActions(rowIndex) {
     announce(row ? row.name : "Bus");
 }
 
-/* The key a row's send level is written to. Main's levels are the SLOT's, under
- * "buses:main_sendN"; a bus's are its own. One place, because the two spellings
- * differing at four call sites is how a level silently edits the wrong bus. */
+/* The key a row's send level is written to. One place, because a spelling
+ * differing at four call sites is how a level silently edits the wrong bus.
+ * There is no Main form: the slot's own two levels have no reader in the audio
+ * path and are not offered (see busListRows in bus_model.mjs). */
 function busSendKey(row, which) {
     const n = which === "send2" ? 2 : 1;
-    if (!row || row.kind === "main") return `buses:main_send${n}`;
     return `bus${row.index + 1}:send${n}`;
 }
 
@@ -3777,7 +3790,7 @@ function busSendsGridIo() {
                  * answered. The controller treats a null contract as "the read
                  * did not complete" — it plans nothing and retries — where an
                  * empty answer is a CLAIM, and the claim it would make here is
-                 * "this slot has no buses": a mixer drawn with only Main on it.
+                 * "this slot has no buses": a mixer drawn with no faders on it.
                  */
                 if (!busConfig || busConfig.unresolved) return null;
                 return JSON.stringify(k === "ui_hierarchy"
@@ -3813,16 +3826,19 @@ function busSendsGridIo() {
  * has nothing selected to read out. Same gate enterChainSettings uses.
  */
 function enterBusSendsGrid(rowIndex) {
-    if (!paramPagesEnabled()) { enterBusActions(rowIndex); return; }
+    /* Unreachable through the list — busRowsNow drops the Sends row when the
+     * grid is not the Param View — and kept as the total answer for any other
+     * caller, since the row it would open has no menu of its own. */
+    if (!paramPagesEnabled()) { announce("Sends unavailable in List view"); return; }
     enterParamPages(busSlot, BUS_SENDS_COMPONENT, BUS_SENDS_COMPONENT, null,
                     busSendsGridIo(), {
         label: `S${busSlot + 1}`,
         name: "Sends",
         returnView: VIEWS.BUS_LIST,
-        /* ONE SECTION, ONE PAGE. Each page is Main plus the present buses — at
-         * most five cells — so this never has to split; the flag says the
-         * grouping is AUTHORED, so a fifth bus could not silently become
-         * "Send A - 2" either. */
+        /* ONE SECTION, ONE PAGE. Each page is the present buses — at most four
+         * cells — so this never has to split; the flag says the grouping is
+         * AUTHORED, so a fifth bus could not silently become "Send A - 2"
+         * either. */
         paginate: false,
     });
     announce("Sends");
@@ -9023,6 +9039,16 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
     const patch = {
         custom_name: name,
         input: "both",
+        /* DECLARED HERE, filled in below, and the position is the point: an
+         * object keeps a key's insertion position when it is reassigned, so
+         * naming them ahead of every component puts them ahead of every opaque
+         * `state` blob in the stringified document. bus_parse_section scans the
+         * WHOLE document for "buses" and "main_sends" and takes the first hit,
+         * so a module that stores a key by either name cannot answer for the
+         * slot. JSON.stringify drops an undefined value, so a slot with no
+         * buses still writes neither key. */
+        main_sends: undefined,
+        buses: undefined,
         synth: null,
         audio_fx: []
     };
@@ -9134,6 +9160,59 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
             }
         } catch (e) {
             /* Ignore parse errors */
+        }
+    }
+
+    /*
+     * ---- BUSES ------------------------------------------------------------
+     *
+     * The producer half of the bus file format. chain_patch.c has read "buses"
+     * and "main_sends" since the feature landed and NOTHING WROTE THEM, which
+     * is worse than "buses do not persist": patch_info_t is zeroed before the
+     * parse, so a document without the key arrives at chain_bus_apply_patch as
+     * four absent buses and it RESETS all four. Loading any preset, or changing
+     * sets, destroyed a live bus kit mid-session and said nothing.
+     *
+     * A FAILED READ BAILS THE WHOLE SAVE. Everywhere else in this function that
+     * is the bail-if-empty rule for autosave only; here it applies to an
+     * explicit save too, because the document we would otherwise write is not
+     * merely missing a field — it is a document that DELETES the user's buses
+     * the next time it is loaded. `""` is different and is not a failure: it is
+     * a chain host that serves no bus keys at all, and it emits nothing.
+     */
+    const busRaw = getSlotStateWithRetry(slotIndex, "buses:config", stateRetries);
+    if (busRaw !== "") {
+        const busCfg = BusModel.parseBusesConfig(busRaw);
+        if (busCfg.unresolved) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " buses:config read FAILED — bailing (a document with no " +
+                     "\"buses\" key WIPES them on load)");
+            return null;
+        }
+        let busStateFailed = false;
+        const fields = BusModel.busPatchFields(busCfg, (b, k) => {
+            const raw = getSlotStateWithRetry(slotIndex, `bus${b + 1}:fx${k + 1}:state`,
+                                              stateRetries);
+            if (raw === null) {
+                /* Same tri-state rule as componentEntry: null is a read that did
+                 * not complete, "" is an insert that serves no state. Only the
+                 * first may cost us the save. */
+                if (bailIfEmpty) busStateFailed = true;
+                return undefined;
+            }
+            if (!raw) return undefined;
+            try { return JSON.parse(raw); } catch (e) { return raw; }
+        });
+        if (busStateFailed) {
+            debugLog("buildSlotPatchJson: slot " + slotIndex +
+                     " bus insert state read FAILED — bailing");
+            return null;
+        }
+        if (fields) {
+            /* main_sends FIRST: bus_parse_section scans the whole document for
+             * it, and an insert's opaque state could carry the same key. */
+            patch.main_sends = fields.main_sends;
+            patch.buses = fields.buses;
         }
     }
 
@@ -19422,12 +19501,11 @@ function handleSelect() {
             const row = rows[busListIndex];
             if (!row) break;
             if (row.kind === "new") busCreate();
-            /* MAIN's menu is its two send levels and nothing else, so this row
-             * opens the whole send MIXER instead — every bus's A and B on an
-             * encoder, which is the thing a list row cannot be. A bus row still
-             * opens its own menu: it has voices, inserts, a name and a delete
-             * that the mixer says nothing about. */
-            else if (row.kind === "main") enterBusSendsGrid(busListIndex);
+            /* The Sends row opens the whole send MIXER — every bus's A and B on
+             * an encoder, which is the thing a list row cannot be. A bus row
+             * still opens its own menu: it has voices, inserts, a name and a
+             * delete that the mixer says nothing about. */
+            else if (row.kind === "sends") enterBusSendsGrid(busListIndex);
             else enterBusActions(busListIndex);
             break;
         }
@@ -21746,6 +21824,11 @@ function drawHelpDetail() {
      * decides — a setter here would be a second place a gesture can change the
      * state, which is what the view-module split exists to prevent. */
     Object.defineProperty(_ctx, 'busConfig', { get() { return busConfig; }, enumerable: true });
+    /* The ROW LIST, not a second call to busListRows: the views used to build
+     * their own and would then disagree with the input paths about which rows
+     * exist (busRowsNow drops the Sends row in List view), which is an index
+     * mismatch between what is drawn and what a click acts on. */
+    _ctx.busRows = () => busRowsNow();
     Object.defineProperty(_ctx, 'busVoices', { get() { return busVoices; }, enumerable: true });
     Object.defineProperty(_ctx, 'busListIndex', { get() { return busListIndex; }, enumerable: true });
     Object.defineProperty(_ctx, 'busActionsRow', { get() { return busActionsRow; }, enumerable: true });

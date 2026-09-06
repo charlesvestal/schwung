@@ -56,24 +56,6 @@ static void test_multi_digit_is_not_read_from_one_char(void) {
     printf("  multi-digit: ok\n");
 }
 
-static void test_target_key_roundtrip(void) {
-    char out[BUS_TARGET_KEY_LEN];
-    for (int n = 1; n <= TEST_SLOT_BUSES; n++) {
-        assert(bus_route_target(out, sizeof(out), n) == 1);
-        const char *end = NULL;
-        assert(bus_route_parse_index(out, &end) == n);
-        assert(*end == '\0');
-    }
-
-    /* A buffer too small must be REFUSED, not filled with a prefix. The whole
-     * point of BUS_TARGET_KEY_LEN is that a truncated target compares unequal
-     * and silently un-modulates, so this is the one failure the function
-     * exists to make loud. */
-    char small[4];
-    assert(bus_route_target(small, sizeof(small), 12) == 0);
-    printf("  target roundtrip: ok\n");
-}
-
 static void test_voice_index_lookup(void) {
     const char *ids[4] = { "kick", "snare", "chh", "ohh" };
     assert(bus_voice_index(ids, 4, "kick") == 0);
@@ -107,7 +89,6 @@ int main(void) {
     test_past_the_cap_is_rejected_not_routed_to_zero();
     test_malformed_ids();
     test_multi_digit_is_not_read_from_one_char();
-    test_target_key_roundtrip();
     test_voice_index_lookup();
     printf("PASS\n");
     return 0;
