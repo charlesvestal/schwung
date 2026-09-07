@@ -22869,6 +22869,10 @@ function drawHelpDetail() {
     /* Utility functions */
     _ctx.setView = setView;
     _ctx.getSlotParam = getSlotParam;
+    /* The polled identity of a bus insert, or "" -- read from the cache the
+     * ~1 Hz poll fills, never from IPC: this is consulted on the draw path. */
+    _ctx.busInsertDisplayName = (bus, pos) =>
+        fxDisplayNameCache[`bus:${busSlot}:${bus}:${pos}`] || "";
     _ctx.setSlotParam = setSlotParam;
     _ctx.updateFocusedSlot = updateFocusedSlot;
     /* The slot list's Master FX row. Wrapped, because it reads the mirror and
@@ -25254,6 +25258,38 @@ globalThis.tick = function() {
          * masterFxConfig — i.e. the SEND's positions — so it would poll
          * whatever master slots the send happens to occupy and skip whatever
          * master slots the send leaves empty. */
+        /*
+         * BUS INSERTS, and only the bus on screen.
+         *
+         * A module that ships several effects from one binary -- which is what
+         * default_buses encourages, and what Airwindows already is -- puts
+         * several instances of ONE module in a bus. The diagram labels a box
+         * with the MODULE's abbreviation and the band with the POSITION, so
+         * four of them read as the same three letters over "FX 1".."FX 4".
+         * display_name is the existing answer for an effect with a live
+         * identity; bus inserts were simply never added to the poll.
+         *
+         * SCOPED TO THE OPEN BUS. Four slots x eight buses x eight positions is
+         * 256 reads a second for a screen nobody is looking at. The bus chain
+         * editor is the only place these are drawn, so it is the only place
+         * they are asked -- at most eight reads a second, while you are looking
+         * at them, and pollFxDisplayName's own backoff drops a module that does
+         * not implement it after the first miss.
+         */
+        if (view === VIEWS.BUS_CHAIN && busConfig && !busConfig.unresolved) {
+            const b = busConfig.buses[busChainBus];
+            const fx = (b && b.fx) || [];
+            for (let k = 0; k < fx.length; k++) {
+                if (!fx[k]) continue;
+                const cacheKey = `bus:${busSlot}:${busChainBus}:${k}`;
+                const name = pollFxDisplayName(busSlot,
+                    `bus${busChainBus + 1}:fx${k + 1}:display_name`, cacheKey);
+                if (name && name !== fxDisplayNameCache[cacheKey]) {
+                    fxDisplayNameCache[cacheKey] = name;
+                    needsRedraw = true;
+                }
+            }
+        }
         withFxBus(0, () => {
             for (const { key } of masterFxChainComponents()) {
                 if (key === "settings") continue;
