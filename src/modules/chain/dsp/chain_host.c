@@ -1069,8 +1069,23 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         }
     }
     else if (strcmp(key, "load_file") == 0) {
-        /* Load patch from arbitrary file path (used for autosave restore) */
-        patch_info_t temp_patch;
+        /* Load patch from arbitrary file path (used for autosave restore).
+         *
+         * FILE-SCOPE, NOT A STACK LOCAL. patch_info_t is 232 KB once
+         * SLOT_BUSES is 8 (194 KB at 4), and v2_set_param IS the SPI audio
+         * callback — a stack overflow there is not a glitch, it is a crash
+         * that takes MoveOriginal down. Nothing else on that thread needs the
+         * bytes, and heap-allocating would be an RT violation.
+         *
+         * A static is only safe because this cannot be RE-ENTERED, and that
+         * rests on one fact worth stating rather than re-deriving: a
+         * sub-plugin loaded by v2_load_from_patch_info below could re-enter
+         * through host_api_v1_t::set_param — but the shim never assigns that
+         * field. `shadow_host_api` is BSS and set_param is not among the
+         * twelve members it fills, so every sub-plugin sees NULL and cannot
+         * call back in. If that ever changes, this must go back on the stack
+         * or grow a guard. */
+        static patch_info_t temp_patch;
         memset(&temp_patch, 0, sizeof(temp_patch));
         if (v2_parse_patch_file(inst, val, &temp_patch) == 0) {
             v2_load_from_patch_info(inst, &temp_patch);
