@@ -1718,6 +1718,48 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return off;
     }
 
+    /*
+     * Mod routes as JSON — THE SAVE DOCUMENT. All eight, with the source.
+     *
+     * shadow_ui.js reads this and stores it as `patch.mod_routes`;
+     * chain_patch.c reads that section back, preferring it over the legacy
+     * "lfos" one. A slot saved once is therefore migrated, and one never opened
+     * keeps loading through the legacy reader forever.
+     *
+     * `src` is written as its WIRE NAME rather than its index, so reordering
+     * mod_src_names cannot silently repoint every saved route at a different
+     * source. `slewed` and `slew_primed` are runtime state and are deliberately
+     * absent: persisting a slew position would replay a transient on load.
+     *
+     * A route with no target is written as null, matching lfo_config — an empty
+     * object would be six fields of defaults per unused route in every slot
+     * file.
+     */
+    if (strcmp(key, "mod_config") == 0) {
+        int off = 0;
+        off += snprintf(buf + off, buf_len - off, "{");
+        for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
+            lfo_state_t *lfo = &inst->mod_routes[i];
+            if (i > 0) off += snprintf(buf + off, buf_len - off, ",");
+            if (!lfo->enabled && !lfo->target[0]) {
+                off += snprintf(buf + off, buf_len - off, "\"mod%d\":null", i + 1);
+            } else {
+                off += snprintf(buf + off, buf_len - off,
+                    "\"mod%d\":{\"enabled\":%d,\"src\":\"%s\",\"shape\":%d,\"sync\":%d,"
+                    "\"rate_hz\":%.1f,\"rate_div\":%d,\"depth\":%.2f,\"polarity\":%d,"
+                    "\"phase_offset\":%.2f,\"cc_num\":%d,\"slew\":%.2f,"
+                    "\"target\":\"%s\",\"target_param\":\"%s\","
+                    "\"retrigger\":%d,\"division_table_version\":%d}",
+                    i + 1, lfo->enabled, mod_src_name(lfo->src), lfo->shape, lfo->sync,
+                    lfo->rate_hz, lfo->rate_div, lfo->depth, lfo->bipolar,
+                    lfo->phase_offset, lfo->cc_num, lfo->slew, lfo->target, lfo->param,
+                    lfo->retrigger, LFO_NUM_DIVISIONS);
+            }
+        }
+        off += snprintf(buf + off, buf_len - off, "}");
+        return off;
+    }
+
     /* Knob mapping info */
     if (strcmp(key, "knob_mappings") == 0) {
         /* Return full knob mappings array as JSON for patch saving.

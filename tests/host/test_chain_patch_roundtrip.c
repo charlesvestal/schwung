@@ -910,6 +910,107 @@ static void test_buses_absent(chain_instance_t *inst, patch_info_t *patch) {
     CHECK(patch->main_sends[0] == 0 && patch->main_sends[1] == 0, "no main sends");
 }
 
+
+/* ============================================================================
+ * MOD ROUTES: two section names on disk, and the newer one wins.
+ *
+ * "lfos" is what every patch written before the mod-route sources existed
+ * carries, with keys lfo1 and lfo2. It is READ-ONLY now: nothing writes it, so
+ * a set saved once migrates itself and a set never opened keeps loading. There
+ * is no migration pass and no version stamp anywhere in this feature, because
+ * MOD_SRC_LFO is 0 -- an absent "src" memsets to exactly the source those
+ * routes already had. These assertions are what make that claim checkable.
+ * ========================================================================= */
+
+static void test_mod_routes_legacy(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"name\": \"Old\", \"lfos\": {"
+                "\"lfo1\": {\"enabled\": 1, \"shape\": 2, \"depth\": 0.5,"
+                " \"target\": \"fx1\", \"target_param\": \"mix\","
+                " \"division_table_version\": 27},"
+                "\"lfo2\": null}}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "legacy lfos patch parsed");
+    CHECK(patch->mod_routes[0].enabled == 1, "legacy lfo1 loaded");
+    CHECK(patch->mod_routes[0].shape == 2, "legacy shape survived");
+    CHECK(patch->mod_routes[0].src == MOD_SRC_LFO,
+          "a legacy route is an LFO: an absent src parses as 0, no migration needed");
+    CHECK(strcmp(patch->mod_routes[0].target, "fx1") == 0, "legacy target survived");
+    CHECK(strcmp(patch->mod_routes[0].param, "mix") == 0, "legacy target_param survived");
+    CHECK(patch->mod_routes[1].enabled == 0, "a null legacy route stays inactive");
+    for (int i = 2; i < MOD_ROUTE_COUNT; i++) {
+        CHECK(patch->mod_routes[i].enabled == 0 && patch->mod_routes[i].target[0] == 0,
+              "route %d is untouched by a two-route legacy document", i);
+    }
+}
+
+static void test_mod_routes_modern(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"name\": \"New\", \"mod_routes\": {"
+                "\"mod1\": {\"enabled\": 1, \"src\": \"velocity\", \"depth\": -0.25,"
+                " \"target\": \"synth\", \"target_param\": \"cutoff\","
+                " \"division_table_version\": 27},"
+                "\"mod8\": {\"enabled\": 1, \"src\": \"cc\", \"cc_num\": 74,"
+                " \"slew\": 0.5, \"target\": \"fx2\", \"target_param\": \"mix\","
+                " \"division_table_version\": 27}}}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "mod_routes patch parsed");
+    CHECK(patch->mod_routes[0].src == MOD_SRC_VELOCITY, "mod1 is a velocity route");
+    CHECK(patch->mod_routes[0].depth == -0.25f,
+          "a negative depth round-trips EXACTLY -- it inverts the modulation");
+    CHECK(patch->mod_routes[7].src == MOD_SRC_CC, "mod8 is a CC route");
+    CHECK(patch->mod_routes[7].cc_num == 74, "cc_num round-trips");
+    CHECK(patch->mod_routes[7].slew == 0.5f, "slew round-trips exactly");
+    CHECK(patch->mod_routes[7].slew_primed == 0,
+          "slew_primed is NOT persisted -- restoring it would replay a transient");
+    CHECK(patch->mod_routes[7].slewed == 0.0f, "slewed is not persisted either");
+    CHECK(strcmp(patch->mod_routes[7].target, "fx2") == 0, "mod8 reached route 7");
+    CHECK(patch->mod_routes[3].enabled == 0, "an unmentioned middle route stays empty");
+}
+
+/* An unknown src name must load as LFO rather than rejecting the patch: it is
+ * what a file written by a NEWER build looks like, and losing the whole slot
+ * over one unrecognised word is worse than losing one route source. */
+static void test_mod_routes_unknown_src(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"mod_routes\": {\"mod1\": {\"enabled\": 1, \"src\": \"telepathy\","
+                " \"target\": \"synth\", \"target_param\": \"cutoff\","
+                " \"division_table_version\": 27}}}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0,
+          "a patch with an unknown src still parses");
+    CHECK(patch->mod_routes[0].src == MOD_SRC_LFO, "an unknown src name falls back to LFO");
+    CHECK(patch->mod_routes[0].enabled == 1, "the rest of the route survived");
+}
+
+/* Both sections present: mod_routes wins, and is applied ONCE. Order matters --
+ * legacy first, new second -- or a stale "lfos" would overwrite a route the
+ * user has since edited. */
+static void test_mod_routes_both_sections(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"lfos\": {\"lfo1\": {\"enabled\": 1, \"depth\": 0.25,"
+                " \"target\": \"fx1\", \"target_param\": \"a\","
+                " \"division_table_version\": 27}},"
+                "\"mod_routes\": {\"mod1\": {\"enabled\": 1, \"depth\": 0.75,"
+                " \"target\": \"fx2\", \"target_param\": \"b\","
+                " \"division_table_version\": 27}}}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0,
+          "a patch with both sections parsed");
+    CHECK(patch->mod_routes[0].depth == 0.75f, "mod_routes wins over the legacy section");
+    CHECK(strcmp(patch->mod_routes[0].target, "fx2") == 0, "and it wins on every field");
+}
+
+/* The legacy reader must not invent routes 3-8 from a "lfos" document: the
+ * format froze at two, so a "lfo5" key in that section is not ours to honour. */
+static void test_mod_routes_legacy_caps_at_two(chain_instance_t *inst, patch_info_t *patch) {
+    reset_state(inst);
+    write_patch("{\"lfos\": {\"lfo5\": {\"enabled\": 1, \"depth\": 0.9,"
+                " \"target\": \"fx3\", \"target_param\": \"z\","
+                " \"division_table_version\": 27}}}\n");
+    CHECK(v2_parse_patch_file(inst, patch_path, patch) == 0, "the patch parsed");
+    for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
+        CHECK(patch->mod_routes[i].enabled == 0,
+              "route %d not invented from a lfo5 key -- the legacy format holds two", i);
+    }
+}
+
 /* A "buses" array whose bracket never closes must yield NOTHING, matching the
  * audio_fx scan: refusing nonsense beats inventing sub-mixes from it. */
 static void test_buses_unterminated(chain_instance_t *inst, patch_info_t *patch) {
@@ -1062,6 +1163,11 @@ int main(int argc, char **argv) {
     test_buses_absent(inst, patch);
     test_buses_unterminated(inst, patch);
     test_buses_from_producer(inst, patch, argv[1]);
+    test_mod_routes_legacy(inst, patch);
+    test_mod_routes_modern(inst, patch);
+    test_mod_routes_unknown_src(inst, patch);
+    test_mod_routes_both_sections(inst, patch);
+    test_mod_routes_legacy_caps_at_two(inst, patch);
 
     free(inst);
     free(patch);

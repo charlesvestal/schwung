@@ -9573,13 +9573,24 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
         }
     }
 
-    /* Include LFO config */
-    const lfoConfigJson = getSlotParam(slotIndex, "lfo_config");
-    if (lfoConfigJson) {
+    /*
+     * Mod routes. ONE read, and it writes the NEW section only.
+     *
+     * The legacy "lfos" section is not written any more. chain_patch.c still
+     * READS it, so a slot file saved before mod routes existed keeps loading
+     * forever; writing both would mean two documents of the same eight routes
+     * that could disagree, and the reader prefers the new one anyway.
+     *
+     * "mod_config" answers for all eight routes and carries the source as its
+     * wire name. Its two-route predecessor "lfo_config" is still served by the
+     * DSP for any older consumer, but nothing here asks for it.
+     */
+    const modConfigJson = getSlotParam(slotIndex, "mod_config");
+    if (modConfigJson) {
         try {
-            const lfos = JSON.parse(lfoConfigJson);
-            if (lfos) {
-                patch.lfos = lfos;
+            const modRoutes = JSON.parse(modConfigJson);
+            if (modRoutes) {
+                patch.mod_routes = modRoutes;
             }
         } catch (e) {
             /* Ignore parse errors */
