@@ -16043,7 +16043,8 @@ function exitHierarchyEditor() {
      * (rather than in the canvas teardown, which runs on every canvas open and
      * close) is what makes the next component ask the question afresh. */
     widgetModuleLoaded = "";
-    widgetAttemptedFor = "";
+    widgetAttemptedSig = "";
+    widgetResolvedSig = "";
     hierEditorAllParams = [];
     hierEditorAllKnobs = [];
     hierEditorChildIndex = -1;
@@ -18275,12 +18276,65 @@ let widgetModuleLoaded = "";
  * already does, and it stops entirely the moment the id resolves. */
 const WIDGET_RETRY_TICKS = 15;
 let widgetRetryTick = 0;
-/* The component the last attempt was made for, so a NEW one is attempted at
- * once rather than at the next throttle boundary. */
-let widgetAttemptedFor = "";
+/*
+ * BOTH TRACKERS KEY ON A SIGNATURE, NOT ON A COMPONENT.
+ *
+ * The signature is `<slot>:<component>\0<latched module id>` -- the component
+ * on screen AND what the process-global registry currently holds. Either half
+ * alone is a bug:
+ *
+ *   component only  the OTHER call site (loadHierarchyLevel, the list editor)
+ *                   relatches and wipes the registry without this tick ever
+ *                   running, so the component still matches a registry that
+ *                   has since been emptied for somebody else.
+ *   latch only      returning to a component whose module happens to still be
+ *                   latched would skip the attempt that re-registers it.
+ *
+ * Signature changes are what "new situation" means, so the throttle's
+ * attempt-at-once branch covers a latch stolen from underneath us for free --
+ * and it fires ONCE, because the next frame's signature is the same again.
+ * A bare "the latch is stale" test would have re-attempted every frame for as
+ * long as it stayed unresolvable, which is the IPC cost the throttle exists to
+ * avoid.
+ */
+let widgetAttemptedSig = "";
+let widgetResolvedSig = "";
 
 function tickComponentWidgets() {
-    if (widgetModuleLoaded) return;                 /* resolved: nothing to ask */
+    /*
+     * "RESOLVED" IS A QUESTION ABOUT THE COMPONENT ON SCREEN.
+     *
+     * This early-out read `if (widgetModuleLoaded) return;` -- the latch is a
+     * module id, so any truthy value meant "resolved, nothing to ask". That is
+     * only sound while the latch can only ever describe the component in front
+     * of you, and it cannot: `ensureComponentWidgets` calls `clearWidgets()`
+     * and sets the latch for whichever module reaches it, from EITHER call
+     * site (the list editor's `loadHierarchyLevel`, and this tick). Load a
+     * module that declares no custom kind and the registry is emptied and the
+     * latch set to that module's id -- after which this function returned on
+     * its first line for every component visited afterwards, and nothing was
+     * ever registered again.
+     *
+     * The registry is process-global, so the damage is not local: on device,
+     * opening a module with no custom widget left a module that HAS one
+     * drawing the detector's dials, with no error and no log line, until the
+     * next reboot. `ensureComponentWidgets` was right all along -- it compares
+     * the id -- but it was never reached to do the comparison.
+     *
+     * The guard cannot simply be deleted: without it every frame pays the
+     * ~2.8ms `_module` IPC read that the throttle below exists to avoid. So it
+     * asks the narrower question instead, against the same key the throttle
+     * already computes.
+     *
+     * That is the exact device sequence: the grid resolved for its slot, the
+     * list editor then loaded another module and emptied the registry, and the
+     * grid went on believing its own answer. So the guard closes only while the
+     * signature it resolved for still describes the world -- see the signature
+     * note above.
+     */
+    const key = `${paramPagesSlot()}:${paramPagesComponent()}`;
+    const sig = `${key}\u0000${widgetModuleLoaded}`;
+    if (widgetModuleLoaded && widgetResolvedSig === sig) return;
 
     /*
      * FIRST ATTEMPT IS IMMEDIATE; ONLY RETRIES ARE THROTTLED.
@@ -18299,9 +18353,7 @@ function tickComponentWidgets() {
      * genuinely-unsettled case, where repeating a ~2.8ms round trip every frame
      * would cost more than the render.
      */
-    const key = `${paramPagesSlot()}:${paramPagesComponent()}`;
-    if (key !== widgetAttemptedFor) {
-        widgetAttemptedFor = key;
+    if (sig !== widgetAttemptedSig) {
         widgetRetryTick = 0;
     } else if (++widgetRetryTick % WIDGET_RETRY_TICKS) {
         return;
@@ -18329,6 +18381,32 @@ function tickComponentWidgets() {
     if (!moduleKey) return;
     const id = getSlotParam(slot, moduleKey) || "";
     ensureComponentWidgets(id, getComponentChainParams(slot, comp));
+
+    /*
+     * RECORD THE ATTEMPT AGAINST THE WORLD IT LEAVES BEHIND, NOT THE ONE IT
+     * FOUND.
+     *
+     * Stamping `sig` before the attempt looks equivalent and is not: the
+     * attempt itself usually CHANGES the latch, so the stamp described a state
+     * that no longer existed the moment it was written -- and a later frame
+     * that genuinely arrived in that state was mistaken for a repeat and
+     * throttled. Concretely: enter a component while another module is latched,
+     * register, then have the list editor relatch that same other module. The
+     * signature then matched the stale stamp exactly, and the grid drew dials
+     * for the ~250ms until the throttle came round.
+     *
+     * Stamping afterwards keeps the property the throttle is for -- an attempt
+     * that changed nothing leaves the signature it was given, so the next frame
+     * is correctly a repeat -- while any real change re-attempts at once.
+     */
+    widgetAttemptedSig = `${key}\u0000${widgetModuleLoaded}`;
+
+    /* Resolved only if the latch actually describes THIS component.
+     * ensureComponentWidgets returns without latching on an unresolved id or
+     * unsettled chain_params -- the tri-state rule -- and recording regardless
+     * would re-create the bug one level down, closing the guard on a question
+     * still open. */
+    if (id && widgetModuleLoaded === id) widgetResolvedSig = widgetAttemptedSig;
 }
 
 function ensureComponentWidgets(moduleId, chainParams) {

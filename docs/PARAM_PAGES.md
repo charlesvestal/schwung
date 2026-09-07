@@ -1637,6 +1637,66 @@ shipped `src/modules/audio_fx/widget-test/{module.json,canvas.js}` rather than
 calling `registerWidget()` directly. Every other widget test registers directly,
 and that is exactly why none of them saw this.
 
+#### "Already resolved" is a question about the COMPONENT, not about the process
+
+`tickComponentWidgets` is the knob grid's half of that lifetime, and it opened
+with `if (widgetModuleLoaded) return;` — a comment reading *"resolved: nothing
+to ask"*. The latch is a module id, so any truthy value stopped the retry. That
+is sound only while the latch can only ever describe the component in front of
+you, and it cannot: `ensureComponentWidgets` wipes the process-global registry
+and latches whichever module reaches it, **from either call site** — this tick,
+and `loadHierarchyLevel` in the list editor.
+
+So visiting a module that declares no custom kind emptied the registry and set
+the latch to *its* id, after which this function returned on its first line for
+every component visited afterwards. Nothing registered again. A module that
+*has* a widget then drew the detector's dials, because an unregistered kind does
+not claim its keys — the same silent fall-through as the section above, reached
+from a completely different direction. No error, no log line, and no recovery
+short of a reboot.
+
+Observed on device on 2026-09-07 while developing a module's widget: it
+registered once, an unrelated drum module was opened six minutes later, and from
+then on the grid drew dials. The author's reading was "my widget is broken", and
+an hour of redeploys went into a registry that was never going to be re-read.
+
+Three things make the fix less obvious than it looks.
+
+**The guard cannot simply be deleted.** Without it every frame pays the ~2.8 ms
+`_module` IPC read the throttle exists to avoid — against a 1.68 ms whole-page
+render, so the "fix" costs more than redrawing the screen.
+
+**Remembering the component is not enough either.** The list editor relatches
+without this tick running, so the component can still match a registry that has
+since been emptied for somebody else. The guard closes on a **signature** —
+`<slot>:<component>` *and* the currently latched id — so it reopens whether the
+component changed or the registry was taken out from under it.
+
+**And the attempt must be stamped with the world it LEAVES, not the one it
+found.** Stamping the signature before the attempt looks equivalent; it is not,
+because the attempt itself usually changes the latch, so the stamp described a
+state that no longer existed. A later frame genuinely arriving in that state was
+then mistaken for a repeat and throttled — 250 ms of dials before the module's
+art appeared, which is the "an unresolved answer must not become a picture" rule
+broken by a subtler route. Stamping afterwards preserves what the throttle is
+for (an attempt that changed nothing leaves its signature, so the next frame is
+correctly a repeat) while any real change re-attempts at once.
+
+`tests/host/test_widget_latch_per_component.sh` drives the actual device
+sequence, including the entry through the list editor, and asserts both halves:
+that a module re-registers on the **first** frame after another module has been
+visited, and that a resolved component still costs **zero** IPC reads.
+
+**The old source pin asserted the bug.** `test_canvas_drawcell_wiring.sh`
+required the literal `if (widgetModuleLoaded) return;` — so the defect was not
+merely untested, it was defended. It pins the rule now, plus the *absence* of
+the old form. A source pin that quotes an expression rather than stating a rule
+will do this every time.
+
+**For module authors:** a redeployed `canvas.js` is not re-read while its
+component stays loaded — the latch is per module id, by design, so the script is
+parsed once. Leave the component and come back to pick up a new build.
+
 ### A module may declare SEVERAL widgets, and one call site said otherwise
 
 The registry has always been a `Map`, and `registerWidget` has always taken a
