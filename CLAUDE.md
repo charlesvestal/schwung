@@ -140,9 +140,19 @@ Modules (src/modules/<id>/):
 
 Key sources: `src/schwung_host.c` (host runtime), `src/schwung_shim.c` (LD_PRELOAD shim), `src/host/module_manager.c`, `src/host/menu_ui.js`, `src/host/plugin_api_v1.h`.
 
-Built-in modules: `chain`, `file-browser`, `song-mode`, `wav-player`.
+**Built-in modules — the NINE the tarball actually carries**, which this line
+named four of for a long while: `chain`, `file-browser`, `song-mode`,
+`wav-player`, `freeverb`, `linein`, `chord`, `arp`, `rnbo-runner`. CI pins the
+list in both directions now (`.github/workflows/ci.yml`) — what must be built
+AND what must not ship — because the half that rots quietly is the second one.
+
+Freeverb is the only bundled audio FX and stays for that reason: without it a
+fresh device opens an empty FX picker and has nothing to demonstrate a chain
+with. All nine together are 1.2 MB.
+
 Source-only (not shipped): `store` (on-device store retired — see Module Install/Update below).
-Source-only (not in release tarball): `controller` (superseded by catalog `control`), `tools/{ui,seq,config,splash}-test`, `text-test`.
+Source-only (not in release tarball): `controller` (superseded by catalog `control`), `tools/{ui,seq,config,splash}-test`, `text-test`, `voice-poc` and `midi_fx/sysex_probe` (both SCRUBBED after building — a gated build is not a gated module).
+`velocity_scale` left the tree entirely: it is a catalog module now (`charlesvestal/schwung-velocity-scale`, 0.3.0, deliberately above the 0.2.0 that shipped in the bundle so a device carrying that copy sees an update rather than a downgrade).
 
 ### JS Module Lifecycle
 
