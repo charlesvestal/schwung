@@ -270,7 +270,7 @@ void chain_bus_clear_all(chain_instance_t *inst)
     for (int b = 0; b < SLOT_BUSES; b++) bus_reset(inst, b);
     for (int i = 0; i < BUS_MIX_SENDS; i++) {
         inst->main_send_level[i] = 0;
-        /* The LFO's offset goes with it. lfo_tick re-zeroes this every block, so
+        /* The LFO's offset goes with it. mod_tick re-zeroes this every block, so
          * a stale value could only be heard on the blocks between a reset and
          * the next tick -- but a reset that leaves audio flowing through a send
          * the user just cleared is exactly the kind of gap nobody looks for. */
