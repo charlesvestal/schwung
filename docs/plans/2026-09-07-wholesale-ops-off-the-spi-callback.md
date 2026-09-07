@@ -117,6 +117,53 @@ saves.
 **Fast params must not be deferred.** Pausing a slot per knob turn would lose
 whole 2.9 ms blocks — strictly worse than the bug.
 
+### Relationship to PR #303 (open, unmerged, not hardware-verified)
+
+#303 "Build modules off the SPI callback" solves the SAME DEFECT CLASS at a
+DIFFERENT ENTRY POINT: it defers `create_instance`, measured at **672.9 ms for
+minijv, ~232 consecutive dropped frames**. This plan is about `set_param`.
+
+**It does not fix the reported click**, and the two do not overlap on disk (only
+`CLAUDE.md`). Its own scope note is explicit: *"Scope is the synth position
+only. Audio FX, MIDI FX, Master FX, `load_patch` and boot restore keep the
+synchronous path."* So of the wholesale keys listed above it claims exactly one,
+`synth:module`, and this plan should claim the remainder rather than restate it.
+
+**Its mechanism is better than the lease sketched below, and where it applies it
+should be copied rather than re-invented.** "Stage, don't swap": the loader
+thread builds the instance into a staging record no render path can reach, and
+the SPI thread publishes it by swapping pointers from `v2_render_block`. That
+keeps *"only the SPI thread ever mutates a chain instance"* true verbatim — so
+it needs NO gating at the 65 `.instance` call sites, which is precisely the hard
+part identified below. No locks either, in both directions, which matters
+because an RT thread blocking on a SCHED_OTHER thread's mutex is unbounded
+priority inversion.
+
+**But it cannot be transferred to a state apply, and that is the crux.** Staging
+works by constructing a NEW thing. A state apply MUTATES A RUNNING INSTANCE;
+staging it would mean creating a fresh instance, applying the blob off-thread
+and swapping — i.e. reinstantiating, which cuts reverb tails and resets arp
+phase. That is exactly what a recall exists not to do ("A recall writes STATE,
+never SHAPE"). So the lease problem below survives #303 intact.
+
+**What IS directly reusable is its concurrency discipline: no field has two
+writers.** Its first version shared one `state` word between the two threads and
+produced three real defects — a request lost so the position never loads with
+nothing logged, a stranded staged module leaking a dlopen handle per swap, and a
+segfault from nulling a reusable ~1.1 MB parameter block the loader then
+memset through. Work is derived from generation counters advanced by one side
+only, and "is a load outstanding" is `req_gen != committed_gen`. The lease needs
+the same discipline; copy the structure.
+
+**The attribution logging in this change is an instrument #303 can use.** #303
+ships unverified on hardware, and a 672.9 ms `synth:module` write is far past
+the 1000 µs threshold — so it will name itself in `debug.log` before the merge
+and, after it, its absence is the regression test. Note the limit honestly: this
+measures the BLOCKING half only. #303's own "still owed" is the *burn* number —
+CPU spent at realtime priority by inherited-FIFO plugin threads — and its
+correlation with the Link Audio stalls. Nothing here measures that; that is the
+RT-thread audit's job.
+
 ### The lease, which is the hard part
 
 While the worker holds an instance, nothing on the RT path may touch it.
