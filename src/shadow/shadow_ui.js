@@ -4797,9 +4797,23 @@ function openParamEditorFromGrid(slotIndex, fullKey, meta) {
      */
     if (componentKey === "slot" || componentKey === MASTER_SETTINGS_COMPONENT) {
         const isMaster = componentKey === MASTER_SETTINGS_COMPONENT;
+        /*
+         * THE TWO SCREENS SPELL THE KEY DIFFERENTLY, and this is the one place
+         * that has to know both. A slot route is "modN:" (1..8); a Master FX
+         * route keeps "lfoN:" (1..2), because its params are parsed in the shim
+         * by a literal strncmp that has never heard of mod routes.
+         *
+         * This regex was left at /^slot:lfo([12]):target$/ when the slot keys
+         * were renamed, so the Targ cell stopped opening the picker — the door
+         * drew, took the click, and did nothing. Reported from the device.
+         * Nothing caught it: the drift pin greps for two-route literals, and a
+         * pattern inside a REGEX LITERAL is invisible to that (see
+         * tests/host/test_grid_target_dive.sh, which evaluates the match
+         * instead of reading for it).
+         */
         const m = isMaster
             ? /^master_settings:master_fx:lfo([12]):target$/.exec(String(fullKey || ""))
-            : /^slot:lfo([12]):target$/.exec(String(fullKey || ""));
+            : /^slot:mod([1-8]):target$/.exec(String(fullKey || ""));
         if (m) {
             /* enterLfoTargetPicker reads lfoCtx, so point it at this LFO first —
              * the same context the list editor builds. */
