@@ -1165,7 +1165,18 @@ The DSP plugin receives these in `set_param()` and `get_param()`.
 
 ## Shadow UI Parameter Hierarchy
 
-Modules expose a navigable parameter hierarchy to the Shadow UI via `ui_hierarchy` in module.json or `get_param("ui_hierarchy")`. The hierarchy uses a **levels dictionary** format with named levels:
+Modules expose a navigable parameter hierarchy to the Shadow UI via
+`ui_hierarchy`. **Where it must live depends on your `component_type`, and a
+sound generator has only one option: `get_param("ui_hierarchy")`.** A synth's
+`module.json` hierarchy is never read, and declaring one there produces no
+error -- the grid simply plans from `chain_params` as though you had declared
+nothing, which on the device looks like a module with no pages at all, just its
+preset row. Audio FX and MIDI FX may use either. The full rule, with the source
+lines that implement it, is under
+[Where the hierarchy must live](#where-the-hierarchy-must-live) below -- read it
+before choosing, not after.
+
+The hierarchy uses a **levels dictionary** format with named levels:
 
 ```json
 {
@@ -1671,6 +1682,8 @@ rack" would seat every one of them as one. Notes describe *voices*; `pad_layout`
 describes the *surface*; the two axes never imply each other. `"drums"` with no
 voices declared is legal (a rack whose pages are not published yet), and
 `"chromatic"` with a note on every zone page is legal and correct.
+
+### Where the hierarchy must live
 
 It lives in `ui_hierarchy` rather than in `module.json` capabilities so that a
 module whose answer depends on what is loaded — an sfz player, a slicer: drums
