@@ -103,21 +103,47 @@ if grep -nE 'announce\("Master FX' src/shadow/shadow_ui.js >/dev/null 2>&1; then
   exit 1
 fi
 
-# A SEND has no fx:insert/fx:remove/fx:move — the shim serves those only under
-# the master_fx: prefix. The picker's "a removal is COMPLETE here" shortcut is
-# therefore true for the master and false for a send, and taking it on faith
-# made picking None on a loaded send position do nothing at all: the verb went
-# nowhere and the module write that empties the position was skipped as
-# redundant. Reported from hardware twice.
+# hasShapeVerbs MUST AGREE WITH WHAT THE SHIM SERVES.
+#
+# This used to assert the opposite -- that a send declares false -- because the
+# shim served fx:insert/fx:remove/fx:move only under master_fx:. Both halves of
+# that have cost a hardware bug. Declaring false made picking None on a loaded
+# send do nothing (the verb went nowhere AND the module write that empties the
+# position was skipped as redundant). Then the editor, which is shared, offered
+# Shift+jog anyway and moved its own model against a shim that dropped the verb,
+# so the picture reordered and the audio did not.
+#
+# So the pin is the AGREEMENT, not either value: a bus that claims the verbs
+# must have a handler, and one that does not must not be offered them.
 for f in send1 send2; do
   if ! grep -qE "id: \"$f\"" src/shadow/shadow_ui.js; then
     echo "FAIL: FX_BUSES has no $f row to check" >&2; exit 1
   fi
 done
-if ! grep -qE 'hasShapeVerbs: true' src/shadow/shadow_ui.js ||
-   ! grep -qE 'hasShapeVerbs: false' src/shadow/shadow_ui.js; then
-  echo "FAIL: FX_BUSES must declare hasShapeVerbs — true for the master, false for a send" >&2
-  exit 1
+if grep -cE 'hasShapeVerbs:' src/shadow/shadow_ui.js | grep -qx 0; then
+  echo "FAIL: FX_BUSES no longer declares hasShapeVerbs at all" >&2; exit 1
+fi
+# Every bus that declares TRUE needs the shim to route and serve the verbs.
+if grep -qE 'id: "send[12]".*' src/shadow/shadow_ui.js && \
+   grep -A2 -E 'id: "send1"' src/shadow/shadow_ui.js | grep -q 'hasShapeVerbs: true'; then
+  # send_fx_key.h must let the fx-shaped verb keys through to the bus level;
+  # its guard rejects anything beginning with "fx" that names no position.
+  for verb in 'fx:insert' 'fx:remove' 'fx:move'; do
+    if ! grep -q "\"$verb\"" src/host/send_fx_key.h; then
+      echo "FAIL: send_fx_key.h drops $verb — a send declares hasShapeVerbs but the key never reaches the handler" >&2
+      exit 1
+    fi
+  done
+  for fn in shadow_send_fx_insert shadow_send_fx_remove shadow_send_fx_move; do
+    if ! grep -q "int $fn(" src/host/shadow_chain_mgmt.c; then
+      echo "FAIL: $fn is missing — a send declares hasShapeVerbs with no permutation behind it" >&2
+      exit 1
+    fi
+  done
+  if ! grep -q 'shadow_send_fx_move(send_idx' src/host/shadow_chain_mgmt.c; then
+    echo "FAIL: the send param handler never calls shadow_send_fx_move — the verb is routed but unserved" >&2
+    exit 1
+  fi
 fi
 if ! grep -qE 'shapeVerbs && choice\.shape && choice\.shape\.kind === "remove"' src/shadow/shadow_ui.js; then
   echo "FAIL: the picker treats a remove as complete without asking whether the bus HAS the verb" >&2

@@ -1042,6 +1042,97 @@ int shadow_master_fx_move(int from, int to) {
     return 1;
 }
 
+/* ============================================================================
+ * Send bus shape edits
+ * ============================================================================
+ *
+ * The SAME permutation, aimed at shadow_send_fx_slots[send][] instead. It is
+ * genuinely simpler than the master's rather than a trimmed copy of it, and the
+ * two things it does not do are the two things fx_slot_unload_impl already
+ * documents as Master FX's alone:
+ *
+ *   - NO LFO RETARGET. A send bus has no LFOs, so there is no table naming a
+ *     position by string and nothing to re-aim.
+ *   - NO LENGTH. A send publishes none; its chain is SEND_FX_SLOTS positions
+ *     with holes, and the editor derives what to draw from `modules`. So the
+ *     permutation is bounded by the array itself, which also means a module can
+ *     be moved into a trailing empty position -- correct here, where the master
+ *     would be extending a length it publishes.
+ *
+ * There were deliberately no verbs here at all ("a send position is emptied by
+ * writing an empty string into it"). That was fine while nothing offered to
+ * reorder one -- but the editor is shared, and its Shift+jog moved the model
+ * and emitted a verb the shim dropped on the floor, so the picture reordered
+ * and the audio did not. Reported from hardware.
+ *
+ * Runs on the SPI callback, like the master's: no allocation, no I/O, and the
+ * caller refuses while a staged load is in flight for the same reason.
+ */
+#define SEND_PERM_MAX_ARRAYS 8
+
+static int send_perm_collect(int send, chain_perm_array_t *out, char **owned_ptrs) {
+    int n = 0;
+    for (int i = 0; i < SEND_FX_SLOTS; i++) {
+        owned_ptrs[i] = shadow_send_fx_slots[send][i].chain_params_cache;
+        shadow_send_fx_slots[send][i].chain_params_cache = NULL;
+    }
+    /* Two arrays where the master collects five: the three it adds are its own
+     * runtime chain_params caches, which live in parallel arrays there and are
+     * plain FIELDS of the shared struct here -- so they rotate with it. */
+    out[n++] = (chain_perm_array_t)MFX_PERM_FIELD(shadow_send_fx_slots[send]);
+    out[n++] = (chain_perm_array_t)MFX_PERM_OWNED(owned_ptrs);
+    return n;
+}
+
+static void send_perm_restore_owned(int send, char **owned_ptrs) {
+    for (int i = 0; i < SEND_FX_SLOTS; i++) {
+        shadow_send_fx_slots[send][i].chain_params_cache = owned_ptrs[i];
+    }
+}
+
+static int send_perm_ok(int send) {
+    return send >= 0 && send < SEND_BUSES;
+}
+
+int shadow_send_fx_insert(int send, int at) {
+    if (!send_perm_ok(send)) return 0;
+    chain_perm_array_t arrays[SEND_PERM_MAX_ARRAYS];
+    char *owned[SEND_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+    int n = send_perm_collect(send, arrays, owned);
+    int now = chain_perm_insert(arrays, n, SEND_FX_SLOTS, SEND_FX_SLOTS, at, map);
+    send_perm_restore_owned(send, owned);
+    return now < 0 ? 0 : 1;
+}
+
+int shadow_send_fx_remove(int send, int at) {
+    if (!send_perm_ok(send)) return 0;
+    if (at < 0 || at >= SEND_FX_SLOTS) return 0;
+    chain_perm_array_t arrays[SEND_PERM_MAX_ARRAYS];
+    char *owned[SEND_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+
+    /* Through the unload, never a memset: the struct holds a live instance AND
+     * a dlopen handle, and zeroing it leaks both silently. */
+    shadow_send_fx_slot_unload(send, at);
+
+    int n = send_perm_collect(send, arrays, owned);
+    int now = chain_perm_remove(arrays, n, SEND_FX_SLOTS, at, map);
+    send_perm_restore_owned(send, owned);
+    return now < 0 ? 0 : 1;
+}
+
+int shadow_send_fx_move(int send, int from, int to) {
+    if (!send_perm_ok(send)) return 0;
+    chain_perm_array_t arrays[SEND_PERM_MAX_ARRAYS];
+    char *owned[SEND_FX_SLOTS];
+    int map[CHAIN_PERM_MAX_POS];
+    int n = send_perm_collect(send, arrays, owned);
+    int now = chain_perm_move(arrays, n, SEND_FX_SLOTS, from, to, map);
+    send_perm_restore_owned(send, owned);
+    return now < 0 ? 0 : 1;
+}
+
 int shadow_master_fx_count(void) {
     return mfx_fx_count_effective();
 }
@@ -3756,6 +3847,61 @@ void shadow_inprocess_handle_param_request(void) {
                                  shadow_send_a_to_b);
                         shadow_param->error = 0;
                         shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (strcmp(send_param, "fx_count") == 0) {
+                    /* A send publishes no dynamic length -- its chain is the
+                     * full array with holes -- but the editor asks, so answer
+                     * the cap rather than let the key fall through unserved and
+                     * be read as a failure. Read-only, as the master's is. */
+                    if (is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else {
+                        snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d",
+                                 SEND_FX_SLOTS);
+                        shadow_param->error = 0;
+                        shadow_param->result_len = strlen(shadow_param->value);
+                    }
+                } else if (strcmp(send_param, "fx:insert") == 0 ||
+                           strcmp(send_param, "fx:remove") == 0 ||
+                           strcmp(send_param, "fx:move") == 0) {
+                    /* THE SHAPE VERBS, spelled and behaving exactly as the
+                     * master's so the editor's one shared emitter differs
+                     * between the two targets only in the prefix its key()
+                     * adds. Ids are 1-BASED on the wire; the C is 0-based.
+                     *
+                     * Refused (error 15), never queued, while a staged load is
+                     * in flight: a permutation moves the positions a staged
+                     * realisation is stamped against, so the install would put
+                     * the incoming module wherever the shift had left that
+                     * index. Same rule, same code, as the master block. */
+                    if (!is_set) {
+                        shadow_param->error = 14;
+                        shadow_param->result_len = -1;
+                    } else if (shadow_fx_load_any_in_flight()) {
+                        shadow_param->error = 15;
+                        shadow_param->result_len = 0;
+                    } else {
+                        int ok = 0;
+                        if (send_param[3] == 'm') {          /* fx:move */
+                            const char *arrow = strchr(shadow_param->value, '>');
+                            if (arrow) {
+                                int from = atoi(shadow_param->value);
+                                int to = atoi(arrow + 1);
+                                if (from >= 1 && to >= 1) {
+                                    ok = shadow_send_fx_move(send_idx, from - 1, to - 1);
+                                }
+                            }
+                        } else {
+                            int at = atoi(shadow_param->value);
+                            if (at >= 1) {
+                                ok = (send_param[3] == 'i')
+                                     ? shadow_send_fx_insert(send_idx, at - 1)
+                                     : shadow_send_fx_remove(send_idx, at - 1);
+                            }
+                        }
+                        shadow_param->error = ok ? 0 : 15;
+                        shadow_param->result_len = 0;
                     }
                 } else if (strcmp(send_param, "modules") == 0) {
                     /* The whole send chain's ids and paths in ONE answer, the

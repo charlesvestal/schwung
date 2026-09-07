@@ -2015,13 +2015,26 @@ function masterFxSendEntries() {
         }));
 }
 
+/*
+ * A send heads its row with the way BACK, where the master heads its row with
+ * the two sends. Same place, same gesture, opposite direction -- and it means
+ * the head of the row always answers "where does this bus sit", on both screens
+ * rather than only on the one you happen to have entered from.
+ */
+function masterFxBackEntry() {
+    return { id: "busback", key: "busback", kind: "busback",
+             busIndex: 0, label: FX_BUSES[0].short };
+}
+
 function masterFxChainComponents() {
     const rows = chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
-    /* Only the MASTER bus heads its row with them. A send showing its own entry
-     * would be a box that reopens the screen it is drawn on, and Send A showing
-     * Send B would claim a routing that does not exist (the A->B feed is a level
-     * on A's Settings, not a position in its chain). */
-    if (!fxBusIsMaster()) return rows;
+    /* Only the MASTER bus heads its row with the sends. A send showing its own
+     * entry would be a box that reopens the screen it is drawn on, and Send A
+     * showing Send B would claim a routing that does not exist (the A->B feed is
+     * a level on A's Settings, not a position in its chain). */
+    if (!fxBusIsMaster()) {
+        return [masterFxBackEntry()].concat(rows).map((c, i) => ({ ...c, position: i }));
+    }
     /* `position` is the ROW and is renumbered, because chainEditorComponents
      * assigned it before these existed. `index` -- the FX position -- is left
      * exactly as it was; that is the whole point of telling the two apart. */
@@ -3393,11 +3406,16 @@ const FX_BUSES = [
     { id: "master", label: "Master FX", short: "MFX",  prefix: "master_fx:",
       send: -1, hasLfos: true,  hasPresets: true,  hasShapeVerbs: true,
       busLevelKeys: [] },
+    /* hasShapeVerbs TRUE: the shim serves send<N>:fx:insert / :remove / :move
+     * now, through the same permutation the master uses. It served none, while
+     * the editor -- which is shared -- offered Shift+jog anyway: the model
+     * reordered, the verb was dropped on the floor, and the audio kept the old
+     * order. A capability flag that lies is worse than a missing feature. */
     { id: "send1",  label: "Send A",    short: "SNDA", prefix: "send1:",
-      send: 0,  hasLfos: false, hasPresets: false, hasShapeVerbs: false,
+      send: 0,  hasLfos: false, hasPresets: false, hasShapeVerbs: true,
       busLevelKeys: ["return", "to_send2"] },
     { id: "send2",  label: "Send B",    short: "SNDB", prefix: "send2:",
-      send: 1,  hasLfos: false, hasPresets: false, hasShapeVerbs: false,
+      send: 1,  hasLfos: false, hasPresets: false, hasShapeVerbs: true,
       busLevelKeys: ["return"] },
 ];
 let currentFxBusIndex = 0;
@@ -19599,6 +19617,8 @@ function handleJog(delta, shift = isShiftHeld()) {
                     const comp = comps[selectedMasterFxComponent];
                     if (comp.kind === "sendbus") {
                         announceMenuItem(comp.label, fxBusSummaries[comp.busIndex] || "");
+                    } else if (comp.kind === "busback") {
+                        announce(`Back to ${FX_BUSES[comp.busIndex].label}`);
                     } else if (comp.kind === "add") {
                         /* "+, Empty" says nothing. The label already is the
                          * whole instruction. */
@@ -20198,8 +20218,9 @@ function handleSelect() {
                      * outlive the position it named. Nothing to open. */
                     break;
                 }
-                if (selectedComp.kind === "sendbus") {
-                    /* A door, drawn where the signal actually enters. */
+                if (selectedComp.kind === "sendbus" || selectedComp.kind === "busback") {
+                    /* A door, drawn where the signal actually enters -- or, on a
+                     * send, where it goes. */
                     enterFxBus(selectedComp.busIndex);
                     break;
                 }

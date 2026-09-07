@@ -302,13 +302,19 @@ function settingsShift(components, index, first) {
     return 0;
 }
 
-/* SEND_GAP applies to the first box that is NOT a send entry, and everything
+/* The two HEAD DOORS: the master row leads with the sends, a send row leads
+ * with the way back. Same role, same gap, so the test is on the role. */
+export function isBusDoor(kind) {
+    return kind === "sendbus" || kind === "busback";
+}
+
+/* SEND_GAP applies to the first box that is NOT a head door, and everything
  * after it -- the mirror of settingsShift, which applies from Settings onward. */
 function sendShift(components, index, first) {
     for (let i = first + 1; i <= index; i++) {
         const prev = components[i - 1];
         const c = components[i];
-        if (prev && prev.kind === "sendbus" && c && c.kind !== "sendbus") return SEND_GAP;
+        if (prev && isBusDoor(prev.kind) && c && !isBusDoor(c.kind)) return SEND_GAP;
     }
     return 0;
 }
@@ -484,6 +490,22 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
          * its outline, and radius 4 is the floor render_page.mjs already treats
          * as a readable dial rather than a bar.
          */
+        /*
+         * THE WAY BACK. A chevron and the destination, not just an arrow: the
+         * header already says which bus you are IN, so the box has to say where
+         * it goes or it is one glyph asking to be guessed at.
+         */
+        if (comp.kind === "busback") {
+            const ink = selected ? 0 : 1;
+            const cy = y + Math.floor(BOX_H / 2);
+            for (let d = 0; d < 3; d++) {
+                for (let k = -d; k <= d; k++) px(x + 5 - d, cy + k, ink);
+            }
+            const lbl = fitAbbrev(ctx, String(comp.label || ""), bw - 8);
+            ctx.print(x + 8, y + LABEL_DY, lbl, ink);
+            continue;
+        }
+
         if (comp.kind === "sendbus") {
             const lvl = opts.sendLevel ? opts.sendLevel(comp) : 0;
             const ink = selected ? 0 : 1;

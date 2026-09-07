@@ -531,6 +531,14 @@ int shadow_master_fx_insert(int at);
 int shadow_master_fx_remove(int at);
 int shadow_master_fx_move(int from, int to);
 
+/* The same three verbs for a global send bus. Simpler than the master's: a send
+ * has no LFOs to re-aim and publishes no length, so the permutation is bounded
+ * by SEND_FX_SLOTS itself. Return 1 on success, 0 if refused before anything
+ * moved. SPI callback, like the master's. */
+int shadow_send_fx_insert(int send, int at);
+int shadow_send_fx_remove(int send, int at);
+int shadow_send_fx_move(int send, int from, int to);
+
 /* How long the Master FX chain is, holes included — NOT the cap. Published as
  * `master_fx:fx_count`. Once a position can be removed, the cap no longer says
  * where the chain ends; bound loops by this. Never reports less than

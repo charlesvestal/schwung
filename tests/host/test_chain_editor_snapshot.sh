@@ -355,8 +355,12 @@ function masterComponents(config, isMaster = true) {
                 uiSrc.indexOf("\n}\n", uiSrc.indexOf("function masterFxChainConfig("))) +
     "\n}\nreturn masterFxChainConfig;")(held.c, MASTER_FX_SLOTS);
   const rows = chainEditorComponents(decls(), { hasSynth: false, hasMidiFx: false });
-  if (!isMaster) return rows;
-  return masterFxSendEntries().concat(rows).map((c, i) => ({ ...c, position: i }));
+  /* A SEND heads its row with the way back, where the master heads its row with
+     the two sends -- so neither case is a bare chain, and a harness that built
+     one would baseline a row the device does not draw. */
+  const head = isMaster ? masterFxSendEntries()
+    : [{ id: "busback", key: "busback", kind: "busback", busIndex: 0, label: "MFX" }];
+  return head.concat(rows).map((c, i) => ({ ...c, position: i }));
 }
 
 /* drawMasterFx takes its shared state through ctx, so the state goes in

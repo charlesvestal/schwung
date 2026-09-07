@@ -29,6 +29,7 @@
 #define SEND_FX_KEY_H
 
 #include <stddef.h>
+#include <string.h>   /* strcmp, for the shape verbs below */
 #include "master_fx_key.h"   /* master_fx_parse_index, for the "fx<M>" half */
 
 /* Buffer for a formatted "send%d" key or LFO target. Matches
@@ -94,11 +95,24 @@ static inline int send_fx_route(const char *key, int send_count, int slot_count,
         return 1;
     }
 
-    /* Anything fx-SHAPED that did not parse as an in-range position is
+    /* THE THREE SHAPE VERBS are bus-level keys that begin with "fx", and they
+     * are the only ones. They have to be named here because the rejection
+     * below is deliberately broad: "send1:fx:move" is fx-SHAPED but names no
+     * position, so without this it was dropped on the floor and the editor's
+     * reorder silently did nothing while still moving its own model. */
+    if (strcmp(rest, "fx:insert") == 0 || strcmp(rest, "fx:remove") == 0 ||
+        strcmp(rest, "fx:move") == 0 || strcmp(rest, "fx_count") == 0) {
+        if (out_send)  *out_send  = n - 1;
+        if (out_slot)  *out_slot  = -1;
+        if (out_param) *out_param = rest;
+        return 1;
+    }
+
+    /* Anything else fx-SHAPED that did not parse as an in-range position is
      * rejected here rather than handed back as a bus-level param name.
      * "fx0:" and "fx01:" fail master_fx_parse_index's leading-zero rule, and
      * without this line they would arrive at the bus level as a param
-     * literally called "fx0:cutoff". No bus-level key begins with "fx". */
+     * literally called "fx0:cutoff". */
     if (rest[0] == 'f' && rest[1] == 'x') return 0;
 
     if (*rest == '\0') return 0;           /* "send1:" names nothing */

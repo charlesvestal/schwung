@@ -146,6 +146,56 @@ static void test_return_level_on_first_load(void) {
     printf("  return level on first load: ok\n");
 }
 
+/*
+ * THE THREE SHAPE VERBS reach the bus level.
+ *
+ * They are fx-SHAPED and name no position, so the guard that rejects
+ * "fx0:cutoff" swallowed them whole: "send1:fx:move" routed nowhere, the shim
+ * never saw it, and the editor reordered its own model against a chain that had
+ * not moved. The picture changed and the audio did not.
+ */
+static void test_shape_verbs_route(void) {
+    static const char *verbs[] = { "fx:insert", "fx:remove", "fx:move", "fx_count" };
+    for (unsigned v = 0; v < sizeof(verbs) / sizeof(verbs[0]); v++) {
+        char key[64];
+        snprintf(key, sizeof(key), "send1:%s", verbs[v]);
+        int send = -9, slot = -9;
+        const char *param = NULL;
+        assert(send_fx_route(key, TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 1);
+        assert(send == 0);
+        /* -1 is the BUS, not a position: a caller must branch on the slot before
+         * indexing the FX array, or a verb would be written into fx1. */
+        assert(slot == -1);
+        assert(strcmp(param, verbs[v]) == 0);
+    }
+
+    /* Every send bus, not just the first. */
+    {
+        int send = -9, slot = -9; const char *param = NULL;
+        assert(send_fx_route("send2:fx:move", TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 1);
+        assert(send == 1 && slot == -1 && strcmp(param, "fx:move") == 0);
+    }
+
+    /* AND THE GUARD STILL HOLDS for everything else fx-shaped. These must not
+     * become bus-level params now that three of their neighbours do. */
+    static const char *still_rejected[] = {
+        "send1:fx0:cutoff", "send1:fx01:cutoff", "send1:fx9:cutoff",
+        "send1:fx:", "send1:fx", "send1:fx:moves", "send1:fx:mov",
+        "send1:fxmove", "send1:fx_counts",
+    };
+    for (unsigned i = 0; i < sizeof(still_rejected) / sizeof(still_rejected[0]); i++) {
+        int send = -9, slot = -9; const char *param = NULL;
+        assert(send_fx_route(still_rejected[i], TEST_SEND_BUSES, TEST_SEND_FX_SLOTS,
+                             &send, &slot, &param) == 0);
+        /* NOTHING written on a rejection -- the whole contract of this header. */
+        assert(send == -9 && slot == -9 && param == NULL);
+    }
+
+    printf("  shape verbs route to the bus level, guard intact: ok\n");
+}
+
 int main(void) {
     printf("test_send_fx_key (buses=%d slots=%d):\n",
            TEST_SEND_BUSES, TEST_SEND_FX_SLOTS);
@@ -154,6 +204,7 @@ int main(void) {
     test_past_caps_rejected();
     test_malformed();
     test_return_level_on_first_load();
+    test_shape_verbs_route();
     test_null_outparams();
     printf("PASS\n");
     return 0;
