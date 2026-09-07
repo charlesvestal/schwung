@@ -1998,6 +1998,39 @@ function masterFxChainComponents() {
  * row, the `+`, the Settings box, or an index left over from a chain that got
  * shorter? The gates that used to compare the index against a fixed settings
  * position ask this instead; there is no fixed settings position any more. */
+/*
+ * A master-row ROW INDEX and an FX POSITION are DIFFERENT NUMBERS.
+ *
+ * They are equal today and that is a coincidence: the row happens to begin at
+ * fx1, so row i is position i. The moment anything is drawn ahead of the first
+ * FX box -- the Send A / Send B entries -- every site that passed one where the
+ * other was wanted starts addressing the wrong module. Silently: both are small
+ * integers and both are in range, so there is no error to catch, only a click on
+ * fx1 that edits fx3.
+ *
+ * parseChainId is the authority (it already parses "fx3"). A row that is not an
+ * FX position -- `+`, Settings, a send entry -- answers -1 rather than a
+ * plausible number, so a caller cannot mistake "not a position" for position 0.
+ */
+function masterFxPositionOf(rowIndex) {
+    if (!(rowIndex >= 0)) return -1;
+    const comp = masterFxChainComponents()[rowIndex];
+    /* chainEditorComponents already carries BOTH numbers: `index` is the
+     * position within the section, `position` is the row. Reading the field
+     * rather than re-parsing the key means the two can never disagree. */
+    return (comp && comp.kind === "module") ? comp.index : -1;
+}
+
+/* The inverse: which row an FX position occupies, or -1 if it is not drawn. */
+function masterFxRowOf(position) {
+    if (!(position >= 0)) return -1;
+    const comps = masterFxChainComponents();
+    for (let i = 0; i < comps.length; i++) {
+        if (comps[i].kind === "module" && comps[i].index === position) return i;
+    }
+    return -1;
+}
+
 function masterFxSelectedIsModule() {
     if (selectedMasterFxComponent < 0) return false;
     const comp = masterFxChainComponents()[selectedMasterFxComponent];
@@ -11863,7 +11896,8 @@ function applyMasterFxModuleSelection() {
         if (pickerReplacedModule(choice.replaced, picked)) {
             clearLfoRoutingForComponent(MASTER_CHAIN_TARGET, comp.key);
         }
-        setMasterFxSlotModule(selectedMasterFxComponent, (selected && selected.dspPath) || "");
+        /* comp.index is the FX POSITION; selectedMasterFxComponent is the ROW. */
+        setMasterFxSlotModule(comp.index, (selected && selected.dspPath) || "");
     }
 
     resetLfoTargetLabels();
@@ -16503,7 +16537,7 @@ function buildKnobContextForKnob(knobIndex) {
         if (comp && comp.kind === "module") {
             /* The shim answers ":name" with the module id, so this one read is
              * both the identity and the display name. */
-            const pluginName = getMasterFxParam(selectedMasterFxComponent, "name");
+            const pluginName = getMasterFxParam(masterFxPositionOf(selectedMasterFxComponent), "name");
             return buildChainKnobContext(MASTER_CHAIN_TARGET, comp, knobIndex,
                                          pluginName, !!(pluginName && pluginName.length));
         }
@@ -20069,7 +20103,9 @@ function handleSelect() {
                      * chain's audio-FX `+`. */
                     const at = beginChainInsertFromAddBox(MASTER_CHAIN_TARGET, selectedComp);
                     if (at >= 0) {
-                        selectedMasterFxComponent = at;
+                        /* `at` is an FX POSITION; the selection is a ROW. */
+                        const row = masterFxRowOf(at);
+                        if (row >= 0) selectedMasterFxComponent = row;
                         enterMasterFxModuleSelect(at);
                     }
                     break;
@@ -20115,16 +20151,17 @@ function handleSelect() {
 
                     if (moduleData && moduleData.module) {
                         /* Module is loaded - try hierarchy editor first */
-                        const hierarchy = getMasterFxHierarchy(selectedMasterFxComponent);
+                        const fxAt = masterFxPositionOf(selectedMasterFxComponent);
+                        const hierarchy = getMasterFxHierarchy(fxAt);
                         if (hierarchy) {
-                            enterMasterFxHierarchyEditor(selectedMasterFxComponent);
+                            enterMasterFxHierarchyEditor(fxAt);
                         } else {
                             /* No hierarchy - enter module selection to swap */
-                            enterMasterFxModuleSelect(selectedMasterFxComponent);
+                            enterMasterFxModuleSelect(fxAt);
                         }
                     } else {
                         /* No module loaded - enter module selection */
-                        enterMasterFxModuleSelect(selectedMasterFxComponent);
+                        enterMasterFxModuleSelect(masterFxPositionOf(selectedMasterFxComponent));
                     }
                 }
             }
@@ -20525,7 +20562,8 @@ function handleSelect() {
                         const fxSlot = hierEditorMasterFxSlot;
                         exitHierarchyEditor();
                         /* Restore Master FX component selection and enter module select */
-                        selectedMasterFxComponent = fxSlot;
+                        const mfxRow = masterFxRowOf(fxSlot);
+                        if (mfxRow >= 0) selectedMasterFxComponent = mfxRow;
                         enterMasterFxModuleSelect(fxSlot);
                     } else if (swapBusAt) {
                         /* A bus insert: back to that bus's diagram, with its own
@@ -25363,7 +25401,7 @@ globalThis.onMidiMessageInternal = function(data) {
                     if (hostShiftHeld && view === VIEWS.CHAIN_EDIT && selectedChainComponent >= 0) {
                         handleShiftSelect();
                     } else if (hostShiftHeld && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
-                        enterMasterFxModuleSelect(selectedMasterFxComponent);
+                        enterMasterFxModuleSelect(masterFxPositionOf(selectedMasterFxComponent));
                     } else if (hostShiftHeld && view === VIEWS.BUS_CHAIN && !selectingBusModule) {
                         enterBusModuleSelect();
                     } else {
@@ -25608,7 +25646,7 @@ globalThis.onMidiMessageInternal = function(data) {
                 handleShiftSelect();
             } else if (isShiftHeld() && view === VIEWS.MASTER_FX && masterFxSelectedIsModule()) {
                 /* Shift+Click in Master FX view enters module selector for the slot */
-                enterMasterFxModuleSelect(selectedMasterFxComponent);
+                enterMasterFxModuleSelect(masterFxPositionOf(selectedMasterFxComponent));
             } else if (isShiftHeld() && view === VIEWS.BUS_CHAIN && !selectingBusModule) {
                 /* ...and on a bus insert, for the same reason: plain Click now
                  * edits the module, so Shift is what swaps it. */
