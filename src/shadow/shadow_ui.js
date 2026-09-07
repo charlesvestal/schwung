@@ -7727,6 +7727,27 @@ function seedDefaultFxForSlot(slotIndex, moduleId) {
                 setSlotParam(slotIndex, `${key}:${pk}`, String(entry.params[pk]));
             }
         }
+        /*
+         * THE FACTORY PRESET, applied LAST.
+         *
+         * A module can only name a preset it SHIPS. A user preset is by
+         * definition something dialled in afterwards, whose name the module
+         * cannot know, so a fallback to one was written here and removed: the
+         * declaration is "start from this known sound", and only the factory
+         * list is knowable at authoring time.
+         *
+         * Last, because a preset is a whole state and any param written after
+         * it would be overwritten by it -- and `plugin_id` in particular has to
+         * land FIRST for a host like Airwindows, where the preset only means
+         * something once the plugin behind it is chosen.
+         *
+         * By name rather than by index: a module's preset list is its own and
+         * reorders between versions, so an index would silently start naming a
+         * different sound.
+         */
+        if (entry.preset) {
+            setSlotParam(slotIndex, `${key}:preset_name`, String(entry.preset));
+        }
     }
     if (seeded) {
         debugLog(`default_fx: seeded ${seeded} position(s) for ${moduleId}`);

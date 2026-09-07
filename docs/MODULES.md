@@ -224,10 +224,28 @@ user picks this module:
 ```json
 "capabilities": {
   "default_fx": [
-    { "module": "clap", "params": { "plugin_id": "PurestDrive" } }
+    { "module": "clap",
+      "params":  { "plugin_id": "Galactic" },
+      "preset":  "Big Room" }
   ]
 }
 ```
+
+`params` are written first, then `preset` — and that order is load-bearing. A
+preset is a whole state, so anything written after it is overwritten by it, and
+for a host like Airwindows `plugin_id` has to land first or the preset names
+nothing.
+
+**`preset` names one of the effect's own FACTORY presets**, written as
+`preset_name` — the contract its preset browser already uses. Not a user preset:
+those are dialled in after the fact and their names are unknowable when you are
+authoring a module.
+
+By name and not by index, because a module's preset list is its own and reorders
+between versions — an index would quietly start naming a different sound.
+
+Both fields are optional. `params` alone is a complete declaration, and so is
+`preset` alone.
 
 For a module whose sound genuinely includes a stage the chain can host — a drum
 kit voiced through a bus compressor, say. The alternative has been to build that
