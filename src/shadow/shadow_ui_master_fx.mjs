@@ -230,15 +230,18 @@ export function drawMasterFx() {
         abbrev: (comp) => {
             if (comp.kind === "add") return "+";
             if (comp.kind === "settings") return "*";
-            /* "A" / "B", from the LABEL rather than a literal, so the box and
-             * the band below it cannot come to say different things. */
-            if (comp.kind === "sendbus") return comp.label.slice(-1);
+            /* A send entry draws its own dial and letter (see drawMiniDial in
+             * chain_diagram.mjs); this is never reached for one. */
             /* masterFxConfig is the cached copy the editor already holds — no
              * IPC here. Nothing in this list is `kind: "synth"`, so no box gets
              * the synth band: Master FX has no synth to landmark. */
             const moduleData = masterFxConfig[comp.key];
             return (moduleData && moduleData.module) ? getModuleAbbrev(moduleData.module) : "--";
         },
+        /* THE RETURN LEVEL, cached on entry like the summaries beside it. Never
+         * a live read: this is the draw path of a screen that redraws every
+         * frame, and a round trip is ~2.8ms against a 1.68ms whole-page render. */
+        sendLevel: (comp) => (ctx.fxBusReturn ? ctx.fxBusReturn(comp.busIndex) : 0),
         marks: (comp) => {
             /* Neither the settings box nor the `+` is an FX position: neither
              * has a bypass parameter and neither can be an LFO target, so

@@ -3448,6 +3448,7 @@ function enterFxBus(index) {
     /* The bands under the boxes name what is in each send; read ONCE here, on a
      * screen change, never on the draw path. */
     fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
+    fxBusReturns = FX_BUSES.map((_, i) => fxBusReturnNow(i));
     enterMasterFxSettings();
 }
 
@@ -3516,6 +3517,22 @@ function fxBusSummary(index) {
 }
 
 let fxBusSummaries = ["", "", ""];
+/* The RETURN level of each bus, read beside the summaries and on the same
+ * schedule. -1 means "not read" and draws as a dial at zero rather than as a
+ * confident full one; the master bus has no return and keeps it. */
+let fxBusReturns = [-1, -1, -1];
+
+function fxBusReturnNow(index) {
+    const bus = FX_BUSES[index];
+    if (!bus || bus.send < 0) return -1;
+    if (typeof shadow_get_param !== "function") return -1;
+    let raw;
+    try { raw = shadow_get_param(0, bus.prefix + "return"); } catch (e) { return -1; }
+    /* Branch on the RAW value: null is "the read did not complete". */
+    if (raw === null || raw === undefined || raw === "") return -1;
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? -1 : n;
+}
 
 function enterFxBusPicker() {
     selectedFxBusRow = currentFxBusIndex;
@@ -22372,6 +22389,7 @@ function drawHelpDetail() {
      * this is consulted by the info band of a screen that redraws every frame,
      * and a ~2.8ms round trip there is more than a whole page render. */
     _ctx.fxBusSummary = (i) => fxBusSummaries[i] || "";
+    _ctx.fxBusReturn = (i) => (fxBusReturns[i] >= 0 ? fxBusReturns[i] : 0);
     _ctx.sendBusLevelRead = (...args) => sendBusLevelRead(...args);
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);

@@ -16,6 +16,17 @@
  */
 
 import { scrollWindow } from "./chain_model.mjs";
+/*
+ * THE rounded-corner idiom, not a second copy of it. notchCorners is the one
+ * thing every filled or framed box on the knob grid wears -- the enum square,
+ * the label strip, the opaque cell door frame, the footer pills, the fader box
+ * and the switch pill -- and the chain diagram was the outlier that did not.
+ * At one pixel and two colours there is no second way to soften a corner, so a
+ * local copy here would be two definitions of the same four pixels.
+ *
+ * No new load on the device: shadow_ui.js already imports the param_pages tree.
+ */
+import { notchCorners } from "./param_pages/render_page.mjs";
 
 /**
  * 21, not 22, and the parity is the point.
@@ -269,12 +280,68 @@ export function defaultAbbrev(comp) {
  */
 export const SETTINGS_GAP = 4;
 
+/*
+ * The same trick at the OTHER end: a gap after the send entries.
+ *
+ * They are boxes in this row because they scroll and select like one, but they
+ * are not positions in the chain -- they are what arrives before it. A gap is
+ * the cheapest thing that says so, it needs no new glyph, and the row already
+ * uses exactly this mechanism to set Settings apart at the far end.
+ *
+ * It is affordable for the same reason SETTINGS_GAP is: five boxes plus both
+ * gaps is 5*21 + 4*2 + 4 + 4 = 121 against DIAGRAM_W 122. Asserted, rather than
+ * argued, by test_master_fx_diagram_fit (clipped() === 0 at the cap).
+ */
+export const SEND_GAP = 4;
+
 function settingsShift(components, index, first) {
     for (let i = first + 1; i <= index; i++) {
         const c = components[i];
         if (c && c.kind === "settings") return SETTINGS_GAP;
     }
     return 0;
+}
+
+/* SEND_GAP applies to the first box that is NOT a send entry, and everything
+ * after it -- the mirror of settingsShift, which applies from Settings onward. */
+function sendShift(components, index, first) {
+    for (let i = first + 1; i <= index; i++) {
+        const prev = components[i - 1];
+        const c = components[i];
+        if (prev && prev.kind === "sendbus" && c && c.kind !== "sendbus") return SEND_GAP;
+    }
+    return 0;
+}
+
+/*
+ * A 9px dial: a ring and a pointer, the smallest this repo already considers
+ * readable (render_page.mjs takes radius >= 4 as the floor below which a dial
+ * becomes a bar). Hand-rolled because the diagram's ctx is fillRect and print
+ * only -- it has no circle, by design, so that the whole file stays pure and
+ * renders into a test framebuffer.
+ *
+ * Sweep is the usual 270 degrees, 7 o-clock round to 5 o-clock, so "off" and
+ * "full" are visibly different from each other AND from the midpoint.
+ */
+function drawMiniDial(px, cx, cy, r, frac, color) {
+    /* Midpoint circle, one octant mirrored eight ways. */
+    let dx = r, dy = 0, err = 1 - r;
+    while (dx >= dy) {
+        for (const [a, b] of [[dx, dy], [dy, dx], [-dy, dx], [-dx, dy],
+                              [-dx, -dy], [-dy, -dx], [dy, -dx], [dx, -dy]]) {
+            px(cx + a, cy + b, color);
+        }
+        dy++;
+        if (err < 0) err += 2 * dy + 1;
+        else { dx--; err += 2 * (dy - dx) + 1; }
+    }
+    const t = Math.max(0, Math.min(1, frac));
+    const ang = (-135 + 270 * t) * Math.PI / 180;
+    /* From the centre outward, stopping short of the ring so the pointer reads
+     * as a pointer rather than closing the circle. */
+    for (let d = 1; d <= r - 1; d++) {
+        px(Math.round(cx + Math.sin(ang) * d), Math.round(cy - Math.cos(ang) * d), color);
+    }
 }
 
 /**
@@ -318,6 +385,7 @@ export function layoutChainDiagram(components, selectedIndex, opts = {}) {
         /** Screen x of component `index` (an index into `components`, not into
          *  the window — off-window indices are simply not drawn). */
         boxX: (index) => x + pad + (index - win.first) * (BOX_W + GAP)
+            + sendShift(components, index, win.first)
                        + settingsShift(components, index, win.first),
     };
 }
@@ -359,6 +427,15 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
         }
 
         /*
+         * AFTER the shape, because it CLEARS pixels. On the dotted `+` this is
+         * also a small repair: the dashes walk one continuous perimeter and only
+         * two of the four corners land on a dash, so a box with one doubled and
+         * one missing corner is what it looked like. Notching removes all four
+         * and the asymmetry with it.
+         */
+        notchCorners(ctx, x, y, bw, BOX_H);
+
+        /*
          * The synth wears a filled band across its top, drawn in whichever
          * colour the box is NOT. It is the landmark the scroll leans on — once
          * the chain is longer than the screen it is the only orientation left —
@@ -394,6 +471,25 @@ export function drawChainDiagram(ctx, components, selectedIndex, opts = {}) {
         if (comp.kind === "settings") {
             drawSettingsIcon(px, x, y, selected ? 0 : 1);
             drawMarks(ctx, px, x, y, marksOf(comp), bw);
+            continue;
+        }
+
+        /*
+         * A SEND ENTRY IS A READOUT, not a label. The letter alone said only
+         * which bus it was; the dial says how much of it is coming back, which
+         * is the one number worth a glance from here and the difference between
+         * "there is a reverb on A" and "you can hear it".
+         *
+         * 9px ring + 2px gap + a 4px letter is 15 of the 19 the box has inside
+         * its outline, and radius 4 is the floor render_page.mjs already treats
+         * as a readable dial rather than a bar.
+         */
+        if (comp.kind === "sendbus") {
+            const lvl = opts.sendLevel ? opts.sendLevel(comp) : 0;
+            const ink = selected ? 0 : 1;
+            drawMiniDial(px, x + 6, y + Math.floor(BOX_H / 2), 4,
+                         (typeof lvl === "number" && lvl > 0) ? lvl / 127 : 0, ink);
+            ctx.print(x + 13, y + LABEL_DY, String(comp.label || "").slice(-1), ink);
             continue;
         }
 

@@ -332,13 +332,31 @@ const MASTER_FX_SLOTS = 8;
  * to remove.
  */
 const chainEditorComponents = lift("chainEditorComponents", ["chainComponents"])(chainComponents);
-function masterComponents(config) {
+/* The REAL send entries, lifted rather than restated: the master row heads are
+   derived from FX_BUSES, and a stub here would let the harness baseline a row
+   the device does not draw. */
+const masterFxSendEntries = (() => {
+  const busAt = uiSrc.indexOf("const FX_BUSES = [");
+  const busEnd = uiSrc.indexOf("\n];", busAt);
+  const fnAt = uiSrc.indexOf("function masterFxSendEntries(");
+  const fnEnd = uiSrc.indexOf("\n}\n", fnAt);
+  if (busAt < 0 || fnAt < 0) { fail("could not lift masterFxSendEntries/FX_BUSES"); return () => []; }
+  return new Function(uiSrc.slice(busAt, busEnd + 3) + uiSrc.slice(fnAt, fnEnd + 2) +
+    "\nreturn masterFxSendEntries;")();
+})();
+
+/* `isMaster` false for a SEND case: only the master bus heads its row with the
+   send entries, so a send editor showing its own box would be a box that
+   reopens the screen it is drawn on. */
+function masterComponents(config, isMaster = true) {
   const held = { c: config };
   const decls = new Function("masterFxConfig", "MASTER_FX_SLOTS",
     uiSrc.slice(uiSrc.indexOf("let masterFxChainLength = -1;"),
                 uiSrc.indexOf("\n}\n", uiSrc.indexOf("function masterFxChainConfig("))) +
     "\n}\nreturn masterFxChainConfig;")(held.c, MASTER_FX_SLOTS);
-  return chainEditorComponents(decls(), { hasSynth: false, hasMidiFx: false });
+  const rows = chainEditorComponents(decls(), { hasSynth: false, hasMidiFx: false });
+  if (!isMaster) return rows;
+  return masterFxSendEntries().concat(rows).map((c, i) => ({ ...c, position: i }));
 }
 
 /* drawMasterFx takes its shared state through ctx, so the state goes in
@@ -428,7 +446,11 @@ function renderMaster(c) {
   const mfxCtx = {
     MASTER_CHAIN_TARGET: mTarget,
     /* Derived per case, from that case`s config. */
-    MASTER_FX_CHAIN_COMPONENTS: masterComponents(c.config),
+    MASTER_FX_CHAIN_COMPONENTS: masterComponents(c.config, !c.bus),
+    /* Cached on entry on the device; fixed per case here. A send box draws its
+       RETURN as a dial and names what is in the bus on the info band. */
+    fxBusSummary: (i) => (c.busSummaries || {})[i] || "",
+    fxBusReturn: (i) => ((c.busReturns || {})[i] || 0),
     ensureMasterFxConfigFresh: () => {},
     isShiftHeld: () => !!c.shift,
     chainLfoTargetMap: mLfoMap,
@@ -997,7 +1019,7 @@ const addMaster = (id, o) => {
      as the chain: `settings` is at index 2 on an empty Master FX and at index 9
      on a full one. An index baked into a case name would drift with it. */
   if (typeof sel === "string") {
-    sel = masterComponents(config).findIndex((c) => c.key === sel);
+    sel = masterComponents(config, !o.bus).findIndex((c) => c.key === sel);
     /* -1 is the PRESET row, so a key that resolves to it is a case naming a box
        that is not there -- which is how "sel-fx1 on an empty chain" would have
        gone on quietly snapshotting the preset row instead. */
@@ -1006,6 +1028,8 @@ const addMaster = (id, o) => {
   if (sel === undefined || sel < -1)
     fail("master case " + id + " has no selection");
   masterCases.push({ id, sel, config, state: o.extra || {},
+                     busSummaries: o.busSummaries || {},
+                     busReturns: o.busReturns || {},
                      card: o.card || null, shift: !!o.shift,
                      presetName: o.presetName || "",
                      /* Which FX bus. Absent means the master bus, so every case
@@ -1024,6 +1048,21 @@ const M8 = rep(8, "cloudseed");
    chain, which is exactly what step 4e removed: a Master FX holding one module
    has one module box and a `+`, not eight boxes with seven of them blank. Their
    replacements are the sel-add-fx cases below. */
+/* THE SEND ENTRIES. Nothing covered them at all: masterComponents called
+   chainEditorComponents directly, so the harness never built a row that had
+   one, and every send-box pixel was unbaselined while the suite was green.
+   Selected and not, at three levels, because the dial is the whole point. */
+addMaster("master/sends/a-zero", { modules: ["freeverb"], sel: "sendbus1",
+  busSummaries: { 1: "Empty" }, busReturns: { 1: 0 } });
+addMaster("master/sends/a-full", { modules: ["freeverb"], sel: "sendbus1",
+  busSummaries: { 1: "2 FX" }, busReturns: { 1: 127 } });
+addMaster("master/sends/a-mid-unselected", { modules: ["freeverb"], sel: "fx1",
+  busSummaries: { 1: "1 FX", 2: "3 FX" }, busReturns: { 1: 64, 2: 100 } });
+addMaster("master/sends/b-selected", { modules: ["freeverb"], sel: "sendbus2",
+  busSummaries: { 2: "3 FX" }, busReturns: { 2: 40 } });
+addMaster("master/sends/gap-with-settings", { modules: [], sel: "settings",
+  busReturns: { 1: 20, 2: 90 } });
+
 addMaster("master/len0/sel-settings", { modules: [], sel: "settings" });
 addMaster("master/len0/sel-preset",   { modules: [], sel: -1 });
 addMaster("master/len1/sel-fx1",      { modules: ["freeverb"], sel: "fx1" });

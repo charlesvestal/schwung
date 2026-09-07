@@ -134,9 +134,29 @@ for (const nfx of [0, 3, 12]) {
     return lit;
   };
   const fxAt = comps.findIndex((p) => p.id === "fx1");
-  if (topEdge(fxAt) !== lay.boxW) fail("a module box should have a solid top edge");
+  /* SOLID MEANS boxW - 2 NOW: every box wears notchCorners, the rounded-corner
+     idiom the whole knob grid already uses (the enum square, the label strip,
+     the footer pills, the fader box). The chain diagram was the one surface
+     that did not. So a solid edge is the full width minus its two corners --
+     and the distinction that matters here, solid versus the dotted `+`, is
+     unchanged because a dash pattern lights far fewer than that. */
+  const solidTop = lay.boxW - 2;
+  if (topEdge(fxAt) !== solidTop)
+    fail("a module box should have a solid top edge between its notched corners"
+         + " (lit " + topEdge(fxAt) + ", expected " + solidTop + ")");
+  /* The notch itself, asserted rather than inferred from the count: a box whose
+     top edge lost two pixels SOMEWHERE ELSE would satisfy the sum above. */
+  {
+    const x0 = lay.boxX(fxAt);
+    const corner = (x, y) => fb.pixels[y * fb.width + x];
+    if (corner(x0, lay.y) || corner(x0 + lay.boxW - 1, lay.y))
+      fail("a module box has un-notched top corners");
+    const yb = lay.y + D.BOX_H - 1;
+    if (corner(x0, yb) || corner(x0 + lay.boxW - 1, yb))
+      fail("a module box has un-notched bottom corners");
+  }
   for (const i of ends) {
-    if (topEdge(i) >= lay.boxW) fail("the `+` box at " + i + " is not dotted");
+    if (topEdge(i) >= solidTop) fail("the `+` box at " + i + " is not dotted");
     if (topEdge(i) === 0) fail("the `+` box at " + i + " has no top edge at all");
   }
 }
