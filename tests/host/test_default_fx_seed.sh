@@ -106,6 +106,40 @@ ok("no declaration, a malformed one, or entries with no module: nothing written"
   ok("a declaration longer than the section cap is truncated to it");
 }
 
+/* ---- THE FACTORY PRESET, which is the point of declaring an FX at all -- */
+{
+  const DECL_P = { capabilities: { default_fx: [
+    { module: "clap", params: { plugin_id: "Galactic" }, preset: "Big Room" },
+  ] } };
+  const r = rig(DECL_P, "0");
+  r.seed("dr32");
+
+  /* ORDER IS LOAD-BEARING: module, then params, then the preset. A preset is a
+     whole state and overwrites anything written after it; plugin_id has to
+     land first or there is no plugin for the preset to name. */
+  if (JSON.stringify(r.writes) !== JSON.stringify(
+        ["fx1:module=clap", "fx1:plugin_id=Galactic", "fx1:preset_name=Big Room"])) {
+    fail("preset seeding wrote " + JSON.stringify(r.writes));
+  }
+
+  /* A module can only name a preset it SHIPS. A user preset is dialled in
+     afterwards and its name is unknowable at authoring time, so nothing here
+     may reach for the <prefix>:state blob. */
+  if (r.writes.some((w) => w.indexOf(":state=") >= 0)) {
+    fail("seeding touched a user preset state blob: " + JSON.stringify(r.writes));
+  }
+
+  /* params alone, with no preset, is a complete declaration. */
+  const q = rig({ capabilities: { default_fx: [
+    { module: "clap", params: { plugin_id: "Galactic" } } ] } }, "0");
+  q.seed("dr32");
+  if (JSON.stringify(q.writes) !== JSON.stringify(
+        ["fx1:module=clap", "fx1:plugin_id=Galactic"])) {
+    fail("params without a preset wrote " + JSON.stringify(q.writes));
+  }
+  ok("preset: the module factory preset, applied after the params it depends on");
+}
+
 /* metadata handed over as a JSON STRING is parsed -- the binding has returned
    both shapes across versions, and a string would otherwise read as "declares
    nothing" rather than as an error. */
