@@ -91,4 +91,16 @@ for bus in master send1 send2; do
 done
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
+# The editor for THREE buses must not ANNOUNCE a hardcoded one. The drawn
+# header was scoped to fxBus().label and these were left behind, so with the
+# screen reader on every send editor called itself "Master FX" — reported from
+# hardware as an effect that would not clear, by a user who had been told he
+# was in a different bus. A drawn value and its spoken twin drifting apart has
+# now happened three times on this branch; this pins the spoken one.
+if grep -nE 'announce\("Master FX' src/shadow/shadow_ui.js >/dev/null 2>&1; then
+  echo "FAIL: shadow_ui.js announces a hardcoded \"Master FX\" — use fxBus().label" >&2
+  grep -nE 'announce\("Master FX' src/shadow/shadow_ui.js >&2
+  exit 1
+fi
+
 echo "PASS: every master-bus writer that runs from another screen is scoped to the master bus, the swap moves both halves, and the snapshot harness's FX_BUSES stub agrees with the real table"

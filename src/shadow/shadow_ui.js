@@ -20791,21 +20791,28 @@ function handleBack() {
             handlePresetDetailBack();
             break;
         case VIEWS.MASTER_FX:
+            /* fxBus().label, never a hardcoded "Master FX": this view is the
+             * editor for THREE buses. The drawn header was made bus-aware and
+             * these announcements were not, so with the screen reader on every
+             * send editor called itself Master FX. Reported from hardware as
+             * "removing an effect from the send didn't clear it" — by a user
+             * who had been told he was somewhere else. Third time on this
+             * branch a DRAWN value was scoped and its SPOKEN twin was not. */
             if (masterShowingNamePreview) {
                 /* Cancel name preview */
                 masterShowingNamePreview = false;
                 needsRedraw = true;
-                announce("Master FX Settings");
+                announce(fxBus().label + " Settings");
             } else if (masterConfirmingOverwrite) {
                 /* Cancel overwrite - return to settings */
                 masterConfirmingOverwrite = false;
                 needsRedraw = true;
-                announce("Master FX Settings");
+                announce(fxBus().label + " Settings");
             } else if (masterConfirmingDelete) {
                 /* Cancel delete */
                 masterConfirmingDelete = false;
                 needsRedraw = true;
-                announce("Master FX Settings");
+                announce(fxBus().label + " Settings");
             } else if (helpDetailScrollState) {
                 helpDetailScrollState = null;
                 needsRedraw = true;
@@ -20821,18 +20828,18 @@ function handleBack() {
                     helpReturnView = null;
                     enterGlobalSettings();
                 } else {
-                    announce("Master FX Settings");
+                    announce(fxBus().label + " Settings");
                 }
             } else if (inMasterPresetPicker) {
                 /* Exit preset picker, return to FX list */
                 exitMasterPresetPicker();
-                announce("Master FX");
+                announce(fxBus().label);
             } else if (inMasterFxSettingsMenu) {
                 /* Exit settings menu */
                 inMasterFxSettingsMenu = false;
                 editingMasterFxSetting = false;
                 needsRedraw = true;
-                announce("Master FX");
+                announce(fxBus().label);
             } else if (selectingMasterFxModule) {
                 /* Cancel module selection, return to chain view. Backing out of
                  * a `+` picker WRITES NOTHING AT ALL — the position it opened
@@ -20840,7 +20847,7 @@ function handleBack() {
                 cancelPendingChainInsert();
                 selectingMasterFxModule = false;
                 needsRedraw = true;
-                announce("Master FX");
+                announce(fxBus().label);
             } else {
                 /* Back from a BUS returns to the picker it was opened from,
                  * matching every other list: the picker is the level above.
