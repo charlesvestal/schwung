@@ -287,6 +287,66 @@ int shadow_send_fx_slot_load(int send, int pos, const char *dsp_path);
 int shadow_send_fx_slot_load_with_config(int send, int pos, const char *dsp_path,
                                          const char *config_json);
 
+/* --- Async FX position loading -------------------------------------------
+ *
+ * The two loaders above are SYNCHRONOUS and do a dlopen, a create_instance and
+ * a module.json read. They are for BOOT and for tests/host, both of which run
+ * on a thread that may block. THE PARAM SURFACE MUST NOT CALL THEM: it is
+ * served from shim_pre_transfer, i.e. the SPI callback, where one 7.7 MB
+ * bundle cost ~708 dropped frames on hardware. It calls
+ * shadow_fx_load_request() instead, which records the intent and returns, and
+ * tests/host/test_fx_load_off_callback.sh fails if that ever changes back.
+ *
+ * The split is the one chain_bus.c already makes for bus FX; see the block
+ * comment above shadow_fx_load_request in the .c, and fx_load_gate.h for the
+ * sequence gate that joins the two threads.
+ *
+ * Flat index space: master positions are 0..MASTER_FX_SLOTS-1 (a master index
+ * IS its flat index), sends follow. Use the two helpers rather than restating
+ * the arithmetic.
+ */
+int shadow_fx_load_flat_master(int slot);
+int shadow_fx_load_flat_send(int send, int pos);
+
+/* Allocate the loader's staging param cache. Idempotent; call off the
+ * callback (chain_mgmt_init does). While it has not succeeded every request is
+ * refused, so no position can come up without one. */
+int shadow_fx_load_storage_ensure(void);
+
+/* RT-SAFE. Records the request and returns 0 — ACCEPTED, not loaded. -1 means
+ * the request can never be served (bad index, no owned buffer, path too long),
+ * which is the only case a caller may report as an error. An empty path is an
+ * unload and goes the same way. */
+int shadow_fx_load_request(int flat, const char *dsp_path);
+
+/* FX_LOAD_SETTLED / FX_LOAD_LOADING / FX_LOAD_FAILED (fx_load_gate.h). This is
+ * what lets the editor tell a load in progress from one that failed. */
+int shadow_fx_load_state(int flat);
+
+/* What a position calls itself: the module ARRIVING while one is, otherwise the
+ * module that is there. `want_path` picks the DSP path over the module id.
+ * Every namer of a position — `:module`, `:name`, and both `modules` snapshots
+ * — goes through this, so they cannot disagree mid-load. Never NULL. */
+const char *shadow_fx_load_pending_name(int flat, int want_path);
+
+/* Is any position mid-load? The Master FX shape verbs refuse while one is,
+ * because insert/remove/move permute the array a staged realisation is stamped
+ * against. */
+int shadow_fx_load_any_in_flight(void);
+
+/* RT-SAFE. Abandon every in-flight request without loading anything — for the
+ * paths that tear the chains down synchronously. */
+void shadow_fx_load_cancel_all(void);
+
+/* RT-SAFE, once per SPI frame: install a finished realisation into its live
+ * position. Called from shadow_inprocess_handle_param_request. */
+void shadow_fx_load_install_tick(void);
+
+/* WORKER ONLY (shim_worker.c). Does the dlopen / create_instance / parse and
+ * the destroy_instance / dlclose of whatever the install retired. Never call
+ * it from the SPI callback. */
+void shadow_fx_load_worker_tick(void);
+
 /* Is there anything for send bus `sb` to do this frame? False means the shim
  * skips it entirely — no memcpy, no process_block. A send with nothing loaded
  * and no return level costs one pointer scan per frame and nothing else. */

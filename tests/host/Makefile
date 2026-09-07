@@ -59,6 +59,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
+	$(BUILD_DIR)/test_fx_load_gate \
 	$(BUILD_DIR)/test_split_voices_parse \
 	$(BUILD_DIR)/test_voice_send_source \
 	$(BUILD_DIR)/test_me_post_snapshot_fx \
@@ -187,6 +188,9 @@ $(BUILD_DIR)/test_master_fx_slot_routing: test_master_fx_slot_routing.c ../../sr
 
 $(BUILD_DIR)/test_send_fx_key: test_send_fx_key.c ../../src/host/send_fx_key.h ../../src/host/master_fx_key.h ../../src/host/shadow_chain_mgmt.h ../../src/host/bus_mix.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SEND_BUSES=$(SEND_BUSES) -DTEST_SEND_FX_SLOTS=$(SEND_FX_SLOTS) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_fx_load_gate: test_fx_load_gate.c ../../src/host/fx_load_gate.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)

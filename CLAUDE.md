@@ -1216,6 +1216,25 @@ cannot report that it overflowed, which is why
 and one past it. Per-box reads are bounded by the ~5 boxes DRAWN, not by the
 cap, so raising 4 → 8 cost one read per frame rather than four.
 
+**Loading an FX module is OFF the callback, and the editor can see it.** Both
+`module` writes went to `fx_slot_load_impl` — a `dlopen`, a `create_instance`
+and a `module.json` read — from `shim_pre_transfer`. Bus FX had already been
+moved to a worker for exactly this; the sends were left behind only because
+Master FX was. The symptom is not a stutter: the param deadline is **100 ms**,
+a 7.7 MB bundle is not, so the write and every read behind it timed out and the
+screen sat on "Loading". RT records the intent, the **shim's existing worker**
+does the dlopen (never a `pthread_create` from an entry point — it inherits
+FIFO 70 and starves `Link Main` at 35), and **RT installs**, which is what
+keeps it the only WRITER of the position structs and is why not one of the
+dozens of unguarded readers had to change. The gate is a **sequence number**
+(`fx_load_gate.h`) and the close comes **before** the publish, both for
+`chain_bus.c`'s reasons. `is_loading` / `load_error` give the entry gate an
+ENDING — **a failed load leaves the position empty, which is byte-identical to
+one still arriving**, and the hold never gives up. A loading position names the
+module it is **becoming**; naming the outgoing one opens the wrong editor,
+naming nothing makes the autosave erase the state file. Restores WAIT
+(`waitForFxPositionSettled`); an interactive pick does not.
+
 Master FX still has **no insert, remove or move** — removal is picking `None`,
 which unloads in place and leaves a hole. Adding those (and the permutation
 that must come with them) is residual 2.2 Step 4, and it is a new feature, not

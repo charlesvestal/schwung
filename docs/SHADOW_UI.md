@@ -1375,6 +1375,103 @@ with its return up is an ordinary state. They are restored **last**, because
 `shadow_send_bus_active()` answers true on a level alone, and raising a return
 before its chain exists would put one dry frame through the master bus.
 
+### Loading an FX module happened on the SPI CALLBACK, and the editor could not see it
+
+`fx_slot_load_impl` (`src/host/shadow_chain_mgmt.c`) does a `dlopen`, a
+`create_instance` and a `module.json` read. Both `module` param writes —
+`master_fx:fxN:module` and `send<N>:fx<M>:module` — reached it from
+`shadow_inprocess_handle_param_request`, which the shim calls from
+`shim_pre_transfer`. **That is the SPI callback**: SCHED_FIFO 70, core 3,
+~2370 µs of slack for the whole device.
+
+The comment above the function said so and called it "pre-existing in kind,
+mirrors Master FX". It is not pre-existing in kind: **bus FX were deliberately
+moved to a worker for exactly this reason** (`chain_bus.c`,
+`chain_bus_worker_fn` / `bus_load_fx`), and the sends were left on the callback
+only because Master FX was. The inconsistency was the defect.
+
+**The user-visible failure is not "the device stutters".** The JS param channel
+deadline is 100 ms (`SHADOW_PARAM_DEFAULT_TIMEOUT_MS`, `shadow_ui.c`), and a
+7.7 MB CLAP bundle takes far longer than that to open. So the write **timed
+out**, and so did every read behind it while the callback was still inside the
+`dlopen` — which is the whole editor's supply of facts. Reported from hardware
+as: the screen sat on "Loading", nothing else would load afterwards, and
+`send_fx_0_0.json` still held the previous module. That last one is the
+autosave working correctly — `saveSendFxChainConfig` refuses to write on a read
+that did not complete, which is the three-answer rule doing its job.
+
+Now:
+
+- **RT records the intent and returns.** `shadow_fx_load_request` is a bounded
+  `snprintf` and three stores. The `module` SET answers **error 0 meaning
+  ACCEPTED, not loaded**; error 7 is kept for a request that can never be
+  served (bad index, no owned buffer).
+- **The worker does the expensive half** — `dlopen`, `create_instance`, the
+  `module.json` parse, and the `destroy_instance` / `dlclose` of whatever it
+  replaced. It is the **shim's existing worker** (`shim_worker.c`), which is
+  created from shim init and demotes itself to SCHED_OTHER on cores 0-2 as its
+  first action. A `pthread_create` from a module entry point would inherit
+  SCHED_FIFO 70 — above Move's own `Link Main` at 35 — and starve the audio
+  publisher, i.e. cause the dropouts going off-thread is meant to avoid.
+- **RT installs.** The worker builds into a staging `master_fx_slot_t`; the SPI
+  thread moves the pointers across and hands the outgoing module to a retire
+  ring. **That is why no reader had to change**: `shadow_master_fx_slots` and
+  `shadow_send_fx_slots` are read unguarded from the render loop, the MIDI
+  forwarder, the param handler and both snapshot serializers, and the RT thread
+  stays their only WRITER. Gating each of those instead was the alternative,
+  and it is dozens of sites that do not know a gate exists.
+- **The gate is a SEQUENCE NUMBER, not a flag** (`src/host/fx_load_gate.h`),
+  for the reason `chain_bus.c`'s is: a boolean makes "close" a store by one
+  thread and "open" a store by another, so a worker preempted between its check
+  and its store re-opens a gate the RT thread closed — putting `dlclose` in a
+  race with the render path. Here the RT thread owns **both** stores (`req_seq`
+  closes, `done_seq` opens at install) and the worker publishes only the
+  stage's own state word, which the install refuses whenever the seq it carries
+  is no longer the one being asked for.
+- **CLOSE BEFORE YOU PUBLISH.** The request has a payload the gate does not, so
+  `req_seq` is bumped *first*, the path is written, and `req_pub` catches up
+  last. Reading the path before that is a torn `dlopen` argument.
+  `tests/host/test_fx_load_off_callback.sh` fails on the reverse order, on a
+  module SET that calls a synchronous loader, and on file I/O or allocation in
+  either RT function.
+
+**The editor can now SEE all three states**, which is the half that makes the
+move worth anything: `<prefix>:is_loading` answers "1" while a request is in
+flight and `<prefix>:load_error` answers "1" when the last settled one failed.
+The component entry gate already held on an exact `is_loading == "1"`; what it
+lacked was an ending, because **a failed load leaves the position genuinely
+empty, which is byte-identical to one still arriving** — and the hold never
+gives up on purpose. `ENTRY_FAILED` (`component_load_gate.mjs`) is that ending.
+
+**A loading position names the module it is BECOMING**, not the one leaving and
+not "". Both alternatives were wrong in opposite directions: the outgoing name
+makes the entry gate open the editor of the module being replaced, and an empty
+one makes the autosave read the position as vacated and write `{}` over the
+state file. `shadow_fx_load_pending_name` is the single namer, so `:module`,
+`:name` and both `modules` snapshots cannot disagree mid-load.
+
+**A restore must WAIT; an interactive pick must not.** Every restore loop
+writes `module` and then `state`/`params`, and those used to land on a plugin
+the synchronous load had already put in place. `waitForFxPositionSettled`
+(`shadow_ui.js`) polls `is_loading` for up to 10 s before the writes that
+follow a module write in the three restore paths (set change, patch-library
+preset, send set load). The interactive picker has no state to follow it — it
+is the path that had to stop blocking, and it does not wait. Boot restore still
+uses the **synchronous** loaders (`fx_boot_restore_one`), which is correct:
+that runs at shim init, not on the callback.
+
+**A shape verb refuses while a load is in flight.** `fx:insert` / `fx:remove` /
+`fx:move` permute the position array a staged realisation is stamped against,
+so running one mid-load would install the incoming module wherever the shift
+left that index. Error 15, not a queue — the editor already reports a refused
+verb, and a queued one would reorder a chain the user has since changed.
+
+Not in scope and unchanged: the Airwindows module (`clap`) picking the first
+plugin it finds when its config names none ("No plugin in config, loading first
+available" → `ADT`). That string is in `charlesvestal/schwung-airwindows`, not
+here; the host reports the *module* the user chose and never presents a
+sub-plugin as a choice.
+
 ### Snapshot / recall: what it restores, and what it deliberately does not
 
 Shift+Copy snapshots all 4 slots plus all 8 Master FX positions; Shift+Delete

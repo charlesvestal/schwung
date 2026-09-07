@@ -137,7 +137,7 @@ import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
-    ENTRY_ENTER, ENTRY_HOLD,
+    ENTRY_ENTER, ENTRY_HOLD, ENTRY_FAILED,
 } from '/data/UserData/schwung/shared/component_load_gate.mjs';
 import {
     formatParamValue as ufFormatParamValue,
@@ -10090,6 +10090,9 @@ function loadMasterPreset(index, presetName) {
                     delete fxDisplayNameSkip[`master:${key}`];
                     delete fxDisplayNameBackoff[`master:${key}`];
 
+                    /* The load is asynchronous now, so the params below need
+                     * somewhere to land — see waitForFxPositionSettled. */
+                    if (opt.dspPath) waitForFxPositionSettled("master_fx:", key);
                     /* Restore plugin_id first (CLAP sub-plugin selection) */
                     if (fxConfig.params && typeof shadow_set_param === "function") {
                         if (fxConfig.params.plugin_id) {
@@ -12192,6 +12195,44 @@ function saveSendFxChainConfig() {
  * skipped — that is what stops the outgoing set's reverb staying in Send A.
  * Same rule the Master FX set-change loop follows.
  */
+/*
+ * Wait out a position's load before writing its restored state into it.
+ *
+ * NEEDED BECAUSE THE LOAD IS NO LONGER SYNCHRONOUS. A `module` write used to
+ * dlopen on the SPI callback and return with the module in place, so the
+ * `state` / `params` writes that follow it in every restore loop landed on a
+ * live plugin. The dlopen happens on the shim worker now (shadow_chain_mgmt.c,
+ * shadow_fx_load_request), so those writes would otherwise arrive at a position
+ * that is still empty and be answered emptily — a restore that silently loses
+ * every parameter, which is worse than the stall it was meant to fix.
+ *
+ * Only the RESTORE loops need this. An interactive pick has no state to follow
+ * it, which is the whole reason it is the path that had to stop blocking.
+ *
+ * Bounded, and a timeout is not an error: the writes below go out anyway, since
+ * a module that is merely slower than this is better served late than not at
+ * all. `is_loading` answering anything but "1" — including null, a read that
+ * did not complete — ends the wait; a channel that cannot answer cannot be
+ * waited on either.
+ *
+ * Each poll is one param round trip (~2.8 ms), most of it asleep inside the
+ * claim, so this paces itself without a timer the JS side does not have.
+ */
+const FX_LOAD_SETTLE_TIMEOUT_MS = 10000;
+function waitForFxPositionSettled(prefix, key) {
+    if (typeof shadow_get_param !== "function") return;
+    const deadline = Date.now() + FX_LOAD_SETTLE_TIMEOUT_MS;
+    for (;;) {
+        let v = null;
+        try { v = shadow_get_param(0, `${prefix}${key}:is_loading`); } catch (e) {}
+        if (v !== "1") return;
+        if (Date.now() >= deadline) {
+            debugLog(`FX load: ${prefix}${key} still loading after ${FX_LOAD_SETTLE_TIMEOUT_MS}ms`);
+            return;
+        }
+    }
+}
+
 function loadSendFxChainConfigForSet() {
     if (typeof shadow_set_param !== "function") return;
     for (const bus of FX_BUSES) {
@@ -12209,6 +12250,9 @@ function loadSendFxChainConfigForSet() {
             const dspPath = (data && data.module_path) || "";
             shadow_set_param(0, `${bus.prefix}${key}:module`, dspPath);
             if (!dspPath || !data) continue;
+            /* The module write is ACCEPTED, not completed — the state below has
+             * to have somewhere to land. */
+            waitForFxPositionSettled(bus.prefix, key);
             try {
                 if (data.state !== undefined) {
                     const s = (typeof data.state === "string") ? data.state
@@ -14714,6 +14758,11 @@ function componentEntryReader(slotIndex, componentKey, mfxIndex) {
              * getHierarchyActiveModuleId, whose two spellings these mirror. */
             module: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "module"),
             isLoading: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "is_loading"),
+            /* A Master FX / send position loads on the shim's worker now, so
+             * it has a third state the slot chain's components do not: a load
+             * that FAILED leaves the position empty, which is indistinguishable
+             * from one still arriving unless somebody asks. See ENTRY_FAILED. */
+            loadError: () => chainTargetGetParam(MASTER_CHAIN_TARGET, fxKey, "load_error"),
         };
     }
     const target = slotChainTarget(slotIndex);
@@ -14744,6 +14793,26 @@ function openComponentEditor(slotIndex, componentKey, mfxIndex) {
 
     if (decision.action === ENTRY_HOLD) {
         holdForComponentLoad(slotIndex, componentKey, mfxIndex, decision.reason);
+        return;
+    }
+
+    /*
+     * The module did not load. Say so and leave — the hold above never gives
+     * up by design, so without this branch a failed dlopen would spin the
+     * "Loading..." screen for the rest of the session, which is the exact
+     * symptom reported from hardware when the load still ran on the SPI
+     * callback. The position is empty and pickable, so the way forward is the
+     * picker the empty box already opens.
+     */
+    if (decision.action === ENTRY_FAILED) {
+        const failedLabel = componentLoadHoldLabel() ||
+                            (mfxIndex >= 0 ? `FX ${mfxIndex + 1}` : String(componentKey));
+        componentLoadHold = null;
+        announce(`${failedLabel}, failed to load`);
+        if (view === VIEWS.COMPONENT_LOADING) {
+            setView(mfxIndex >= 0 ? VIEWS.MASTER_FX : VIEWS.CHAIN_EDIT);
+        }
+        needsRedraw = true;
         return;
     }
 
@@ -24051,6 +24120,7 @@ globalThis.tick = function() {
                 delete fxDisplayNameBackoff[`master:${key}`];
 
                 /* Restore plugin state/params if available */
+                if (mfxDspPath) waitForFxPositionSettled("master_fx:", key);
                 if (mfxData) {
                     try {
                         if (mfxDspPath && mfxData.state) {
