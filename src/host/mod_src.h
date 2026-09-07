@@ -118,6 +118,46 @@ static inline void mod_input_reset(mod_input_t *in) {
     for (int i = 0; i < 128; i++) in->cc[i] = MOD_SRC_CC_REST;
 }
 
+/*
+ * Latch one MIDI message into the input state.
+ *
+ * Lives HERE rather than in chain_midi.c so tests/host can RUN it — the same
+ * reason bus_route.h and mod_route_key.h exist. Its caller
+ * (chain_record_mod_input) stays in chain_midi.c because WHERE it is called
+ * from is the load-bearing part and that is pinned separately: both synth-feed
+ * paths, beside chain_record_synth_note, because an arpeggiator emits from
+ * tick() rather than from process_midi.
+ *
+ * NOTE-OFFS LATCH NOTHING. A released pad's velocity is release velocity, a
+ * different control entirely, and zeroing on release would make every velocity
+ * route snap to the bottom of its range between notes.
+ *
+ * Runs on the SPI callback: a switch and a store, nothing else.
+ */
+static inline void mod_input_record(mod_input_t *in, const uint8_t *msg, int len) {
+    if (!in || !msg || len < 2) return;
+    switch (msg[0] & 0xF0) {
+    case 0x90:  /* note on; velocity 0 is a note off and latches neither field */
+        if (len >= 3 && msg[2] > 0) {
+            in->velocity = msg[2];
+            in->note = msg[1];
+        }
+        break;
+    case 0xA0:  /* poly aftertouch — collapsed to channel, see mod_input_t */
+        if (len >= 3) in->pressure = msg[2];
+        break;
+    case 0xD0:  /* channel aftertouch — ONE data byte, so msg[1] is the value */
+        in->pressure = msg[1];
+        break;
+    case 0xB0:  /* control change; the index is masked because cc[] is the last
+                 * member of mod_input_t and msg[1] comes off the wire */
+        if (len >= 3) in->cc[msg[1] & 0x7F] = msg[2];
+        break;
+    default:
+        break;
+    }
+}
+
 /* ============================================================================
  * The mapping
  * ========================================================================= */

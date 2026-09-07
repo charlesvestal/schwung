@@ -55,28 +55,15 @@ else
   done
   say_ok "the latch does no I/O, logging or allocation"
 
-  # Channel aftertouch has ONE data byte. Reading msg[2] for 0xD0 is the classic
-  # error and would latch whatever is stale in the packet.
-  if printf '%s' "$body" | /usr/bin/grep -A2 'case 0xD0' | /usr/bin/grep -q 'msg\[1\]'; then
-    say_ok "channel aftertouch reads msg[1], its only data byte"
+  # The DECODING is tested by behaviour in tests/host/test_mod_src.c --
+  # channel aftertouch reading msg[1], a velocity-0 note-on latching nothing,
+  # the CC index masked -- because it lives in mod_src.h now and can be RUN.
+  # What is left here is the part only a source pin can see: WHERE the latch is
+  # called from, and that it stays a store.
+  if printf '%s' "$body" | /usr/bin/grep -q 'mod_input_record(&inst->mod_input, msg, len)'; then
+    say_ok "the latch delegates to mod_src.h, which tests/host can run"
   else
-    say_fail "channel aftertouch does not read msg[1]"
-  fi
-
-  # A note-on with velocity 0 is a note OFF. Latching it would slam every
-  # velocity route to the bottom on every note release.
-  if printf '%s' "$body" | /usr/bin/grep -q 'msg\[2\] > 0'; then
-    say_ok "a velocity-0 note-on is not latched as a velocity"
-  else
-    say_fail "chain_record_mod_input latches velocity-0 note-ons"
-  fi
-
-  # The CC index must be masked -- msg[1] is attacker-adjacent data off the wire
-  # and cc[] is the last member of mod_input_t.
-  if printf '%s' "$body" | /usr/bin/grep -q 'msg\[1\] & 0x7F'; then
-    say_ok "the CC index is masked to 0..127 before indexing cc[]"
-  else
-    say_fail "the CC index is not masked; cc[] is the last struct member"
+    say_fail "chain_record_mod_input no longer delegates to mod_input_record"
   fi
 fi
 

@@ -143,34 +143,13 @@ static inline void chain_record_synth_note(chain_instance_t *inst,
  * did — a velocity curve or a chord FX in the slot is part of the instrument,
  * and a route that ignored them would disagree with the sound coming out.
  *
- * NOTE-OFFS LATCH NOTHING. A released pad's velocity is release velocity, which
- * is a different control entirely, and zeroing on release would make every
- * velocity route snap to the bottom of its range between notes.
+ * THE DECODING ITSELF LIVES IN mod_src.h, so tests/host can run it. What stays
+ * here is WHERE it is called from, which is the half that has a war story.
  *
- * Runs on the SPI callback — four stores and a switch, nothing else. */
+ * Runs on the SPI callback — a switch and a store, nothing else. */
 static inline void chain_record_mod_input(chain_instance_t *inst,
                                           const uint8_t *msg, int len) {
-    if (len < 2) return;
-    switch (msg[0] & 0xF0) {
-    case 0x90:  /* note on; velocity 0 is a note off and latches neither field */
-        if (len >= 3 && msg[2] > 0) {
-            inst->mod_input.velocity = msg[2];
-            inst->mod_input.note = msg[1];
-        }
-        break;
-    case 0xA0:  /* poly aftertouch — collapsed to channel, see mod_input_t */
-        if (len >= 3) inst->mod_input.pressure = msg[2];
-        break;
-    case 0xD0:  /* channel aftertouch — ONE data byte, so msg[1] is the value */
-        inst->mod_input.pressure = msg[1];
-        break;
-    case 0xB0:  /* control change; the index is masked because cc[] is the last
-                 * member of mod_input_t and msg[1] comes off the wire */
-        if (len >= 3) inst->mod_input.cc[msg[1] & 0x7F] = msg[2];
-        break;
-    default:
-        break;
-    }
+    mod_input_record(&inst->mod_input, msg, len);
 }
 
 static void chain_midi_trace(const chain_instance_t *inst, const char *what,
