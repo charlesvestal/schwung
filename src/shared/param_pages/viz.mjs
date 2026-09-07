@@ -231,7 +231,13 @@ function collectDeclared(keys, metaIndex, invalid) {
              * Such a role is also NOT claimed, so its own cell still draws as
              * an ordinary control. It informs the picture; it is not part of it.
              */
-            if (v.role) g.roles[v.role] = { key, slot, span: v.span !== false };
+            /* `viz` is retained because the group's extra_keys are read back
+             * off it below -- a role stored without it made that lookup
+             * (`declaredExtraKeys(r.viz)`) return null for every member, so a
+             * GROUP could never carry extra_keys at all while the comment
+             * there said it could. A spanning widget whose values live on
+             * another page then drew its "no answer" state forever. */
+            if (v.role) g.roles[v.role] = { key, slot, span: v.span !== false, viz: v };
             if (v.kind && !g.kind) g.kind = v.kind;
         } else if (v.kind) {
             /*
