@@ -58,6 +58,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
+	$(BUILD_DIR)/test_lfo_process_midi_count \
 	$(BUILD_DIR)/test_send_fx_key \
 	$(BUILD_DIR)/test_fx_load_gate \
 	$(BUILD_DIR)/test_split_voices_parse \
@@ -197,6 +198,13 @@ $(BUILD_DIR)/test_bus_mix: test_bus_mix.c ../../src/host/bus_mix.h | $(BUILD_DIR
 
 $(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../src/modules/chain/dsp/chain_internal.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -DTEST_SLOT_BUSES=$(SLOT_BUSES) $< -o $@ $(LDFLAGS)
+
+# No -DLFO_COUNT here, deliberately: lfo_common.h defines it unconditionally, so
+# a command-line value is REDEFINED by the header and the test would go green
+# against either implementation. It discriminates by passing an array shorter
+# than the macro instead -- see the file's preamble.
+$(BUILD_DIR)/test_lfo_process_midi_count: test_lfo_process_midi_count.c ../../src/host/lfo_common.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/split_voices_parse.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
