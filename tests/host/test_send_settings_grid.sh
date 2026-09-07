@@ -17,10 +17,15 @@
 #    -- a key nobody serves, which answers "" and not an error, so every cell
 #    draws a confident zero and every turn writes to nothing. The bus prefix
 #    must SURVIVE the strip, which is what the assertion below actually checks.
-#  - a write PERSISTS. The list path calls saveSendFxChainConfig() after every
-#    level change; a grid write that dropped it takes effect immediately and is
-#    gone on reboot with no error anywhere, which is the failure already
-#    documented on masterGridIoFor.
+#  - a write PERSISTS, but does NOT save inline. Dropping persistence entirely
+#    is the "takes effect now, gone on reboot" failure documented on
+#    masterGridIoFor. Doing it inline is the opposite failure and was reported
+#    from hardware: saveSendFxChainConfig walks both buses, reads `modules` and
+#    a `:bypassed` per position and writes up to sixteen state files -- ~18 IPC
+#    round trips and seventeen flash writes. The jog got away with it because it
+#    steps by four and a hand turns it slowly; a knob emits a burst of detents
+#    and the return took two to three seconds to follow the hand. So the write
+#    marks a flag and the tick flushes the LEVELS FILE ALONE.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -56,11 +61,14 @@ function run(busLevelKeys) {
     "let reads = [], writes = [], saves = 0;",
     "function getSlotParam(s, k) { reads.push(k); return \"64\"; }",
     "function setSlotParam(s, k, v) { writes.push(k + \"=\" + v); return true; }",
-    "function saveSendFxChainConfig() { saves++; }",
+    "function saveSendFxChainConfig() { fullSaves++; }",
+    "function saveSendLevels() { saves++; }",
+    "let fullSaves = 0; let sendLevelsDirty = false;",
     grab("sendSettingsGridParams"),
     grab("sendSettingsGridIo"),
     "return { params: sendSettingsGridParams(), io: sendSettingsGridIo(),",
-    "         reads, writes, saves: () => saves };",
+    "         reads, writes, saves: () => saves,",
+    "         fullSaves: () => fullSaves, dirty: () => sendLevelsDirty };",
   ].join("\n");
   return new Function(body)();
 }
@@ -105,18 +113,33 @@ function run(busLevelKeys) {
   }
   ok("strips the component prefix, keeping the bus prefix");
 
-  /* THE WRITE, AND THE SAVE. */
-  const before = e.saves();
+  /* THE WRITE: reaches the bus key, marks dirty, and does NO file I/O. */
   e.io.setParam("send_settings:send1:return", 100);
   const w = e.writes[e.writes.length - 1];
   if (w !== "send1:return=100") {
     fail("a write went to " + JSON.stringify(w) + ", expected \"send1:return=100\"");
   }
-  if (e.saves() !== before + 1) {
-    fail("a grid write did not call saveSendFxChainConfig() -- it takes effect "
-         + "now and is gone on reboot, with no error anywhere");
+  if (!e.dirty()) {
+    fail("a grid write left sendLevelsDirty false -- nothing will ever flush it, "
+         + "so the change takes effect now and is gone on reboot");
   }
-  ok("a write reaches the bus key AND persists");
+  if (e.fullSaves() !== 0) {
+    fail("a grid write called saveSendFxChainConfig() inline (" + e.fullSaves()
+         + "x). That walks both buses, reads a :bypassed per position and writes "
+         + "up to sixteen state files -- per DETENT. It is what put two to three "
+         + "seconds between the knob and the value.");
+  }
+  if (e.saves() !== 0) {
+    fail("a grid write wrote the levels file inline; the tick flushes it");
+  }
+  /* A BURST costs nothing extra: the flag is idempotent, which is the whole
+     point of deferring rather than throttling at the call site. */
+  for (let i = 0; i < 50; i++) e.io.setParam("send_settings:send1:return", i);
+  if (e.fullSaves() !== 0 || e.saves() !== 0) {
+    fail("50 detents produced " + e.fullSaves() + " full saves and " + e.saves()
+         + " level writes; a burst must produce none");
+  }
+  ok("a write reaches the bus key and marks dirty, with no file I/O per detent");
 
   if (e.io.isModulated("send1:return") !== false) {
     fail("isModulated must answer false without IPC -- a send bus has no LFOs");

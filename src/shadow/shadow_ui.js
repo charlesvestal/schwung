@@ -12351,16 +12351,35 @@ function saveSendFxChainConfig() {
         }
     }
 
-    /* The three scalars, in their own file — they belong to the BUS and not to
-     * any position in it, so filing them under position 0 would lose them the
-     * moment that position was emptied. This file is a MERGE onto whatever is
-     * already on disk, never a fresh object: a failed read is skipped rather
-     * than written as 0, and skipping a key from a WHOLE-FILE rewrite is
-     * writing 0 for it on the next boot (loadSendFxChainConfigForSet treats an
-     * absent field as 0). So a failed read for Send A must not erase Send B's
-     * last-known-good value just because this pass rewrote the file — start
-     * from the existing file and only overwrite the keys that read
-     * successfully this pass. */
+    saveSendLevels();
+}
+
+/*
+ * THE THREE SCALARS ALONE — the levels file, and nothing else.
+ *
+ * Split out of saveSendFxChainConfig because a LEVEL CHANGE IS NOT A CHAIN
+ * CHANGE, and the full save is enormous: it walks both send buses, reads
+ * `modules` and a `:bypassed` per position, and writes up to sixteen
+ * send_fx_<bus>_<i>.json files. That is ~18 IPC round trips at ~2.8 ms plus
+ * seventeen flash writes.
+ *
+ * The settings LIST called it on every jog detent and got away with it, because
+ * the jog steps by SEND_LEVEL_STEP and a hand turns it slowly. The knob grid
+ * does not: a knob emits a burst of detents, each one paying the whole cost,
+ * and the return took two to three seconds to catch up with the hand. Reported
+ * from hardware.
+ *
+ * They belong to the BUS and not to any position in it, so filing them under
+ * position 0 would lose them the moment that position was emptied. This file is
+ * a MERGE onto whatever is already on disk, never a fresh object: a failed read
+ * is skipped rather than written as 0, and skipping a key from a WHOLE-FILE
+ * rewrite is writing 0 for it on the next boot (loadSendFxChainConfigForSet
+ * treats an absent field as 0). So a failed read for Send A must not erase Send
+ * B's last-known-good value just because this pass rewrote the file — start
+ * from the existing file and only overwrite the keys that read successfully.
+ */
+function saveSendLevels() {
+    if (typeof shadow_get_param !== "function") return;
     const levels = {};
     try {
         const raw = host_read_file(activeSlotStateDir + "/send_levels.json");
@@ -12607,6 +12626,11 @@ let _configSyncTickCounter = 0;
 const CONFIG_SYNC_INTERVAL = 88; /* ~2 seconds at 44 ticks/sec */
 
 let _feedbackHoldTickCounter = 0;
+/* ~4x/sec at 60Hz, the same order as the feedback guard beside it. Small enough
+ * that letting go of the knob and reaching for Back cannot outrun the write. */
+const SEND_LEVELS_FLUSH_INTERVAL = 15;
+let _sendLevelsTickCounter = 0;
+let sendLevelsDirty = false;
 const FEEDBACK_HOLD_CHECK_INTERVAL = 10; /* ~4x/sec — run the continuous feedback guard */
 let _upgradeOverlayText = null; /* Web-initiated upgrade status for OLED display */
 
@@ -13709,12 +13733,13 @@ function sendSettingsGridIo() {
         },
         setParam(fullKey, value) {
             const ok = setSlotParam(0, bare(fullKey), String(value));
-            /* THE SAVE THE LIST PATH CARRIES. adjustMasterFxSetting calls
-             * saveSendFxChainConfig() after every level change; a grid write
-             * that dropped it would take effect immediately and be gone on
-             * reboot, with no error anywhere -- the exact failure documented on
-             * masterGridIoFor's writeParam. */
-            if (ok) saveSendFxChainConfig();
+            /* MARKED DIRTY, NOT SAVED. The write itself must still persist --
+             * dropping it is the "takes effect now, gone on reboot" failure
+             * documented on masterGridIoFor -- but a knob emits a burst of
+             * detents and the save is file I/O, so doing it here put two to
+             * three seconds between the hand and the value. The tick flushes it
+             * on a divider; see sendLevelsDirty. */
+            if (ok) sendLevelsDirty = true;
             return ok;
         },
         /* No send level is a modulation target: a send bus has no LFOs, so the
@@ -19551,7 +19576,10 @@ function adjustMasterFxSetting(setting, delta) {
         /* SEND_LEVEL_STEP, not 1: the range is 0..127 and a detent per unit
          * makes a full sweep 127 turns of the jog. */
         sendBusLevelWrite(setting.busKey, cur + delta * SEND_LEVEL_STEP);
-        saveSendFxChainConfig();
+        /* The LEVELS file only: a level change never moves a module, so the
+         * sixteen per-position writes the full save makes are all rewrites of
+         * bytes that did not change. */
+        saveSendLevels();
         return;
     }
 }
@@ -24040,6 +24068,16 @@ globalThis.tick = function() {
         } finally {
             if (_h && typeof host_trace_end === 'function') host_trace_end(_h);
         }
+    }
+
+    /* Send levels, flushed off the knob. Marked dirty by the grid write and
+     * written here at most a few times a second: the file I/O is what put
+     * seconds between the hand and the value when it ran per detent. A pending
+     * write is never dropped -- the flag survives until a flush succeeds. */
+    if (sendLevelsDirty && ++_sendLevelsTickCounter >= SEND_LEVELS_FLUSH_INTERVAL) {
+        _sendLevelsTickCounter = 0;
+        sendLevelsDirty = false;
+        saveSendLevels();
     }
 
     /* Continuous feedback guard: bypass Line In slots while speaker-feedback risk
