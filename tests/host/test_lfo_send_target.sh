@@ -109,10 +109,24 @@ ok("the slot LFO picker offers a Sends component");
       fail("lfo_tick does not zero main_send_mod at the top of the block, so a "
            + "disabled or retargeted LFO leaves its offset stuck");
     }
-    /* and the zero must come BEFORE the per-LFO loop, or it wipes the result. */
-    if (t.search(zero) > t.indexOf("for (int i = 0; i < LFO_COUNT")) {
-      fail("main_send_mod is zeroed INSIDE or after the LFO loop, which erases "
-           + "the contribution it was meant to reset");
+    /* and the zero must come BEFORE the per-route loop, or it wipes the result.
+     *
+     * The marker is looked up SEPARATELY and its absence is its own failure.
+     * This was one expression using indexOf, and when the loop bound was
+     * renamed LFO_COUNT -> MOD_ROUTE_COUNT the lookup returned -1, so
+     * `search(zero) > -1` was trivially true and the test failed for a reason
+     * that had nothing to do with the ordering it was checking. An assertion
+     * whose landmark can vanish must say so rather than compare against -1.
+     *
+     * (No apostrophes anywhere in this file: the whole script is a single-
+     * quoted -e argument, so one ends it mid-expression.) */
+    const loopAt = t.indexOf("for (int i = 0; i < MOD_ROUTE_COUNT");
+    if (loopAt < 0) {
+      fail("could not find the per-route loop in mod_tick -- the ordering "
+           + "check here has no landmark to compare against");
+    } else if (t.search(zero) > loopAt) {
+      fail("main_send_mod is zeroed INSIDE or after the route loop, which "
+           + "erases the contribution it was meant to reset");
     }
     if (!bad) ok("lfo_tick adds an offset, sums, and re-zeroes it every block");
   }

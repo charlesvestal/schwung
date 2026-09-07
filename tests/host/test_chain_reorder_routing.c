@@ -162,7 +162,7 @@ static void seed_chain(int n_fx, int n_mfx) {
 
     memset(inst->mod_targets, 0, sizeof(inst->mod_targets));
     inst->mod_target_count = 0;
-    memset(inst->lfos, 0, sizeof(inst->lfos));
+    memset(inst->mod_routes, 0, sizeof(inst->mod_routes));
     memset(inst->knob_mappings, 0, sizeof(inst->knob_mappings));
     inst->knob_mapping_count = 0;
     inst->dirty = 0;
@@ -242,7 +242,7 @@ static mod_target_state_t *mod_by_param(const char *param) {
 }
 
 static void set_lfo(int n, const char *target, const char *param) {
-    lfo_state_t *l = &inst->lfos[n];
+    lfo_state_t *l = &inst->mod_routes[n];
     memset(l, 0, sizeof(*l));
     l->active = 1;
     l->depth = 0.5f;
@@ -276,15 +276,15 @@ static knob_mapping_t *knob_by_cc(int cc) {
  * exactly the shape of "the fourth string table was never retargeted".
  */
 static void check_no_dangling(const char *what) {
-    struct { const char *id; const char *kind; } rows[MAX_MOD_TARGETS + LFO_COUNT + MAX_KNOB_MAPPINGS];
+    struct { const char *id; const char *kind; } rows[MAX_MOD_TARGETS + MOD_ROUTE_COUNT + MAX_KNOB_MAPPINGS];
     int n = 0;
     for (int i = 0; i < inst->mod_target_count; i++) {
         if (!inst->mod_targets[i].active) continue;
         rows[n].id = inst->mod_targets[i].target; rows[n].kind = "a modulation target"; n++;
     }
-    for (int i = 0; i < LFO_COUNT; i++) {
-        if (!inst->lfos[i].active) continue;
-        rows[n].id = inst->lfos[i].target; rows[n].kind = "an LFO"; n++;
+    for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
+        if (!inst->mod_routes[i].active) continue;
+        rows[n].id = inst->mod_routes[i].target; rows[n].kind = "an LFO"; n++;
     }
     for (int i = 0; i < inst->knob_mapping_count; i++) {
         rows[n].id = inst->knob_mappings[i].target; rows[n].kind = "a knob mapping"; n++;
@@ -411,17 +411,17 @@ static void test_remove_clears_lfo(void) {
     EXPECT_INT(unloaded_fx_slot, 1, "the removed position was unloaded before the shift");
     EXPECT_INT(inst->fx_count, 2, "the chain did not shrink");
 
-    EXPECT_STR(inst->lfos[0].target, "", "the LFO aimed at the DELETED FX was not cleared");
-    EXPECT_STR(inst->lfos[0].param, "",
+    EXPECT_STR(inst->mod_routes[0].target, "", "the LFO aimed at the DELETED FX was not cleared");
+    EXPECT_STR(inst->mod_routes[0].param, "",
                "the LFO kept the parameter name of a module that left -- a later "
                "write of target alone revives half a routing");
-    EXPECT_INT(inst->lfos[0].active, 0, "the orphaned LFO is still marked active");
+    EXPECT_INT(inst->mod_routes[0].active, 0, "the orphaned LFO is still marked active");
 
     /* ...and the one behind it followed, rather than being cleared along with
        it or left pointing at the index the deleted module vacated. */
-    EXPECT_STR(inst->lfos[1].target, "fx2", "the LFO behind the deletion did not follow");
-    EXPECT_STR(inst->lfos[1].param, "p3", "the surviving LFO lost its parameter");
-    EXPECT_INT(inst->lfos[1].active, 1, "the surviving LFO was deactivated");
+    EXPECT_STR(inst->mod_routes[1].target, "fx2", "the LFO behind the deletion did not follow");
+    EXPECT_STR(inst->mod_routes[1].param, "p3", "the surviving LFO lost its parameter");
+    EXPECT_INT(inst->mod_routes[1].active, 1, "the surviving LFO was deactivated");
 
     /* The modulation entry of the deleted module is gone (the unloader), and
        the one behind it survived intact with its base (the permutation). */
@@ -442,8 +442,8 @@ static void test_remove_clears_lfo(void) {
     set_lfo(0, "fx2", "p2");
     set_lfo(1, "fx2", "p2");
     chain_reorder_remove(inst, 0, 1);
-    EXPECT_STR(inst->lfos[0].target, "", "LFO 1 survived the deletion");
-    EXPECT_STR(inst->lfos[1].target, "",
+    EXPECT_STR(inst->mod_routes[0].target, "", "LFO 1 survived the deletion");
+    EXPECT_STR(inst->mod_routes[1].target, "",
                "only the FIRST LFO was cleared -- LFO 2 still names the deleted position");
 
     /* An LFO aimed at the SYNTH, or at the other section, is none of an audio
@@ -453,8 +453,8 @@ static void test_remove_clears_lfo(void) {
     set_lfo(0, "synth", "cutoff");
     set_lfo(1, "midi_fx2", "m2");
     chain_reorder_remove(inst, 0, 1);
-    EXPECT_STR(inst->lfos[0].target, "synth", "an audio FX deletion cleared a SYNTH routing");
-    EXPECT_STR(inst->lfos[1].target, "midi_fx2",
+    EXPECT_STR(inst->mod_routes[0].target, "synth", "an audio FX deletion cleared a SYNTH routing");
+    EXPECT_STR(inst->mod_routes[1].target, "midi_fx2",
                "an audio FX deletion cleared a MIDI FX routing");
 
     /* And the same rule on the MIDI side. */
@@ -464,9 +464,9 @@ static void test_remove_clears_lfo(void) {
     set_lfo(1, "midi_fx3", "m3");
     EXPECT_INT(chain_reorder_remove(inst, 1, 1), 1, "remove of midi_fx2 accepted");
     EXPECT_INT(unloaded_midi_fx_slot, 1, "the removed MIDI position was unloaded");
-    EXPECT_STR(inst->lfos[0].target, "", "the LFO aimed at the deleted MIDI FX was not cleared");
-    EXPECT_STR(inst->lfos[0].param, "", "the deleted MIDI FX left its param name in the LFO");
-    EXPECT_STR(inst->lfos[1].target, "midi_fx2", "the MIDI LFO behind the deletion did not follow");
+    EXPECT_STR(inst->mod_routes[0].target, "", "the LFO aimed at the deleted MIDI FX was not cleared");
+    EXPECT_STR(inst->mod_routes[0].param, "", "the deleted MIDI FX left its param name in the LFO");
+    EXPECT_STR(inst->mod_routes[1].target, "midi_fx2", "the MIDI LFO behind the deletion did not follow");
     if (mod_by_param("m2")) failf("the deleted MIDI FX left an active modulation entry");
     check_no_dangling("after a MIDI FX remove");
 }
@@ -583,7 +583,7 @@ static void test_refusal_is_inert(void) {
     EXPECT_INT(chain_reorder_remove(inst, 0, 4), 0, "a remove past the end was accepted");
     EXPECT_INT(chain_reorder_insert(inst, 0, -1), 0, "an insert at a negative position was accepted");
 
-    EXPECT_STR(inst->lfos[0].target, "fx2", "a refused edit moved an LFO routing");
+    EXPECT_STR(inst->mod_routes[0].target, "fx2", "a refused edit moved an LFO routing");
     EXPECT_STR(knob_by_cc(71)->target, "fx2", "a refused edit moved a knob mapping");
     {
         mod_target_state_t *e = mod_by_param("p2");

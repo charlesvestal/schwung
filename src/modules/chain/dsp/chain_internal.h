@@ -47,12 +47,32 @@
 #include "host/bus_mix.h"
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
+#include "host/mod_route_key.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
 /* Limits */
 #define MAX_PATCHES 32      /* Max patches to list in browser */
 #define MAX_AUDIO_FX 8      /* Max FX loaded per active chain */
+
+/*
+ * Mod routes a slot carries. Each is a SOURCE (LFO, velocity, pressure, a CC,
+ * or the note number — mod_src.h) aimed at one parameter of one component,
+ * summed non-destructively by the modulation bus in chain_mod.c.
+ *
+ * 8, matching MAX_AUDIO_FX / SLOT_BUSES / MASTER_FX_SLOTS — this codebase's
+ * number for "a chain of things". It costs sizeof(lfo_state_t) each in
+ * chain_instance_t, which is heap, and in patch_info_t, which is a stack local
+ * on v2_set_param's load_file route: 2 -> 8 adds ~780 bytes to a frame already
+ * around 232 KB. Both were measured before raising it.
+ *
+ * MASTER_FX_LFO_COUNT IS A DIFFERENT NUMBER and must stay 2. Master FX shares
+ * lfo_state_t but has neither the sources nor the UI for them, and no MIDI
+ * input for a source to read in the first place. The two used to be the same
+ * macro; lfo_process_midi now takes an explicit count precisely so a call with
+ * the shorter array cannot walk off the end of it.
+ */
+#define MOD_ROUTE_COUNT 8
 
 /* Buses a slot can hold, BESIDE Main. Main is bus 0 and is implicit: it is
  * never created or deleted, holds every voice not assigned elsewhere, and its
@@ -313,7 +333,7 @@ typedef struct {
     int midi_fx_pre_mode;  /* 0 = Post (default), 1 = Pre (additive inject to Move MIDI_IN) */
     int knob_cc_out;       /* 0 = off (default), 1 = echo chain-knob changes out
                             * as CC 102-109 on the slot's recv channel */
-    lfo_state_t lfos[LFO_COUNT];  /* LFO configuration */
+    lfo_state_t mod_routes[MOD_ROUTE_COUNT];  /* Mod route configuration */
     bus_config_t buses[SLOT_BUSES];
     int main_sends[BUS_MIX_SENDS];
     /*
@@ -801,9 +821,10 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
 
     /* Per-slot LFO state */
-    lfo_state_t lfos[LFO_COUNT];
-    float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
-    int lfo_base_valid[LFO_COUNT];     /* Whether base has been snapshotted */
+    lfo_state_t mod_routes[MOD_ROUTE_COUNT];
+    float mod_route_base_values[MOD_ROUTE_COUNT];  /* Base snapshot for mod-to-mod */
+    int mod_route_base_valid[MOD_ROUTE_COUNT];     /* Whether base has been snapshotted */
+    mod_input_t mod_input;             /* Latched MIDI for the non-LFO sources */
 
     /* MIDI input filter */
     midi_input_t midi_input;
@@ -1176,6 +1197,13 @@ CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);
 CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
+/* ---- chain_mod_routes.c: the eight per-slot modulation SOURCES ----------
+ * Sibling of chain_mod.c, which is the BUS. These produce contributions; that
+ * file decides where they land. See the file preamble for the split. */
+CHAIN_INTERNAL int chain_mod_route_index(const char *key, const char **out_rest);
+CHAIN_INTERNAL int chain_mod_route_set_param(chain_instance_t *inst, const char *key, const char *val);
+CHAIN_INTERNAL int chain_mod_route_get_param(chain_instance_t *inst, const char *key, char *buf, int buf_len, int *out_len);
+
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);

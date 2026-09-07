@@ -110,8 +110,8 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
             e->param[0] = '\0';
         }
     }
-    for (int i = 0; i < LFO_COUNT; i++) {
-        lfo_state_t *l = &inst->lfos[i];
+    for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
+        lfo_state_t *l = &inst->mod_routes[i];
         if (chain_perm_retarget(l->target, sizeof(l->target), prefix, max, map, count) < 0) {
             l->param[0] = '\0';
             l->active = 0;
