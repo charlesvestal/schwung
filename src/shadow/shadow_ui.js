@@ -7698,6 +7698,112 @@ function moduleDefaultFx(moduleId) {
  * Returns how many positions were seeded (0 when it declined), so the caller
  * can decide whether the chain needs re-reading rather than re-reading always.
  */
+/*
+ * `capabilities.default_buses: [{ name, voices, fx: [...] }]`
+ *
+ * A module that ships its own effects can hand them over as a BUS rather than
+ * bake them in. dr32 is the case: its Drum Bus is four stages in series over the
+ * whole kit, and shipping that as one insert loses the only thing anyone wants
+ * from it -- swapping just the compressor, or putting a drive between two
+ * stages. A container of positions is the point.
+ *
+ * A BUS AND NOT THE SLOT CHAIN, and the difference is real rather than
+ * cosmetic. A bus catches the VOICES; the slot chain catches the synth's whole
+ * output, including any returns it sums internally. And a bus keeps the
+ * module's own glue out of the eight slot positions the user wants for their
+ * effects.
+ *
+ * `voices: "*"` means every voice the synth publishes -- the "everything, by
+ * default" routing. A list of ids means those, for a module that wants its kick
+ * glued and its hats left alone.
+ *
+ * Same rules as default_fx, for the same reasons: interactive pick only, and
+ * only into a slot that has NO buses yet. A slot with buses has been arranged
+ * by somebody, and adding to it silently re-routes their voices.
+ */
+function moduleDefaultBuses(moduleId) {
+    if (!moduleId) return [];
+    let meta = null;
+    try {
+        if (typeof host_get_module_metadata === "function") meta = host_get_module_metadata(moduleId);
+    } catch (e) { return []; }
+    if (typeof meta === "string") {
+        try { meta = JSON.parse(meta); } catch (e) { return []; }
+    }
+    const list = meta && meta.capabilities && meta.capabilities.default_buses;
+    if (!Array.isArray(list)) return [];
+    /* NOT capped here. The seeding loop breaks at SLOT_BUSES, and a second cap
+     * in front of it is a branch no mutation can kill -- one was written and
+     * removed for exactly that. */
+    return list.filter((b) => b && typeof b === "object");
+}
+
+function seedDefaultBusesForSlot(slotIndex, moduleId) {
+    const wanted = moduleDefaultBuses(moduleId);
+    if (!wanted.length) return 0;
+
+    /* Only into a slot with NO buses. Read through the model rather than a raw
+     * param so an unresolved config answers -1 and declines -- busCount returns
+     * -1 for "the read did not complete", never 0, exactly so this can tell the
+     * two apart. */
+    const cfg = BusModel.parseBusesConfig(getSlotParam(slotIndex, "buses:config"));
+    if (BusModel.busCount(cfg) !== 0) return 0;
+
+    /*
+     * The voices the synth publishes.
+     *
+     * DECLINING ON EMPTY CARRIES THE TRI-STATE HERE, rather than a test of its
+     * own. parseSplitVoices answers `unresolved: true` only for null/undefined,
+     * and always with `voices: []` alongside it -- so an explicit unresolved
+     * check is a branch nothing can kill, and one was written and removed. Both
+     * roads lead to the same place and the same place is right: a read that did
+     * not complete must not create a bus with nothing routed into it, and
+     * neither must a synth that genuinely splits into nothing.
+     */
+    const sv = BusModel.parseSplitVoices(getSlotParam(slotIndex, "synth:split_voices"));
+    const allIds = ((sv && sv.voices) || []).map((v) => v && v.id).filter((x) => x);
+    if (!allIds.length) return 0;
+
+    let made = 0;
+    for (const decl of wanted) {
+        const at = made;   /* buses are positional; we are filling an empty set */
+        if (at >= BusModel.SLOT_BUSES) break;
+        const bus = `bus${at + 1}`;
+        if (!setSlotParam(slotIndex, `${bus}:create`, "1")) break;
+
+        const ids = (decl.voices === "*" || decl.voices === undefined)
+            ? allIds
+            : (Array.isArray(decl.voices) ? decl.voices.filter((v) => allIds.indexOf(v) >= 0) : []);
+        /* ONE write, the whole list: every bus<N>:voices write is a replace, so
+         * the write has to carry the complete membership. */
+        if (ids.length) setSlotParam(slotIndex, `${bus}:voices`, ids.join(","));
+        if (decl.name) setSlotParam(slotIndex, `${bus}:name`, String(decl.name));
+
+        const fx = Array.isArray(decl.fx) ? decl.fx : [];
+        let k = 0;
+        for (const entry of fx) {
+            if (!entry || typeof entry.module !== "string" || !entry.module) continue;
+            if (k >= BusModel.BUS_FX_SLOTS) break;
+            const pos = `${bus}:fx${k + 1}`;
+            if (!setSlotParam(slotIndex, `${pos}:module`, entry.module)) break;
+            k++;
+            if (entry.params && typeof entry.params === "object") {
+                for (const pk in entry.params) {
+                    setSlotParam(slotIndex, `${pos}:${pk}`, String(entry.params[pk]));
+                }
+            }
+            /* Last, for the reason default_fx applies it last: a preset is a
+             * whole state and overwrites anything written after it. */
+            if (entry.preset) {
+                setSlotParam(slotIndex, `${pos}:preset_name`, String(entry.preset));
+            }
+        }
+        made++;
+    }
+    if (made) debugLog(`default_buses: created ${made} bus(es) for ${moduleId}`);
+    return made;
+}
+
 function seedDefaultFxForSlot(slotIndex, moduleId) {
     const wanted = moduleDefaultFx(moduleId);
     if (!wanted.length) return 0;
@@ -13485,6 +13591,7 @@ function applyComponentSelectionConfirmed(slotIndex, paramKey, moduleId, comp, c
      * reconstructs a chain that has already been shaped. See moduleDefaultFx. */
     if (moduleId && comp.key === "synth") {
         seedDefaultFxForSlot(slotIndex, moduleId);
+        seedDefaultBusesForSlot(slotIndex, moduleId);
     }
 
     /* Track component selection for analytics. Outside the branches, because a
