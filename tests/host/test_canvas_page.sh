@@ -57,7 +57,7 @@ const CP = [
   { key: "b", name: "B", type: "float", min: 0, max: 1, step: 0.01 },
   { key: "c", name: "C", type: "float", min: 0, max: 1, step: 0.01 },
   { key: "face", name: "Face", type: "canvas", canvas_script: "canvas.js",
-    canvas_overlay: "face_page", as_page: true },
+    canvas_overlay: "face_page", as_page: true, extra_keys: ["activity"] },
 ];
 
 /* ---- planning ---- */
@@ -72,6 +72,29 @@ ok(cp && JSON.stringify(cp.keys) === JSON.stringify(["a", "b", "c"]),
    "it carries the levels own knobs, so the encoders do what they do on the grid");
 ok(cp && cp.canvas.script === "canvas.js" && cp.canvas.overlay === "face_page",
    "the script and overlay travel with the page");
+ok(cp && JSON.stringify(cp.canvas.extraKeys) === JSON.stringify(["activity"]),
+   "read-only canvas dependencies travel with the page without becoming cells");
+
+/*
+ * CAPPED AT FOUR, the same cap a widgets viz.extra_keys gets and from the same
+ * exported constant.
+ *
+ * ONE READ PER STOP. Uncapped, a page asking for twenty spends its whole read
+ * budget on the picture and starves the knobs drawn beside it -- measured on
+ * the version that shipped that way: a three-knob page went from refreshing a
+ * knob every 4 ticks to every 24. Declaring ONE key, as the case above does,
+ * passes identically with and without a cap, so the assertion has to overrun
+ * it deliberately.
+ */
+{
+  const many = ["k0", "k1", "k2", "k3", "k4", "k5"];
+  const CPX = CP.map((p) => (p.key === "face" ? { ...p, extra_keys: many } : p));
+  const px = planPages({ hierarchy: HIER, chainParams: CPX }).pages.find((p) => p.canvas);
+  ok(px && px.canvas.extraKeys.length === 4,
+     "six declared extra keys are capped to four, so the read budget survives");
+  ok(px && JSON.stringify(px.canvas.extraKeys) === JSON.stringify(["k0", "k1", "k2", "k3"]),
+     "and it keeps the FIRST four, so the cap is a truncation the author can predict");
+}
 
 /* The canvas key must NOT also be a cell anywhere. */
 const celled = plan.pages.some((p) => (p.keys || []).indexOf("face") >= 0);
@@ -117,7 +140,7 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
 /* ---- the controller reaches it, and knobs still work ---- */
 {
   const store = { ui_hierarchy: JSON.stringify(HIER), chain_params: JSON.stringify(CP),
-                  a: "0.25", b: "0.5", c: "0.75" };
+                  a: "0.25", b: "0.5", c: "0.75", activity: "frame-1" };
   const writes = [];
   let t = 0;
   const ctrl = createController({
@@ -142,9 +165,54 @@ ok(plan2.pages.some((p) => (p.keys || []).indexOf("face") >= 0),
 
   /* Turning knob 0 on the custom page must write the levels first knob. */
   for (let i = 0; i < 10; i++) ctrl.tick();
+  ctrl.render(drawContext(createFramebuffer(128, 64)), {
+    title: "M", footer: null,
+  });
   ctrl.onKnobTurn(0, 1);
   ok(writes.some((w) => w[0] === "a"),
      "an encoder on the custom page writes the levels own param");
+  /* It is fetched only while the custom page is current and never appears in
+   * cp.keys, so it does not consume a knob/cell. */
+  ok(ctrl.state.values.activity === "frame-1",
+     "the canvas extra key is fetched by the staggered value rotation");
+}
+
+/*
+ * A KEY THAT ALREADY HAS A CELL IS NOT A SECOND STOP.
+ *
+ * The rotation serves one key per tick, so a knob named in extra_keys as well
+ * would simply be read twice per lap -- the value it already had, at the cost
+ * of every other key on the page waiting a tick longer. The planner cannot
+ * rule it out (one canvas serves both a custom page and the preset browser,
+ * and those carry different key lists), so the controller does.
+ */
+{
+  const CPD = CP.map((p) => (p.key === "face" ? { ...p, extra_keys: ["a", "activity"] } : p));
+  const store = { ui_hierarchy: JSON.stringify(HIER), chain_params: JSON.stringify(CPD),
+                  a: "0.25", b: "0.5", c: "0.75", activity: "frame-1" };
+  const reads = {};
+  let t = 0;
+  const ctrl = createController({
+    getParam: (k) => { const b = String(k).split(":").pop();
+                       reads[b] = (reads[b] || 0) + 1;
+                       return store[b] === undefined ? null : store[b]; },
+    setParam: () => true, announce: () => {}, now: () => (t += 16),
+  });
+  ctrl.load({ prefix: "synth" });
+  ctrl.setLayout(LAYOUT_MOVY);
+  for (let i = 0; i < 8; i++) {
+    ctrl.goToPage(i, { remember: false });
+    if (ctrl.onCanvasPage()) break;
+  }
+  for (const k of Object.keys(reads)) delete reads[k];
+  for (let i = 0; i < 120; i++) ctrl.tick();
+  /* Three knobs + the preset name + ONE extra key = 5 stops. "a" is a knob, so
+   * it gets its own stop and no more; a second stop would read it ~1.5x as
+   * often as its neighbours. */
+  ok(reads.a && reads.b && Math.abs(reads.a - reads.b) <= 1,
+     "a knob also named in extra_keys is read no more often than its neighbours");
+  ok(ctrl.state.values.activity === "frame-1",
+     "and the genuinely off-page key is still fetched");
 }
 
 /* ---- a thrower is retired, not fatal ---- */

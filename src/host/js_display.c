@@ -370,7 +370,7 @@ Font* js_display_load_font(const char *filename, int charSpacing) {
     }
 
     stbi_image_free(image);
-    printf("Loaded bitmap font: %s (%d chars, cell %dx%d)\n", filename, numChars, charW, height);
+    fprintf(stderr, "Loaded bitmap font: %s (%d chars, cell %dx%d)\n", filename, numChars, charW, height);
     return out;
 }
 
@@ -417,7 +417,7 @@ Font* js_display_load_ttf_font(const char *filename, int pixel_height) {
     stbtt_GetFontVMetrics(&out->ttf_info, &ascent, &descent, &lineGap);
     out->ttf_ascent = (int)(ascent * out->ttf_scale);
 
-    printf("Loaded TTF font: %s (height=%d)\n", filename, pixel_height);
+    fprintf(stderr, "Loaded TTF font: %s (height=%d)\n", filename, pixel_height);
     return out;
 }
 

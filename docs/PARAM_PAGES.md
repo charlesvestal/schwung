@@ -409,6 +409,57 @@ level. The one sanctioned divergence is the root's name — the walker calls its
 root "Main", and the picker overrides that with the mode's own name when
 `modes` gives it more than one root.
 
+### `visible_if` on the grid failed OPEN, against the LIST editor's slot
+
+`page_plan.mjs` calls the caller's `visible` hook for a level's `visible_if`
+and for a param entry's, and the shadow UI wires that to
+`evaluateVisibilityCondition` (`shadow_ui_param_pages.mjs`, the `io.visible`
+fallback). That function resolved every condition against `hierEditorSlot` /
+`hierEditorComponent` — **the list editor's identity, which `enterParamPages`
+never sets.** From the grid that is slot `-1`: the read answers `null`, the
+evaluator's `// fail-open` fires, and **every `visible_if` on the knob grid was
+true.** A send level meant to collapse to the armed type's cells — a reverb
+*or* a delay — showed all twenty, three pages deep, with nothing logged.
+Reported from the device on schwung-dr32 0.2.0; it affected every module in the
+fleet that declares one.
+
+The three synthesised contracts were already immune, and said so: `io.visible`
+is overridden in `createSlotGridIo` under a comment naming this exact staleness
+(*"they belong to the list editor and are stale while the grid is up"*). Only
+real module components were exposed. On `PARAM_PAGES` the evaluator now takes
+the grid's own slot and component; the hand-off to the list editor calls
+`exitParamPages()` first, so the list can never fall into that branch.
+
+**Cache-first, because the naive fix froze the OLED.** `replanIfCondition` runs
+a full re-plan on every detent of a gating knob, and a plan evaluates every
+condition on the level — forty blocking ~2.8 ms reads per detent on a gated
+send page. The controller's own `state.values` answers first (it carries every
+write the grid made and every key its read cursor has landed on, condition keys
+included, so a fresh write is seen by the very next plan) and the TTL'd
+`getSlotParamCached` answers a miss. A miss on a *failed* read returns the last
+known-good value rather than `null`, so a channel stall no longer flashes every
+gated cell back in — the fail-open path is reached only when nothing has ever
+been read.
+
+**And the cache is asked with the TEMPLATE key, never the resolved one.** The
+key the evaluator holds has been through `hierChildKeyFor`, so on a child level
+it is concrete (`sram_part_2_partlevel`), while the controller files its values
+under what the level *lists* (`partlevel`) — the same dialect split
+`hierGenericKeyFor` exists to bridge, and the reason
+`openParamEditorFromGrid`'s owner search once missed. Asking with the concrete
+key missed **every time**, so a per-instance condition never hit the cache and
+paid the blocking read the branch is there to avoid — precisely the case the
+level-name lookup was added to serve. It was silent, because *a miss still
+answers correctly, only slowly*: a cache that cannot hit reports nothing. The
+invert uses the same level and index as the resolve, and the controller drops a
+level's values when its child index moves, so there is never a second
+instance's value under that key to find.
+
+`tests/host/test_grid_visible_if_context.sh` pins the call site and then drives
+a real controller through choosing a child, asserting `state.values` really is
+keyed by templates — if the controller ever files resolved keys, the inversion
+becomes wrong and that half fails.
+
 ### The grid FOLLOWS the focused voice, and writes no LEDs doing it
 
 A module can declare what its performance surface is — `pad_layout`, and a `note`
@@ -433,6 +484,29 @@ declared wins because two live sources would disagree the moment a module moved
 its focus without a note — a preset load, mrdrums' auto-select — and the
 disagreement would latch.
 
+The grid does report one thing about what is PLAYED — a physical press. While
+the component declares `child_press_param` (or `focus_press_param`) the shim
+forwards hardware pad notes to the UI passively (`pad_observe`, reconciled in
+`tickParamPages`, dropped on exit and by the shim on display close) and
+`handleParamPagesMidi` writes `"1"` to that param on each note-on. It is a
+vouch, never a pad id, and the module still owns the index — see *Live
+presses* in `docs/MODULES.md`.
+
+**`pad_observe` is RESTATED every tick, never memoised.** The shim clears it on
+its own authority, and the shadow display closes from four sites in the SPI
+callback — Menu tap, Track tap, Shift+Track, Shift+Step — **none of which tell
+JS**. A JS-side mirror of the flag is therefore stale from the first Menu
+dismiss onward, and re-entering the grid then compares `want` against that
+mirror, finds them equal and skips the write that would turn the shim back on:
+live presses stop for the rest of the session, silently, with the declaring
+module still on screen. `js_host_pad_observe` is idempotent and logs only on a
+transition precisely so the caller can restate it — a native call and one SHM
+byte store, against the ~2.8 ms an IPC read costs.
+`tests/host/test_child_press_param.sh` fails on a reconcile that compares
+against a mirror, and the press predicate itself (note-on only, velocity-0 is a
+release, the pad range) lives in `page_input.mjs` so it is run rather than
+grepped.
+
 A `<prefix>:last_note` fallback used to sit at the end of that list. It is
 deleted: **a sequencer plays notes**, so a running pattern changed the page on
 every hit in the bar, and a pad press could not be told from a clip because
@@ -447,6 +521,52 @@ voice — which is what makes **re-hitting the pad you are already on** navigate
 again. Without the count, hit kick → jog to Reverb → hit kick leaves you on
 Reverb, because the answer never changed. 9W9 shipped a counter for this before
 the contract existed; see `focusToken` in `voices.mjs`.
+
+### Hold Copy or Delete, then pick an instance — and the POLL is the hard part
+
+A drum rack's oldest gesture, offered by the grid to any child level: the
+instance focused when **Copy** goes down is the source, every instance focused
+while it is held is pasted into, **Delete** clears them instead, and **Undo**
+restores the last one overwritten (one level). `onEditCc` /
+`serviceEditGesture` in `page_controller.mjs`; the buttons reach the grid only
+for a module declaring `capabilities.claims_edit_ccs`, so opting in to the
+buttons IS opting in to the gesture. What is copied is `child_copy_keys` in
+declared order — see `docs/MODULES.md`, which is where a module author looks.
+
+**The gesture reads `child_index_param` ITSELF, once per tick, while a button
+is held.** Everything else on the grid takes the focus from `s.childIndex`,
+which `syncChildIndexFromModule` refreshes on **one stop of the read rotation**
+— every `keys.length + 1` ticks, ~150 ms on an eight-key drum page. That
+cadence is exactly right for following a played pad onto the page and wrong for
+this gesture in two ways at once, both reproduced against the controller before
+they were fixed:
+
+- the SOURCE was the pad focused *before* the one you just hit, because Copy
+  went down inside the window — hit a pad, hold Copy, copy the wrong pad, no
+  indication;
+- a second pad tapped inside the same window was **invisible**, because the
+  poll only ever sees where the focus ended up. "Hold Copy and tap four pads"
+  pasted into the fourth one only, silently. `test_child_copy_gesture.sh` taps
+  one tick apart and asserts all three targets.
+
+The extra read costs a round-trip per tick *for the duration of a hold* and
+nothing at all otherwise — the poll returns on `!s.editGesture` first. The
+answer is adopted into `s.childIndex` rather than kept beside it: without that,
+`dropChildLevelCache` re-warms the instance the cache still believed in and
+paints the wrong pad's values over the write just made.
+
+**A read that did not complete voids the whole snapshot** — the tri-state, and
+it bites harder here than anywhere. Dropping a failed key left the target's own
+value in place: a pad copied without its sample, reported as `PASTED`. So a
+source that cannot be read arms nothing, and an undo snapshot that cannot be
+read skips that instance rather than overwriting something it cannot put back.
+`""` stays a value (a filepath with no file); only `null` is a failure.
+
+The notice is a `prompt` (dropped when the button comes up) or a RESULT (not).
+Clearing every notice on the release meant `PASTED PAD 2` was only ever visible
+while you kept holding the button — and the release is how the gesture ends. It
+is centred in `s.frameRect`, the same rect a floating card is centred in, so an
+embedded consumer does not get it on its own chrome.
 
 ### The header pad minimap
 
@@ -681,6 +801,41 @@ scroll still gets the names.
 The envelope is the file's real peaks (`wav_peaks.mjs`, streamed and bounded,
 advanced from the tick — never from the draw path). When there are none there
 is no envelope, just the baseline, the cursor and the brackets.
+
+**The CELL and the fullscreen EDITOR read one file format table, and for a
+while they read two.** The jobs are genuinely different — the cell streams a
+block per tick and never holds the file (`wav_peaks.mjs`), the fullscreen
+`wav_position` editor has the whole thing in memory and sweeps it once
+(`parseWavPositionPeaks` in `shadow_ui.js`) — but both must first answer the
+same question, *which bytes are the samples and how are they encoded*. Answered
+twice, the two answers drifted, and every symptom read as "that file is
+broken":
+
+- The editor knew only 8- and 16-bit RIFF, so a Core Library kit (largely
+  24-bit and AIFF) **drew in the cell and then said "unsupported wav format"
+  the moment you clicked into it** (#428).
+- The cell had no `WAVE_FORMAT_EXTENSIBLE` (0xFFFE) branch — and **every**
+  24-bit WAV that ffmpeg or sox writes is extensible, so after #428 the
+  divergence simply pointed the other way.
+- The cell read AIFF 8-bit as UNSIGNED. AIFF 8-bit is signed, so a quiet sample
+  drew full-scale.
+- Both rejected AIFC `twos`, which is byte-identical to `NONE` and is what
+  macOS's own `afconvert` writes.
+
+`wav_format.mjs` is that one answer: `locateAudioData` finds the data in
+RIFF/WAVE (including extensible) or FORM/AIFF-AIFC (`NONE`/`twos` big-endian,
+`sowt` little-endian, `raw ` unsigned 8-bit, `fl32` float), and `sampleReader`
+returns one small decoder per layout, **hoisted out of the sample loop by both
+callers** — picking the format per sample cost the cell a chain of string
+compares on its hot path. `dataSize` is reported as the file DECLARES it and is
+never clamped to the buffer, because the streaming caller needs the real length
+and the caller holding the whole file can clamp in one line.
+
+`tests/host/test_wav_format_readers.sh` drives **both** readers over one corpus
+— 17 layouts — and asserts they report the same peak. The corpus samples
+alternate SIGN frame by frame: a positive-only ramp decodes perfectly through a
+reader that treats signed samples as unsigned, so the first version of it
+missed exactly the bug class it was written for.
 
 There used to be a fallback shape, `sin(t*PI)*(0.55+0.35*sin(t*23))`, drawn
 whenever the peaks were missing. It is the tri-state read rule in a different
@@ -1527,6 +1682,21 @@ level's jog rotation carrying that level's own knobs — reached by paging,
 turned by the encoders, redrawn every tick so it can animate, and wearing the
 host's own header and footer. `preset_browser` goes further and makes it the
 level's browser, so a face per character replaces a row of text.
+
+An authored canvas page can declare `extra_keys` on its canvas parameter.
+They travel as `canvas.extraKeys` and join the controller's bounded value-read
+rotation only while that page is current. They never join `page.keys`, so an
+animation snapshot can reach `drawPage({ values })` without consuming a cell
+or encoder.
+
+**Capped at the same four**, from the same constant — `MAX_DECLARED_EXTRA_KEYS`
+is exported by `viz.mjs` rather than restated, because a widget and a canvas
+page spend the SAME rotation on the SAME page and two copies of the number
+would be two copies of the decision. It shipped uncapped in #433 and twenty
+keys took a three-knob page from a knob refresh every 4 ticks to every 24.
+Keys already carrying a cell on the page are skipped in the controller, not the
+planner: one canvas can serve both a custom page and the preset browser, and
+those two pages carry different key lists.
 
 **IT IS A PAGE_KNOBS PAGE WITH A DRAWER, NOT A NEW KIND**, and that is the whole
 reason it works. Twenty-two places in `page_controller` branch on PAGE_KNOBS:

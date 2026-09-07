@@ -86,6 +86,8 @@ for keys anywhere in `module.json`).
 | `midi_out` | Module sends MIDI output (chain MIDI FX, generator tools) |
 | `aftertouch` | Module uses aftertouch |
 | `claims_master_knob` | Module handles volume knob (CC 79) instead of host |
+| `claims_ccs` | A list of CC numbers the module handles while its UI is on screen; they are withheld from Move firmware for that window. See "Claiming buttons" below. |
+| `claims_edit_ccs` | Shorthand for `claims_ccs: [56, 60, 119]` — Undo, Copy and Delete. Default off. |
 | `raw_midi` | Skip host MIDI transforms (velocity curve, aftertouch filter); module may also bypass internal MIDI filters when set |
 | `raw_ui` | Module owns UI input handling; host won't intercept Back to return to menu (use `host_return_to_menu()` to exit) |
 | `chainable` | Marks a module as usable inside Signal Chain patches (metadata) |
@@ -96,6 +98,7 @@ for keys anywhere in `module.json`).
 | `suspend_keeps_js` | Tool/overtake modules: pressing Back suspends the UI but the DSP keeps ticking; full exit requires Shift+Back. Useful for sequencers that should keep playing while you browse Move. |
 | `component_type` | Module category: `sound_generator`, `audio_fx`, `midi_fx`, `utility`, `system`, `featured`, `overtake`, or `tool` |
 | `forks_processes` | Module creates child **processes** (not threads) to do its DSP, as JE-8086 does. See below. |
+| `standalone` | A **tool** that is a whole program: selecting it runs `<module dir>/standalone` through `launch-standalone.sh`, which restarts Move when the program exits. See below. |
 
 > **Where these are read.** `src/host/module_manager.c` (used by the
 > standalone host runtime) currently parses only `claims_master_knob`,
@@ -103,6 +106,41 @@ for keys anywhere in `module.json`).
 > shim and shadow UI code paths that actually run on device — search
 > for the flag name in `src/schwung_shim.c`, `src/shadow/shadow_ui.{c,js}`,
 > and `src/modules/chain/dsp/chain_host.c` to find the consumer.
+
+### `standalone` tools, and a privileged helper of their own
+
+A tool with `"standalone": true` carries an executable named `standalone` in its
+module directory; the Tools menu runs it via `launch-standalone.sh` and Move is
+restarted when it exits. Everything such a tool installs lives under its own
+`modules/tools/<id>/` — ableton-owned, like every module.
+
+Some standalone tools need one privileged step of their own — a shim of their own
+that must reach `/usr/lib` setuid for glibc's AT_SECURE `LD_PRELOAD` check, or a
+service to pause. They cannot reuse `schwung-heal`: its paths are compile-time
+constants on purpose. Instead a tool stages **its own** helper and lets
+`schwung-heal` install it:
+
+- stage the helper at `modules/tools/<id>/bin/heal.new` (a regular file;
+  `<id>` limited to `[A-Za-z0-9_.-]` and never leading-dot);
+- run `/data/UserData/schwung/bin/schwung-heal` (it is setuid; the tool may run
+  it as `ableton`);
+- heal installs the stage beside itself as `bin/heal`, root-owned `04755`, and
+  removes the stage — exactly the way it installs its own `schwung-heal.new`.
+
+`<id>`, `bin/` and the stage itself are ableton-writable names, so heal resolves
+every one of them with `O_NOFOLLOW` and copies through descriptors: **a symlink
+at any component is refused, not followed.** Nothing here may be a symlink, and
+the stage must be a regular file — a directory or a FIFO is ignored with a
+message rather than blocking heal, which runs at every boot.
+
+A tool's failure is reported but never changes heal's exit code, because that
+code gates `--reboot` and the reboot belongs to heal's own mirror. A broken
+stage cannot turn a repair into "shim mirrored, device never rebooted".
+
+The trust model is unchanged: `ableton` can already stage `schwung-heal.new`
+itself, so a staged helper adds convenience, not capability, and a device with
+nothing staged never enters the path. Heal's own duties (the shim and entrypoint
+mirror) run on the same invocation, idempotently.
 
 ### `forks_processes`
 
@@ -646,23 +684,57 @@ Only consume Back while you actually have somewhere to go back *to*. If `handleB
 always returns truthy the user can never leave your module via Back — it is the only
 host-processed exit in this screen, so the sole remaining way out is to exit shadow mode.
 
-#### Copy / Delete / Undo (`ui_chain.js`)
+#### Claiming buttons (`capabilities.claims_ccs`, `claims_edit_ccs`)
 
-While the shadow UI is on screen, CC 56 (Undo), CC 60 (Copy), and CC 119
-(Delete) are delivered exclusively to the loaded module's `ui_chain.js` via
-`onMidiMessageInternal` — they are blocked from reaching Move firmware for
-the duration, so a press can never double-fire into Move's own undo/copy/
-delete while you're editing a module (e.g. a Delete press won't also delete
-a Move clip in the background).
+Move's buttons reach Move firmware by default and are **not** forwarded to
+modules. A module that wants some of them for its own gestures opts in:
 
-This makes the three buttons safe to repurpose for module-specific gestures
-— e.g. hold Copy/Delete + tap a pad to target it, tap Undo to revert the
-last such operation. They join the existing forwarded set (jog wheel/click,
-Back, track buttons, knobs, Mute) that a chain module already receives in
-this screen.
+```json
+{
+  "capabilities": {
+    "claims_edit_ccs": true,
+    "claims_ccs": [85, 58]
+  }
+}
+```
 
-Outside shadow display (or outside COMPONENT_EDIT), these CCs behave as
-normal Move hardware buttons and are not intercepted.
+`claims_edit_ccs: true` is shorthand for Undo (CC 56), Copy (CC 60) and
+Delete (CC 119) — the drum-rack trio. `claims_ccs` lists any others by CC
+number; the two combine.
+
+While that module's UI is on screen, a claimed button is delivered to the
+module (a `type: "canvas"` UI receives it in `onMidi`; on the knob grid Undo,
+Copy and Delete drive the instance copy/clear gesture under *Child Selectors*)
+**and withheld from Move firmware**, so a press cannot double-fire into Move's
+own action — hold Copy and tap a pad without also copying the Move clip behind
+the screen. The claim applies on the knob grid, the hierarchy editor, the
+component edit/params screens, and a canvas UI (fullscreen or co-run overlay).
+Leave any of those and the buttons return to Move immediately; the shim also
+drops every claim on its own when the shadow display closes, so a shadow UI
+that exits without reconciling cannot strand one.
+
+> **Opt-in is the whole point.** #154 withheld Undo/Copy/Delete unconditionally
+> whenever the shadow display was up, and #175 reverted it: it stole Move's
+> native Undo during ordinary chain use, so you could not undo a note edit
+> while any Schwung module was on screen. Modules that declare no claim are
+> unaffected, and Move keeps its own buttons everywhere else.
+
+**What cannot be claimed.** The controls the host itself owns are refused by
+the shim whatever a module lists, and the shadow UI logs the refusal: Shift,
+Menu and Back (how you leave a screen), the jog wheel and click, the eight
+knobs and the master knob, the four track buttons, Mute (Move-native Mute+Pad
+depends on it reaching firmware), and the two jack-detect CCs. Everything
+else is the module's to claim, transport included: a module that claims Play
+(CC 85) takes Move's transport button away while its UI is up, which is what
+a claim means.
+
+**Shift is the host's.** A press with Shift held is never claimed:
+Shift+Copy / Shift+Delete stay the host's snapshot and recall over a claiming
+module, and a module gets the bare buttons only.
+
+Press/release pairing is latched per button: whoever receives the press also
+receives the release, even if the claim changes mid-hold. Neither Move nor the
+module can be left believing a button is still held.
 
 ### Menu Layout Helpers
 
@@ -1416,6 +1488,12 @@ Rate options are emitted from slowest to fastest timing, for example:
 - `wav_position` in module.json
 - `canvas` in module.json
 
+`visible_if` is a LEVEL field. It goes on a level, or on one of that level's
+`params` entries -- **not** in `chain_params`. The planner reads it from the
+level and nowhere else, so a gate declared beside a param's other metadata
+hides nothing: every gated cell is drawn, with no error and nothing logged.
+`validate.mjs` reports that as `visible-if-not-on-level`.
+
 `visible_if` can be attached to level entries and param entries:
 
 ```json
@@ -1642,6 +1720,44 @@ Without this, adding a child level to a module that already follows the played
 pad would *cost* that behaviour — the grid would sit on the instance the picker
 last chose. With it, the declaration is purely additive.
 
+#### Copying and clearing an instance — hold Copy or Delete, then pick
+
+A drum rack's oldest gesture: hold **Copy**, hit a pad, hit another, and the
+second now sounds like the first. The knob grid offers it to any child level,
+once the module has claimed the buttons (`capabilities.claims_edit_ccs`; Move
+keeps them otherwise):
+
+- **Hold Copy** on an instance's page: that instance is the source. Every
+  instance that becomes focused while Copy is held — a pad hit through
+  `child_index_param`, or a pick from the instance list — is pasted into.
+- **Hold Delete**: every instance that becomes focused is cleared.
+- **Undo** puts back the last instance overwritten (one level).
+
+What is copied is the level's **`child_copy_keys`**, in declared order (that
+is also the write order, so list the sample first), or the level's own params
+when none are declared. Declare the list: "what the page shows" is a weak
+default. A pad's level-affecting params with no cell — a gain, a velocity
+depth — would be skipped and the copy would be quieter than its source, and
+a key that is a *pointer* (a position within this pad's folder, an identity
+like its note) must not be copied at all.
+
+```json
+"pads": {
+  "child_prefix": "pad", "child_count": 32,
+  "child_index_param": "ui_current_pad",
+  "child_copy_keys": ["sample", "start", "end", "transpose", "gain", "volume", "pan"],
+  "knobs": ["start", "end", "transpose", "volume", "pan"]
+}
+```
+
+Clear writes each key's declared `default`; a key without one is left alone,
+and a filepath without one is written `""`. A key whose read does not complete
+cancels the whole operation — a copy missing one key would leave the target's
+own value in place and still report a paste — so declare keys the module
+actually serves. The focused instance itself is
+not touched by Delete going down — only the instances you pick while holding
+it — so a pad already on screen is cleared by picking another first.
+
 ### Declaring your performance surface
 
 A sequencer driving your module — movy is the live case — has to lay out Move's
@@ -1800,6 +1916,7 @@ declared.
 | `child_notes` | a child level | sparse per-instance notes; wins over `child_note_base` |
 | `child_names` | a child level | per-instance names; falls back **per item** to `child_label` + index |
 | `child_roles` | a child level | per-instance roles, same free-form rule as `role` |
+| `child_press_param` | a child level | a param the knob grid writes `"1"` to when a **finger** hits a pad while this component is on screen — see *Live presses* below |
 
 #### A `note` is a MIDI NOTE, never a pad id
 
@@ -1824,6 +1941,7 @@ a pad id. It is a diagnostic — **nothing navigates on it**, for the reason
 under "Why there is no note-based fallback" below.
 
 | `focus_param` | hierarchy top level | a param naming the focused voice: a **level name**, optionally prefixed `"<count>:"` |
+| `focus_press_param` | hierarchy top level | the sibling-shape spelling of `child_press_param` — see *Live presses* below |
 
 `role` is a **free string** and deliberately not an enumeration. It is a hint a
 consumer may use to colour or seat a rack it has never seen, and one that does
@@ -1868,6 +1986,47 @@ publish a focus param.
 
 `synth:last_note` is still served (see `docs/CHAIN.md`) and is a reasonable
 thing for a sequencer to ask. **Nothing navigates on it.**
+
+##### Live presses — a vouch, never a pad id
+
+The follow above moves the grid to the voice **you** say is focused. For a
+drum module the voice you want focused is the pad you just **hit**, and that
+is the one fact the module cannot get on its own: Move turns a pad press into
+an ordinary note before playing it, so by the time it reaches `on_midi` a hit
+and a sequenced note are the same bytes — same status, channel, note and
+source (measured on device). Capture rules would tell them apart, but they
+take the pad away from Move, which is the opposite of what a drum rack wants.
+
+The knob grid still sees the raw pad event. So a level may ask to be told:
+
+```json
+"pads": {
+  "child_count": 16, "child_key_template": "p{index}_{key}",
+  "child_index_param": "focused_pad",
+  "child_press_param": "live_press",
+  "knobs": ["vol", "pan", "tune"]
+}
+```
+
+While the grid shows a component with such a level (or a `focus_press_param`
+at the top of a sibling-shape hierarchy), the host forwards Move's hardware
+pad notes to itself **passively** — nothing is blocked, the pad still plays —
+and on each press writes `<prefix>:<child_press_param> = "1"`: *a finger did
+that.* Note-on only, one write per press.
+
+**It is a vouch, not a pad id.** The host does not say *which* pad, because
+the pad-to-note map is Move's (drum layout, octave, a track's own transpose),
+and a module told "pad 68" could only ever address the sixteen pads of one
+bank, mis-strided. The module pairs the vouch with the note it receives
+itself, in either order — the two cross a process boundary and arrive a few
+milliseconds apart — inside a short window, and moves `child_index_param` to
+that pad. A vouch with no note inside the window is dropped; a note with no
+vouch is a sequenced note and moves nothing. That is the whole contract, and
+it is why `child_index_param` stays the single source of truth: the host
+never writes the index, it only reports the gesture.
+
+Declaring neither costs nothing: the shim never forwards a pad for you and
+no write is made. The list editor does not report presses; only the grid does.
 
 ##### A focus answer may carry a CHANGE TOKEN
 
@@ -2328,6 +2487,22 @@ carrying that level's own knobs:
   "canvas_script": "canvas.js", "as_page": true, "show_value": false }
 ```
 
+If the drawing needs a read-only value that is not one of the level's knobs,
+declare it with `extra_keys`. Those values are added to the page's staggered
+read rotation without becoming visible or turnable cells:
+
+```json
+{ "key": "activity", "name": "Activity", "type": "string", "access": "read" }
+{ "key": "face", "name": "Face", "type": "canvas",
+  "canvas_script": "canvas.js", "as_page": true,
+  "show_value": false, "extra_keys": ["activity"] }
+```
+
+**Nothing hides `activity` and nothing needs to.** A param earns a cell by being
+in a level's `knobs`; one that is only ever named by `extra_keys` has no cell to
+suppress. (There is no `hidden` field — the planner honours `visible_if` and
+nothing else, so a `"hidden": true` would be read by no one.)
+
 ```javascript
 globalThis.canvas_overlay = {
     drawPage(ctx, { values, base, keys, touched, nowMs, preset }) {
@@ -2349,6 +2524,11 @@ globalThis.canvas_overlay = {
   and you should not draw any of your own.
 - `values` carries live values merged over the base; `base` is the knob
   positions, for a page that wants to show both.
+- `extra_keys` is **capped at four**, the same cap and the same reason as a
+  widget's `viz.extra_keys` above: one read per stop, so a page asking for
+  twenty would spend its whole read budget here and starve the knobs it is
+  drawn beside. A key that already has a cell on the page costs nothing extra —
+  it is already in the rotation and is skipped.
 - **One strike**, as everywhere else: a `drawPage` that throws is retired for
   the session and the body is left empty under a normal page.
 

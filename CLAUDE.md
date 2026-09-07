@@ -328,7 +328,14 @@ any hand-rolled hardware-mailbox zeroing.
 **Swallowing a button needs BOTH EDGES, latched.** Press-only leaves Move a lone
 button-up for a key it never saw go down, and Move acts on it. The release
 cannot be gated on `shadow_shift_held` either — Shift is usually let go *before*
-the button.
+the button. **Nor on the screen still being up:** `capabilities.claims_ccs`
+withholds a claimed press inside the `shadow_display_mode` block, so dropping
+the latch when the display closes hands Move the orphan release directly — hold
+Copy on a claiming module's grid, dismiss, let go. The latch is a TRI-state
+(`CLAIM_LATCH_HELD` vs `RELEASED`) precisely because it deliberately outlives
+the release, so "non-zero" cannot answer "is a release still owed?"; a held
+button keeps its latch across the close and a drain in the unconditional
+post-ioctl scan swallows what is owed.
 
 `shadow_midi_in_compact()` (`src/host/shadow_midi_filter.c`) closes the gaps and
 runs **last** in `shim_post_transfer` — the blocking sites above it pair `sh[j]`
@@ -405,6 +412,12 @@ once per repaint**, which makes it worse than the equivalent `set_param`.
 ```
 
 Device: `ssh ableton@move.local`. Stock firmware preserved at `/opt/move/MoveOriginal`.
+
+**Boot selector**: `/opt/move/Move` IS `shim-entrypoint.sh`, and it is a
+SELECTOR now, not the launcher — services live in `schwung-entry.sh`, targets
+in `/data/UserData/boot-targets/` (`docs/BOOT_TARGETS.md`). Read that file
+before touching boot; every selector failure path must end in an exec of
+MoveOriginal.
 
 ## Gain Staging (MFX ME-Only Bus)
 
@@ -530,6 +543,18 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   calloc happens there, joined to the RT side by `buf` and a **sequence
   number** — the boolean it replaced could be resurrected by a preempted
   worker, racing `process_block` against the next reconcile's `dlclose`.
+- **A MIDI FX `tick()` runs on IDLE frames too, and what wakes the slot is
+  DELIVERY, not emission.** The shim skips `render_block` on a silent slot
+  (one frame in 172), which used to freeze every time-driven MIDI FX with it —
+  the generator stopped, then replayed. `mod:tick` now runs the MIDI FX tick
+  beside the LFOs, and a message that reaches the synth un-parks that same
+  block. Waking on "a MIDI FX emitted" instead would switch the idle gate off
+  permanently for a slot with **no synth** (Pre mode driving Move's own
+  instrument): silent by construction, so idle forever, so woken on every
+  generating frame to render nothing. The handshake is order-dependent —
+  tick, then ONE `chain_take_midi_tick_wake`, then the render — because `take`
+  is one-shot and a "no" is what clears the double-tick guard. Transitions in
+  `chain_idle_tick.h` so `tests/host` can drive them.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
@@ -620,6 +645,14 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   needs no `clearScreen` while the enum peek does. Same `frameCtx` contract as a
   widget, for a second reason: `card_w`/`card_h` are declared **per parameter**,
   so coordinates authored against one card are wrong on the next.
+- **The sample CELL and the fullscreen EDITOR share one format table** —
+  `wav_format.mjs`. They stream and sweep respectively, but "which bytes are
+  the samples" was answered twice and drifted four ways, each reading as a
+  broken file: the editor knowing only 8/16-bit RIFF (a Core Library kit drew
+  in the cell and then said "unsupported" in the editor), the cell missing
+  `WAVE_FORMAT_EXTENSIBLE` — which is **every** 24-bit WAV ffmpeg or sox
+  writes — the cell reading signed AIFF 8-bit as unsigned, and both rejecting
+  AIFC `twos`, the tag macOS's own `afconvert` emits for plain big-endian PCM.
 - **A graphic must sit inside ONE ROW**; `alignGroupsToRows` reflows 24 fleet
   pages to keep it there, as a permutation *within* a page.
 - Every scrolling list draws a scrollbar, and no list draws arrows.
@@ -630,6 +663,20 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   load, an older host and a one-strike disable. Guarding in the shared walk
   instead of the singles branch silently yields a THREE-cell envelope with a key
   orphaned.
+- **`visible_if` FAILED OPEN on the whole knob grid**, and had since the grid
+  shipped. The evaluator resolved every condition against `hierEditorSlot` —
+  the LIST editor's slot, which `enterParamPages` never sets — so from the grid
+  it read slot -1, got `null`, and took the fail-open branch: a send meant to
+  collapse to the armed type's cells showed all twenty, three pages deep, with
+  nothing logged. The three synthesised contracts were already immune by
+  overriding `io.visible`; only real modules were exposed. On `PARAM_PAGES` the
+  grid's own identity is the context now, read **cache-first** — a re-plan
+  follows every detent of a gating knob, and a blocking read per condition
+  froze the OLED. And the cache is asked with the **TEMPLATE** key, never the
+  resolved one: the controller files a child level under what it *lists*
+  (`partlevel`), so asking with `sram_part_2_partlevel` missed every time and
+  paid the read anyway — silent, because *a miss still answers correctly, only
+  slowly.*
 - **`level_walk.mjs` is the walk, and the LFO target picker is its second
   consumer.** Names must not be copied — nothing shows a grid page title beside
   the picker's row for the same level.
@@ -650,6 +697,18 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   a clip anyway (both arrive through the same MIDI_OUT echo). `last_note` is
   still served as a diagnostic and the test asserts it is never READ, because a
   read is what someone later starts navigating on again.
+- **The one thing the grid DOES report about what is played is a VOUCH: a
+  finger hit a pad.** `child_press_param` (sibling shape: `focus_press_param`)
+  — while a declaring component is on the grid the shim ALSO forwards pad
+  notes to the UI, passively, and the UI writes `"1"`. Never WHICH pad: the
+  pad-to-note map is Move's, so the module pairs the vouch with the note it
+  receives and still owns `child_index_param`. It exists because Move turns a
+  press into an ordinary note *before* playing it, so downstream a hit and a
+  sequenced note are the same bytes — which is why the rule above holds and
+  this is not a hole in it. **The `pad_observe` flag is RESTATED every tick,
+  never memoised**: the shim drops it unilaterally from four SPI-callback
+  sites that never tell JS, so a mirror latches and the feature dies silently
+  after the first Menu dismiss.
 - **A focus answer may carry a CHANGE TOKEN — `"<count>:<level>"`.** The follow
   acts on a change, so a repeat does nothing — correct while a value is
   re-reported, wrong when it marks a second hit on the pad you are already
@@ -661,6 +720,15 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   your hand. A map matching the page order would be a second bank bar. Move's
   rack counts up from the BOTTOM-LEFT; off-rack draws the empty box rather than
   the nearest cell.
+- **Hold Copy or Delete, then pick an instance** — copy, clear and one-level
+  undo for any child level, opted into by `capabilities.claims_edit_ccs`. It
+  is the one thing on the grid that reads `child_index_param` **itself, every
+  tick, while a button is held**: the rotation refreshes that focus once every
+  `keys.length + 1` ticks, which made the SOURCE the pad before the one you
+  hit and made a second tap inside the window invisible — four pads tapped,
+  one pasted, silently. And a failed read voids the whole snapshot rather than
+  dropping a key, or a pad is copied without its sample and still reported as
+  `PASTED`.
 - **The voice-follow path writes no pad LEDs.** Move owns the pads while the
   shadow UI is up; `tests/host/test_voice_follow_no_leds.sh` fails on a MIDI or
   LED write in `syncVoiceFromModule` or `voices.mjs`.
@@ -949,6 +1017,15 @@ Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) 
 ### Quantized Sampler
 
 Shift+Sample. Source: resample (incl. Schwung synths) or Move Input. Duration in bars (or until stopped); uses MIDI clock, falls back to project tempo. Starts on note event or play. Saved to `Samples/Schwung/Resampler/YYYY-MM-DD/`.
+
+**The take is recorded THROUGH the preroll and trimmed afterwards** — starting
+on the count-in is what makes it sample-accurate to the downbeat. That trim was
+a no-op from 2026-04 to 1.2: the WAV was opened `"wb"`, so its `fread` returned
+0, the copy broke on the first pass and the `ftruncate` ran anyway — leaving the
+COUNT-IN on the card at exactly the right duration with the tail cut, which
+reads as a sampler that ignores preroll rather than as a file never rewritten.
+It logged success. **A short read must never become a truncation, and a length
+assertion would have passed the whole time** — see `docs/SHADOW_UI.md`.
 
 ### Feedback Protection
 

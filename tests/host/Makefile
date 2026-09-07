@@ -52,6 +52,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_metronome_announce \
 	$(BUILD_DIR)/test_shadow_metronome \
 	$(BUILD_DIR)/test_sampler_stem_path \
+	$(BUILD_DIR)/test_sampler_wav_trim \
 	$(BUILD_DIR)/test_perf_snapshot_size \
 	$(BUILD_DIR)/test_relative_cc \
 	$(BUILD_DIR)/test_link_audio_backlog_trim \
@@ -59,7 +60,10 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
 	$(BUILD_DIR)/test_split_voices_parse \
-	$(BUILD_DIR)/test_me_post_snapshot_fx
+	$(BUILD_DIR)/test_me_post_snapshot_fx \
+	$(BUILD_DIR)/test_boot_select_core \
+	$(BUILD_DIR)/test_chain_idle_tick \
+	$(BUILD_DIR)/test_heal_tool_id
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -137,6 +141,12 @@ $(BUILD_DIR)/test_spi_tally: test_spi_tally.c ../../src/host/spi_tally.c | $(BUI
 $(BUILD_DIR)/test_link_audio_backlog_trim: test_link_audio_backlog_trim.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
+# Header-only unit: heal_tool_id_is_safe lives in heal_tool_id.h. schwung-heal
+# itself cannot be exercised here (it setuid(0)s and bails when not root), so
+# the filter is only testable as long as it stays out of the binary.
+$(BUILD_DIR)/test_heal_tool_id: test_heal_tool_id.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
 $(BUILD_DIR)/test_align_capture: test_align_capture.c ../../src/host/align_capture.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
@@ -157,6 +167,9 @@ $(BUILD_DIR)/test_metronome_announce: test_metronome_announce.c ../../src/host/m
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_sampler_wav_trim: test_sampler_wav_trim.c ../../src/host/sampler_wav_trim.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_shadow_metronome: test_shadow_metronome.c ../../src/host/shadow_metronome.c ../../src/host/metronome_click.h | $(BUILD_DIR)
@@ -185,6 +198,13 @@ $(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/s
 
 $(BUILD_DIR)/test_me_post_snapshot_fx: test_me_post_snapshot_fx.c ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+$(BUILD_DIR)/test_boot_select_core: test_boot_select_core.c ../../src/host/boot_select_core.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
+
+# Same as relative_cc above: chain_idle_tick.h lives with the chain DSP and is
+# standalone by construction (no chain_internal.h).
+$(BUILD_DIR)/test_chain_idle_tick: test_chain_idle_tick.c ../../src/modules/chain/dsp/chain_idle_tick.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -I../../src/modules/chain/dsp $< -o $@ $(LDFLAGS)
 
 test: $(TARGETS)
 	@for t in $(TARGETS); do \

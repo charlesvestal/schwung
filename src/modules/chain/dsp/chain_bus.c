@@ -1,3 +1,10 @@
+/* _GNU_SOURCE before ANY include: the bus worker moved here from chain_host.c
+ * needs CPU_ZERO/CPU_SET/sched_setaffinity, which sched.h only declares under
+ * it. chain_host.c guards it the same way. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 /*
  * chain_bus.c — the "bus<N>:" parameter surface, the voice map, the patch
  * apply, and the worker's reconcile step.
@@ -39,6 +46,10 @@
  * thread had made in between, which put process_block() on the audio thread in
  * a race with the destroy_instance() and dlclose() of the very next reconcile.
  */
+#include <sched.h>
+#include <errno.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include "chain_internal.h"
 #include "host/bus_voice_apply.h"
 
@@ -954,3 +965,184 @@ void chain_bus_worker_reconcile(chain_instance_t *inst, int b, const int *run_fl
      */
     __atomic_store_n(&bus->fx_ready, seq, __ATOMIC_RELEASE);
 }
+
+/* ============================================================================
+ * Bus allocation, off the realtime thread — MOVED HERE from chain_host.c
+ * ============================================================================
+ *
+ * Not a reorganisation for its own sake: tests/host/test_chain_host_file_split.sh
+ * caps chain_host.c at 2900 lines, and the bus work put it at 2896 — four lines
+ * of headroom, which the next merge from main spent. This block is bus
+ * lifecycle and it belongs beside the rest of it.
+ */
+/* ============================================================================
+ * Bus allocation, off the realtime thread
+ * ============================================================================ */
+
+/*
+ * Bus allocation worker. SCHED_OTHER on cores 0-2.
+ *
+ * THREADS INHERIT THE CALLBACK'S PRIORITY. pthread_create is called from a
+ * module entry point, i.e. from the SPI callback, so this thread starts at
+ * SCHED_FIFO 70 — above Move's own `Link Main` at FIFO 35, which it would then
+ * starve, producing exactly the dropouts going off-thread was meant to avoid.
+ * Demoting is therefore the FIRST thing here, before the instance pointer is
+ * even dereferenced.
+ */
+static void *chain_bus_worker_fn(void *arg) {
+    struct sched_param sp = { .sched_priority = 0 };
+    sched_setscheduler(0, SCHED_OTHER, &sp);
+    cpu_set_t set; CPU_ZERO(&set);
+    CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);   /* core 3 is SPI's */
+    sched_setaffinity(0, sizeof(set), &set);
+
+    chain_instance_t *inst = (chain_instance_t *)arg;
+
+    for (;;) {
+        /* Parked, not polling: the wake comes from chain_bus_request_alloc or
+         * from the stop below. sem_wait is restartable, so EINTR is a retry and
+         * not an exit — exiting on a stray signal would leave later requests
+         * unserved with nothing to report it. */
+        while (sem_wait(&inst->bus_worker_sem) != 0) {
+            if (errno == EINTR) continue;
+            /* Anything else is unreachable (EINVAL needs a destroyed
+             * semaphore, and sem_destroy only runs after the join) — but
+             * falling through would spin this core forever, since the
+             * started flag is still set and the outer loop would re-enter
+             * immediately. Leave instead. */
+            return NULL;
+        }
+
+        if (!__atomic_load_n(&inst->bus_worker_started, __ATOMIC_ACQUIRE)) break;
+
+        for (int b = 0; b < SLOT_BUSES; b++) {
+            /* The stop flag, checked BETWEEN buses as well as inside the
+             * reconcile: v2_destroy_instance joins this thread from the SPI
+             * callback, so the queue must be abandonable at every unit
+             * boundary rather than run to completion. */
+            if (!__atomic_load_n(&inst->bus_worker_started, __ATOMIC_ACQUIRE)) break;
+            if (!__atomic_load_n(&inst->bus_alloc_pending[b], __ATOMIC_ACQUIRE)) continue;
+            /* Clear BEFORE attempting, not after. Clearing afterwards
+             * clobbers a request the RT thread made WHILE we were working:
+             * it would set pending=1, we would store 0 over it, and the bus
+             * would sit unreconciled until some later change. Clearing first
+             * turns that race into a harmless duplicate pass — and the
+             * reconcile is idempotent, which is what makes a duplicate free. */
+            __atomic_store_n(&inst->bus_alloc_pending[b], 0, __ATOMIC_RELEASE);
+            /*
+             * EVERYTHING EXPENSIVE LIVES IN HERE, and that is the entire point
+             * of this thread: the buffer calloc, the dlopen and
+             * create_instance for each bus FX, and the ~1.1 MB of parameter
+             * metadata plus 64 KB ui_hierarchy cache each of those needs. See
+             * chain_bus.c for the ownership split and for the two
+             * release/acquire gates (`buf` and `fx_ready`) that join the two
+             * threads.
+             */
+            chain_bus_worker_reconcile(inst, b, &inst->bus_worker_started);
+        }
+    }
+    return NULL;
+}
+
+/*
+ * RT side: mark and return.
+ *
+ * No BUS memory is allocated here — that is the whole point of the worker.
+ * The one deliberate exception is the first call's pthread_create, which
+ * allocates the worker's stack and TLS and issues clone(2) on this callback.
+ * It is once per slot, on a user gesture, and there is nowhere earlier to put
+ * it without starting a thread for every slot that never makes a bus. Do not
+ * read "nothing is allocated here" into this function and add a second thing:
+ * a comment claiming a realtime guarantee the code does not give is a defect
+ * this branch has already shipped three times.
+ *
+ * The worker is started LAZILY, on the first bus a slot ever creates, so the
+ * common case — a slot with no buses — costs no thread at all.
+ */
+void chain_bus_request_alloc(chain_instance_t *inst, int bus) {
+    if (!inst || bus < 0 || bus >= SLOT_BUSES) return;
+    inst->buses[bus].in_use = 1;
+    chain_bus_post_work(inst, bus);
+}
+
+/* The same handover without the claim — see the header. A delete must reach the
+ * worker too, and must not resurrect in_use on its way there. */
+void chain_bus_post_work(chain_instance_t *inst, int bus) {
+    if (!inst || bus < 0 || bus >= SLOT_BUSES) return;
+
+    __atomic_store_n(&inst->bus_alloc_pending[bus], 1, __ATOMIC_RELEASE);
+
+    if (!inst->bus_worker_started) {
+        if (!inst->bus_worker_sem_ok) {
+            /* sem_init writes the struct in place — no allocation, no lock. */
+            if (sem_init(&inst->bus_worker_sem, 0, 0) != 0) return;
+            inst->bus_worker_sem_ok = 1;
+        }
+        __atomic_store_n(&inst->bus_worker_started, 1, __ATOMIC_RELEASE);
+        if (pthread_create(&inst->bus_worker, NULL, chain_bus_worker_fn, inst) != 0) {
+            /* No worker, no allocation, no crash: the bus keeps playing
+             * through Main and a later request tries again. */
+            __atomic_store_n(&inst->bus_worker_started, 0, __ATOMIC_RELEASE);
+            return;
+        }
+    }
+    sem_post(&inst->bus_worker_sem);
+}
+
+/* Stop and JOIN the worker. Runs on the callback (destroy_instance does), and
+ * the join is why the wake is a semaphore rather than a sleep: the worker is
+ * parked, so it observes the cleared flag as soon as it is posted instead of
+ * sitting out the rest of a poll period with the audio thread waiting on it. */
+void chain_bus_worker_stop(chain_instance_t *inst) {
+    if (!inst) return;
+    if (inst->bus_worker_started) {
+        __atomic_store_n(&inst->bus_worker_started, 0, __ATOMIC_RELEASE);
+        sem_post(&inst->bus_worker_sem);
+        pthread_join(inst->bus_worker, NULL);
+    }
+    if (inst->bus_worker_sem_ok) {
+        sem_destroy(&inst->bus_worker_sem);
+        inst->bus_worker_sem_ok = 0;
+    }
+}
+
+/*
+ * Release everything a bus owns, in the reverse order it was acquired: the FX
+ * instances, then their dlopen handles, then the buffer. Missing any one is a
+ * leak plus a dangling handle the render path cannot detect.
+ *
+ * Only safe after chain_bus_worker_stop — the worker writes buses[].buf.
+ */
+void chain_bus_release_all(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int b = 0; b < SLOT_BUSES; b++) {
+        slot_bus_t *bus = &inst->buses[b];
+        for (int i = 0; i < MAX_AUDIO_FX; i++) {
+            if (bus->fx_plugins_v2[i] && bus->fx_instances[i] &&
+                bus->fx_plugins_v2[i]->destroy_instance) {
+                bus->fx_plugins_v2[i]->destroy_instance(bus->fx_instances[i]);
+            }
+            bus->fx_instances[i] = NULL;
+            bus->fx_plugins_v2[i] = NULL;
+            if (bus->fx_handles[i]) {
+                dlclose(bus->fx_handles[i]);
+                bus->fx_handles[i] = NULL;
+            }
+            bus->fx_bypassed[i] = 0;
+            bus->current_fx_modules[i][0] = '\0';
+            /* The per-position metadata the worker allocated. Missing it is a
+             * ~1.1 MB leak per occupied position, which four slots of buses
+             * makes large enough to matter. */
+            chain_bus_free_fx_meta(bus, i);
+        }
+        bus->fx_count = 0;
+        bus->fx_ready = 0;
+        free(bus->buf);
+        bus->buf = NULL;
+        /* A buffer the RT side unpublished and the worker never got to. */
+        free(bus->buf_retired);
+        bus->buf_retired = NULL;
+        bus->in_use = 0;
+    }
+}
+

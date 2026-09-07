@@ -289,11 +289,15 @@ import {
 import {
     paramPagesEnabled, enterParamPages, exitParamPages, paramPagesActive,
     tickParamPages, drawParamPages, handleParamPagesMidi, currentParamPage,
-    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, clearParamPagesTouch,
+    paramPagesComponent, paramPagesSlot, paramPagesChildIndex, paramPagesLevelNameOf,
+    paramPagesCachedValue, clearParamPagesTouch,
     enumPickerFooterHints, CONTRACT_SETTLE_MS, LAYOUT_LIST,
     paramPagesRefreshTrailing, paramPagesExitMenu, paramPagesRevalue,
     paramPagesPageName
 } from './shadow_ui_param_pages.mjs';
+/* Container + sample decoding for the fullscreen wave editor, shared with the
+ * sample cell's peak reader so the two never disagree about a file. */
+import { locateAudioData, sampleReader, sampleBytesFor } from '/data/UserData/schwung/shared/param_pages/wav_format.mjs';
 /* Registers the QuickJS file IO for the sample cell's peak envelope. Imported
  * for its side effect, and from HERE because this file is the shadow UI's only
  * genuinely device-only module — node never imports it (the host tests lift the
@@ -5887,13 +5891,13 @@ function compareConditionValue(actualRaw, expectedRaw) {
     return String(actualRaw) === String(expectedRaw);
 }
 
-function evaluateVisibilityConditionForContext(slot, componentPrefix, condition, levelDef, childIndex) {
+function evaluateVisibilityConditionForContext(slot, componentPrefix, condition, levelDef, childIndex, read) {
     if (!condition || typeof condition !== "object") return true;
     const conditionParam = condition.param || condition.key || condition.param_key;
     if (!conditionParam) return true;
 
     const fullKey = normalizeVisibilityConditionKey(componentPrefix, levelDef, childIndex, String(conditionParam));
-    const rawValue = getSlotParam(slot, fullKey);
+    const rawValue = (typeof read === "function") ? read(slot, fullKey) : getSlotParam(slot, fullKey);
     if (rawValue === null || rawValue === undefined) return true; // fail-open
 
     if (condition.equals !== undefined) {
@@ -5932,6 +5936,64 @@ function evaluateVisibilityConditionForContext(slot, componentPrefix, condition,
 }
 
 function evaluateVisibilityCondition(condition, levelDef) {
+    /*
+     * The knob grid is a caller too (page_controller's `visible` hook), and it
+     * keeps its OWN slot and component: enterParamPages never sets
+     * hierEditorSlot (see enterHierarchyEditorFromParamPages). So from the grid
+     * this read every condition against slot -1, got null, and FAILED OPEN --
+     * every visible_if on the grid was true, and a level meant to collapse to
+     * the armed type's cells (a send that is a reverb OR a delay) showed all of
+     * them, three pages deep. Reported from the device. On the grid, the
+     * grid's identity is the context.
+     */
+    if (view === VIEWS.PARAM_PAGES && paramPagesActive()) {
+        const comp = paramPagesComponent();
+        const slot = paramPagesSlot();
+        const gridPrefix = getComponentParamPrefix(comp);
+        const lvlName = paramPagesLevelNameOf(levelDef);
+        const childIdx = lvlName ? paramPagesChildIndex(lvlName) : -1;
+        /* Cache-first. A re-plan follows every detent of a gating knob and
+         * evaluates every condition on the level; a blocking read per
+         * condition (~2.8 ms each, forty on a gated send page) froze the OLED
+         * while the knob turned. The grid's own values answer first -- they
+         * carry every write it made and every key its cursor has read -- and
+         * the TTL cache answers a miss, so a plan costs IPC only for a key
+         * nothing has touched yet. */
+        const read = (s, k) => {
+            /*
+             * ...and the cache is asked with the TEMPLATE key, never the one
+             * that arrived.
+             *
+             * `k` has been through hierChildKeyFor, so on a child level it is
+             * CONCRETE ("pad3_type"), while the controller keys its values by
+             * what the level LISTS ("type") -- see the dialect split
+             * hierGenericKeyFor exists for. Asking with the concrete key
+             * missed every single time, so a per-instance condition never hit
+             * the cache and paid the blocking read this branch is here to
+             * avoid: exactly the case paramPagesLevelNameOf was added to
+             * serve, and silent, because a miss still answers CORRECTLY --
+             * only slowly. A cache that cannot hit reports nothing.
+             *
+             * The invert uses the same level and index as the resolve did, so
+             * the value it finds belongs to the instance the grid is showing;
+             * the controller drops a level's values when its child index
+             * moves, so there is never a second instance's value under that
+             * key to find.
+             */
+            const bare = k.startsWith(`${gridPrefix}:`) ? k.slice(gridPrefix.length + 1) : k;
+            const held = paramPagesCachedValue(hierGenericKeyFor(levelDef, childIdx, bare));
+            if (held !== undefined) return held;
+            return getSlotParamCached(s, k, `grid:${s}:${comp}`);
+        };
+        return evaluateVisibilityConditionForContext(
+            slot,
+            gridPrefix,
+            condition,
+            levelDef,
+            childIdx,
+            read
+        );
+    }
     const prefix = getComponentParamPrefix(hierEditorComponent);
     return evaluateVisibilityConditionForContext(
         hierEditorSlot,
@@ -17135,105 +17197,28 @@ function wavContentToBytes(content) {
     return null;
 }
 
-function wavByteAt(bytes, idx) {
-    if (!bytes || idx < 0 || idx >= bytes.length) return 0;
-    return bytes[idx] & 0xff;
-}
-
-function wavReadChunkId(bytes, idx) {
-    return String.fromCharCode(
-        wavByteAt(bytes, idx),
-        wavByteAt(bytes, idx + 1),
-        wavByteAt(bytes, idx + 2),
-        wavByteAt(bytes, idx + 3)
-    );
-}
-
-function wavReadU16LE(bytes, idx) {
-    return wavByteAt(bytes, idx) | (wavByteAt(bytes, idx + 1) << 8);
-}
-
-function wavReadS16LE(bytes, idx) {
-    const v = wavReadU16LE(bytes, idx);
-    return v > 0x7fff ? v - 0x10000 : v;
-}
-
-function wavReadU32LE(bytes, idx) {
-    return (wavByteAt(bytes, idx) |
-        (wavByteAt(bytes, idx + 1) << 8) |
-        (wavByteAt(bytes, idx + 2) << 16) |
-        (wavByteAt(bytes, idx + 3) << 24)) >>> 0;
-}
-
-function wavReadF32LE(bytes, idx) {
-    if (!bytes || idx < 0 || idx + 4 > bytes.length) return 0;
-    try {
-        const view = new DataView(bytes.buffer, bytes.byteOffset || 0, bytes.byteLength || bytes.length);
-        return view.getFloat32(idx, true);
-    } catch (e) {
-        return 0;
-    }
-}
-
-function wavFindRiffOffset(bytes) {
-    if (!bytes || bytes.length < 12) return -1;
-    if (wavReadChunkId(bytes, 0) === "RIFF" && wavReadChunkId(bytes, 8) === "WAVE") return 0;
-
-    const limit = Math.min(bytes.length - 12, 4096);
-    for (let i = 0; i <= limit; i++) {
-        if (wavReadChunkId(bytes, i) === "RIFF" && wavReadChunkId(bytes, i + 8) === "WAVE") {
-            return i;
-        }
-    }
-    return -1;
-}
-
+/*
+ * The editor holds the WHOLE file, so it sweeps the data once here rather than
+ * streaming it like the sample cell does. Which bytes those are, and how a
+ * sample is encoded, is the shared question -- wav_format.mjs answers it for
+ * both, which is what keeps the cell and the editor reading the same files.
+ */
 function parseWavPositionPeaks(content, width) {
     const bytes = wavContentToBytes(content);
     if (!bytes || bytes.length < 44) return { error: "file too small", points: [] };
 
-    const riffOffset = wavFindRiffOffset(bytes);
-    if (riffOffset < 0) return { error: "not a wav file", points: [] };
+    const located = locateAudioData(bytes);
+    if (located.error) return { error: located.error, points: [] };
 
-    let fmtOffset = -1;
-    let dataOffset = -1;
-    let dataSize = 0;
-    let cursor = riffOffset + 12;
-
-    while (cursor + 8 <= bytes.length) {
-        const chunkId = wavReadChunkId(bytes, cursor);
-        const chunkSize = wavReadU32LE(bytes, cursor + 4);
-        const chunkData = cursor + 8;
-        const chunkEnd = chunkData + chunkSize;
-        const available = Math.max(0, bytes.length - chunkData);
-
-        if (chunkId === "fmt " && available >= 16) {
-            fmtOffset = chunkData;
-        } else if (chunkId === "data") {
-            dataOffset = chunkData;
-            dataSize = Math.min(chunkSize, available);
-            break;
-        }
-
-        if (chunkEnd <= chunkData || chunkEnd > bytes.length) break;
-        cursor = chunkEnd + (chunkSize % 2);
-    }
-
-    if (fmtOffset < 0 || dataOffset < 0 || dataSize <= 0) {
-        return { error: "missing wav chunks", points: [] };
-    }
-
-    const audioFmt = wavReadU16LE(bytes, fmtOffset);
-    const channels = Math.max(1, wavReadU16LE(bytes, fmtOffset + 2));
-    const bits = wavReadU16LE(bytes, fmtOffset + 14);
-    const blockAlign = Math.max(1, wavReadU16LE(bytes, fmtOffset + 12));
-    if (audioFmt !== 1 && audioFmt !== 3) return { error: "unsupported wav codec", points: [] };
-    if (!((audioFmt === 1 && (bits === 8 || bits === 16)) || (audioFmt === 3 && bits === 32))) {
-        return { error: "unsupported wav format", points: [] };
-    }
-
-    const sampleBytes = bits / 8;
-    const effectiveBlockAlign = blockAlign > 0 ? blockAlign : Math.max(1, channels * sampleBytes);
+    const read = sampleReader(located.kind);
+    if (!read) return { error: "unsupported format", points: [] };
+    const sampleBytes = sampleBytesFor(located.kind);
+    const effectiveBlockAlign = located.blockAlign > 0 ? located.blockAlign : Math.max(1, located.channels * sampleBytes);
+    const dataOffset = located.dataOffset;
+    /* Declared length, clamped to what the file actually carries: a truncated
+     * take must draw the part that is there, not stop at the header. */
+    const dataSize = Math.min(located.dataSize, Math.max(0, bytes.length - dataOffset));
+    if (dataSize <= 0) return { error: "missing wav chunks", points: [] };
     const frameCount = Math.max(1, Math.floor(dataSize / effectiveBlockAlign));
     const points = new Array(width).fill(0);
     const dataEnd = dataOffset + dataSize;
@@ -17248,15 +17233,7 @@ function parseWavPositionPeaks(content, width) {
         for (let frame = start; frame < end; frame += stride) {
             const base = dataOffset + frame * effectiveBlockAlign;
             if (base + sampleBytes > dataEnd) break;
-            let sample = 0;
-            if (audioFmt === 1 && bits === 16) {
-                sample = wavReadS16LE(bytes, base) / 32768;
-            } else if (audioFmt === 1 && bits === 8) {
-                sample = (wavByteAt(bytes, base) - 128) / 128;
-            } else if (audioFmt === 3 && bits === 32) {
-                sample = wavReadF32LE(bytes, base);
-            }
-            const abs = Math.abs(sample);
+            const abs = Math.abs(read(bytes, base));
             if (abs > maxAbs) maxAbs = abs;
         }
 
@@ -17770,10 +17747,15 @@ function moduleFileExists(path) {
     }
 }
 
-function getHierarchyActiveModuleId() {
+/* The same lookup, with the tri-state INTACT: null = the read did not complete.
+ * getHierarchyActiveModuleId below is the `|| ""` view of it, which is what
+ * every caller that only wants a name should use. reconcileCcClaim wants the
+ * third answer, because "the read failed" and "there is no module" lead to
+ * opposite decisions there. */
+function hierarchyActiveModuleIdRaw() {
     if (hierEditorSlot < 0 || !hierEditorComponent) return "";
     if (hierEditorIsMasterFx) {
-        return getSlotParam(0, `${hierEditorComponent}:module`) || "";
+        return getSlotParam(0, `${hierEditorComponent}:module`);
     }
     /* A bus insert spells it the colon way too — chain_bus.c answers
      * "bus1:fx2:module" with the module id. The underscore form below is the
@@ -17785,7 +17767,11 @@ function getHierarchyActiveModuleId() {
 
     const prefix = getComponentParamPrefix(hierEditorComponent);
     if (!prefix) return "";
-    return getSlotParam(hierEditorSlot, `${prefix}_module`) || "";
+    return getSlotParam(hierEditorSlot, `${prefix}_module`);
+}
+
+function getHierarchyActiveModuleId() {
+    return hierarchyActiveModuleIdRaw() || "";
 }
 
 /* Module id whose in-grid widgets are currently registered. "" = none. */
@@ -17969,6 +17955,172 @@ function ensureComponentWidgets(moduleId, chainParams) {
         debugLog(`widgets: ${id} declares a custom viz kind but no usable drawCell` +
                  (loaded && loaded.error ? ` (${loaded.error})` : ""));
     }
+}
+
+/* ── Button claims: capabilities.claims_ccs / claims_edit_ccs ─────────────────
+ *
+ * A module declaring `capabilities.claims_ccs` (a list of CC numbers) or the
+ * shorthand `claims_edit_ccs: true` (Undo 56, Copy 60, Delete 119) gets those
+ * buttons delivered to it while its UI is on screen, and Move firmware does
+ * not see them for that window -- so a hold-Copy + tap-pad style gesture
+ * cannot also copy a Move clip behind the screen.
+ *
+ * ⚠ ENTRY-CONDITION TABLE. Every screen that may hold a claim, what opens it,
+ * and where that condition is re-checked. A new screen wanting these buttons
+ * declares itself HERE:
+ *
+ *   screen                       opened by                    re-checked in
+ *   ──────────────────────────   ──────────────────────────   ─────────────────
+ *   PARAM_PAGES (the knob grid)  a component whose module     reconcileCcClaim()
+ *   HIERARCHY_EDITOR             declares a claim              -- and ONLY there
+ *   COMPONENT_EDIT
+ *   COMPONENT_PARAMS
+ *   CANVAS (fullscreen)          a canvas param opened on
+ *   CANVAS (co-run overlay)      such a component
+ *
+ * The claim is re-derived in ONE place from what is on screen right now, never
+ * bookkept at the flag's write sites. That is the whole design: #154 blocked
+ * Undo/Copy/Delete unconditionally whenever the shadow display was up, and was
+ * reverted (#175) because it stole Move's native Undo during ordinary chain
+ * use. The revert asked for a capability opt-in; this is it.
+ *
+ * The shim independently drops every claim when the shadow display closes, so
+ * a shadow_ui that exits or crashes without reconciling cannot strand one; it
+ * also refuses the host-owned controls below whatever is written. */
+const CC_CLAIM_VIEWS = {};
+CC_CLAIM_VIEWS[VIEWS.PARAM_PAGES] = true;
+CC_CLAIM_VIEWS[VIEWS.HIERARCHY_EDITOR] = true;
+CC_CLAIM_VIEWS[VIEWS.COMPONENT_EDIT] = true;
+CC_CLAIM_VIEWS[VIEWS.COMPONENT_PARAMS] = true;
+CC_CLAIM_VIEWS[VIEWS.CANVAS] = true;
+
+/* The controls the host owns: how you leave a screen (Shift 49, Menu 50,
+ * Back 51), what the host routes itself (jog 14/3, knobs 71-78, master 79,
+ * tracks 40-43) and Mute 88 (Move-native Mute+Pad). Mirrors claim_denied_cc in
+ * the shim, which is the enforcing copy; this one only tells the author. */
+const CC_CLAIM_DENIED = new Set([49, 50, 51, 14, 3, 71, 72, 73, 74, 75, 76, 77, 78, 79, 88, 40, 41, 42, 43, 114, 115]);
+const EDIT_CCS = [56, 60, 119];
+
+let ccClaimCache = {};
+let ccClaimKey = null;
+let ccClaimed = "";
+
+/* The sorted, host-permitted list of CCs `moduleId` claims, as a string
+ * ("" = none). Cached per module: the lookup is a file read. */
+function moduleClaimedCcs(moduleId) {
+    if (!moduleId) return "";
+    if (moduleId in ccClaimCache) return ccClaimCache[moduleId];
+    let meta = null;
+    try {
+        if (typeof host_get_module_metadata === "function") {
+            meta = host_get_module_metadata(moduleId);
+        }
+    } catch (e) {
+        /* The read threw -- that is news about the CHANNEL, not about the
+         * module. Answer "no claim" for this tick and leave the cache empty so
+         * the next reconcile asks again; caching it would make one bad read
+         * permanent for the session. A metadata object that simply declares no
+         * capability is a real answer and IS cached below. */
+        debugLog(`claims_ccs: metadata read for ${moduleId} failed (${e}) -- not cached`);
+        return "";
+    }
+    const caps = (meta && meta.capabilities) || {};
+    const want = new Set();
+    if (caps.claims_edit_ccs) for (const cc of EDIT_CCS) want.add(cc);
+    if (Array.isArray(caps.claims_ccs)) {
+        for (const v of caps.claims_ccs) {
+            const cc = Number(v);
+            if (Number.isInteger(cc) && cc >= 0 && cc < 128) want.add(cc);
+        }
+    }
+    const denied = [...want].filter((cc) => CC_CLAIM_DENIED.has(cc));
+    if (denied.length) {
+        debugLog(`claims_ccs: ${moduleId} asked for host-owned CC(s) ${denied.join(",")} -- ignored`);
+        for (const cc of denied) want.delete(cc);
+    }
+    const v = [...want].sort((a, b) => a - b).join(",");
+    ccClaimCache[moduleId] = v;
+    return v;
+}
+
+function reconcileCcClaim() {
+    if (typeof host_claim_ccs !== "function") return;
+    const onScreen = !!CC_CLAIM_VIEWS[view] ||
+        (coRunUiActive() && coRunView === VIEWS.CANVAS);
+    /* Cheap identity of "whose UI is on screen". The module-id read costs a
+     * blocking get_param round-trip (~2.8 ms), so it is consulted only when
+     * this tuple changes -- not on every one of the ~44 ticks/sec. A module
+     * SWAP always transits COMPONENT_SELECT, which moves `view`, so the tuple
+     * catches swaps too. The knob grid keeps its own slot/component
+     * (enterParamPages never touches hierEditorSlot), so on that view the
+     * identity comes from the grid. */
+    const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
+    const slot = onGrid ? paramPagesSlot() : hierEditorSlot;
+    const comp = onGrid ? paramPagesComponent() : hierEditorComponent;
+    /*
+     * THE DISPLAY MODE IS PART OF THE IDENTITY, because the SHIM CLEARS THE
+     * CLAIM AND DOES NOT TELL US.
+     *
+     * shadow_display_mode drops from four sites in the SPI callback -- Menu
+     * tap, Track tap, Shift+Track, Shift+Step -- and the shim memsets
+     * claim_cc_bits on that edge. None of them runs any JS. So `ccClaimed`
+     * below is a MIRROR OF STATE ANOTHER PROCESS OWNS, and after a dismiss it
+     * says "claimed" while the shim holds nothing: the claim is not restated
+     * on the way back in, and the module's buttons go to Move for the rest of
+     * the session.
+     *
+     * Without this the save was incidental. Every re-entry raises a jump flag,
+     * and those mostly land on a NON-claim view (CHAIN_EDIT, MASTER_FX,
+     * TOOLS), which empties the key and re-arms. But Shift+Vol+Step2 lands on
+     * VIEWS.PARAM_PAGES -- a claim view -- via enterGlobalSettings ->
+     * enterGlobalSettingsGrid -> enterParamPages, and it was only the SLOT and
+     * COMPONENT halves of this tuple (Global Settings carries a synthesised
+     * component of its own) that made the key differ anyway. That is a real
+     * invariant resting on a coincidence, and nothing at either site said so.
+     *
+     * Reading it is an SHM byte, not an IPC round-trip, so it costs nothing on
+     * the gate it guards. The flag the shim clears is now the flag this key
+     * turns on, which is the fact itself rather than a proxy for it.
+     *
+     * The pad_observe register next to it (#426) had no key at all and could
+     * only be fixed by restating it every tick; the read behind THIS gate is
+     * ~2.8 ms and must stay memoised, so the gate is widened instead.
+     */
+    const displayOn = (typeof shadow_get_display_mode === "function")
+        ? shadow_get_display_mode() : 1;
+    const key = onScreen
+        ? (view + "|" + coRunView + "|" + slot + "|" + comp + "|" + displayOn)
+        : "";
+    if (key === ccClaimKey) return;
+    /* THE READ COMES FIRST, AND null IS NOT AN ANSWER.
+     *
+     * getSlotParam is the tri-state: null means the read did not complete (the
+     * claim was refused, or the response timed out), "" means served-but-empty.
+     * Collapsing them with `|| ""` reads as "this component has no module", so
+     * the claim is dropped -- and latching ccClaimKey before the read made that
+     * verdict permanent for the whole visit to the screen, with Delete going
+     * back to Move. That is the failure the capability exists to prevent.
+     *
+     * So the key is latched only once an answer is in hand; a failed read
+     * leaves it alone and the next tick asks again. */
+    let moduleId = "";
+    if (onScreen && onGrid) {
+        const prefix = getComponentParamPrefix(comp);
+        if (prefix) {
+            const raw = getSlotParam(slot, `${prefix}_module`);
+            if (raw === null || raw === undefined) return;   /* retry next tick */
+            moduleId = raw;
+        }
+    } else if (onScreen) {
+        const raw = hierarchyActiveModuleIdRaw();
+        if (raw === null || raw === undefined) return;       /* retry next tick */
+        moduleId = raw;
+    }
+    ccClaimKey = key;
+    const claim = onScreen ? moduleClaimedCcs(moduleId) : "";
+    if (claim === ccClaimed) return;
+    ccClaimed = claim;
+    host_claim_ccs(claim ? claim.split(",").map(Number) : []);
 }
 
 function getModuleBasePath(moduleId) {
@@ -23311,6 +23463,11 @@ function dispatchCoRunDraw() {
 
 let lastDrawError = null;  /* one-shot log guard for the tick draw catch */
 globalThis.tick = function() {
+    /* Button claims, re-derived from whatever is on screen. Kept at the top of
+     * the tick as the SINGLE re-check point for that entry condition -- see the
+     * table above reconcileCcClaim(). */
+    reconcileCcClaim();
+
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
      * internal state. Display and LED bindings are swapped for no-ops so the

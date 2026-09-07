@@ -231,7 +231,13 @@ function collectDeclared(keys, metaIndex, invalid) {
              * Such a role is also NOT claimed, so its own cell still draws as
              * an ordinary control. It informs the picture; it is not part of it.
              */
-            if (v.role) g.roles[v.role] = { key, slot, span: v.span !== false };
+            /* `viz` is retained because the group's extra_keys are read back
+             * off it below -- a role stored without it made that lookup
+             * (`declaredExtraKeys(r.viz)`) return null for every member, so a
+             * GROUP could never carry extra_keys at all while the comment
+             * there said it could. A spanning widget whose values live on
+             * another page then drew its "no answer" state forever. */
+            if (v.role) g.roles[v.role] = { key, slot, span: v.span !== false, viz: v };
             if (v.kind && !g.kind) g.kind = v.kind;
         } else if (v.kind) {
             /*
@@ -321,8 +327,15 @@ function collectDeclared(keys, metaIndex, invalid) {
  * ONE READ PER STOP, so this is not free: declare what the picture needs and
  * nothing else. Capped, because a module asking for twenty keys would spend the
  * page's whole read budget on one cell and starve every other value on screen.
+ *
+ * EXPORTED, because a widget is no longer the only thing that can declare them:
+ * an `as_page` canvas param takes `extra_keys` too, and it spends the SAME
+ * rotation on the SAME page. A second copy of the number is a second copy of
+ * the decision, and the canvas path shipped without one -- twenty keys were
+ * accepted, and a three-knob page went from refreshing a knob every 4 ticks to
+ * every 24.
  */
-const MAX_DECLARED_EXTRA_KEYS = 4;
+export const MAX_DECLARED_EXTRA_KEYS = 4;
 
 function declaredExtraKeys(v) {
     const raw = v && (v.extra_keys || v.extraKeys);

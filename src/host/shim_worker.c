@@ -560,6 +560,9 @@ static void drain_events(void) {
         case SHIM_EVT_OVERTAKE_DSP_FREE:
             if (worker_hooks.overtake_dsp_free_pending) worker_hooks.overtake_dsp_free_pending();
             break;
+        case SHIM_EVT_BOOT_HEALTHY:
+            if (worker_hooks.boot_healthy) worker_hooks.boot_healthy();
+            break;
         default:
             break;
         }

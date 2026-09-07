@@ -50,6 +50,14 @@ typedef struct {
     float pad_vol[PAD_COUNT];
     char  cur_voice[32];       /* a LEVEL NAME - the focus_param contract */
     unsigned focus_count;      /* bumped on every hit; see the getter */
+    /* Bumped ONLY by the host's live-press vouch (focus_press_param). It is
+     * deliberately NOT bumped by vp_on_midi: the whole point of the vouch is
+     * that a note cannot tell you whether a finger or a sequencer produced
+     * it, so a counter that moves on notes would demonstrate nothing. Read
+     * back as `live_hits` and shown on the root page, which makes the vouch a
+     * NUMBER YOU CAN WATCH -- press a pad and it goes up; play the same note
+     * from a clip or over MIDI and it does not. */
+    unsigned live_hits;
 } vp_t;
 
 static void *vp_create(const char *module_dir, const char *json_defaults) {
@@ -102,6 +110,17 @@ static void vp_set_param(void *inst, const char *key, const char *val) {
         snprintf(v->cur_voice, sizeof(v->cur_voice), "%s", val);
         return;
     }
+    if (strcmp(key, "live_press") == 0) {
+        /* THE VOUCH: a finger hit a pad. The host writes "1" and says nothing
+         * about WHICH pad, because the pad-to-note map is Move's -- a real
+         * module pairs this with the note it receives in vp_on_midi and moves
+         * cur_voice. This POC only COUNTS it, which is the smaller claim and
+         * the one that can be checked at a glance: the count is the evidence
+         * that the vouch arrived at all. Pairing is the module author's job
+         * and has its own failure modes; arriving is the host's. */
+        if (val[0] == '1') v->live_hits++;
+        return;
+    }
     if (strcmp(key, "kick_tune") == 0)  { v->kick_tune  = (float)atof(val); return; }
     if (strcmp(key, "snare_tune") == 0) { v->snare_tune = (float)atof(val); return; }
     if (strcmp(key, "hat_tune") == 0)   { v->hat_tune   = (float)atof(val); return; }
@@ -129,6 +148,7 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
          * before the contract existed. */
         return snprintf(buf, buf_len, "%u:%s", v->focus_count, v->cur_voice);
     }
+    if (strcmp(key, "live_hits") == 0)   return snprintf(buf, buf_len, "%u", v->live_hits);
     if (strcmp(key, "kick_tune") == 0)  return snprintf(buf, buf_len, "%.3f", v->kick_tune);
     if (strcmp(key, "snare_tune") == 0) return snprintf(buf, buf_len, "%.3f", v->snare_tune);
     if (strcmp(key, "hat_tune") == 0)   return snprintf(buf, buf_len, "%.3f", v->hat_tune);
@@ -173,7 +193,11 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
           "{\"key\":\"p1_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1},"
           "{\"key\":\"p2_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1},"
           "{\"key\":\"p3_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1},"
-          "{\"key\":\"p4_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1}"
+          "{\"key\":\"p4_vol\",\"name\":\"Vol\",\"type\":\"float\",\"min\":0,\"max\":1},"
+          /* access:"read" -- a READOUT, not a knob. The grid dots its stroke
+           * and refuses to turn it, which is what this is: evidence, not a
+           * control. */
+          "{\"key\":\"live_hits\",\"name\":\"HITS\",\"type\":\"int\",\"min\":0,\"max\":9999,\"access\":\"read\",\"live\":true}"
         "]";
         int len = (int)strlen(j);
         if (len >= buf_len) return -1;
@@ -186,8 +210,13 @@ static int vp_get_param(void *inst, const char *key, char *buf, int buf_len) {
         "{"
           "\"pad_layout\":\"drums\","
           "\"focus_param\":\"cur_voice\","
+          /* The sibling-shape spelling of child_press_param. This module has
+           * no child level it wants presses for -- its rack is `pads` and its
+           * voices are siblings -- so the declaration sits at the top. */
+          "\"focus_press_param\":\"live_press\","
           "\"levels\":{"
-            "\"root\":{\"name\":\"Voice POC\",\"params\":["
+            "\"root\":{\"name\":\"Voice POC\",\"knobs\":[\"live_hits\"],\"params\":["
+              "{\"key\":\"live_hits\"},"
               "{\"level\":\"kick\",\"label\":\"Kick\"},"
               "{\"level\":\"snare\",\"label\":\"Snare\"},"
               "{\"level\":\"hat\",\"label\":\"Hat\"},"

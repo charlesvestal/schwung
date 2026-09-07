@@ -76,75 +76,70 @@ if [ -x "$SCHWUNG_HEAL" ]; then
     "$SCHWUNG_HEAL" >>"$SCHWUNG_DIR/heal-boot.log" 2>&1
 fi
 
-# Set library path for bundled TTS libraries
-export LD_LIBRARY_PATH=$SCHWUNG_DIR/lib:$LD_LIBRARY_PATH
+# ── Boot selector ─────────────────────────────────────────────────────────
+# Resolve a target, offer the 2 s Back window, watchdog-count the attempt,
+# then exec the target's entry script. Every failure path lands on stock
+# MoveOriginal: the selector's own failure mode is always "Move boots".
+BT_LIB="$SCHWUNG_DIR/host/boot_target_lib.sh"
+BOOT_SELECT="$SCHWUNG_DIR/bin/boot-select"
 
-# Note: link-subscriber is launched by the shim (auto-recovery lifecycle)
-
-# Start live display server if present
-DISPLAY_SRV="$SCHWUNG_DIR/display-server"
-if [ -x "$DISPLAY_SRV" ]; then
-    "$DISPLAY_SRV" >/dev/null 2>&1 &
-fi
-
-# Start schwung-manager web UI if present (skip if already running)
-SCHWUNG_MGR="$SCHWUNG_DIR/schwung-manager"
-SCHWUNG_MGR_LOG="$SCHWUNG_DIR/schwung-manager.log"
-SCHWUNG_MGR_PID="$SCHWUNG_DIR/schwung-manager.pid"
-if [ -x "$SCHWUNG_MGR" ]; then
-    # Skip if already running.
-    #
-    # `kill -0` alone is NOT enough: it asks whether SOMETHING holds that pid,
-    # not whether the manager does. The pid file survives a reboot, and Linux
-    # hands the number out again — observed 2026-08-20, where the stale pid 928
-    # came back as `display-server`, so this test passed, the manager was never
-    # started, and port 7700 was simply dead until someone noticed. It fails
-    # silently and only after a reboot, which is the worst combination.
-    #
-    # So confirm the pid is actually the manager by reading its cmdline.
-    SCHWUNG_MGR_RUNNING=0
-    if [ -f "$SCHWUNG_MGR_PID" ]; then
-        mgr_pid="$(cat "$SCHWUNG_MGR_PID" 2>/dev/null)"
-        # A non-numeric or empty pid file must not turn into a bare `/proc//cmdline`.
-        case "$mgr_pid" in
-            ''|*[!0-9]*) mgr_pid="" ;;
-        esac
-        # SCHWUNG_PROC_DIR is /proc on the device; the host test overrides it,
-        # since the dev machines have no /proc to build a fixture in.
-        if [ -n "$mgr_pid" ] && kill -0 "$mgr_pid" 2>/dev/null &&
-           tr '\0' ' ' < "${SCHWUNG_PROC_DIR:-/proc}/$mgr_pid/cmdline" 2>/dev/null |
-               grep -q "schwung-manager"; then
-            SCHWUNG_MGR_RUNNING=1
-        fi
+# Lib missing (partial payload, downgrade): prefer the full Schwung entry —
+# it carries the sidecar services and LD_LIBRARY_PATH the bare LD_PRELOAD
+# exec here would lose (a dead port 7700 is the documented worst failure
+# shape). The bare exec remains the last resort.
+if [ ! -f "$BT_LIB" ]; then
+    if [ -x "$SCHWUNG_DIR/schwung-entry.sh" ]; then
+        exec "$SCHWUNG_DIR/schwung-entry.sh"
     fi
-    if [ "$SCHWUNG_MGR_RUNNING" = "1" ]; then
-        : # already running
+    exec env LD_PRELOAD=schwung-shim.so /opt/move/MoveOriginal
+fi
+. "$BT_LIB"
+
+# Self-registration: Schwung owns its own registry entry, refreshed every
+# boot so a wiped or hand-edited registry heals itself.
+mkdir -p "$BOOT_TARGETS_DIR/schwung"
+printf '{\n  "name": "Schwung",\n  "exec": "%s"\n}\n' \
+    "$SCHWUNG_DIR/schwung-entry.sh" > "$BOOT_TARGETS_DIR/schwung/boot.json"
+
+target=$(bt_resolve_default)
+bt_watchdog_enter "$target" >/dev/null
+
+# boot-select: window + picker. Prints the chosen id on stdout; a selection
+# rewrites $BOOT_TARGETS_DIR/default itself. Missing or failing binary ->
+# silent fallthrough to the resolved default.
+if [ -x "$BOOT_SELECT" ]; then
+    if bt_watchdog_forced "$target"; then
+        chosen=$("$BOOT_SELECT" --forced "$target" 2>/dev/null) || chosen=""
     else
-        # Rotate log if over 100KB
-        if [ -f "$SCHWUNG_MGR_LOG" ]; then
-            log_size=$(wc -c < "$SCHWUNG_MGR_LOG" 2>/dev/null || echo 0)
-            if [ "$log_size" -gt 102400 ]; then
-                tail -c 102400 "$SCHWUNG_MGR_LOG" > "$SCHWUNG_MGR_LOG.tmp" 2>/dev/null
-                mv "$SCHWUNG_MGR_LOG.tmp" "$SCHWUNG_MGR_LOG"
-            fi
-        fi
-        "$SCHWUNG_MGR" -port 7700 -roots /data/UserData/ >>"$SCHWUNG_MGR_LOG" 2>&1 &
-        echo $! > "$SCHWUNG_MGR_PID"
+        chosen=$("$BOOT_SELECT" --window "$target" 2>/dev/null) || chosen=""
+    fi
+    if [ -n "$chosen" ] && [ "$chosen" != "$target" ]; then
+        target="$chosen"
+        bt_watchdog_enter "$target" >/dev/null
     fi
 fi
 
-# The standalone :404 file browser is GONE and is not started here any more.
-#
-# It was a bundled third-party binary serving all of /data/UserData with
-# --noauth, gated on a flag file that Global Settings -> Services wrote. Schwung
-# Manager already serves the same tree at :7700/files, with keyboard and
-# screen-reader access this one never had -- so the toggle amounted to a second
-# unauthenticated web server for a job already done.
-#
-# The flag file on an upgraded device is removed by retireFilebrowserService()
-# in shadow_ui.js, which also kills anything still listening. Deleting this
-# block alone would have been enough to stop it at the NEXT boot and would have
-# left the flag behind for a reinstall to find.
+if [ "$target" = "stock" ]; then
+    bt_watchdog_clear
+    exec /opt/move/MoveOriginal
+fi
 
+entry=$(bt_exec_path "$target") || entry=""
+if [ -z "$entry" ] || [ ! -x "$entry" ]; then
+    exec /opt/move/MoveOriginal
+fi
 
-exec env LD_PRELOAD=schwung-shim.so /opt/move/MoveOriginal
+# Liveness watcher: exec preserves the pid, so checking our own pid after
+# 15 s checks the target. A crash-loop dies in seconds; the original 30 s
+# horizon made ordinary human power cycles read as failures three times in
+# one day of field use. A target that forks-and-exits is not covered —
+# that is what the healthy touch-file is for (see docs/BOOT_TARGETS.md).
+self=$$
+(
+    sleep 15
+    if kill -0 "$self" 2>/dev/null; then
+        BOOT_TARGETS_DIR="$BOOT_TARGETS_DIR" . "$BT_LIB" && bt_watchdog_clear
+    fi
+) &
+
+exec "$entry"

@@ -1,0 +1,69 @@
+{
+  "planPath": "docs/superpowers/plans/2026-09-05-boot-selector.md",
+  "tasks": [
+    {
+      "id": 1,
+      "subject": "Task 1: boot_target_lib.sh — resolution + watchdog",
+      "status": "completed",
+      "description": "**Goal:** src/host/boot_target_lib.sh, sourceable selector decision logic (bt_resolve_default, bt_exec_path, bt_json_field, bt_watchdog_enter/forced/clear), no side effects at source time, all paths from BOOT_TARGETS_DIR.\n\n**Files:**\n- Create: src/host/boot_target_lib.sh\n- Test: tests/host/test_boot_target_resolution.sh, tests/host/test_boot_watchdog.sh\n\n**Acceptance Criteria:**\n- bt_resolve_default: default file honored when registered; dangling/missing -> schwung if registered else stock\n- bt_exec_path: exec value from boot.json; rc 1 for stock/missing\n- bt_watchdog_enter: healthy file clears+consumes then increments; per-target strike reset; stock never stamped (echoes 0)\n- bt_watchdog_forced: rc 0 iff stamp names id with count >= 2\n- Both new tests pass; existing tests/host/*.sh unaffected\n\n**Verify:** bash tests/host/test_boot_target_resolution.sh && bash tests/host/test_boot_watchdog.sh -> exit 0, all PASS lines\n\n**Steps:** Full library and test code are in the plan document, Task 1.\n\n```json:metadata\n{\"files\": [\"src/host/boot_target_lib.sh\", \"tests/host/test_boot_target_resolution.sh\", \"tests/host/test_boot_watchdog.sh\"], \"verifyCommand\": \"bash tests/host/test_boot_target_resolution.sh && bash tests/host/test_boot_watchdog.sh\", \"acceptanceCriteria\": [\"resolution: default/dangling/missing/stock cases\", \"watchdog: increment, healthy-clear, per-target reset, stock unstamped, forced at 2\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 2: entrypoint split (selector + schwung-entry.sh)",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** shim-entrypoint.sh becomes the thin selector (same filename — heal/manager/post-update paths untouched); today's tail (services + LD_PRELOAD exec) moves verbatim to new src/schwung-entry.sh; selector self-registers boot-targets/schwung/boot.json each boot; liveness watcher backgrounds before exec; every fallback lands on exec /opt/move/MoveOriginal.\n\n**Files:**\n- Create: src/schwung-entry.sh\n- Modify: src/shim-entrypoint.sh (rewrite tail), scripts/build.sh:848 (cp new files), scripts/package.sh:17 (ITEMS)\n- Test: tests/host/test_manager_pidfile_guard.sh:24 (SRC -> src/schwung-entry.sh), tests/host/test_runtime_logs_not_in_root_tmp.sh:12 (add schwung-entry.sh)\n\n**Acceptance Criteria:**\n- schwung-entry.sh: LD_LIBRARY_PATH, display-server, manager (pidfile cmdline guard intact), filebrowser, final LD_PRELOAD exec — behavior unchanged\n- shim-entrypoint.sh: migration + factory-reset net + symlink fix + heal unchanged, then selector flow (see plan); no service launches remain\n- Self-registration of schwung boot.json every boot\n- Watcher uses pid-preserved-across-exec kill -0 after 30 s -> bt_watchdog_clear\n- Both repointed tests pass; sh -n clean on both scripts\n\n**Verify:** bash tests/host/test_manager_pidfile_guard.sh && bash tests/host/test_runtime_logs_not_in_root_tmp.sh && sh -n src/shim-entrypoint.sh && sh -n src/schwung-entry.sh\n\n**Steps:** Full selector shell code in the plan document, Task 2 Step 2.\n\n```json:metadata\n{\"files\": [\"src/schwung-entry.sh\", \"src/shim-entrypoint.sh\", \"scripts/build.sh\", \"scripts/package.sh\", \"tests/host/test_manager_pidfile_guard.sh\", \"tests/host/test_runtime_logs_not_in_root_tmp.sh\"], \"verifyCommand\": \"bash tests/host/test_manager_pidfile_guard.sh && bash tests/host/test_runtime_logs_not_in_root_tmp.sh && sh -n src/shim-entrypoint.sh && sh -n src/schwung-entry.sh\", \"acceptanceCriteria\": [\"selector flow per plan\", \"tail moved verbatim\", \"self-registration\", \"all fallbacks end in exec MoveOriginal\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 3: boot_select_core.c — host-testable picker logic",
+      "status": "completed",
+      "description": "**Goal:** src/host/boot_select_core.{c,h}: 8-stride MIDI_IN scan with Back/jog-click press-edge detection (first frame never fires), jog delta decode (1..63 -> +v, 65..127 -> v-128), flat-JSON field extraction, row model (registered targets, schwung first, built-in stock last).\n\n**Files:**\n- Create: src/host/boot_select_core.h, src/host/boot_select_core.c\n- Test: tests/host/test_boot_select_core.c; modify tests/host/Makefile (TARGETS + explicit rule)\n\n**Acceptance Criteria:**\n- Stride 8, terminator-slot stop, cable 0 only, 248-byte bound (BS_MIDI_IN_BYTES = 31*8)\n- Stateful edges: no edge on frame 0; one edge per press; hold produces no repeats; events behind a terminator invisible; cable-2 ignored\n- bs_json_field: extract/absent/truncation cases\n- bs_build_rows: schwung, others alpha, stock appended; no overflow\n- make -C tests/host test green\n\n**Verify:** make -C tests/host test -> all green incl. test_boot_select_core\n\n**Steps:** Header, scan loop, and the 8 test cases are in the plan document, Task 3.\n\n```json:metadata\n{\"files\": [\"src/host/boot_select_core.h\", \"src/host/boot_select_core.c\", \"tests/host/test_boot_select_core.c\", \"tests/host/Makefile\"], \"verifyCommand\": \"make -C tests/host test\", \"acceptanceCriteria\": [\"8-stride walk, terminator stop, cable filter\", \"edge semantics incl. frame-0 suppression\", \"json field + rows model\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 4: boot-select binary (SPI window + picker)",
+      "status": "completed",
+      "blockedBy": [
+        3
+      ],
+      "description": "**Goal:** src/boot-select.c — opens /dev/ablspi0.0 (open/mmap/memset/speed-ioctl per schwung_host.c:2216-2371), paints window/picker via js_display, per-frame WAIT_SEND ioctl + bs_input_scan, writes default atomically on selection, prints chosen id; alarm(60) prints default and exits 0; cleanup (munmap/close) on every path. Built to build/bin/boot-select (rides ./bin packaging; do NOT add to package.sh scrub line 24).\n\n**Files:**\n- Create: src/boot-select.c\n- Modify: scripts/build.sh (~line 836, link block copying shadow_ui's quickjs include/lib paths from build.sh:343-352)\n\n**Acceptance Criteria:**\n- --window <id>: ~2 s window, timeout prints id exit 0; Back edge -> picker\n- --forced <id>: no window, banner '<name> failed to start', cursor on stock\n- Picker: jog scrolls, click writes default (tmp+rename) + prints id, Back cancels printing incoming id\n- Failure -> exit 1, empty stdout; SPI fd closed + munmap before exit\n- ./scripts/build.sh emits ARM aarch64 build/bin/boot-select; host tests still green\n\n**Verify:** ./scripts/build.sh && file build/bin/boot-select (aarch64) && make -C tests/host test\n\n**Steps:** frame()/flush_display() code and full flow in the plan document, Task 4.\n\n```json:metadata\n{\"files\": [\"src/boot-select.c\", \"scripts/build.sh\"], \"verifyCommand\": \"./scripts/build.sh && file build/bin/boot-select && make -C tests/host test\", \"acceptanceCriteria\": [\"window/forced/picker behavior\", \"atomic default write\", \"clean SPI teardown\", \"ARM64 artifact\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 5: installer surfaces + never-blessed compat",
+      "status": "completed",
+      "blockedBy": [
+        2,
+        4
+      ],
+      "description": "**Goal:** install.sh (full + re-enable paths) chmods schwung-entry.sh and asserts the new payload files; post-update.sh chmods schwung-entry.sh; uninstall.sh removes /data/UserData/boot-targets. No heal changes, no features.json changes, no ld.so.preload entries.\n\n**Files:**\n- Modify: scripts/install.sh (~1005/1202 chmods, 975-981/1117-1118 assertions), scripts/post-update.sh (~68), scripts/uninstall.sh (~202)\n- Test: create tests/host/test_old_entrypoint_payload_compat.sh\n\n**Acceptance Criteria:**\n- Both install paths updated symmetrically\n- Web-update activates the selector with zero manager/heal changes (same-filename design)\n- NEVER-BLESSED HARD REQUIREMENT (Charles: 'i dont want to brick never blessed devices'): new payload keeps every file the OLD entrypoint content references (schwung-shim.so, bin/schwung-heal, lib/, display-server, schwung-manager, bin/filebrowser, host/font.png) — pinned by test_old_entrypoint_payload_compat.sh (old entrypoint vendored as heredoc fixture; each referenced path asserted present in build outputs)\n- bash tests/host/test_features_json_preserved.sh still passes\n\n**Verify:** bash -n scripts/install.sh scripts/post-update.sh scripts/uninstall.sh && bash tests/host/test_features_json_preserved.sh && bash tests/host/test_old_entrypoint_payload_compat.sh\n\n**Steps:** Exact line-level edits in the plan document, Task 5.\n\n```json:metadata\n{\"files\": [\"scripts/install.sh\", \"scripts/post-update.sh\", \"scripts/uninstall.sh\", \"tests/host/test_old_entrypoint_payload_compat.sh\"], \"verifyCommand\": \"bash -n scripts/install.sh scripts/post-update.sh scripts/uninstall.sh && bash tests/host/test_features_json_preserved.sh && bash tests/host/test_old_entrypoint_payload_compat.sh\", \"acceptanceCriteria\": [\"both install paths symmetric\", \"uninstall removes registry\", \"old-entrypoint payload compat pinned by test\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 6: shim healthy touch via shim_worker",
+      "status": "completed",
+      "blockedBy": [
+        1
+      ],
+      "description": "**Goal:** shim posts SHIM_EVT_BOOT_HEALTHY once from shim_pre_transfer's first-frame branch (schwung_shim.c ~5732, right after shim_init_subsystems); the shim_worker hook (SCHED_OTHER) mkdirs + touches /data/UserData/boot-targets/schwung/healthy. Zero file I/O on the RT path.\n\n**Files:**\n- Modify: src/host/shim_worker.h (event + hooks member), src/host/shim_worker.c (dispatch), src/schwung_shim.c (hook impl, registration, one-shot post)\n- Test: tests/host/test_boot_healthy_touch.sh\n\n**Acceptance Criteria:**\n- Event/hook follow the existing SHIM_EVT_* pattern exactly\n- Source-pin test: healthy path string only inside the hook fn; RT site calls shim_worker_post with no file I/O within +/-5 lines; hook registered in shim_worker_set_hooks struct\n- Shim compiles (./scripts/build.sh); make -C tests/host test and all tests/host/*.sh green\n\n**Verify:** bash tests/host/test_boot_healthy_touch.sh && make -C tests/host test\n\n**Steps:** Post-site code in the plan document, Task 6.\n\n```json:metadata\n{\"files\": [\"src/host/shim_worker.h\", \"src/host/shim_worker.c\", \"src/schwung_shim.c\", \"tests/host/test_boot_healthy_touch.sh\"], \"verifyCommand\": \"bash tests/host/test_boot_healthy_touch.sh && make -C tests/host test\", \"acceptanceCriteria\": [\"worker-mediated touch, no RT file I/O\", \"source-pin test\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 7: docs + hardware verification + PR",
+      "status": "in_progress",
+      "blockedBy": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "description": "PAUSED AT HARDWARE GATE. Docs half done (8ec37663). Remaining: on-hardware checklist (see plan Task 7) — ASK CHARLES for a deploy window first.\n\n**Goal:** Docs match the as-built system (BOOT_TARGETS.md status + paths, one CLAUDE.md index bullet, ARCHITECTURE.md:63, catalog-site manual boot-menu note); full on-hardware checklist passes; branch -> PR -> green CI.\n\n**USER-ORDERED GATE — NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in acceptanceCriteria has been re-validated independently, with output captured.\n\n**Files:**\n- Modify: docs/BOOT_TARGETS.md, CLAUDE.md, docs/ARCHITECTURE.md, ../schwung-catalog-site/manual.html\n\n**Acceptance Criteria:**\n- Normal boot: window -> timeout -> Schwung boots, healthy file appears, stamp cleared\n- Back -> picker -> Stock: MoveOriginal with empty LD_PRELOAD in /proc environ, no :7700, default file reads 'stock'; reverse trip restores\n- Watchdog: chmod -x schwung entry, two reboots -> forced picker with failure banner, cursor on Stock\n- Factory-reset net intact; web-update activation via schwung-manager works\n- Never-blessed simulation: old-style boot, Schwung works, repair banner shows (no brick)\n- Partial-heal simulation: new entrypoint + old shim -> liveness watcher clears stamp, no forced picker\n- ASK CHARLES BEFORE DEPLOYING (standing rule)\n\n**Verify:** hardware checklist above with captured SSH output, plus: for t in tests/host/*.sh; do bash \"$t\"; done && make -C tests/host test\n\n**Steps:** Checklist detail in the plan document, Task 7.\n\n```json:metadata\n{\"files\": [\"docs/BOOT_TARGETS.md\", \"CLAUDE.md\", \"docs/ARCHITECTURE.md\"], \"verifyCommand\": \"for t in tests/host/*.sh; do bash \\\"$t\\\"; done && make -C tests/host test\", \"acceptanceCriteria\": [\"all hardware checklist items with captured output\", \"docs synced\", \"PR green\"], \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"hardware verification before merge\", \"modelTier\": \"standard\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-09-05T11:16:45.279Z"
+}

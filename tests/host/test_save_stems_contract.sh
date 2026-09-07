@@ -146,6 +146,19 @@ check(moveIdx === slots,
             " — save_stems must sit AFTER it: appending is free, inserting moves " +
             "every field behind it and schwung-manager reads stay_in_shadow at a " +
             "raw offset");
+        /* "Appended" means nothing was put in FRONT of it. It does not mean it
+         * stays last forever: the next register appended after it (the first
+         * were claim_cc_bits and then pad_observe) is exactly the discipline
+         * this pins, and a last-field check would fail on every correct append
+         * from here on. So
+         * the invariant is its PREDECESSOR -- the field it was appended after --
+         * which an insertion anywhere before it would change. */
+        const at = fields.indexOf("save_stems");
+        check(at > 0 && fields[at - 1] === "metronome_beats_per_bar",
+            "save_stems no longer directly follows metronome_beats_per_bar (preceded by " +
+            JSON.stringify(fields[at - 1]) + ") — a field was INSERTED before it, which " +
+            "moves every field behind it and schwung-manager reads one at a raw offset; " +
+            "new registers are APPENDED after the last field");
     }
 }
 

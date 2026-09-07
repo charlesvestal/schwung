@@ -20,6 +20,7 @@
  */
 
 import { hasChildren, childCount, childIndexParam, childName } from "./child_key.mjs";
+import { MAX_DECLARED_EXTRA_KEYS } from "./viz.mjs";
 
 /**
  * Every param key the hierarchy lists ANYWHERE — so the planner can ask
@@ -271,14 +272,44 @@ function levelNameToPrefix(name) {
 /* FNV-1a over the declared contract. The page set is rebuilt when this changes:
  * module swap, an is_loading→ready re-fetch that rewrites the tree (Virus,
  * minijv expansions), or a mode change. */
+/*
+ * The last (parts -> fingerprint), compared by IDENTITY.
+ *
+ * Hashing means stringifying the whole contract and walking every character of
+ * it, and planPages runs on every detent of a gating knob (replanIfCondition).
+ * On those re-plans the contract has not changed at all -- only a VALUE has --
+ * and `hierarchy` and `chainParams` are the very objects the previous plan
+ * used, because the controller assigns them from parse() on a read and never
+ * mutates them in place (page_controller.mjs `load`). So the same objects mean
+ * the same bytes, and re-hashing them is pure waste.
+ *
+ * It is waste that scales with the contract: a 94 KB one costs ~0.78 ms in
+ * node, and the device runs QuickJS on an A72, where a 94,000-iteration
+ * charCodeAt loop is far slower. Turning a filter-type knob through its values
+ * paid that per detent, and the screen stalled.
+ *
+ * Identity, not equality: a re-read parses new objects, so a contract that
+ * really did change (osirus republishing rom_index's options once its ROM is
+ * known) arrives as a different object and is hashed.
+ */
+let fingerprintMemo = null;
+
 function fingerprintOf(parts) {
+    if (fingerprintMemo && fingerprintMemo.parts.length === parts.length &&
+        fingerprintMemo.parts.every((part, i) => part === parts[i])) {
+        return fingerprintMemo.value;
+    }
     let h = 0x811c9dc5;
     const s = JSON.stringify(parts);
     for (let i = 0; i < s.length; i++) {
         h ^= s.charCodeAt(i);
         h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
     }
-    return h.toString(16);
+    const value = h.toString(16);
+    /* One entry, holding one contract's objects alive -- the same ones the
+     * controller is already holding in `s.hierarchy` / `s.chainParams`. */
+    fingerprintMemo = { parts: parts.slice(), value };
+    return value;
 }
 
 function chunk(arr, size) {
@@ -426,6 +457,19 @@ export function levelShortNames(lvl) {
  * rather than by diving, and the eight encoders do there exactly what they do
  * on the level's grid.
  */
+function declaredCanvasExtraKeys(p) {
+    const raw = Array.isArray(p.extra_keys) ? p.extra_keys
+              : (Array.isArray(p.extraKeys) ? p.extraKeys : null);
+    if (!raw) return [];
+    const out = [];
+    for (const k of raw) {
+        if (typeof k !== "string" || !k) continue;
+        if (out.indexOf(k) < 0) out.push(k);
+        if (out.length >= MAX_DECLARED_EXTRA_KEYS) break;
+    }
+    return out;
+}
+
 function canvasPageParams(chainParams) {
     const out = new Map();
     for (const p of chainParams || []) {
@@ -440,6 +484,16 @@ function canvasPageParams(chainParams) {
             script: typeof p.canvas_script === "string" ? p.canvas_script : "canvas.js",
             overlay: typeof p.canvas_overlay === "string" ? p.canvas_overlay
                    : (typeof p.overlay === "string" ? p.overlay : ""),
+            /* Read-only values the picture needs but which must not become
+             * visible/turnable cells on the level grid. They join the normal
+             * staggered read rotation, never the draw path.
+             *
+             * Capped at the SAME four a widget's `viz.extra_keys` gets, and for
+             * the same reason: one read per stop, so an uncapped page spends
+             * its whole budget here and starves the knobs it is drawn beside.
+             * Measured on the uncapped version -- twenty keys took a
+             * three-knob page from a knob refresh every 4 ticks to every 24. */
+            extraKeys: declaredCanvasExtraKeys(p),
             name: p.name || p.short_name || p.key,
         });
     }
@@ -762,9 +816,21 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
         /* The walk root's grid page is always "Main", even when the level
          * declares a label. 16 modules would otherwise open on a page called
          * "Patch" / "Console" / "BOOM"; one consistent name for "where you land"
-         * beats each module's own word for it. */
+         * beats each module's own word for it.
+         *
+         * `subtitle` is the OPT-IN exception: "Main - <subtitle>". It exists
+         * for a module that splits one level per page so the header can say
+         * which page you are on -- Hinge has three ADSR rows (OP2's, OP1's and
+         * the filter's) that draw the same graphic under the same four labels,
+         * so the header is the only thing distinguishing them, and its landing
+         * page had nothing to say. Deliberately NOT `name`: reading the level's
+         * own label here would rename the landing page of all 16 modules above,
+         * which is the thing this rule exists to prevent. A module must ask. */
         const isRoot = levelKey === rootKey;
-        const base = isRoot ? "Main" : nameOf(levelKey, lvl);
+        const subtitle = isRoot && lvl && typeof lvl.subtitle === "string"
+            ? lvl.subtitle.trim() : "";
+        const base = isRoot ? (subtitle ? `Main - ${subtitle}` : "Main")
+                            : nameOf(levelKey, lvl);
         const title = prefix ? `${prefix}/${base}` : base;
 
         /* Preset browser first — decided 2026-07-26. A level is routinely both
@@ -807,7 +873,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 nameParam: lvl.name_param || "preset_name",
                 ...(browserCanvas ? {
                     canvas: { key: browserCanvas.key, script: browserCanvas.script,
-                              overlay: browserCanvas.overlay },
+                              overlay: browserCanvas.overlay,
+                              extraKeys: browserCanvas.extraKeys },
                     keys: knobKeys(lvl).filter(
                         (k) => !isHiddenParam(lvl, k, isVisible) && !selectorKeys.has(k))
                         .slice(0, perPage === Infinity ? undefined : perPage),
@@ -1068,7 +1135,8 @@ export function planPages({ hierarchy, chainParams, mode, visible, unresolved,
                 authored: true,
                 /* What makes it custom. render_page hands the module this and
                  * the body band; everything else about the page is ordinary. */
-                canvas: { key: cp.key, script: cp.script, overlay: cp.overlay },
+                canvas: { key: cp.key, script: cp.script, overlay: cp.overlay,
+                          extraKeys: cp.extraKeys },
             });
         }
 
