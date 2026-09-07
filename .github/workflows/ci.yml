@@ -84,7 +84,6 @@ jobs:
             build/modules/audio_fx/freeverb/freeverb.so \
             build/modules/midi_fx/chord/dsp.so \
             build/modules/midi_fx/arp/dsp.so \
-            build/modules/midi_fx/velocity_scale/dsp.so \
             build/modules/sound_generators/linein/dsp.so \
             build/modules/tools/wav-player/dsp.so \
             build/bin/display_ctl \
@@ -94,6 +93,23 @@ jobs:
             test -f "$f" || { echo "MISSING"; exit 1; }
             file "$f" | grep -q 'aarch64' || { echo "WRONG ARCH"; file "$f"; exit 1; }
             echo "ok"
+          done
+          # AND WHAT MUST NOT SHIP. The list above pins what a device needs;
+          # this pins the scrub, which is the half that rots quietly. A gated
+          # BUILD is not a gated MODULE -- the generic module loop copies every
+          # module.json it finds, and gesture-test shipped that way for a while:
+          # a module.json with no .so beside it, offered in the FX picker, and
+          # restored on every boot as a slot that cannot load.
+          for f in \
+            build/modules/midi_fx/velocity_scale \
+            build/modules/sound_generators/voice-poc \
+            build/modules/midi_fx/sysex_probe \
+            build/modules/audio_fx/widget-test \
+            build/modules/audio_fx/gesture-test \
+            build/modules/tools/sysex-test ; do
+            printf '%-48s ' "$f"
+            test -e "$f" && { echo "SHIPPED (must not be)"; exit 1; }
+            echo "absent ok"
           done
           # link-subscriber is the SOLE reception path for Move->Schwung
           # audio, and this check used to be a warning:
