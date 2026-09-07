@@ -119,6 +119,65 @@ int main(void) {
     CHECK(NEAR(mod_src_slew(1.0f, 0.0f, 0.5f), 0.5f), "slew moves down by the same fraction");
     CHECK(NEAR(mod_src_slew(0.0f, 1.0f, 0.5f), 0.5f), "slew moves up by the same fraction");
 
+    /* ---- the LATCH, run rather than grepped ---------------------------- */
+    {
+        mod_input_t l;
+        mod_input_reset(&l);
+
+        const uint8_t note_on[3]    = { 0x92, 60, 100 };
+        const uint8_t note_on_v0[3] = { 0x92, 62, 0 };
+        const uint8_t note_off[3]   = { 0x82, 60, 64 };
+        const uint8_t chan_at[2]    = { 0xD3, 90 };
+        const uint8_t poly_at[3]    = { 0xA3, 60, 77 };
+        const uint8_t cc74[3]       = { 0xB1, 74, 120 };
+        const uint8_t cc_hi[3]      = { 0xB1, 0xFF, 55 };
+
+        mod_input_record(&l, note_on, 3);
+        CHECK(l.velocity == 100 && l.note == 60, "a note-on latches velocity and note");
+
+        /* A note-on with velocity 0 IS a note off (running status). Latching it
+         * would slam every velocity route to the bottom on each release. */
+        mod_input_record(&l, note_on_v0, 3);
+        CHECK(l.velocity == 100 && l.note == 60,
+              "a velocity-0 note-on latches nothing -- it is a note OFF");
+
+        /* Release velocity is a different control; a real note-off must not
+         * touch either field. */
+        mod_input_record(&l, note_off, 3);
+        CHECK(l.velocity == 100 && l.note == 60, "a note-off latches nothing");
+
+        /* Channel aftertouch has ONE data byte. Reading msg[2] here is the
+         * classic error and would latch whatever is stale in the packet. */
+        mod_input_record(&l, chan_at, 2);
+        CHECK(l.pressure == 90, "channel aftertouch reads msg[1], its only data byte");
+
+        mod_input_record(&l, poly_at, 3);
+        CHECK(l.pressure == 77, "poly aftertouch latches its value byte");
+
+        mod_input_record(&l, cc74, 3);
+        CHECK(l.cc[74] == 120, "a CC lands under its own controller number");
+        CHECK(l.cc[73] == MOD_SRC_CC_REST && l.cc[75] == MOD_SRC_CC_REST,
+              "a CC does not spill onto its neighbours");
+
+        /* cc[] is the LAST member of mod_input_t, so an unmasked index writes
+         * past the struct. 0xFF & 0x7F is 127, the last valid slot. */
+        mod_input_record(&l, cc_hi, 3);
+        CHECK(l.cc[127] == 55, "a high CC index is masked to 0..127, not written past");
+
+        /* Degenerate inputs are no-ops, not wild writes. */
+        const uint8_t before_v = l.velocity;
+        mod_input_record(&l, note_on, 1);
+        mod_input_record(&l, NULL, 3);
+        mod_input_record(NULL, note_on, 3);
+        CHECK(l.velocity == before_v, "a short message, a NULL msg and a NULL input are no-ops");
+
+        /* An unhandled status (pitch bend) must not be mistaken for anything. */
+        const uint8_t bend[3] = { 0xE0, 0, 96 };
+        mod_input_record(&l, bend, 3);
+        CHECK(l.velocity == before_v && l.pressure == 77,
+              "an unhandled status latches nothing");
+    }
+
     /* ---- the LFO predicate -------------------------------------------- */
     CHECK(mod_src_is_lfo(MOD_SRC_LFO) == 1, "LFO is flagged as the LFO type");
     CHECK(mod_src_is_lfo(MOD_SRC_VELOCITY) == 0, "velocity is not the LFO type");
