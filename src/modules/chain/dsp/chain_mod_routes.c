@@ -217,14 +217,38 @@ int chain_mod_route_get_param(chain_instance_t *inst, const char *key,
         n = snprintf(buf, buf_len, "%s", lfo->param);
     else if (strcmp(subkey, "retrigger") == 0)
         n = snprintf(buf, buf_len, "%d", lfo->retrigger);
-    /* The wire NAME, not the index — see the set side. A stored index would
-     * mean a different source the moment mod_src_names is reordered. */
+    /*
+     * THE INDEX, not the name — and the pairing matches shape / shape_name
+     * directly above, for exactly the same reason.
+     *
+     * An `enum` cell on the knob grid reads its own param to place the cursor,
+     * so it must be given a number; served the word "velocity" it cannot find
+     * the option and the cell is unusable. `visible_if` compares against it
+     * too, so the LFO-only cells gate on src == "0".
+     *
+     * The wire NAME is a separate key. The save document formats it with
+     * mod_src_name() in C rather than reading it back through here, so this
+     * spelling exists for the UI and for diagnostics.
+     */
     else if (strcmp(subkey, "src") == 0)
-        n = snprintf(buf, buf_len, "%s", mod_src_name(lfo->src));
-    /* The INDEX, for the knob grid's enum cell, which counts rather than reads
-     * words. Both spellings exist because both callers are right. */
-    else if (strcmp(subkey, "src_index") == 0)
         n = snprintf(buf, buf_len, "%d", lfo->src);
+    else if (strcmp(subkey, "src_name") == 0)
+        n = snprintf(buf, buf_len, "%s", mod_src_name(lfo->src));
+    /*
+     * WHICH RATE CELL, IF ANY — 0 free, 1 synced, 2 neither.
+     *
+     * The grid needs "show rate_hz when this is a FREE-RUNNING LFO", which is
+     * two facts (src and sync), and the visible_if evaluator takes exactly one
+     * condition. Rather than widen that module-facing contract for one screen,
+     * the DSP answers the question the screen is actually asking.
+     *
+     * It also costs ONE condition key where a compound would have cost two, and
+     * the planner re-reads every condition key on each re-plan — on a screen
+     * where an IPC read is ~2.8 ms against a 1.68 ms full page render.
+     */
+    else if (strcmp(subkey, "rate_mode") == 0)
+        n = snprintf(buf, buf_len, "%d",
+                     !mod_src_is_lfo(lfo->src) ? 2 : (lfo->sync ? 1 : 0));
     else if (strcmp(subkey, "cc_num") == 0)
         n = snprintf(buf, buf_len, "%d", lfo->cc_num);
     else if (strcmp(subkey, "slew") == 0)
