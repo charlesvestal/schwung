@@ -59,6 +59,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_bus_mix \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_lfo_process_midi_count \
+	$(BUILD_DIR)/test_mod_src \
 	$(BUILD_DIR)/test_send_fx_key \
 	$(BUILD_DIR)/test_fx_load_gate \
 	$(BUILD_DIR)/test_split_voices_parse \
@@ -204,6 +205,9 @@ $(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../s
 # against either implementation. It discriminates by passing an array shorter
 # than the macro instead -- see the file's preamble.
 $(BUILD_DIR)/test_lfo_process_midi_count: test_lfo_process_midi_count.c ../../src/host/lfo_common.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
+
+$(BUILD_DIR)/test_mod_src: test_mod_src.c ../../src/host/mod_src.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/split_voices_parse.h | $(BUILD_DIR)
