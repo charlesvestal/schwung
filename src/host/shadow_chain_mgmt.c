@@ -70,6 +70,9 @@ int (*shadow_chain_fx_requires_continuous)(void *instance) = NULL;
 void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
                                  int n_sends, int frames,
                                  int slot_volume_0_127) = NULL;
+void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
+                                     int n_sends, const int16_t *post_fx,
+                                     int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
 host_api_v1_t shadow_host_api;
 
@@ -1825,6 +1828,9 @@ int shadow_inprocess_load_chain(void) {
      * shim null-checks it and the sends simply receive nothing. */
     shadow_chain_drain_sends = (void (*)(void *, int16_t *const *, int, int, int))
         dlsym(shadow_dsp_handle, "chain_drain_sends");
+    shadow_chain_drain_main_send =
+        (void (*)(void *, int16_t *const *, int, const int16_t *, int, int))
+        dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
 
@@ -1835,8 +1841,9 @@ int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous,
             (void*)shadow_chain_take_midi_tick_wake);
-    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p",
-            (void*)shadow_chain_drain_sends);
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
+            (void*)shadow_chain_drain_sends,
+            (void*)shadow_chain_drain_main_send);
 
     /* Set pages: read persisted page on boot */
     set_page_current = set_page_read_persisted();

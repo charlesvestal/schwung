@@ -308,8 +308,8 @@ all three in step.
 The aliasing above is what makes a bus free, and it is also what makes a bus
 **coarse**. Two voices in one bus are handed one pointer and are already summed
 by the time the chain sees the buffer, so they cannot be scaled differently: a
-slot's send levels are `SLOT_BUSES × BUS_MIX_SENDS` = **8**, with every voice
-belonging to exactly one bus. The reference consumer, `schwung-dr32`, carries
+slot's per-bus send levels are `SLOT_BUSES × BUS_MIX_SENDS` = **16**, with every
+voice belonging to exactly one bus. The reference consumer, `schwung-dr32`, carries
 **64** — a `send_db[0]`/`send_db[1]` on each of 32 pads. It could not drop its
 internal sends and adopt the platform feature without losing capability, which
 is the test of whether the feature is sufficient.
@@ -322,7 +322,43 @@ meaning**:
 | **per-BUS send** (unchanged) | the bus buffer, **post-insert**, post-fader | after the bus's chain runs |
 | **per-VOICE send** (new) | the voice's **own** audio, **pre-insert**, post-fader | straight out of `render_split` |
 
-The two **sum** into the same `send_accum[]`. A voice with all-zero per-voice
+### The slot send: the drain point after the slot FX
+
+A bus send and a voice send both need the module to publish `split_voices`, and
+one module in the fleet does. **The slot send needs nothing of the module**: the
+whole slot feeds Send A and Send B, which is what makes the global send buses
+reachable on an ordinary synth at all — and is the classic reason a console has
+them, one reverb shared by four slots instead of four instances inside them.
+
+It could not exist while `chain_drain_sends` was the only tap. That runs
+immediately after `render_block`, and under the same-frame-FX mode the device
+always runs, `render_block` returns the **raw synth** (the `external_fx_mode`
+early return) while the slot's own 8 FX run later, in the shim. There is no
+post-FX buffer at that point, so a slot send taken there would have been
+pre-FX while every bus send was post-insert — two meanings behind one control.
+It shipped once as exactly that and was inert; the level was written, saved,
+restored and read by nobody.
+
+`chain_drain_main_send` is the second tap, and the shim calls it from the **mix
+pass** instead, at the three sites where a slot's finished audio exists:
+`shadow_slot_fx_deferred[s]` on the normal path, the inline legacy branch, and
+`fx_buf` under `rebuild_from_la` (where the slot is Move's track plus the synth
+through the same chain — inseparable by construction, the same reason a stem is
+a slot). The audio is passed IN, because the chain does not hold it.
+
+The timing works because `send_accum[]` is **cleared in the render pass**, which
+runs post-ioctl, *after* the mix pass: clear → per-bus and per-voice drains →
+ioctl → the next mix pass's slot drains → the send-bus loop consumes. Both taps
+describe the same block and neither is consumed twice.
+
+Post-fader like every other send here — the shim passes
+`shadow_effective_volume(s) * fade.gain`, which is 0 for a muted or soloed-out
+slot. The level is `buses:main_send<N>`, the key `chain_bus.c` already read and
+persisted; it is edited in **Slot Settings** (a `Sends` page on the knob grid,
+two rows on both settings lists), never on the bus Send Mixer, because a slot
+with no buses never sees that screen.
+
+The three **sum** into the same `send_accum[]`. A voice with all-zero per-voice
 sends **costs nothing and still aliases** into its bus buffer exactly as before
 — you pay only for what you use.
 

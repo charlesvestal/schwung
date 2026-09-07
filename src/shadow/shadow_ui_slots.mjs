@@ -35,6 +35,18 @@ export const SLOT_SETTINGS = [
      * publishes no `split_voices` — see slotSettingsItems. */
     { key: "buses", label: "Buses", type: "action" },
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 4, step: 0.05 },
+    /* THE SLOT SEND — the whole slot into global Send A / Send B, needing no
+     * bus and therefore nothing at all from the module. A per-bus send is only
+     * reachable through `split_voices`, which almost no module publishes, so
+     * without these two rows the send buses have no feed on an ordinary synth.
+     * Post-fader and post-slot-FX; drained by chain_drain_main_send.
+     *
+     * Step 4 rather than 1: this is a 0..127 level on a JOG, and 127 detents to
+     * cross it is not an edit. Both ends stay reachable — the adjust clamps, so
+     * 124 + 4 lands on 127. The knob grid keeps step 1, which is what a knob is
+     * for. */
+    { key: "buses:main_send1", label: "Send A", type: "int", min: 0, max: 127, step: 4 },
+    { key: "buses:main_send2", label: "Send B", type: "int", min: 0, max: 127, step: 4 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },

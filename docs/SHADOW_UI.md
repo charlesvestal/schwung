@@ -1171,14 +1171,17 @@ FX is: every action on them is slot-chain shaped.
 `tests/host/test_bus_insert_editable.sh` pins each leg, because not one of them
 is a pixel.
 
-**The send mixer is ONE PAGE PER SEND PER KIND.** The `Sends` row on the bus
-list opens a synthesised contract (`busSendGridHierarchy` in `bus_model.mjs`)
+**The send mixer is ONE PAGE PER SEND PER KIND.** The `Send Mixer` row on the
+bus list — named that, not `Sends`, because under a menu called *Buses* the
+shorter word reads as *this slot's* sends and means *a mixer for the buses'*
+sends, an ambiguity that got worse the moment the slot acquired sends of its own
+— opens a synthesised contract (`busSendGridHierarchy` in `bus_model.mjs`)
 whose pages carry every level on an encoder; the per-bus rows on that bus's own
 menu stay, because a level you have to click into, jog and click out of is not a
 level you can RIDE. **Send A** and **Send B** are the buses; **Voices A** and
 **Voices B** are the per-voice sends (see `docs/CHAIN.md`, "Per-voice sends"),
 and they are separate levels rather than a merged page for two reasons: the
-counts are unlike — at most `SLOT_BUSES` = 4 buses against `SPLIT_VOICES_MAX` =
+counts are unlike — at most `SLOT_BUSES` = 8 buses against `SPLIT_VOICES_MAX` =
 32 voices — and a row of eight cells that silently changed meaning halfway along
 (post-insert to pre-insert) would be a worse screen than two honest ones. **A
 level with no keys is omitted, not emitted empty**, so a module that cannot
@@ -1261,7 +1264,10 @@ silently dropped an entry would drop it from both sides and pass.
 id-keyed array (`[{"id":"chh","sends":[12,90]}, ...]`), stored once for the slot
 rather than inside `bus_config_t` — a voice's send is a property of the VOICE,
 not of a bus, and every byte added to `bus_config_t` is multiplied by
-`SLOT_BUSES`, then by `MAX_PATCHES` on the heap, then by four slots. **Zero
+`SLOT_BUSES`, then by `MAX_PATCHES` on the heap, then by four slots — which at
+`SLOT_BUSES` = 8 is 9844 bytes of `bus_config_t` per bus, ~315 KB of heap per
+slot and ~9.6 KB on the SPI callback's stack (`v2_set_param`'s `load_file` route
+holds a `patch_info_t` local: 232 KB at 8 buses, 194 KB at 4). **Zero
 entries and orphans are carried verbatim**: a zero is what the user set the
 fader to (drop it and the value springs back on the next load), and an id that
 does not resolve right now is an orphan the chain host retains and counts, not a
@@ -1295,10 +1301,18 @@ instead, each hosted **exactly like Master FX** — the same `master_fx_slot_t`
 array, the same "always process, then restore the dry on a bypassed position"
 discipline — so there is one piece of chain machinery in the shim, not three.
 
+**THREE TAPS FEED THEM, and only one of them needs anything of the module.** A
+per-bus send and a per-voice send both require `split_voices`; the **slot send**
+does not, so on an ordinary synth it is what feeds these buses at all. It is
+drained by `chain_drain_main_send` from the shim's MIX pass — not the render
+pass, where the slot's post-FX audio does not yet exist — and edited in Slot
+Settings, never on the bus Send Mixer, which a slot with no buses never sees.
+See `docs/CHAIN.md`, "The slot send".
+
 **Post-insert and post-fader.** A slot's per-bus buffers already carry their own
-insert chains when `chain_drain_sends` reads them, and the slot's effective
-volume is passed in, so pulling a track down pulls it out of the sends the way a
-console does. Mute and solo live inside `shadow_effective_volume`, so a muted
+insert chains when `chain_drain_sends` reads them, the slot send is taken after
+the slot's own 8 FX, and the slot's effective volume is passed in to both, so
+pulling a track down pulls it out of the sends the way a console does. Mute and solo live inside `shadow_effective_volume`, so a muted
 slot feeds the sends nothing, and a bypassed synth clears `bus_rendered_mask` so
 its voices cannot reach a send through the 1-in-172 probe frame. The level is
 quantised to 0..127 and applied **per block**, so it does not follow the main

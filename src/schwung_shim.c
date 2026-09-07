@@ -2365,6 +2365,44 @@ static inline void shadow_stem_dispatch(void (*sink)(const int16_t *const *, int
     sink(ptrs, SAMPLER_STEM_COUNT);
 }
 
+/*
+ * THE SLOT SEND — the whole slot into the global send buses, no bus required.
+ *
+ * Taken here in the MIX pass and not beside chain_drain_sends in the render
+ * pass, because the signal only exists here: under same-frame FX the render
+ * returns the raw synth (chain_host.c's external_fx_mode early return) and the
+ * slot's own 8 FX run in this pass, and under rebuild_from_la the slot is
+ * composited from Move's track before those FX run at all. `post_fx` is
+ * whichever of those two buffers this call site is holding — the same audio
+ * that is about to be added to the mix.
+ *
+ * The timing works out because send_accum is CLEARED in the render pass, which
+ * runs post-ioctl, after this one: clear -> per-bus drains -> ioctl -> this
+ * pass's slot drains -> the send-bus loop consumes. So both taps describe the
+ * same block of audio and neither is consumed twice.
+ *
+ * POST-FADER: the level passed is the slot's effective volume, which is 0 for
+ * a muted or soloed-out slot, so mute and solo silence the slot send exactly
+ * as they silence a bus send. Quantised to 0..127 and applied per block, like
+ * the per-bus drain — it does not follow the per-sample fade ramp.
+ *
+ * SPI callback: no allocation, no I/O, no locks.
+ */
+static void shim_drain_slot_send(int s, const int16_t *post_fx) {
+    if (!shadow_chain_drain_main_send || !post_fx) return;
+    if (s < 0 || s >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_chain_slots[s].instance) return;
+    int16_t *send_targets[SEND_BUSES];
+    for (int sb = 0; sb < SEND_BUSES; sb++) send_targets[sb] = send_accum[sb];
+    float vol = shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain;
+    int vol127 = (int)lroundf(vol * (float)BUS_MIX_SEND_LEVEL_MAX);
+    if (vol127 < 0) vol127 = 0;
+    if (vol127 > BUS_MIX_SEND_LEVEL_MAX) vol127 = BUS_MIX_SEND_LEVEL_MAX;
+    shadow_chain_drain_main_send(shadow_chain_slots[s].instance, send_targets,
+                                 SEND_BUSES, post_fx, MOVE_FRAMES_PER_BLOCK,
+                                 vol127);
+}
+
 static void shadow_inprocess_mix_from_buffer(void) {
     if (!shadow_inprocess_ready || !global_mmap_addr) return;
 
@@ -2694,6 +2732,12 @@ static void shadow_inprocess_mix_from_buffer(void) {
                     }
                 }
 
+                /* Slot send, from the slot as the master bus is about to
+                 * receive it: Move's track and the synth, through the slot's
+                 * own chain. Under Move->Schwung those two are inseparable by
+                 * construction — the same reason a stem is a slot. */
+                shim_drain_slot_send(s, fx_buf);
+
                 /* Track FX output silence for phase 2 idle */
                 int fx_silent = 1;
                 for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
@@ -2788,6 +2832,10 @@ skip_la_rebuild:
 
                 int16_t *fx_buf = shadow_slot_fx_deferred[s];
 
+                /* Slot send, from the deferred FX output — the slot only, with
+                 * none of Move's audio in it on this path. */
+                shim_drain_slot_send(s, fx_buf);
+
                 /* Stem tap. Outside Move->Schwung this is the SLOT ONLY —
                  * Move's own audio never enters a slot on this path, and is
                  * captured whole as the Move stem instead. */
@@ -2823,6 +2871,10 @@ skip_la_rebuild:
                 memcpy(fx_buf, shadow_slot_deferred[s], sizeof(fx_buf));
                 shadow_chain_process_fx(shadow_chain_slots[s].instance,
                                         fx_buf, MOVE_FRAMES_PER_BLOCK);
+
+                /* Slot send. Same tap as the deferred path above; this is the
+                 * legacy branch that runs the FX inline. */
+                shim_drain_slot_send(s, fx_buf);
 
                 shadow_stem_store(s, fx_buf,
                                   shadow_effective_volume(s) * shadow_chain_slots[s].fade.gain);

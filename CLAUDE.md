@@ -766,23 +766,42 @@ A `Buses` action row opens the slot's bus list; a bus's own menu opens its
   Shift+Click swaps. Read `chain_params` and the entry gate's hierarchy through
   the BUS target: `slotChainTarget` answers null for "bus1:fx2", and an empty
   `chain_params` is what invents a `float 0..1` knob for every parameter.
-- **The send mixer is ONE PAGE PER SEND PER KIND** (the `Sends` row on the bus
-  list): Send A/B are the buses, Voices A/B the per-voice sends, and a level
+- **The send mixer is ONE PAGE PER SEND PER KIND** (the `Send Mixer` row on the
+  bus list — `Sends` under a menu called *Buses* read as "this slot's sends" and
+  meant "a mixer for the buses' sends"): Send A/B are the buses, Voices A/B the per-voice sends, and a level
   with no keys is OMITTED rather than emitted empty. Its ROOT level carries no
   knobs on purpose — the planner names a walk root's page "Main" whatever it
   declares, and "Main / Send B" is not a mixer. **`paginate` is a whole-CONTRACT
   switch, not per-level**, so the pin to one page is dropped exactly when there
   are voice faders — 32 cells against 8 knobs leaves 24 undrawable, worse than
-  the split the pin prevents. The `Sends` door opens for a bus OR a voice; on a
+  the split the pin prevents. The `Send Mixer` door opens for a bus OR a voice; on a
   bus alone it was unreachable for the 32-pad rack the feature is for. A voice
   key is **`buses:voice<V>:send<M>`** — the prefix is load-bearing, since
   `bus<N>:` routes to a bus and a bare `voice7:send1` reaches the synth
   plugin.
-- **There is no MAIN row: the slot's own two sends are WIRED AND INERT.**
-  `main_send_level` is written, serialized and patch-applied, and
-  `chain_drain_sends` reads it nowhere — Main's post-insert signal does not
-  exist at drain time, so sending it there would be PRE-FX while every bus is
-  POST-insert. The knob is off the screen until a second drain point exists.
+- **The SLOT SEND is the only send that needs nothing of the module, and it has
+  its own drain point.** A bus send and a voice send both require
+  `split_voices`, which one module in the fleet publishes, so without this the
+  two global send buses have no feed on an ordinary synth. It could not exist
+  while `chain_drain_sends` was the only tap: that runs right after
+  `render_block`, which under same-frame FX returns the RAW SYNTH (the
+  `external_fx_mode` early return) while the slot's 8 FX run later in the shim —
+  so it shipped once as a knob that read back its own value and moved no audio.
+  `chain_drain_main_send` is taken in the shim's MIX pass instead, at the three
+  sites where the slot's finished audio exists, and `send_accum[]` is cleared in
+  the RENDER pass (which runs after the mix), so both taps describe one block
+  and neither is consumed twice. Post-fader via `shadow_effective_volume`, so
+  mute and solo silence it. Key `buses:main_send<N>`; edited in **Slot
+  Settings** (a `Sends` grid page plus a row on both lists), never on the bus
+  Send Mixer, which a slot with no buses never sees.
+- **`SLOT_BUSES` is 8, and raising it is NOT free.** Everything takes the cap as
+  a parameter (`bus_route.h`, `bus_mix.h`), but `bus_config_t` is 9844 bytes and
+  sits `SLOT_BUSES` deep in `patch_info_t`, which is a STACK LOCAL on the SPI
+  callback (`v2_set_param`'s `load_file`) and `MAX_PATCHES` deep in
+  `chain_instance_t`. 4 → 8 took that frame from 194 KB to 232 KB and the
+  instance from 7.19 MB to 8.44 MB. The JS copy in `bus_model.mjs` must move
+  with it; `test_bus_model.sh` fails on drift and `test_bus_route.sh` reads the
+  cap out of the header.
 - **The bus file format had a READER AND NO WRITER, and every load WIPED it.**
   `patch_info_t` is zeroed, so a document with no `"buses"` reached
   `chain_bus_apply_patch` as four absent buses and it reset all four —

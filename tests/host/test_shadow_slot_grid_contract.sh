@@ -68,11 +68,17 @@ function makeSlot(over) {
   const grids = pages.filter((p) => p.kind === "knobs");
   const menus = pages.filter((p) => p.kind === "menu");
   /*
-   * Main, LFO 1, LFO 2, Actions. Each LFO is exactly ONE page: nine params
-   * would chunk to 8 + 1 and put an orphan page holding a single control
+   * Main, Sends, LFO 1, LFO 2, Actions. Each LFO is exactly ONE page: nine
+   * params would chunk to 8 + 1 and put an orphan page holding a single control
    * between LFO 1 and LFO 2.
+   *
+   * SENDS IS A LEVEL, NOT AN OVERFLOW. The two slot sends are the ninth and
+   * tenth param a slot has, and left on the values level they would chunk to
+   * 8 + 2 with the second page titled "Main - 2" -- a name that says nothing,
+   * for the same one flip. The assertion below is therefore on the NAME, and
+   * seeing "Main - 2" here means somebody moved them back onto root.
    */
-  if (grids.length !== 3) fail("expected 3 grid pages (Main + two LFOs), got " + grids.length);
+  if (grids.length !== 4) fail("expected 4 grid pages (Main + Sends + two LFOs), got " + grids.length);
   if (menus.length !== 1) fail("expected one actions menu page, got " + menus.length);
   if (pages[pages.length - 1].kind !== "menu") {
     fail("Actions must come LAST — a level emits its menu before any level it " +
@@ -80,14 +86,26 @@ function makeSlot(over) {
          pages.map((p) => p.name).join(" / "));
   }
   const names = pages.map((p) => p.name);
-  const order = ["Main", "LFO 1", "LFO 2", "Actions"];
+  const order = ["Main", "Sends", "LFO 1", "LFO 2", "Actions"];
   if (names.join("|") !== order.join("|")) {
     fail("page order should be " + order.join(" / ") + ", got " + names.join(" / "));
   }
+  /* Every page but Sends is a full eight; Sends is the pair it declares. A
+     count derived from the declaration rather than a literal, so adding a third
+     send moves this without editing it. */
   for (const g of grids) {
-    if ((g.keys || []).length !== 8) {
-      fail("page " + JSON.stringify(g.name) + " should hold 8 knobs, got " + (g.keys || []).length);
+    const want = g.name === "Sends" ? SG.SLOT_SEND_PARAMS.length : 8;
+    if ((g.keys || []).length !== want) {
+      fail("page " + JSON.stringify(g.name) + " should hold " + want +
+           " knobs, got " + (g.keys || []).length);
     }
+  }
+  {
+    const sends = grids.find((g) => g.name === "Sends");
+    const want = SG.SLOT_SEND_PARAMS.map((p) => p.key);
+    if ((sends.keys || []).join("|") !== want.join("|"))
+      fail("the Sends page should hold " + JSON.stringify(want) +
+           ", got " + JSON.stringify(sends.keys));
   }
 
   const keys = grids[0].keys || [];
@@ -146,6 +164,17 @@ function makeSlot(over) {
   if (store["midi_fx_pre_mode"] !== "1") fail("midi_fx_pre_mode must write the BARE key, got " + JSON.stringify(store));
   if ("slot:midi_fx_pre_mode" in store) fail("midi_fx_pre_mode must not write a slot: key");
   if (io.getParam("slot:midi_fx_pre_mode") !== "1") fail("midi_fx_pre_mode did not read back");
+  /* chain-routed. A slot send is stored by the CHAIN, under the slot-level
+     "buses:" route, and neither a bare nor a "slot:" spelling reaches it. */
+  io.setParam("slot:send_a", "64");
+  if (store["buses:main_send1"] !== "64")
+    fail("send_a must write buses:main_send1, got " + JSON.stringify(store));
+  if ("slot:send_a" in store || "send_a" in store)
+    fail("send_a must not write a slot: or bare key");
+  if (io.getParam("slot:send_a") !== "64") fail("send_a did not read back");
+  io.setParam("slot:send_b", "9");
+  if (store["buses:main_send2"] !== "9")
+    fail("send_b must write buses:main_send2, got " + JSON.stringify(store));
 }
 
 /* ---- 4. Fwd Ch offset: the negative half must be reachable -------------- */
@@ -396,6 +425,13 @@ function makeSlot(over) {
     ["receive_channel", "slot:receive_channel"],
     ["forward_channel", "slot:forward_channel"],
     ["midi_fx_pre_mode", "midi_fx_pre_mode"],
+    /* THE SLOT SENDS ARE CHAIN KEYS, not slot keys. "buses:" is the chain
+       host slot-level route; a bare or "slot:"-prefixed spelling is handed
+       somewhere else entirely and the level silently edits nothing. One-indexed
+       on the wire against A/B on the screen, which is the other half of what
+       this pins. */
+    ["send_a", "buses:main_send1"],
+    ["send_b", "buses:main_send2"],
     ["mpe_mode", null],
   ];
   for (const [gridKey, want] of cases) {
@@ -408,7 +444,7 @@ function makeSlot(over) {
   }
   /* Every declared value param must have an entry here, or it silently reads
    * and writes the wrong place the day it is added. */
-  for (const p of SG.SLOT_GRID_PARAMS) {
+  for (const p of SG.SLOT_GRID_PARAMS.concat(SG.SLOT_SEND_PARAMS)) {
     const real = SG.realKeyFor(p.key);
     if (real === undefined) fail("realKeyFor has no answer for declared param " + p.key);
   }
@@ -784,8 +820,8 @@ function makeMaster(over) {
 }
 
 if (failures) process.exit(1);
-console.log("PASS: slot grid contract — Main + LFO 1 + LFO 2 + Actions in that order, " +
-            "Save As/Delete gated on a preset, all three storage conventions, " +
+console.log("PASS: slot grid contract — Main + Sends + LFO 1 + LFO 2 + Actions in that order, " +
+            "Save As/Delete gated on a preset, all four storage conventions, " +
             "the Fwd Ch offset pinned at both ends, MPE derived and edge-triggered, " +
             "LFO targets resolved per surface. Master FX: the same four pages, " +
             "the SAME LFO builder param for param, actions gated, keys passed " +

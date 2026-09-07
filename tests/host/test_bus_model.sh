@@ -230,8 +230,11 @@ eq("the bus does not free itself", M.voiceMoveWrites(VCFG, 0, "kick"), []);
    bounds: an out-of-range key routed as a real position lands on whatever the
    chain host does with an unmatched key. */
 eq("a bus insert key is its prefix", M.busComponentKey(0, 1), "bus1:fx2");
-eq("...and the last one", M.busComponentKey(3, 7), "bus4:fx8");
-eq("a bus past the cap has no key", M.busComponentKey(4, 0), null);
+/* DERIVED FROM THE CAP, never a literal: raising SLOT_BUSES must not require
+   editing the assertion that guards its edge, or the edge stops being tested. */
+eq("...and the last one", M.busComponentKey(M.SLOT_BUSES - 1, M.BUS_FX_SLOTS - 1),
+   `bus${M.SLOT_BUSES}:fx${M.BUS_FX_SLOTS}`);
+eq("a bus past the cap has no key", M.busComponentKey(M.SLOT_BUSES, 0), null);
 eq("a position past the cap has no key", M.busComponentKey(0, 8), null);
 eq("the key parses back", M.parseBusComponentKey("bus1:fx2"), { bus: 0, fx: 1 });
 eq("a key past the cap does not parse", M.parseBusComponentKey("bus9:fx1"), null);
@@ -286,7 +289,7 @@ eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), nul
   /* Bounded BY CONSTRUCTION at SLOT_BUSES cells, which is why the page is
      handed paginate:false rather than being allowed to split. */
   const full = M.parseBusesConfig(JSON.stringify({
-    buses: [0, 1, 2, 3].map((i) => (
+    buses: Array.from({ length: M.SLOT_BUSES }, (_, i) => (
       { present: 1, name: "B" + i, orphans: 0, voices: [], sends: [0, 0], fx: [] })),
     main_sends: [0, 0] }));
   eq("a full slot is one cell per bus",
@@ -406,7 +409,8 @@ eq("an unresolved config lists no rows either -- the one refusal",
      still parse back as bus 2. */
   eq("every bus has an entry", f.buses.length, M.SLOT_BUSES);
   eq("a hole is present:0 and nothing else", f.buses[1], { present: 0 });
-  eq("the buses keep their positions", f.buses.map((b) => b.present), [1, 0, 1, 0]);
+  eq("the buses keep their positions", f.buses.map((b) => b.present),
+     Array.from({ length: M.SLOT_BUSES }, (_, i) => (i === 0 || i === 2) ? 1 : 0));
   eq("the slot sends ride along", f.main_sends, [5, 30]);
 
   /* KEY ORDER IS LOAD-BEARING: bus_field takes the FIRST hit inside the

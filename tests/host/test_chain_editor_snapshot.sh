@@ -1339,19 +1339,33 @@ const HATS = { name: "Hats", voices: ["v1", "v2"], sends: [0, 15],
 const SNARE = { name: "Snare", voices: ["v3"], sends: [5, 5], fx: [] };
 const TOMS = { name: "Toms", voices: ["v4"], sends: [40, 40], fx: ["freeverb"] };
 
-/* THE LIST AT EVERY LENGTH IT CAN HAVE. One bus is three rows (it, Sends, New
-   Bus); four buses is FIVE, and there is no sixth -- SLOT_BUSES is 4 and the
-   New Bus row is gone once none is free, so five rows is the maximum this
-   screen can ever draw. */
+/* Extra buses so the list and the mixer can be shown AT THE CAP. Derived from
+   SLOT_BUSES rather than written out, so raising the cap again widens these
+   cases instead of quietly leaving them short of it. */
+const EXTRA_BUSES = Array.from({ length: Math.max(0, BusModel.SLOT_BUSES - 4) },
+  (_, i) => ({ name: "Aux " + (i + 1), voices: ["x" + i], sends: [10 + i, 0],
+               fx: [] }));
+const ALL_BUSES = [KICK, HATS, SNARE, TOMS].concat(EXTRA_BUSES);
+
+/* THE LIST AT EVERY LENGTH IT CAN HAVE. One bus is three rows (it, Send Mixer,
+   New Bus); SLOT_BUSES buses is SLOT_BUSES + 1, and there is no more -- the New
+   Bus row is gone once none is free, so that is the maximum this screen can ever
+   draw. It SCROLLS well before then: the list shows five rows. */
 addBus("bus/list/1", { screen: "list", config: busesConfig({ buses: [KICK] }), index: 0 });
 addBus("bus/list/3", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS, SNARE], mainSends: [5, 30] }), index: 1 });
-addBus("bus/list/full", { screen: "list",
+addBus("bus/list/4", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS, SNARE, TOMS], mainSends: [5, 30] }), index: 3 });
-/* The Sends row and the New Bus row, each under the cursor: the footer names
-   the verb of the row it is ON, and these are the two rows whose verb differs
-   from a bus`s. The Sends row carries no level of its own -- the slot`s two
-   main sends were a control no audio path read, and are gone. */
+/* AT THE CAP: every bus present, so no New Bus row, and the cursor on the last
+   one -- the scrolled end of the longest list this screen can hold. */
+addBus("bus/list/full", { screen: "list",
+  config: busesConfig({ buses: ALL_BUSES, mainSends: [5, 30] }),
+  index: BusModel.SLOT_BUSES });
+/* The Send Mixer row and the New Bus row, each under the cursor: the footer
+   names the verb of the row it is ON, and these are the two rows whose verb
+   differs from a bus`s. The Send Mixer row carries no level of its own -- the
+   slot`s own two sends are real, but they belong to the SLOT and are edited in
+   Slot Settings, not on this screen. */
 addBus("bus/list/sends-row", { screen: "list",
   config: busesConfig({ buses: [KICK, HATS], mainSends: [5, 30] }), index: 2 });
 addBus("bus/list/new-row", { screen: "list",
@@ -1469,17 +1483,17 @@ const mkBusSendsIo = lift("busSendsGridIo",
 const busSendsCases = [];
 const addBusSends = (id, o) => busSendsCases.push(Object.assign({ id }, o));
 
-/* Two buses, and four -- which is SLOT_BUSES cells and the widest this page
-   can ever be. (There is no Main cell: the slot`s own two send levels are a
-   control no audio path reads, so they are not offered.) Both pages of each,
-   because the two levels are built from the same rows and a mapping that lost
-   the send index would draw them identically. */
+/* Two buses, and the CAP -- SLOT_BUSES cells, the widest this page can ever be
+   and exactly the number of knobs. (There is no Main cell: the slot`s own two
+   send levels are real but belong to the slot, and are edited in Slot Settings.)
+   Both pages of each, because the two levels are built from the same rows and a
+   mapping that lost the send index would draw them identically. */
 addBusSends("bus/sends/2-send-a", { page: "Send A",
   buses: [KICK, HATS], mainSends: [5, 30] });
 addBusSends("bus/sends/2-send-b", { page: "Send B",
   buses: [KICK, HATS], mainSends: [5, 30] });
 addBusSends("bus/sends/full-send-a", { page: "Send A",
-  buses: [KICK, HATS, SNARE, TOMS], mainSends: [5, 30] });
+  buses: ALL_BUSES, mainSends: [5, 30] });
 /* A HOLE: bus 2 deleted. The rows are the LIST`s rows, so the page must show
    two faders and no third -- and the one that is there must still be bus 3`s
    own level, not the second row`s. */
@@ -1541,7 +1555,8 @@ function renderBusSends(c) {
   /* The store, keyed by the REAL spelling -- "busN:sendM". Seeded from the
      same config the rows come from, so a case says its levels once. A key the
      mixer must never ask for is seeded with a value it would be obvious about:
-     "buses:main_send1" is retired, and a cell reading 99 would say so. */
+     "buses:main_send1" is the SLOT`s send, edited in Slot Settings and never on
+     this mixer, and a cell reading 99 would say so. */
   const store = { "buses:main_send1": "99", "buses:main_send2": "99" };
   cfg.buses.forEach((b) => {
     if (!b.present) return;
@@ -1577,7 +1592,7 @@ function renderBusSends(c) {
      value, exactly as renderSettings does. */
   for (let i = 0; i < 400; i++) ctl.tick();
   ctl.render(drawContext(fb), {
-    title: "S1 > Sends",
+    title: "S1 > Send Mixer",
     footer: SETTINGS_FOOTER[ctl.page.kind] || SETTINGS_FOOTER.knobs,
   });
   clearGlobals();
@@ -1651,6 +1666,11 @@ const SLOT_VALUES = {
   "slot:volume": "1.00", "slot:muted": "0", "slot:soloed": "0",
   "slot:receive_channel": "1", "slot:forward_channel": "-1",
   "slot:transpose": "0", "midi_fx_pre_mode": "0",
+  /* The slot sends, stored by the CHAIN under the slot-level "buses:" route --
+     not "slot:", which is why they are spelled out here rather than picked up
+     by a prefix. One non-zero so the render shows a level and not just a zero
+     column: a row whose value is always 0 cannot show that it is drawn wrong. */
+  "buses:main_send1": "40", "buses:main_send2": "0",
 };
 
 /* THE THREE STATES OF THE ROW, down both lists: absent (the synth cannot

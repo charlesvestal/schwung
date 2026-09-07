@@ -254,6 +254,17 @@ extern void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
                                         int n_sends, int frames,
                                         int slot_volume_0_127);
 
+/* Drain the WHOLE SLOT's post-FX audio into the same accumulators — the slot
+ * send, which needs no bus and therefore no split_voices from the module. The
+ * signal is passed IN because the chain does not hold it: the slot's FX chain
+ * runs in the shim's mix pass, one pass after the render chain_drain_sends is
+ * taken from. NULL until a chain DSP that exports chain_drain_main_send is
+ * loaded; an older chain simply has no slot send. */
+extern void (*shadow_chain_drain_main_send)(void *instance,
+                                            int16_t *const *accum, int n_sends,
+                                            const int16_t *post_fx, int frames,
+                                            int slot_volume_0_127);
+
 /* --- Send bus FX: storage, load and unload -------------------------------
  *
  * The Master FX pair with the two Master-FX-only halves removed. Sends have no

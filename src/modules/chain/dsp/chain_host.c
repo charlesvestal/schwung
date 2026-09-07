@@ -2643,15 +2643,13 @@ void chain_process_fx(void *instance, int16_t *buf, int frames) {
  * into, never overwritten — the caller clears them once per frame, before any
  * slot drains.
  *
- * MAIN IS NOT DRAINED HERE, and inst->main_send_level therefore still has no
- * reader. Main's post-insert audio does not exist at this point: under the
- * same-frame-FX mode the device always runs in, render_block returns the raw
- * synth and the slot's own FX chain runs later, into a different buffer. Taking
- * Main's send here would send a pre-FX signal while every bus sends a
- * post-insert one — two different meanings behind one control. Doing it
- * properly needs a second drain point after chain_process_fx, and under
- * rebuild_from_la that point moves again; it belongs with the task that owns
- * that mix path.
+ * MAIN IS NOT DRAINED HERE, and it never can be: Main's post-insert audio does
+ * not exist at this point. Under the same-frame-FX mode the device always runs
+ * in, render_block returns the raw synth and the slot's own FX chain runs later,
+ * into a different buffer. Taking Main's send here would send a pre-FX signal
+ * while every bus sends a post-insert one — two different meanings behind one
+ * control. inst->main_send_level is drained by chain_drain_main_send instead,
+ * which the shim calls from the mix pass, where that buffer exists.
  *
  * Runs on the SPI callback: no allocation, no I/O, no locks.
  */
@@ -2722,6 +2720,61 @@ void chain_drain_sends(void *instance, int16_t *const *accum, int n_sends,
                              frames * 2, lvl);
             }
         }
+    }
+}
+
+/*
+ * Exported: drain THE WHOLE SLOT into the caller's global send accumulators.
+ *
+ * The counterpart to chain_drain_sends and deliberately a separate call, taking
+ * the audio as an argument rather than reading it off the instance: the signal
+ * this sends is the slot's POST-FX output, which this plugin does not hold. The
+ * shim owns it — under same-frame FX it is what chain_process_fx just wrote,
+ * and under rebuild_from_la it is Move's track plus the synth through the same
+ * chain — so the shim is the only caller that can point at it. That is also
+ * why this cannot be folded into chain_drain_sends, which runs one pass
+ * earlier, immediately after the render, when no such buffer exists yet.
+ *
+ * This is what makes a send reachable WITHOUT a bus. A per-bus send needs the
+ * module to publish split_voices; the slot send needs nothing of the module at
+ * all, which is the classic reason a console has send buses: one reverb shared
+ * by four slots instead of four instances inside them.
+ *
+ * POST-FADER, exactly like every other send here: the caller passes the slot's
+ * effective volume, and a muted or soloed-out slot arrives as 0 and sends
+ * nothing.
+ *
+ * A slot whose buses also carry sends feeds both taps, and that is correct
+ * rather than double-counting: a bus send is the bus's own post-insert audio
+ * before the slot chain, this is the finished slot. A console does the same.
+ *
+ * `accum[i]` must hold at least `frames * 2` int16 samples and is ACCUMULATED
+ * into. `post_fx` is read, never written.
+ *
+ * Runs on the SPI callback: no allocation, no I/O, no locks.
+ */
+__attribute__((visibility("default")))
+void chain_drain_main_send(void *instance, int16_t *const *accum, int n_sends,
+                           const int16_t *post_fx, int frames,
+                           int slot_volume_0_127) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst || !accum || !post_fx || n_sends <= 0 || frames <= 0) return;
+    if (frames > FRAMES_PER_BLOCK) frames = FRAMES_PER_BLOCK;
+    /* A closed fader sends nothing — the post-fader rule, not an optimisation.
+     * Mute and solo reach this line as a volume of 0. */
+    if (slot_volume_0_127 <= 0) return;
+    if (slot_volume_0_127 > BUS_MIX_SEND_LEVEL_MAX)
+        slot_volume_0_127 = BUS_MIX_SEND_LEVEL_MAX;
+    /* Same rule as chain_drain_sends: the caller's count wins when it is
+     * smaller, our array caps it when it is larger. */
+    int ns = (n_sends < BUS_MIX_SENDS) ? n_sends : BUS_MIX_SENDS;
+    for (int sd = 0; sd < ns; sd++) {
+        if (!accum[sd]) continue;
+        int lvl = (inst->main_send_level[sd] * slot_volume_0_127) /
+                  BUS_MIX_SEND_LEVEL_MAX;
+        /* bus_mix_send returns immediately on a level <= 0, so a slot with no
+         * send costs one multiply and a compare. */
+        bus_mix_send(accum[sd], post_fx, frames * 2, lvl);
     }
 }
 

@@ -21,9 +21,12 @@
  * and no framebuffer. The host supplies the accessors; nothing here reads a
  * global.
  *
- * The eight values fill one page exactly. The actions become a menu page, the
- * page kind that exists for entries with a name, a consequence and nothing to
- * show.
+ * The eight values fill one page exactly, and the slot sends are a PAGE OF
+ * THEIR OWN rather than the ninth and tenth cell of that one. Nine params chunk
+ * to 8 + 1 and the overflow page is titled "Main - 2", which names nothing; an
+ * authored level is a page called "Sends" and costs the same flip. The actions
+ * become a menu page, the page kind that exists for entries with a name, a
+ * consequence and nothing to show.
  */
 
 /** 1..16 as strings, for the channel enums. */
@@ -93,6 +96,30 @@ export const SLOT_GRID_PARAMS = [
       options: ["Off", "On"], short_options: ["OFF", "ON"], default: 0 },
     { key: "mpe_mode", name: "MPE", type: "enum", options: ["Off", "On"], short_options: ["OFF", "ON"],
       default: 0 },
+];
+
+/*
+ * THE SLOT SENDS, and on almost every module the only send that is reachable
+ * at all.
+ *
+ * A per-bus send needs the module to publish `split_voices`, which one module
+ * in the fleet does; these two need nothing of it. Post-fader and post-slot-FX
+ * — the drain is chain_drain_main_send, taken in the shim's mix pass, which is
+ * the only point at which the slot's finished audio exists.
+ *
+ * 0..127 step 1, the same range and grain as every other send in this design
+ * (BUS_MIX_SEND_LEVEL_MAX), because a knob can cross it in one gesture. The two
+ * settings LISTS declare step 4, because a jog cannot.
+ *
+ * Their own level, not two more cells on the values page: that page is eight
+ * params against eight knobs, and a ninth chunks to 8 + 1 with the overflow
+ * titled "Main - 2". A level is a page with a NAME for the same flip.
+ */
+export const SLOT_SEND_PARAMS = [
+    { key: "send_a", name: "Send A", short_name: "SndA", type: "int",
+      min: 0, max: 127, step: 1, default: 0 },
+    { key: "send_b", name: "Send B", short_name: "SndB", type: "int",
+      min: 0, max: 127, step: 1, default: 0 },
 ];
 
 /*
@@ -312,7 +339,7 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
         .filter((a) => !a.when || have[a.when])
         .map((a) => ({ label: a.label, action: a.action }));
     /*
-     * Page order is Main, LFO 1, LFO 2, Actions.
+     * Page order is Main, Sends, LFO 1, LFO 2, Actions.
      *
      * The menu therefore lives on its OWN level rather than on root: a level
      * emits its menu straight after its own grids, before any level it
@@ -325,9 +352,17 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
             label: "Slot",
             knobs: SLOT_GRID_PARAMS.map((p) => p.key),
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
-                .concat([{ level: "lfo1", label: "LFO 1" },
+                .concat([{ level: "sends", label: "Sends" },
+                         { level: "lfo1", label: "LFO 1" },
                          { level: "lfo2", label: "LFO 2" },
                          { level: "actions", label: "Actions" }]),
+        },
+        /* Before the LFOs: a send is a mix decision and belongs beside the
+         * values, where a modulation source does not. */
+        sends: {
+            label: "Sends",
+            knobs: SLOT_SEND_PARAMS.map((p) => p.key),
+            params: SLOT_SEND_PARAMS.map((p) => ({ key: p.key })),
         },
     };
     Object.assign(levels, lfoLevels([1, 2]));
@@ -337,7 +372,8 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
 
 /** Every declared param across the slot page and both LFO pages. */
 export function allSlotGridParams() {
-    return SLOT_GRID_PARAMS.concat(lfoParams(1)).concat(lfoParams(2));
+    return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS)
+                           .concat(lfoParams(1)).concat(lfoParams(2));
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
@@ -348,6 +384,13 @@ export function realKeyFor(gridKey) {
      * the same one makeSlotLfoCtx uses, so they pass straight through. Adding
      * "slot:" would address a param that does not exist and read empty. */
     if (/^lfo[12]:/.test(gridKey)) return gridKey;
+    /* The slot sends are stored by the CHAIN, not by the slot: "buses:" is the
+     * chain host's slot-level route (a bare "send_a" would be handed to the
+     * synth plugin, i.e. a write to somebody else's parameter) and
+     * "main_send<N>" is the spelling chain_bus.c already reads and persists.
+     * One-indexed on the wire, lettered on the screen. */
+    if (gridKey === "send_a") return "buses:main_send1";
+    if (gridKey === "send_b") return "buses:main_send2";
     return "slot:" + gridKey;
 }
 
@@ -358,6 +401,7 @@ export function realKeyFor(gridKey) {
  * actually stores:
  *
  *   volume, muted, soloed, transpose, receive_channel  ->  "slot:<key>"
+ *   send_a, send_b                                     ->  "buses:main_send<N>"
  *   midi_fx_pre_mode                                   ->  bare key
  *   forward_channel                                    ->  "slot:*", offset
  *   mpe_mode                                           ->  DERIVED

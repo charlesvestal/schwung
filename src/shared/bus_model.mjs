@@ -38,7 +38,7 @@
  * SLOT_BUSES and BUS_FX_SLOTS are chain_internal.h's SLOT_BUSES and
  * MAX_AUDIO_FX; BUS_SENDS is bus_mix.h's BUS_MIX_SENDS and SEND_LEVEL_MAX its
  * BUS_MIX_SEND_LEVEL_MAX. Nothing here re-derives them from a screen. */
-export const SLOT_BUSES = 4;
+export const SLOT_BUSES = 8;
 export const BUS_FX_SLOTS = 8;
 export const BUS_SENDS = 2;
 export const SEND_LEVEL_MAX = 127;
@@ -189,22 +189,21 @@ export function insertSummary(fx, abbrev) {
  * The rows of the bus list: every PRESENT bus, then the Sends row, then New Bus
  * if a free bus is left.
  *
- * THERE IS NO "MAIN" ROW, AND ITS TWO SEND LEVELS ARE NOT OFFERED. They were,
- * and they did nothing: `inst->main_send_level` is written, serialized, read
- * back and patch-applied, and NO AUDIO PATH READS IT (chain_host.c's
- * chain_drain_sends says so in as many words). It is inert for a real reason —
- * at drain time Main's post-insert signal does not exist, because under the
- * same-frame-FX mode the device always runs render_block returns the raw synth
- * and the slot's own FX chain runs later into a different buffer, so draining
- * Main there would send a PRE-FX signal while every bus sends a POST-insert
- * one. Two meanings behind one control. Until there is a second drain point
- * after the slot FX, a knob that reads back its own value and changes nothing
- * must not be on the screen.
+ * THERE IS NO "MAIN" ROW HERE, and the slot's own two send levels are not on
+ * this screen. They are real now — chain_drain_main_send is the second drain
+ * point, taken after the slot FX in the shim's mix pass, which is why they were
+ * inert before and are not any more — but they belong to the SLOT, not to its
+ * buses, so they live in Slot Settings beside Volume and the channels. Most
+ * modules publish no `split_voices` and never see this screen at all; a slot
+ * send that could only be reached through it would be unreachable for them,
+ * which is the exact hole it exists to close.
  *
- * The row survives as `Sends`, because it is also the only way into the send
- * MIXER — every bus's A and B on an encoder — and those levels do work. It is
- * offered only when there is at least one bus to ride: a mixer with no faders
- * is a row that answers a click by doing nothing.
+ * The row is `Send Mixer`, not `Sends`, and the difference is not cosmetic:
+ * under a menu called Buses, "Sends" reads as "this slot's sends" and means
+ * "a mixer for the buses' sends" — an ambiguity that got worse the moment the
+ * slot acquired sends of its own. It is offered only when there is at least
+ * one bus or voice to ride: a mixer with no faders is a row that answers a
+ * click by doing nothing.
  */
 export function busListRows(config, abbrev, voices) {
     const rows = [];
@@ -222,7 +221,7 @@ export function busListRows(config, abbrev, voices) {
      * door opens when there is either a bus to ride or a voice to ride. Without
      * this the mixer is unreachable for exactly the module that motivated it. */
     if (rows.length || (voices && voices.length)) {
-        rows.push({ kind: "sends", index: -1, name: "Sends", orphans: 0,
+        rows.push({ kind: "sends", index: -1, name: "Send Mixer", orphans: 0,
                     summary: "", sends: [] });
     }
     if (config.buses.some((b) => !b.present)) rows.push({ kind: "new", name: "New Bus" });
@@ -504,9 +503,9 @@ export function voiceSendGridKey(index, send) {
  * claims to have closed.
  */
 export function busSendGridRealKey(gridKey) {
-    /* No "main_send" form. The slot's own two levels have no reader in the
-     * audio path (see busListRows), so there is no key here that would write
-     * them and nothing on the mixer that would name one. */
+    /* No "main_send" form. The slot's own two levels are real (see busListRows)
+     * but they are a SLOT fact, edited in Slot Settings; this mixer names buses
+     * and voices only, so there is no grid key here that would write them. */
     const key = String(gridKey || "");
     const bus = /^bus(\d+)_send(\d+)$/.exec(key);
     if (bus) {
@@ -565,6 +564,18 @@ export function sendMixerVoiceRows(voices) {
  * ~30px and a bus name is whatever the user typed, so the cell gets a clipped
  * name and the held-knob header gets the real one.
  */
+/*
+ * The four characters an enum-less mixer cell has room for.
+ *
+ * SPACES ARE DROPPED FIRST, and that is not tidying. A bus with no name of its
+ * own is called "Bus <n>", so a plain slice(0, 4) gives every one of them
+ * "Bus " — eight identical cells on a full slot, with nothing on the page to
+ * tell them apart. "Bus1".."Bus8" costs the same four columns and says which.
+ */
+function mixerShortName(name) {
+    return String(name || "").replace(/\s+/g, "").slice(0, 4);
+}
+
 export function busSendGridParams(config, voices) {
     const out = [];
     /*
@@ -583,7 +594,7 @@ export function busSendGridParams(config, voices) {
             out.push({
                 key: sendGridKey(row, send),
                 name: row.name,
-                short_name: String(row.name).slice(0, 4),
+                short_name: mixerShortName(row.name),
                 type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
             });
         }
@@ -598,7 +609,7 @@ export function busSendGridParams(config, voices) {
             out.push({
                 key: voiceSendGridKey(row.index, send),
                 name: row.label,
-                short_name: String(row.label).slice(0, 4),
+                short_name: mixerShortName(row.label),
                 type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
             });
         }
@@ -651,7 +662,7 @@ export function busSendGridHierarchy(config, voices) {
     const [busA, busB] = half(busKeys);
     const [voiceA, voiceB] = half(voiceKeys);
 
-    const levels = { root: { label: "Sends", knobs: [], params: [] } };
+    const levels = { root: { label: "Send Mixer", knobs: [], params: [] } };
     /* NO PER-LEVEL `paginate` HERE, and that is not an omission: the planner
      * takes it once for the whole contract (planPages' `paginate` argument,
      * passed through the chrome), so a flag written on a level would be read by

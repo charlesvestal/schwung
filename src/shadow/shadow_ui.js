@@ -3525,14 +3525,14 @@ function refreshBuses() {
  * this (the views read it as ctx.busRows), so nothing can index a list the
  * other half did not draw.
  *
- * The Sends row is dropped when the knob grid is not the user's Param View —
+ * The Send Mixer row is dropped when the knob grid is not the user's Param View —
  * which is every screen-reader session. It is a door into the send MIXER and
  * the mixer is a grid; with no grid to open, the row would answer a click by
  * doing nothing, and the same two levels are already rows on each bus's own
  * menu.
  */
 function busRowsNow() {
-    /* busVoices is passed because the Sends door now opens for a slot with NO
+    /* busVoices is passed because the Send Mixer door now opens for a slot with NO
      * buses at all — a splittable synth's per-voice sends need none. Its
      * `voices` is [] both for "this module cannot split" and (harmlessly) while
      * the read has not landed; the retry tick re-reads and the row appears. */
@@ -3851,30 +3851,30 @@ function busSendsGridIo() {
  * has nothing selected to read out. Same gate enterChainSettings uses.
  */
 function enterBusSendsGrid(rowIndex) {
-    /* Unreachable through the list — busRowsNow drops the Sends row when the
-     * grid is not the Param View — and kept as the total answer for any other
-     * caller, since the row it would open has no menu of its own. */
-    if (!paramPagesEnabled()) { announce("Sends unavailable in List view"); return; }
+    /* Unreachable through the list — busRowsNow drops the Send Mixer row when
+     * the grid is not the Param View — and kept as the total answer for any
+     * other caller, since the row it would open has no menu of its own. */
+    if (!paramPagesEnabled()) { announce("Send Mixer unavailable in List view"); return; }
     enterParamPages(busSlot, BUS_SENDS_COMPONENT, BUS_SENDS_COMPONENT, null,
                     busSendsGridIo(), {
         label: `S${busSlot + 1}`,
-        name: "Sends",
+        name: "Send Mixer",
         returnView: VIEWS.BUS_LIST,
         /*
          * ONE SECTION, ONE PAGE — but ONLY while the mixer is buses alone.
          *
          * `paginate` is a whole-CONTRACT switch, not a per-level one, so it
          * cannot say "pin the bus pages and page the voice pages". A bus page
-         * is at most SLOT_BUSES = 4 cells and never has to split, and the flag
-         * said the grouping was AUTHORED so a fifth bus could not silently
-         * become "Send A - 2". A VOICE page can be 32 cells against 8 knobs:
+         * is at most SLOT_BUSES cells -- 8, exactly the number of knobs -- and
+         * never has to split, and the flag said the grouping was AUTHORED so a
+         * ninth bus could not silently become "Send A - 2". A VOICE page can be 32 cells against 8 knobs:
          * pinned, twenty-four of them would be declared and undrawable, which
          * is worse than the split the flag exists to prevent. So the pin is
          * dropped exactly when there is something that needs paging.
          */
         paginate: !!(busVoices && busVoices.voices && busVoices.voices.length),
     });
-    announce("Sends");
+    announce("Send Mixer");
 }
 
 /*
@@ -5178,6 +5178,12 @@ const CHAIN_SETTINGS_ITEMS = [
      * its stored gain until something turns the knob, which then pulls it into
      * range. */
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
+    /* The slot send. Mirrored from SLOT_SETTINGS deliberately — the two lists
+     * already overlap from Volume down, and a row on one way into a slot and
+     * not the other is worse than either. See SLOT_SETTINGS for why step is 4
+     * here and 1 on the grid. */
+    { key: "buses:main_send1", label: "Send A", type: "int", min: 0, max: 127, step: 4 },
+    { key: "buses:main_send2", label: "Send B", type: "int", min: 0, max: 127, step: 4 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:soloed", label: "Soloed", type: "int", min: 0, max: 1, step: 1 },
     { key: "slot:receive_channel", label: "Recv Ch", type: "int", min: 0, max: 16, step: 1 },
@@ -19730,7 +19736,7 @@ function handleSelect() {
             const row = rows[busListIndex];
             if (!row) break;
             if (row.kind === "new") busCreate();
-            /* The Sends row opens the whole send MIXER — every bus's A and B on
+            /* The Send Mixer row opens every bus's A and B on
              * an encoder, which is the thing a list row cannot be. A bus row
              * still opens its own menu: it has voices, inserts, a name and a
              * delete that the mixer says nothing about. */
@@ -22047,7 +22053,7 @@ function drawHelpDetail() {
     Object.defineProperty(_ctx, 'busConfig', { get() { return busConfig; }, enumerable: true });
     /* The ROW LIST, not a second call to busListRows: the views used to build
      * their own and would then disagree with the input paths about which rows
-     * exist (busRowsNow drops the Sends row in List view), which is an index
+     * exist (busRowsNow drops the Send Mixer row in List view), which is an index
      * mismatch between what is drawn and what a click acts on. */
     _ctx.busRows = () => busRowsNow();
     Object.defineProperty(_ctx, 'busVoices', { get() { return busVoices; }, enumerable: true });

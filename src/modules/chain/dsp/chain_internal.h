@@ -59,12 +59,27 @@
  * SLOT_BUSES + 1 mixing destinations and (SLOT_BUSES + 1) * MAX_AUDIO_FX
  * positions.
  *
- * Raising this should be a one-line change: all "bus<N>:" key routing goes
- * through bus_route.h with this passed in as bus_count, and every loop over
- * buses is bounded by this name. Read out of this line by
- * tests/host/test_bus_route.sh. The bitmask in bus_mix_active_mask is a
- * uint32_t, so 32 is the hard ceiling. */
-#define SLOT_BUSES 4
+ * Raising this is a one-line change HERE and a matching one in
+ * src/shared/bus_model.mjs, which carries the JS copy; test_bus_model.sh fails
+ * on drift between the two. All "bus<N>:" key routing goes through bus_route.h
+ * with this passed in as bus_count, and every loop over buses is bounded by
+ * this name. Read out of this line by tests/host/test_bus_route.sh and by
+ * tests/host/Makefile. The bitmask in bus_mix_active_mask is a uint32_t, so 32
+ * is the hard ceiling.
+ *
+ * IT IS NOT FREE, and the cost is not the audio buffers (512 bytes each, on
+ * demand). It is bus_config_t: 9844 bytes, embedded SLOT_BUSES times in
+ * patch_info_t, which is embedded MAX_PATCHES times in chain_instance_t. So
+ * each bus costs ~9.6 KB on the SPI callback's STACK (v2_set_param's load_file
+ * route holds a patch_info_t local) and ~315 KB of heap per slot. 4 -> 8 took
+ * the stack frame from 194 KB to 232 KB and the instance from 7.19 MB to
+ * 8.44 MB. Measure both before raising it again; the stack is the half that
+ * fails hard.
+ *
+ * 4 was chosen when a bus was thought to cost ~9.1 MB of per-position metadata
+ * as well. It does not: that metadata is allocated per OCCUPIED position now,
+ * so an empty bus is only the struct above. */
+#define SLOT_BUSES 8
 /* Named, not a repeated 32: bus_mix.h is included above now (the render path
  * needs it), so the copy this header used to carry has no excuse left. */
 _Static_assert(SLOT_BUSES > 0 && SLOT_BUSES <= BUS_MIX_MAX_BUSES,
