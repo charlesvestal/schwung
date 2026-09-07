@@ -95,6 +95,14 @@ tally, each with its arming file. Read it before measuring anything on hardware:
   same amount. The old overrun counter fired on *every* frame: 43,986 in two
   minutes on an idle device.
 - The tally stays **silent for ~20 s after arming**, which looks like a broken build.
+- **`param-slow` is the OTHER always-on diagnostic, and it needs no flag.** A
+  serve past 1000 us is logged with its KEY (`param-slow: set slot 0
+  synth:module took 124.825 ms`). A module blocking in `set_param` is the
+  steady state, not an anomaly, so the question is which key rather than
+  whether to look — and twice the same defect cost a session for want of a
+  name. **A single blown frame is invisible to the frame tally** (1 Hz
+  aggregates, zero `LATE` lines for a 20 ms serve); `spi_timing`'s
+  `param=avg/max` is what sees it.
 - The **CPU usage page** (`/system/cpu`, schwung-manager, `/schwung-perf`) is the
   one diagnostic that is **always on** — its timing was already being collected
   unconditionally, so only its 1 Hz polling is armed, by a button, not a file.

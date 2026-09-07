@@ -7,6 +7,38 @@ Every switch below is **off by default** and armed by touching a file under
 `/data/UserData/schwung/`. Disarm them when you stop measuring — `debug_log_on`
 has itself caused the audio dropouts it was being used to hunt.
 
+**`param-slow` is ALWAYS ON, and is the exception to the sentence above.**
+There is no file to touch. When a param serve exceeds 1000 us the shim worker
+logs, at WARN:
+
+```
+param-slow: set slot 0 synth:module took 124.825 ms on the SPI callback — the module is doing blocking work in its entry point
+```
+
+**Why it is not armed like everything else.** Module entry points ARE the SPI
+callback and the ecosystem does not know it (~150 confirmed violations across
+113 catalogued modules), so a module blocking in `set_param` is the steady
+state, not an anomaly. The question is never "shall we go looking", it is
+"which key was it this time" — and a flag you must arm first is a flag nobody
+has armed at the moment the glitch happens. Twice the same defect cost a full
+diagnosis session for want of a name: overtake's `dlopen` (param stage
+7us -> 11513us) and dr32's kit load inside `synth:state` (7us -> 20051us).
+
+Cost is two vDSO clock reads (~340ns each — not the ~1.8us syscall) per serve
+and, past the threshold, one bounded string copy. No formatting and no logging
+on the callback; the worker does both at 1 Hz. Unlike the drop counters beside
+it, this only fires when something has already overrun the budget, so it is
+never noise. Loss is by construction — the callback cannot wait for a
+consumer — but never silent: overwritten entries are counted and reported.
+
+`src/host/param_slow.h`, `tests/host/test_param_slow.sh`.
+
+**A single blown frame is invisible to the SPI frame tally.** `backlog` and
+`frames / irq` are 1 Hz aggregates, so an overrun that drains immediately never
+appears, and a 20 ms serve produced **zero `LATE` lines** across a whole
+session. What catches it is `spi_timing`'s `Pre(us): ... param=avg/max` line
+(`param=7/20051`) — reach for that, not the tally, for a one-frame stall.
+
 **On-device E2E tests** (opt-in, not in CI): `tools/pytest-schwung/` is a pip-installable pytest plugin that drives a real Move end-to-end through `schwung-testd`, an opt-in test-bus daemon (TCP loopback, started manually over SSH; built into the tarball but not auto-started). Tests inject MIDI, wait for SPI frames, snapshot pad LEDs, capture MIDI_OUT, and reset to a known-empty set (`pristine_set`). Run `pytest tests/e2e` against attached hardware. Full protocol, fixtures, and hardware pitfalls in `tools/pytest-schwung/README.md`.
 
 **OTLP span tracing** (perf profiling, off by default): `touch /data/UserData/schwung/otlp_trace_on` makes **both** the shim and the `shadow_ui` process emit realtime-safe spans as OTLP/JSONL to `/data/UserData/schwung/traces/`, one file per service (`schwung-shim-*` / `schwung-shadow-ui-*`). Shim: `spi.pre`/`spi.post` roots + `shadow.mix_audio`, `midi.process`, `param.serve` children. shadow_ui: `js.tick` + `param.get`. Spans correlate **cross-process by trace_id** — the shim's `param.serve` is emitted as a child of shadow_ui's `param.get` (context propagated through `shadow_param_t`), so Tempo/Jaeger stitch the two files into one trace. JS modules (overtake/chain, incl. ion) can add spans via `host_trace_begin(name) -> handle` / `host_trace_end(handle)` (shadow_ui context only); balance the pair within one `tick()` (handles come from a 16-entry table reset each `js.tick`). `rm` the file to stop. Zero hot-path cost when off. See `docs/tracing.md`.
