@@ -181,7 +181,16 @@ export function drawBusChain() {
     const comp = comps[busChainPos];
     let info = "(empty)";
     if (comp && comp.kind === "add") info = "New effect";
-    else if (comp && comp.module) info = comp.module;
+    else if (comp && comp.module) {
+        /* The module, plus what it says it IS when it says anything. Four
+         * instances of one binary are otherwise indistinguishable here -- same
+         * abbreviation on every box, and a band naming only the position. Read
+         * from the cache the display_name poll fills; a draw path cannot afford
+         * a ~2.8 ms round trip to label itself. */
+        const live = ctx.busInsertDisplayName
+            ? ctx.busInsertDisplayName(busChainBus, busChainPos) : "";
+        info = live ? `${comp.module} (${live})` : comp.module;
+    }
     drawChainEditorBands(movy, {
         headerLeft: truncateText(bus.name, 14),
         headerRight: "BUS",
