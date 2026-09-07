@@ -503,6 +503,21 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
 - **A plain read of a modulated key answers the BASE**, never the plugin's value
   — the plugin holds the effective value the overlay keeps writing into it. The
   driven value is asked for as `<key>:effective` (#276).
+- **A mod route's SOURCE is a field, and `MOD_SRC_LFO` is 0 so there is no
+  migration.** The eight slot routes (`mod1:`..`mod8:`, with `lfo1:`/`lfo2:`
+  kept as a read-only ALIAS onto the same storage — a copy would give a
+  twice-loaded set four routes) each pick LFO, Velocity, Pressure, CC or Note.
+  The MIDI sources latch at **both** synth-feed paths, the same rule and the
+  same reason as `synth:last_note` below: an arpeggiator emits from `tick()`,
+  so a latch on `v2_on_midi` alone never moves with an arp in the slot,
+  silently. They are last-note and channel-wide **by construction** — the bus
+  moves a PARAMETER through `set_param`, so poly velocity is the synth's job —
+  and their **rest values are not zero**, or an unplayed velocity route pins
+  its target to the floor and reads as a dead synth. Only an LFO route advances
+  PHASE, or one switched back resumes from somewhere arbitrary. **Master FX is
+  not this**: two LFOs, `master_fx:lfoN:`, parsed in the SHIM by a literal
+  strncmp, no MIDI input and so no source — `lfo_process_midi` takes an
+  explicit count so the shorter array cannot be walked off the end.
 - **A chain shape edit is a PERMUTATION, never a reload.** `fx:insert` /
   `fx:remove` / `fx:move` keep instances running; a run of `<id>:module` writes
   rebuilds every position behind it, losing arp phase and reverb tails.
@@ -691,6 +706,17 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   load, an older host and a one-strike disable. Guarding in the shared walk
   instead of the singles branch silently yields a THREE-cell envelope with a key
   orphaned.
+- **A mod-route page is EIGHT knobs and the SOURCE decides which eight** — 8 for
+  an LFO, 6 for velocity/pressure/note, 7 for CC. Phase is **absent** from a
+  slot route rather than declared-but-not-a-knob: a leftover declared param
+  gets its own page from the planner, so demoting it produced a `Mod 1 - 2`
+  overflow holding one cell. Slew is gated OFF for an LFO, which is the design
+  (an LFO is already smooth) and also what makes the count work. The rate cells
+  gate on **one** DSP-computed key, `rate_mode`, because "a free-running LFO" is
+  two facts and `visible_if` takes one condition. And the key STEM is
+  per-screen — `modN:` on a slot, `lfoN:` on Master FX, whose params the SHIM
+  parses literally; renaming them leaves every Master FX LFO control writing a
+  key nothing reads, with the page still drawing.
 - **`visible_if` FAILED OPEN on the whole knob grid**, and had since the grid
   shipped. The evaluator resolved every condition against `hierEditorSlot` —
   the LIST editor's slot, which `enterParamPages` never sets — so from the grid
