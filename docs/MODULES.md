@@ -1366,6 +1366,12 @@ Rate options are emitted from slowest to fastest timing, for example:
 - `wav_position` in module.json
 - `canvas` in module.json
 
+`visible_if` is a LEVEL field. It goes on a level, or on one of that level's
+`params` entries -- **not** in `chain_params`. The planner reads it from the
+level and nowhere else, so a gate declared beside a param's other metadata
+hides nothing: every gated cell is drawn, with no error and nothing logged.
+`validate.mjs` reports that as `visible-if-not-on-level`.
+
 `visible_if` can be attached to level entries and param entries:
 
 ```json
