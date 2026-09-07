@@ -446,6 +446,35 @@ static void test_remove_clears_lfo(void) {
     EXPECT_STR(inst->mod_routes[1].target, "",
                "only the FIRST LFO was cleared -- LFO 2 still names the deleted position");
 
+    /*
+     * THE LAST ROUTE, not just the first two.
+     *
+     * Every assertion above touches routes 0 and 1, which is all there were
+     * when they were written. A retarget loop left bounded by the old count
+     * passes all of them and silently ignores routes 2..7 -- and a route left
+     * aimed at a stale position is WORSE than a dropped one: fx3 still exists
+     * after a deletion, so the route keeps modulating, just the wrong module.
+     */
+    seed_chain(3, 0);
+    set_lfo(MOD_ROUTE_COUNT - 1, "fx3", "p3");
+    set_lfo(MOD_ROUTE_COUNT - 2, "fx2", "p2");
+    chain_reorder_remove(inst, 0, 1);
+    EXPECT_STR(inst->mod_routes[MOD_ROUTE_COUNT - 2].target, "",
+               "the LAST-but-one route aimed at the deleted FX was not cleared");
+    EXPECT_STR(inst->mod_routes[MOD_ROUTE_COUNT - 1].target, "fx2",
+               "the LAST route did not follow the deletion -- the retarget loop "
+               "is bounded by the old two-route count");
+    EXPECT_STR(inst->mod_routes[MOD_ROUTE_COUNT - 1].param, "p3",
+               "the last route lost its parameter");
+
+    /* And on a MOVE, where a stale target keeps modulating rather than going
+       quiet -- the failure with no symptom to report. */
+    seed_chain(3, 0);
+    set_lfo(MOD_ROUTE_COUNT - 1, "fx3", "p3");
+    chain_reorder_move(inst, 0, 2, 0);
+    EXPECT_STR(inst->mod_routes[MOD_ROUTE_COUNT - 1].target, "fx1",
+               "the last route did not follow fx3 to the head of the chain");
+
     /* An LFO aimed at the SYNTH, or at the other section, is none of an audio
        FX deletion's business. Clearing those would silence modulation the user
        never touched. */

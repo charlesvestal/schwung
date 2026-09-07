@@ -389,3 +389,18 @@ console.log("PASS: chain shape edits — ON BOTH CHAINS, insert, remove and reor
             "is carried because nothing is destroyed, the `+` box opens a position and writes " +
             "nothing, an append still needs no hole, and a saved two-FX slot loads unmigrated");
 '
+
+# Every mod route is remapped, not just the two that used to exist. A route left
+# aimed at a stale position is WORSE than a dropped one: fx3 still exists after a
+# move, so the route keeps modulating -- the wrong module, with no symptom to
+# report. test_chain_reorder_routing.c covers the behaviour on the LAST route;
+# this pins the bound so a future edit cannot quietly narrow it again.
+if /usr/bin/grep -qE 'for \(int i = 0; i < (LFO_COUNT|2); i\+\+\)' src/modules/chain/dsp/chain_reorder.c; then
+  echo "FAIL: chain_reorder still bounds a retarget loop by the old LFO count" >&2
+  exit 1
+fi
+if ! /usr/bin/grep -q 'i < MOD_ROUTE_COUNT' src/modules/chain/dsp/chain_reorder.c; then
+  echo "FAIL: no MOD_ROUTE_COUNT-bounded retarget loop in chain_reorder.c" >&2
+  exit 1
+fi
+
