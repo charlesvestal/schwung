@@ -908,7 +908,7 @@ void parse_debug_log(const char *msg) {
     }
 }
 
-static void lfo_tick(chain_instance_t *inst, int frames);
+static void mod_tick(chain_instance_t *inst, int frames);
 
 
 static void v2_set_param(void *instance, const char *key, const char *val) {
@@ -918,7 +918,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     /*
      * "mod:tick" — advance modulation WITHOUT rendering audio.
      *
-     * lfo_tick() normally runs inside render_block, and the shim skips
+     * mod_tick() normally runs inside render_block, and the shim skips
      * render_block entirely on a silent slot (one probe frame in 172, see
      * schwung_shim.c). A skipped frame advanced the LFO by nothing at all, so
      * an idle slot ran its LFOs ~172x too slow and in visible steps — which is
@@ -943,7 +943,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
      */
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
         int frames = val ? atoi(val) : 128;
-        lfo_tick(inst, frames);
+        mod_tick(inst, frames);
         chain_idle_tick_mark(&inst->idle_tick, v2_tick_midi_fx(inst, frames));
         return;
     }
@@ -2116,14 +2116,31 @@ typedef struct {
     float max_val;
 } slot_lfo_param_meta_t;
 
+/*
+ * What a route may modulate on ANOTHER route (mod-to-mod).
+ *
+ * Deliberately not every field a route has. `src` and `cc_num` are absent
+ * because sweeping them continuously is nonsense rather than a feature: an LFO
+ * driving another route SOURCE TYPE would cycle it through velocity, pressure
+ * and CC several times a second, and driving its CC NUMBER would walk it across
+ * 128 unrelated controllers. Both are choices, not quantities.
+ *
+ * `slew` is here because it IS a quantity -- how smoothly the target route
+ * follows its own source -- and sweeping it is a real gesture.
+ *
+ * Anything added here needs a matching arm in BOTH ladders below (the read for
+ * the base, and the write for the result); a name here with no arm silently
+ * takes the `continue` and the modulation does nothing.
+ */
 static const slot_lfo_param_meta_t slot_lfo_param_meta[] = {
     { "depth",       -1.0f, 1.0f  },
     { "rate_hz",      0.1f, 20.0f },
     { "phase_offset", 0.0f, 1.0f  },
+    { "slew",         0.0f, 0.99f },
 };
-#define SLOT_LFO_PARAM_META_COUNT 3
+#define SLOT_LFO_PARAM_META_COUNT 4
 
-static void lfo_tick(chain_instance_t *inst, int frames) {
+static void mod_tick(chain_instance_t *inst, int frames) {
     if (!inst) return;
     float sample_rate = (float)(inst->host ? inst->host->sample_rate : MOVE_SAMPLE_RATE);
 
@@ -2146,35 +2163,81 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
         lfo_state_t *lfo = &inst->mod_routes[i];
         if (!lfo->enabled || !lfo->active) continue;
 
-        /* Phase: when a transport is running, lock to song position (writing
-         * lfo->phase keeps continuity — on stop, free-run resumes from the
-         * locked phase instead of jumping). Otherwise free-run as before. */
-        double bp = -1.0;
-        if (lfo->sync && inst->host && inst->host->get_beat_position)
-            bp = inst->host->get_beat_position();
-        if (lfo->sync && bp >= 0.0) {
-            lfo->phase = lfo_synced_phase(bp, lfo->rate_div);
-        } else {
-            float rate_hz;
-            if (lfo->sync) {
-                float bpm = 120.0f;
-                if (inst->host && inst->host->get_bpm) bpm = inst->host->get_bpm();
-                rate_hz = lfo_sync_rate_hz(bpm, lfo->rate_div);
+        float signal;
+        if (mod_src_is_lfo(lfo->src)) {
+            /* Phase: when a transport is running, lock to song position (writing
+             * lfo->phase keeps continuity — on stop, free-run resumes from the
+             * locked phase instead of jumping). Otherwise free-run as before. */
+            double bp = -1.0;
+            if (lfo->sync && inst->host && inst->host->get_beat_position)
+                bp = inst->host->get_beat_position();
+            if (lfo->sync && bp >= 0.0) {
+                lfo->phase = lfo_synced_phase(bp, lfo->rate_div);
             } else {
-                rate_hz = lfo->rate_hz;
+                float rate_hz;
+                if (lfo->sync) {
+                    float bpm = 120.0f;
+                    if (inst->host && inst->host->get_bpm) bpm = inst->host->get_bpm();
+                    rate_hz = lfo_sync_rate_hz(bpm, lfo->rate_div);
+                } else {
+                    rate_hz = lfo->rate_hz;
+                }
+                lfo->phase = lfo_advance_phase(lfo->phase, rate_hz, frames, sample_rate);
             }
-            lfo->phase = lfo_advance_phase(lfo->phase, rate_hz, frames, sample_rate);
+
+            /* Compute waveform with phase offset */
+            double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
+            signal = lfo_compute_shape(lfo->shape, effective_phase, lfo);
+        } else {
+            /*
+             * A MIDI SOURCE — velocity, pressure, a CC, the note number. Read
+             * from the latch chain_record_mod_input keeps, which is fed at both
+             * synth-feed paths so an arpeggiator drives it.
+             *
+             * PHASE IS DELIBERATELY NOT ADVANCED HERE. It is not just a wasted
+             * sinf per block for a number nothing reads: a route later switched
+             * back to LFO would have had its phase running the whole time and
+             * the waveform would resume from somewhere arbitrary instead of
+             * where the user left it.
+             */
+            signal = mod_src_signal(lfo->src, &inst->mod_input, lfo->cc_num);
         }
 
-        /* Compute waveform with phase offset */
-        double effective_phase = fmod(lfo->phase + (double)lfo->phase_offset, 1.0);
-        float signal = lfo_compute_shape(lfo->shape, effective_phase, lfo);
+        /*
+         * Slew, for EVERY source including the LFO. An LFO with slew 0 is
+         * unchanged — mod_src_slew returns the target outright — so this stays
+         * one code path rather than a branch that has to be kept in step with
+         * the one above.
+         *
+         * SEEDED, not ramped, on the first block and after a src change (which
+         * clears slew_primed). A route switched from Velocity to Pressure would
+         * otherwise glide from the old source's value to the new one's, and a
+         * glide between two unrelated controls reads as a fault in the synth
+         * rather than as a transition in the matrix.
+         */
+        if (!lfo->slew_primed) {
+            lfo->slewed = signal;
+            lfo->slew_primed = 1;
+        } else {
+            lfo->slewed = mod_src_slew(lfo->slewed, signal, lfo->slew);
+        }
+        signal = lfo->slewed;
 
-        /* Check for LFO-to-LFO targeting: "lfo1" or "lfo2" */
+        /*
+         * Mod-to-mod targeting: "mod1".."mod8", and legacy "lfo1"/"lfo2".
+         *
+         * Reuses the one index parser rather than re-deriving the index from
+         * the characters, which is what the old two-wide test did — it read
+         * target[3] against '1'..'2' and would silently have ignored routes 3
+         * through 8. chain_mod_route_index wants the trailing colon every real
+         * param key has, hence the probe.
+         */
         int target_lfo = -1;
-        if (lfo->target[0] == 'l' && lfo->target[1] == 'f' && lfo->target[2] == 'o' &&
-            lfo->target[3] >= '1' && lfo->target[3] <= '2' && lfo->target[4] == '\0') {
-            target_lfo = lfo->target[3] - '1';
+        {
+            char probe[24];
+            int n = snprintf(probe, sizeof(probe), "%s:", lfo->target);
+            if (n > 0 && n < (int)sizeof(probe))
+                target_lfo = chain_mod_route_index(probe, NULL);
         }
 
         /*
@@ -2218,6 +2281,7 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
             if (strcmp(lfo->param, "depth") == 0) cur = tgt->depth;
             else if (strcmp(lfo->param, "rate_hz") == 0) cur = tgt->rate_hz;
             else if (strcmp(lfo->param, "phase_offset") == 0) cur = tgt->phase_offset;
+            else if (strcmp(lfo->param, "slew") == 0) cur = tgt->slew;
             else continue;
 
             /* Use base from mod_route_base_values if not yet snapshotted.
@@ -2237,6 +2301,7 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
             if (strcmp(lfo->param, "depth") == 0) tgt->depth = modulated;
             else if (strcmp(lfo->param, "rate_hz") == 0) tgt->rate_hz = modulated;
             else if (strcmp(lfo->param, "phase_offset") == 0) tgt->phase_offset = modulated;
+            else if (strcmp(lfo->param, "slew") == 0) tgt->slew = modulated;
         } else if (target_lfo < 0) {
             /* Normal FX/synth target: emit modulation via existing runtime */
             char source_id[8];
@@ -2300,7 +2365,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     /* A silent-slot mod:tick may already have advanced both timers and woken
      * this exact block with a generated note. Never advance it twice. */
     if (chain_idle_tick_consume(&inst->idle_tick)) {
-        lfo_tick(inst, frames);
+        mod_tick(inst, frames);
         v2_tick_midi_fx(inst, frames);
     }
 
