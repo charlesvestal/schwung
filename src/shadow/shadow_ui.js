@@ -2056,7 +2056,29 @@ function masterFxComponentKey(i) {
  * which is slot 0 under a garbage param name (see shadow_chain_mgmt.c).
  */
 function masterFxIndexFromComponentKey(componentKey) {
-    const m = /^master_fx:fx(\d+)$/.exec(String(componentKey || ""));
+    /*
+     * THE PREFIX COMES FROM FX_BUSES, never from a literal here.
+     *
+     * This regex was /^master_fx:fx(\d+)$/ and its builder
+     * (enterMasterFxHierarchyEditorWith) spelled the same literal, so BOTH
+     * halves named the master bus while the editor they serve is shared by all
+     * three. Opening a position in Send A built the key "master_fx:fx1" and
+     * every read behind it asked the MASTER bus -- where nothing is loaded --
+     * so ui_hierarchy never resolved and the component gate held on "Loading"
+     * forever. Master FX worked for the one reason that made it hard to see:
+     * there the hardcoded prefix happens to be the right one.
+     *
+     * A send position addresses exactly like a master one (send_fx_key.h routes
+     * "send<N>:fx<M>:<param>" through the same handler and the same cap,
+     * SEND_FX_SLOTS == MASTER_FX_SLOTS), so the POSITION is all a caller needs
+     * from this -- the bus is currentFxBusIndex, which every consumer already
+     * reads through fxBus(). Deriving the prefixes from the table is what stops
+     * a fourth bus from silently failing to open the same way.
+     */
+    const key = String(componentKey || "");
+    const bus = FX_BUSES.find((b) => key.startsWith(b.prefix));
+    if (!bus) return -1;
+    const m = /^fx(\d+)$/.exec(key.slice(bus.prefix.length));
     if (!m) return -1;
     const i = Number(m[1]) - 1;
     return (i >= 0 && i < MASTER_FX_SLOTS) ? i : -1;
@@ -2114,6 +2136,34 @@ function paramPagesChromeFor(componentKey) {
         moduleKey: MASTER_CHAIN_TARGET.key(masterFxComponentKey(mfx), "name"),
         returnView: VIEWS.MASTER_FX,
     };
+}
+
+/*
+ * The key that NAMES THE MODULE behind a component key -- for any of the three
+ * chains -- or null when the key addresses no module position.
+ *
+ * THE UNDERSCORE FORM IS THE SLOT CHAIN'S ALONE. `${prefix}_module` is correct
+ * for "fx1" and for nothing else: getComponentParamPrefix returns a prefixed
+ * key verbatim, so a Master FX or send position produced "master_fx:fx1_module"
+ * / "send1:fx1_module", which nobody serves. Three call sites took their key
+ * from the KNOB GRID, which stores whichever chain it was opened on, and so
+ * asked the malformed form on every tick -- reconcileCcClaim returns on a
+ * failed read to retry next tick, so it re-asked at the full frame rate. That
+ * was measured on the device at 61 errored round trips per second against a
+ * ~2.8 ms param read: about a sixth of the channel, burned, starving the reads
+ * an entry gate is waiting on.
+ *
+ * paramPagesChromeFor already resolves the spelling for the two prefixed
+ * chains (":name" for an FX bus, ":module" for a bus insert -- both serve the
+ * module ID, as the underscore form does), so this reuses that answer rather
+ * than restating it. The sites that reach here only AFTER those branches have
+ * returned keep the bare underscore form and are unaffected.
+ */
+function componentModuleIdKey(componentKey) {
+    const chrome = paramPagesChromeFor(componentKey);
+    if (chrome) return chrome.moduleKey;
+    const prefix = getComponentParamPrefix(componentKey);
+    return prefix ? `${prefix}_module` : null;
 }
 
 /*
@@ -15215,7 +15265,10 @@ function enterMasterFxHierarchyEditorWith(fxSlot, hierarchy) {
      * instrument slot 0), and hierEditorComponent carries the prefixed form
      * "master_fx:fxN" so params become "master_fx:fxN:param". */
     const fxKey = masterFxComponentKey(fxSlot);
-    const componentKey = `master_fx:${fxKey}`;
+    /* fxBus().prefix, NOT a "master_fx:" literal -- this entry point serves
+     * Master FX, Send A and Send B, and the literal pointed every send's editor
+     * at the master bus. See masterFxIndexFromComponentKey, the inverse. */
+    const componentKey = `${fxBus().prefix}${fxKey}`;
 
     /*
      * Param View = Knobs opens the grid HERE TOO.
@@ -17934,9 +17987,9 @@ function tickComponentWidgets() {
     const comp = paramPagesComponent();
     if (slot < 0 || !comp) return;
 
-    const prefix = getComponentParamPrefix(comp);
-    if (!prefix) return;
-    const id = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleKey = componentModuleIdKey(comp);
+    if (!moduleKey) return;
+    const id = getSlotParam(slot, moduleKey) || "";
     ensureComponentWidgets(id, getComponentChainParams(slot, comp));
 }
 
@@ -18185,9 +18238,9 @@ function reconcileCcClaim() {
      * leaves it alone and the next tick asks again. */
     let moduleId = "";
     if (onScreen && onGrid) {
-        const prefix = getComponentParamPrefix(comp);
-        if (prefix) {
-            const raw = getSlotParam(slot, `${prefix}_module`);
+        const moduleKey = componentModuleIdKey(comp);
+        if (moduleKey) {
+            const raw = getSlotParam(slot, moduleKey);
             if (raw === null || raw === undefined) return;   /* retry next tick */
             moduleId = raw;
         }
@@ -18418,9 +18471,9 @@ function resolveCardScriptPath(slot, component, scriptRef) {
      * worked in one consumer and not the other for exactly this reason, which
      * is what a single-host test would have missed.
      */
-    const prefix = getComponentParamPrefix(component);
-    if (!prefix || slot < 0) return "";
-    const moduleId = getSlotParam(slot, `${prefix}_module`) || "";
+    const moduleKey = componentModuleIdKey(component);
+    if (!moduleKey || slot < 0) return "";
+    const moduleId = getSlotParam(slot, moduleKey) || "";
     const moduleDir = getModuleBasePath(moduleId);
     if (!moduleDir) return "";
     const scriptPath = `${moduleDir}/${scriptRef}`;

@@ -207,8 +207,19 @@ const grab = (name) => {
     return m[0];
 };
 
+// The REAL FX-bus table, lifted rather than restated: masterFxIndexFromComponentKey
+// derives its accepted prefixes from it, so a stub here would let the parser and
+// the table drift apart -- which is the exact bug being pinned here.
+const grabConst = (name) => {
+    const re = new RegExp("^const " + name + " = \\[[^]*?^\\];", "m");
+    const m = src.match(re);
+    if (!m) fail("could not lift " + name + " out of shadow_ui.js");
+    return m[0];
+};
+
 const body = [
     "const MASTER_FX_SLOTS = 8;",
+    grabConst("FX_BUSES"),
     grab("masterFxIndexFromComponentKey"),
     // Stubs recording whether the trailing-page machinery was reached.
     "let getComponentParamPrefixCalls = 0;",
@@ -227,6 +238,12 @@ const body = [
     "if (busInsert !== null) throw new Error(\"expected null for a bus insert, got \" + JSON.stringify(busInsert));",
     "const slot = componentParamPagesIo(1, \"fx1\");",
     "if (master !== null) throw new Error(\"expected null for a Master FX target, got \" + JSON.stringify(master));",
+    // A SEND position is an FX-bus position and inherits the same exclusion. It
+    // reaches it only because masterFxIndexFromComponentKey accepts every prefix
+    // in FX_BUSES; while that regex named master_fx alone, "send1:fx2" fell
+    // through to the slot-chain branch and was handed slot-chain trailing pages.
+    "const sendPos = componentParamPagesIo(0, \"send1:fx2\");",
+    "if (sendPos !== null) throw new Error(\"expected null for a Send FX target, got \" + JSON.stringify(sendPos));",
     "if (!slot || typeof slot.trailingMenus !== \"function\" || typeof slot.runAction !== \"function\")",
     "  throw new Error(\"expected an io object with trailingMenus/runAction for a slot component\");",
     "if (getComponentParamPrefixCalls < 1) throw new Error(\"getComponentParamPrefix was never called for the slot case\");",
