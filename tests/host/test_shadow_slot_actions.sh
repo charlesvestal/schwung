@@ -103,12 +103,15 @@ if (typeof ctx.runSlotAction !== "function") {
     { key: "knobs",  name: "My Patch",
       expect: () => ctx.view === V.KNOB_EDITOR,
       why: "Knob Mapping must open the knob editor" },
-    { key: "lfo1",   name: "My Patch",
+    /* Route 1 and the LAST route: the handler parses the index out of the key
+       now instead of testing two literals, so the far end is the half that
+       would break. */
+    { key: "mod1",   name: "My Patch",
       expect: () => ctx.view === V.LFO_EDIT,
-      why: "LFO 1 must open the LFO editor" },
-    { key: "lfo2",   name: "My Patch",
+      why: "Mod 1 must open the mod-route editor" },
+    { key: "mod8",   name: "My Patch",
       expect: () => ctx.view === V.LFO_EDIT,
-      why: "LFO 2 must open the LFO editor" },
+      why: "Mod 8 must open the mod-route editor" },
     /* An unnamed slot has nothing to overwrite, so Save asks for a name. */
     { key: "save",   name: "",
       expect: () => ctx.showingNamePreview === true,
