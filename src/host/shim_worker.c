@@ -26,6 +26,7 @@
 #include "shadow_chain_mgmt.h"  /* shadow_fx_load_worker_tick */
 
 volatile uint32_t shim_debug_flags = 0;
+
 volatile int shim_pending_sysex_inject = -1;
 volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
@@ -637,6 +638,41 @@ static void ui_midi_out_drop_tick(void)
     LOG_DEBUG("shim", msg);
 }
 
+/*
+ * Drain the slow-param ring.
+ *
+ * WHY IT IS WORTH A LOG LINE OF ITS OWN. `param=7/20051` in the spi_timing
+ * block already said a serve took 20 ms; what it could not say is WHICH KEY,
+ * and without that the only way forward is a differential experiment against
+ * the user's ears. Twice now that has cost a full session (overtake dlopen,
+ * then dr32's kit load inside synth:state). The key is in the request; this
+ * carries it out.
+ *
+ * WARN, not DEBUG: unlike the drop counters above, this fires only when
+ * something has already overrun the audio budget, so it is never noise.
+ */
+static void param_slow_tick(void)
+{
+    param_slow_entry_t e;
+    char msg[256];
+    int n = 0;
+    while (n < PARAM_SLOW_ENTRIES && param_slow_take(&shim_param_slow, &e)) {
+        if (param_slow_format(&e, msg, sizeof(msg)) > 0)
+            unified_log("shim", LOG_LEVEL_WARN, "%s", msg);
+        n++;
+    }
+
+    /* Loss is by construction (the callback may not wait for us) but must not
+     * be silent: a non-zero count means slow serves are arriving faster than
+     * 1 Hz, which is a different and worse finding than any single line above. */
+    uint32_t dropped = param_slow_take_dropped(&shim_param_slow);
+    if (dropped)
+        unified_log("shim", LOG_LEVEL_WARN,
+                    "param-slow: %u further slow serve(s) not recorded — they "
+                    "are arriving faster than this report drains",
+                    (unsigned)dropped);
+}
+
 static void *worker_main(void *arg) {
     (void)arg;
 
@@ -788,6 +824,7 @@ static void *worker_main(void *arg) {
             ext_midi_drop_tick();
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
+            param_slow_tick();        /* always on; silent unless one overran */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;

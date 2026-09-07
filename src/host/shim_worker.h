@@ -35,7 +35,17 @@
  * reusing the bit would make a stale build read one trigger as another. */
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
 
+#include "param_slow.h"   /* param_slow_t, for the extern below */
+
 extern volatile uint32_t shim_debug_flags;
+
+/*
+ * Attribution for a param serve that ate the frame. Produced on the SPI
+ * callback (shadow_chain_mgmt.c's pserve_emit), drained and logged here on the
+ * worker — the callback may not format or log. See param_slow.h for why this
+ * is always on rather than behind an arming flag.
+ */
+extern param_slow_t shim_param_slow;
 
 /* Atomically test-and-clear a one-shot flag. Returns nonzero if it was set. */
 static inline int shim_debug_flag_consume(uint32_t bit) {
