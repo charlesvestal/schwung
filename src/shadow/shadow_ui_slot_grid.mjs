@@ -148,6 +148,30 @@ export const SLOT_SEND_PARAMS = [
  * header read "BI" and "THR", which tells you nothing you could not already
  * see in the cell.
  */
+/*
+ * THE SLOT ROUTE COUNT, and it MUST equal MOD_ROUTE_COUNT in
+ * src/modules/chain/dsp/chain_internal.h.
+ *
+ * The C side sizes its arrays from that name and this side draws the pages. A
+ * disagreement is a page that reads and writes a route the DSP does not have,
+ * which answers "" and looks like a dead knob rather than like a mismatch —
+ * the same class of drift test_master_fx_slots_js.sh exists to catch, and for
+ * the same reason: a _Static_assert cannot span the two languages.
+ * Pinned by tests/host/test_mod_route_count_js.sh.
+ */
+export const MOD_ROUTE_COUNT = 8;
+export const MOD_ROUTE_INDICES =
+    Array.from({ length: MOD_ROUTE_COUNT }, (_, i) => i + 1);
+
+/*
+ * The SOURCE words. Order IS the wire contract: the enum cell writes an index
+ * and mod_src.h reads one, so inserting a source anywhere but the end
+ * repoints every saved route that used a later one. Master FX never sees this
+ * list — it has no MIDI input and so no Source cell.
+ */
+export const MOD_SOURCES = ["LFO", "Velocity", "Pressure", "CC", "Note"];
+export const MOD_SOURCES_SHORT = ["LFO", "VEL", "PRS", "CC", "NTE"];
+
 export const LFO_SHAPES = ["Sine", "Triangle", "Saw", "Square", "S&H", "Swishy"];
 export const LFO_SHAPES_SHORT = ["SIN", "TRI", "SAW", "SQR", "S&H", "SWY"];
 export const LFO_DIVISIONS = [
@@ -186,12 +210,68 @@ export const LFO_DIVISIONS_SHORT = [
  *   would be resolved against slot 0's chain rather than the master bus, read
  *   empty, compare false, and hide BOTH rate cells rather than one.
  */
-export function lfoParams(lfoIndex, keyPrefix = "") {
-    /* The viz group is a name scoped to ONE page, and an LFO is exactly one
-     * page, so it does not need the prefix and stays "lfoN" for both. */
-    const g = `lfo${lfoIndex}`;
-    const k = (name) => `${keyPrefix}lfo${lfoIndex}:${name}`;
+export function modParams(routeIndex, keyPrefix = "") {
+    /* The viz group is a name scoped to ONE page, and a route is exactly one
+     * page, so it does not need the prefix and stays "modN" for both. */
+    /*
+     * THE KEY STEM DIFFERS BY SCREEN, and it is not cosmetic.
+     *
+     * A slot route is a mod route and is addressed "modN:"; a Master FX route
+     * is an LFO and keeps "lfoN:". They are handled by different code on the
+     * device: a slot key reaches chain_mod_routes.c, which understands both
+     * spellings, while a MASTER key is parsed in the shim
+     * (shadow_chain_mgmt.c) by a literal strncmp on "lfo1:"/"lfo2:" that has
+     * never heard of mod routes. Renaming the master keys here would have left
+     * every Master FX LFO control writing a key nothing reads -- silently, with
+     * the page still drawing.
+     *
+     * It is also the honest name. Master FX has no MIDI input and so no source
+     * to choose; there, the thing really is an LFO.
+     */
+    const stem = keyPrefix === "" ? "mod" : "lfo";
+    const g = `${stem}${routeIndex}`;
+    const k = (name) => `${keyPrefix}${stem}${routeIndex}:${name}`;
+    /*
+     * A SLOT route can be anything; a MASTER FX route is always an LFO.
+     *
+     * Master FX processes the mixed bus and has no MIDI input, so there is no
+     * mod_input for a velocity or pressure source to read. Offering the Source
+     * cell there would be a control that silently does nothing, which is worse
+     * than its absence — and it is what keeps the Master FX page pixel-identical
+     * to what it was before mod routes existed.
+     *
+     * The gate is expressed as spread-in properties rather than as a `hidden`
+     * flag because on Master FX there is no `src` key AT ALL: a condition whose
+     * param reads empty compares false, so a declared-but-unsatisfiable
+     * condition would hide the whole page rather than show it.
+     */
+    const isSlot = keyPrefix === "";
+    const lfoOnly = isSlot ? { visible_if: { param: k("src"), equals: "0" } } : {};
+    const ccOnly = { visible_if: { param: k("src"), equals: "3" } };
+    /*
+     * ONE condition key for the rate cells, not two.
+     *
+     * "show rate_hz when this is a free-running LFO" is two facts, and the
+     * visible_if evaluator takes one condition. The DSP answers the composite
+     * question directly as `rate_mode` (0 free, 1 synced, 2 not an LFO) rather
+     * than the contract growing an `all:` form for one screen — and it costs one
+     * condition key instead of two, on a page where the planner re-reads every
+     * condition key per re-plan at ~2.8 ms an IPC read.
+     *
+     * On Master FX, where there is no src, `sync` alone is still the whole
+     * question, so the old condition is kept verbatim.
+     */
+    const rateWhen = (mode, syncVal) => isSlot
+        ? { visible_if: { param: k("rate_mode"), equals: String(mode) } }
+        : { visible_if: { param: k("sync"), equals: String(syncVal) } };
     return [
+        /* The SOURCE, first cell: it decides which of the others exist, so it
+         * reads left-to-right as "this route is a Velocity route, aimed here,
+         * this deep". Slot only — see isSlot above. */
+        ...(isSlot ? [{
+            key: k("src"), name: "Src", type: "enum",
+            options: MOD_SOURCES, short_options: MOD_SOURCES_SHORT,
+        }] : []),
         /*
          * ROW 1 — what the modulator IS: where it goes, whether it runs, how it
          * is scaled, what its clock is.
@@ -222,11 +302,11 @@ export function lfoParams(lfoIndex, keyPrefix = "") {
           options: ["Unipolar", "Bipolar"], short_options: ["UNI", "BI"],
           viz: { group: g, role: "polarity", span: false } },
         { key: k("sync"), name: "Sync", type: "enum",
-          options: ["Free", "Sync"], short_options: ["FRE", "SYN"] },
+          options: ["Free", "Sync"], short_options: ["FRE", "SYN"], ...lfoOnly },
 
         { key: k("shape"), name: "Shape", type: "enum",
           options: LFO_SHAPES, short_options: LFO_SHAPES_SHORT,
-          viz: { group: g, role: "shape" } },
+          viz: { group: g, role: "shape" }, ...lfoOnly },
         /*
          * ONE rate cell, not two. Free-run and synced rates are the same
          * control wearing different units, and showing both spends a cell on
@@ -242,11 +322,11 @@ export function lfoParams(lfoIndex, keyPrefix = "") {
          * group finds exactly one either way.
          */
         { key: k("rate_hz"), name: "Rate", type: "float", min: 0.1, max: 20, step: 0.1, unit: "Hz",
-          visible_if: { param: k("sync"), equals: "0" },
+          ...rateWhen(0, 0),
           viz: { group: g, role: "rate" } },
         { key: k("rate_div"), name: "Rate", type: "enum",
           options: LFO_DIVISIONS, short_options: LFO_DIVISIONS_SHORT,
-          visible_if: { param: k("sync"), equals: "1" },
+          ...rateWhen(1, 1),
           viz: { group: g, role: "rate" } },
         /* Percent, not a raw fraction: "65%" is the value, "0.65" is the storage.
          * Bipolar is kept — a negative depth INVERTS the modulation, which is a
@@ -254,23 +334,85 @@ export function lfoParams(lfoIndex, keyPrefix = "") {
         { key: k("depth"), name: "Depth", type: "float", min: -1, max: 1, step: 0.01, unit: "%",
           default: 1,
           viz: { group: g, role: "depth" } },
-        { key: k("phase_offset"), name: "Phase", type: "float", min: 0, max: 1, step: 0.0417, unit: "%",
-          viz: { group: g, role: "phase" } },
+        /*
+         * WHICH CONTROLLER, for a CC route only. Default 74 because that is the
+         * filter-cutoff CC on essentially every controller ever made, so the
+         * cell is useful the moment it appears rather than needing a lookup.
+         */
+        ...(isSlot ? [{
+            key: k("cc_num"), name: "CC#", type: "int", min: 0, max: 127, step: 1,
+            default: 74, ...ccOnly,
+        }, {
+            /*
+             * HOW SMOOTHLY the route follows its source — and NOT on an LFO.
+             *
+             * That is the design, not a page-budget compromise: an LFO is
+             * already smooth by construction, so slewing one only softens a
+             * square edge. Slew exists for the 7-bit MIDI sources, which step
+             * audibly on a filter cutoff, and this is the cell that fixes them.
+             *
+             * (It is also what makes the arithmetic work: with slew ungated an
+             * LFO route showed NINE cells against eight encoders and spilled
+             * onto a "Mod 1 - 2" overflow page.)
+             *
+             * Capped below 1, which mod_src_slew reads as "never arrive".
+             */
+            key: k("slew"), name: "Slew", type: "float",
+            min: 0, max: 0.99, step: 0.01, unit: "%",
+            visible_if: { param: k("src"), not_equals: "0" },
+        }] : []),
+        /*
+         * PHASE — on Master FX only, and that asymmetry is the page budget.
+         *
+         * Master FX has no Source cell, so its route is the nine-declared /
+         * eight-visible page it always was and Phase keeps its knob. A SLOT
+         * route spends that cell on Source, and nine visible against eight
+         * encoders does not fit.
+         *
+         * It leaves the grid ENTIRELY rather than becoming a declared non-knob:
+         * the planner gives a leftover param its own page, so demoting it
+         * produced a "Mod 1 - 2" overflow holding one cell — the exact outcome
+         * SLOT_SEND_PARAMS above warns about ("titled 'Main - 2', which names
+         * nothing"). Retrigger already went this way for the same reason and is
+         * edited from the list view; Phase joins it there.
+         *
+         * Of the nine it is the right one to lose: it only matters when two
+         * routes run at the same rate and you want them offset. lfoHeights
+         * defaults phase to 0, so the waveform graphic is unchanged.
+         */
+        ...(isSlot ? [] : [{
+            key: k("phase_offset"), name: "Phase", type: "float",
+            min: 0, max: 1, step: 0.0417, unit: "%",
+            viz: { group: g, role: "phase" },
+        }]),
     ];
 }
 
 /**
- * Nine declared, one of them always hidden — so EIGHT show and an LFO is
- * exactly one page.
+ * EVERY declared param is a knob, and `visible_if` does the fitting.
  *
- * The two rates never appear together (visible_if on sync), and that is what
- * pays for Phase. Retrigger is the one still missing: ten params do not fit
- * eight cells however they are arranged, and of the two, phase offset is the
- * one a per-slot LFO reaches for more often. Retrigger stays editable in the
- * list view.
+ * That is the whole trick this page has always used: the two rate cells never
+ * appear together, so nine declared come to eight on screen. The mod sources
+ * extend it rather than replacing it — `src` gates shape, sync and the rates
+ * off for a MIDI source, and gates `cc_num` and `slew` on.
+ *
+ * ON SCREEN, per source:
+ *   LFO         src target enabled polarity sync shape rate depth   = 8
+ *   Velocity |
+ *   Pressure |  src target enabled polarity depth slew              = 6
+ *   Note     |
+ *   CC          the six above plus cc_num                           = 7
+ *   Master FX   target enabled polarity sync shape rate depth phase = 8
+ *
+ * Nothing is filtered out here. A param declared but NOT listed as a knob gets
+ * its own overflow page from the planner — "Mod 1 - 2" holding a single cell —
+ * so the two ways of not showing something are not interchangeable: a control
+ * that should not be on the grid must not be DECLARED for the grid. Phase is
+ * absent from a slot route for exactly that reason, and is edited from the list
+ * view alongside Retrigger.
  */
-export function lfoKnobKeys(lfoIndex, keyPrefix = "") {
-    return lfoParams(lfoIndex, keyPrefix).map((p) => p.key);
+export function modKnobKeys(routeIndex, keyPrefix = "") {
+    return modParams(routeIndex, keyPrefix).map((p) => p.key);
 }
 
 /**
@@ -289,13 +431,19 @@ export function lfoKnobKeys(lfoIndex, keyPrefix = "") {
  * @returns {object} { lfo1: {...}, lfo2: {...} } keyed by LEVEL name, which is
  *   unprefixed — a level name is internal to the hierarchy, not a param key.
  */
-export function lfoLevels(indices, keyPrefix = "") {
+export function modLevels(indices, keyPrefix = "") {
     const levels = {};
     for (const n of indices) {
-        levels["lfo" + n] = {
-            label: "LFO " + n,
-            knobs: lfoKnobKeys(n, keyPrefix),
-            params: lfoParams(n, keyPrefix).map((p) => (
+        levels[(keyPrefix === "" ? "mod" : "lfo") + n] = {
+            /*
+             * "Mod N" on a slot, "LFO N" on Master FX — the label says what the
+             * thing can actually be. A Master FX route has no Source cell and
+             * is always an LFO, so calling it "Mod" there would promise a
+             * choice that screen cannot offer.
+             */
+            label: (keyPrefix === "" ? "Mod " : "LFO ") + n,
+            knobs: modKnobKeys(n, keyPrefix),
+            params: modParams(n, keyPrefix).map((p) => (
                 p.visible_if ? { key: p.key, visible_if: p.visible_if } : { key: p.key }
             )),
         };
@@ -339,51 +487,57 @@ export function slotGridHierarchy(hasPreset, hasSplits) {
         .filter((a) => !a.when || have[a.when])
         .map((a) => ({ label: a.label, action: a.action }));
     /*
-     * Page order is Main, Sends, LFO 1, LFO 2, Actions.
+     * Page order is Main, Sends, Mod 1..8, Actions.
      *
      * The menu therefore lives on its OWN level rather than on root: a level
      * emits its menu straight after its own grids, before any level it
      * navigates to, so a menu on root would land second — between the values
-     * and the LFOs. Actions are what you do when you have finished, so they
-     * belong at the end.
+     * and the mod routes. Actions are what you do when you have finished, so
+     * they belong at the end.
      */
     const levels = {
         root: {
             label: "Slot",
             knobs: SLOT_GRID_PARAMS.map((p) => p.key),
             params: SLOT_GRID_PARAMS.map((p) => ({ key: p.key }))
-                .concat([{ level: "sends", label: "Sends" },
-                         { level: "lfo1", label: "LFO 1" },
-                         { level: "lfo2", label: "LFO 2" },
-                         { level: "actions", label: "Actions" }]),
+                .concat([{ level: "sends", label: "Sends" }])
+                /* Eight rows generated from the one count, not eight literals:
+                 * a hand-written list is how the C cap and the UI cap drift. */
+                .concat(MOD_ROUTE_INDICES.map((n) => (
+                    { level: "mod" + n, label: "Mod " + n }
+                )))
+                .concat([{ level: "actions", label: "Actions" }]),
         },
-        /* Before the LFOs: a send is a mix decision and belongs beside the
-         * values, where a modulation source does not. */
+        /* Before the mod routes: a send is a mix decision and belongs beside
+         * the values, where a modulation source does not. */
         sends: {
             label: "Sends",
             knobs: SLOT_SEND_PARAMS.map((p) => p.key),
             params: SLOT_SEND_PARAMS.map((p) => ({ key: p.key })),
         },
     };
-    Object.assign(levels, lfoLevels([1, 2]));
+    Object.assign(levels, modLevels(MOD_ROUTE_INDICES));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
     return { modes: null, levels };
 }
 
-/** Every declared param across the slot page and both LFO pages. */
+/** Every declared param across the slot page and all eight mod-route pages. */
 export function allSlotGridParams() {
-    return SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS)
-                           .concat(lfoParams(1)).concat(lfoParams(2));
+    let out = SLOT_GRID_PARAMS.concat(SLOT_SEND_PARAMS);
+    for (const n of MOD_ROUTE_INDICES) out = out.concat(modParams(n));
+    return out;
 }
 
 /** Which real param key a grid key reads and writes, or null when derived. */
 export function realKeyFor(gridKey) {
     if (gridKey === "mpe_mode") return null;            /* derived, see below */
     if (gridKey === "midi_fx_pre_mode") return "midi_fx_pre_mode";  /* bare */
-    /* LFO params are declared with their real prefix already ("lfo1:shape"),
-     * the same one makeSlotLfoCtx uses, so they pass straight through. Adding
-     * "slot:" would address a param that does not exist and read empty. */
-    if (/^lfo[12]:/.test(gridKey)) return gridKey;
+    /* Mod-route params are declared with their real prefix already
+     * ("mod1:shape"), the same one makeSlotLfoCtx uses, so they pass straight
+     * through. Adding "slot:" would address a param that does not exist and
+     * read empty. The legacy "lfoN:" spelling is still accepted by the DSP but
+     * nothing here emits it. */
+    if (/^mod[1-8]:/.test(gridKey)) return gridKey;
     /* The slot sends are stored by the CHAIN, not by the slot: "buses:" is the
      * chain host's slot-level route (a bare "send_a" would be handed to the
      * synth plugin, i.e. a write to somebody else's parameter) and
@@ -468,7 +622,7 @@ export function createSlotGridIo(io) {
          */
         isModulated(fullKey) {
             const k = bare(fullKey);
-            if (!/^lfo[12]:/.test(k)) return false;
+            if (!/^mod[1-8]:/.test(k)) return false;
             if (!io.isModulated) return false;
             /* The REAL key: the grid addresses these as "slot:lfo1:depth" and
              * the device knows them as "lfo1:depth". */
@@ -484,7 +638,7 @@ export function createSlotGridIo(io) {
          */
         formatValue(fullKey, raw, surface) {
             const k = bare(fullKey);
-            const m = /^lfo([12]):target$/.exec(k);
+            const m = /^mod([1-8]):target$/.exec(k);
             if (!m || !io.describeTarget) return null;
             const d = io.describeTarget(parseInt(m[1], 10) - 1);
             if (!d) return null;
@@ -622,7 +776,7 @@ export function masterGridHierarchy(hasPreset) {
         },
     };
     /* The SAME builder the slot contract uses, one bus over. */
-    Object.assign(levels, lfoLevels([1, 2], MASTER_KEY_PREFIX));
+    Object.assign(levels, modLevels([1, 2], MASTER_KEY_PREFIX));
     levels.actions = { label: "Actions", knobs: [], params: [], menu: menu, menu_label: "Actions" };
     return { modes: null, levels };
 }
@@ -630,8 +784,8 @@ export function masterGridHierarchy(hasPreset) {
 /** Every declared param across the root page and both LFO pages. */
 export function allMasterGridParams() {
     return MASTER_GRID_PARAMS
-        .concat(lfoParams(1, MASTER_KEY_PREFIX))
-        .concat(lfoParams(2, MASTER_KEY_PREFIX));
+        .concat(modParams(1, MASTER_KEY_PREFIX))
+        .concat(modParams(2, MASTER_KEY_PREFIX));
 }
 
 const MASTER_LFO_KEY = new RegExp("^" + MASTER_KEY_PREFIX + "lfo[12]:");
