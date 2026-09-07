@@ -127,7 +127,7 @@ import { groupLfoTargetParams, flatLfoTargetParams, locateLfoTargetParam, indexO
 import { emptyChain, parseId as parseChainId, chainComponents, moveBy as chainMoveBy,
          removeAt as chainRemoveAt, insertAt as chainInsertAt, MAX_FX, MAX_MIDI_FX }
     from '/data/UserData/schwung/shared/chain_model.mjs';
-import { drawChainDiagram, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
+import { drawChainDiagram, isBusDoor, DEFAULT_Y as DIAGRAM_Y, BOX_H as DIAGRAM_BOX_H }
     from '/data/UserData/schwung/shared/chain_diagram.mjs';
 import { runDrawBench } from '/data/UserData/schwung/shared/draw_bench.mjs';
 import { installParamTally, paramTallyTick, paramTallyArmed } from '/data/UserData/schwung/shared/param_tally.mjs';
@@ -3435,6 +3435,18 @@ const SEND_LEVEL_STEP = 4;
 let selectedFxBusRow = 0;
 
 /*
+ * WHERE EACH BUS WAS LEFT, so re-entering puts you back on the module you were
+ * working on rather than at the start of the row.
+ *
+ * Per bus, because enterFxBus deliberately drops everything the editor holds
+ * about "the chain" -- all of it is keyed by position, not by bus -- so a single
+ * remembered index would be Send B's position applied to the master. The slot
+ * chain has had this as lastChainComponent[] all along; the FX buses simply
+ * never did, and reset to the head of the row on every entry.
+ */
+const lastFxBusComponent = [];
+
+/*
  * Open one bus's editor. THE ONE PLACE currentFxBusIndex changes.
  *
  * Everything the editor holds about "the chain" is keyed by position, not by
@@ -3458,11 +3470,31 @@ function enterFxBus(index) {
      * so carrying the name across would put Master FX's preset in a send's
      * header band. */
     if (!fxBusIsMaster()) currentMasterPresetName = "";
-    /* Land on the first FX POSITION, not on the Send A box that now heads the
-     * row. Arriving pointed at a door out of the screen you just opened is the
-     * same complaint defaultChainComponent exists to answer for the `+`. */
+    /*
+     * THE LANDING, resolved against a config that has ACTUALLY BEEN READ.
+     *
+     * invalidateMasterFxConfig above marks the mirror stale and the reload is
+     * LAZY -- drawMasterFx does it on its next diagram frame. So asking which
+     * row holds FX 1 here read an empty chain, got -1, and left the selection on
+     * row 0: the Send A box. Entering Master FX with a full chain landed on a
+     * door out of it. Reported from hardware.
+     *
+     * One IPC read (`<prefix>modules`) on a screen change buys the right answer.
+     * It is safe HERE specifically -- the warning on `invalidate` is about the
+     * `+` box, whose pending position exists only in the model and would be
+     * wiped by a reload; a fresh entry has no pending insert.
+     */
+    MASTER_CHAIN_TARGET.reload();
+    const comps = masterFxChainComponents();
     const firstFx = masterFxRowOf(0);
-    if (firstFx >= 0) selectedMasterFxComponent = firstFx;
+    const fallback = firstFx >= 0 ? firstFx : 0;
+    const want = lastFxBusComponent[currentFxBusIndex];
+    /* Never LAND on a head door, even if that is where the cursor was left: it
+     * is a way out of the screen you just opened, which is the complaint
+     * defaultChainComponent already answers for the `+`. */
+    selectedMasterFxComponent =
+        (typeof want === "number" && want >= 0 && want < comps.length &&
+         comps[want] && !isBusDoor(comps[want].kind)) ? want : fallback;
     /* The bands under the boxes name what is in each send; read ONCE here, on a
      * screen change, never on the draw path. */
     fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
@@ -19739,6 +19771,8 @@ function handleJog(delta, shift = isShiftHeld()) {
                  * would open the MASTER bus's preset picker. */
                 const floor = fxBus().hasPresets ? -1 : 0;
                 selectedMasterFxComponent = Math.max(floor, Math.min(comps.length - 1, selectedMasterFxComponent + delta));
+                /* Remembered per bus, so coming back lands here. */
+                lastFxBusComponent[currentFxBusIndex] = selectedMasterFxComponent;
                 if (selectedMasterFxComponent === -1) {
                     announce("Preset Selection");
                 } else {

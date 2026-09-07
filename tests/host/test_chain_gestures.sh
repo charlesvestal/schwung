@@ -376,7 +376,12 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
                    /* The bus decides whether the PRESET row at -1 exists at
                       all: a send has no preset store, so jogging left off
                       position 0 must stop there. Master, in this block. */
-                   "fxBus"];
+                   "fxBus",
+                   /* The jog records where each bus was left, so re-entering
+                      lands on the module you were working on rather than at
+                      the head of the row -- which is now a DOOR out of the
+                      screen. Injected so the lift can run the write. */
+                   "fxBusSummaries", "currentFxBusIndex", "lastFxBusComponent"];
     const maker = liftStateful(null, NAMES, ["selectedMasterFxComponent", "needsRedraw"],
       "var __f = function (delta, shift) { switch (1) { case 1: " + body + " } };");
 
@@ -390,6 +395,9 @@ const call = (maker, deps, names) => maker(...names.map((n) => deps[n]));
       rig.deps.helpNavStack = [];
       rig.deps.inMasterPresetPicker = false;
       rig.deps.inMasterFxSettingsMenu = false;
+      rig.deps.fxBusSummaries = [];
+      rig.deps.currentFxBusIndex = 0;
+      rig.deps.lastFxBusComponent = [];
       rig.deps.selectingMasterFxModule = false;
       rig.deps.fxBus = () => ({ hasPresets: true });
       return rig;
