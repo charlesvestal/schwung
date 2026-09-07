@@ -1422,6 +1422,17 @@
       "asset_name": "jp8000-module.tar.gz",
       "min_host_version": "1.1.1",
       "requires": "JP-8000 v1.5 firmware ROMs: all 8 .mid files in the module's roms/ folder"
+    },
+    {
+      "id": "hinge",
+      "name": "Hinge",
+      "description": "Two-operator FM on eight knobs, one page: ratio, brightness, bite, one envelope pair, noise and a tone sweep. 32 presets",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-hinge",
+      "default_branch": "main",
+      "asset_name": "hinge-module.tar.gz",
+      "min_host_version": "1.2.0"
     }
   ]
 }
