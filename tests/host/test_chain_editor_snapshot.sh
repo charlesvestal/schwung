@@ -729,6 +729,121 @@ function masterSettingsState(o) {
   return s;
 }
 
+
+/* ======================================================================== */
+/* THE SLOT SETTINGS GRID -- the mod-route pages                             */
+/* ======================================================================== */
+/*
+ * The master LFO cases above cover the shared builder, but they cannot cover
+ * the part that is SLOT-ONLY: the Source cell and the cells it gates on and
+ * off. A velocity route draws six cells where an LFO draws eight, and "the
+ * contract says six" is not the same claim as "six cells appear, in the right
+ * places, with nothing clipped and no hole where a hidden param used to be".
+ *
+ * These exist because the composition test that PASSED still let a page ship
+ * with a "Mod 1 - 2" overflow holding one cell: the count was right and the
+ * picture was wrong. Only a render says otherwise.
+ */
+const { createSlotGridIo } = await import("./src/shadow/shadow_ui_slot_grid.mjs");
+const SLOT_GRID = await import("./src/shadow/shadow_ui_slot_grid.mjs");
+
+/* A slot state map, as the shim would answer it. Every route is fully
+   populated for the same reason the master one is: an unread key draws as an
+   empty cell, which would let a case pass its content floor on the OTHER cells
+   while quietly no longer protecting the one that went missing. */
+function slotGridState(o) {
+  const src = o.src === undefined ? 0 : o.src;
+  const sync = o.sync === undefined ? "0" : o.sync;
+  const s = {
+    volume: "1.00", muted: "0", soloed: "0", transpose: "0",
+    receive_channel: "1", forward_channel: "-1",
+    midi_fx_pre_mode: "0", mpe_mode: "0",
+    "buses:main_send1": "0", "buses:main_send2": "0",
+  };
+  for (let n = 1; n <= SLOT_GRID.MOD_ROUTE_COUNT; n++) {
+    const q = "mod" + n + ":";
+    s[q + "target"] = "fx1";
+    s[q + "target_param"] = "room_size";
+    s[q + "enabled"] = "1";
+    s[q + "polarity"] = "1";
+    s[q + "sync"] = sync;
+    s[q + "shape"] = o.shape === undefined ? "0" : o.shape;
+    s[q + "rate_hz"] = "2.4";
+    s[q + "rate_div"] = "19";
+    s[q + "depth"] = "0.65";
+    s[q + "src"] = String(src);
+    s[q + "cc_num"] = "74";
+    s[q + "slew"] = "0.35";
+    /* What the DSP computes: 0 free LFO, 1 synced LFO, 2 not an LFO at all.
+       Mirrored here rather than re-derived, so a case cannot disagree with the
+       device about which rate cell is on the page. */
+    s[q + "rate_mode"] = src !== 0 ? "2" : (sync === "1" ? "1" : "0");
+  }
+  return s;
+}
+
+const slotGridCases = [];
+const addSlotGrid = (id, o) => slotGridCases.push({
+  id, page: o.page, state: slotGridState(o),
+});
+
+function renderSlotGrid(c) {
+  const fb = createFramebuffer();
+  const store = c.state;
+  installGlobals(fb, (slot, key) => (store[key] !== undefined ? store[key] : ""));
+  const io = createSlotGridIo({
+    readSlotParam: (k) => (store[k] !== undefined ? store[k] : ""),
+    writeSlotParam: (k, v) => { store[k] = String(v); },
+    readParam: (k) => (store[k] !== undefined ? store[k] : ""),
+    writeParam: (k, v) => { store[k] = String(v); },
+    hasPreset: () => true,
+    hasSplitVoices: () => false,
+    isMpeMode: () => false,
+    setMpeMode: () => {},
+    describeTarget: () => ({ short: "F1 ROOM", header: "FX 1", long: "FX 1: Room Size" }),
+    isModulated: () => false,
+    runAction: () => { fail(c.id + " ran an action while merely rendering"); },
+  });
+  /* The visibility evaluator the host binds to the slot. not_equals is part of
+     it because the Slew cell is gated that way -- an evaluator that only knew
+     `equals` would hide Slew everywhere and the pages would still look
+     plausible. */
+  io.visible = (cond) => {
+    if (!cond || !cond.param) return true;
+    const v = store[cond.param] !== undefined ? store[cond.param] : "";
+    if (cond.not_equals !== undefined) return String(v) !== String(cond.not_equals);
+    return String(v) === String(cond.equals);
+  };
+  const ctl = createController(Object.assign({ announce: noop }, io));
+  ctl.load({ slot: 0, component: "slot", prefix: "slot", visible: io.visible });
+  ctl.setLayout(LAYOUT_MOVY);
+  const names = ctl.pages.map((pg) => pg.name);
+  const at = names.indexOf(c.page);
+  if (at < 0) fail(c.id + " names a page that does not exist: " + c.page +
+                   " (pages: " + names.join(", ") + ")");
+  ctl.goToPage(Math.max(0, at));
+  for (let i = 0; i < 400; i++) ctl.tick();
+  ctl.render(drawContext(fb), {
+    title: "Slot 1 > Settings",
+    footer: SETTINGS_FOOTER[ctl.page.kind] || SETTINGS_FOOTER.knobs,
+  });
+  clearGlobals();
+  return fb;
+}
+
+/* ONE CASE PER SOURCE, because the source is what changes the page. The LFO
+   pair also covers the rate swap, which on a slot is gated by rate_mode rather
+   than by sync -- a different key from the master pages above, so it needs its
+   own picture. */
+addSlotGrid("settings/slot/mod1-lfo-free", { page: "Mod 1", src: 0, sync: "0" });
+addSlotGrid("settings/slot/mod1-lfo-sync", { page: "Mod 1", src: 0, sync: "1", shape: "3" });
+addSlotGrid("settings/slot/mod1-velocity", { page: "Mod 1", src: 1 });
+addSlotGrid("settings/slot/mod1-pressure", { page: "Mod 1", src: 2 });
+addSlotGrid("settings/slot/mod1-cc", { page: "Mod 1", src: 3 });
+addSlotGrid("settings/slot/mod1-note", { page: "Mod 1", src: 4 });
+/* The LAST route, so eight pages are a fact rather than a count. */
+addSlotGrid("settings/slot/mod8-velocity", { page: "Mod 8", src: 1 });
+
 const settingsCases = [];
 const addSettings = (id, o) => settingsCases.push({
   id, page: o.page, state: masterSettingsState(o),
@@ -1869,6 +1984,7 @@ run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/slot/" + c.id.slic
 run(pickerCases.map((c) => Object.assign({}, c, { id: "picker/master/" + c.id.slice(7) })),
     renderMasterPicker, "picker");
 run(settingsCases, renderSettings, "settings");
+run(slotGridCases, renderSlotGrid, "settings");
 run(sendSettingsCases, renderSendSettings, "picker");
 run(busPickerCases, renderBusPicker, "picker");
 /* The bus screens: the three lists wear the list bands, the insert chain wears
@@ -2040,6 +2156,7 @@ console.log("PASS: chain editor snapshot — " + chainCases.length + " slot-chai
             masterCases.length + " FX-bus (master and send), " +
             (pickerCases.length * 2) + " module-picker, " + busPickerCases.length +
             " FX-bus-picker, " + settingsCases.length + " Master FX settings and " +
+            slotGridCases.length + " slot mod-route and " +
             sendSettingsCases.length + " send settings-menu and " +
             busCases.length + " slot-bus and " + settingsListCases.length +
             " slot-settings-list renders match the baseline, " +
