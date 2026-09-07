@@ -103,4 +103,25 @@ if grep -nE 'announce\("Master FX' src/shadow/shadow_ui.js >/dev/null 2>&1; then
   exit 1
 fi
 
+# A SEND has no fx:insert/fx:remove/fx:move — the shim serves those only under
+# the master_fx: prefix. The picker's "a removal is COMPLETE here" shortcut is
+# therefore true for the master and false for a send, and taking it on faith
+# made picking None on a loaded send position do nothing at all: the verb went
+# nowhere and the module write that empties the position was skipped as
+# redundant. Reported from hardware twice.
+for f in send1 send2; do
+  if ! grep -qE "id: \"$f\"" src/shadow/shadow_ui.js; then
+    echo "FAIL: FX_BUSES has no $f row to check" >&2; exit 1
+  fi
+done
+if ! grep -qE 'hasShapeVerbs: true' src/shadow/shadow_ui.js ||
+   ! grep -qE 'hasShapeVerbs: false' src/shadow/shadow_ui.js; then
+  echo "FAIL: FX_BUSES must declare hasShapeVerbs — true for the master, false for a send" >&2
+  exit 1
+fi
+if ! grep -qE 'shapeVerbs && choice\.shape && choice\.shape\.kind === "remove"' src/shadow/shadow_ui.js; then
+  echo "FAIL: the picker treats a remove as complete without asking whether the bus HAS the verb" >&2
+  exit 1
+fi
+
 echo "PASS: every master-bus writer that runs from another screen is scoped to the master bus, the swap moves both halves, and the snapshot harness's FX_BUSES stub agrees with the real table"

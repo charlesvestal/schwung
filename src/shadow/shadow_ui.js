@@ -3273,11 +3273,14 @@ function slotChainTarget(slotIndex) {
  */
 const FX_BUSES = [
     { id: "master", label: "Master FX", short: "MFX",  prefix: "master_fx:",
-      send: -1, hasLfos: true,  hasPresets: true,  busLevelKeys: [] },
+      send: -1, hasLfos: true,  hasPresets: true,  hasShapeVerbs: true,
+      busLevelKeys: [] },
     { id: "send1",  label: "Send A",    short: "SNDA", prefix: "send1:",
-      send: 0,  hasLfos: false, hasPresets: false, busLevelKeys: ["return", "to_send2"] },
+      send: 0,  hasLfos: false, hasPresets: false, hasShapeVerbs: false,
+      busLevelKeys: ["return", "to_send2"] },
     { id: "send2",  label: "Send B",    short: "SNDB", prefix: "send2:",
-      send: 1,  hasLfos: false, hasPresets: false, busLevelKeys: ["return"] },
+      send: 1,  hasLfos: false, hasPresets: false, hasShapeVerbs: false,
+      busLevelKeys: ["return"] },
 ];
 let currentFxBusIndex = 0;
 function fxBus() { return FX_BUSES[currentFxBusIndex] || FX_BUSES[0]; }
@@ -4000,6 +4003,7 @@ const MASTER_CHAIN_TARGET = {
     /* False on a send, so chainLfoTargetMap skips two reads per frame rather
      * than asking for a key the shim does not serve. */
     get hasLfos() { return fxBus().hasLfos; },
+    get hasShapeVerbs() { return fxBus().hasShapeVerbs !== false; },
     key: (componentKey, suffix) => {
         /* "settings" is a box in the list but not a module position, so it has
          * no params — same rule chainComponentParamKey applies for the slot
@@ -11800,8 +11804,19 @@ function applyMasterFxModuleSelection() {
      * the edit is renumbered — which one `<id>:module` write cannot say. One
      * verb, and the DSP permutes rather than reloading. A removal is COMPLETE
      * here; an insert only opens the hole and the module write below fills it. */
-    if (choice.shape) writeChainShape(MASTER_CHAIN_TARGET, choice.shape);
-    if (!(choice.shape && choice.shape.kind === "remove")) {
+    /* A shape verb only exists where the shim serves one. Master FX has
+     * fx:insert / fx:remove / fx:move; a SEND has none — Task 6 left them out
+     * deliberately, "a send position is emptied by writing "" into it".
+     *
+     * So `remove is COMPLETE` below is true for the master and false for a
+     * send, and taking it on faith is what made picking None on a loaded send
+     * position do NOTHING AT ALL: the verb went nowhere and the module write
+     * that would have emptied the position was skipped as redundant. Reported
+     * from hardware twice, the first time unreadable because the editor was
+     * also announcing the wrong bus. */
+    const shapeVerbs = MASTER_CHAIN_TARGET.hasShapeVerbs;
+    if (choice.shape && shapeVerbs) writeChainShape(MASTER_CHAIN_TARGET, choice.shape);
+    if (!(shapeVerbs && choice.shape && choice.shape.kind === "remove")) {
         if (pickerReplacedModule(choice.replaced, picked)) {
             clearLfoRoutingForComponent(MASTER_CHAIN_TARGET, comp.key);
         }
