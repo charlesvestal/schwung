@@ -55,7 +55,31 @@ static void test_a_long_key_is_truncated_not_overflowed(void) {
     assert(param_slow_record(&p, longkey, 0, 1, 5000) == 1);
     assert(param_slow_take(&p, &e) == 1);
     assert(strlen(e.key) == PARAM_SLOW_KEY_LEN - 1);
-    printf("  long key truncated: ok\n");
+
+    /*
+     * THE BOUNDARY, not just "something long".
+     *
+     * A key far over the limit clamps identically whether the guard is `>=` or
+     * `>`, so a 127-char key cannot tell the two apart — and `>` is a one-byte
+     * overrun of key[] at exactly PARAM_SLOW_KEY_LEN. Found by mutation: the
+     * long-key case above passed the mutant. Both neighbours are pinned so the
+     * clamp cannot drift in either direction.
+     */
+    char exact[PARAM_SLOW_KEY_LEN + 1];
+    memset(exact, 'k', PARAM_SLOW_KEY_LEN);
+    exact[PARAM_SLOW_KEY_LEN] = '\0';
+    assert(strlen(exact) == PARAM_SLOW_KEY_LEN);
+    assert(param_slow_record(&p, exact, 0, 1, 5000) == 1);
+    assert(param_slow_take(&p, &e) == 1);
+    assert(strlen(e.key) == PARAM_SLOW_KEY_LEN - 1);   /* truncated by one */
+
+    char fits[PARAM_SLOW_KEY_LEN];
+    memset(fits, 'k', PARAM_SLOW_KEY_LEN - 1);
+    fits[PARAM_SLOW_KEY_LEN - 1] = '\0';
+    assert(param_slow_record(&p, fits, 0, 1, 5000) == 1);
+    assert(param_slow_take(&p, &e) == 1);
+    assert(strcmp(e.key, fits) == 0);                  /* NOT truncated */
+    printf("  long key truncated (incl. the exact boundary): ok\n");
 }
 
 static void test_a_missing_key_still_reports(void) {
