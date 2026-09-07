@@ -218,10 +218,10 @@ settings/send1/sel-return f0047eb3ae8c654f7b550c9c20eeecc06bf8ab31
 settings/send1/sel-to-send2 d835eb7b81d908ecaa6a0bdc74986f4bad660222
 settings/send1/unread f9a92aac78f1789f6d4c8ac457011f72296a2da4
 settings/send2/sel-return dd8286804f682d07ee32add3dddf4c2a883b9703
-settings/slot/buses-2 f2f8a377ca45ca25a7bed698dfaf30c04625b18c
-settings/slot/buses-cursor 60fdd89dbc4ac2b9c8b319ab77b8771701e6c52c
-settings/slot/buses-none badba9b67ea07cb5bd506ffebf3ffbf5fc6583e3
-settings/slot/buses-nopreset 08fa3a8ab89c6a4cf5909a9bf3ff7de21c3da5a5
+settings/slot/buses-2 c5a84c44d2290308a87d72410625f7f44899d206
+settings/slot/buses-cursor 929095fe16e65a77cdc696fb9205743d1e25b265
+settings/slot/buses-none 154e105f8ac69f3557aa2bcd9ba6dd0f4cf9cd53
+settings/slot/buses-nopreset ab9cc2d1532305ebc90b58ad74a9f985e8e70c9a
 settings/slot/mod1-cc d23317eba89ff87b6517c3f6736efbf61a1beb1e
 settings/slot/mod1-lfo-free aa8bfcf044fb6ca70517ca8f5b26986dd9105594
 settings/slot/mod1-lfo-sync 377293096bb6c5af349c8ec54d6c61cd84000538
@@ -229,7 +229,7 @@ settings/slot/mod1-note 7e2616896dd0594c56e0262c9075e8d4bed70dc9
 settings/slot/mod1-pressure 1436138820a3cd394a2b58093fcfd2910643e7a2
 settings/slot/mod1-velocity c1f8b9c412eaeb45789b1293f31d76c0ed273ee0
 settings/slot/mod8-velocity 17b49ce117e613b9cb7c0970548b8abbd59e243f
-settings/slot/no-buses 56d75f10ccad2d4e3ac3d58ebe3fddaa0a52c4ed
+settings/slot/no-buses 6d6272255dfa5b7629ff482add4a851105c28812
 settings/slotlist/buses-2 a530a3e2c68bfaa4f6cf525acf04cee5f766ba17
 settings/slotlist/buses-cursor 8b83868ed7ab981491eed1906fc259e5014d08f7
 settings/slotlist/no-buses d3f7c8f56cdbc7db5cce2174fd2353d5cc05e6a4

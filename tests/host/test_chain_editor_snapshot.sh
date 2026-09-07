@@ -1738,14 +1738,20 @@ const slotsSrc = readFileSync("src/shadow/shadow_ui_slots.mjs", "utf8");
 
 /* An exported const ARRAY, evaluated out of its own source rather than retyped:
    a mirrored copy that drifted would baseline a list the device does not draw. */
-function liftArray(src, what, name) {
+function liftArray(src, what, name, deps) {
   const at = src.indexOf("const " + name + " = [");
   if (at < 0) { fail(name + " is gone from " + what); return []; }
   const end = src.indexOf("\n];", at);
   if (end < 0) { fail("could not find the end of " + name + " in " + what); return []; }
-  return new Function(src.slice(at, end + 3) + "\nreturn " + name + ";")();
+  const names = Object.keys(deps || {});
+  return new Function(...names,
+    src.slice(at, end + 3) + "\nreturn " + name + ";")(...names.map((k) => deps[k]));
 }
-const CHAIN_SETTINGS_ITEMS = liftArray(uiSrc, "shadow_ui.js", "CHAIN_SETTINGS_ITEMS");
+/* The chain settings list generates one row per mod route, so the lift needs
+   the count shadow_ui.js imports. Passed from the module rather than restated:
+   a literal here would be a third copy of a number two files already share. */
+const CHAIN_SETTINGS_ITEMS = liftArray(uiSrc, "shadow_ui.js", "CHAIN_SETTINGS_ITEMS",
+  { MOD_ROUTE_INDICES: SLOT_GRID.MOD_ROUTE_INDICES });
 const SLOT_SETTINGS = liftArray(slotsSrc, "shadow_ui_slots.mjs", "SLOT_SETTINGS");
 
 const mkChainSettingsDraw = liftFrom(settingsSrc, "shadow_ui_settings.mjs",
