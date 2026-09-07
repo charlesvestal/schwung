@@ -22,22 +22,22 @@ f="src/modules/chain/dsp/chain_host.c"
 blk=$(awk '/strcmp\(key, "clear"\) == 0/,/malloc_trim\(0\)/' "$f")
 [ -n "$blk" ] || fail "the clear handler is gone from $f"
 
-command grep -q "memset(inst->lfos, 0, sizeof(inst->lfos))" <<<"$blk" || \
-  fail "clear does not reset inst->lfos — a new set keeps the old set's LFO routing"
-command grep -q "memset(inst->lfo_base_valid" <<<"$blk" || \
-  fail "clear does not reset lfo_base_valid — a stale base would be re-applied to whatever loads next"
+command grep -q "memset(inst->mod_routes, 0, sizeof(inst->mod_routes))" <<<"$blk" || \
+  fail "clear does not reset inst->mod_routes — a new set keeps the old set's LFO routing"
+command grep -q "memset(inst->mod_route_base_valid" <<<"$blk" || \
+  fail "clear does not reset mod_route_base_valid — a stale base would be re-applied to whatever loads next"
 
 # It must clear AFTER the unloads, not before: the targets are only meaningless
 # once the modules are gone, and ordering it first would be a silent no-op the
 # moment an unload path grows an LFO write of its own.
 u=$(command grep -n "v2_unload_synth(inst)" <<<"$blk" | head -n 1 | cut -d: -f1)
-l=$(command grep -n "memset(inst->lfos" <<<"$blk" | head -n 1 | cut -d: -f1)
+l=$(command grep -n "memset(inst->mod_routes" <<<"$blk" | head -n 1 | cut -d: -f1)
 [ -n "$u" ] && [ -n "$l" ] && [ "$u" -lt "$l" ] || \
   fail "the LFO reset runs before the modules are unloaded"
 
 # And a patch load must still assign the whole array, which is what makes
 # zeroing safe. If that ever becomes a merge, clearing first LOSES settings.
-command grep -q "inst->lfos\[i\] = patch->lfos\[i\]" src/modules/chain/dsp/chain_patch.c || \
+command grep -q "inst->mod_routes\[i\] = patch->mod_routes\[i\]" src/modules/chain/dsp/chain_patch.c || \
   fail "a patch load no longer assigns the LFO array wholesale — clearing first is then lossy"
 
 echo "  ok  clear resets the LFOs, after the unloads"

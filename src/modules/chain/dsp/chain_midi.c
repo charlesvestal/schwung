@@ -747,15 +747,15 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
 
     /* Reset synced LFO phases on MIDI Start (0xFA) */
     if (len >= 1 && msg[0] == 0xFA) {
-        for (int i = 0; i < LFO_COUNT; i++) {
-            if (inst->lfos[i].sync) {
-                inst->lfos[i].phase = 0.0;
+        for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
+            if (inst->mod_routes[i].sync) {
+                inst->mod_routes[i].phase = 0.0;
             }
         }
     }
 
     /* LFO retrigger: reset phase on first note-on of new phrase */
-    lfo_process_midi(inst->lfos, LFO_COUNT, msg, len);
+    lfo_process_midi(inst->mod_routes, MOD_ROUTE_COUNT, msg, len);
 
     /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
      * Skip synth, MIDI FX, and knob handling - this MIDI is from a

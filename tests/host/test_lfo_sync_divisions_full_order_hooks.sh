@@ -3,7 +3,10 @@ set -euo pipefail
 
 host_file="src/host/lfo_common.h"
 ui_file="src/shadow/shadow_ui.js"
-chain_file="src/modules/chain/dsp/chain_host.c"
+# The mod-route ladders moved out of chain_host.c into chain_mod_routes.c
+# when the source types were added -- chain_host.c is pinned below 2900
+# lines by test_chain_host_file_split.sh and the cluster no longer fit.
+chain_file="src/modules/chain/dsp/chain_mod_routes.c"
 mfx_file="src/host/shadow_chain_mgmt.c"
 
 expected_labels="16bar,15bar,14bar,13bar,12bar,11bar,10bar,9bar,8bar,7bar,6bar,5bar,4bar,3bar,2bar,1/1,1/1T,1/2,1/2T,1/4,1/4T,1/8,1/8T,1/16,1/16T,1/32,1/32T"
