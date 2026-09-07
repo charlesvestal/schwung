@@ -653,6 +653,67 @@ the shim at init (`shadow_resample.c`), so the filter is in force before the
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
 
+### A route page is EIGHT knobs, and the source decides which eight
+
+A slot's mod-route page is eight physical encoders, and the trick that makes it
+fit is the one it always used: `rate_hz` and `rate_div` never appear together,
+so nine declared params come to eight on screen. The sources extend that rather
+than replacing it — `src` gates `shape`, `sync` and the rates OFF for a MIDI
+source, and gates `cc_num` and `slew` ON.
+
+```
+LFO         src target enabled polarity sync shape rate depth   = 8
+Velocity |
+Pressure |  src target enabled polarity depth slew              = 6
+Note     |
+CC          the six above plus cc_num                           = 7
+Master FX   target enabled polarity sync shape rate depth phase = 8  (no src)
+```
+
+**PHASE IS ABSENT FROM A SLOT ROUTE, not merely un-knobbed** — and the two are
+not interchangeable. The planner gives a leftover declared param its own page,
+so demoting `phase_offset` to a non-knob produced a `"Mod 1 - 2"` overflow
+holding a single cell: the exact outcome `SLOT_SEND_PARAMS` warns about ("titled
+'Main - 2', which names nothing"). It leaves the grid entirely and is edited
+from the list view, where Retrigger already lives for the same reason. Master
+FX, having no Source cell, keeps Phase and its four-cell row-wide graphic; a
+slot's graphic covers shape/rate/depth and is three cells wide.
+
+**Slew is gated OFF for an LFO, and that is the design.** An LFO is already
+smooth by construction, so slewing one only softens a square edge; slew exists
+for the 7-bit MIDI sources that step audibly on a filter cutoff. It is also what
+makes the arithmetic work — ungated it made nine visible cells and spilled onto
+that same overflow page.
+
+**The rate cells gate on `rate_mode`, ONE key, not on two conditions.** "Show
+`rate_hz` when this is a free-running LFO" is two facts and the `visible_if`
+evaluator takes one condition. The DSP answers the composite question instead of
+the module-facing contract growing an `all:` form for a single screen — and it
+costs one condition key where a compound would cost two, on a page where the
+planner re-reads every condition key per re-plan at ~2.8 ms an IPC read.
+
+**The key STEM differs by screen, and it is load-bearing.** A slot route is
+`modN:`; a Master FX route keeps `lfoN:`, because its params are parsed in the
+SHIM (`shadow_chain_mgmt.c`) by a literal `strncmp` on `"lfo1:"`/`"lfo2:"` that
+has never heard of mod routes. Renaming the master keys leaves every Master FX
+LFO control writing a key nothing reads — silently, with the page still drawing.
+It is also the honest name: Master FX has no MIDI input, so there the thing
+really is an LFO. Caught by the snapshot baseline, which is the only test that
+looks at the screen.
+
+**`mod1:src` returns the INDEX.** An `enum` cell reads its own param to place
+the cursor; served the word `"velocity"` it cannot find the option and the cell
+is unusable. The wire name is `mod1:src_name`, exactly as `shape`/`shape_name`
+already pairs in the same ladder.
+
+The count lives in exactly two places — `MOD_ROUTE_COUNT` in
+`chain_internal.h` and in `shadow_ui_slot_grid.mjs` — and
+`tests/host/test_mod_route_count_js.sh` derives both from source and fails on
+drift, in the shape of `test_master_fx_slots_js.sh`. Neither direction of drift
+has an error path: too high and the grid draws pages the DSP does not serve, so
+every read answers `""` and every knob looks dead; too low and routes the DSP is
+running are invisible and unreachable.
+
 ### The LFO target picker groups by LEVEL, and the grouping must be LOSSLESS
 
 An LFO's target was chosen from ONE flat list — every modulatable key the
