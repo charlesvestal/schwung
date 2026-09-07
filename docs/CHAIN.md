@@ -43,6 +43,99 @@ Modules expose `ui_hierarchy` (menu structure + knob mappings) via get_param:
 
 Types: `float` (min/max/step), `int` (min/max), `enum` (options). Optional: `default`, `unit`, `display_format`.
 
+### Mod routes: a source, a destination, and eight of them per slot
+
+A slot carries **eight mod routes** (`MOD_ROUTE_COUNT`, `chain_internal.h`).
+Each picks a SOURCE, aims it at one parameter of one component in the slot, and
+its contribution is summed non-destructively by the modulation bus in
+`chain_mod.c` — up to 8 sources per target, across 32 targets.
+
+```
+mod1:src            lfo | velocity | pressure | cc | note   (index on read, see below)
+mod1:target         synth | fx1..8 | midi_fx1..8 | mod1..8 | buses
+mod1:target_param   the key within that component
+mod1:depth          -1..+1   (negative INVERTS)
+mod1:polarity       0 unipolar, 1 bipolar
+mod1:slew           0..0.99  (the fraction of distance KEPT per block)
+mod1:cc_num         0..127   (MOD_SRC_CC only)
+mod1:enabled        0 | 1
+mod1:shape mod1:sync mod1:rate_hz mod1:rate_div mod1:phase_offset mod1:retrigger
+                    LFO only — ignored by every other source
+```
+
+**`MOD_SRC_LFO` is 0, and that is the entire migration story.** Every route in
+every patch on disk predates the `src` field, so it parses as absent, memsets to
+zero, and *is* the LFO it always was. There is no migration pass and no version
+stamp anywhere in the feature. The legacy `lfo1:` / `lfo2:` key spelling is
+still accepted as a **read-only alias resolving to the same storage** as
+`mod1:` / `mod2:` — an alias, never a copy, or a set loaded twice ends up with
+four routes running. It is capped at two because that is where the on-disk
+format froze it; `lfo5` was never something a writer could produce.
+
+**The MIDI sources latch at BOTH synth-feed paths**, via
+`chain_record_mod_input` — a deliberate sibling of `chain_record_synth_note`,
+called at the same two sites for the same reason. An **arpeggiator emits from
+`tick()`**, not from `process_midi`, so a latch on `v2_on_midi` alone never
+updates with an arp in the slot: the route stays enabled, aimed, and stuck at
+its rest value, with nothing to report it. It is **post-MIDI-FX** on purpose —
+this is what the synth *heard*, and a velocity curve or chord FX in the slot is
+part of the instrument.
+
+**They are last-note and channel-wide BY CONSTRUCTION.** The bus moves a
+PARAMETER, through `set_param`, and a parameter belongs to the plugin rather
+than to a note. Poly velocity cannot be expressed across that boundary and is
+the synth's own job; pretending otherwise here would ship a feature that sounds
+broken rather than one that is honestly absent.
+
+**Rest values are not zero** (`mod_src.h`). A velocity route aimed at cutoff on
+a slot nobody has played yet must not sit at the bottom of its range — the user
+hears a dead synth and blames the target, not the untouched source. Velocity and
+note rest at CENTRE; pressure and CC, which a player really does start at zero,
+rest at the bottom. `mod_input_reset` exists instead of a `memset` for exactly
+this, and is called at instance creation and on `clear`.
+
+**Only an LFO route advances phase.** Not merely to save a `sinf` for a number
+nothing reads: a route later switched back to LFO would have had its phase
+running the whole time and the waveform would resume from somewhere arbitrary
+rather than where the user left it. The slew is likewise **seeded**, not ramped,
+on the first block and whenever `src` changes — gliding between two unrelated
+controls reads as a fault in the synth rather than as a transition.
+
+**Two reads answer the source, and the difference matters.** `mod1:src` returns
+the INDEX, because an `enum` cell on the knob grid reads its own param to place
+the cursor and cannot use a word; `mod1:src_name` returns the wire name. It is
+the same pairing as `shape` / `shape_name` in the same ladder. The patch file
+stores the NAME — an index would silently repoint every saved route the moment
+`mod_src_names` were reordered — and an unknown name falls back to LFO, which is
+what a file from a newer build looks like.
+
+`mod1:rate_mode` (0 free, 1 synced, 2 not an LFO) exists for the UI: "show
+`rate_hz` when this is a free-running LFO" is two facts and `visible_if` takes
+one condition, so the DSP answers the composite question rather than the
+module-facing contract growing an `all:` form for one screen.
+
+**The send amounts are an OFFSET, never a write.** A route aimed at
+`buses` / `main_send<N>` accumulates into `main_send_mod[]` and bypasses the
+overlay entirely, because `buses:main_send<N>` is read back by
+`saveSendLevels()` — driving it through `set_param` would persist a modulated
+number as the user's level, permanently, with the route still sweeping over it.
+Any new target class has to be checked against that same question.
+
+**Mod-to-mod targets are quantities, not choices.** A route may modulate
+another route's `depth`, `rate_hz`, `phase_offset` or `slew`
+(`slot_lfo_param_meta[]`). `src` and `cc_num` are deliberately absent: sweeping
+a source TYPE would cycle it through velocity/pressure/CC several times a
+second, and sweeping a CC NUMBER would walk it across 128 unrelated
+controllers. A name in that table needs an arm in **both** ladders beside it —
+one to read the base, one to write the result — or it silently takes the
+`continue` and does nothing.
+
+**Master FX is NOT this.** It keeps two LFOs, `MASTER_FX_LFO_COUNT`, addressed
+`master_fx:lfoN:` and parsed in the shim (`shadow_chain_mgmt.c`) by a literal
+`strncmp` that has never heard of mod routes. It has no MIDI input, so it has no
+source to choose and offers no Source cell. `lfo_process_midi` takes an explicit
+count precisely so a call with the shorter array cannot walk off the end of it.
+
 ### Reading a modulated parameter — four forms, one rule
 
 While a chain-mod source (slot LFO, etc.) drives `<prefix>:<key>`, the overlay
