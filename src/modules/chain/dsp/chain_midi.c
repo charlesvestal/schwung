@@ -755,7 +755,7 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     }
 
     /* LFO retrigger: reset phase on first note-on of new phrase */
-    lfo_process_midi(inst->lfos, msg, len);
+    lfo_process_midi(inst->lfos, LFO_COUNT, msg, len);
 
     /* FX broadcast: forward only to audio FX with on_midi (e.g. ducker).
      * Skip synth, MIDI FX, and knob handling - this MIDI is from a
