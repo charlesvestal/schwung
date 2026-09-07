@@ -3661,12 +3661,10 @@ function refreshBuses() {
  * menu.
  */
 function busRowsNow() {
-    /* No voices are passed: the mixer rides BUSES. Per-voice send levels are
-     * the module's own parameters now, on its own pages — see the note beside
-     * SEND_LEVEL_STEP in bus_model.mjs. */
-    const rows = BusModel.busListRows(busConfig, getModuleAbbrev);
-    if (paramPagesEnabled()) return rows;
-    return rows.filter((r) => r.kind !== "sends");
+    /* Buses and New Bus, and nothing else: the Send Mixer moved out to its own
+     * `Sends` row on Slot Settings, so there is no longer a grid-only row here
+     * to filter out for List view. */
+    return BusModel.busListRows(busConfig, getModuleAbbrev);
 }
 
 /*
@@ -3971,27 +3969,34 @@ function busSendsGridIo() {
  * user's Param View — which includes every screen-reader session, where a grid
  * has nothing selected to read out. Same gate enterChainSettings uses.
  */
-function enterBusSendsGrid(rowIndex) {
-    /* Unreachable through the list — busRowsNow drops the Send Mixer row when
-     * the grid is not the Param View — and kept as the total answer for any
-     * other caller, since the row it would open has no menu of its own. */
+function enterBusSendsGrid(slot) {
+    /* Unreachable in List view -- getChainSettingsItems offers the two plain
+     * `Send A` / `Send B` rows there instead -- and kept as the total answer for
+     * any other caller, since the row it would open has no menu of its own. */
     if (!paramPagesEnabled()) { announce("Send Mixer unavailable in List view"); return; }
+    /* Opened from Slot Settings now, so it is handed the slot rather than
+     * inheriting whichever one the bus list was last pointed at. */
+    if (slot >= 0 && slot < SHADOW_UI_SLOTS) busSlot = slot;
+    refreshBusConfig();
     enterParamPages(busSlot, BUS_SENDS_COMPONENT, BUS_SENDS_COMPONENT, null,
                     busSendsGridIo(), {
         label: `S${busSlot + 1}`,
         name: "Send Mixer",
-        returnView: VIEWS.BUS_LIST,
+        returnView: VIEWS.CHAIN_SETTINGS,
         /*
-         * ONE SECTION, ONE PAGE. A bus page is at most SLOT_BUSES cells — 8,
-         * exactly the number of knobs — so it never has to split, and the flag
-         * says the grouping is AUTHORED so a ninth bus could not silently
-         * become "Send A - 2".
+         * CONDITIONAL AGAIN, because Main is a cell now.
          *
-         * It was conditional while the mixer also carried a fader per voice: 32
-         * cells against 8 knobs cannot be pinned. Those faders belong to the
-         * module now, so the pin is unconditional again.
+         * A send page is Main plus one fader per present bus, so at the bus cap
+         * it is SLOT_BUSES + 1 = 9 against 8 knobs and one page cannot hold it.
+         * Pinning it anyway is not a cosmetic choice -- the ninth fader is the
+         * one that would silently have nowhere to go.
+         *
+         * It was conditional once before, while the mixer carried a fader per
+         * voice (32 cells), and was pinned when those moved to the module. So
+         * the rule is not "buses fit" but "ask whether they do": below the cap
+         * this still returns false and the page keeps its authored grouping.
          */
-        paginate: false,
+        paginate: (BusModel.busCount(busConfig) + 1) > NUM_KNOBS,
     });
     announce("Send Mixer");
 }
@@ -5298,10 +5303,24 @@ const CHAIN_SETTINGS_ITEMS = [
      * its stored gain until something turns the knob, which then pulls it into
      * range. */
     { key: "slot:volume", label: "Volume", type: "float", min: 0, max: 2, step: 0.05 },
-    /* The slot send. Mirrored from SLOT_SETTINGS deliberately — the two lists
-     * already overlap from Volume down, and a row on one way into a slot and
-     * not the other is worse than either. See SLOT_SETTINGS for why step is 4
-     * here and 1 on the grid. */
+    /*
+     * THE SEND MIXER'S DOOR -- one row for every level into A and B.
+     *
+     * These were two rows, `Send A` and `Send B`, writing the slot Main levels,
+     * while a `Send Mixer` sat one screen deeper under `Buses` carrying the
+     * per-BUS levels and not these. So the sends were split across two screens
+     * filed under two different ideas, and the screen that called itself the
+     * mixer was missing the source most slots actually use.
+     *
+     * One door, and the mixer carries Main. Buses is left meaning exactly one
+     * thing: making and filling containers.
+     *
+     * IN LIST VIEW THE TWO ROWS COME BACK -- see getChainSettingsItems. The
+     * mixer is a knob grid and a grid has nothing for a screen reader to read
+     * out, so a screen-reader session would otherwise lose the slot sends
+     * entirely, which is worse than the split this replaces.
+     */
+    { key: "sends", label: "Sends", type: "action" },
     { key: "buses:main_send1", label: "Send A", type: "int", min: 0, max: 127, step: 4 },
     { key: "buses:main_send2", label: "Send B", type: "int", min: 0, max: 127, step: 4 },
     { key: "slot:muted", label: "Muted", type: "int", min: 0, max: 1, step: 1 },
@@ -9166,9 +9185,15 @@ function isExistingPreset(slotIndex) {
 function getChainSettingsItems(slotIndex) {
     const hasPreset = isExistingPreset(slotIndex);
     const splits = chainSynthSplits(slotIndex);
+    /* The Send Mixer is a grid; a screen reader gets the two plain rows instead.
+     * EXACTLY ONE of the two forms is ever present, so neither view shows the
+     * same two levels twice. */
+    const grid = paramPagesEnabled();
     return CHAIN_SETTINGS_ITEMS.filter(function(item) {
         if (item.key === "delete") return hasPreset;
         if (item.key === "buses") return splits;
+        if (item.key === "sends") return grid;
+        if (item.key === "buses:main_send1" || item.key === "buses:main_send2") return !grid;
         return true;
     });
 }
@@ -13289,6 +13314,11 @@ function runChainSettingAction(slot, key) {
          * so the same thunk serves both. Same shape as the knob editor's own
          * Back (VIEWS.KNOB_EDITOR -> enterChainSettings). */
         enterBusList(slot, () => enterChainSettings(slot));
+        return;
+    }
+
+    if (key === "sends") {
+        enterBusSendsGrid(slot);
         return;
     }
 
@@ -19942,11 +19972,9 @@ function handleSelect() {
             const row = rows[busListIndex];
             if (!row) break;
             if (row.kind === "new") busCreate();
-            /* The Send Mixer row opens every bus's A and B on
-             * an encoder, which is the thing a list row cannot be. A bus row
-             * still opens its own menu: it has voices, inserts, a name and a
-             * delete that the mixer says nothing about. */
-            else if (row.kind === "sends") enterBusSendsGrid(busListIndex);
+            /* A bus row opens its own menu: voices, inserts, a name and a
+             * delete. The Send Mixer is no longer a row here -- it is the
+             * `Sends` row on Slot Settings, beside the one that opened this. */
             else enterBusActions(busListIndex);
             break;
         }

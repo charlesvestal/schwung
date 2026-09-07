@@ -1672,9 +1672,13 @@ function renderSettingsList(c) {
     ["isSlotMpeMode", "slotBusCountLabel", "getSlotParam"])(
     isSlotMpeMode, slotBusCountLabel, w.getSlotParam);
   const isExistingPreset = lift("isExistingPreset", ["slots"])([{ name: c.preset || "" }]);
+  /* FALSE, because this harness renders the LIST form of the settings screen.
+   * That is the branch that carries the two plain `Send A` / `Send B` rows: the
+   * Send Mixer they replace is a knob grid, and a grid has nothing for a screen
+   * reader to read out, so the list must keep a way to reach the slot sends. */
   const getChainSettingsItems = lift("getChainSettingsItems",
-    ["isExistingPreset", "chainSynthSplits", "CHAIN_SETTINGS_ITEMS"])(
-    isExistingPreset, w.chainSynthSplits, CHAIN_SETTINGS_ITEMS);
+    ["isExistingPreset", "chainSynthSplits", "CHAIN_SETTINGS_ITEMS", "paramPagesEnabled"])(
+    isExistingPreset, w.chainSynthSplits, CHAIN_SETTINGS_ITEMS, () => false);
 
   Object.assign(BUS_CTX, {
     slots: [{ name: c.preset || "Untitled" }],

@@ -103,12 +103,14 @@ const A2 = (m) => String(m).slice(0, 2).toUpperCase();
      chain. */
   eq("a hole does not renumber", rows.filter((r) => r.kind === "bus").map((r) => r.index),
      [0, 2]);
-  /* THERE IS NO MAIN ROW. Its two send levels were a wired, persisted,
-     documented control that NO AUDIO PATH READ (chain_drain_sends says so), so
-     the row is the door into the send mixer and carries no level of its own. */
+  /* THIS SCREEN IS CONTAINERS ONLY -- buses and New Bus. It carried a Send
+     Mixer row too, so "New Bus" sat beside a mixer and the two ideas were one
+     screen; the mixer is its own Sends row on Slot Settings now and holds Main.
+     Neither a Main row nor a Sends row belongs here. */
   eq("no Main row", rows.some((r) => r.kind === "main"), false);
-  eq("the Sends row is the door", rows[rows.length - 2].kind, "sends");
-  eq("the Sends row carries no level", M.busRowValue(rows[rows.length - 2]), "");
+  eq("no Sends row", rows.some((r) => r.kind === "sends"), false);
+  eq("containers only", rows.map((r) => r.kind).filter((k, i, a) => a.indexOf(k) === i)
+     .every((k) => k === "bus" || k === "new"), true);
   eq("a free bus offers New Bus", rows[rows.length - 1].kind, "new");
   eq("the hole is the next bus made", M.firstFreeBus(cfg), 1);
 }
@@ -120,7 +122,7 @@ const A2 = (m) => String(m).slice(0, 2).toUpperCase();
   const rows = M.busListRows(cfg, A2);
   eq("no New Bus at the cap", rows.some((r) => r.kind === "new"), false);
   eq("no free bus at the cap", M.firstFreeBus(cfg), -1);
-  eq("the list is as long as it can get", rows.length, M.SLOT_BUSES + 1);
+  eq("the list is as long as it can get", rows.length, M.SLOT_BUSES);
 }
 
 {
@@ -128,8 +130,13 @@ const A2 = (m) => String(m).slice(0, 2).toUpperCase();
      an empty slot offers only New Bus. */
   const empty = M.parseBusesConfig(cfgJson([]));
   const rows = M.busListRows(empty, A2);
-  eq("no buses, no Sends row", rows.map((r) => r.kind), ["new"]);
-  eq("no buses, no mixer params", M.busSendGridParams(empty).length, 0);
+  eq("no buses, only New Bus", rows.map((r) => r.kind), ["new"]);
+  /* MAIN SURVIVES A BUSLESS SLOT, and that is the point of moving it here: "the
+     rest of the slot" is a send source every slot has, and most slots have no
+     buses at all. It declared no params at all before, so the send mixer was
+     unreachable for exactly the slots that needed it most. */
+  eq("a busless slot still mixes Main", M.busSendGridParams(empty).map((p) => p.key),
+     ["main_send1", "main_send2"]);
 }
 
 /* The summary is COUNTED past two, because the value column carries both send
@@ -257,23 +264,34 @@ eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), nul
       { present: 0, name: "Bus 4", orphans: 0, voices: [], sends: [0, 0], fx: [] }],
     main_sends: [3, 4] }));
   const params = M.busSendGridParams(cfg);
-  /* The present buses, times the two sends. A hole is not a row, and neither
-     is Main: the slot`s own two levels have no reader in the audio path. */
-  eq("a send mixer has one cell per bus per send", params.length, 4);
-  eq("only the present buses are faders",
-     params.slice(0, 2).map((p) => p.name), ["Kick", "Hats"]);
-  eq("no main_send key is offered",
-     params.some((p) => /main/.test(p.key)), false);
+  /* MAIN plus the present buses, times the two sends. A hole is not a row. */
+  eq("a send mixer has Main and one cell per present bus, per send",
+     params.length, (2 + 1) * M.BUS_SENDS);
+  eq("Main heads each send page, then the present buses",
+     params.slice(0, 3).map((p) => p.name), ["Main", "Kick", "Hats"]);
+  eq("Main appears once per send and no more",
+     params.filter((p) => /^main_send/.test(p.key)).length, M.BUS_SENDS);
   eq("every cell is an int over the real range",
      params.every((p) => p.type === "int" && p.min === 0 && p.max === M.SEND_LEVEL_MAX),
      true);
   /* THE HOLE DOES NOT RENUMBER: the second present bus is bus 3, and its key
-     must say 3. This is the one that edits the wrong bus when it is wrong. */
-  eq("a bus keeps its own number", M.busSendGridRealKey(params[1].key), "bus3:send1");
-  eq("send B is a different key", M.busSendGridRealKey(params[3].key), "bus3:send2");
-  /* And the retired spelling maps to nothing at all: a grid key that still
-     said "main_send1" would write a level nothing reads. */
-  eq("the retired Main spelling is gone", M.busSendGridRealKey("main_send1"), null);
+     must say 3. This is the one that edits the wrong bus when it is wrong.
+     Indexed off the bus keys rather than off a fixed offset, so MAIN sitting at
+     the head of each send page cannot silently shift what is being asserted. */
+  const busKeys = params.filter((p) => /^bus/.test(p.key)).map((p) => p.key);
+  eq("a bus keeps its own number", M.busSendGridRealKey(busKeys[1]), "bus3:send1");
+  const busKeysB = params.filter((p) => /^bus\d+_send2$/.test(p.key)).map((p) => p.key);
+  eq("send B is a different key", M.busSendGridRealKey(busKeysB[1]), "bus3:send2");
+  /* MAIN IS A MIXER KEY NOW, and this pin is the reverse of what it said.
+     It used to assert the spelling mapped to nothing, on the rule that the
+     two levels of the slot itself were a SLOT fact edited in Slot Settings. That split
+     the sends across two screens filed under two different ideas, and left the
+     screen calling itself the send mixer without the source most slots use --
+     turn every fader up on a slot with no buses and it still sent nothing.
+     The key is unchanged; only where it is edited moved. */
+  eq("Main is a mixer key", M.busSendGridRealKey("main_send1"), "buses:main_send1");
+  eq("Main send B too", M.busSendGridRealKey("main_send2"), "buses:main_send2");
+  eq("but only within range", M.busSendGridRealKey("main_send9"), null);
   eq("a key naming no send maps to nothing", M.busSendGridRealKey("volume"), null);
   eq("a bus past the cap maps to nothing", M.busSendGridRealKey("bus9_send1"), null);
   eq("a send past the cap maps to nothing", M.busSendGridRealKey("bus1_send3"), null);
@@ -284,16 +302,24 @@ eq("a master key is not a bus key", M.parseBusComponentKey("master_fx:fx2"), nul
   eq("the root page is empty", h.levels.root.knobs.length, 0);
   eq("one level per send", [h.levels.send_a.label, h.levels.send_b.label],
      ["Send A", "Send B"]);
-  eq("each send page is one knob per bus",
-     [h.levels.send_a.knobs.length, h.levels.send_b.knobs.length], [2, 2]);
-  /* Bounded BY CONSTRUCTION at SLOT_BUSES cells, which is why the page is
-     handed paginate:false rather than being allowed to split. */
+  eq("each send page is Main plus one knob per bus",
+     [h.levels.send_a.knobs.length, h.levels.send_b.knobs.length], [3, 3]);
+  eq("and Main is first on each", [h.levels.send_a.knobs[0], h.levels.send_b.knobs[0]],
+     ["main_send1", "main_send2"]);
+  /* AT THE CAP A SEND PAGE NO LONGER FITS: Main plus SLOT_BUSES faders is 9
+     cells against 8 knobs. That is why enterBusSendsGrid asks
+     (busCount + 1) > NUM_KNOBS rather than pinning paginate:false -- the ninth
+     fader is the one that would otherwise have nowhere to go. */
   const full = M.parseBusesConfig(JSON.stringify({
     buses: Array.from({ length: M.SLOT_BUSES }, (_, i) => (
       { present: 1, name: "B" + i, orphans: 0, voices: [], sends: [0, 0], fx: [] })),
     main_sends: [0, 0] }));
-  eq("a full slot is one cell per bus",
-     M.busSendGridHierarchy(full).levels.send_a.knobs.length, M.SLOT_BUSES);
+  eq("a full slot is Main plus one cell per bus",
+     M.busSendGridHierarchy(full).levels.send_a.knobs.length, M.SLOT_BUSES + 1);
+  /* Stated as the INEQUALITY the grid has to satisfy, so raising SLOT_BUSES or
+     the knob count re-answers it here rather than leaving a literal behind. */
+  eq("...which is one more than the knobs can hold",
+     M.SLOT_BUSES + 1 > 8, true);
 }
 /* AND THE READ THAT DID NOT COMPLETE MAKES NO CONTRACT. An empty one would be
    a claim -- "this slot has no buses" -- drawn as a mixer with no faders.
@@ -491,13 +517,13 @@ eq("an unresolved config lists no rows either -- the one refusal",
   /* THE MIXER IS BUSES. Passing voices changes nothing -- the argument is gone,
      and a caller that still passes one must not resurrect a fader. */
   const params = M.busSendGridParams(cfg, voices);
-  eq("mixer params are buses only", params.map((p) => p.key),
-     ["bus1_send1", "bus1_send2"]);
+  eq("mixer params are Main plus the buses", params.map((p) => p.key),
+     ["main_send1", "bus1_send1", "main_send2", "bus1_send2"]);
 
   const h = M.busSendGridHierarchy(cfg, voices);
   eq("mixer levels", Object.keys(h.levels), ["root", "send_a", "send_b"]);
   eq("root carries no knobs", h.levels.root.knobs, []);
-  eq("send_a is buses", h.levels.send_a.knobs, ["bus1_send1"]);
+  eq("send_a is Main then the buses", h.levels.send_a.knobs, ["main_send1", "bus1_send1"]);
   for (const id of Object.keys(h.levels))
     if ("paginate" in h.levels[id]) fail("level " + id + " declares a paginate the planner never reads");
 
@@ -511,7 +537,17 @@ eq("an unresolved config lists no rows either -- the one refusal",
   }));
   eq("busless rows, voices or not",
      M.busListRows(busless, undefined, voices).map((r) => r.kind), ["new"]);
-  eq("busless declares no mixer", M.busSendGridHierarchy(busless, voices), null);
+  /* A BUSLESS SLOT STILL HAS A MIXER, holding Main alone. It declared none while
+     Main lived elsewhere, which was consistent then and is the bug now: "the
+     rest of the slot" is a send source every slot has, and most slots have no
+     buses at all. An UNRESOLVED config is still no mixer -- that distinction is
+     the tri-state, and it is asserted just below. */
+  const buslessH = M.busSendGridHierarchy(busless, voices);
+  eq("a busless slot mixes Main alone", buslessH && buslessH.levels.send_a.knobs,
+     ["main_send1"]);
+  eq("an UNRESOLVED config still declares no mixer",
+     M.busSendGridHierarchy({ unresolved: true }), null);
+  eq("...and no params", M.busSendGridParams({ unresolved: true }), []);
   eq("unresolved declares nothing",
      M.busSendGridHierarchy({ unresolved: true }, voices), null);
   eq("unresolved declares no params",

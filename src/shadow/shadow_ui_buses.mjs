@@ -81,9 +81,6 @@ export function drawBusList() {
      * primary action goes first and the count is kept where it fits. */
     const row = rows[busListIndex];
     if (row && row.kind === "new") drawFooter(["Clk: create", "Back: out"]);
-    /* The Send Mixer row opens a MIXER, not a menu — the verb names what the
-     * click does. */
-    else if (row && row.kind === "sends") drawFooter(["Clk: mixer", "Back: out"]);
     else drawFooter(["Clk: edit", "Back: out"]);
 }
 

@@ -199,15 +199,16 @@ export function busListRows(config, abbrev) {
             summary: insertSummary(b.fx, abbrev), sends: b.sends,
         });
     }
-    /* A BUS IS THE ONLY THING WITH A FADER HERE. The door briefly opened for a
-     * slot with no buses at all, because per-voice sends need none; those
-     * faders belong to the module now (see the note beside SEND_LEVEL_STEP), so
-     * a mixer with no bus on it would again be a row that answers a click by
-     * doing nothing. */
-    if (rows.length) {
-        rows.push({ kind: "sends", index: -1, name: "Send Mixer", orphans: 0,
-                    summary: "", sends: [] });
-    }
+    /*
+     * NO SEND-MIXER ROW. This screen is about MAKING AND FILLING CONTAINERS --
+     * Bus 1..N and New Bus -- and the mixer is about LEVELS INTO A AND B. They
+     * were one screen, so "New Bus" sat beside a mixer, and the mixer that
+     * called itself the sends view silently omitted the slot Main row, whose two
+     * levels lived two screens away under a different name.
+     *
+     * The mixer is its own `Sends` row on Slot Settings now, beside this one,
+     * and it carries Main. Reported as "combining buses and sends is weird".
+     */
     if (config.buses.some((b) => !b.present)) rows.push({ kind: "new", name: "New Bus" });
     return rows;
 }
@@ -245,9 +246,7 @@ export function busRowLabel(row) {
 }
 
 export function busRowValue(row) {
-    /* The Sends row carries no value of its own: it is a door, and the levels
-     * behind it belong to the buses listed above it. */
-    if (!row || row.kind === "new" || row.kind === "sends") return "";
+    if (!row || row.kind === "new") return "";
     const [a, b] = row.sends || [0, 0];
     /* "A/B", not "A B": the slash is what says these are two values rather than
      * one number the eye has to split. */
@@ -439,7 +438,7 @@ export function parseBusComponentKey(componentKey) {
  *
  * ONE PAGE PER SEND, not one page per bus. Both groupings are authored, and
  * this one is bounded by construction: a page is the present buses, so at most
- * SLOT_BUSES = 4 cells against the eight knobs, and the
+ * SLOT_BUSES cells against the eight knobs, and the
  * planner is handed `paginate: false` because a mixer split across "Send A"
  * and "Send A - 2" would put two of its faders on a page you cannot see while
  * turning the others. The per-bus grouping is 2 cells a page and ten pages.
@@ -478,10 +477,17 @@ export function sendGridKey(row, send) {
  * claims to have closed.
  */
 export function busSendGridRealKey(gridKey) {
-    /* No "main_send" form. The slot's own two levels are real (see busListRows)
-     * but they are a SLOT fact, edited in Slot Settings; this mixer names buses
-     * and voices only, so there is no grid key here that would write them. */
     const key = String(gridKey || "");
+    /* MAIN. The slot's own two levels, which this mixer now carries: it is the
+     * one screen that answers "where is my reverb coming from", and it could not
+     * while the source most slots use was edited two screens away. The key is
+     * unchanged -- `buses:main_send<N>`, exactly what Slot Settings wrote. */
+    const main = /^main_send(\d+)$/.exec(key);
+    if (main) {
+        const n = Number(main[1]);
+        if (!(n >= 1 && n <= BUS_SENDS)) return null;
+        return `buses:main_send${n}`;
+    }
     const bus = /^bus(\d+)_send(\d+)$/.exec(key);
     if (bus) {
         const b = Number(bus[1]);
@@ -519,17 +525,33 @@ function mixerShortName(name) {
 export function busSendGridParams(config) {
     const out = [];
     /*
-     * NO UNRESOLVED GUARD OF ITS OWN. busListRows already answers no rows for a
-     * read that did not complete, and a second copy of that test here was a
-     * guard no test could kill: mutating it away changed nothing, so
-     * "an unresolved config declares no params" passed for a reason other than
-     * the one it named. One refusal, in busListRows, where mutating it does
-     * kill the assertion.
+     * THE UNRESOLVED GUARD IS EXPLICIT AGAIN, and this time it is load-bearing.
+     *
+     * It used to be absent on the grounds that busListRows already answers no
+     * rows for a read that did not complete, so a copy here was a guard no test
+     * could kill. That reasoning ended when Main was added: Main is not a bus
+     * and does not come from busListRows, so an unresolved config would now
+     * declare exactly one fader and the mixer would draw -- claiming "this slot
+     * has no buses", which is the tri-state mistake this file already documents
+     * one screen up. Mutating this away is killable now.
      */
-    /* BUSES ONLY. The list also carries the door into this very mixer and, when
-     * there is a free bus, New Bus — neither of which is a fader. */
+    if (!config || config.unresolved) return out;
+    /* Buses, from the list (New Bus is not a fader), with MAIN AT THE HEAD.
+     *
+     * Main is "the rest of the slot" -- everything not routed into a bus -- and
+     * it is the send source most slots have and many have alone. It was missing
+     * here, which made a screen called the send mixer answer a question it could
+     * not: turn every fader up and a slot with no buses still sends nothing.
+     * Its levels are the same `buses:main_send<N>` keys Slot Settings wrote, so
+     * this is a row appearing, not a value moving. */
     const rows = busListRows(config, undefined).filter((r) => r.kind === "bus");
     for (let send = 1; send <= BUS_SENDS; send++) {
+        out.push({
+            key: `main_send${send}`,
+            name: "Main",
+            short_name: "Main",
+            type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
+        });
         for (const row of rows) {
             out.push({
                 key: sendGridKey(row, send),
@@ -587,7 +609,7 @@ export function busSendGridHierarchy(config) {
      * passed through the chrome), so a flag written on a level would be read by
      * nobody and would read as a promise the planner never made. The caller
      * decides — enterBusSendsGrid pins the mixer to one page only while it is
-     * buses alone, which is at most SLOT_BUSES = 4 cells. */
+     * Main plus the buses, which is at most SLOT_BUSES + 1 cells. */
     const add = (id, label, keys) => {
         if (!keys.length) return;
         levels[id] = { label, knobs: keys, params: keys.map((k) => ({ key: k })) };
