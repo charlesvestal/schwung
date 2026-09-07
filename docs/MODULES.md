@@ -216,6 +216,46 @@ Use `defaults` to pass initial parameters to DSP plugins at load time:
 }
 ```
 
+## Declaring the effects that belong behind your module
+
+`capabilities.default_fx` names audio FX the slot chain should hold when the
+user picks this module:
+
+```json
+"capabilities": {
+  "default_fx": [
+    { "module": "clap", "params": { "plugin_id": "PurestDrive" } }
+  ]
+}
+```
+
+For a module whose sound genuinely includes a stage the chain can host — a drum
+kit voiced through a bus compressor, say. The alternative has been to build that
+effect INTO the module, which is a second and worse copy of what the slot chain
+already provides: reachable only from inside your UI, persisted by you, and
+invisible to the host's bypass, LFOs and presets.
+
+**Declare `requires_modules` in your catalog entry for anything you name here.**
+A `default_fx` naming a module the user does not have seeds nothing and says
+nothing; the catalog field is what installs it.
+
+Three rules, and they are the whole contract:
+
+- **It fires when the user PICKS your module, and at no other time.** Not on
+  boot, not on a set change, not on a patch load. Those reconstruct a chain the
+  user has already shaped, so seeding there would put back an effect they
+  deleted, on every boot, with no way to refuse it permanently.
+- **It fires only into an EMPTY FX section.** A slot that already carries
+  effects has been shaped by somebody, and appending to it silently rewrites
+  their signal path.
+- **What lands is an ORDINARY INSERT.** Editable, removable, saved by the same
+  autosave as anything else. Nothing marks it as yours, because a position that
+  could not be removed would be a worse version of the in-module effect this
+  exists to replace.
+
+A default is an opening position, not a policy. If your module cannot work
+without the effect, it belongs inside your module.
+
 ## Per-Module Settings
 
 A module that wants user-configurable settings exposed in the
