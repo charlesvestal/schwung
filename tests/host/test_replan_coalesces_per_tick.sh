@@ -7,11 +7,26 @@
 # gates other params re-planned the entire module once per detent, before
 # anything was drawn once.
 #
-# MEASURED ON DEVICE with DR32, whose send-effect page gates its cells on the
+# WHAT THIS TEST ACTUALLY MEASURES, because the two numbers are different and
+# the difference is the whole reason to read this comment.
+#
+# REPORTED ON DEVICE with DR32, whose send-effect page gates its cells on the
 # send's mode: 26 condition evaluations per planning pass, and 2912 evaluations
-# inside a single 10.6 ms tick. That is 112 complete planning passes -- each a
-# level walk, a group gather, a row alignment and a fingerprint. The send-effect
-# type picker did not read as slow; it read as a hang.
+# inside a single 10.6 ms tick -- 112 complete planning passes. That report is
+# what prompted the change and it is NOT reproduced here or anywhere else. The
+# write path cannot produce it: `onKnobTurn` already throttles its setParam and
+# its re-plan to one per SETPARAM_THROTTLE_MS (20 ms) per key, so a sweep buys
+# at most one or two passes per ~23 ms tick however many detents arrive.
+#
+# MEASURED HERE, by reverting `replanIfCondition` to call `replanNow()`: the
+# 112-detent burst below cost 4 evaluations -- TWO passes, not 112. So this
+# test pins a real property (the cost of a burst does not grow with the burst)
+# and the device's 2912 remains unexplained: whatever produced it is somewhere
+# this test does not look -- warmCurrentPage's 8 reads, flushDueWrites over
+# many pending keys, a repeated load()/reloadIfChanged, or a counter counting
+# per-condition-per-level rather than per-pass.
+#
+# DO NOT read a green run here as the DR32 hang being fixed.
 #
 # THE OBSERVABLE IS PASSES, NOT READS. The `visible` hook fires once per
 # condition per pass, so counting its calls counts passes. A read count would
@@ -70,10 +85,8 @@ ctl.load({
   visible: () => { evals += 1; return true; },
 });
 
-const perPass = (() => {
-  evals = 0; clock += 20; ctl.tick();
-  return evals;   /* whatever a settled tick costs; 0 when nothing is owed */
-})();
+/* Settle whatever the load left owed, so the counts below start from zero. */
+clock += 20; ctl.tick();
 
 /* The mode knob, driven exactly as the hardware drives it. */
 const modeSlot = (() => {
@@ -103,9 +116,29 @@ const ONE_PASS = evals;
 
   clock += 20; ctl.tick();
   ok(evals === ONE_PASS,
-     "⭐⭐ the whole burst costs ONE pass, not 112 (" + evals + " evaluations, one pass = " + ONE_PASS + ")");
-  ok(evals * 112 !== 0 && evals < ONE_PASS * 2,
-     "...and certainly not 112x — that was " + (ONE_PASS * 112) + " evaluations before this change");
+     "⭐⭐ the whole burst costs ONE pass (" + evals + " evaluations, one pass = " + ONE_PASS + ")");
+}
+
+/* ---- and the cost does not grow with the burst -------------------------- */
+{
+  /* THE property, stated as one: 1 detent and 112 detents cost the same. Before
+   * this change the 112-detent burst cost 2 passes where a single turn cost 1
+   * — the write throttle had already capped it, which is why the pre-change
+   * number is 2 and not 112 (see the header). A burst that costs strictly more
+   * than a single turn is the regression this guards.
+   * (No apostrophes in here: the whole script is one single-quoted shell arg.) */
+  clock += 20; ctl.tick();
+  evals = 0;
+  clock += 20; ctl.onKnobTurn(modeSlot, 1, clock);
+  clock += 20; ctl.tick();
+  const one = evals;
+
+  clock += 20; ctl.tick();
+  evals = 0;
+  for (let i = 0; i < 112; i++) ctl.onKnobTurn(modeSlot, i % 2 ? 1 : -1, clock);
+  clock += 20; ctl.tick();
+  ok(evals === one,
+     "112 detents cost exactly what 1 detent costs (" + evals + " vs " + one + ")");
 }
 
 /* ---- it must still actually happen, and before anything is drawn -------- */
