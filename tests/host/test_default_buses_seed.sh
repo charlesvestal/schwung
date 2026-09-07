@@ -42,7 +42,7 @@ const cfgJson = (n) => JSON.stringify({
   main_sends: [0, 0],
 });
 
-function rig(meta, existingBuses, voicesJson) {
+function rig(meta, existingBuses, voicesJson, declaredByPos) {
   const body = [
     "const BusModel = arguments[0];",
     "let writes = [];",
@@ -51,11 +51,28 @@ function rig(meta, existingBuses, voicesJson) {
     "function getSlotParam(slot, key) {",
     "  if (key === \"buses:config\") return " + JSON.stringify(existingBuses) + ";",
     "  if (key === \"synth:split_voices\") return " + JSON.stringify(voicesJson) + ";",
+    "  if (/:module$/.test(key)) return getSlotParamModule(slot, key);",
     "  return \"\"; }",
     "function setSlotParam(slot, key, val) { writes.push(key + \"=\" + val); return true; }",
     "function debugLog() {}",
+    "let pendingBusInsertWrites = []; const BUS_INSERT_WRITE_TRIES = 120;",
+    /* The position answers `loaded` only once the harness says so, which is how
+       the worker actually behaves: a bus insert is dlopened OFF the RT thread. */
+    "let loaded = false;",
+    /* Answers the module ACTUALLY declared for that position. A stub that
+       returned one id for every position would have fx2 (clap) never match, and
+       the refusal to write there is the readiness test doing its job. */
+    "const DECLARED = " + JSON.stringify(declaredByPos || {}) + ";",
+    "function getSlotParamModule(slot, key) {",
+    "  if (!loaded) return null;",
+    "  const m = /fx(\\d+):module$/.exec(key);",
+    "  return m ? (DECLARED[m[1]] || \"\") : \"\"; }",
+    grab("queueBusInsertParams"), grab("flushPendingBusInsertWrites"),
     grab("moduleDefaultBuses"), grab("seedDefaultBusesForSlot"),
-    "return { seed: (id) => seedDefaultBusesForSlot(0, id), writes };",
+    "return { seed: (id) => seedDefaultBusesForSlot(0, id), writes,",
+    "         flush: () => flushPendingBusInsertWrites(),",
+    "         load: () => { loaded = true; },",
+    "         pending: () => pendingBusInsertWrites.length };",
   ].join("\n");
   return new Function(body)(BusModel);
 }
@@ -73,8 +90,11 @@ const DRUMBUS = { capabilities: { default_buses: [{
 
 /* ---- the whole kit, routed by default -------------------------------- */
 {
-  const r = rig(DRUMBUS, cfgJson(0), VOICES);
+  const r = rig(DRUMBUS, cfgJson(0), VOICES, { "1": "dr32-fx", "2": "clap" });
   if (r.seed("dr32") !== 1) fail("no bus was created");
+  /* The params are QUEUED until the insert loads -- see the load-race case
+     below -- so drive that here before asserting on them. */
+  r.load(); r.flush();
   const w = r.writes;
   if (w[0] !== "bus1:create=1") fail("first write was " + w[0] + ", expected the create");
   /* ONE voices write carrying the WHOLE list -- every bus<N>:voices write is a
@@ -93,6 +113,89 @@ const DRUMBUS = { capabilities: { default_buses: [{
     fail("the preset was applied before the params it depends on");
   }
   ok("creates the bus, routes every voice in ONE write, fills its positions in order");
+}
+
+/* ---- THE LOAD RACE, which made four inserts identical ---------------- */
+/*
+ * A bus insert loads on the WORKER, and chain_bus.c drops any set_param that
+ * arrives before the instance exists. Writing params straight after the module
+ * write therefore lost every one of them, and four declared inserts all came up
+ * as the module default -- four boxes reading "Crunch". Reported from hardware,
+ * and INTERMITTENT: a reload lands the same writes after the load and works.
+ */
+{
+  const r = rig(DRUMBUS, cfgJson(0), VOICES, { "1": "dr32-fx", "2": "clap" });
+  r.seed("dr32");
+  /* The MODULE writes go immediately -- they are what starts the load. */
+  if (!r.writes.some((w) => w === "bus1:fx1:module=dr32-fx")) {
+    fail("the module write was deferred; it is what starts the load");
+  }
+  /* Nothing else may have been written yet. */
+  if (r.writes.some((w) => /fx\d+:(effect|plugin_id|preset_name)=/.test(w))) {
+    fail("params were written before the insert loaded: " + JSON.stringify(r.writes)
+         + " -- chain_bus.c drops those, which is the bug");
+  }
+  if (r.pending() !== 2) fail("expected 2 queued param sets, got " + r.pending());
+
+  /* Flushing while it is STILL loading must write nothing and keep waiting. */
+  r.flush();
+  if (r.writes.some((w) => /:effect=/.test(w))) fail("flushed into an unloaded insert");
+  if (r.pending() !== 2) fail("a not-yet-loaded position was dropped from the queue");
+
+  /* Once the position reports the module we asked for, the params land. */
+  r.load();
+  r.flush();
+  const want = ["bus1:fx1:effect=Crunch", "bus1:fx2:plugin_id=Pop3",
+                "bus1:fx2:preset_name=Glue"];
+  for (const k of want) if (r.writes.indexOf(k) < 0) fail("after load, missing: " + k);
+  if (r.pending() !== 0) fail("the queue did not drain after the writes landed");
+
+  /* And it does not write twice. */
+  r.flush();
+  if (r.writes.filter((w) => w === "bus1:fx1:effect=Crunch").length !== 1) {
+    fail("a drained entry was written again");
+  }
+  ok("params wait for the insert to load, land once, and drain");
+}
+
+/*
+ * A POSITION REPORTING ANOTHER MODULE IS NOT READY.
+ *
+ * A position being reloaded answers with the OUTGOING module until the worker
+ * installs the new one. Testing merely "did it answer" would write this
+ * params of THIS module into that plugin -- setting Crunch and Pop3 values on
+ * whatever used to be there. The test is the module we ASKED FOR.
+ */
+{
+  const r = rig(DRUMBUS, cfgJson(0), VOICES, { "1": "someone-else", "2": "clap" });
+  r.seed("dr32");
+  r.load();          /* the position answers, but with the WRONG module */
+  r.flush();
+  if (r.writes.some((w) => w === "bus1:fx1:effect=Crunch")) {
+    fail("params were written to a position reporting a different module -- that "
+         + "sets this module parameters on somebody else plugin");
+  }
+  if (r.pending() < 1) fail("the entry was dropped rather than kept waiting");
+  /* fx2 DOES match, so its params land -- one position waiting must not hold
+     up another that is ready. */
+  if (r.writes.indexOf("bus1:fx2:plugin_id=Pop3") < 0) {
+    fail("a ready position was held up by an unready one");
+  }
+  ok("a position reporting another module keeps waiting, and does not block its neighbour");
+}
+
+/* A load that never completes must not retry forever. */
+{
+  const r = rig(DRUMBUS, cfgJson(0), VOICES, { "1": "dr32-fx", "2": "clap" });
+  r.seed("dr32");
+  for (let i = 0; i < 200; i++) r.flush();     /* never loads */
+  if (r.pending() !== 0) {
+    fail("a position that never loaded is still queued after 200 passes");
+  }
+  if (r.writes.some((w) => /:effect=/.test(w))) {
+    fail("params were written to a position that never loaded");
+  }
+  ok("a load that never completes gives up rather than retrying forever");
 }
 
 /* ---- a SUBSET, which is what a bus is really for --------------------- */

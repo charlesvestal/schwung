@@ -7738,6 +7738,59 @@ function moduleDefaultBuses(moduleId) {
     return list.filter((b) => b && typeof b === "object");
 }
 
+/*
+ * Param writes waiting for a bus insert to finish loading.
+ *
+ * Each entry is retried from the tick until the position reports the module we
+ * asked for, then written once and dropped. BOUNDED, so a load that fails --
+ * a missing module, a refused dlopen -- cannot leave an entry retrying forever.
+ */
+let pendingBusInsertWrites = [];
+const BUS_INSERT_WRITE_TRIES = 120;   /* ~2s at the 60Hz tick */
+
+function queueBusInsertParams(slotIndex, pos, entry) {
+    const params = (entry.params && typeof entry.params === "object") ? entry.params : null;
+    if (!params && !entry.preset) return;
+    pendingBusInsertWrites.push({
+        slot: slotIndex, pos, module: entry.module,
+        params, preset: entry.preset ? String(entry.preset) : "",
+        tries: 0,
+    });
+}
+
+/*
+ * One pass over the queue. Called from the tick.
+ *
+ * The readiness test is the position reporting the module we ASKED FOR, not
+ * merely reporting something: a position being reloaded answers with the
+ * outgoing module until the worker installs, and writing this module's params
+ * into that one would set parameters on somebody else's plugin.
+ */
+function flushPendingBusInsertWrites() {
+    if (!pendingBusInsertWrites.length) return;
+    const keep = [];
+    for (const w of pendingBusInsertWrites) {
+        const got = getSlotParam(w.slot, `${w.pos}:module`);
+        /* null is "the read did not complete" and "" is "nothing there yet" --
+         * neither is a reason to give up, only to wait. */
+        if (got !== w.module) {
+            if (++w.tries < BUS_INSERT_WRITE_TRIES) keep.push(w);
+            else debugLog(`default_buses: ${w.pos} never reported ${w.module}; params dropped`);
+            continue;
+        }
+        if (w.params) {
+            for (const pk in w.params) {
+                setSlotParam(w.slot, `${w.pos}:${pk}`, String(w.params[pk]));
+            }
+        }
+        /* Last, for the reason default_fx applies it last: a preset is a whole
+         * state and overwrites anything written after it. */
+        if (w.preset) setSlotParam(w.slot, `${w.pos}:preset_name`, w.preset);
+        debugLog(`default_buses: applied queued params to ${w.pos}`);
+    }
+    pendingBusInsertWrites = keep;
+}
+
 function seedDefaultBusesForSlot(slotIndex, moduleId) {
     const wanted = moduleDefaultBuses(moduleId);
     if (!wanted.length) return 0;
@@ -7787,16 +7840,25 @@ function seedDefaultBusesForSlot(slotIndex, moduleId) {
             const pos = `${bus}:fx${k + 1}`;
             if (!setSlotParam(slotIndex, `${pos}:module`, entry.module)) break;
             k++;
-            if (entry.params && typeof entry.params === "object") {
-                for (const pk in entry.params) {
-                    setSlotParam(slotIndex, `${pos}:${pk}`, String(entry.params[pk]));
-                }
-            }
-            /* Last, for the reason default_fx applies it last: a preset is a
-             * whole state and overwrites anything written after it. */
-            if (entry.preset) {
-                setSlotParam(slotIndex, `${pos}:preset_name`, String(entry.preset));
-            }
+            /*
+             * THE PARAMS ARE QUEUED, NOT WRITTEN. A bus insert loads on the
+             * WORKER -- chain_bus.c does the dlopen and create_instance off the
+             * RT thread -- and its set_param drops anything that arrives before
+             * the instance exists: "a write during a reconcile is dropped
+             * rather than queued: the UI re-sends on the next detent".
+             *
+             * A human turning a knob re-sends seconds later and never notices.
+             * Seeding writes microseconds later, so every param was dropped and
+             * four declared inserts all came up as the module's default -- four
+             * boxes reading "Crunch". Reported from hardware, and INTERMITTENT,
+             * because a reload lands the same writes after the load and works:
+             * the worst shape a race can have.
+             *
+             * The slot chain does not need this. chain_host.c loads an audio FX
+             * on the SPI callback, so default_fx's writes land on a plugin that
+             * already exists.
+             */
+            queueBusInsertParams(slotIndex, pos, entry);
         }
         made++;
     }
@@ -24469,6 +24531,11 @@ globalThis.tick = function() {
             if (_h && typeof host_trace_end === 'function') host_trace_end(_h);
         }
     }
+
+    /* Params for a bus insert that was still loading when it was seeded. Costs
+     * one read per waiting position and nothing at all once the queue drains,
+     * which it does within a second of a pick. */
+    flushPendingBusInsertWrites();
 
     /* Send levels, flushed off the knob. Marked dirty by the grid write and
      * written here at most a few times a second: the file I/O is what put
