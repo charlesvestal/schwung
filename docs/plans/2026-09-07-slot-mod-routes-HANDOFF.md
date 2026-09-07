@@ -1,13 +1,30 @@
 # Slot Mod Routes — HANDOFF (parked 2026-09-07)
 
-**Branch:** `worktree-mod-matrix`, 15 commits, worktree at
+**Branch:** `worktree-mod-matrix`, 17 commits, worktree at
 `.claude/worktrees/mod-matrix`. Not pushed, no PR.
 
 **Plan:** `docs/plans/2026-09-07-slot-mod-routes.md` (all 10 tasks executed).
 
-**State: PARKED, and it is NOT finished.** The DSP is solid and verified on
-hardware; the UI is not usable yet. Read "What is actually wrong" before
-resuming — the remaining work is a redesign, not a bug hunt.
+## STATE: PARKED, AND IT DOES NOT WORK
+
+**On the device, the modulation never reaches the destination.** Charles,
+playing it: *"it doesn't work, it never reached the destination."* The target
+parameter does not move. This is the headline and it is not a UI nit.
+
+An earlier draft of this file said "the DSP is solid and verified on hardware".
+**That was wrong, and how it was wrong is the most useful thing here** — see
+*The verification was hollow* below. In short: the on-device checks read
+`<key>:effective`, which is the modulation bus's OWN bookkeeping. It is
+computed by `chain_mod.c` and returned from its table. **Reading it never asks
+the plugin anything.** So an 18/18 pass proved the chain calculated a number,
+not that any module received one — which is precisely the failure being
+reported.
+
+There are therefore TWO blockers, and they are independent:
+
+1. **It does not reach the destination.** Undiagnosed. Start here.
+2. **Eight sibling Mod pages is the wrong shape** — Charles wants one Mod page
+   listing all eight, divable. A redesign, not a bug.
 
 ---
 
@@ -67,30 +84,90 @@ Notes for whoever does it:
 
 ## What is actually wrong
 
-**1. The design above.** Eight pages is the blocker.
+### 1. The modulation does not reach the destination
 
-**2. "this isn't working anyway."** Reported on the device after the Targ fix
-was deployed; NOT diagnosed. What is known:
+Reported from the device after the Targ fix was built and deployed. The route
+can be configured, the chain reports it active, and the target parameter does
+not move.
 
-- The Targ door not opening the picker WAS a real bug, fixed in `f59a623a`,
-  rebuilt and redeployed. Whether Charles retested after that deploy is
-  unknown — the report may predate it.
-- **Velocity did not vary on the device.** Injecting notes over the test bus,
-  the velocity byte arrived pinned at 127 whatever was sent, while note number
-  and CC **from the same messages** varied correctly (114 vs 17, 121 vs 6). So
-  notes reach the latch and the latch works; the velocity byte is already 127
-  on arrival. Earlier in the same session, on the same build, it read 121 vs 7
-  correctly — so something in Move's state changed across a reboot.
-  **Unresolved.** The next step is a pad played by hand (the real path; test-bus
-  injection is a synthetic substitute) or the MIDI trace armed BEFORE the
-  process starts (`touch /data/UserData/schwung/chain_midi_trace_on` then
-  reboot — arming it after start produced no log).
+**Not diagnosed.** What is known, and what is only assumed:
 
-Everything else on the device passed, and those results are worth trusting:
-pressure 121↔6, CC74 121↔6 with CC75 correctly inert, note-track 114↔17, slew
-gliding `10→11,13,15,17,19,21→120` against an instant jump at slew 0, the base
-holding at 64 throughout, disable restoring it, eight routes summing to 50
-(predicted 50.8).
+KNOWN:
+
+- The **host** E2E test (`tests/host/test_mod_route_e2e.c`) drives the ladder
+  and the bus together against a FAKE PLUGIN that records every `set_param` it
+  receives, and asserts the value arrives. That passes. So on the host, the
+  path from a configured route to a plugin write is correct, including the
+  range scaling and the summing.
+- The **device** checks never verified that half at all (below).
+- Earlier in the session, injected MIDI moved `:effective` (121 vs 7); later in
+  the same session on a rebuilt install it did not. That inconsistency is
+  itself unexplained and may be the same fault.
+
+NOT KNOWN — the questions to answer first:
+
+- Does `mod_tick` run at all on the device for this slot? It is driven from
+  `render_block` and, on silent frames, from the shim's `mod:tick`. If neither
+  fires, nothing is emitted and every param read still looks sane.
+- Does `chain_mod_emit_value` find the target's metadata? `find_param_by_key`
+  failing makes the emit return -1 and no contribution appears — but
+  `:modulated` would then read 0, so check that FIRST, it is one read.
+- Does `chain_mod_apply_effective_value` actually reach the plugin's
+  `set_param`? For an INT/ENUM target it is additionally rate-limited by
+  `MOD_INT_ENUM_MIN_INTERVAL_MS` and skipped when the value has not changed by
+  `MOD_FLOAT_CHANGE_EPSILON`.
+
+**How to answer them, since no param read can:** arm the chain MIDI trace
+BEFORE the process starts (`touch
+/data/UserData/schwung/chain_midi_trace_on` then reboot — arming it on a
+running process produced no log), or add a temporary counter to `mod_tick` and
+`chain_mod_apply_effective_value` and read it back as a param. The module's own
+`synth:state` blob is the one existing channel that reflects PLUGIN-side
+values rather than the chain's table.
+
+### 2. The page shape
+
+See "THE DESIGN CHANGE TO MAKE FIRST" above. Independent of (1) — worth doing
+whichever is tackled first, but (1) is what makes the feature real.
+
+### 3. Velocity, on the test-bus path
+
+Injecting notes over the test bus, the velocity byte arrived pinned at 127
+whatever was sent, while note number and CC **from the same messages** varied
+correctly. May be a Move-side normalisation on that synthetic path, may be part
+of (1). Not chased. A pad played by hand is the real path and settles it.
+
+---
+
+## The verification was hollow, and this is the lesson
+
+The device harness read `<key>:effective` and watched it change. That number
+comes from `chain_mod.c`'s own `mod_target_state_t` table — the bus computing
+`base + sum(contributions)` and storing it. **The read is served from that
+table and never touches the plugin.**
+
+So the device suite could report 18/18 while no module ever received a value.
+It measured the bus doing arithmetic.
+
+Worse, and worth understanding before designing a replacement: **no ordinary
+param read can show what the plugin holds while a key is modulated.** That is
+by design (#276) — a plain read of a modulated key answers the BASE so that
+mod-unaware UIs do not show a jittering knob, and `:effective` answers the
+chain's computed value. Both are the chain's numbers. The plugin is not asked
+by either.
+
+Any future device verification of this feature must therefore confirm the
+DESTINATION by a channel that is not the param bus:
+
+- the module's own `synth:state` blob (it serialises live plugin values),
+- the chain MIDI/param trace (armed before process start),
+- a temporary counter exported as a param,
+- or the audible result.
+
+This is the same class as the CC-clamp assertion that passed with the clamp
+deleted, and the bipolar-halving assertion that passed with the halving
+removed: **a probe that measures the wrong thing reports green.** Three times
+in one feature.
 
 ---
 
@@ -107,11 +184,16 @@ holding at 64 throughout, disable restoring it, eight routes summing to 50
 | Ladder + bus, driven in order | — | **`test_mod_route_e2e.c`** — 11 mutants, 10 caught |
 | The route pages | `shadow_ui_slot_grid.mjs` | contract test + 7 snapshot renders, each looked at |
 | Targ opens the picker | `shadow_ui.js` | `test_grid_target_dive.sh` |
-| On real hardware | — | `tools/pytest-schwung/tests/device_mod_routes.py`, 18/18 |
+| On real hardware | — | `device_mod_routes.py` — 18/18, **but see above: it reads the bus's own table, not the plugin. Do not trust this row.** |
 
 `make -C tests/host test` + all `tests/host/*.sh`: **0 failures.** ARM
 cross-compile clean. The four pure units also RUN on the Move's own ARM64 with
 bit-identical float results.
+
+**Read that table as "the pieces are individually sound", not as "the feature
+works".** The host E2E is the strongest evidence, because it asserts against a
+plugin that records what it was told — and the device contradicts it, which is
+exactly where the bug must be.
 
 ---
 
@@ -170,14 +252,20 @@ grid must not be DECLARED for the grid.
 
 ## Device state
 
-The Move is running **this branch build, not a release**, with 9w9 in slot 0 and
-Mod 1 armed (Velocity → BD Tune). `freeverb` in fx1 was already there.
+**The Move has since been moved to a different branch — it is NOT running this
+build.** Anything measured on it after that point says nothing about this work,
+and any probe run against it must reinstall from here first:
 
-**Nothing of Charles's was written**: every `slot_state/*/slot_0.json` and the
-global `slot_0.json` are still dated Sep 6 — the loaded synth and the route are
-live in RAM only and clear on reboot.
+```sh
+./scripts/build.sh
+./scripts/install.sh local --skip-modules --skip-confirmation
+```
 
-To put it back: reinstall a release, or reboot and reinstall from `main`.
+While this branch WAS installed, 9w9 was loaded into slot 0 with Mod 1 armed
+(Velocity → BD Tune); `freeverb` in fx1 was already Charles's. **Nothing of his
+was written** — every `slot_state/*/slot_0.json` and the global `slot_0.json`
+stayed dated Sep 6, so the loaded synth and the route were RAM-only and cleared
+on reboot.
 
 ---
 
@@ -196,9 +284,25 @@ To put it back: reinstall a release, or reboot and reinstall from `main`.
 
 ## If picking this up
 
-1. Read this file, then `docs/plans/2026-09-07-slot-mod-routes.md` for the
-   task-by-task detail.
-2. Do the **Mod list page** first — it is the reason this is parked.
-3. Then settle the velocity question on hardware, with a pad and a hand.
-4. `tools/pytest-schwung/tests/device_mod_routes.py` re-runs the whole device
-   check; it needs `schwung-testd` started and tunnelled (see its docstring).
+1. Read this file first, especially *The verification was hollow*. Then
+   `docs/plans/2026-09-07-slot-mod-routes.md` for the task-by-task detail.
+
+2. **Find out why it does not reach the destination.** Reinstall this branch,
+   then answer the three questions in "What is actually wrong" §1 in order —
+   `:modulated` first, because it is one read and it splits the problem in
+   half. Do NOT use `:effective` as evidence of anything reaching a plugin.
+
+3. **Fix `device_mod_routes.py` before trusting it again.** As written it
+   asserts against the bus's own table and will happily report 18/18 on a
+   feature that does nothing. It needs a destination-side channel — the
+   `synth:state` blob is the cheapest one that already exists.
+
+4. Then the **Mod list page** — Charles's design call, and the reason this is
+   parked rather than merged.
+
+5. Only then the velocity-pinned-at-127 question, with a pad and a hand.
+
+A note on sequencing, learned here: every step of this feature was green before
+any of it was played. The host tests are good and worth keeping; they were also
+never going to find this. Get one end-to-end audible result early next time,
+and treat the wall of green as necessary rather than sufficient.
