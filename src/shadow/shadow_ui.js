@@ -13630,6 +13630,106 @@ function masterGridIoFor() {
     return io;
 }
 
+/*
+ * A SEND'S Settings, as the knob grid.
+ *
+ * It stayed on the list for two stated reasons and neither survived. The first
+ * was that MASTER_GRID_PARAMS names "master_fx:" keys directly -- true, and
+ * fixed by building the send's own contract from its busLevelKeys rather than
+ * by reusing the master's. The second was that "two rows is not a grid's
+ * worth", which the master bus itself contradicts: its own settings grid has
+ * ONE knob param (MIDI Ch), so a send with Return and -> Send B is the larger
+ * page of the two.
+ *
+ * The real argument is what Return IS. It is a continuous 0..127 level, and on
+ * the list you jog to the row, click into edit mode, then jog. On a knob you
+ * turn it -- while listening, which is the whole use of a return. It is also
+ * drawn as a DIAL on the master row now, and a dial you cannot turn with a knob
+ * is a readout pretending to be a control.
+ *
+ * STEP 1, not SEND_LEVEL_STEP. The list steps by four because a detent per unit
+ * makes a full sweep 127 turns of the jog; a knob has the travel, and this is
+ * the same split slot Volume already makes between its list row and its cell.
+ */
+const SEND_SETTINGS_COMPONENT = "send_settings";
+
+function sendSettingsGridParams() {
+    const bus = fxBus();
+    return bus.busLevelKeys.map((k) => ({
+        key: bus.prefix + k,
+        name: SEND_LEVEL_ROW_LABELS[k] || k,
+        type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
+    }));
+}
+
+function sendSettingsGridIo() {
+    /* The declared keys already carry their own "send1:" prefix, so the reads
+     * and writes are pass-throughs at IPC slot 0 exactly as the master's are. */
+    const params = sendSettingsGridParams();
+    /*
+     * THE COMPONENT PREFIX COMES OFF FIRST, and it is not optional.
+     *
+     * The controller composes every read as `${prefix}:${key}`, and the prefix
+     * here is the synthesised component name -- so a declared key arrives as
+     * "send_settings:send1:return". Passing that through would ask the shim for
+     * a key nobody serves, which answers "" rather than erroring, so every cell
+     * would have drawn a confident zero and every turn would have written to
+     * nothing.
+     *
+     * BY NAME rather than by the first colon. The generic /^[^:]*:/ that
+     * busSendsGridIo uses is equivalent here -- it takes "send_settings" and
+     * leaves "send1:return" intact, since the declared key's own colon is not
+     * the first. What the named form buys is the case where the prefix is
+     * ABSENT: a bare "send1:return" survives it, where the generic strip would
+     * quietly turn it into "return". That does not arise today, because the
+     * controller always prefixes; it is one less thing that has to stay true.
+     */
+    const bare = (fullKey) => {
+        const k = String(fullKey || "");
+        return k.startsWith(SEND_SETTINGS_COMPONENT + ":")
+            ? k.slice(SEND_SETTINGS_COMPONENT.length + 1) : k;
+    };
+    return {
+        getParam(fullKey) {
+            const k = bare(fullKey);
+            if (k === "ui_hierarchy") {
+                if (!params.length) return null;
+                return JSON.stringify({ modes: null, levels: { root: {
+                    label: "Settings",
+                    knobs: params.map((p) => p.key),
+                    params: params.map((p) => ({ key: p.key })),
+                } } });
+            }
+            if (k === "chain_params") {
+                return params.length ? JSON.stringify(params) : null;
+            }
+            /* The RAW answer, null included: only the caller that saw the wire
+             * can tell a stalled channel from a zero. */
+            return getSlotParam(0, k);
+        },
+        setParam(fullKey, value) {
+            const ok = setSlotParam(0, bare(fullKey), String(value));
+            /* THE SAVE THE LIST PATH CARRIES. adjustMasterFxSetting calls
+             * saveSendFxChainConfig() after every level change; a grid write
+             * that dropped it would take effect immediately and be gone on
+             * reboot, with no error anywhere -- the exact failure documented on
+             * masterGridIoFor's writeParam. */
+            if (ok) saveSendFxChainConfig();
+            return ok;
+        },
+        /* No send level is a modulation target: a send bus has no LFOs, so the
+         * generic oracle would spend IPC round trips per tick to answer no. */
+        isModulated: () => false,
+    };
+}
+
+function enterSendSettingsGrid() {
+    enterParamPages(0, SEND_SETTINGS_COMPONENT, SEND_SETTINGS_COMPONENT, null,
+                    sendSettingsGridIo(),
+                    { label: MASTER_CHAIN_TARGET.label, name: "Settings",
+                      returnView: VIEWS.MASTER_FX });
+}
+
 function enterMasterFxSettingsGrid() {
     enterParamPages(0, MASTER_SETTINGS_COMPONENT, MASTER_SETTINGS_COMPONENT, null,
                     masterGridIoFor(),
@@ -20244,13 +20344,14 @@ function handleSelect() {
                      * Settings position gets. The screen reader still gets the
                      * list (paramPagesEnabled returns false for it): a grid has
                      * eight cells and nothing selected to read out. */
-                    /* The settings GRID is a synthesised contract that names
-                     * master_fx: keys directly (MASTER_GRID_PARAMS), so on a
-                     * send it would draw the master bus's rows under the send's
-                     * title. A send stays on the list until that contract is
-                     * parameterised too — two rows is not a grid's worth. */
-                    if (paramPagesEnabled() && fxBusIsMaster() && !suppressMasterGridOnce) {
-                        enterMasterFxSettingsGrid();
+                    /* Each bus builds its OWN contract: the master's names
+                     * master_fx: keys directly (MASTER_GRID_PARAMS) and would
+                     * otherwise draw the master bus's rows under a send's
+                     * title. See enterSendSettingsGrid for why a send is a grid
+                     * at all now. */
+                    if (paramPagesEnabled() && !suppressMasterGridOnce) {
+                        if (fxBusIsMaster()) enterMasterFxSettingsGrid();
+                        else enterSendSettingsGrid();
                         break;
                     }
                     suppressMasterGridOnce = false;
