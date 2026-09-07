@@ -1476,7 +1476,7 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
     const char *lfos_pos = strstr(json, "\"lfos\"");
     if (lfos_pos) {
-        for (int i = 0; i < LFO_COUNT; i++) {
+        for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
             char lfo_key[8];
             snprintf(lfo_key, sizeof(lfo_key), "\"lfo%d\"", i + 1);
             const char *lfo_pos = strstr(lfos_pos, lfo_key);
@@ -1499,7 +1499,7 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
                 if (depth > 0) obj_end++;
             }
 
-            lfo_state_t *lfo = &patch->lfos[i];
+            lfo_state_t *lfo = &patch->mod_routes[i];
             json_get_int(obj, "enabled", &lfo->enabled);
             json_get_int(obj, "shape", &lfo->shape);
             json_get_int(obj, "sync", &lfo->sync);
@@ -1732,17 +1732,17 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
     inst->midi_input = patch->midi_input;
 
     /* Restore LFO config from patch (clear old sources first) */
-    for (int i = 0; i < LFO_COUNT; i++) {
+    for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
         char source_id[8];
-        snprintf(source_id, sizeof(source_id), "lfo%d", i + 1);
+        snprintf(source_id, sizeof(source_id), "mod%d", i + 1);
         chain_mod_clear_source(inst, source_id);
-        inst->lfos[i] = patch->lfos[i];
+        inst->mod_routes[i] = patch->mod_routes[i];
         /* Reset runtime state */
-        inst->lfos[i].last_sh_value = 0.0f;
-        inst->lfos[i].prev_wrap = 0;
+        inst->mod_routes[i].last_sh_value = 0.0f;
+        inst->mod_routes[i].prev_wrap = 0;
         /* Reset phase for synced LFOs on patch load */
-        if (inst->lfos[i].sync) {
-            inst->lfos[i].phase = 0.0;
+        if (inst->mod_routes[i].sync) {
+            inst->mod_routes[i].phase = 0.0;
         }
     }
 

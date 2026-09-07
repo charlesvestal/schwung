@@ -7,6 +7,8 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "mod_src.h"
+
 /* M_PI is hidden by glibc <math.h> under strict -std=c11 (exposed on macOS
  * unconditionally). This header is compiled standalone by unit tests, so
  * guarantee M_PI is always defined. */
@@ -52,6 +54,34 @@ typedef struct {
     int drunk_init;       /* Swishy: initialized flag */
     int retrigger;        /* Reset phase on first note-on of new phrase */
     int held_count;       /* Number of currently held notes (for retrigger) */
+
+    /* ---- Mod route fields ------------------------------------------------
+     *
+     * A slot's routes can take their signal from something other than the LFO
+     * above (velocity, pressure, a CC, the note number — see mod_src.h). A
+     * route whose src is not MOD_SRC_LFO ignores every field above except
+     * target / param / depth / bipolar / enabled, which are the parts that
+     * describe the DESTINATION rather than the oscillator.
+     *
+     * APPENDED, and zero must stay meaningful. src == MOD_SRC_LFO == 0 is what
+     * lets every patch written before these fields existed parse as the LFO it
+     * already was: the keys are simply absent, the struct is memset, and the
+     * result is the old behaviour exactly. That is the entire migration story
+     * for this feature — there is no migration pass and no version stamp to
+     * get wrong.
+     *
+     * Master FX shares this struct and never sets any of them; it has no MIDI
+     * input for a source to read. */
+    int src;              /* MOD_SRC_* */
+    int cc_num;           /* MOD_SRC_CC only: which controller, 0..127 */
+    float slew;           /* 0..0.99, the fraction of distance KEPT per block */
+
+    /* Runtime, never persisted. Persisting `slewed` would replay a transient on
+     * every patch load; `slew_primed` is cleared whenever src changes so the
+     * slew seeds from the NEW source's value rather than gliding from the old
+     * one's, which sounds like a fault in the synth rather than a transition. */
+    float slewed;
+    int slew_primed;
 } lfo_state_t;
 
 /* Process a MIDI message for retrigger: reset phase on first note-on of a phrase.

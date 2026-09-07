@@ -91,6 +91,14 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
      * a real note number (C-1) and would name a voice nobody selected. */
     inst->synth_last_note = -1;
 
+    /* The mod sources' latched MIDI, for the same reason and with the same
+     * shape of bug behind it: calloc says velocity 0, and a velocity route on a
+     * slot nobody has played yet would pin its target to the bottom of its
+     * range. That reads as a dead synth, and the blame lands on the target
+     * rather than on the untouched source. mod_input_reset seeds each control
+     * at the value a player would call its rest — see mod_src.h. */
+    mod_input_reset(&inst->mod_input);
+
     /* No synth loaded yet, so no split voices — zeroed explicitly rather than
      * relying on calloc, matching v2_unload_synth / v2_load_synth below. */
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
@@ -902,6 +910,7 @@ void parse_debug_log(const char *msg) {
 
 static void lfo_tick(chain_instance_t *inst, int frames);
 
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
@@ -1136,13 +1145,17 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
          * defined it.
          *
          * Safe to zero rather than preserve: loading a patch assigns the whole
-         * array from the patch (chain_patch.c, `inst->lfos[i] = patch->lfos[i]`),
+         * array from the patch (chain_patch.c, `inst->mod_routes[i] = patch->mod_routes[i]`),
          * so nothing a patch defines can be lost by clearing first. Zero is
          * inert -- no target, no depth.
          */
-        memset(inst->lfos, 0, sizeof(inst->lfos));
-        memset(inst->lfo_base_values, 0, sizeof(inst->lfo_base_values));
-        memset(inst->lfo_base_valid, 0, sizeof(inst->lfo_base_valid));
+        memset(inst->mod_routes, 0, sizeof(inst->mod_routes));
+        memset(inst->mod_route_base_values, 0, sizeof(inst->mod_route_base_values));
+        memset(inst->mod_route_base_valid, 0, sizeof(inst->mod_route_base_valid));
+        /* RESET, not memset: the sources' rest values are not zero. A cleared
+         * slot whose routes are re-enabled before anything is played must start
+         * where an untouched control sits, not on a rail. See mod_src.h. */
+        mod_input_reset(&inst->mod_input);
         /*
          * Knob mappings go too, for the identical reason the LFOs do: they
          * are per-SLOT state, not per-module, so unloading everything they
@@ -1336,89 +1349,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             inst->dirty = 1;
         }
     }
-    /* LFO configuration: lfo1:* and lfo2:* */
-    else if (strncmp(key, "lfo1:", 5) == 0 || strncmp(key, "lfo2:", 5) == 0) {
-        int lfo_idx = (key[3] == '1') ? 0 : 1;
-        lfo_state_t *lfo = &inst->lfos[lfo_idx];
-        const char *subkey = key + 5;
-        char source_id[8];
-        snprintf(source_id, sizeof(source_id), "lfo%d", lfo_idx + 1);
-
-        if (strcmp(subkey, "enabled") == 0) {
-            lfo->enabled = atoi(val);
-            if (!lfo->enabled) {
-                lfo->active = 0;
-                chain_mod_clear_source(inst, source_id);
-            } else {
-                /* Set sensible defaults if this is a fresh LFO (rate_hz still 0) */
-                if (lfo->rate_hz < 0.1f && !lfo->sync) {
-                    lfo->rate_hz = 1.0f;
-                }
-                /*
-                 * Full depth, not half. An LFO you have just switched on should
-                 * DO something — at 50% the effect was there but easy to miss,
-                 * and the row-wide waveform now drawn on the LFO page reads as
-                 * a half-height wave for no reason the user chose.
-                 *
-                 * The guard is what makes this safe: it fires only when depth is
-                 * exactly 0 AND no target has been picked yet, i.e. a genuinely
-                 * fresh LFO. Anything already configured, or restored from a
-                 * saved slot, sets depth explicitly and is untouched.
-                 */
-                if (lfo->depth == 0.0f && !lfo->target[0] && !lfo->param[0]) {
-                    lfo->depth = 1.0f;
-                }
-                lfo->active = (lfo->target[0] && lfo->param[0]);
-            }
-        } else if (strcmp(subkey, "shape") == 0) {
-            lfo->shape = atoi(val);
-            if (lfo->shape < 0) lfo->shape = 0;
-            if (lfo->shape >= LFO_NUM_SHAPES) lfo->shape = LFO_NUM_SHAPES - 1;
-        } else if (strcmp(subkey, "rate_hz") == 0) {
-            lfo->rate_hz = strtof(val, NULL);
-            if (lfo->rate_hz < 0.1f) lfo->rate_hz = 0.1f;
-            if (lfo->rate_hz > 20.0f) lfo->rate_hz = 20.0f;
-        } else if (strcmp(subkey, "rate_div") == 0) {
-            lfo->rate_div = atoi(val);
-            if (lfo->rate_div < 0) lfo->rate_div = 0;
-            if (lfo->rate_div >= LFO_NUM_DIVISIONS) lfo->rate_div = LFO_NUM_DIVISIONS - 1;
-        } else if (strcmp(subkey, "sync") == 0) {
-            lfo->sync = atoi(val);
-            /* Default to 1/1 (index 15) if rate_div is still at 0 (16bar) */
-            if (lfo->sync && lfo->rate_div == 0) lfo->rate_div = 15;
-        } else if (strcmp(subkey, "depth") == 0) {
-            lfo->depth = strtof(val, NULL);
-            if (lfo->depth < -1.0f) lfo->depth = -1.0f;
-            if (lfo->depth > 1.0f) lfo->depth = 1.0f;
-        } else if (strcmp(subkey, "polarity") == 0) {
-            lfo->bipolar = atoi(val) ? 1 : 0;
-        } else if (strcmp(subkey, "phase_offset") == 0) {
-            lfo->phase_offset = strtof(val, NULL);
-            if (lfo->phase_offset < 0.0f) lfo->phase_offset = 0.0f;
-            if (lfo->phase_offset > 1.0f) lfo->phase_offset = 1.0f;
-        } else if (strcmp(subkey, "target") == 0) {
-            /* Clear old modulation source before changing target */
-            if (lfo->target[0]) {
-                chain_mod_clear_source(inst, source_id);
-            }
-            strncpy(lfo->target, val, sizeof(lfo->target) - 1);
-            lfo->target[sizeof(lfo->target) - 1] = '\0';
-            lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
-            inst->lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
-        } else if (strcmp(subkey, "target_param") == 0) {
-            /* Clear old modulation source before changing param */
-            if (lfo->param[0]) {
-                chain_mod_clear_source(inst, source_id);
-            }
-            strncpy(lfo->param, val, sizeof(lfo->param) - 1);
-            lfo->param[sizeof(lfo->param) - 1] = '\0';
-            lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
-            inst->lfo_base_valid[lfo_idx] = 0;  /* Re-snapshot base */
-        } else if (strcmp(subkey, "retrigger") == 0) {
-            lfo->retrigger = atoi(val);
-            lfo->held_count = 0;  /* Reset on toggle */
-        }
-        inst->dirty = 1;
+    /* Mod route configuration: mod1: .. mod8:, and legacy lfo1: / lfo2:.
+     * The ladder lives in chain_mod_routes.c; it returns 0 for a key that is
+     * not a route's, so this branch falls through exactly as an inline
+     * strncmp would have. */
+    else if (chain_mod_route_set_param(inst, key, val)) {
+        /* handled */
     }
     /* Knob mapping set: knob_N_set with value "target:param" */
     else if (strncmp(key, "knob_", 5) == 0) {
@@ -1737,52 +1673,32 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%d", inst->fx_count);
     }
 
-    /* LFO configuration queries */
-    if (strncmp(key, "lfo1:", 5) == 0 || strncmp(key, "lfo2:", 5) == 0) {
-        int lfo_idx = (key[3] == '1') ? 0 : 1;
-        lfo_state_t *lfo = &inst->lfos[lfo_idx];
-        const char *subkey = key + 5;
-
-        if (strcmp(subkey, "enabled") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->enabled);
-        if (strcmp(subkey, "active") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->active);
-        if (strcmp(subkey, "shape") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->shape);
-        if (strcmp(subkey, "shape_name") == 0)
-            return snprintf(buf, buf_len, "%s",
-                   (lfo->shape >= 0 && lfo->shape < LFO_NUM_SHAPES)
-                   ? lfo_shape_names[lfo->shape] : "sine");
-        if (strcmp(subkey, "rate_hz") == 0)
-            return snprintf(buf, buf_len, "%.1f", lfo->rate_hz);
-        if (strcmp(subkey, "rate_div") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->rate_div);
-        if (strcmp(subkey, "rate_div_label") == 0)
-            return snprintf(buf, buf_len, "%s",
-                   (lfo->rate_div >= 0 && lfo->rate_div < LFO_NUM_DIVISIONS)
-                   ? lfo_divisions[lfo->rate_div].label : "1/4");
-        if (strcmp(subkey, "sync") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->sync);
-        if (strcmp(subkey, "depth") == 0)
-            return snprintf(buf, buf_len, "%.2f", lfo->depth);
-        if (strcmp(subkey, "polarity") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->bipolar);
-        if (strcmp(subkey, "phase_offset") == 0)
-            return snprintf(buf, buf_len, "%.2f", lfo->phase_offset);
-        if (strcmp(subkey, "target") == 0)
-            return snprintf(buf, buf_len, "%s", lfo->target);
-        if (strcmp(subkey, "target_param") == 0)
-            return snprintf(buf, buf_len, "%s", lfo->param);
-        if (strcmp(subkey, "retrigger") == 0)
-            return snprintf(buf, buf_len, "%d", lfo->retrigger);
-        return -1;
+    /* Mod route queries: mod1: .. mod8:, and legacy lfo1: / lfo2:.
+     * See chain_mod_routes.c. Returns 0 when the key is not a route's, so the
+     * ladder below still gets its turn. */
+    {
+        int route_len = -1;
+        if (chain_mod_route_get_param(inst, key, buf, buf_len, &route_len))
+            return route_len;
     }
-    /* LFO config as JSON (for patch save) */
+    /*
+     * LFO config as JSON — THE LEGACY SAVE DOCUMENT, and it holds exactly two.
+     *
+     * shadow_ui.js reads this key and stores the result as `patch.lfos`;
+     * chain_patch.c's legacy reader looks only for "lfo1" and "lfo2", because
+     * that is all this format ever had. Widening the loop to MOD_ROUTE_COUNT
+     * would write six more entries that nothing reads back — silent loss on
+     * every save, and no error anywhere.
+     *
+     * The literal 2 is deliberate rather than a name. This is a FROZEN on-disk
+     * shape, so it must not track a cap that can move; the eight-route document
+     * is "mod_config", which is what new saves use.
+     */
     if (strcmp(key, "lfo_config") == 0) {
         int off = 0;
         off += snprintf(buf + off, buf_len - off, "{");
-        for (int i = 0; i < LFO_COUNT; i++) {
-            lfo_state_t *lfo = &inst->lfos[i];
+        for (int i = 0; i < 2; i++) {
+            lfo_state_t *lfo = &inst->mod_routes[i];
             if (i > 0) off += snprintf(buf + off, buf_len - off, ",");
             if (!lfo->enabled && !lfo->target[0]) {
                 off += snprintf(buf + off, buf_len - off, "\"lfo%d\":null", i + 1);
@@ -2226,8 +2142,8 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
      */
     for (int sd = 0; sd < BUS_MIX_SENDS; sd++) inst->main_send_mod[sd] = 0;
 
-    for (int i = 0; i < LFO_COUNT; i++) {
-        lfo_state_t *lfo = &inst->lfos[i];
+    for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
+        lfo_state_t *lfo = &inst->mod_routes[i];
         if (!lfo->enabled || !lfo->active) continue;
 
         /* Phase: when a transport is running, lock to song position (writing
@@ -2287,7 +2203,7 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
 
         if (target_lfo >= 0 && target_lfo != i) {
             /* LFO-to-LFO: directly modify target LFO's param */
-            lfo_state_t *tgt = &inst->lfos[target_lfo];
+            lfo_state_t *tgt = &inst->mod_routes[target_lfo];
             const slot_lfo_param_meta_t *meta = NULL;
             for (int j = 0; j < SLOT_LFO_PARAM_META_COUNT; j++) {
                 if (strcmp(slot_lfo_param_meta[j].key, lfo->param) == 0) {
@@ -2304,15 +2220,15 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
             else if (strcmp(lfo->param, "phase_offset") == 0) cur = tgt->phase_offset;
             else continue;
 
-            /* Use base from lfo_base_values if not yet snapshotted.
-             * We store base in inst->lfo_base_values[i] and track validity
-             * with inst->lfo_base_valid[i]. */
-            if (!inst->lfo_base_valid[i]) {
-                inst->lfo_base_values[i] = cur;
-                inst->lfo_base_valid[i] = 1;
+            /* Use base from mod_route_base_values if not yet snapshotted.
+             * We store base in inst->mod_route_base_values[i] and track validity
+             * with inst->mod_route_base_valid[i]. */
+            if (!inst->mod_route_base_valid[i]) {
+                inst->mod_route_base_values[i] = cur;
+                inst->mod_route_base_valid[i] = 1;
             }
 
-            float base = inst->lfo_base_values[i];
+            float base = inst->mod_route_base_values[i];
             float half_range = (meta->max_val - meta->min_val) / 2.0f;
             float modulated = base + signal * lfo->depth * half_range;
             if (modulated < meta->min_val) modulated = meta->min_val;
@@ -2324,7 +2240,7 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
         } else if (target_lfo < 0) {
             /* Normal FX/synth target: emit modulation via existing runtime */
             char source_id[8];
-            snprintf(source_id, sizeof(source_id), "lfo%d", i + 1);
+            snprintf(source_id, sizeof(source_id), "mod%d", i + 1);
             chain_mod_emit_value(inst, source_id, lfo->target, lfo->param,
                                  signal, lfo->depth, 0.0f, lfo->bipolar, 1 /*enabled*/);
         }
