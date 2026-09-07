@@ -216,6 +216,52 @@ Use `defaults` to pass initial parameters to DSP plugins at load time:
 }
 ```
 
+## Declaring a bus your module ships with
+
+`capabilities.default_buses` hands your own effects over as a BUS — a container
+of ordinary inserts — rather than baking them in:
+
+```json
+"capabilities": {
+  "default_buses": [{
+    "name": "Drum Bus",
+    "voices": "*",
+    "fx": [
+      { "module": "dr32-fx", "params": { "effect": "Crunch" } },
+      { "module": "clap", "params": { "plugin_id": "Pop3" }, "preset": "Glue" }
+    ]
+  }]
+}
+```
+
+Shipping a multi-stage effect as ONE insert loses the only thing anyone wants
+from it: swapping just the compressor, or putting a drive between two stages. As
+a bus, every stage is a normal chain position — reorderable, bypassable with
+`Mute`+`Jog Click`, an LFO target, swappable, removable.
+
+**A bus, not the slot chain, and the difference is real.** A bus catches the
+VOICES; the slot chain catches your whole output including anything you sum
+internally. A bus also keeps your glue out of the eight slot positions the user
+wants for their own effects.
+
+**A bus returns BEFORE `fx1`**, so the user's slot effects see the glued result
+— and sends are tapped post-insert, so a bus feeding Send A sends the glued
+signal rather than the raw voices.
+
+`voices: "*"` routes every voice you publish in `split_voices`. A list routes
+those; an id you do not publish is dropped rather than written, since each
+`bus<N>:voices` write is a whole-list replace and the host would otherwise keep
+it as an orphan.
+
+Same rules as `default_fx`: it fires on an interactive pick only, and only into
+a slot with **no buses**. A slot that has buses has been arranged by somebody,
+and adding to it silently re-routes their voices.
+
+**Shipping several effects from one binary is the normal case.** Airwindows does
+it — one `.so`, 500+ effects, chosen by `plugin_id`. `plugin_api_v2` is
+multi-instance, so declaring the same module four times with a different
+`effect` each is four ordinary instances of one file.
+
 ## Declaring the effects that belong behind your module
 
 `capabilities.default_fx` names audio FX the slot chain should hold when the
