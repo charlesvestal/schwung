@@ -1990,8 +1990,43 @@ function setMasterFxChainConfig(cfg) {
  * ONE `+`, appended: Master FX has one section, and its `+` is the audio-FX end
  * of a slot chain wearing the same rules.
  */
+/*
+ * The two SEND ENTRIES that head the master row.
+ *
+ * They are boxes in the chain diagram, not a menu: sends land BEFORE Master FX
+ * (the shim sums the returns into fx_target and the MFX loop processes that
+ * same buffer), so the leftmost boxes in this row genuinely ARE what arrives
+ * ahead of FX position 1. The picture is the signal flow rather than an
+ * arrangement of destinations.
+ *
+ * They ride the same array as the FX positions so they scroll, select and
+ * announce through the code that already does all three -- the same reason `+`
+ * and Settings are rows here rather than special cases. `kind` is its own value
+ * so nothing that means "an FX position" (masterFxPositionOf, marks, bypass)
+ * can pick one up: all of those test `kind === "module"`.
+ */
+function masterFxSendEntries() {
+    return FX_BUSES
+        .map((bus, i) => ({ bus, i }))
+        .filter((e) => e.bus.send >= 0)
+        .map((e) => ({
+            id: `sendbus${e.i}`, key: `sendbus${e.i}`, kind: "sendbus",
+            busIndex: e.i, label: e.bus.label,
+        }));
+}
+
 function masterFxChainComponents() {
-    return chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
+    const rows = chainEditorComponents(masterFxChainConfig(), MASTER_CHAIN_TARGET);
+    /* Only the MASTER bus heads its row with them. A send showing its own entry
+     * would be a box that reopens the screen it is drawn on, and Send A showing
+     * Send B would claim a routing that does not exist (the A->B feed is a level
+     * on A's Settings, not a position in its chain). */
+    if (!fxBusIsMaster()) return rows;
+    /* `position` is the ROW and is renumbered, because chainEditorComponents
+     * assigned it before these existed. `index` -- the FX position -- is left
+     * exactly as it was; that is the whole point of telling the two apart. */
+    return masterFxSendEntries().concat(rows)
+        .map((c, i) => ({ ...c, position: i }));
 }
 
 /* Is the Master FX selection on a module POSITION — as opposed to the preset
@@ -3405,6 +3440,14 @@ function enterFxBus(index) {
      * so carrying the name across would put Master FX's preset in a send's
      * header band. */
     if (!fxBusIsMaster()) currentMasterPresetName = "";
+    /* Land on the first FX POSITION, not on the Send A box that now heads the
+     * row. Arriving pointed at a door out of the screen you just opened is the
+     * same complaint defaultChainComponent exists to answer for the `+`. */
+    const firstFx = masterFxRowOf(0);
+    if (firstFx >= 0) selectedMasterFxComponent = firstFx;
+    /* The bands under the boxes name what is in each send; read ONCE here, on a
+     * screen change, never on the draw path. */
+    fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
     enterMasterFxSettings();
 }
 
@@ -19497,7 +19540,9 @@ function handleJog(delta, shift = isShiftHeld()) {
                     announce("Preset Selection");
                 } else {
                     const comp = comps[selectedMasterFxComponent];
-                    if (comp.kind === "add") {
+                    if (comp.kind === "sendbus") {
+                        announceMenuItem(comp.label, fxBusSummaries[comp.busIndex] || "");
+                    } else if (comp.kind === "add") {
                         /* "+, Empty" says nothing. The label already is the
                          * whole instruction. */
                         announce(comp.label);
@@ -20096,6 +20141,11 @@ function handleSelect() {
                 if (!selectedComp) {
                     /* The list is as long as the chain now, so a selection can
                      * outlive the position it named. Nothing to open. */
+                    break;
+                }
+                if (selectedComp.kind === "sendbus") {
+                    /* A door, drawn where the signal actually enters. */
+                    enterFxBus(selectedComp.busIndex);
                     break;
                 }
                 if (selectedComp.kind === "add") {
@@ -21019,13 +21069,18 @@ function handleBack() {
                 selectingMasterFxModule = false;
                 needsRedraw = true;
                 announce(fxBus().label);
+            } else if (!fxBusIsMaster()) {
+                /* A SEND is entered from a box at the head of the master row, so
+                 * that is where Back goes -- the level above is the screen you
+                 * came from, which is now a diagram rather than a list. */
+                enterFxBus(0);
             } else {
-                /* Back from a BUS returns to the picker it was opened from,
-                 * matching every other list: the picker is the level above.
-                 * It used to leave shadow mode from here, which was right while
-                 * Master FX was the only FX screen and there was no level above
-                 * it. Back from the PICKER is what leaves now. */
-                enterFxBusPicker();
+                /* The master bus IS the top of this branch now, so Back leaves,
+                 * exactly as the chain editor does from its own top. The picker
+                 * it used to return to is no longer a landing. */
+                if (typeof shadow_request_exit === "function") {
+                    shadow_request_exit();
+                }
             }
             break;
         case VIEWS.FX_BUS_PICKER:
@@ -22274,6 +22329,10 @@ function drawHelpDetail() {
      * underneath it when the picker is used, so a snapshotted object would keep
      * drawing the bus you left. */
     _ctx.fxBus = () => fxBus();
+    /* The CACHED summary, refreshed on entry to a bus editor. Never a live read:
+     * this is consulted by the info band of a screen that redraws every frame,
+     * and a ~2.8ms round trip there is more than a whole page render. */
+    _ctx.fxBusSummary = (i) => fxBusSummaries[i] || "";
     _ctx.sendBusLevelRead = (...args) => sendBusLevelRead(...args);
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
     _ctx.loadMasterFxChainConfig = (...args) => loadMasterFxChainConfig(...args);
@@ -23950,12 +24009,16 @@ globalThis.tick = function() {
                 }
             }
             if (flags & SHADOW_UI_FLAG_JUMP_TO_MASTER_FX) {
-                /* The gesture (Shift+Vol+Menu, hold-Menu) now opens the BUS
-                 * PICKER rather than the master bus directly: Master FX is one
-                 * of three buses and there is no other way to reach the sends.
-                 * The shim flag is unchanged — it says "the user asked for the
-                 * FX screen", and which FX screen that is is a UI decision. */
-                enterFxBusPicker();
+                /* The gesture (Shift+Vol+Menu, hold-Menu) lands on the MASTER
+                 * bus -- the thing that was actually asked for -- with Send A and
+                 * Send B as the first two boxes of its row, one jog to the left.
+                 * It briefly opened a three-row picker instead, which made every
+                 * route to Master FX pay for a list nobody wanted to read; the
+                 * sends are reachable from the diagram now, so the level above
+                 * has nothing left to offer. The shim flag is unchanged -- it
+                 * says "the user asked for the FX screen", and which screen that
+                 * is stays a UI decision. */
+                enterFxBus(0);
                 /* Clear the flag */
                 if (typeof shadow_clear_ui_flags === "function") {
                     shadow_clear_ui_flags(SHADOW_UI_FLAG_JUMP_TO_MASTER_FX);

@@ -230,6 +230,9 @@ export function drawMasterFx() {
         abbrev: (comp) => {
             if (comp.kind === "add") return "+";
             if (comp.kind === "settings") return "*";
+            /* "A" / "B", from the LABEL rather than a literal, so the box and
+             * the band below it cannot come to say different things. */
+            if (comp.kind === "sendbus") return comp.label.slice(-1);
             /* masterFxConfig is the cached copy the editor already holds — no
              * IPC here. Nothing in this list is `kind: "synth"`, so no box gets
              * the synth band: Master FX has no synth to landmark. */
@@ -267,6 +270,11 @@ export function drawMasterFx() {
          * thing rather than one position in it", which is why they share the
          * band — they just name different objects. */
         infoLine = currentMasterPresetName || "(no preset)";
+    } else if (selectedComp && selectedComp.kind === "sendbus") {
+        /* The band says what is IN the send, which is the one thing the two
+         * letters on the box cannot. Read from the cached summaries the picker
+         * already fills -- no IPC on a screen that redraws every frame. */
+        infoLine = ctx.fxBusSummary ? ctx.fxBusSummary(selectedComp.busIndex) : "";
     } else if (selectedComp && selectedComp.kind === "add") {
         infoLine = "New effect";
     } else if (selectedComp && selectedComp.kind === "module") {
@@ -274,8 +282,10 @@ export function drawMasterFx() {
         if (moduleData && moduleData.module) {
             const opt = MASTER_FX_OPTIONS.find(o => o.id === moduleData.module);
             const displayName = opt ? opt.name : moduleData.module;
-            const preset = getMasterFxParam(selectedMasterFxComponent, "preset_name") ||
-                          getMasterFxParam(selectedMasterFxComponent, "preset") || "";
+            /* comp.index is the FX POSITION. selectedMasterFxComponent is the
+             * ROW, and the two are no longer the same number. */
+            const preset = getMasterFxParam(selectedComp.index, "preset_name") ||
+                          getMasterFxParam(selectedComp.index, "preset") || "";
             infoLine = preset ? `${displayName} (${truncateText(preset, 8)})` : displayName;
         } else {
             infoLine = "(empty)";

@@ -338,8 +338,13 @@ for (const sel of SELECTIONS) {
       { key: "d", name: "Mix",  type: "float", min: 0, max: 1, step: 0.01 }] }),
     values: { a: 0.62, b: 0.25, c: 1, d: 0.8 },
     viz: null, modulated: null };
-  const plain = render(CAP, 0, {});
   for (const sel of [0, CAP - 1]) {
+    /* The baseline is the SAME SELECTION with the card off. It used to be
+     * render(CAP, 0) for every sel, which only agreed because every row in the
+     * master diagram cost the same number of reads; once the row could begin
+     * with a box that reads nothing (a send entry), the comparison started
+     * measuring the selection rather than the card. */
+    const plain = render(CAP, sel, {});
     const { fb, reads } = render(CAP, sel, { card: CARD });
     if (fb.clipped() !== 0)
       fail("selection " + sel + " with the knob card up drew " + fb.clipped() +
@@ -352,8 +357,12 @@ for (const sel of SELECTIONS) {
            " extra reads on the DRAW path - every value it shows was read on " +
            "touch-down, and a round trip is ~2.8ms against a 1.68ms page render");
   }
+  /* Reachability: the card is a modal over the diagram, so it must change the
+   * screen whatever is selected underneath it. Its own baseline, since the
+   * per-selection ones above are scoped to the loop. */
+  const plainBase = render(CAP, 0, {});
   const withCard = render(CAP, 0, { card: CARD });
-  if (withCard.fb.countLit() === plain.fb.countLit())
+  if (withCard.fb.countLit() === plainBase.fb.countLit())
     fail("the screen is pixel-identical with and without the knob card - the " +
          "card block is unreachable, which is how a lift silently measures a " +
          "feature that is switched off");
