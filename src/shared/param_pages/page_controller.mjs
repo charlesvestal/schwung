@@ -698,6 +698,10 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* A write touched a condition key; tick() owes one plan. Coalesced
+         * because an encoder sweep is a burst of writes and each one used to
+         * buy a full planPages. */
+        replanOwed: false,
         /* Instance copy / clear gesture (hold Copy or Delete, then pick an
          * instance) -- see onEditCc. `editUndo` is the one-level undo. */
         editGesture: null,
@@ -2017,6 +2021,10 @@ export function createController(io = {}) {
     function tick() {
         s.tickCount++;
         flushDueWrites();
+        /* After flushDueWrites, which is itself a writer of condition keys, so
+         * its changes fold into the same single plan. Before everything below,
+         * which reads s.pages. */
+        flushReplan();
         expireTurnClaim();
         serviceEditGesture();
 
@@ -3488,8 +3496,43 @@ export function createController(io = {}) {
         if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
     }
 
+    /*
+     * A condition key changed, so the page plan may be stale. Mark it owed and
+     * let tick() do it ONCE, rather than re-planning on every write.
+     *
+     * WHY: this used to call planPages() synchronously on each write to a
+     * condition key, and an encoder sweep is a burst of CCs — a continuous
+     * cell emits hundreds per turn. So turning a knob that gates other params
+     * re-planned the whole module once per detent, before anything was drawn.
+     *
+     * Measured on a Move with DR32, whose send-effect page gates its cells on
+     * the send's mode: 26 condition evaluations per planning pass, and 2912
+     * evaluations inside a single 10.6 ms tick — 112 complete planning passes,
+     * each doing the level walk, the group gather, the row alignment and the
+     * fingerprint. The picker did not read as slow, it read as a hang.
+     *
+     * Marking is not planning: flushReplan() below does the work.
+     */
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
+        s.replanOwed = true;
+    }
+
+    /*
+     * Run the plan the writes above asked for — at most one per tick, whatever
+     * the burst looked like.
+     *
+     * Called from tick(), which every consumer calls before render(), so a gate
+     * that flips is reflected in the same frame the user sees. Deferring past
+     * the draw would show one stale frame per flip.
+     */
+    function flushReplan() {
+        if (!s.replanOwed) return;
+        s.replanOwed = false;
+        replanNow();
+    }
+
+    function replanNow() {
         const oldPages = s.pages, oldIndex = s.pageIndex;
         const planned = planPages({
             hierarchy: s.hierarchy, chainParams: s.chainParams,
