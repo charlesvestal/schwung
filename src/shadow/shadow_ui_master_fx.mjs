@@ -51,19 +51,33 @@ export function enterMasterFxSettings() {
 
     ctx.MASTER_FX_OPTIONS = scanForAudioFxModules();
     loadMasterFxChainConfig();
-    ctx.selectedMasterFxComponent = 0;
+    /*
+     * RESOLVED HERE, after the load, and never assigned 0.
+     *
+     * This was `= 0`, which is the whole of the "opening Master FX jumps to
+     * Send A" bug: enterFxBus works out where the cursor belongs and this line
+     * -- reached from its last statement -- threw the answer away. Row 0 used
+     * to be FX 1, so a hardcoded 0 was invisible until the row grew a door at
+     * its head.
+     *
+     * It must stay AFTER loadMasterFxChainConfig: the component list is derived
+     * from the chain, so before the load there are no module rows to land on and
+     * the resolver would fall through to its own last resort.
+     */
+    ctx.selectedMasterFxComponent = ctx.resolveFxBusLanding
+        ? ctx.resolveFxBusLanding() : 0;
     ctx.selectingMasterFxModule = false;
     setView(VIEWS.MASTER_FX);
     ctx.needsRedraw = true;
 
-    /* READ AFTER the load: the component list is derived from the chain, so it
-     * is only as long as what was just loaded. On an empty chain position 0 is
-     * the `+`, whose label already is the whole instruction — "Add FX, Empty"
-     * would say nothing. */
-    const comp = ctx.MASTER_FX_CHAIN_COMPONENTS[0];
+    /* The box actually LANDED ON, not index 0. Reading position 0 announced a
+     * different box from the one under the cursor the moment the two stopped
+     * being the same row. */
+    const at = ctx.selectedMasterFxComponent;
+    const comp = ctx.MASTER_FX_CHAIN_COMPONENTS[at];
     if (!comp) announce(busLabel);
     else if (comp.kind === "add") announce(`${busLabel}, ${comp.label}`);
-    else announce(`${busLabel}, ${comp.label} ${getMasterFxSlotModule(0) || "Empty"}`);
+    else announce(`${busLabel}, ${comp.label} ${getMasterFxSlotModule(comp.index) || "Empty"}`);
 }
 
 /* ---- Display name (used in slot list) ----------------------------------- */

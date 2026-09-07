@@ -2069,6 +2069,52 @@ function masterFxPositionOf(rowIndex) {
     return (comp && comp.kind === "module") ? comp.index : -1;
 }
 
+/*
+ * WHERE THE CURSOR GOES when an FX bus editor opens.
+ *
+ * CALLED AFTER THE CHAIN IS LOADED, and that is the whole reason it is a
+ * function rather than a few lines in enterFxBus. It was written there, before
+ * enterMasterFxSettings() -- the last line of enterFxBus -- which loads the
+ * chain and then assigned `selectedMasterFxComponent = 0` unconditionally. So
+ * the landing was computed and then thrown away one call later, and row 0 is
+ * now the Send A box: entering Master FX with a full chain landed on a door out
+ * of it, whatever had been selected before. Reported from hardware twice, the
+ * second time with a module loaded, which is what ruled out the empty-chain
+ * explanation.
+ *
+ * The order is: where this bus was left, else the first MODULE, else the `+`.
+ *
+ *  - never a head door (Send A / Send B / the way back), even if that is where
+ *    the cursor was actually left. Landing on a way out of the screen you just
+ *    opened is the complaint itself, and defaultChainComponent already answers
+ *    it for the slot chain`s `+`.
+ *  - the `+` and not 0 when there is no module at all. On an empty master bus
+ *    row 0 is Send A, so falling back to 0 is the same bug in its quietest
+ *    form; the `+` is the one thing on an empty chain worth pointing at.
+ */
+function resolveFxBusLanding() {
+    const comps = masterFxChainComponents();
+    if (!comps.length) return 0;
+    const usable = (i) => i >= 0 && i < comps.length && comps[i] &&
+                          !isBusDoor(comps[i].kind);
+
+    const want = lastFxBusComponent[currentFxBusIndex];
+    if (typeof want === "number" && usable(want)) return want;
+
+    const firstFx = masterFxRowOf(0);
+    if (firstFx >= 0) return firstFx;
+
+    /* THE FIRST NON-DOOR, which on an empty chain IS the `+` box -- the one
+     * thing worth pointing at when there is nothing loaded. An explicit "find
+     * the add box" branch stood here and was deleted: for every row this code
+     * can build ([A, B, +, Settings] on the master, [back, +, Settings] on a
+     * send) the two answers are the same box, so it was a branch no test could
+     * kill. Falling back to 0 instead is the original bug in its quietest form,
+     * because row 0 is a door. */
+    const any = comps.findIndex((c) => c && !isBusDoor(c.kind));
+    return any >= 0 ? any : 0;
+}
+
 /* The inverse: which row an FX position occupies, or -1 if it is not drawn. */
 function masterFxRowOf(position) {
     if (!(position >= 0)) return -1;
@@ -3470,31 +3516,6 @@ function enterFxBus(index) {
      * so carrying the name across would put Master FX's preset in a send's
      * header band. */
     if (!fxBusIsMaster()) currentMasterPresetName = "";
-    /*
-     * THE LANDING, resolved against a config that has ACTUALLY BEEN READ.
-     *
-     * invalidateMasterFxConfig above marks the mirror stale and the reload is
-     * LAZY -- drawMasterFx does it on its next diagram frame. So asking which
-     * row holds FX 1 here read an empty chain, got -1, and left the selection on
-     * row 0: the Send A box. Entering Master FX with a full chain landed on a
-     * door out of it. Reported from hardware.
-     *
-     * One IPC read (`<prefix>modules`) on a screen change buys the right answer.
-     * It is safe HERE specifically -- the warning on `invalidate` is about the
-     * `+` box, whose pending position exists only in the model and would be
-     * wiped by a reload; a fresh entry has no pending insert.
-     */
-    MASTER_CHAIN_TARGET.reload();
-    const comps = masterFxChainComponents();
-    const firstFx = masterFxRowOf(0);
-    const fallback = firstFx >= 0 ? firstFx : 0;
-    const want = lastFxBusComponent[currentFxBusIndex];
-    /* Never LAND on a head door, even if that is where the cursor was left: it
-     * is a way out of the screen you just opened, which is the complaint
-     * defaultChainComponent already answers for the `+`. */
-    selectedMasterFxComponent =
-        (typeof want === "number" && want >= 0 && want < comps.length &&
-         comps[want] && !isBusDoor(comps[want].kind)) ? want : fallback;
     /* The bands under the boxes name what is in each send; read ONCE here, on a
      * screen change, never on the draw path. */
     fxBusSummaries = FX_BUSES.map((_, i) => fxBusSummary(i));
@@ -22573,6 +22594,7 @@ function drawHelpDetail() {
      * this is consulted by the info band of a screen that redraws every frame,
      * and a ~2.8ms round trip there is more than a whole page render. */
     _ctx.fxBusSummary = (i) => fxBusSummaries[i] || "";
+    _ctx.resolveFxBusLanding = () => resolveFxBusLanding();
     _ctx.fxBusReturn = (i) => (fxBusReturns[i] >= 0 ? fxBusReturns[i] : 0);
     _ctx.sendBusLevelRead = (...args) => sendBusLevelRead(...args);
     _ctx.scanForAudioFxModules = (...args) => scanForAudioFxModules(...args);
