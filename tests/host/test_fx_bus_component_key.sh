@@ -124,5 +124,43 @@ for (const fn of ["refreshComponentWidgetsForGrid", "reconcileCcClaim", "resolve
 }
 ok("the grid-fed sites resolve the module-id key through componentModuleIdKey()");
 
+/* ---- 4. THE FOUR MASTER ENTRY POINTS TAKE AN FX POSITION --------------- */
+/*
+ * getMasterFxHierarchy, getMasterFxParam and enterMasterFxHierarchyEditor all
+ * resolve their argument through masterFxComponentKey, i.e. they take a
+ * POSITION. enterMasterFxModuleSelect indexes the component array instead, so
+ * it took a ROW -- and while the two were the same number nothing said so.
+ *
+ * Once the row began with two send entries, a caller handing it a position got
+ * row 0, which is Send A, which fails its kind check and RETURNS SILENTLY:
+ * Shift+Click to swap or remove a Master FX module did nothing at all, with no
+ * error anywhere. Reported from hardware.
+ */
+{
+    const body = grab("enterMasterFxModuleSelect");
+    if (!/masterFxRowOf\(/.test(body)) {
+        fail("enterMasterFxModuleSelect no longer converts through masterFxRowOf "
+             + "-- it indexes the component array, so it must take an FX POSITION "
+             + "and convert, or it silently opens nothing once the row does not "
+             + "begin at fx1");
+    }
+    const calls = [...src.matchAll(/enterMasterFxModuleSelect\(([^()]*(?:\([^()]*\))?[^()]*)\)/g)]
+        .map((m) => m[1].trim())
+        .filter((a) => a && a !== "fxSlot");
+    if (!calls.length) fail("no enterMasterFxModuleSelect call sites found -- the scan broke");
+    for (const arg of calls) {
+        if (arg === "selectedMasterFxComponent") {
+            fail("enterMasterFxModuleSelect(" + arg + ") passes a ROW where an FX "
+                 + "POSITION is wanted; wrap it in masterFxPositionOf()");
+        }
+        if (!/^masterFxPositionOf\(/.test(arg) && !/^fx/i.test(arg)) {
+            fail("enterMasterFxModuleSelect(" + arg + ") -- the argument is not "
+                 + "recognisably an FX position. Name it fx... or convert it.");
+        }
+    }
+    ok("enterMasterFxModuleSelect converts, and all " + calls.length +
+       " call sites pass an FX position");
+}
+
 console.log("PASS");
 ' "$UI"

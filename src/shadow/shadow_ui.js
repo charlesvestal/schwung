@@ -11832,8 +11832,18 @@ function setMasterFxSlotModule(slotIndex, dspPath) {
 let masterFxPickerItems = [];
 
 /* Enter module selection for a Master FX position */
-function enterMasterFxModuleSelect(componentIndex) {
-    const comp = masterFxChainComponents()[componentIndex];
+/*
+ * TAKES AN FX POSITION, like getMasterFxHierarchy, getMasterFxParam and
+ * enterMasterFxHierarchyEditor.
+ *
+ * It took a ROW while the two were the same number, so it was the one of the
+ * four with a different convention and nothing said so. Once the row began with
+ * two send entries, callers handing it a position resolved to row 0 -- Send A --
+ * failed `kind !== "module"` and returned silently: Shift+Click to swap or
+ * remove a Master FX module did NOTHING AT ALL. Reported from hardware.
+ */
+function enterMasterFxModuleSelect(fxSlot) {
+    const comp = masterFxChainComponents()[masterFxRowOf(fxSlot)];
     if (!comp || comp.kind !== "module") return;
 
     /*
@@ -20181,10 +20191,11 @@ function handleSelect() {
                      * chain's audio-FX `+`. */
                     const at = beginChainInsertFromAddBox(MASTER_CHAIN_TARGET, selectedComp);
                     if (at >= 0) {
-                        /* `at` is an FX POSITION; the selection is a ROW. */
-                        const row = masterFxRowOf(at);
-                        if (row >= 0) selectedMasterFxComponent = row;
-                        enterMasterFxModuleSelect(at);
+                        /* beginChainInsertFromAddBox answers a ROW (it is a
+                         * findIndex over components()), and the picker wants a
+                         * POSITION. */
+                        selectedMasterFxComponent = at;
+                        enterMasterFxModuleSelect(masterFxPositionOf(at));
                     }
                     break;
                 }
