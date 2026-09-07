@@ -2145,33 +2145,42 @@ static void shadow_inprocess_render_to_buffer(void) {
     if (probe_burst_this_frame > spi_slot_probe_burst_max)
         spi_slot_probe_burst_max = probe_burst_this_frame;
 
+    /* Restore raw hardware audio_in so overtake plugins can read line-in.
+     * The resample bridge may have overwritten the shadow_mailbox AUDIO_IN
+     * region; re-copy from hardware to give plugins the actual input.
+     *
+     * For EITHER overtake role. This used to live inside the generator branch
+     * below, so an overtake module loaded as an audio FX (one whose .so exports
+     * move_audio_fx_init_v2, e.g. to declare end_of_chain and process the
+     * whole mix) read whatever the bridge had left in the region instead of
+     * the jack. Restoring here lets such a module offer both inputs -- the
+     * mix in place through process_block, the jack through audio_in_offset --
+     * as one module with an input-source setting, rather than shipping as two. */
+    if ((overtake_dsp_gen_inst || overtake_dsp_fx_inst) && hardware_mmap_addr) {
+        int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
+        int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
+        /* Log once to verify hardware audio levels */
+        static int ain_log_count = 0;
+        if (ain_log_count < 3) {
+            int16_t hw_peak = 0, sh_peak = 0;
+            for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
+                int16_t s = hw_ain[i] < 0 ? -hw_ain[i] : hw_ain[i];
+                if (s > hw_peak) hw_peak = s;
+                s = sh_ain[i] < 0 ? -sh_ain[i] : sh_ain[i];
+                if (s > sh_peak) sh_peak = s;
+            }
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                     "SampleRobot: audio_in restore - hw_peak=%d sh_peak=%d hw[0..3]=%d,%d,%d,%d",
+                     hw_peak, sh_peak, hw_ain[0], hw_ain[1], hw_ain[2], hw_ain[3]);
+            shadow_log(msg);
+            ain_log_count++;
+        }
+        memcpy(sh_ain, hw_ain, AUDIO_BUFFER_SIZE);
+    }
+
     /* Overtake DSP generator: mix its output into the deferred buffer */
     if (overtake_dsp_gen && overtake_dsp_gen_inst && overtake_dsp_gen->render_block) {
-        /* Restore raw hardware audio_in so overtake plugins can read line-in.
-         * The resample bridge may have overwritten the shadow_mailbox AUDIO_IN
-         * region; re-copy from hardware to give plugins the actual input. */
-        if (hardware_mmap_addr) {
-            int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
-            int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
-            /* Log once to verify hardware audio levels */
-            static int ain_log_count = 0;
-            if (ain_log_count < 3) {
-                int16_t hw_peak = 0, sh_peak = 0;
-                for (int i = 0; i < FRAMES_PER_BLOCK * 2; i++) {
-                    int16_t s = hw_ain[i] < 0 ? -hw_ain[i] : hw_ain[i];
-                    if (s > hw_peak) hw_peak = s;
-                    s = sh_ain[i] < 0 ? -sh_ain[i] : sh_ain[i];
-                    if (s > sh_peak) sh_peak = s;
-                }
-                char msg[256];
-                snprintf(msg, sizeof(msg),
-                         "SampleRobot: audio_in restore - hw_peak=%d sh_peak=%d hw[0..3]=%d,%d,%d,%d",
-                         hw_peak, sh_peak, hw_ain[0], hw_ain[1], hw_ain[2], hw_ain[3]);
-                shadow_log(msg);
-                ain_log_count++;
-            }
-            memcpy(sh_ain, hw_ain, AUDIO_BUFFER_SIZE);
-        }
         int16_t render_buffer[FRAMES_PER_BLOCK * 2];
         memset(render_buffer, 0, sizeof(render_buffer));
         struct timespec og_t0, og_t1;
