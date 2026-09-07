@@ -130,6 +130,17 @@ controllers. A name in that table needs an arm in **both** ladders beside it —
 one to read the base, one to write the result — or it silently takes the
 `continue` and does nothing.
 
+**Clearing a route must drop its CONTRIBUTIONS before restoring the base.**
+`chain_mod_apply_effective_value` begins by recomputing effective from
+`base + sum(active contributions)`, so assigning `effective_value = base_value`
+and calling it achieves nothing while the sources are still active — it writes
+the modulated value, and the `memset` afterwards destroys the record of why. The
+single-source path is safe because `chain_mod_remove_source_contribution` zeroes
+the source first; the CLEAR-ALL path had to be taught to, and it is reachable
+from any sub-plugin (`host->mod_clear_source`). Found by
+`tests/host/test_mod_route_e2e.c`, the only test that drives this sequence
+rather than reading it.
+
 **Master FX is NOT this.** It keeps two LFOs, `MASTER_FX_LFO_COUNT`, addressed
 `master_fx:lfoN:` and parsed in the shim (`shadow_chain_mgmt.c`) by a literal
 `strncmp` that has never heard of mod routes. It has no MIDI input, so it has no
