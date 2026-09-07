@@ -65,7 +65,8 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_me_post_snapshot_fx \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
-	$(BUILD_DIR)/test_heal_tool_id
+	$(BUILD_DIR)/test_heal_tool_id \
+	$(BUILD_DIR)/test_audio_in_restore
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
