@@ -597,6 +597,23 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   nominal each); the rule lives in `registerOverlayWidgets`, beside the
   registry, so `tests/host/` can run it, and an unusable declaration is LOGGED
   rather than dropped.
+- **The widget registry is PROCESS-GLOBAL, and "already resolved" was asked
+  about the process rather than about the component.** `tickComponentWidgets`
+  opened `if (widgetModuleLoaded) return;` — the latch is a module id, so any
+  truthy value stopped the retry, and `ensureComponentWidgets` sets it from
+  EITHER call site. Open a module declaring no custom kind and the registry is
+  emptied and the latch set to it; every component after that returned on the
+  first line and registered nothing, so a module that HAS a widget drew the
+  detector's dials until reboot — silent, because an unregistered kind simply
+  does not claim its keys. The guard cannot be deleted (every frame would pay
+  the 2.8 ms `_module` read it exists to avoid) and the component alone is not
+  enough (the list editor relatches without this tick running), so it closes on
+  a SIGNATURE of component + latched id — **stamped with the world the attempt
+  LEAVES, not the one it found**, or a signature that recurs is mistaken for a
+  repeat and throttled. The old source pin asserted the buggy line verbatim,
+  which is how a defect gets defended rather than merely missed. Authors: a
+  redeployed `canvas.js` is not re-read until you leave the component and
+  return.
 - **A card is handed the PAGE's values, not only its own.** The payload is
   `{w, h, name, value, raw, values, nowMs}`. A card whose meaning depends on a
   sibling — the vowel of *which* character — otherwise had no route to it at

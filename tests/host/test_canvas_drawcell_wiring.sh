@@ -133,8 +133,24 @@ ok(cpGuardIdx < latchIdx, "the empty-chainParams guard also comes BEFORE the lat
 ok(/function tickComponentWidgets/.test(src), "there is a retry for the unresolved case");
 const tcwStart = src.indexOf("function tickComponentWidgets");
 const tcwBody = code(src.slice(tcwStart, src.indexOf("\nfunction ", tcwStart + 1)));
-ok(/if\s*\(\s*widgetModuleLoaded\s*\)\s*return;/.test(tcwBody),
-   "the retry stops once the id resolves");
+/* THE STOPPING CONDITION IS NARROWER THAN IT LOOKS, AND THIS PIN USED TO STATE
+ * THE BUG.
+ *
+ * It asserted, literally, `if (widgetModuleLoaded) return;` -- so it defended
+ * the defect rather than the rule. The latch is a module id and the registry is
+ * process-global, so ANY module reaching ensureComponentWidgets sets it and
+ * wipes the registry, from either call site. Once that happened the retry
+ * stopped for every component visited afterwards, and a module with a custom
+ * widget silently drew the detectors dials until reboot.
+ *
+ * The rule was always "stop once resolved". What it is resolved FOR is the
+ * component on screen together with what the registry currently holds -- which
+ * is what the signature carries. Pin the rule, and pin the absence of the old
+ * form, so a well-meaning simplification back to it fails here. */
+ok(/if\s*\(\s*widgetModuleLoaded\s*&&\s*widgetResolvedSig\s*===\s*sig\s*\)\s*return;/.test(tcwBody),
+   "the retry stops once resolved for THIS component and THIS registry");
+ok(!/if\s*\(\s*widgetModuleLoaded\s*\)\s*return;/.test(tcwBody),
+   "the retry does not stop merely because some module is latched");
 ok(/WIDGET_RETRY_TICKS/.test(tcwBody),
    "the retry is THROTTLED -- the id costs an IPC read, ~2.8ms against a 1.68ms render");
 
