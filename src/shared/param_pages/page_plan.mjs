@@ -272,14 +272,44 @@ function levelNameToPrefix(name) {
 /* FNV-1a over the declared contract. The page set is rebuilt when this changes:
  * module swap, an is_loading→ready re-fetch that rewrites the tree (Virus,
  * minijv expansions), or a mode change. */
+/*
+ * The last (parts -> fingerprint), compared by IDENTITY.
+ *
+ * Hashing means stringifying the whole contract and walking every character of
+ * it, and planPages runs on every detent of a gating knob (replanIfCondition).
+ * On those re-plans the contract has not changed at all -- only a VALUE has --
+ * and `hierarchy` and `chainParams` are the very objects the previous plan
+ * used, because the controller assigns them from parse() on a read and never
+ * mutates them in place (page_controller.mjs `load`). So the same objects mean
+ * the same bytes, and re-hashing them is pure waste.
+ *
+ * It is waste that scales with the contract: a 94 KB one costs ~0.78 ms in
+ * node, and the device runs QuickJS on an A72, where a 94,000-iteration
+ * charCodeAt loop is far slower. Turning a filter-type knob through its values
+ * paid that per detent, and the screen stalled.
+ *
+ * Identity, not equality: a re-read parses new objects, so a contract that
+ * really did change (osirus republishing rom_index's options once its ROM is
+ * known) arrives as a different object and is hashed.
+ */
+let fingerprintMemo = null;
+
 function fingerprintOf(parts) {
+    if (fingerprintMemo && fingerprintMemo.parts.length === parts.length &&
+        fingerprintMemo.parts.every((part, i) => part === parts[i])) {
+        return fingerprintMemo.value;
+    }
     let h = 0x811c9dc5;
     const s = JSON.stringify(parts);
     for (let i = 0; i < s.length; i++) {
         h ^= s.charCodeAt(i);
         h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
     }
-    return h.toString(16);
+    const value = h.toString(16);
+    /* One entry, holding one contract's objects alive -- the same ones the
+     * controller is already holding in `s.hierarchy` / `s.chainParams`. */
+    fingerprintMemo = { parts: parts.slice(), value };
+    return value;
 }
 
 function chunk(arr, size) {
