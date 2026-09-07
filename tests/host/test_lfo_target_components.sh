@@ -40,12 +40,18 @@ function lift(name, deps) {
 const CHAIN_CAP = { midiFx: 8, fx: 8 };
 const LFO_TARGET_PARAMS = [];
 const VIEWS = { CHAIN_SETTINGS: "chain_settings" };
+/* Imported by shadow_ui.js from shadow_ui_slot_grid.mjs; the lift has no
+   imports, so it has to come across explicitly. Read from the module rather
+   than restated, or this file becomes a THIRD place the count lives. */
+const { MOD_ROUTE_COUNT } =
+  await import(process.cwd() + "/src/shadow/shadow_ui_slot_grid.mjs");
 
 const makeCtx = lift("makeSlotLfoCtx",
   ["getSlotParam", "setSlotParam", "shadowSetParamBlocking", "CHAIN_CAP",
    /* The slot LFO picker offers the send amounts of the slot as a target, so
       the constant naming that component has to come across or the lift throws. */
-   "LFO_TARGET_PARAMS", "SENDS_LFO_TARGET_KEY", "VIEWS", "debugLog"]);
+   "LFO_TARGET_PARAMS", "SENDS_LFO_TARGET_KEY", "VIEWS", "debugLog",
+   "MOD_ROUTE_COUNT"]);
 if (!makeCtx) process.exit(1);
 
 /* A fake slot that answers only what it was given. An unserved key answers ""

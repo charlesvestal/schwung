@@ -306,7 +306,12 @@ import { locateAudioData, sampleReader, sampleBytesFor } from '/data/UserData/sc
 import '/data/UserData/schwung/shared/param_pages/wav_io_qjs.mjs';
 import { createSlotGridIo, createMasterGridIo,
          MFX_MIDI_CHANNEL_OPTIONS, MFX_MIDI_CHANNEL_KEY, mfxMidiChannelToIndex,
-         mfxMidiChannelFromIndex } from './shadow_ui_slot_grid.mjs';
+         mfxMidiChannelFromIndex,
+         /* IMPORTED, never re-declared. The route count exists once on this
+          * side (and once in chain_internal.h, pinned against it by
+          * tests/host/test_mod_route_count_js.sh); a second literal here is
+          * exactly the drift that pin is for. */
+         MOD_ROUTE_COUNT, MOD_ROUTE_INDICES } from './shadow_ui_slot_grid.mjs';
 import { createGlobalGridIo, GLOBAL_SECTIONS } from './shadow_ui_global_grid.mjs';
 import {
     drawMasterFx as _drawMasterFx,
@@ -5426,8 +5431,11 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },  // 0 = Post (slot synth only), 1 = Pre (also inject to Move native)
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
-    { key: "lfo1", label: "LFO 1", type: "action" },
-    { key: "lfo2", label: "LFO 2", type: "action" },
+    /* One row per route, generated from the count -- eight literals here is
+       how the C cap and the list drift apart. */
+    ...MOD_ROUTE_INDICES.map((n) => (
+        { key: "mod" + n, label: "Mod " + n, type: "action" }
+    )),
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
@@ -13500,8 +13508,8 @@ function runChainSettingAction(slot, key) {
         return;
     }
 
-    if (key === "lfo1" || key === "lfo2") {
-        const lfoIdx = (key === "lfo1") ? 0 : 1;
+    if (/^mod[1-8]$/.test(key)) {
+        const lfoIdx = parseInt(key.slice(3), 10) - 1;
         lfoCtx = makeSlotLfoCtx(slot, lfoIdx);
         selectedLfoItem = 0;
         editingLfoValue = false;
@@ -23102,12 +23110,20 @@ function drawGlobalSettings() { _drawGlobalSettings(); }
 /* --- LFO Context Factories --- */
 
 function makeSlotLfoCtx(slot, lfoIdx) {
-    const prefix = "lfo" + (lfoIdx + 1) + ":";
+    /*
+     * "modN:", the slot spelling. The DSP still answers "lfoN:" for the first
+     * two as a read-only alias so old patches load, but nothing here emits it:
+     * two spellings in flight is how a route ends up half-written.
+     *
+     * Master FX has its OWN context and keeps "lfoN:" -- its params are parsed
+     * in the shim by a literal strncmp that has never heard of mod routes.
+     */
+    const prefix = "mod" + (lfoIdx + 1) + ":";
     return {
         lfoIdx: lfoIdx,
         /* Identifies the ROUTING SPACE for the label cache — `title` does not:
          * slot 2's "LFO 1" and slot 3's "LFO 1" are different components. */
-        scopeId: "slot" + slot + ":lfo" + lfoIdx,
+        scopeId: "slot" + slot + ":mod" + lfoIdx,
         getParam: function(key) { return getSlotParam(slot, prefix + key); },
         setParam: function(key, val) { setSlotParam(slot, prefix + key, val); },
         setParamBlocking: function(key, val) { return shadowSetParamBlocking(slot, prefix + key, val); },
@@ -23165,9 +23181,18 @@ function makeSlotLfoCtx(slot, lfoIdx) {
                     comps.push({ key: "midi_fx" + i, label: "MIDI FX " + i + ": " + name });
                 }
             }
-            /* Add the other LFO as a target (skip self) */
-            const otherIdx = lfoIdx === 0 ? 1 : 0;
-            comps.push({ key: "lfo" + (otherIdx + 1), label: "LFO " + (otherIdx + 1) });
+            /*
+             * EVERY OTHER ROUTE, not just "the other one".
+             *
+             * With two routes there was exactly one other and an index flip
+             * said so. With eight, a flip offers one of seven and silently
+             * hides the rest -- so the list is generated and self is skipped
+             * by comparison rather than by arithmetic.
+             */
+            for (let i = 0; i < MOD_ROUTE_COUNT; i++) {
+                if (i === lfoIdx) continue;
+                comps.push({ key: "mod" + (i + 1), label: "Mod " + (i + 1) });
+            }
             /* The slot's own send amounts. Offered UNCONDITIONALLY: the two Main
              * sends exist on every slot whether or not it has buses or anything
              * loaded in Send A, so there is no state to test and no way for this
@@ -23182,18 +23207,28 @@ function makeSlotLfoCtx(slot, lfoIdx) {
         getTargetGroups: function(compKey) {
             return lfoTargetGroupsFor(slotChainTarget(slot), compKey, "LFO");
         },
-        title: "LFO " + (lfoIdx + 1),
+        title: "Mod " + (lfoIdx + 1),
         returnView: VIEWS.CHAIN_SETTINGS,
         returnAnnounce: "Chain Settings",
         supportsRetrigger: true,
     };
 }
 
-/* Hardcoded LFO param list for LFO-to-LFO modulation */
+/*
+ * What a route may modulate on ANOTHER route.
+ *
+ * Must match slot_lfo_param_meta[] in chain_host.c -- a name offered here that
+ * the DSP does not handle takes its `continue` and the modulation silently does
+ * nothing. `src` and `cc_num` are deliberately absent from both: sweeping a
+ * source TYPE would cycle it through velocity/pressure/CC several times a
+ * second and sweeping a CC NUMBER would walk 128 unrelated controllers. Those
+ * are choices, not quantities.
+ */
 const LFO_TARGET_PARAMS = [
     { key: "depth", label: "Depth" },
     { key: "rate_hz", label: "Rate Hz" },
     { key: "phase_offset", label: "Phase Offset" },
+    { key: "slew", label: "Slew" },
 ];
 
 /*
