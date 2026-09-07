@@ -83,22 +83,22 @@ ok("the slot LFO picker offers a Sends component");
    * wrong. `\n}` stops at the first INNER block, not the function, because a C
    * function closes at column 0 -- so the body was truncated and the assertions
    * below passed over text that did not contain the code they were checking.
-   * And `^static void lfo_tick\(` alone matches the FORWARD DECLARATION 1300
+   * And `^static void mod_tick\(` alone matches the FORWARD DECLARATION 1300
    * lines earlier, whose body then runs to the next column-0 brace: a 33k-char
    * "body" with no main_send_mod in it at all. Requiring the opening brace is
    * what separates the definition from the declaration.
    */
-  const m = host.match(/^static void lfo_tick\([^)]*\)\s*\{[^]*?^}/m);
-  if (!m) { fail("could not find lfo_tick in chain_host.c"); }
+  const m = host.match(/^static void mod_tick\([^)]*\)\s*\{[^]*?^}/m);
+  if (!m) { fail("could not find mod_tick in chain_host.c"); }
   else {
     const t = m[0];
     if (/main_send_level\s*\[[^\]]*\]\s*=/.test(t)) {
-      fail("lfo_tick ASSIGNS main_send_level. That value is read back by "
+      fail("mod_tick ASSIGNS main_send_level. That value is read back by "
            + "saveSendLevels() and written to send_levels.json, so a modulated "
            + "number would be persisted as the user setting.");
     }
     if (!/main_send_mod\s*\[[^\]]*\]\s*\+=/.test(t)) {
-      fail("lfo_tick does not ADD into main_send_mod -- two LFOs on one send "
+      fail("mod_tick does not ADD into main_send_mod -- two LFOs on one send "
            + "must sum, and an assignment lets the second clobber the first");
     }
     /* ZEROED EVERY BLOCK. Without it a disabled or retargeted LFO leaves its
@@ -106,7 +106,7 @@ ok("the slot LFO picker offers a Sends component");
        on screen, with no gesture that puts it back. */
     const zero = /for\s*\(int sd = 0; sd < BUS_MIX_SENDS; sd\+\+\)\s*inst->main_send_mod\[sd\] = 0;/;
     if (!zero.test(t)) {
-      fail("lfo_tick does not zero main_send_mod at the top of the block, so a "
+      fail("mod_tick does not zero main_send_mod at the top of the block, so a "
            + "disabled or retargeted LFO leaves its offset stuck");
     }
     /* and the zero must come BEFORE the per-route loop, or it wipes the result.
@@ -128,7 +128,7 @@ ok("the slot LFO picker offers a Sends component");
       fail("main_send_mod is zeroed INSIDE or after the route loop, which "
            + "erases the contribution it was meant to reset");
     }
-    if (!bad) ok("lfo_tick adds an offset, sums, and re-zeroes it every block");
+    if (!bad) ok("mod_tick adds an offset, sums, and re-zeroes it every block");
   }
 }
 
