@@ -912,6 +912,18 @@ static volatile int shadow_volume_knob_touched = 0;
 /* Count of currently-held pads (notes 68-99).  When > 0, volume knob adjusts
  * pad gain, not master volume, so display-based volume detection is skipped. */
 static volatile int shadow_pads_held = 0;
+/* Bitmask of currently-held step buttons (notes 16-31).  Same reason as the
+ * pad counter above: step + volume knob is Move's per-step VELOCITY edit and
+ * draws a velocity overlay, not the master volume overlay, so the pixel
+ * scanner must not read it.
+ *
+ * A mask rather than a counter because midi_monitor() only processes a MIDI_IN
+ * slot whose first four bytes CHANGED since last frame, and events shift
+ * between slots (that is why the dedup rings key on content, not position) —
+ * so the same note-on can be seen twice and a note-off can be seen in a slot
+ * that already held it.  Set/clear by note number is idempotent under both;
+ * a counter drifts, and a drifted counter latches the scanner off forever. */
+static volatile uint32_t shadow_steps_held_mask = 0;
 /* Is jog encoder currently being touched? (note 9) */
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
@@ -5616,6 +5628,21 @@ void midi_monitor()
             }
         }
 
+        /* Track step-button hold state (notes 16-31) for the same gating.
+         * Hold a programmed step and turn the volume knob and Move edits that
+         * step's velocity, showing a velocity overlay in the same rows the
+         * volume bar lives in — read as a volume bar it drags mailbox gain
+         * down with the velocity. */
+        if (midi_1 >= CC_STEP_UI_FIRST && midi_1 <= CC_STEP_UI_LAST) {
+            uint32_t bit = 1u << (midi_1 - CC_STEP_UI_FIRST);
+            if ((midi_0 & 0xF0) == 0x90 && midi_2 > 0) {
+                shadow_steps_held_mask |= bit;
+            } else if ((midi_0 & 0xF0) == 0x80 ||
+                       ((midi_0 & 0xF0) == 0x90 && midi_2 == 0)) {
+                shadow_steps_held_mask &= ~bit;
+            }
+        }
+
     }
 }
 
@@ -6402,10 +6429,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
             pin_accumulate_slice(idx, mem + 84, bytes);
         }
 
-        /* When volume knob touched (and no track or pad held), start capturing.
-         * Pad+volume adjusts pad gain and shows a gain overlay, not the
-         * master volume overlay — reading it would set master volume wrong. */
-        if (shadow_volume_knob_touched && shadow_held_track < 0 && shadow_pads_held == 0) {
+        /* When volume knob touched (and no track, pad or step held), start
+         * capturing.  Pad+volume adjusts pad gain, step+volume edits that
+         * step's velocity, track+volume the track level — each draws its own
+         * overlay, not the master volume overlay, and reading one of those
+         * sets master volume (mailbox gain) from a bar that means something
+         * else entirely. */
+        if (shadow_volume_knob_touched && shadow_held_track < 0 &&
+            shadow_pads_held == 0 && shadow_steps_held_mask == 0) {
             if (!volume_capture_active) {
                 volume_capture_active = 1;
                 volume_capture_warmup = 18;  /* Wait ~3 frames (6 slices * 3) for overlay to render */
