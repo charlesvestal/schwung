@@ -1473,12 +1473,45 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
     /* Parse knob_cc_out (top-level; absence = off). */
     json_get_int(json, "knob_cc_out", &patch->knob_cc_out);
 
-    /* Parse LFO config: "lfos": { "lfo1": { ... }, "lfo2": ... } */
-    const char *lfos_pos = strstr(json, "\"lfos\"");
+    /*
+     * MOD ROUTES — two section names on disk, and the newer one WINS.
+     *
+     * "lfos" is what every patch written before the mod-route sources existed
+     * carries, with keys "lfo1" and "lfo2". It is READ-ONLY: nothing emits it
+     * any more (chain_host.c's lfo_config getter is kept only so an old
+     * consumer still gets an answer), so a set saved once migrates itself and a
+     * set never opened keeps loading forever.
+     *
+     * THERE IS NO MIGRATION PASS AND NO VERSION STAMP, because MOD_SRC_LFO is
+     * 0: an absent "src" is memset to exactly the source those routes already
+     * had. That one property is what makes this two-line table the whole of the
+     * backwards-compatibility story.
+     *
+     * The legacy section is capped at MOD_ROUTE_LEGACY_COUNT rather than at
+     * MOD_ROUTE_COUNT. That is not caution — the format froze at two, so a
+     * "lfo5" key in a "lfos" document is not something any writer could have
+     * produced, and honouring it would be inventing a route from noise.
+     *
+     * ORDER MATTERS: legacy first, new second. A file holding both ends up with
+     * the new one; the other way round, a stale "lfos" section would overwrite
+     * a route the user has since edited.
+     */
+    static const struct {
+        const char *section;   /* the JSON key, quoted */
+        const char *item;      /* per-route key prefix */
+        int count;
+    } route_sections[] = {
+        { "\"lfos\"",       "lfo", MOD_ROUTE_LEGACY_COUNT },
+        { "\"mod_routes\"", "mod", MOD_ROUTE_COUNT },
+    };
+
+    for (size_t sec_i = 0; sec_i < sizeof(route_sections) / sizeof(route_sections[0]); sec_i++) {
+    const char *lfos_pos = strstr(json, route_sections[sec_i].section);
     if (lfos_pos) {
-        for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
-            char lfo_key[8];
-            snprintf(lfo_key, sizeof(lfo_key), "\"lfo%d\"", i + 1);
+        for (int i = 0; i < route_sections[sec_i].count; i++) {
+            char lfo_key[12];
+            snprintf(lfo_key, sizeof(lfo_key), "\"%s%d\"",
+                     route_sections[sec_i].item, i + 1);
             const char *lfo_pos = strstr(lfos_pos, lfo_key);
             if (!lfo_pos) continue;
 
@@ -1521,8 +1554,30 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
             json_get_int(obj, "polarity", &lfo->bipolar);
             json_get_int(obj, "retrigger", &lfo->retrigger);
 
+            /*
+             * The source. Absent in every legacy document, which is the point:
+             * it stays MOD_SRC_LFO (0) and the route is the LFO it always was.
+             *
+             * Read by NAME rather than by index. A stored index would silently
+             * mean a different source the moment mod_src_names is reordered,
+             * and mod_src_from_name falls back to LFO for a word it does not
+             * know — which is what a file from a NEWER build looks like, and
+             * losing one route's source beats refusing the whole slot.
+             */
+            {
+                char src_name[16];
+                if (json_get_string(obj, "src", src_name, sizeof(src_name)) == 0) {
+                    lfo->src = mod_src_from_name(src_name);
+                }
+            }
+            json_get_int(obj, "cc_num", &lfo->cc_num);
+            json_get_float(obj, "slew", &lfo->slew);
+            /* slewed / slew_primed are RUNTIME ONLY and deliberately not read:
+             * restoring a slew position would replay a transient on every load. */
+
             lfo->active = (lfo->enabled && lfo->target[0] && lfo->param[0]);
         }
+    }
     }
 
     bus_parse_section(json, patch);
@@ -1731,7 +1786,7 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
     /* Copy other settings */
     inst->midi_input = patch->midi_input;
 
-    /* Restore LFO config from patch (clear old sources first) */
+    /* Restore mod route config from patch (clear old sources first) */
     for (int i = 0; i < MOD_ROUTE_COUNT; i++) {
         char source_id[8];
         snprintf(source_id, sizeof(source_id), "mod%d", i + 1);
@@ -1740,6 +1795,15 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
         /* Reset runtime state */
         inst->mod_routes[i].last_sh_value = 0.0f;
         inst->mod_routes[i].prev_wrap = 0;
+        /*
+         * The slew re-seeds from the LIVE source on the next block rather than
+         * from whatever the struct copy carried. The parser never sets these —
+         * they are not in the file — but patch_info_t is reused across loads,
+         * so a stale `slewed` from a previous patch would otherwise be the
+         * value this route glides away from.
+         */
+        inst->mod_routes[i].slewed = 0.0f;
+        inst->mod_routes[i].slew_primed = 0;
         /* Reset phase for synced LFOs on patch load */
         if (inst->mod_routes[i].sync) {
             inst->mod_routes[i].phase = 0.0;
