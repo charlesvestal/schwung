@@ -3678,7 +3678,12 @@ MIDI FX are built identically to other native plugins:
 |--------|----|-------------|
 | Chord | `chord` | Chord generator (15 types, inversions, voicings, strum) |
 | Arpeggiator | `arp` | Arpeggiator (up, down, up_down, random with tempo sync) |
-| Velocity Scale | `velocity_scale` | Velocity range mapping (min/max) |
+
+Velocity Scale is no longer among them: it moved to its own repo
+(`charlesvestal/schwung-velocity-scale`) at 0.3.0 and installs from the catalog.
+The example below is kept because it is still the clearest small MIDI FX
+`module.json` in the tree — note that a catalog module drops `"builtin": true`
+and declares `component_type` at the top level.
 
 ### MIDI FX module.json Example
 

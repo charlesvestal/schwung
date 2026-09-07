@@ -402,6 +402,17 @@
       "requires": "Virus ROM file (place in module's roms/ folder)"
     },
     {
+      "id": "velocity_scale",
+      "name": "Velocity Scale",
+      "description": "Scale and curve incoming note velocities.",
+      "author": "Charles Vestal",
+      "component_type": "midi_fx",
+      "github_repo": "charlesvestal/schwung-velocity-scale",
+      "default_branch": "main",
+      "asset_name": "velocity_scale-module.tar.gz",
+      "min_host_version": "0.1.0"
+    },
+    {
       "id": "superarp",
       "name": "Super Arp",
       "description": "Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers",

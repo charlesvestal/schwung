@@ -166,7 +166,6 @@ mkdir -p ./build/modules/chain/
 mkdir -p ./build/modules/audio_fx/freeverb/
 mkdir -p ./build/modules/midi_fx/chord/
 mkdir -p ./build/modules/midi_fx/arp/
-mkdir -p ./build/modules/midi_fx/velocity_scale/
 mkdir -p ./build/modules/midi_fx/sysex_probe/
 mkdir -p ./build/modules/sound_generators/linein/
 mkdir -p ./build/modules/sound_generators/voice-poc/
@@ -633,18 +632,6 @@ else
     echo "Skipping arp MIDI FX (up to date)"
 fi
 
-# Build Velocity Scale MIDI FX
-if needs_rebuild build/modules/midi_fx/velocity_scale/dsp.so \
-    src/modules/midi_fx/velocity_scale/dsp/velocity_scale.c src/host/midi_fx_api_v1.h; then
-    echo "Building velocity scale MIDI FX..."
-    "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
-        src/modules/midi_fx/velocity_scale/dsp/velocity_scale.c \
-        -o build/modules/midi_fx/velocity_scale/dsp.so \
-        -Isrc -lm
-else
-    echo "Skipping velocity scale MIDI FX (up to date)"
-fi
-
 # Build SysEx Probe MIDI FX — a hardware TEST FIXTURE, not a shipped module.
 #
 # A slot reaches USB-A through host->midi_send_external (the ROUTE_EXTERNAL
@@ -931,6 +918,13 @@ rm -rf \
 # gate alone cannot keep it out -- it has to be scrubbed here. Both go together:
 # they are the two halves of one measurement (docs/SYSEX.md).
 #
+# voice-poc is here for a third reason: it is a CONSUMER, not a feature. It
+# exists because a contract nobody has implemented is a contract nobody has
+# tested, and it found a real ordering defect in the split-voice work that ~100
+# green assertions had missed. That makes it worth keeping in the tree and not
+# worth putting on a user's device, where it appears in the synth picker as a
+# sound generator that makes a test tone.
+#
 # widget-test and gesture-test are here for the same reason and a sharper one.
 # Their .so is gated, but the generic loop above copies every module.json it
 # finds -- so without this scrub a normal build shipped their module.json with
@@ -944,6 +938,7 @@ if [ -z "${SCHWUNG_BUILD_TEST_MODULES:-}" ]; then
         ./build/modules/midi_fx/sysex_probe \
         ./build/modules/audio_fx/widget-test \
         ./build/modules/audio_fx/gesture-test \
+        ./build/modules/sound_generators/voice-poc \
         2>/dev/null || true
 fi
 

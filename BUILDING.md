@@ -156,7 +156,6 @@ build/
     sound_generators/linein/ # Sound generator: Line In passthrough
     midi_fx/chord/           # MIDI FX: Chord generator
     midi_fx/arp/             # MIDI FX: Arpeggiator
-    midi_fx/velocity_scale/  # MIDI FX: Velocity range mapping
     controller/              # MIDI controller (overtake)
     store/                   # Module Store (system)
     tools/file-browser/      # File browser tool (UI only)
