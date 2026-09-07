@@ -60,6 +60,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_bus_route \
 	$(BUILD_DIR)/test_send_fx_key \
 	$(BUILD_DIR)/test_split_voices_parse \
+	$(BUILD_DIR)/test_voice_send_source \
 	$(BUILD_DIR)/test_me_post_snapshot_fx \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
@@ -195,6 +196,9 @@ $(BUILD_DIR)/test_bus_route: test_bus_route.c ../../src/host/bus_route.h ../../s
 
 $(BUILD_DIR)/test_split_voices_parse: test_split_voices_parse.c ../../src/host/split_voices_parse.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
+
+$(BUILD_DIR)/test_voice_send_source: test_voice_send_source.c ../../src/host/voice_send_source.h ../../src/host/bus_mix.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS) -lm
 
 $(BUILD_DIR)/test_me_post_snapshot_fx: test_me_post_snapshot_fx.c ../../src/host/shadow_chain_mgmt.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)

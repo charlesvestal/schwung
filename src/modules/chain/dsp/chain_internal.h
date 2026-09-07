@@ -45,6 +45,7 @@
 #include "host/midi_fx_api_v1.h"
 #include "host/lfo_common.h"
 #include "host/bus_mix.h"
+#include "host/voice_send_source.h"
 #include "host/bus_route.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
@@ -316,16 +317,13 @@ typedef struct {
     bus_config_t buses[SLOT_BUSES];
     int main_sends[BUS_MIX_SENDS];
     /*
-     * Per-voice sends, ID-KEYED and stored ONCE for the whole slot — not inside
-     * bus_config_t, and that placement is the cost decision. A voice's send is
-     * a property of the VOICE, not of a bus (a voice on Main can have one, and
-     * dr32's whole case is 32 such voices and no bus at all), and every byte
-     * added to bus_config_t is multiplied by SLOT_BUSES, then by MAX_PATCHES on
-     * the heap, then by four slots. Here it is ~1.1 KB per patch.
+     * NO PER-VOICE SENDS HERE. They were a `voice_sends` array in this document
+     * for as long as the HOST owned them; the MODULE owns them now (its own
+     * pages, its own params — voice_send_source.h) and they are saved inside
+     * the synth's opaque `state` blob, which this document already carries. A
+     * second copy would be a second source of truth, and the loser of that race
+     * is whichever one the user last touched.
      */
-    char voice_send_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
-    int  voice_sends[SPLIT_VOICES_MAX][BUS_MIX_SENDS];
-    int  voice_send_count;
 } patch_info_t;
 
 /* ============================================================================
@@ -607,19 +605,31 @@ typedef struct chain_instance {
      * already summed by the time the chain sees the buffer — and a 32-pad drum
      * rack wants 32 send levels, not one.
      *
-     * THE CONFIGURATION IS ID-KEYED; the render table is DERIVED.
-     * `voice_send_ids` / `voice_send_cfg` are what the user set and what is
-     * saved, in the same shape and for the same reason a bus stores voice ids:
-     * a module that gains or loses a voice must not silently re-point every
-     * level one place along. `voice_send` is rebuilt from them by
-     * chain_bus_rebuild_voice_map and is indexed by the RENDER index, the same
-     * index as voice_bus[] and voice_out[]. An id that no longer resolves is
-     * RETAINED in the config and COUNTED in voice_send_orphans, never dropped.
+     * THE MODULE OWNS THE LEVELS. Nothing here is configuration and nothing
+     * here is saved: `voice_send` is a CACHE of what the module answers for the
+     * keys it declared in `voice_send_params` (voice_send_source.h), refreshed
+     * by chain_voice_sends_poll on the render path and indexed by the RENDER
+     * index — the same index as voice_bus[] and voice_out[]. The host used to
+     * own these, as an id-keyed config with its own faders on the Send Mixer
+     * and its own `voice_sends` array in the slot document; dr32 published the
+     * same knobs on its own pages, so the concept existed twice and meant two
+     * things. It exists once now, where the voice lives.
      */
-    char   voice_send_ids[SPLIT_VOICES_MAX][SPLIT_VOICE_ID_LEN];
-    int8_t voice_send_cfg[SPLIT_VOICES_MAX][BUS_MIX_SENDS];   /* 0..127 */
-    int    voice_send_count;
-    int    voice_send_orphans;
+    char  voice_send_tmpl[BUS_MIX_SENDS][VOICE_SEND_TMPL_LEN];
+    /* Metadata for template s, resolved ONCE at synth load out of the module's
+     * own chain_params. `meta_ok` 0 means the host could not find the range and
+     * therefore REFUSES to map that send at all — see voice_send_source.h on
+     * why a refusal beats a guessed scale. */
+    float voice_send_min[BUS_MIX_SENDS];
+    float voice_send_max[BUS_MIX_SENDS];
+    int   voice_send_is_db[BUS_MIX_SENDS];
+    int   voice_send_meta_ok[BUS_MIX_SENDS];
+    int   voice_send_tmpl_count;   /* 0 = this module declares no voice sends */
+    /* The background sweep's cursor over the flat [voice][send] key space, and
+     * the flag a write to one of those keys sets so the NEXT frame reads the
+     * whole table instead of waiting for the cursor to come round. */
+    int   voice_send_poll_cursor;
+    int   voice_send_resweep;
     int8_t voice_send[SPLIT_VOICES_MAX][BUS_MIX_SENDS];       /* derived */
 
     /*
@@ -1048,6 +1058,29 @@ CHAIN_INTERNAL int chain_bus_get_param(chain_instance_t *inst, int bus,
  * synth's declared voice list — an id resolves against whatever module is
  * loaded NOW. RT-safe: a scan, no allocation. */
 CHAIN_INTERNAL void chain_bus_rebuild_voice_map(chain_instance_t *inst);
+
+/*
+ * ============ THE MODULE-OWNED PER-VOICE SEND LEVELS ======================
+ *
+ * chain_voice_sends_load  — at synth load: read the module's
+ *   `voice_send_params` declaration, resolve each template's range out of the
+ *   module's own chain_params, and clear the cache. Clearing is right here and
+ *   only here: the voice LIST has just changed, so a level cached against the
+ *   previous module's index would be a send on whatever voice now holds it.
+ *
+ * chain_voice_sends_poll  — on the render path, before the solo mask: refresh
+ *   a bounded slice of the cache from the module. Bounded because a module's
+ *   get_param runs on the SPI callback (32 voices x 2 sends is 64 calls) and
+ *   because nothing about a send level needs a whole table every frame.
+ *
+ * chain_voice_sends_touch — a `synth:` write went past whose key ends like one
+ *   of the declared templates. Arms a full sweep on the next frame, so a knob
+ *   turn is heard immediately rather than whenever the cursor comes round. It
+ *   does not itself set a level: the module is asked, always.
+ */
+CHAIN_INTERNAL void chain_voice_sends_load(chain_instance_t *inst);
+CHAIN_INTERNAL void chain_voice_sends_poll(chain_instance_t *inst, int n_voices);
+CHAIN_INTERNAL void chain_voice_sends_touch(chain_instance_t *inst, const char *subkey);
 
 /* Worker side: reconcile one bus's buffer and FX chain to the RT thread's
  * request. Runs on chain_bus_worker_fn (SCHED_OTHER) and is the ONLY place

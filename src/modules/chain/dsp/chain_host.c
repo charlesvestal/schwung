@@ -237,6 +237,9 @@ void v2_unload_synth(chain_instance_t *inst) {
      * function pointer into a dlclose'd mapping. */
     inst->synth_render_split = NULL;
     chain_reset_voice_bus(inst);
+    /* And the module-owned send levels, by the same rule and through the same
+     * function that reads them: with no plugin it is exactly the clear. */
+    chain_voice_sends_load(inst);
     /* AND THE ORPHAN COUNTS WITH IT. They are a fact about resolving a bus's
      * stored ids AGAINST A MODULE, and there is no module now — leaving them
      * meant "buses:config" reported the departed module's counts, so the bus
@@ -721,6 +724,10 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * does not declare becomes an orphan and comes back if the old module
      * does. */
     chain_bus_rebuild_voice_map(inst);
+    /* AFTER parse_chain_params above, and it has to be: the range a send level
+     * is mapped from comes out of inst->synth_params, so a load that read the
+     * declaration first would find no metadata and refuse every send. */
+    chain_voice_sends_load(inst);
     {
         char json_path[MAX_PATH_LEN];
         snprintf(json_path, sizeof(json_path), "%s/module.json", synth_path);
@@ -1247,6 +1254,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->set_param) {
                 inst->synth_plugin_v2->set_param(inst->synth_instance, subkey, val);
             }
+            /* A write that LOOKS like one of the module's declared per-voice
+             * send keys arms a full re-read next frame. It does not set a level
+             * from `val`: the module is still the authority (it may clamp, and
+             * the key may be a focus alias naming a voice we cannot resolve),
+             * so this only says "ask again now" rather than "the answer is". */
+            chain_voice_sends_touch(inst, subkey);
             inst->dirty = 1;
         }
     }
@@ -2378,6 +2391,11 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
         /* Which voices need their own buffer this frame. Reads only RT-owned
          * memory (voice_send is derived on this thread by
          * chain_bus_rebuild_voice_map), so no gate and no atomics. */
+        /* Refresh a bounded slice of the module's own send levels FIRST — the
+         * mask is computed from the cache, so a poll after it would decide
+         * this frame's solo partition from last frame's answer and a send
+         * raised from zero would be inaudible for one extra frame. */
+        chain_voice_sends_poll(inst, nv);
         n_solo = bus_mix_solo_mask(&inst->voice_send[0][0], nv,
                                    BUS_MIX_SENDS, &solo_mask);
         inst->voice_send_mask = solo_mask;

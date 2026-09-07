@@ -538,6 +538,17 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   and deliberately not through the bus worker**: nothing is allocated, so there
   is no publish gate and no lifetime question. The tap is CHAIN-side; the
   module is never told sends exist.
+- **A voice's send LEVEL belongs to the MODULE, and the three tiers are owned
+  where the thing they send lives**: voice → the module's own pages, bus → the
+  Send Mixer row, slot → Slot Settings. The host owned the first tier too for a
+  while, with faders on the same mixer, and dr32 already published per-pad
+  `send1`/`send2` beside pan and cutoff — **the same concept twice, meaning two
+  things.** A module declares `voice_send_params` (`["{id}_send1", …]`, ARRAY
+  POSITION IS THE SEND INDEX; one entry too many is an ERROR, not a
+  truncation), substitution is VERBATIM, and the range is read from the
+  module's own `chain_params` — dB or linear, and **not found means REFUSED,
+  never a guessed scale.** The levels are a CACHE, never saved: they ride in
+  the synth's `state` blob. `src/host/voice_send_source.h`.
 - **A bus's realisation is a WORKER, not the callback** (`chain_bus.c`,
   SCHED_OTHER on cores 0-2): every `dlopen`, `create_instance` and megabyte
   calloc happens there, joined to the RT side by `buf` and a **sequence

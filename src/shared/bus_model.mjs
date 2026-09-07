@@ -43,11 +43,24 @@ export const BUS_FX_SLOTS = 8;
 export const BUS_SENDS = 2;
 export const SEND_LEVEL_MAX = 127;
 /* chain_internal.h's SPLIT_VOICES_MAX — how many voices a module may declare,
- * and therefore how many per-voice send faders the mixer can carry. */
+ * and therefore how many a bus's voice multi-select can list. */
 export const SPLIT_VOICES_MAX = 32;
 /* A detent per unit would make a full sweep 127 turns of the jog, so a send row
  * steps by four — the same step the FX-bus settings rows use. */
 export const SEND_LEVEL_STEP = 4;
+
+/*
+ * THE SEND MIXER RIDES BUSES, NOT VOICES.
+ *
+ * It carried a fader per voice for a while, fed by a `buses:voice<V>:send<M>`
+ * route and a `voice_sends` array in the slot document. dr32 already published
+ * per-pad `send1`/`send2` knobs on its own `pads` level, beside pan and cutoff
+ * — so the same number had two homes that did not agree, which is what this
+ * screen was actually showing. A VOICE's send belongs to the module (its
+ * pages, its state blob), a BUS's to the bus row here, a SLOT's to Slot
+ * Settings. The audio path is unchanged; only the owner of the numbers moved.
+ * See src/host/voice_send_source.h.
+ */
 
 /* ==========================================================================
  * THE WIRE — parsing, all of it tri-state-aware
@@ -107,36 +120,7 @@ export function parseBusesConfig(raw) {
     return {
         unresolved: false, buses,
         mainSends: normaliseSends(o.main_sends),
-        voiceSends: normaliseVoiceSends(o.voice_sends),
     };
-}
-
-/*
- * `voice_sends` -> [{ id, sends: [a, b] }, ...], id-keyed and in no particular
- * order.
- *
- * A ZERO entry is kept, because it is what the user set. Dropping it would make
- * a fader they just pulled down spring back to its old value on the next read,
- * which is the same lie as a cached failed read.
- */
-function normaliseVoiceSends(arr) {
-    const out = [];
-    if (!Array.isArray(arr)) return out;
-    for (const e of arr) {
-        const id = (e && typeof e === "object" && typeof e.id === "string") ? e.id : "";
-        if (!id) continue;
-        out.push({ id, sends: normaliseSends(e.sends) });
-    }
-    return out;
-}
-
-/* One voice's level for one send, 1-based send number. Zero for a voice the
- * config says nothing about — which is the same thing the DSP answers, and
- * deliberately not "unknown": an absent entry IS a level of zero. */
-export function voiceSendValue(config, id, send) {
-    const list = (config && config.voiceSends) || [];
-    for (const e of list) if (e.id === id) return e.sends[send - 1] || 0;
-    return 0;
 }
 
 function normaliseSends(arr) {
@@ -205,7 +189,7 @@ export function insertSummary(fx, abbrev) {
  * one bus or voice to ride: a mixer with no faders is a row that answers a
  * click by doing nothing.
  */
-export function busListRows(config, abbrev, voices) {
+export function busListRows(config, abbrev) {
     const rows = [];
     if (!config || config.unresolved) return rows;
     for (const b of config.buses) {
@@ -215,12 +199,12 @@ export function busListRows(config, abbrev, voices) {
             summary: insertSummary(b.fx, abbrev), sends: b.sends,
         });
     }
-    /* A BUS IS NO LONGER THE ONLY THING WITH A FADER. Per-voice sends are taken
-     * from the voice's own audio and need no bus at all — a 32-pad rack with a
-     * send on every pad and not one bus is the case they exist for — so the
-     * door opens when there is either a bus to ride or a voice to ride. Without
-     * this the mixer is unreachable for exactly the module that motivated it. */
-    if (rows.length || (voices && voices.length)) {
+    /* A BUS IS THE ONLY THING WITH A FADER HERE. The door briefly opened for a
+     * slot with no buses at all, because per-voice sends need none; those
+     * faders belong to the module now (see the note beside SEND_LEVEL_STEP), so
+     * a mixer with no bus on it would again be a row that answers a click by
+     * doing nothing. */
+    if (rows.length) {
         rows.push({ kind: "sends", index: -1, name: "Send Mixer", orphans: 0,
                     summary: "", sends: [] });
     }
@@ -475,15 +459,6 @@ export function sendGridKey(row, send) {
     return `bus${row.index + 1}_send${send}`;
 }
 
-/*
- * The grid key for one VOICE's send. `index` is the voice's position in the
- * module's own split_voices list — the render index, the one the DSP resolves
- * to an id on the write. Not the position in the config, which is a set.
- */
-export function voiceSendGridKey(index, send) {
-    return `voice${index + 1}_send${send}`;
-}
-
 /**
  * The real DSP key a grid key reads and writes, or null when it names no send.
  *
@@ -515,46 +490,11 @@ export function busSendGridRealKey(gridKey) {
         if (!(n >= 1 && n <= BUS_SENDS)) return null;
         return `bus${b}:send${n}`;
     }
-    const voice = /^voice(\d+)_send(\d+)$/.exec(key);
-    if (voice) {
-        const v = Number(voice[1]);
-        const n = Number(voice[2]);
-        /* Bounded by SPLIT_VOICES_MAX, the same cap the DSP's route enforces.
-         * An out-of-range index must answer null rather than be sent to a chain
-         * host that would refuse it silently — the caller can then draw nothing
-         * instead of a fader that does nothing. */
-        if (!(v >= 1 && v <= SPLIT_VOICES_MAX)) return null;
-        if (!(n >= 1 && n <= BUS_SENDS)) return null;
-        /* THE "buses:" PREFIX IS LOAD-BEARING. chain_host.c routes a leading
-         * "bus<N>:" to that bus and "buses:" to the SLOT-level handler, and a
-         * per-voice send is a slot fact — the voice may be on no bus at all.
-         * A bare "voice7:send1" matches neither route and is handed to the
-         * synth plugin, which is a write to somebody else's parameter. */
-        return `buses:voice${v}:send${n}`;
-    }
+    /* NO "voice<N>_send<M>" FORM. It resolved to "buses:voice<V>:send<M>", a
+     * route the chain host no longer serves — a voice's send level is one of
+     * the module's own parameters now. A key that named one must answer null,
+     * not a key the host would refuse silently. */
     return null;
-}
-
-/*
- * The voice rows of the mixer: every voice the module DECLARES, whether or not
- * it currently has a level.
- *
- * Not "every voice in voice_sends" — that list holds only what has been touched,
- * so a mixer built from it would offer a fader for a pad only after you had
- * already found some other way to set one.
- *
- * A hole (an entry the module published with no usable id) is SKIPPED but keeps
- * its index, because the index is the render index and compacting it re-points
- * every voice behind it.
- */
-export function sendMixerVoiceRows(voices) {
-    const rows = [];
-    for (const v of (voices || [])) {
-        if (!v || !v.id) continue;
-        if (!(v.index >= 0 && v.index < SPLIT_VOICES_MAX)) continue;
-        rows.push({ index: v.index, id: v.id, label: v.label || v.id });
-    }
-    return rows;
 }
 
 /**
@@ -576,7 +516,7 @@ function mixerShortName(name) {
     return String(name || "").replace(/\s+/g, "").slice(0, 4);
 }
 
-export function busSendGridParams(config, voices) {
+export function busSendGridParams(config) {
     const out = [];
     /*
      * NO UNRESOLVED GUARD OF ITS OWN. busListRows already answers no rows for a
@@ -588,28 +528,13 @@ export function busSendGridParams(config, voices) {
      */
     /* BUSES ONLY. The list also carries the door into this very mixer and, when
      * there is a free bus, New Bus — neither of which is a fader. */
-    const rows = busListRows(config, undefined, voices).filter((r) => r.kind === "bus");
+    const rows = busListRows(config, undefined).filter((r) => r.kind === "bus");
     for (let send = 1; send <= BUS_SENDS; send++) {
         for (const row of rows) {
             out.push({
                 key: sendGridKey(row, send),
                 name: row.name,
                 short_name: mixerShortName(row.name),
-                type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
-            });
-        }
-    }
-    /* Voice faders come AFTER every bus fader, and grouped by send the same
-     * way, so the two halves of one send never end up on pages that do not
-     * touch. They are declared only when the config resolved: a param whose
-     * value cannot be read is a knob that reads back zero and then writes it. */
-    const vrows = (config && !config.unresolved) ? sendMixerVoiceRows(voices) : [];
-    for (let send = 1; send <= BUS_SENDS; send++) {
-        for (const row of vrows) {
-            out.push({
-                key: voiceSendGridKey(row.index, send),
-                name: row.label,
-                short_name: mixerShortName(row.label),
                 type: "int", min: 0, max: SEND_LEVEL_MAX, step: 1, default: 0,
             });
         }
@@ -628,14 +553,10 @@ export function busSendGridParams(config, voices) {
  * no keys emits no grid page at all, so the pages are the levels below it and
  * each is named for the send it is.
  *
- * BUSES AND VOICES ARE SEPARATE LEVELS, not one merged page, for two reasons.
- * The counts are unlike — at most SLOT_BUSES = 4 buses against up to
- * SPLIT_VOICES_MAX = 32 voices — and pagination is a whole-CONTRACT switch, so
- * one merged level would force the four bus faders to page along with the
- * thirty-two voice ones. And they mean different things: a bus fader is
- * post-insert, a voice fader is pre-insert, and a row of eight cells that
- * silently changed meaning halfway along would be a worse screen than two
- * honest ones.
+ * THERE ARE NO VOICE LEVELS. Two more (`voice_a` / `voice_b`) lived here while
+ * the host owned per-voice send levels; the module owns them now, so the mixer
+ * is the buses again — at most SLOT_BUSES cells a page, which is why the
+ * caller can pin it to one page per section.
  *
  * A level with no keys is OMITTED rather than emitted empty — a slot with no
  * buses gets the two voice pages and nothing else, and a module that cannot
@@ -653,14 +574,12 @@ export function busSendGridParams(config, voices) {
  * than parameterised in place — test_bus_model.sh's `[3, 3]` fails loudly
  * first, so it cannot ship quietly.
  */
-export function busSendGridHierarchy(config, voices) {
+export function busSendGridHierarchy(config) {
     if (!config || config.unresolved) return null;
-    const params = busSendGridParams(config, voices);
-    const busKeys = params.filter((p) => p.key.startsWith("bus")).map((p) => p.key);
-    const voiceKeys = params.filter((p) => p.key.startsWith("voice")).map((p) => p.key);
+    const params = busSendGridParams(config);
+    const busKeys = params.map((p) => p.key);
     const half = (a) => [a.slice(0, a.length / BUS_SENDS), a.slice(a.length / BUS_SENDS)];
     const [busA, busB] = half(busKeys);
-    const [voiceA, voiceB] = half(voiceKeys);
 
     const levels = { root: { label: "Send Mixer", knobs: [], params: [] } };
     /* NO PER-LEVEL `paginate` HERE, and that is not an omission: the planner
@@ -676,8 +595,6 @@ export function busSendGridHierarchy(config, voices) {
     };
     add("send_a", "Send A", busA);
     add("send_b", "Send B", busB);
-    add("voice_a", "Voices A", voiceA);
-    add("voice_b", "Voices B", voiceB);
 
     /* Nothing to ride at all is not a mixer. It is reachable: busListRows opens
      * the door when there is a bus OR a voice, and a bus can be deleted from
@@ -733,22 +650,14 @@ export function busSendGridHierarchy(config, voices) {
  */
 export function busPatchFields(config, fxState) {
     if (!config || config.unresolved || !Array.isArray(config.buses)) return null;
-    /* KEY ORDER, again: `main_sends` and `voice_sends` before `buses`, because
-     * bus_parse_section scans the WHOLE document for the first two and only
-     * then walks the array. A `voice_sends` emitted after the buses would still
-     * parse today — `bus_field` looks for a QUOTED key, so "voice_sends" cannot
-     * be found by a search for "sends" — but the rule this file already states
-     * for main_sends is the one that stays true when somebody reorders. */
+    /* KEY ORDER, again: `main_sends` before `buses`, because bus_parse_section
+     * scans the WHOLE document for it and only then walks the array. */
+    /* NO `voice_sends`. Per-voice send levels are the module's own parameters
+     * and travel in the synth's `state` blob, which this document already
+     * carries — writing a second copy here would race the state load on the way
+     * back in, and the loser would be a level the user cannot find. */
     const out = {
         main_sends: normaliseSends(config.mainSends),
-        /* CARRIED VERBATIM from the config, zeros included, and never rebuilt
-         * from the module's current voice list: an id that does not resolve
-         * right now is an ORPHAN, not a deletion, and the chain host retains
-         * and counts it. Filtering here is how a level is lost by saving while
-         * a module is still loading. */
-        voice_sends: ((config.voiceSends) || []).map((e) => ({
-            id: String(e.id), sends: normaliseSends(e.sends),
-        })),
         buses: [],
     };
     for (let b = 0; b < SLOT_BUSES; b++) {

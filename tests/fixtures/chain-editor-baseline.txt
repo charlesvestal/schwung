@@ -48,6 +48,13 @@
 # and eight were added for the `+` box and the Shift footer. Reviewed case by
 # case, and NO chain/ hash moved with them.
 #
+# RETIERING PER-VOICE SENDS onto the MODULE deleted five bus/sends cases --
+# the four `Voices` pages and the mixed slot -- and moved NOTHING. The mixer
+# rides buses again; a voice`s send level is one of the module`s own
+# parameters, on its own pages (src/host/voice_send_source.h). The bus pages
+# rendering byte for byte as they did is the point: the audio machinery and
+# the bus half of the screen were not supposed to change, and did not.
+#
 # A mismatch names which case moved, and the runner prints the render.
 #
 # Regenerate with:
@@ -80,11 +87,6 @@ bus/sends/2-send-a 9fb4f4fe413c00888b14e3d9a0f2603e896c3101
 bus/sends/2-send-b dbc9af3584a31a7b52e0f82b778918b3b31d5588
 bus/sends/full-send-a b6f1d74463125f88018204784f1cfc75fecaaee9
 bus/sends/hole-send-a 3f1bb1e640dbb045e572ad41896d59c2f2c5d2b0
-bus/sends/mixed-send-a 53a78c97a128eefc32d34d5a33397011cc164426
-bus/sends/voices-a 717d54302dfad72b483fd1b032f68b948951ef3e
-bus/sends/voices-a-2 87358d59299625dcb02ec28c18e2a0b9cb7c2275
-bus/sends/voices-b 2bf0f725f06d87579227e80ba158a1ddbf552b87
-bus/sends/voices-no-bus a18e8633feec8dbfc7b7f1aece0bd72bee2f42d4
 bus/voices/16-scrolled f7c3b804e7a755a24ba7e28403c723cd87814cb5
 bus/voices/16-top 568376be1a7317c074fcbabb652f8d38b3c2d6d1
 bus/voices/orphans ed3210cb3d7e4db1b4fa9d0fc0834211c1e7c712

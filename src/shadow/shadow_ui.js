@@ -3535,12 +3535,10 @@ function refreshBuses() {
  * menu.
  */
 function busRowsNow() {
-    /* busVoices is passed because the Send Mixer door now opens for a slot with NO
-     * buses at all — a splittable synth's per-voice sends need none. Its
-     * `voices` is [] both for "this module cannot split" and (harmlessly) while
-     * the read has not landed; the retry tick re-reads and the row appears. */
-    const rows = BusModel.busListRows(busConfig, getModuleAbbrev,
-                                      busVoices ? busVoices.voices : []);
+    /* No voices are passed: the mixer rides BUSES. Per-voice send levels are
+     * the module's own parameters now, on its own pages — see the note beside
+     * SEND_LEVEL_STEP in bus_model.mjs. */
+    const rows = BusModel.busListRows(busConfig, getModuleAbbrev);
     if (paramPagesEnabled()) return rows;
     return rows.filter((r) => r.kind !== "sends");
 }
@@ -3815,15 +3813,9 @@ function busSendsGridIo() {
                  * "this slot has no buses": a mixer drawn with no faders on it.
                  */
                 if (!busConfig || busConfig.unresolved) return null;
-                /* Voices come from the SAME cached read the bus screens use.
-                 * Its own tri-state has already been honoured by
-                 * refreshBusVoices, which leaves busVoices null rather than
-                 * empty on a failed read — so an empty list here is the
-                 * module's answer, not a stalled channel. */
-                const voices = busVoices ? busVoices.voices : [];
                 return JSON.stringify(k === "ui_hierarchy"
-                    ? BusModel.busSendGridHierarchy(busConfig, voices)
-                    : BusModel.busSendGridParams(busConfig, voices));
+                    ? BusModel.busSendGridHierarchy(busConfig)
+                    : BusModel.busSendGridParams(busConfig));
             }
             const real = BusModel.busSendGridRealKey(k);
             /* The RAW answer, null included: it is the wire value, and only the
@@ -3864,18 +3856,16 @@ function enterBusSendsGrid(rowIndex) {
         name: "Send Mixer",
         returnView: VIEWS.BUS_LIST,
         /*
-         * ONE SECTION, ONE PAGE — but ONLY while the mixer is buses alone.
+         * ONE SECTION, ONE PAGE. A bus page is at most SLOT_BUSES cells — 8,
+         * exactly the number of knobs — so it never has to split, and the flag
+         * says the grouping is AUTHORED so a ninth bus could not silently
+         * become "Send A - 2".
          *
-         * `paginate` is a whole-CONTRACT switch, not a per-level one, so it
-         * cannot say "pin the bus pages and page the voice pages". A bus page
-         * is at most SLOT_BUSES cells -- 8, exactly the number of knobs -- and
-         * never has to split, and the flag said the grouping was AUTHORED so a
-         * ninth bus could not silently become "Send A - 2". A VOICE page can be 32 cells against 8 knobs:
-         * pinned, twenty-four of them would be declared and undrawable, which
-         * is worse than the split the flag exists to prevent. So the pin is
-         * dropped exactly when there is something that needs paging.
+         * It was conditional while the mixer also carried a fader per voice: 32
+         * cells against 8 knobs cannot be pinned. Those faders belong to the
+         * module now, so the pin is unconditional again.
          */
-        paginate: !!(busVoices && busVoices.voices && busVoices.voices.length),
+        paginate: false,
     });
     announce("Send Mixer");
 }

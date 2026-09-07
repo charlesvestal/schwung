@@ -1052,7 +1052,8 @@ qualification is in `src/host/plugin_api_v1.h` and in rule 4 of
 
 **Optional.** A sound generator can offer to render named voices into separate
 buffers, so Signal Chain can put a kick and a snare on different insert chains
-and different sends. A module that does not opt in is rendered exactly as
+and different sends. A module that also declares `voice_send_params` (step 3
+below) keeps ownership of each voice's own send LEVEL, on its own pages. A module that does not opt in is rendered exactly as
 before and the shadow UI shows no bus affordance at all.
 
 **1. Answer `get_param("split_voices")` with a flat ordered array:**
@@ -1131,8 +1132,49 @@ gets the main output buffer, so the sparse case costs nothing. So:
   (32), so it can be **shorter** than what you published. Index only `[0,
   n_voices)`.
 
+**3. Optional: declare where YOUR per-voice send levels live.**
+
+A voice's send level is yours. The host reads it; it does not own it, does not
+draw a fader for it and does not save it — your levels are already in your own
+`state` blob. Publish a key TEMPLATE per send beside your voices:
+
+```c
+if (strcmp(key, "voice_send_params") == 0)
+    return snprintf(buf, buf_len, "[\"{id}_send1\",\"{id}_send2\"]");
+```
+
+`{id}` is replaced with each voice id, **verbatim**, so the host reads
+`kick_send1`, `kick_send2`, `snare_send1`, … off your normal parameter surface.
+Rules, all of which fail LOUDLY rather than quietly:
+
+- **Array position is the send index.** `[0]` is Send A, `[1]` is Send B. A
+  shorter array declares fewer sends. **More than two is an error and the whole
+  declaration is refused** — silently keeping the first two would leave you with
+  a control that writes into nothing.
+- **Every entry must contain `{id}`.** One without it would be a single key for
+  every voice, i.e. every pad sharing one level.
+- **Your ids must address your own params when substituted.** The host will not
+  adjust them. If `split_voices` publishes `pad1`…`pad32` while your params are
+  `pad0_…`…`pad31_…`, every level is off by one and the last one is
+  unaddressable — that is yours to reconcile, not the host's to guess.
+- **Declare the parameter in your `ui_hierarchy`** — once, on the child level,
+  focus-addressed (`send1`), which is how a per-voice control is normally
+  authored. The host reads `min` / `max` / `unit` from there to map your value
+  onto its own 0..127: `unit: "dB"` takes the dB law (0 dB is exactly unity),
+  anything else is linear over `min`..`max`, and a value at or below `min` is
+  exactly off. **If the host cannot find that metadata it refuses the send
+  rather than guessing a scale** — nothing will be heard, and nothing will be
+  mis-scaled.
+- Answering nothing is fine and is the default. A module with no
+  `voice_send_params` simply has no per-voice sends; put the voice in a bus and
+  ride the bus's send.
+- The host asks you for these keys on the audio callback, a few per frame, so
+  keep their `get_param` cheap — no allocation, no file I/O. (That is the rule
+  for every entry point; it is just more visible here.)
+
 Full contract and the host side: `src/host/plugin_api_v1.h`,
-`src/host/bus_mix.h`, and `docs/CHAIN.md` ("Buses").
+`src/host/bus_mix.h`, `src/host/voice_send_source.h`, and `docs/CHAIN.md`
+("Buses", "The module owns a voice's send level").
 
 ### Plugin API v2 (Recommended)
 

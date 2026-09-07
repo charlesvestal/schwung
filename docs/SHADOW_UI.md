@@ -1178,35 +1178,37 @@ sends, an ambiguity that got worse the moment the slot acquired sends of its own
 — opens a synthesised contract (`busSendGridHierarchy` in `bus_model.mjs`)
 whose pages carry every level on an encoder; the per-bus rows on that bus's own
 menu stay, because a level you have to click into, jog and click out of is not a
-level you can RIDE. **Send A** and **Send B** are the buses; **Voices A** and
-**Voices B** are the per-voice sends (see `docs/CHAIN.md`, "Per-voice sends"),
-and they are separate levels rather than a merged page for two reasons: the
-counts are unlike — at most `SLOT_BUSES` = 8 buses against `SPLIT_VOICES_MAX` =
-32 voices — and a row of eight cells that silently changed meaning halfway along
-(post-insert to pre-insert) would be a worse screen than two honest ones. **A
-level with no keys is omitted, not emitted empty**, so a module that cannot
-split gets exactly the two bus pages that shipped before, and a slot with no
-buses gets exactly the two voice pages.
+level you can RIDE. **Send A** and **Send B** are the buses, and they are the
+whole mixer.
+
+**IT CARRIED TWO MORE PAGES, `Voices A` / `Voices B`, AND THEY WERE THE WRONG
+TIER.** A voice's send level belongs to the MODULE — dr32 already published
+per-pad `send1`/`send2` knobs on its own `pads` level, beside pan and cutoff —
+so the same number had two homes that did not agree, which is what this screen
+was actually showing. The faders, the `voice<V>_send<M>` grid key, the
+`buses:voice<V>:send<M>` route and the `voice_sends` array in the slot document
+are all gone; the audio path is untouched. See `docs/CHAIN.md`, "The module owns
+a voice's send level". **A level with no keys is omitted, not emitted empty**,
+and with the voice pages gone a slot with no buses declares no mixer at all —
+which is why `busListRows` offers the door only when there is a bus to ride.
 
 **`paginate` is a whole-CONTRACT switch, not a per-level one**, which is why the
 hierarchy declares none: a flag written on a level would be read by nobody.
-`enterBusSendsGrid` pins the mixer to one page (`paginate: false`) **only while
-it is buses alone** — four cells against eight knobs, so a split can never
-happen and the flag says the grouping is AUTHORED. The moment there are voice
-faders the pin is dropped, because 32 declared cells on an eight-knob page would
-leave twenty-four undrawable, which is worse than the split the pin exists to
-prevent.
+`enterBusSendsGrid` pins the mixer to one page (`paginate: false`) —
+`SLOT_BUSES` = 8 cells against eight knobs, so a split can never happen and the
+flag says the grouping is AUTHORED. It was conditional while the voice faders
+lived here (32 declared cells on an eight-knob page leave twenty-four
+undrawable, worse than the split the pin prevents); it is unconditional again.
 
 The ROOT level carries no knobs, deliberately — the planner names a walk root's
 grid page "Main" whatever the level declares, and "Main / Send B" is not a
 mixer — so the pages are the levels below it. The io maps a flat grid key onto
 the real spelling in one place (`busSendGridRealKey`): `bus<N>_send<M>` →
-`bus<N>:send<M>`, and `voice<V>_send<M>` → **`buses:voice<V>:send<M>`**. That
-`buses:` prefix is load-bearing — `chain_host.c` routes a leading `bus<N>:` to
-that bus and `buses:` to the slot-level handler, and a per-voice send is a slot
-fact because the voice may be on no bus at all; a bare `voice7:send1` matches
-neither route and is handed to the synth plugin, i.e. a write to somebody else's
-parameter. A HOLE does not renumber: the second present bus is bus 3 and its key
+`bus<N>:send<M>`, and nothing else. A `voice<V>_send<M>` form resolved to
+`buses:voice<V>:send<M>` while the host owned those levels; it answers `null`
+now, because `chain_bus.c` no longer serves that route and a key the host
+refuses in silence is a fader that moves and is never heard. A HOLE does not
+renumber: the second present bus is bus 3 and its key
 says 3. An unresolved `buses:config` yields a `null` contract rather than an
 empty one, because an empty one is a claim — "this slot has no buses" — drawn as
 a mixer with no faders on it.
@@ -1222,10 +1224,10 @@ draining Main there would send a PRE-FX signal while every bus sends a
 POST-insert one — two meanings behind one control. Doing it properly needs a
 second drain point after `chain_process_fx` (and under `rebuild_from_la` that
 point moves again). Until then the row is `Sends`, a door into the mixer and
-nothing else, and it is offered when the slot has at least one bus **or the
-module declares any voice** — a bus is no longer the only thing with a fader,
-and gating on one made the mixer unreachable for exactly the 32-pad rack that
-per-voice sends exist for. The C
+nothing else, and it is offered when the slot has at least one
+bus. (It briefly opened for a splittable module with none, because per-voice
+sends need no bus; those faders belong to the module now, so a mixer with
+nothing on it would again be a row that answers a click by doing nothing.) The C
 fields stay, with the missing drain named beside them, so wiring it later is a
 mix-path change and not a re-plumb. `busRowsNow` also drops the row when the
 knob grid is not the user's Param View — every screen-reader session — since
@@ -1246,8 +1248,8 @@ all, so a bus reverb comes back with its parameters and without being
 reinstantiated. Three rules ride on it: a hole is `{"present":0}` and never a
 compaction; key ORDER is load-bearing, because `bus_field` takes the first hit
 inside the object's span and an insert's opaque state is inside that span
-(`name` before `fx`, `module`/`bypassed` before `state`, and `main_sends` and
-`voice_sends` declared ahead of every component in the document); and a
+(`name` before `fx`, `module`/`bypassed` before `state`, and `main_sends`
+declared ahead of every component in the document); and a
 `buses:config` read
 that did not COMPLETE bails the whole save — for an explicit save too, because
 the document it would otherwise write is not missing a field, it is a document
@@ -1260,21 +1262,14 @@ not from the producer's output — built from the output, the diff would assert
 only that the parser echoes whatever the producer said, and a producer that
 silently dropped an entry would drop it from both sides and pass.
 
-**Per-voice sends persist in the same document**, as `voice_sends`: a flat
-id-keyed array (`[{"id":"chh","sends":[12,90]}, ...]`), stored once for the slot
-rather than inside `bus_config_t` — a voice's send is a property of the VOICE,
-not of a bus, and every byte added to `bus_config_t` is multiplied by
-`SLOT_BUSES`, then by `MAX_PATCHES` on the heap, then by four slots — which at
-`SLOT_BUSES` = 8 is 9844 bytes of `bus_config_t` per bus, ~315 KB of heap per
-slot and ~9.6 KB on the SPI callback's stack (`v2_set_param`'s `load_file` route
-holds a `patch_info_t` local: 232 KB at 8 buses, 194 KB at 4). **Zero
-entries and orphans are carried verbatim**: a zero is what the user set the
-fader to (drop it and the value springs back on the next load), and an id that
-does not resolve right now is an orphan the chain host retains and counts, not a
-deletion. A patch REPLACES the list wholesale, exactly as it replaces the buses,
-so a document that predates the field clears it — which is the correct reading
-of "this file describes a slot with no per-voice sends", and is why the writer
-emits the key unconditionally.
+**Per-voice sends do NOT persist in this document.** They did, as a flat
+id-keyed `voice_sends` array, for as long as the host owned them. They are the
+module's own parameters now and ride inside the synth's opaque `state` blob,
+which this same document already carries — so a slot reload restores them by the
+same route every other one of the module's parameters takes. A second copy here
+would race the state load on the way back in, and the loser would be a level the
+user cannot find. An old document's `voice_sends` key reaches nothing:
+`chain_patch.c` has no field left to parse it into.
 
 **The list value column is ~11 characters and carries three facts.** Insert
 summary plus both send levels: past two inserts the summary becomes a COUNT

@@ -393,16 +393,101 @@ fader. And `voice_send_mask` is cleared on **every** path out of
 frame", and draining on the level alone would send a voice's final 128 frames
 forever.
 
-**The configuration is ID-KEYED; the render table is derived.**
-`voice_send_ids[]` / `voice_send_cfg[]` are what the user set and what is saved;
-`voice_send[]` is rebuilt from them by `chain_bus_rebuild_voice_map`, in the same
-pass and off the same id list the bus map uses, because every event that
-re-points a bus re-points these identically. An id that no longer resolves is
-**retained and counted** (`voice_send_orphans`), never dropped or re-pointed —
-the same contract a bus's voice ids have. The param is `buses:voice<V>:send<M>`
-with V the module's **render** index; `bus_route_voice_send` in `bus_route.h`
-parses it, so the spelling `bus_model.mjs` writes and the spelling the chain
-serves are joined by something `tests/host` runs.
+### THE MODULE OWNS A VOICE'S SEND LEVEL
+
+Three tiers of send exist and each is owned where the thing it sends lives:
+
+| Tier | Owner | Where the control lives |
+|---|---|---|
+| **Voice** | the **MODULE** | its own pages |
+| **Bus** | the host | the bus's row on the Send Mixer |
+| **Slot** | the host | Slot Settings |
+
+The host briefly owned the first tier too — an id-keyed config, a fader per
+voice on the Send Mixer, a `buses:voice<V>:send<M>` route and a `voice_sends`
+array in the slot document. dr32 already published per-pad `send1`/`send2`
+knobs on its own `pads` level, beside pan and cutoff, so **the same concept
+appeared twice, in two places, meaning different things.** All four of the
+host's halves are deleted. The audio machinery — the solo partition, the
+fold-back, `chain_drain_sends` — is untouched; only the source of the numbers
+moved.
+
+**A module declares a key TEMPLATE beside its voices:**
+
+```json
+"split_voices":      [{"id":"pad1","label":"Kick"}, …],
+"voice_send_params": ["{id}_send1", "{id}_send2"]
+```
+
+Both are served through `get_param`. `{id}` is substituted **verbatim** with
+the voice id, so the host reads `pad1_send1`, `pad1_send2`, … straight off the
+module's own parameter surface.
+
+- **Array position is the send index.** `[0]` is Send A, `[1]` is Send B. A
+  shorter array declares fewer sends — a real answer. Longer than
+  `BUS_MIX_SENDS` is an **error and the whole declaration is refused**, never a
+  silent truncation: a module that believes it declared three sends while the
+  host kept two has a control writing into nothing.
+- **An entry with no `{id}` is refused too**, for the same reason — it would be
+  one key for every voice, i.e. every pad writing the same level, which looks
+  like a working feature.
+- **A module declaring nothing gets no per-voice sends.** That is the correct
+  fallback and not a gap: put the voice in a bus and ride the bus's send.
+- **The host never adjusts the id it was given.** If a module's `split_voices`
+  ids do not address its own params when substituted, that is the module's
+  contract to fix — a host that corrected an off-by-one would be unpredictable
+  for every other module.
+
+**THE RANGE IS THE MODULE'S, AND IS NEVER ASSUMED.** A send level is 0..127
+(`BUS_MIX_SEND_LEVEL_MAX`, 127 exactly unity); a module's own parameter is
+whatever it says it is — dr32's is dB over −70..+6. The host looks the
+parameter's declared range up in the module's own `chain_params` (the same
+metadata the knob grid draws the control from) and maps:
+
+| `unit` | law |
+|---|---|
+| `dB` | `127 × 10^(v/20)`, clamped — **0 dB is exactly unity** |
+| anything else | `127 × (v − min) / (max − min)` |
+
+In both, a value **at or below the declared minimum is exactly 0**, so the
+control's own off position is off whatever floor the module chose. **When the
+metadata cannot be found the host REFUSES that send** rather than picking a
+scale — assuming 0..127 mis-scales a 0..1 module by two orders of magnitude,
+assuming 0..1 mutes a 0..127 one, and both are silent. The lookup tries the
+focus-addressed spelling first (`{id}_send1` → `send1`, which is how a
+per-voice param is actually authored in a `ui_hierarchy`, once on the child
+level, because 32 voices × N params would not fit `chain_params`) and then the
+fully substituted key.
+
+All of that is in **`src/host/voice_send_source.h`** — header-only for the same
+reason `bus_mix.h` is, so `tests/host/test_voice_send_source.sh` compiles and
+RUNS it; `chain_bus.c` is a translation unit the dev machine cannot build.
+
+**`voice_send[]` is a CACHE, not configuration.** Nothing about it is saved: the
+levels ride in the synth's own opaque `state` blob, which the slot document
+already carries, so a reload restores them by the same route every other one of
+the module's parameters takes. It is refreshed two ways, and the split is
+deliberate:
+
+- `chain_voice_sends_poll` runs on the render path, **before** the solo mask
+  (which is computed from the cache), and asks the module for
+  `VOICE_SEND_POLL_PER_FRAME` = 4 keys a frame — a 32-pad rack sweeps in 16
+  frames (~0.36 s). A module's `get_param` is on the SPI callback, so the full
+  64 calls cannot be a per-frame cost. This is the **ground truth**, catching
+  what no write of ours went past: a state restore, a preset load, a value the
+  module moved itself. Those are followed by silence.
+- `chain_voice_sends_touch` sees a `synth:` write whose key ends like one of the
+  declared templates and arms a **full sweep next frame**, so a knob turn is
+  heard immediately. It never sets a level from the written value — the module
+  may clamp, and the key may be a focus alias (`pad_send1`) naming a pad the
+  host cannot resolve. It says "ask again now", not "the answer is".
+
+**A key the module does not serve leaves the level ALONE.** An unserved read is
+not an answer of zero, and letting one become a level is how a send silently
+mutes. `chain_voice_sends_load` is the one place the cache is cleared, on the
+one event that changes the voice list — a synth load or unload — because a level
+cached against the previous module's render index would be a send on whatever
+voice now holds that index.
 
 Worst case, all 32 voices carrying a distinct level, the added per-frame work is
 a 16 KB clear, a 16 KB fold-back and 32 × 2 scaled adds. The sparse case is a
