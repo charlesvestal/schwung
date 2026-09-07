@@ -131,6 +131,48 @@ static inline void chain_record_synth_note(chain_instance_t *inst,
     }
 }
 
+/* Latch what the SYNTH receives, for the mod routes' MIDI sources.
+ *
+ * Deliberately a sibling of chain_record_synth_note, called at the same two
+ * sites, for exactly the reason written above it: an ARPEGGIATOR emits from
+ * tick(), not from process_midi, so a latch on only v2_on_midi never updates
+ * with an arp in the slot. A velocity route would sit at its rest value while
+ * the arp played, and nothing anywhere would report it.
+ *
+ * POST-MIDI-FX on purpose. This is what the synth HEARD, not what the player
+ * did — a velocity curve or a chord FX in the slot is part of the instrument,
+ * and a route that ignored them would disagree with the sound coming out.
+ *
+ * NOTE-OFFS LATCH NOTHING. A released pad's velocity is release velocity, which
+ * is a different control entirely, and zeroing on release would make every
+ * velocity route snap to the bottom of its range between notes.
+ *
+ * Runs on the SPI callback — four stores and a switch, nothing else. */
+static inline void chain_record_mod_input(chain_instance_t *inst,
+                                          const uint8_t *msg, int len) {
+    if (len < 2) return;
+    switch (msg[0] & 0xF0) {
+    case 0x90:  /* note on; velocity 0 is a note off and latches neither field */
+        if (len >= 3 && msg[2] > 0) {
+            inst->mod_input.velocity = msg[2];
+            inst->mod_input.note = msg[1];
+        }
+        break;
+    case 0xA0:  /* poly aftertouch — collapsed to channel, see mod_input_t */
+        if (len >= 3) inst->mod_input.pressure = msg[2];
+        break;
+    case 0xD0:  /* channel aftertouch — ONE data byte, so msg[1] is the value */
+        inst->mod_input.pressure = msg[1];
+        break;
+    case 0xB0:  /* control change; the index is masked because cc[] is the last
+                 * member of mod_input_t and msg[1] comes off the wire */
+        if (len >= 3) inst->mod_input.cc[msg[1] & 0x7F] = msg[2];
+        break;
+    default:
+        break;
+    }
+}
+
 static void chain_midi_trace(const chain_instance_t *inst, const char *what,
                              const uint8_t *msg, int len, int a, int b) {
     if (!inst || !inst->host || !inst->host->log) return;
@@ -600,6 +642,7 @@ int v2_tick_midi_fx(chain_instance_t *inst, int frames) {
                  * only one of the two makes the other look like silence. */
                 if (chain_midi_is_note(out_msgs[i], out_lens[i]) && chain_midi_trace_enabled())
                     chain_midi_trace(inst, "  ~> synth(tick)", out_msgs[i], out_lens[i], -1, 0);
+                chain_record_mod_input(inst, out_msgs[i], out_lens[i]);
                 chain_record_synth_note(inst, out_msgs[i], out_lens[i]);
                 inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], 0);
                 delivered = 1;
@@ -929,6 +972,7 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     for (int i = 0; i < out_count; i++) {
         if (inst->synth_plugin_v2 && inst->synth_instance && inst->synth_plugin_v2->on_midi) {
             if (trace) chain_midi_trace(inst, "  -> synth", out_msgs[i], out_lens[i], -1, 0);
+            chain_record_mod_input(inst, out_msgs[i], out_lens[i]);
             chain_record_synth_note(inst, out_msgs[i], out_lens[i]);
             inst->synth_plugin_v2->on_midi(inst->synth_instance, out_msgs[i], out_lens[i], source);
         }
