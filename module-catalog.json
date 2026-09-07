@@ -1234,6 +1234,17 @@
       "min_host_version": "0.3.0"
     },
     {
+      "id": "overwork-mix",
+      "name": "Overwork Mix",
+      "description": "Overwork fed by what the Move is playing instead of the jack: granulate the mix live, sample it with the Sample button, play it back from the samplers, sequence all of it. End-of-chain placement; Shift + volume is its master",
+      "author": "timncox",
+      "component_type": "overtake",
+      "github_repo": "timncox/schwung-overwork-mix",
+      "default_branch": "main",
+      "asset_name": "overwork-mix-module.tar.gz",
+      "min_host_version": "1.0.0"
+    },
+    {
       "id": "beatbank",
       "name": "Beat Bank",
       "description": "Library of standard drum patterns from editable .beat files — pick a pattern, it prints one bar into Move.",
