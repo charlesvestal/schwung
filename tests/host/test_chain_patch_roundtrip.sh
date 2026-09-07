@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+fail() { echo "FAIL: $1"; exit 1; }
+
 bin="build/tests/test_chain_patch_roundtrip"
 mkdir -p "$(dirname "$bin")"
 
@@ -26,3 +28,23 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   -o "$bin"
 
 "$bin" "$work"
+
+# ---------------------------------------------------------------- format pin
+#
+# The serializer lives in chain_host.c, which dlopens plugins and so cannot be
+# compiled natively. What matters about it is a property the parser cannot see:
+# an ORDINARY knob must re-save byte-identically to what shipped before
+# destinations existed, or every patch file in the field is rewritten the first
+# time it is touched. That holds only while the new fields are emitted
+# CONDITIONALLY, so the condition is pinned here.
+H=src/modules/chain/dsp/chain_host.c
+command grep -q 'if (km->dests\[di\].lo != 0.0f || km->dests\[di\].hi != 1.0f)' "$H" \
+  || fail "the knob serializer no longer emits lo/hi only for a non-whole-range destination"
+command grep -q 'if (multi) {' "$H" \
+  || fail "the knob serializer no longer emits dest/pos only for a multi-destination knob"
+
+# ...and a truncated array must not be emitted half-written. JSON.parse in the
+# shadow UI throws that into a silent catch, so the knobs would vanish from the
+# saved patch with no error anywhere.
+command grep -q 'return snprintf(buf, buf_len, "\[\]");' "$H" \
+  || fail "the knob serializer no longer answers [] rather than half an array on truncation"

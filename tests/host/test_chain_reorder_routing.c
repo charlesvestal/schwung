@@ -255,9 +255,12 @@ static void add_knob(int cc, const char *target, const char *param, float value)
     knob_mapping_t *k = &inst->knob_mappings[i];
     memset(k, 0, sizeof(*k));
     k->cc = cc;
-    snprintf(k->target, sizeof(k->target), "%s", target);
-    snprintf(k->param, sizeof(k->param), "%s", param);
-    k->current_value = value;
+    snprintf(k->dests[0].target, sizeof(k->dests[0].target), "%s", target);
+    snprintf(k->dests[0].param, sizeof(k->dests[0].param), "%s", param);
+    k->dests[0].lo = 0.0f;
+    k->dests[0].hi = 1.0f;
+    k->dests[0].current_value = value;
+    k->dest_count = 1;   /* a mapping with no destinations is not a mapping */
 }
 
 static knob_mapping_t *knob_by_cc(int cc) {
@@ -287,7 +290,7 @@ static void check_no_dangling(const char *what) {
         rows[n].id = inst->lfos[i].target; rows[n].kind = "an LFO"; n++;
     }
     for (int i = 0; i < inst->knob_mapping_count; i++) {
-        rows[n].id = inst->knob_mappings[i].target; rows[n].kind = "a knob mapping"; n++;
+        rows[n].id = inst->knob_mappings[i].dests[0].target; rows[n].kind = "a knob mapping"; n++;
     }
     for (int i = 0; i < n; i++) {
         const char *id = rows[i].id;
@@ -510,15 +513,15 @@ static void test_knob_mapping_follows(void) {
         char what[96];
         if (!k) { failf("the knob mapping on CC %d disappeared", 71 + i); continue; }
         snprintf(what, sizeof(what), "CC %d (was fx%d) after moving fx6 to fx2", 71 + i, i + 1);
-        EXPECT_STR(k->target, want[i], what);
+        EXPECT_STR(k->dests[0].target, want[i], what);
         snprintf(what, sizeof(what), "CC %d kept its parameter", 71 + i);
         {
             char p[8];
             snprintf(p, sizeof(p), "p%d", i + 1);
-            EXPECT_STR(k->param, p, what);
+            EXPECT_STR(k->dests[0].param, p, what);
         }
         snprintf(what, sizeof(what), "CC %d kept the value the knob was left at", 71 + i);
-        EXPECT_EXACT(k->current_value, 0.1f * (float)(i + 1), what);
+        EXPECT_EXACT(k->dests[0].current_value, 0.1f * (float)(i + 1), what);
     }
     EXPECT_INT(inst->knob_mapping_count, 8, "a move changed how many knobs are mapped");
     check_no_dangling("after a move with a full knob table");
@@ -534,15 +537,15 @@ static void test_knob_mapping_follows(void) {
         knob_mapping_t *k = knob_by_cc(71);
         if (!k) failf("the knob mapping row vanished on a removal");
         else {
-            EXPECT_STR(k->target, "", "the knob still names the position of a deleted module");
-            EXPECT_STR(k->param, "", "the knob kept the deleted module parameter name");
+            EXPECT_STR(k->dests[0].target, "", "the knob still names the position of a deleted module");
+            EXPECT_STR(k->dests[0].param, "", "the knob kept the deleted module parameter name");
         }
         k = knob_by_cc(72);
         if (!k) failf("the second knob mapping vanished");
         else {
-            EXPECT_STR(k->target, "fx7", "the knob behind the deletion did not follow down");
-            EXPECT_STR(k->param, "p8", "the following knob lost its parameter");
-            EXPECT_EXACT(k->current_value, 0.8f, "the following knob lost its value");
+            EXPECT_STR(k->dests[0].target, "fx7", "the knob behind the deletion did not follow down");
+            EXPECT_STR(k->dests[0].param, "p8", "the following knob lost its parameter");
+            EXPECT_EXACT(k->dests[0].current_value, 0.8f, "the following knob lost its value");
         }
     }
     check_no_dangling("after removing a mapped fx6");
@@ -553,14 +556,14 @@ static void test_knob_mapping_follows(void) {
     add_knob(71, "midi_fx6", "m6", 0.66f);
     add_knob(72, "synth", "cutoff", 0.5f);
     chain_reorder_move(inst, 0, 5, 1);
-    EXPECT_STR(knob_by_cc(71)->target, "midi_fx6",
+    EXPECT_STR(knob_by_cc(71)->dests[0].target, "midi_fx6",
                "an AUDIO FX move rewrote a MIDI FX knob mapping");
-    EXPECT_STR(knob_by_cc(72)->target, "synth", "an audio FX move rewrote a synth knob mapping");
+    EXPECT_STR(knob_by_cc(72)->dests[0].target, "synth", "an audio FX move rewrote a synth knob mapping");
 
     /* ...and the MIDI side moves its own. */
     chain_reorder_move(inst, 1, 5, 1);
-    EXPECT_STR(knob_by_cc(71)->target, "midi_fx2", "a MIDI FX move did not carry its knob mapping");
-    EXPECT_EXACT(knob_by_cc(71)->current_value, 0.66f, "the MIDI FX knob lost its value");
+    EXPECT_STR(knob_by_cc(71)->dests[0].target, "midi_fx2", "a MIDI FX move did not carry its knob mapping");
+    EXPECT_EXACT(knob_by_cc(71)->dests[0].current_value, 0.66f, "the MIDI FX knob lost its value");
 }
 
 /* ======================================================================== */
@@ -584,7 +587,7 @@ static void test_refusal_is_inert(void) {
     EXPECT_INT(chain_reorder_insert(inst, 0, -1), 0, "an insert at a negative position was accepted");
 
     EXPECT_STR(inst->lfos[0].target, "fx2", "a refused edit moved an LFO routing");
-    EXPECT_STR(knob_by_cc(71)->target, "fx2", "a refused edit moved a knob mapping");
+    EXPECT_STR(knob_by_cc(71)->dests[0].target, "fx2", "a refused edit moved a knob mapping");
     {
         mod_target_state_t *e = mod_by_param("p2");
         if (!e) failf("a refused edit destroyed a modulation entry");

@@ -119,8 +119,26 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
     }
     for (int i = 0; i < inst->knob_mapping_count && i < MAX_KNOB_MAPPINGS; i++) {
         knob_mapping_t *k = &inst->knob_mappings[i];
-        if (chain_perm_retarget(k->target, sizeof(k->target), prefix, max, map, count) < 0) {
-            k->param[0] = '\0';
+        /* EVERY destination, not just the first: each one names a chain
+         * position by string, so a shape edit that renumbered positions would
+         * otherwise leave the rest aimed at whatever slid into their index. */
+        for (int d = 0; d < k->dest_count && d < MAX_KNOB_DESTS; d++) {
+            knob_dest_t *dest = &k->dests[d];
+            if (chain_perm_retarget(dest->target, sizeof(dest->target),
+                                    prefix, max, map, count) >= 0) continue;
+
+            /* The module this destination pointed at is gone. With others
+             * still live, drop it and close the gap; as the last one, blank
+             * the param and leave the mapping in place -- which is what a
+             * single-destination knob has always done here. */
+            if (k->dest_count > 1) {
+                for (int j = d; j < k->dest_count - 1; j++) k->dests[j] = k->dests[j + 1];
+                memset(&k->dests[k->dest_count - 1], 0, sizeof(k->dests[0]));
+                k->dest_count--;
+                d--;
+            } else {
+                dest->param[0] = '\0';
+            }
         }
     }
 }

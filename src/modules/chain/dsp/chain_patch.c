@@ -667,6 +667,41 @@ static const char *json_span_end(const char *start) {
     return NULL;
 }
 
+/* Read a quoted string field out of one JSON object, bounded by that object.
+ * Replaces four copies of the same nested-strchr dance. */
+static void json_row_string(const char *obj_start, const char *obj_end,
+                            const char *field, char *out, size_t out_len) {
+    out[0] = '\0';
+    /* `field` carries its own colon ("\"param\":"), so a row whose VALUE is the
+     * word this looks for cannot be mistaken for the key. Without it,
+     * {"param":"lo","value":0.5} answers the search for "lo" at its own value
+     * and reads 0.5 as that field -- a module free to name a parameter `lo`,
+     * `hi`, `dest` or `pos` could silently rewrite the row around it. */
+    const char *pos = strstr(obj_start, field);
+    if (!pos || pos >= obj_end) return;
+    const char *colon = strchr(pos, ':');
+    if (!colon) return;
+    const char *q1 = strchr(colon, '"');
+    if (!q1 || q1 >= obj_end) return;
+    const char *q2 = strchr(q1 + 1, '"');
+    if (!q2 || q2 >= obj_end) return;
+    size_t len = (size_t)(q2 - q1 - 1);
+    if (len > out_len - 1) len = out_len - 1;
+    memcpy(out, q1 + 1, len);
+    out[len] = '\0';
+}
+
+/* Read a numeric field out of one JSON object, leaving *out alone if absent --
+ * so a caller's default survives a field the writer did not emit. */
+static void json_row_float(const char *obj_start, const char *obj_end,
+                           const char *field, float *out) {
+    /* `field` carries its own colon -- see json_row_string. */
+    const char *pos = strstr(obj_start, field);
+    if (!pos || pos >= obj_end) return;
+    const char *colon = strchr(pos, ':');
+    if (colon) *out = strtof(colon + 1, NULL);
+}
+
 /* Matching ']' for an array, or NULL (including when the span closed on '}'). */
 static const char *json_array_end(const char *arr_start) {
     const char *end = json_span_end(arr_start);
@@ -1210,85 +1245,100 @@ int v2_parse_patch_file(chain_instance_t *inst, const char *path, patch_info_t *
         }
     }
 
-    /* Parse knob_mappings - simplified */
+    /* Parse knob_mappings.
+     *
+     * Bounded by ROWS, not by mappings: a knob with several destinations
+     * contributes one row each and they merge onto one mapping, so counting
+     * mappings would stop reading part-way through the last knob's
+     * destinations and drop them silently. */
     const char *mappings_pos = strstr(json, "\"knob_mappings\"");
     if (mappings_pos) {
         const char *arr_start = strchr(mappings_pos, '[');
-        const char *arr_end = arr_start ? strchr(arr_start, ']') : NULL;
+        /* Depth-aware, and required to be: these helpers already exist for the
+         * rest of the file, while this one scan still used the first ']' and
+         * the first '}' it could find. Nothing nested is written here today,
+         * but a first ']' is the wrong end of any array that ever gains one. */
+        const char *arr_end = arr_start ? json_array_end(arr_start) : NULL;
 
         if (arr_start && arr_end) {
             const char *obj_start = arr_start;
-            while (patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+            int rows_seen = 0;
+            while (rows_seen++ < MAX_KNOB_MAPPINGS * MAX_KNOB_DESTS) {
                 obj_start = strchr(obj_start + 1, '{');
                 if (!obj_start || obj_start > arr_end) break;
 
-                const char *obj_end = strchr(obj_start, '}');
+                const char *obj_end = json_object_end(obj_start);
                 if (!obj_end || obj_end > arr_end) break;
 
-                knob_mapping_t *m = &patch->knob_mappings[patch->knob_mapping_count];
+                /* Parse the row into scratch first. A row may MERGE into a
+                 * mapping already built for this cc (a knob with several
+                 * destinations writes one row each, all sharing its cc), so
+                 * where it lands is not known until cc and dest are read. */
+                int row_cc = 0, row_dest = -1;
+                char row_target[16] = {0};
+                char row_param[32] = {0};
+                float row_lo = 0.0f, row_hi = 1.0f, row_pos = -1.0f;
+                float row_value = -999999.0f;   /* Sentinel: no saved value */
 
-                /*
-                 * Clear the row before parsing into it.
-                 *
-                 * `m` is only ADVANCED when a row is accepted, so a REJECTED
-                 * row leaves its cc/target/param sitting in the slot and the
-                 * next row inherits every field it happens to omit — a mapping
-                 * silently pointed at a module named by a row that was thrown
-                 * away. Rejected rows used to be a curiosity of hand-edited
-                 * patches; the permutation makes them routine, because vacating
-                 * a position blanks a mapping in place rather than removing it.
-                 *
-                 * It also terminates `target`: the strncpy below caps `len` at
-                 * exactly sizeof-1, and strncpy writes no NUL when it copies
-                 * the full count.
-                 */
-                memset(m, 0, sizeof(*m));
-
-                /* Parse cc */
-                const char *cc_pos = strstr(obj_start, "\"cc\"");
+                const char *cc_pos = strstr(obj_start, "\"cc\":");
                 if (cc_pos && cc_pos < obj_end) {
                     const char *colon = strchr(cc_pos, ':');
-                    if (colon) m->cc = atoi(colon + 1);
+                    if (colon) row_cc = atoi(colon + 1);
                 }
 
-                /* Parse target */
-                const char *target_pos = strstr(obj_start, "\"target\"");
-                if (target_pos && target_pos < obj_end) {
-                    const char *q1 = strchr(strchr(target_pos, ':'), '"');
-                    if (q1 && q1 < obj_end) {
-                        const char *q2 = strchr(q1 + 1, '"');
-                        if (q2 && q2 < obj_end) {
-                            int len = q2 - q1 - 1;
-                            if (len > 15) len = 15;
-                            strncpy(m->target, q1 + 1, len);
+                json_row_string(obj_start, obj_end, "\"target\":", row_target, sizeof(row_target));
+                json_row_string(obj_start, obj_end, "\"param\":", row_param, sizeof(row_param));
+
+                json_row_float(obj_start, obj_end, "\"value\":", &row_value);
+                json_row_float(obj_start, obj_end, "\"lo\":", &row_lo);
+                json_row_float(obj_start, obj_end, "\"hi\":", &row_hi);
+                json_row_float(obj_start, obj_end, "\"pos\":", &row_pos);
+
+                const char *dest_pos = strstr(obj_start, "\"dest\":");
+                if (dest_pos && dest_pos < obj_end) {
+                    const char *colon = strchr(dest_pos, ':');
+                    if (colon) row_dest = atoi(colon + 1);
+                }
+
+                if (row_cc >= KNOB_CC_START && row_cc <= KNOB_CC_END && row_param[0]) {
+                    /* Does a mapping for this cc already exist? */
+                    knob_mapping_t *m = NULL;
+                    for (int k = 0; k < patch->knob_mapping_count; k++) {
+                        if (patch->knob_mappings[k].cc == row_cc) {
+                            m = &patch->knob_mappings[k];
+                            break;
                         }
                     }
-                }
-
-                /* Parse param */
-                const char *param_pos = strstr(obj_start, "\"param\"");
-                if (param_pos && param_pos < obj_end) {
-                    const char *q1 = strchr(strchr(param_pos, ':'), '"');
-                    if (q1 && q1 < obj_end) {
-                        const char *q2 = strchr(q1 + 1, '"');
-                        if (q2 && q2 < obj_end) {
-                            int len = q2 - q1 - 1;
-                            if (len > 31) len = 31;
-                            strncpy(m->param, q1 + 1, len);
+                    if (!m && patch->knob_mapping_count < MAX_KNOB_MAPPINGS) {
+                        m = &patch->knob_mappings[patch->knob_mapping_count++];
+                        /*
+                         * Clear the row before parsing into it.
+                         *
+                         * A REJECTED row used to leave its cc/target/param in
+                         * the slot for the next row to inherit every field it
+                         * happened to omit -- a mapping silently pointed at a
+                         * module named by a row that was thrown away. Rejected
+                         * rows became routine when vacating a chain position
+                         * started blanking a mapping in place rather than
+                         * removing it.
+                         */
+                        memset(m, 0, sizeof(*m));
+                        m->cc = row_cc;
+                    }
+                    if (m) {
+                        /* An explicit dest index, or append. A row naming a
+                         * slot past the cap is dropped rather than folded onto
+                         * another destination. */
+                        int di = (row_dest >= 0) ? row_dest : m->dest_count;
+                        if (di >= 0 && di < MAX_KNOB_DESTS) {
+                            knob_dest_assign(&m->dests[di], row_target, row_param);
+                            m->dests[di].lo = row_lo;
+                            m->dests[di].hi = row_hi;
+                            m->dests[di].current_value = row_value;
+                            if (di + 1 > m->dest_count) m->dest_count = di + 1;
+                            if (row_pos >= 0.0f) m->position = row_pos;
                         }
                     }
-                }
-
-                /* Parse saved value if present */
-                m->current_value = -999999.0f;  /* Sentinel: no saved value */
-                const char *val_pos = strstr(obj_start, "\"value\"");
-                if (val_pos && val_pos < obj_end) {
-                    const char *colon = strchr(val_pos, ':');
-                    if (colon) m->current_value = strtof(colon + 1, NULL);
-                }
-
-                if (m->cc >= KNOB_CC_START && m->cc <= KNOB_CC_END && m->param[0]) {
-                    patch->knob_mapping_count++;
                 }
 
                 obj_start = obj_end;
@@ -1510,8 +1560,8 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
      * The saved value may be stale if params were changed via module UI,
      * so always read the real value from the plugin after state restore. */
     for (int i = 0; i < inst->knob_mapping_count; i++) {
-        const char *target = inst->knob_mappings[i].target;
-        const char *param = inst->knob_mappings[i].param;
+        const char *target = inst->knob_mappings[i].dests[0].target;
+        const char *param = inst->knob_mappings[i].dests[0].param;
 
         /* "Nothing sent to the controller yet" is -1, but the rows we just
          * copied came from a patch_info_t whose parser clears each row with
@@ -1542,20 +1592,20 @@ int v2_load_from_patch_info(chain_instance_t *inst, patch_info_t *patch) {
 
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
         if (got > 0) {
-            inst->knob_mappings[i].current_value = dsp_value_to_float(
+            inst->knob_mappings[i].dests[0].current_value = dsp_value_to_float(
                 val_buf, pinfo, pinfo ? (pinfo->min_val + pinfo->max_val) / 2.0f : 0.5f);
         } else if (pinfo) {
             /* No DSP read — use saved value or midpoint */
-            float saved = patch->knob_mappings[i].current_value;
+            float saved = patch->knob_mappings[i].dests[0].current_value;
             if (saved > -999998.0f) {
                 if (saved < pinfo->min_val) saved = pinfo->min_val;
                 if (saved > pinfo->max_val) saved = pinfo->max_val;
-                inst->knob_mappings[i].current_value = saved;
+                inst->knob_mappings[i].dests[0].current_value = saved;
             } else {
-                inst->knob_mappings[i].current_value = (pinfo->min_val + pinfo->max_val) / 2.0f;
+                inst->knob_mappings[i].dests[0].current_value = (pinfo->min_val + pinfo->max_val) / 2.0f;
             }
         } else {
-            inst->knob_mappings[i].current_value = 0.5f;
+            inst->knob_mappings[i].dests[0].current_value = 0.5f;
         }
     }
 

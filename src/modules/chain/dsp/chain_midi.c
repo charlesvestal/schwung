@@ -800,77 +800,19 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
-                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
-                    if (!pinfo) continue;
-
-                    /* Calculate acceleration based on time between events */
-                    uint64_t now = get_time_ms();
-                    uint64_t last = inst->knob_last_time_ms[i];
-                    inst->knob_last_time_ms[i] = now;
-                    int accel = KNOB_ACCEL_MIN_MULT;
-                    if (last > 0) {
-                        uint64_t elapsed = now - last;
-                        if (elapsed < KNOB_ACCEL_SLOW_MS) {
-                            if (elapsed <= KNOB_ACCEL_FAST_MS) {
-                                accel = KNOB_ACCEL_MAX_MULT;
-                            } else {
-                                float ratio = (float)(KNOB_ACCEL_SLOW_MS - elapsed) /
-                                              (float)(KNOB_ACCEL_SLOW_MS - KNOB_ACCEL_FAST_MS);
-                                accel = KNOB_ACCEL_MIN_MULT + (int)(ratio * (KNOB_ACCEL_MAX_MULT - KNOB_ACCEL_MIN_MULT));
-                            }
-                        }
-                    }
-
-                    /* Cap acceleration: enums never accelerate, ints limited */
-                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                    if (pinfo->type == KNOB_TYPE_ENUM) {
-                        accel = KNOB_ACCEL_ENUM_MULT;
-                    } else if (is_int && accel > KNOB_ACCEL_MAX_MULT_INT) {
-                        accel = KNOB_ACCEL_MAX_MULT_INT;
-                    }
-
-                    /* Relative encoder: apply acceleration to base step */
-                    float base_step = (pinfo->step > 0) ? pinfo->step
-                        : (is_int ? (float)KNOB_STEP_INT : KNOB_STEP_FLOAT);
-
                     /* Two's complement 7-bit, decoded in relative_cc.h so
-                     * tests/host can run it — chain_midi.c itself cannot be
+                     * tests/host can run it -- chain_midi.c itself cannot be
                      * compiled natively, so a source-level pin here could not
                      * tell 4 base steps from 8. 0 and the unused midpoint 64
                      * both come back as no movement. */
                     int ticks = relative_cc_ticks((int)msg[2]);
                     if (ticks == 0) return;
-                    int mag = (ticks < 0) ? -ticks : ticks;
 
-                    /* The LARGER of the detent count and the time-based
-                     * multiplier, never the product: a plain encoder always
-                     * says one detent so `accel` is its only speed signal,
-                     * while an accelerated encoder batches detents so `mag`
-                     * already IS the acceleration. Enums fall out of this
-                     * without a special case, because `accel` was pinned to
-                     * KNOB_ACCEL_ENUM_MULT above. See relative_cc.h. */
-                    int mult = relative_cc_multiplier(mag, accel);
+                    /* Everything else -- acceleration, the detent count, the
+                     * step, the one-vs-several-destinations law -- is
+                     * knob_turn's, in a file tests/host can compile. */
+                    knob_turn(inst, i, ticks, KNOB_STEP_FLOAT);
 
-                    float delta = base_step * (float)mult;
-                    if (ticks < 0) delta = -delta;
-
-                    float new_val = inst->knob_mappings[i].current_value + delta;
-                    if (new_val < pinfo->min_val) new_val = pinfo->min_val;
-                    if (new_val > pinfo->max_val) new_val = pinfo->max_val;
-                    if (is_int) new_val = (float)((int)new_val);  /* Round to int */
-                    inst->knob_mappings[i].current_value = new_val;
-
-                    /* Format as int or float */
-                    char val_str[16];
-                    if (is_int) {
-                        snprintf(val_str, sizeof(val_str), "%d", (int)new_val);
-                    } else {
-                        snprintf(val_str, sizeof(val_str), "%.3f", new_val);
-                    }
-
-                    knob_forward_value(inst, target, param, val_str);
                     /* Relative: the sender moved by a delta and has no idea
                      * where that landed, so it needs the absolute answer. */
                     knob_emit_cc_out(inst, i);
@@ -886,29 +828,20 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
             int target_cc = KNOB_CC_START + (cc - KNOB_ABS_CC_START);
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == target_cc) {
-                    const char *target = inst->knob_mappings[i].target;
-                    const char *param = inst->knob_mappings[i].param;
-                    chain_param_info_t *pinfo = knob_find_param(inst, target, param);
-                    if (!pinfo) return;
+                    /* 0-127 is a POSITION across the knob's own travel -- the
+                     * same thing knob_emit_cc_out sends, read backwards, so a
+                     * controller that echoes what it was told lands where it
+                     * started. With one whole-range destination this is the
+                     * value scaling that has always shipped. */
+                    knob_set_position(inst, i, (float)msg[2] / 127.0f);
 
-                    float abs_val = pinfo->min_val + ((float)msg[2] / 127.0f) * (pinfo->max_val - pinfo->min_val);
-                    int is_int = (pinfo->type == KNOB_TYPE_INT || pinfo->type == KNOB_TYPE_ENUM);
-                    if (is_int) abs_val = (float)((int)(abs_val + 0.5f));
-                    if (abs_val < pinfo->min_val) abs_val = pinfo->min_val;
-                    if (abs_val > pinfo->max_val) abs_val = pinfo->max_val;
-                    inst->knob_mappings[i].current_value = abs_val;
-
-                    char val_str[16];
-                    if (is_int) snprintf(val_str, sizeof(val_str), "%d", (int)abs_val);
-                    else        snprintf(val_str, sizeof(val_str), "%.3f", abs_val);
-
-                    knob_forward_value(inst, target, param, val_str);
                     /* Deliberately no knob_emit_cc_out() here. The sender set
                      * this value, so echoing it back is at best redundant and
                      * at worst a loop: a controller configured to echo its own
-                     * output (common — it is how a motorised unit hears itself)
-                     * would fight the user's fingers mid-turn. Record what the
-                     * sender already knows so later change detection is honest. */
+                     * output (common -- it is how a motorised unit hears
+                     * itself) would fight the user's fingers mid-turn. Record
+                     * what the sender already knows so later change detection
+                     * is honest. */
                     inst->knob_mappings[i].last_cc_out = msg[2];
                     return;
                 }

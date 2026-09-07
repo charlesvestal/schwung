@@ -387,6 +387,85 @@ const INPUT_SOURCE_OPTIONS = [
     { id: "external", name: "External Only", isInputOption: true }
 ];
 
+/*
+ * A patch's knob rows -> this editor's model, plus the rows kept verbatim.
+ *
+ * A knob may drive SEVERAL parameters, stored as several rows sharing one cc.
+ * This editor only ever showed one target and one param, and it rebuilds the
+ * patch's knob array from what it holds -- so reading one row per knob and
+ * writing one back DELETED every extra destination and every window,
+ * permanently, the first time a chain built on the device was saved from here.
+ * It looked correct on both screens throughout.
+ *
+ * The rows are therefore kept. The first is what this editor edits; the rest
+ * ride along untouched until something that understands them writes them again.
+ */
+function parseKnobMappings(knobMappings) {
+    const knobs = createEmptyKnobs();
+    const knobRows = createEmptyKnobRows();
+    if (!Array.isArray(knobMappings)) return { knobs, knobRows };
+
+    const rowsByKnob = {};
+    for (const mapping of knobMappings) {
+        const knobIndex = mapping.cc - KNOB_CC_START;
+        if (knobIndex < 0 || knobIndex >= NUM_KNOBS) continue;
+        if (!rowsByKnob[knobIndex]) rowsByKnob[knobIndex] = [];
+        rowsByKnob[knobIndex].push(mapping);
+    }
+    for (const key in rowsByKnob) {
+        const knobIndex = Number(key);
+        /* `dest` when present, file order otherwise -- an older patch has one
+         * row per knob and no index at all. */
+        const rows = rowsByKnob[key].slice().sort((a, b) => (a.dest || 0) - (b.dest || 0));
+        knobs[knobIndex] = { slot: rows[0].target, param: rows[0].param };
+        knobRows[knobIndex] = rows;
+    }
+    return { knobs, knobRows };
+}
+
+/* ...and back. The first row follows this editor; the rest go out exactly as
+ * they came in, windows and all. Re-pointing the first destination here is a
+ * real edit and is kept; the others are not this screen's to change. */
+function buildKnobMappings(chain) {
+    const out = [];
+    if (!chain || !chain.knobs) return out;
+
+    for (let i = 0; i < NUM_KNOBS; i++) {
+        const knob = chain.knobs[i];
+        if (!knob || !knob.slot || !knob.param) continue;
+
+        const rows = chain.knobRows && chain.knobRows[i];
+        if (rows && rows.length) {
+            out.push(Object.assign({}, rows[0], {
+                cc: KNOB_CC_START + i, target: knob.slot, param: knob.param
+            }));
+            for (let r = 1; r < rows.length; r++) {
+                out.push(Object.assign({}, rows[r], { cc: KNOB_CC_START + i }));
+            }
+            continue;
+        }
+
+        const mapping = { cc: KNOB_CC_START + i, target: knob.slot, param: knob.param };
+        /* Preset param needs integer type and dynamic max from synth */
+        if (knob.param === "preset") {
+            mapping.type = "int";
+            mapping.min = 0;
+            mapping.max_param = "preset_count";
+        }
+        out.push(mapping);
+    }
+    return out;
+}
+
+/* Raw knob rows from the patch, one array per knob, kept so destinations this
+ * editor does not show survive a save. Parallel to `knobs` rather than inside
+ * it: `knobs` is this screen's editable model and is rebuilt freely. */
+function createEmptyKnobRows() {
+    const rows = [];
+    for (let i = 0; i < NUM_KNOBS; i++) rows.push(null);
+    return rows;
+}
+
 function createEmptyKnobs() {
     const knobs = [];
     for (let i = 0; i < NUM_KNOBS; i++) {
@@ -423,7 +502,8 @@ function createEditorState(existingPatch = null) {
                 fx1_config: {},
                 fx2: existingPatch.audio_fx?.[1] || null,
                 fx2_config: {},
-                knobs: existingPatch.knobs || createEmptyKnobs()
+                knobs: existingPatch.knobs || createEmptyKnobs(),
+                knobRows: existingPatch.knobRows || createEmptyKnobRows()
             }
         };
     }
@@ -452,7 +532,8 @@ function createEditorState(existingPatch = null) {
             fx1_config: {},
             fx2: null,
             fx2_config: {},
-            knobs: createEmptyKnobs()
+            knobs: createEmptyKnobs(),
+            knobRows: createEmptyKnobRows()
         }
     };
 }
@@ -497,7 +578,8 @@ function enterEditor(patchIndex = -1) {
                 fx1_config: {},
                 fx2: null,
                 fx2_config: {},
-                knobs: config.knobs || createEmptyKnobs()
+                knobs: config.knobs || createEmptyKnobs(),
+                knobRows: config.knobRows || createEmptyKnobRows()
             }
         };
 
@@ -525,17 +607,13 @@ function enterEditor(patchIndex = -1) {
             }
         }
 
-        /* Parse Knob Mappings */
-        if (Array.isArray(config.knob_mappings)) {
-            for (const mapping of config.knob_mappings) {
-                const knobIndex = mapping.cc - KNOB_CC_START;
-                if (knobIndex >= 0 && knobIndex < NUM_KNOBS) {
-                    editorState.chain.knobs[knobIndex] = {
-                        slot: mapping.target,
-                        param: mapping.param
-                    };
-                }
-            }
+        /* Parse Knob Mappings -- see parseKnobMappings for why the rows are
+         * kept rather than reduced to one target per knob. */
+        {
+            const parsed = parseKnobMappings(config.knob_mappings);
+            editorState.chain.knobs = parsed.knobs;
+            editorState.chain.knobRows = parsed.knobRows;
+        }
         }
     } else {
         /* New chain */
@@ -1520,25 +1598,8 @@ function buildChainJson() {
     }
 
     /* Knob assignments */
-    if (chain.knobs) {
-        const knobs = [];
-        for (let i = 0; i < NUM_KNOBS; i++) {
-            const knob = chain.knobs[i];
-            if (knob && knob.slot && knob.param) {
-                const mapping = {
-                    cc: KNOB_CC_START + i,
-                    target: knob.slot,
-                    param: knob.param
-                };
-                /* Preset param needs integer type and dynamic max from synth */
-                if (knob.param === "preset") {
-                    mapping.type = "int";
-                    mapping.min = 0;
-                    mapping.max_param = "preset_count";
-                }
-                knobs.push(mapping);
-            }
-        }
+    {
+        const knobs = buildKnobMappings(chain);
         if (knobs.length > 0) {
             patch.chain.knob_mappings = knobs;
         }

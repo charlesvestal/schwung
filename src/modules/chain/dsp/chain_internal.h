@@ -99,17 +99,68 @@ typedef enum {
     KNOB_TYPE_ENUM = 2
 } knob_type_t;
 
-/* Knob mapping structure */
+/*
+ * How many parameters one knob may drive. The cap is set by the SCREEN, not by
+ * memory: four destinations is fourteen rows in the editor, which scrolls
+ * comfortably on 128x64; eight would be twenty-six and unusable.
+ */
+#define MAX_KNOB_DESTS 4
+
+/*
+ * One place a knob writes.
+ *
+ * `lo`/`hi` are FRACTIONS of this parameter's own range, not values in its
+ * units -- so a range survives re-pointing the destination at a parameter with
+ * completely different units, and `lo > hi` is an inverted destination (turn
+ * the knob up, this one goes down) with no extra machinery. The whole-range
+ * default is lo=0, hi=1.
+ */
 typedef struct {
-    int cc;              /* CC number (71-78 for knobs 1-8) */
     char target[16];     /* Component: "synth", "fx1", "fx2", "midi_fx" */
     char param[32];      /* Parameter key (lookup metadata in chain_params) */
-    float current_value; /* Current value only */
+    float lo;            /* Fraction of the parameter's range, 0..1 */
+    float hi;            /* lo > hi = inverted */
+    float current_value; /* This destination's value, in its OWN units */
+} knob_dest_t;
+
+/*
+ * Knob mapping structure.
+ *
+ * `dests[0]` is the knob's public face: every readback that answers "what is
+ * this knob assigned to" answers with it, which is what lets a knob with one
+ * destination behave, serialise and read back exactly as it always has.
+ *
+ * `position` is only consulted when there is MORE THAN ONE destination. That
+ * asymmetry is the design, not an optimisation: a single destination keeps the
+ * parameter's own step, acceleration and enum feel, and is merely clamped to
+ * its [lo,hi] window. Driving a lone stepped parameter from a 0..1 position
+ * instead makes it crawl -- an 8-option enum needs a 1/7 move of the position
+ * to advance one option, which is ~95 detents at the float step rather than 1.
+ */
+typedef struct {
+    int cc;              /* CC number (71-78 for knobs 1-8) */
+    knob_dest_t dests[MAX_KNOB_DESTS];
+    int dest_count;      /* 0 = unmapped; 1 = the ordinary case */
+    float position;      /* 0..1, authoritative iff dest_count > 1 */
     int last_cc_out;     /* Last 0-127 value emitted to the external port,
                           * -1 = nothing sent yet. Change detection happens at
                           * CC resolution, so a knob swept through a range that
                           * maps to one CC step emits once, not once per turn. */
 } knob_mapping_t;
+
+/* dests[0], or empty strings for an unmapped knob. The readbacks and the patch
+ * mirror answer with these, so a caller never has to remember the rule. */
+static inline const char *knob_lead_target(const knob_mapping_t *km) {
+    return (km && km->dest_count > 0) ? km->dests[0].target : "";
+}
+static inline const char *knob_lead_param(const knob_mapping_t *km) {
+    return (km && km->dest_count > 0) ? km->dests[0].param : "";
+}
+/* True when the knob's own position drives its destinations rather than each
+ * destination keeping its parameter's feel. THE line; see the struct comment. */
+static inline int knob_is_multi(const knob_mapping_t *km) {
+    return km && km->dest_count > 1;
+}
 
 /* Chain parameter info from module.json */
 #define MAX_CHAIN_PARAMS 256
@@ -569,6 +620,32 @@ CHAIN_INTERNAL chain_param_info_t* find_param_by_key(chain_instance_t *inst, con
 CHAIN_INTERNAL chain_param_info_t *find_param_info(chain_param_info_t *params, int count, const char *key);
 CHAIN_INTERNAL int format_param_value(chain_param_info_t *param, float value, char *buf, int buf_len);
 CHAIN_INTERNAL int is_smoothable_float(const char *val, float *out_value);
+/* One knob-turn law, shared by the three paths that turn a chain knob. */
+CHAIN_INTERNAL int knob_read_live_value(chain_instance_t *inst, const char *target,
+                                        const char *param, char *buf, int buf_len);
+CHAIN_INTERNAL int knob_mapping_index(chain_instance_t *inst, const knob_mapping_t *km);
+CHAIN_INTERNAL void knob_mapping_drop(chain_instance_t *inst, knob_mapping_t *km);
+CHAIN_INTERNAL knob_mapping_t *knob_mapping_for_cc(chain_instance_t *inst, int cc, int create);
+CHAIN_INTERNAL void knob_seed_position(chain_instance_t *inst, knob_mapping_t *km);
+CHAIN_INTERNAL int knob_dest_point(chain_instance_t *inst, knob_mapping_t *km, int di,
+                                   const char *target, const char *param);
+CHAIN_INTERNAL int knob_dest_remove(chain_instance_t *inst, knob_mapping_t *km, int di);
+CHAIN_INTERNAL void knob_dest_set_window(chain_instance_t *inst, knob_mapping_t *km, int di,
+                                         float lo, float hi);
+CHAIN_INTERNAL int knob_position_cc(chain_instance_t *inst, const knob_mapping_t *km);
+CHAIN_INTERNAL void knob_set_position(chain_instance_t *inst, int idx, float position);
+CHAIN_INTERNAL void knob_turn(chain_instance_t *inst, int idx, int ticks, float float_fallback_step);
+CHAIN_INTERNAL float knob_frac_to_value(float frac, const chain_param_info_t *pinfo);
+CHAIN_INTERNAL float knob_value_to_frac(float value, const chain_param_info_t *pinfo);
+CHAIN_INTERNAL float knob_dest_value_at(const knob_dest_t *d, float position,
+                                        const chain_param_info_t *pinfo);
+CHAIN_INTERNAL float knob_dest_clamp(const knob_dest_t *d, float value,
+                                     const chain_param_info_t *pinfo);
+CHAIN_INTERNAL float knob_base_step(const chain_param_info_t *pinfo, float float_fallback);
+CHAIN_INTERNAL void knob_dest_assign(knob_dest_t *d, const char *target, const char *param);
+CHAIN_INTERNAL int chain_knob_accel_for_gap(uint64_t elapsed_ms);
+CHAIN_INTERNAL int chain_knob_accel(uint64_t *last_ms);
+CHAIN_INTERNAL int chain_knob_accel_cap(int accel, int type);
 CHAIN_INTERNAL chain_param_info_t *knob_find_param(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL void knob_forward_value(chain_instance_t *inst, const char *target, const char *param, const char *val_str);
 
