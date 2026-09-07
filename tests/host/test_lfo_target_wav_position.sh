@@ -52,10 +52,16 @@ if (alias.type !== "wav_position")
 /* The type allowlist itself now lives in shared/lfo_target_groups.mjs, so the
    real one is injected rather than a copy -- this still measures the filter
    the picker actually applies, one indirection further out. */
+/* SENDS_LFO_TARGET_KEY and SEND_TARGET_PARAMS come across because the picker
+   short-circuits the slot send amounts the same way it short-circuits an
+   LFO-to-LFO target: they are not a component, so chain_params cannot answer
+   for them. Injected as empty/unmatched here -- this file measures the SYNTH
+   path, and a stub that matched would divert it. */
 const lfoTargetParamsFor = new Function(
   "chainTargetGetParam", "debugLog", "LFO_TARGET_PARAMS", "flatLfoTargetParams",
+  "SENDS_LFO_TARGET_KEY", "SEND_TARGET_PARAMS",
   m[0] + "; return lfoTargetParamsFor;"
-)(() => cpRaw, () => {}, [], flatLfoTargetParams);
+)(() => cpRaw, () => {}, [], flatLfoTargetParams, "buses", []);
 
 const offered = lfoTargetParamsFor("synth", "synth", "test").map((x) => x.key);
 

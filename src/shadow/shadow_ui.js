@@ -4045,9 +4045,17 @@ function busSendsGridIo() {
             busConfigStale = true;
             return ok;
         },
-        /* No send level is a modulation target — the chain host serves no
-         * bus LFO at all — so the generic oracle would spend up to three IPC
-         * round trips per tick to answer no. */
+        /*
+         * FALSE, and now only MOSTLY true. A per-BUS send level is still not a
+         * modulation target -- the chain host serves no bus LFO -- but the Main
+         * row this mixer gained can be driven by a slot LFO (target "buses",
+         * param "main_send<N>"). It is answered false anyway because the chain
+         * host publishes no `:modulated` for these keys, so the honest answer
+         * would cost up to three IPC round trips per tick to fetch, and the
+         * only cost of saying no is a missing dot rather than a wrong value:
+         * the cell still shows the BASE, which is what the user set and what is
+         * saved. If those keys ever publish `:modulated`, this is the line.
+         */
         isModulated: () => false,
     };
 }
@@ -23071,6 +23079,11 @@ function makeSlotLfoCtx(slot, lfoIdx) {
             /* Add the other LFO as a target (skip self) */
             const otherIdx = lfoIdx === 0 ? 1 : 0;
             comps.push({ key: "lfo" + (otherIdx + 1), label: "LFO " + (otherIdx + 1) });
+            /* The slot's own send amounts. Offered UNCONDITIONALLY: the two Main
+             * sends exist on every slot whether or not it has buses or anything
+             * loaded in Send A, so there is no state to test and no way for this
+             * row to answer a click by doing nothing. */
+            comps.push({ key: SENDS_LFO_TARGET_KEY, label: "Sends" });
             comps.push({ key: "__clear__", label: "[Clear Target]" });
             return comps;
         },
@@ -23095,6 +23108,28 @@ const LFO_TARGET_PARAMS = [
 ];
 
 /*
+ * THE SLOT'S SEND AMOUNTS, as an LFO target.
+ *
+ * A synthesised list, exactly as LFO_TARGET_PARAMS is: these are not a
+ * component's chain_params, so the generic read cannot answer for them --
+ * chainComponentParamKey refuses a key that is not a chain position, which is
+ * why an LFO could already target another LFO only by the same short-circuit.
+ *
+ * Keyed "main_send<N>" under the target "buses", which is the namespace the
+ * param already uses (`buses:main_send1`), so the stored routing reads as the
+ * key it drives rather than as a second name for it.
+ *
+ * The LABELS are Send A / Send B -- what the Sends screen calls them. The keys
+ * are what the DSP calls them. Those two have to be allowed to differ here or
+ * the picker starts teaching people the wire format.
+ */
+const SEND_TARGET_PARAMS = [
+    { key: "main_send1", label: "Send A" },
+    { key: "main_send2", label: "Send B" },
+];
+const SENDS_LFO_TARGET_KEY = "buses";
+
+/*
  * What a component offers an LFO to modulate — for EITHER chain.
  *
  * The slot and Master FX LFO editors held two copies of this that differed
@@ -23106,6 +23141,9 @@ const LFO_TARGET_PARAMS = [
 function lfoTargetParamsFor(target, compKey, logLabel) {
     /* LFO-to-LFO: return hardcoded LFO params */
     if (compKey === "lfo1" || compKey === "lfo2") return LFO_TARGET_PARAMS.slice();
+    /* The slot's send amounts, for the same reason: not a component, so
+     * chain_params cannot answer for them. */
+    if (compKey === SENDS_LFO_TARGET_KEY) return SEND_TARGET_PARAMS.slice();
     try {
         const json = chainTargetGetParam(target, compKey, "chain_params");
         if (json) return flatLfoTargetParams(JSON.parse(json));
@@ -23132,6 +23170,11 @@ function lfoTargetParamsFor(target, compKey, logLabel) {
 function lfoTargetGroupsFor(target, compKey, logLabel) {
     if (compKey === "lfo1" || compKey === "lfo2") {
         return { grouped: false, flat: LFO_TARGET_PARAMS.slice(), groups: [] };
+    }
+    if (compKey === SENDS_LFO_TARGET_KEY) {
+        /* Two rows never need grouping, and a group step over two entries is a
+         * screen you have to click through to reach a screen. */
+        return { grouped: false, flat: SEND_TARGET_PARAMS.slice(), groups: [] };
     }
 
     /* chain_params is read ONCE here and both halves come out of it — the flat

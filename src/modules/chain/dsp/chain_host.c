@@ -2211,6 +2211,21 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
     if (!inst) return;
     float sample_rate = (float)(inst->host ? inst->host->sample_rate : MOVE_SAMPLE_RATE);
 
+    /*
+     * ZEROED EVERY BLOCK, then re-added by whichever LFOs are driving a send.
+     *
+     * This is what makes stopping work at all: an LFO that is disabled, muted
+     * to depth 0, or pointed somewhere else takes the `continue` above and
+     * never runs its branch again, so an offset left in place would stick at
+     * whatever the last cycle happened to leave -- a send permanently detuned
+     * from the number on screen, and no gesture that puts it back.
+     *
+     * It is also why the branch below ADDS rather than assigns: two LFOs on one
+     * send sum here, and two LFOs on different sends do not clobber each other,
+     * which an in-branch "zero the others" loop got wrong.
+     */
+    for (int sd = 0; sd < BUS_MIX_SENDS; sd++) inst->main_send_mod[sd] = 0;
+
     for (int i = 0; i < LFO_COUNT; i++) {
         lfo_state_t *lfo = &inst->lfos[i];
         if (!lfo->enabled || !lfo->active) continue;
@@ -2244,6 +2259,30 @@ static void lfo_tick(chain_instance_t *inst, int frames) {
         if (lfo->target[0] == 'l' && lfo->target[1] == 'f' && lfo->target[2] == 'o' &&
             lfo->target[3] >= '1' && lfo->target[3] <= '2' && lfo->target[4] == '\0') {
             target_lfo = lfo->target[3] - '1';
+        }
+
+        /*
+         * THE SLOT'S SEND AMOUNTS, addressed as target "buses" / param
+         * "main_send<N>" -- the namespace the param key already uses, so the
+         * stored routing reads as the key it drives.
+         *
+         * An OFFSET, not a write. See main_send_mod: the level is read back by
+         * the autosave, so driving it directly would persist a modulated value
+         * as the user's setting.
+         */
+        int send_idx = -1;
+        if (strcmp(lfo->target, "buses") == 0 &&
+            strncmp(lfo->param, "main_send", 9) == 0) {
+            int n = atoi(lfo->param + 9);
+            if (n >= 1 && n <= BUS_MIX_SENDS) send_idx = n - 1;
+        }
+        if (send_idx >= 0) {
+            /* Half the full range, matching every other target: a depth of 1
+             * sweeps the whole 0..127 span peak to peak around the base. */
+            float half_range = (float)BUS_MIX_SEND_LEVEL_MAX / 2.0f;
+            int off = (int)lroundf(signal * lfo->depth * half_range);
+            inst->main_send_mod[send_idx] += off;
+            continue;
         }
 
         if (target_lfo >= 0 && target_lfo != i) {
@@ -2803,8 +2842,12 @@ void chain_drain_main_send(void *instance, int16_t *const *accum, int n_sends,
     int ns = (n_sends < BUS_MIX_SENDS) ? n_sends : BUS_MIX_SENDS;
     for (int sd = 0; sd < ns; sd++) {
         if (!accum[sd]) continue;
-        int lvl = (inst->main_send_level[sd] * slot_volume_0_127) /
-                  BUS_MIX_SEND_LEVEL_MAX;
+        /* base + the LFO's offset, clamped. main_send_level itself is never
+         * written by modulation -- see main_send_mod in chain_internal.h. */
+        int amt = inst->main_send_level[sd] + inst->main_send_mod[sd];
+        if (amt < 0) amt = 0;
+        if (amt > BUS_MIX_SEND_LEVEL_MAX) amt = BUS_MIX_SEND_LEVEL_MAX;
+        int lvl = (amt * slot_volume_0_127) / BUS_MIX_SEND_LEVEL_MAX;
         /* bus_mix_send returns immediately on a level <= 0, so a slot with no
          * send costs one multiply and a compare. */
         bus_mix_send(accum[sd], post_fx, frames * 2, lvl);

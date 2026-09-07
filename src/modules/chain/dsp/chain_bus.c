@@ -268,7 +268,14 @@ void chain_bus_clear_all(chain_instance_t *inst)
 {
     if (!inst) return;
     for (int b = 0; b < SLOT_BUSES; b++) bus_reset(inst, b);
-    for (int i = 0; i < BUS_MIX_SENDS; i++) inst->main_send_level[i] = 0;
+    for (int i = 0; i < BUS_MIX_SENDS; i++) {
+        inst->main_send_level[i] = 0;
+        /* The LFO's offset goes with it. lfo_tick re-zeroes this every block, so
+         * a stale value could only be heard on the blocks between a reset and
+         * the next tick -- but a reset that leaves audio flowing through a send
+         * the user just cleared is exactly the kind of gap nobody looks for. */
+        inst->main_send_mod[i] = 0;
+    }
     /* PER-VOICE SENDS ARE NOT CLEARED WITH THEM, because they are not ours to
      * clear: the module holds those levels and this verb empties the slot's
      * BUSES. Clearing the cache here would silence a send for one sweep and

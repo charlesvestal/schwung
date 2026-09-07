@@ -666,6 +666,21 @@ typedef struct chain_instance {
      * it is this instance's own out buffer and its existing fx[] chain. */
     slot_bus_t buses[SLOT_BUSES];
     int main_send_level[BUS_MIX_SENDS];  /* Main sends like any bus */
+    /*
+     * THE LFO's CONTRIBUTION, kept OUT of main_send_level on purpose.
+     *
+     * The LFO-to-LFO path writes its target field directly and snapshots a base
+     * to put back. Doing that here would be a data-loss bug rather than a style
+     * difference: `buses:main_send<N>` is READ BACK by saveSendLevels(), which
+     * writes what it reads to send_levels.json, so an autosave landing while
+     * the LFO was at the top of its cycle would persist the modulated number as
+     * the user's level -- permanently, and with the LFO still running over it.
+     *
+     * As an offset applied at the drain, the base is never touched: reads and
+     * autosave see what the user set, the audio hears base+mod, and stopping
+     * the LFO needs no restore because zeroing this IS the restore.
+     */
+    int main_send_mod[BUS_MIX_SENDS];
 
     /* Which buses v2_render_block actually rendered into on the LAST frame.
      * Written by the render, read by chain_drain_sends, both on the SPI
