@@ -9,8 +9,7 @@ CI. Run it by hand:
     ssh -N -L 47777:127.0.0.1:47777 ableton@move.local &
     python3 tools/pytest-schwung/tests/device_mod_routes.py
 
-It expects 9w9 in slot 0 (it loads it) and leaves the slot at its base values.
-
+It loads 9w9 into slot 0 itself and leaves the slot at its base values.
 
 Every number below is one the DEVICE produced: injected MIDI in, chain-host
 param reads out. Nothing is inferred from source.
@@ -27,6 +26,7 @@ import time
 sys.path.insert(0, "tools/pytest-schwung/src")
 from schwung_bus.client import SchwungBus  # noqa: E402
 
+SYNTH = "9w9"
 KEY = "bd_c_tune"      # 9w9, int 0..127
 LO, HI = 0.0, 127.0
 BASE = 64
@@ -104,7 +104,22 @@ def main():
     eff = lambda: num(g(f"synth:{KEY}:effective"))
     base = lambda: num(g(f"synth:{KEY}"))
 
-    print("=== 1. VELOCITY drives the target, and the base does not move ===")
+    # ---- SELF-CONTAINED: load the synth rather than assuming one ----------
+    #
+    # This did assume it, and passed 18/18 -- because an earlier ad-hoc script
+    # in the same session had left 9w9 in the slot. The next fresh deploy reset
+    # the slot and every read came back None. A device test that depends on
+    # state it did not create is a test that passes for the wrong reason once
+    # and then looks like a product failure.
+    print("=== 0. the slot holds the synth this test drives ===")
+    if g("synth_module") != SYNTH:
+        s("synth:module", SYNTH)
+        time.sleep(2.5)
+    check(g("synth_module") == SYNTH, f"slot 0 synth is {SYNTH} (got {g('synth_module')!r})")
+    check(g(f"synth:{KEY}") not in (None, "", "<err>"),
+          f"synth:{KEY} is readable -- the target this test drives exists")
+
+    print("\n=== 1. VELOCITY drives the target, and the base does not move ===")
     arm("velocity")
     note(127); hard, hb = eff(), base(); note_off()
     s("synth:" + KEY, BASE); time.sleep(0.2)
@@ -114,7 +129,9 @@ def main():
     check(hard is not None and soft is not None and hard > soft,
           f"a hard note drives it higher than a soft one ({hard} > {soft})")
     check(hard is not None and soft is not None and (hard - soft) > 80,
-          f"the sweep spans most of the 0..127 range ({hard - soft:.0f})")
+          "the sweep spans most of the 0..127 range "
+          f"({hard - soft:.0f})" if (hard is not None and soft is not None)
+          else "the sweep could not be measured -- a read came back empty")
     check(hb == BASE and sb == BASE,
           f"the BASE never moves -- #276 ({hb}, {sb}, set {BASE})")
     check(g(f"synth:{KEY}:modulated") == "1", ":modulated reports 1")
@@ -159,7 +176,7 @@ def main():
     # SEEDS straight onto the target, which is correct and looks identical to a
     # slew that does not work. Prime with a soft note, then jump.
     #
-    for slew, label in (("0", "jump"), ("0.99", "glide")):
+    for slew in ("0", "0.99"):
         arm("velocity", slew=slew)
         bus.inject_midi(bytes([0x29, 0x90, 60, 1]))     # prime LOW
         bus.wait_frame(60); time.sleep(0.6)
