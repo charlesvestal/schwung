@@ -54,13 +54,28 @@ typedef struct {
     int held_count;       /* Number of currently held notes (for retrigger) */
 } lfo_state_t;
 
-/* Process a MIDI message for retrigger: reset phase on first note-on of a phrase */
-static inline void lfo_process_midi(lfo_state_t *lfos, const uint8_t *msg, int len) {
-    if (len < 3) return;
+/* Process a MIDI message for retrigger: reset phase on first note-on of a phrase.
+ *
+ * COUNT IS A PARAMETER, and must never go back to being LFO_COUNT.
+ *
+ * This header serves two collections of different sizes: the slot chain's mod
+ * routes (MOD_ROUTE_COUNT) and Master FX's LFOs (MASTER_FX_LFO_COUNT). The loop
+ * used to be bounded by the macro while the array came in as a pointer, which
+ * was harmless only for as long as the two happened to be equal -- they both
+ * started at 2. The moment they diverge, a call with the shorter array writes
+ * past its end, on the SPI callback, and nothing reports it.
+ *
+ * tests/host/test_lfo_process_midi_count.c discriminates by passing an array
+ * SHORTER than LFO_COUNT with a guard element after it. It deliberately does not
+ * try -DLFO_COUNT: the define below is unconditional, so a command-line value is
+ * redefined by this header and such a test passes against either version. */
+static inline void lfo_process_midi(lfo_state_t *lfos, int count,
+                                    const uint8_t *msg, int len) {
+    if (!lfos || count <= 0 || len < 3) return;
     uint8_t status = msg[0] & 0xF0;
     if (status == 0x90 && msg[2] > 0) {
         /* Note on */
-        for (int i = 0; i < LFO_COUNT; i++) {
+        for (int i = 0; i < count; i++) {
             if (lfos[i].retrigger && lfos[i].held_count == 0) {
                 lfos[i].phase = 0.0;
             }
@@ -68,7 +83,7 @@ static inline void lfo_process_midi(lfo_state_t *lfos, const uint8_t *msg, int l
         }
     } else if (status == 0x80 || (status == 0x90 && msg[2] == 0)) {
         /* Note off */
-        for (int i = 0; i < LFO_COUNT; i++) {
+        for (int i = 0; i < count; i++) {
             if (lfos[i].held_count > 0) lfos[i].held_count--;
         }
     }
