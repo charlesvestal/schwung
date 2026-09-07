@@ -294,6 +294,24 @@ static void chain_mod_clear_target_entry(chain_instance_t *inst, mod_target_stat
 
     entry->enabled = 0;
     if (restore_base) {
+        /*
+         * DROP THE CONTRIBUTIONS FIRST. Assigning effective_value here does
+         * nothing on its own: chain_mod_apply_effective_value starts by calling
+         * chain_mod_recompute_effective, which rebuilds it from
+         * base + sum(active contributions). With the sources still active that
+         * sum is the modulation, so the "restore" wrote the MODULATED value
+         * into the plugin and the memset below then destroyed the evidence —
+         * the target stuck off-base with nothing left to say why.
+         *
+         * The single-source path never hit it because
+         * chain_mod_remove_source_contribution zeroes the source before this
+         * runs. The CLEAR-ALL path (`chain_mod_clear_source(ctx, NULL)`) does
+         * not, and that path is reachable from any sub-plugin: the chain hands
+         * it out as host->mod_clear_source. Found by
+         * tests/host/test_mod_route_e2e.c, which is the first thing to drive
+         * this sequence rather than read it.
+         */
+        memset(entry->sources, 0, sizeof(entry->sources));
         entry->effective_value = entry->base_value;
         chain_mod_apply_effective_value(inst, entry, 1);
     }
