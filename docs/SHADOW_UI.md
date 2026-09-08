@@ -266,6 +266,57 @@ there is no loading state to maintain. `tests/host/test_chain_config_read_failur
 lifts the real functions and drives that sequence, reads failing on frame 1 and
 landing on frame 2.
 
+### A module that takes the PADS must be released by an invariant, not by an exit list
+
+A component's `ui_chain.js` can take the pads with `host_pad_block(1)` — 9W9
+does, so it can run Shift+Pad lane select and forward the notes to Move itself
+— and it lowers them from its **own `tick()`**, which the draw switch calls
+from exactly one place: `case VIEWS.COMPONENT_EDIT`. Anything that stops that
+tick strands the flag, and the shim enforces `pad_block` *inside* the
+`shadow_display_mode` branch, so what the user gets is **pads dead in the
+Schwung UI and fine the moment they are back on a Move track** — with knobs,
+jog and Back all still working, which is why it reads as anything but an input
+filter.
+
+Reported from the field 2026-09-08 as *"it happens from time to time, I don't
+know how to reproduce it"*. The device's log carried **exactly one `pad_block
+ON` and no `OFF`, ever**: the byte had been stuck for thirteen hours across two
+shim inits, because `/dev/shm` outlives `restart-move.sh` and nothing cleared
+it at boot. That is also why it looked unrelated to anything done recently —
+the visit that raised it was half a day earlier.
+
+**The exits cannot be enumerated, and two attempts proved it on hardware.**
+Guarding `unloadModuleUi()` fixed the long-press dismiss and left a jump to
+Global Settings dead, because the module stays LOADED across a view change and
+no unload happens. Guarding `setView()` too would still have missed co-run,
+which stops the tick with **no view change at all** — and a Track tap alone
+already means dismiss *or* switch-slot depending on Keep Schwung. So the JS
+states the invariant once, every frame, in `reconcilePadBlock()` beside
+`reconcileCcClaim()`: the pads are blocked only while somebody is actually
+running who can unblock them. There are exactly two such owners — a component
+UI whose `tick()` really is being called, and the on-screen keyboard, which
+uses pads as keys and can be open over other views.
+
+Three properties make that restate possible rather than merely tidy:
+
+- **`js_host_pad_block` is IDEMPOTENT, and compares against the SHM** rather
+  than a remembered value. An unchanged restate costs a byte compare and logs
+  nothing; the old unconditional `shadow_ui_log_line` would have flooded
+  `debug.log` at 60 Hz and made a per-frame reconcile unshippable.
+- **Comparing against the SHM is also what lets the caller restate instead of
+  memoise.** The shim drops this flag unilaterally — on the display-mode edge
+  and at init — without telling JS, so a mirror latches. Same rule as
+  `pad_observe`; 9W9 memoises in `padBlocked` and is exposed to exactly that.
+- **The shim keeps the two drops JS cannot make**: the `display_mode` 1→0 edge
+  (beside `pad_observe`, covering a `shadow_ui` that exited or crashed) and the
+  init clear (covering a stale segment across a Move restart, without which an
+  already-stuck device stays stuck through every restart the user tries).
+
+Nothing is owed on either drop, unlike the claim latches in the same block:
+what was withheld is a pad **note**, so the worst a mid-hold drop hands Move is
+an unmatched note-off. Copy/Delete is the case that needs a latch, and keeps
+one. `tests/host/test_pad_block_lifecycle.sh`.
+
 ### A component editor WAITS; it does not decide from one read
 
 Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and

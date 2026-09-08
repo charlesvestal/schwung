@@ -997,6 +997,20 @@ component load gate, and the input-dispatch order. Read it before editing
 - **Whatever is drawn LAST must be fed FIRST.** The draw path is a switch with the
   overlays painted after it; the input path is a run of early-outs *before* it. The
   two orders are the reverse of each other, and nothing at either site says so.
+- **A module that takes the PADS is released by an INVARIANT, never by an exit
+  list.** `pad_block` is raised by a component's own `ui_chain.js` (9W9) and
+  lowered by that module's `tick()`, which runs from ONE place — `case
+  VIEWS.COMPONENT_EDIT` in the draw switch. Since the shim enforces it inside
+  the `shadow_display_mode` branch, a stranded flag is **pads dead in the
+  Schwung UI and fine on a Move track**, with knobs, jog and Back all working.
+  One field device had it stuck for 13 hours across two shim inits (`/dev/shm`
+  outlives `restart-move.sh`). Enumerating exits failed TWICE on hardware:
+  `unloadModuleUi` misses a jump that keeps the module loaded, `setView` misses
+  co-run, and a Track tap means dismiss *or* switch-slot depending on Keep
+  Schwung. `reconcilePadBlock()` restates it every frame beside
+  `reconcileCcClaim()`; `js_host_pad_block` is idempotent **against the SHM**,
+  which is what makes a per-frame restate free AND is why the caller must never
+  memoise — the shim drops the flag unilaterally, so a mirror latches.
 - **A timed-out read empties NOTHING, and latches nothing.** A `null` recorded as
   "this position is empty" made a filled chain position open the module picker —
   and the *correct* read milliseconds later is what made it permanent, by matching.
