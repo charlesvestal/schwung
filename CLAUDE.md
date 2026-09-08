@@ -677,6 +677,24 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   which is how a defect gets defended rather than merely missed. Authors: a
   redeployed `canvas.js` is not re-read until you leave the component and
   return.
+- **The widget latch is set BEFORE the load can fail, so it could not be the
+  whole answer.** `ensureComponentWidgets` writes `widgetModuleLoaded = id` and
+  only then resolves the module dir, reads `canvas.js` and registers — so a
+  module whose script failed once was byte-identical in state to one that had
+  succeeded: latched, empty registry, `id === widgetModuleLoaded` refusing every
+  later attempt, the tick stamping it RESOLVED, and the cells falling through to
+  ordinary dials in silence. Visiting a DIFFERENT module was the only escape,
+  which is why the report is *"the waveform sometimes appears, and later they are
+  plain dials"* and why switching away and back fixes it. It carries
+  `widgetLoadOk` now, and **a module declaring no custom kind is SETTLED, not
+  failed** — forgetting that half turns the fix into a permanent retry loop on
+  most of the fleet. A failure is scoped to the VISIT (a second attempt on the
+  same page reads the same bytes; not recording it re-parses a broken script
+  ~4x/sec), and the boundary must reset the THROTTLE too or the retry resumes
+  mid-count and a short visit ends before it lands. A script that loaded and
+  registered nothing usable is settled — only failing to reach an overlay is
+  retried — and the **one-strike disable survives**, structurally: a throw can
+  only follow a registration, which settles.
 - **A card is handed the PAGE's values, not only its own.** The payload is
   `{w, h, name, value, raw, values, nowMs}`. A card whose meaning depends on a
   sibling — the vowel of *which* character — otherwise had no route to it at

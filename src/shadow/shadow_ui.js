@@ -16324,8 +16324,10 @@ function exitHierarchyEditor() {
      * (rather than in the canvas teardown, which runs on every canvas open and
      * close) is what makes the next component ask the question afresh. */
     widgetModuleLoaded = "";
+    widgetLoadOk = false;
     widgetAttemptedSig = "";
     widgetResolvedSig = "";
+    widgetFailedVisitSig = "";
     hierEditorAllParams = [];
     hierEditorAllKnobs = [];
     hierEditorChildIndex = -1;
@@ -18531,6 +18533,29 @@ function getHierarchyActiveModuleId() {
 let widgetModuleLoaded = "";
 
 /*
+ * AND WHETHER THAT ATTEMPT ACTUALLY FINISHED. THE LATCH ALONE CANNOT SAY.
+ *
+ * `widgetModuleLoaded = id` is set BEFORE the three things that can still
+ * fail: resolving the module's directory, reading its canvas.js, and getting a
+ * usable widget out of it. It has to be -- it is what clearWidgets() is paired
+ * with, and what stops the next frame re-entering. But it meant a module whose
+ * script failed to load once was recorded exactly like one that succeeded:
+ * latched, with an empty registry. Its cells then fell through to the detector
+ * and drew ordinary dials, `id === widgetModuleLoaded` refused every later
+ * attempt, and the grid's own throttle stamped the signature as resolved. The
+ * only escape was visiting ANOTHER module, which relatches and so changes the
+ * signature -- which is why the device report reads "the waveform sometimes
+ * appears, and later the same knobs are plain dials", and why switching away
+ * and back is what fixes it.
+ *
+ * So the latch is a TWO-part answer now: which module, and whether its widgets
+ * are settled. `widgetLoadOk` is true when the module registered a widget AND
+ * when it declares none at all -- both are finished states with nothing left to
+ * retry. False means an attempt is still owed.
+ */
+let widgetLoadOk = false;
+
+/*
  * REGISTER A MODULE'S IN-GRID WIDGETS WHEN ITS CONTRACT IS KNOWN.
  *
  * This existed at the overlay load inside openCanvasPreview, which was wrong in
@@ -18581,6 +18606,69 @@ let widgetRetryTick = 0;
 let widgetAttemptedSig = "";
 let widgetResolvedSig = "";
 
+/*
+ * A FAILED LOAD IS ITS OWN ANSWER, AND IT IS SCOPED TO THE VISIT.
+ *
+ * The two obvious policies are both wrong. Recording a failure as "resolved"
+ * is the bug above -- one bad read and the module draws dials until another
+ * module is visited. NOT recording it leaves the signature unresolved, so the
+ * throttle retries forever: a module with a genuinely broken canvas.js would
+ * re-read and re-parse it ~4x/sec for as long as its page is on screen, which
+ * is the one cost the throttle exists to prevent.
+ *
+ * A visit is the right unit. Within one visit to the grid a second attempt
+ * cannot learn anything the first did not -- the module directory and its
+ * canvas.js are the same bytes -- so we stop. Leaving the grid and coming back
+ * is a new visit and asks again, which is also exactly the gesture available
+ * to a user who has just installed or repaired the module. `endComponentWidgetVisit`
+ * below is the boundary; it is driven off the view leaving PARAM_PAGES rather
+ * than off an entry point, because the grid has several entry points and only
+ * one way of not being on screen.
+ *
+ * This is deliberately NOT keyed on the failure REASON. A module that loaded
+ * its script and registered nothing usable (a typo in the kind, no drawCell) is
+ * marked settled, not failed -- retrying re-reads the same declaration and gets
+ * the same answer, and the skip is already logged for its author. Only an
+ * unresolved path or a script that would not load is retried.
+ */
+let widgetFailedVisitSig = "";
+
+/*
+ * The one-strike disable in widget_registry.mjs must survive a retry.
+ *
+ * A widget that THREW while drawing is disabled for the session and the page
+ * falls back to a correct built-in. That set is cleared by clearWidgets(), so
+ * a retry that re-registered the module would quietly re-arm a widget already
+ * known to crash. It cannot happen, and the reason is structural rather than
+ * guarded: a throw can only occur after a successful registration, which sets
+ * widgetLoadOk, and a settled module is never re-attempted.
+ */
+
+function endComponentWidgetVisit() {
+    /* Cheap enough to call every frame the grid is not up, and this makes it
+     * free after the first one. */
+    if (!widgetFailedVisitSig && !widgetAttemptedSig) return;
+    widgetFailedVisitSig = "";
+    /*
+     * AND THE THROTTLE IS RESET WITH IT, OR THE RETRY ARRIVES A QUARTER SECOND
+     * LATE -- OR NOT AT ALL.
+     *
+     * Clearing only the failure record leaves widgetAttemptedSig describing the
+     * component we are about to return to, so the next frame takes the throttle
+     * branch instead of the attempt-at-once one and waits out WIDGET_RETRY_TICKS
+     * -- from wherever widgetRetryTick happened to be left, so a short visit can
+     * end before the retry ever lands and the user sees dials for the whole of
+     * it. A new visit is a new situation in exactly the sense that branch
+     * means, so it is spelled the same way: no remembered attempt, no
+     * accumulated tick.
+     *
+     * This cannot make a SETTLED module re-attempt -- widgetResolvedSig is
+     * deliberately not cleared here, and its early-out is tested first.
+     */
+    widgetAttemptedSig = "";
+    widgetRetryTick = 0;
+}
+
 function tickComponentWidgets() {
     /*
      * "RESOLVED" IS A QUESTION ABOUT THE COMPONENT ON SCREEN.
@@ -18616,6 +18704,11 @@ function tickComponentWidgets() {
     const key = `${paramPagesSlot()}:${paramPagesComponent()}`;
     const sig = `${key}\u0000${widgetModuleLoaded}`;
     if (widgetModuleLoaded && widgetResolvedSig === sig) return;
+    /* Already tried and failed for this component, this visit. Held apart from
+     * widgetResolvedSig so that leaving the grid clears one and not the other:
+     * a success is a fact about the module and outlives the visit, a failure is
+     * a fact about one attempt and does not. */
+    if (widgetFailedVisitSig === sig) return;
 
     /*
      * FIRST ATTEMPT IS IMMEDIATE; ONLY RETRIES ARE THROTTLED.
@@ -18687,7 +18780,17 @@ function tickComponentWidgets() {
      * unsettled chain_params -- the tri-state rule -- and recording regardless
      * would re-create the bug one level down, closing the guard on a question
      * still open. */
-    if (id && widgetModuleLoaded === id) widgetResolvedSig = widgetAttemptedSig;
+    if (id && widgetModuleLoaded === id) {
+        if (widgetLoadOk) widgetResolvedSig = widgetAttemptedSig;
+        /* Latched but not settled: the load failed. Stop for this visit only,
+         * and stamp the world the attempt LEAVES -- widgetAttemptedSig, just
+         * computed -- for the same reason as the success above. The first
+         * attempt for a component usually CHANGES the latch (that is what
+         * latching is), so `sig`, read at the top of this frame, describes a
+         * state that no longer exists: the next frame would not match it and
+         * would pay a second load before settling. */
+        else widgetFailedVisitSig = widgetAttemptedSig;
+    }
 }
 
 function ensureComponentWidgets(moduleId, chainParams) {
@@ -18699,7 +18802,7 @@ function ensureComponentWidgets(moduleId, chainParams) {
      * function ACTUALLY sees, at the top, before any guard can hide it.
      * Bounded: the retry that drives this runs at most ~4x/sec and stops the
      * moment the id resolves. */
-    if (!widgetModuleLoaded) {
+    if (!widgetModuleLoaded || !widgetLoadOk) {
         const n = Array.isArray(chainParams) ? chainParams.length : -1;
         const kinds = Array.isArray(chainParams)
             ? chainParams.map((p) => (p && p.viz && p.viz.kind) || "-").join(",")
@@ -18724,7 +18827,11 @@ function ensureComponentWidgets(moduleId, chainParams) {
      * again.
      */
     if (!id) return;
-    if (id === widgetModuleLoaded) return;
+    /* Settled, so nothing to redo. NOT a bare id comparison: the latch is set
+     * before the load can fail, so an id match on its own also matched a module
+     * whose canvas.js never loaded -- and refused the retry that would have
+     * fixed it. See widgetLoadOk. */
+    if (id === widgetModuleLoaded && widgetLoadOk) return;
 
     /*
      * AND chain_params IS A READ TOO. Same rule, one layer down.
@@ -18748,18 +18855,31 @@ function ensureComponentWidgets(moduleId, chainParams) {
      * same custom: name would silently inherit the wrong art. */
     clearWidgets();
     widgetModuleLoaded = id;
+    /* Everything from here can fail, so the answer is "not yet" until one of
+     * the two finished states below is reached. */
+    widgetLoadOk = false;
 
     const wantsWidget = chainParams.some((p) => {
         const k = p && p.viz && p.viz.kind;
         return typeof k === "string" && k.startsWith("custom:");
     });
     /* Nothing is loaded for a module that declares no custom kind -- the script
-     * is only read when the contract says it is needed. */
-    if (!wantsWidget) return;
+     * is only read when the contract says it is needed. A finished state: there
+     * is nothing a later attempt could discover. */
+    if (!wantsWidget) { widgetLoadOk = true; return; }
 
     debugLog(`widgets: ${id} declares a custom viz kind; loading canvas.js`);
     const dir = getModuleBasePath(id);
-    if (!dir) return;
+    /* RETRYABLE, and it used to return in silence. getModuleBasePath stats
+     * module.json across seven category directories, so "" means the module is
+     * not where we looked -- mid-install, a category the installer has not
+     * finished moving, or a genuinely absent module. Indistinguishable, from
+     * here, from a module with no widget, which is exactly why it has to say so
+     * in the log: the device symptom is a plain dial either way. */
+    if (!dir) {
+        debugLog(`widgets: ${id} declares a custom viz kind but its module dir was not found`);
+        return;
+    }
 
     const loaded = loadCanvasOverlayScript(`${dir}/canvas.js`, "");
     const ov = loaded && loaded.overlay;
@@ -18768,6 +18888,11 @@ function ensureComponentWidgets(moduleId, chainParams) {
      * which meant a second declared kind was never registered and its cell
      * silently drew a built-in dial instead. */
     const { registered, skipped } = registerOverlayWidgets(ov);
+    /* The script LOADED and gave us an overlay. Whatever came of it -- widgets
+     * registered, or every declared kind skipped for a reason named below -- is
+     * this module's final answer, because a second read of the same file cannot
+     * produce a different one. Only the failure to get here is retried. */
+    if (ov) widgetLoadOk = true;
     if (registered.length) {
         debugLog(`widgets: ${id} registered ${registered.join(", ")}`);
     }
@@ -24451,6 +24576,10 @@ globalThis.tick = function() {
      * view is ticked at all, and loosening a real invariant to make room for a
      * new call is the wrong trade. */
     if (view === VIEWS.PARAM_PAGES) tickComponentWidgets();
+    /* Off the grid IS the end of the visit -- see endComponentWidgetVisit. Its
+     * own statement for the same reason as the line above: that one is pinned
+     * verbatim by test_param_pages_wiring.sh. */
+    else endComponentWidgetVisit();
     if (view === VIEWS.PARAM_PAGES) tickParamPages();
     /* The debounced `*` refresh (see tickUserPresetStale's own note) — driven
      * from the tick, never from a draw function, and cheap to poll when
