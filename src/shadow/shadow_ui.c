@@ -2794,7 +2794,16 @@ static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
     if (argc < 1 || !shadow_control) return JS_FALSE;
     int val = 0;
     JS_ToInt32(ctx, &val, argv[0]);
-    shadow_control->pad_block = val ? 1 : 0;
+    val = val ? 1 : 0;
+    /* IDEMPOTENT, and compared against the SHM rather than against a
+     * remembered value. That is what lets JS RESTATE this every frame
+     * instead of edging it: an unchanged restate costs a byte compare and
+     * logs nothing, so the caller never has to memoise — and memoising is
+     * the trap, because the shim drops this flag unilaterally (display-mode
+     * edge, shim init) without telling anyone. A mirror latches; the SHM
+     * cannot. Same rule as pad_observe. */
+    if (shadow_control->pad_block == (uint8_t)val) return JS_TRUE;
+    shadow_control->pad_block = (uint8_t)val;
     shadow_ui_log_line(val ? "shadow_ui: pad_block ON" : "shadow_ui: pad_block OFF");
     return JS_TRUE;
 }

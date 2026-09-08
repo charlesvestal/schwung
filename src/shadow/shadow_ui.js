@@ -6664,16 +6664,6 @@ function loadModuleUi(slot, componentKey, moduleId) {
 
 /* Unload the current module UI */
 function unloadModuleUi() {
-    /* Drop the pad block the outgoing module may have raised. A module owns
-     * the pads through host_pad_block() and lowers it from its own tick(),
-     * which is called from ONE place — `case VIEWS.COMPONENT_EDIT` in the
-     * draw switch — so the moment we leave that view the only thing that
-     * could lower it has stopped running. The shim drops it on the
-     * display-mode edge, which covers a dismiss; this covers the exits that
-     * keep the shadow UI up (jump to another slot, Tools, Global Settings).
-     * Unconditional: a module that is gone has no business blocking pads,
-     * and the next one restates the flag in its init(). */
-    if (typeof host_pad_block === "function") host_pad_block(0);
     loadedModuleUi = null;
     loadedModuleSlot = -1;
     loadedModuleComponent = "";
@@ -18990,6 +18980,43 @@ function moduleClaimedCcs(moduleId) {
     return v;
 }
 
+/* pad_block is RESTATED every tick, never edged.
+ *
+ * A component's ui_chain.js takes the pads with host_pad_block(1) — 9W9 does,
+ * so it can do Shift+Pad lane select and forward the notes to Move itself —
+ * and lowers them from its OWN tick(), which the draw switch calls from one
+ * place: `case VIEWS.COMPONENT_EDIT`. Anything that stops that tick strands
+ * the flag, and because the shim enforces pad_block inside the
+ * shadow_display_mode branch, the user gets pads that are dead in the Schwung
+ * UI and fine on a Move track — with knobs, jog and Back still working.
+ *
+ * The first cut of this fix enumerated the exits (unload, then setView) and
+ * shipped half-dead: the module stays LOADED across a jump to Global Settings
+ * or Master FX, so no unload happens, and hardware found the gap the same
+ * afternoon. The exits cannot be enumerated — a Track tap alone means dismiss
+ * or switch-slot depending on Keep Schwung, and co-run stops the tick with no
+ * view change at all. So state the INVARIANT instead: the pads are blocked
+ * only while somebody is actually running who can unblock them.
+ *
+ * Two owners, and there are only two writers of the flag in the tree:
+ *   - a component UI whose tick() is really being called this frame (the
+ *     condition below mirrors the draw switch's gate, including the co-run
+ *     refusal that never invokes loadedModuleUi.tick())
+ *   - the on-screen keyboard, which uses pads as keys and can be open over
+ *     views that are not COMPONENT_EDIT (renaming a preset, naming a set)
+ *
+ * Costs nothing when unchanged: host_pad_block compares against the SHM and
+ * returns without writing or logging, which is also what lets this restate
+ * rather than memoise — the shim drops the flag unilaterally on the
+ * display-mode edge and at init, and a JS mirror of that would latch. */
+function reconcilePadBlock() {
+    if (isTextEntryActive()) return;
+    const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
+                           loadedModuleUi && loadedModuleUi.tick &&
+                           !coRunUiActive();
+    if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
+}
+
 function reconcileCcClaim() {
     if (typeof host_claim_ccs !== "function") return;
     const onScreen = !!CC_CLAIM_VIEWS[view] ||
@@ -24490,6 +24517,7 @@ globalThis.tick = function() {
      * the tick as the SINGLE re-check point for that entry condition -- see the
      * table above reconcileCcClaim(). */
     reconcileCcClaim();
+    reconcilePadBlock();
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
