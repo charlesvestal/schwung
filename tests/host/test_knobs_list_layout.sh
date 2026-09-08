@@ -199,7 +199,7 @@ if (checked < 500) fail(`only ${checked} params compared across ${modulesSeen} m
      * declare this week -- a fixture-derived case would silently stop testing
      * anything the day the last short_options in the fleet was removed. */
     const meta = {
-        key: "usbc_out_persist", type: "enum",
+        key: "long_option_fixture", type: "enum",
         options: ["Off", "On (Main Out)"],
         short_options: ["OFF", "ON"],
     };

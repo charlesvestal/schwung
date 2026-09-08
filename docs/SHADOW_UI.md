@@ -50,11 +50,12 @@ and the cache-var writes that cannot leave `shadow_ui.js` are `globalGridIoFor()
 there. Entry is `enterGlobalSettingsGrid()`, modelled on
 `enterMasterFxSettingsGrid`.
 
-**Seven sections are seven PAGES**, jogged through on one axis with the section
-picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, Services,
-Updates. Six are knob pages; Updates is a menu page. **One section, one page** is
-load-bearing: a section that SPLIT would put a jog step in the middle of a
-scrolling list, and sections-as-levels would be gone without a symptom.
+**Six sections are six PAGES**, jogged through on one axis with the section
+picker on click — Display, Audio, Screen Reader, Set Pages, Shortcuts, System.
+All six are knob pages; Connect and Help are write-only trigger rows on System.
+**One section, one page** is load-bearing: a section that SPLIT would put a jog
+step in the middle of a scrolling list, and sections-as-levels would be gone
+without a symptom.
 
 **But there is no limit on how LONG a section may be, and believing otherwise
 cost a real change.** Eight is the number of physical KNOBS — a grid page has
@@ -66,7 +67,7 @@ anyway — the grid's rule leaking into a screen the grid never draws — so a n
 param silently became a second page named `<Section> - 2` holding one row. On
 the strength of that, Audition was moved out of Audio into Display to make room
 for Save Stems. It is back in Audio, and `enterGlobalSettingsGrid` passes
-**`paginate: false`** beside its layout pin. Audio holds nine.
+**`paginate: false`** beside its layout pin. Audio currently holds eight.
 
 **`paginate` is a property of the CONTRACT and must not be inferred from the
 layout.** `paramPagesLayout()` returns `LAYOUT_LIST` whenever the screen reader
@@ -79,9 +80,7 @@ change) plan it the same way the first plan did. Default `true`: every other
 caller keeps the grid's chunking.
 
 The contract test plans with `paginate: false`, the way the screen does, and
-pins the per-section counts (7/9/6/1/4/1) plus "Audio is longer than a grid page
-and is still one page" — which is the assertion that fails if the hand-off is
-ever dropped.
+pins the per-section counts (7/8/6/1/4/3) plus the exact page list.
 
 Three consequences worth knowing:
 
@@ -648,8 +647,8 @@ before this existed, so any other default silently kills every sidechain in
 the field — and a user whose ducker stopped after an update cannot connect
 that to a setting they never saw. Note that the channel setting **cannot**
 substitute for the pad guard: pads and steps share one cable-0 surface, so no
-channel value separates them. Persisted like `usbc_out_persist` and parsed by
-the shim at init (`shadow_resample.c`), so the filter is in force before the
+channel value separates them. Parsed by the shim at init
+(`shadow_resample.c`), so the filter is in force before the
 first SPI frame. An out-of-range stored value fails **open** (All) rather than
 muting every FX with no visible cause.
 

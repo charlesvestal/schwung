@@ -5128,23 +5128,18 @@ static int shim_handle_param_special(uint8_t req_type, uint32_t req_id) {
             }
             return 1;
         }
-        /* master_fx:usbc_out_persist — whether to restore Move's USB-C
-         * audio-out source after boot. */
+        /* Retained as a compatibility no-op for saved 1.2/1.3 UI code. USB-C
+         * output persistence is disabled: XMOS can leave its source and
+         * monitoring fields inconsistent, muting the speaker or exposing the
+         * microphone. SET cannot re-enable it; GET always reports Off. */
         if (strcmp(fx_key, "usbc_out_persist") == 0) {
             if (req_type == 1) {
-                int val = atoi(shadow_param->value);
-                usbc_out_persist_enabled = val ? 1 : 0;
-                {
-                    char msg[64];
-                    snprintf(msg, sizeof(msg), "USB-C out persist: %s",
-                             usbc_out_persist_enabled ? "ON" : "OFF");
-                    shadow_log(msg);
-                }
+                usbc_out_persist_enabled = 0;
                 shadow_param->error = 0;
                 shadow_param->result_len = 0;
             } else if (req_type == 2) {
                 shadow_param->result_len = snprintf(shadow_param->value,
-                    SHADOW_PARAM_VALUE_LEN, "%d", usbc_out_persist_enabled);
+                    SHADOW_PARAM_VALUE_LEN, "0");
                 shadow_param->error = 0;
             }
             return 1;
@@ -5843,10 +5838,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* XMOS audio-IO SysEx emission — two producers, one slot-safe path.
+    /* XMOS audio-IO SysEx emission — one active producer and one dormant path.
      *
-     * 1. Boot replay of the USB-C audio-out source (worker arms it ~5 s in).
-     * 2. The spi_sysex_inject debug trigger (file content = 37 12 value byte).
+     * 1. Retained USB-C replay machinery. Persistence is disabled as of 1.3.2,
+     *    so the gate below drops this before it can reach XMOS.
+     * 2. The active spi_sysex_inject debug trigger (file content = 37 12 value
+     *    byte).
      *
      * Both go through xmos_audio_emit, which only ever writes free MIDI_OUT
      * slots. The previous implementation blind-wrote out[0..31] regardless of
@@ -5861,7 +5858,7 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         if (pending_count == 0) {
             int replay = shim_usbc_out_replay;
             if (replay >= 0 && !usbc_out_persist_enabled) {
-                /* User turned restore off in Global Settings — drop it. */
+                /* Persistence is retired; discard any stale worker request. */
                 shim_usbc_out_replay = -1;
                 replay = -1;
             }
@@ -6039,18 +6036,18 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* Observe Move's USB-C audio-out source (Mic / Main Out) so the worker can
-     * persist it. Move's firmware forgets this across reboots; Task 3 replays
-     * it. Pure buffer scan — no I/O, safe on the SPI thread.
+    /* Observe Move's USB-C audio-out source (Mic / Main Out). The dormant
+     * worker state machine still records this for compatibility, but replay is
+     * disabled and dropped above. Pure buffer scan — no I/O, safe on the SPI
+     * thread.
      *
      * Note for future readers: this scan can also see SysEx the shim itself
      * just emitted this same frame — any XMOS audio-IO emission earlier in
-     * this pre_transfer (the debug spi_sysex_inject path today, the boot
-     * replay in Task 3) runs before this call, so scan() has no way to tell
+     * this pre_transfer (the debug spi_sysex_inject path today, or a legacy
+     * replay request) runs before this call, so scan() has no way to tell
      * "Move said this" from "we said this a moment ago" on the wire. That,
-     * plus Move's own unconditional Mic assert at boot, is why the worker
-     * gates persistence behind a boot settle window instead of trusting every
-     * observed change (see shim_worker.c's tick >= 35 gate). */
+     * plus Move's own unconditional Mic assert at boot, is why this feature
+     * was retired rather than trusting every observed change. */
     if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
         shim_usbc_out_persist = xmos_audio_observed.usbc_out;
 

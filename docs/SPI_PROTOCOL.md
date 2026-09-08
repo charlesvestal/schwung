@@ -198,6 +198,13 @@ Injecting too many MIDI events per frame causes SIGABRT. Safe limits:
 Moved here from `CLAUDE.md`, which keeps a summary. This is the `37 12` /
 `37 14` TLV pair on MIDI_OUT cable 0, and the boot arbitration around it.
 
+> **Disabled in Schwung 1.3.2.** Two field reports demonstrated that the
+> source and monitoring fields can become inconsistent: USB-C can carry the
+> microphone while the source still reports Main Out, and replaying monitoring
+> can mute the built-in speaker. Schwung no longer restores or repairs this
+> state. The codec and state file remain dormant so the change is reversible;
+> Move's own Settings screen is the sole owner of USB-C output routing.
+
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
 Main Out). Move's firmware **never persists it** — there is no key in
 `/data/UserData/settings/Settings.json`, and the dialog is built as
@@ -240,7 +247,7 @@ the leading half of a split Mic selection. Two consecutive worker ticks
 `37 12 01` at f75529, our `37 12 03` at f75635 (**bit0 preserved, bit1
 restored**), then quiet.
 
-Flow: the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
+Historical flow (dormant as of 1.3.2): the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
 worker persists the value to `/data/UserData/schwung/usbc_out_state`; ~5 s after
 boot the worker arms a replay, which the SPI callback emits one message per
 frame. Only Main Out is replayed — Mic is Move's own boot default, so there is
@@ -277,15 +284,10 @@ Two behaviours worth knowing:
   is correct; the screen is not. Selecting "Main Out" there is harmless;
   selecting "Mic" (believing it a no-op) actually switches it off.
 
-**Global Settings → Audio → USB-C Persist** (`usbc_out_persist`, default On)
-governs *whether Schwung restores* the value — deliberately **not** a second
-Mic/Main Out picker, which could disagree with Move's. Its value column
-annotates the source last seen on the wire (`On (Main Out)`), which is the only
-honest read given Move's screen goes stale. Params: `master_fx:usbc_out_persist`
-(get/set) and `master_fx:usbc_out_source` (get only; -1 unknown, 0 Mic, 1 Main
-Out). Persisted to `shadow_config.json`, which the **shim parses at init**
-(`native_resample_bridge_load_mode_from_shadow_config`) — so the flag is known
-before the ~5 s replay and the restore needs no runtime propagation.
+The former **Global Settings → Audio → USB-C Persist** row is removed.
+`master_fx:usbc_out_persist` remains only as a compatibility parameter: SET is
+a no-op and GET reports `0`. Existing `shadow_config.json` and
+`usbc_out_state` values are preserved but ignored.
 
 Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
 so it is both SPI-callback-safe and host-testable; unit tests in
@@ -301,4 +303,3 @@ mid-flight, and never partial-writes. The `spi_sysex_inject` debug trigger was
 rerouted through it — the old path blind-wrote `out[0..31]` regardless of what
 Move had queued, and a stuck injection like that hard-powered-off the device
 twice.
-
