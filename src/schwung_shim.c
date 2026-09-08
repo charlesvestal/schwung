@@ -3905,9 +3905,19 @@ static void init_shadow_shm(void)
          *
          * Suspend_overtake follows the same logic — it gates several
          * overtake passthrough decisions and a stale "1" lets the
-         * shim drop input that no parked module will ever pick up. */
+         * shim drop input that no parked module will ever pick up.
+         *
+         * The pad flags are the same story with a longer receipt. A device
+         * arrived with pad_block stuck at 1 from thirteen hours and two shim
+         * inits earlier: the flag is session-scoped input ownership, nothing
+         * clears it at boot, and /dev/shm outlives restart-move.sh, so the
+         * pads stayed dead inside the Schwung UI across every restart the
+         * user tried. Both belong to whichever component UI is on screen,
+         * and at init there is none. */
         shadow_control->overtake_mode    = 0;
         shadow_control->suspend_overtake = 0;
+        shadow_control->pad_block        = 0;
+        shadow_control->pad_observe      = 0;
         shadow_control->selected_slot    = 0;
         shadow_control->skip_led_clear   = 0;
         shadow_control->overtake_suppress_sysex = 0;
@@ -7557,13 +7567,34 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * nothing owed. Both drops are UNILATERAL, though: JS is not told, which
      * is why the reconcile on the other side RESTATES the flag every tick
      * instead of comparing against a mirror of it. See
-     * shadow_ui_param_pages.mjs. */
+     * shadow_ui_param_pages.mjs.
+     *
+     * pad_block JOINS THEM, and it is the one that had already gone wrong.
+     * It is raised by a component's own ui_chain.js (9W9, to take the pads
+     * for its Shift+Pad lane select) and lowered ONLY by that module's
+     * tick() -- which shadow_ui.js calls from exactly one place, inside
+     * `case VIEWS.COMPONENT_EDIT` of the draw switch. Every shim-decided
+     * exit from that view stops the tick without consulting JS at all: the
+     * track long-press dismiss, Shift+Track, a Menu tap. The flag then had
+     * nothing left that could lower it, and because the shim enforces it
+     * INSIDE the shadow_display_mode branch below, the result is pads dead
+     * in the Schwung UI and fine the moment you are back on a Move track --
+     * with knobs, jog and Back all still working, which is what makes it
+     * read as anything but an input filter. Reported from the field
+     * 2026-09-08; the byte had been stuck for 13 hours and two shim inits.
+     *
+     * Unlike a button latch there is nothing owed here either: what was
+     * withheld is a pad NOTE, so the worst a mid-hold drop can hand Move is
+     * an unmatched note-off, which no Move code path acts on. That is not
+     * true of Copy/Delete, which is why the array above keeps its HELD
+     * entries and this does not need to. */
     {
         static int prev_display_mode = 0;
         if (prev_display_mode && !shadow_display_mode) {
             if (shadow_control) {
                 memset((void *)shadow_control->claim_cc_bits, 0, sizeof(shadow_control->claim_cc_bits));
                 shadow_control->pad_observe = 0;
+                shadow_control->pad_block = 0;
             }
             for (int c = 0; c < 128; c++) {
                 if (claim_press_blocked[c] != CLAIM_LATCH_HELD) claim_press_blocked[c] = CLAIM_LATCH_NONE;

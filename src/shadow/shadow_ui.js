@@ -6664,6 +6664,16 @@ function loadModuleUi(slot, componentKey, moduleId) {
 
 /* Unload the current module UI */
 function unloadModuleUi() {
+    /* Drop the pad block the outgoing module may have raised. A module owns
+     * the pads through host_pad_block() and lowers it from its own tick(),
+     * which is called from ONE place — `case VIEWS.COMPONENT_EDIT` in the
+     * draw switch — so the moment we leave that view the only thing that
+     * could lower it has stopped running. The shim drops it on the
+     * display-mode edge, which covers a dismiss; this covers the exits that
+     * keep the shadow UI up (jump to another slot, Tools, Global Settings).
+     * Unconditional: a module that is gone has no business blocking pads,
+     * and the next one restates the flag in its init(). */
+    if (typeof host_pad_block === "function") host_pad_block(0);
     loadedModuleUi = null;
     loadedModuleSlot = -1;
     loadedModuleComponent = "";
