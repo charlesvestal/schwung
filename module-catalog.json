@@ -1404,9 +1404,9 @@
       "id": "maze_seq",
       "name": "Maze",
       "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
-      "author": "Sam Di Domizio",
+      "author": "sd88me",
       "component_type": "tool",
-      "github_repo": "sd88me/schwung-maze-sequencer",
+      "github_repo": "sd88me/schwung-maze",
       "default_branch": "main",
       "asset_name": "maze_seq-module.tar.gz",
       "min_host_version": "1.0.0"
@@ -1415,11 +1415,22 @@
       "id": "maze_seq_lite",
       "name": "Maze Lite",
       "description": "Dual generative clock-synced sequencer (Moog Labyrinth style). Slot MIDI FX.",
-      "author": "Sam Di Domizio",
+      "author": "sd88me",
       "component_type": "midi_fx",
-      "github_repo": "sd88me/schwung-maze-sequencer",
+      "github_repo": "sd88me/schwung-maze",
       "default_branch": "main",
       "asset_name": "maze_seq_lite-module.tar.gz",
+      "min_host_version": "1.0.0"
+    },
+    {
+      "id": "maze-voice",
+      "name": "Maze Voice",
+      "description": "Monophonic Moog Labyrinth-style thru-zero oscillator / wavefolder / state-variable filter voice. Chainable sound generator.",
+      "author": "sd88me",
+      "component_type": "sound_generator",
+      "github_repo": "sd88me/schwung-maze",
+      "default_branch": "main",
+      "asset_name": "maze-voice-module.tar.gz",
       "min_host_version": "1.0.0"
     },
     {
