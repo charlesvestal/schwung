@@ -130,11 +130,6 @@
         "key": "browser_preview",
         "label": "Audition Files",
         "type": "bool"
-      },
-      {
-        "key": "usbc_out_persist",
-        "label": "USB-C Persist",
-        "type": "bool"
       }
     ]
   },

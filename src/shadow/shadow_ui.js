@@ -5509,9 +5509,6 @@ let cachedResampleBridgeMode = 0;
 let cachedLinkAudioRouting = false;
 let cachedLinkAudioPublish = false;
 let cachedLatencyCompEnabled = false;
-/* Default true: restoring Move's USB-C audio-out source is on unless the
- * user turns it off. Mirrors usbc_out_persist_enabled in the shim. */
-let cachedUsbcOutPersist = true;
 /* Default -1 (All): Master FX heard every channel before this setting
  * existed, so anything else here is a silent regression for every sidechain
  * already in the field. Mirrors master_fx_midi_channel in the shim. */
@@ -12571,7 +12568,6 @@ function saveMasterFxChainConfigOnMaster() {
         config.link_audio_routing = cachedLinkAudioRouting;
         config.link_audio_publish = cachedLinkAudioPublish;
         config.latency_comp_enabled = cachedLatencyCompEnabled;
-        config.usbc_out_persist = cachedUsbcOutPersist;
         config.master_fx_midi_channel = cachedMasterFxMidiChannel;
 
         host_write_file(configPath, JSON.stringify(config, null, 2));
@@ -12588,7 +12584,7 @@ function saveMasterFxChainConfigOnMaster() {
  * reasoning so it is not "simplified" into a parameterised copy of it. That
  * function does five things a send has none of — the shadow_config.json
  * master_fx_chain section, the preset name, the LFO snapshot filed under
- * position 0, the resample/link/usbc cached scalars, and the display-name cache
+ * position 0, the resample/link cached scalars, and the display-name cache
  * eviction that goes with adopting into masterFxConfig. Threading a bus through
  * all of it would put a `if (master)` at each. What DOES have to agree between
  * the two is the FILE SHAPE, and that agreement is enforced on the C side,
@@ -13043,17 +13039,10 @@ function loadMasterFxChainFromConfigOnMaster() {
             shadow_set_param(0, "master_fx:latency_comp_enabled", config.latency_comp_enabled ? "1" : "0");
             cachedLatencyCompEnabled = !!config.latency_comp_enabled;
         }
-        if (config.usbc_out_persist !== undefined && typeof shadow_set_param === "function") {
-            /* The shim also reads this key straight from shadow_config.json at
-             * init, so the boot replay is already correctly gated before we get
-             * here. This push only keeps the two in sync for the UI. */
-            shadow_set_param(0, "master_fx:usbc_out_persist", config.usbc_out_persist ? "1" : "0");
-            cachedUsbcOutPersist = !!config.usbc_out_persist;
-        }
         if (config.master_fx_midi_channel !== undefined && typeof shadow_set_param === "function") {
-            /* Like usbc_out_persist, the shim reads this key straight from
-             * shadow_config.json at init, so the filter is already in force
-             * before the first frame. This push only keeps the two in sync. */
+            /* The shim reads this key straight from shadow_config.json at init,
+             * so the filter is already in force before the first frame. This
+             * push only keeps the two in sync. */
             /* Round-tripped through the index so a garbage stored value lands
              * on All rather than being written straight back to the shim. */
             const val = mfxMidiChannelFromIndex(
@@ -14146,12 +14135,11 @@ function globalGridIoFor() {
             case "stay_in_shadow":
                 return bit(typeof stay_in_shadow_get === "function" && stay_in_shadow_get());
 
-            /* ---- audio. These four are the ONLY reads that cost IPC. */
+            /* ---- audio. These three plus resample_bridge below are the only
+             * reads in this group that cost IPC. */
             case "link_audio_routing":
             case "link_audio_publish":
             case "latency_comp_enabled":
-            case "usbc_out_persist":
-            case "usbc_out_source":
                 return mfx(key);
             case "resample_bridge": {
                 /* Normalised through the same parser the old path used, so an
@@ -14266,12 +14254,6 @@ function globalGridIoFor() {
             case "latency_comp_enabled":
                 mfxSet(key, on ? "1" : "0");
                 cachedLatencyCompEnabled = on;
-                return;
-            case "usbc_out_persist":
-                /* Both On indexes store 1 — the third option carries only the
-                 * wire annotation, and the source is Move's to choose. */
-                mfxSet(key, on ? "1" : "0");
-                cachedUsbcOutPersist = on;
                 return;
             case "resample_bridge": {
                 const mode = parseResampleBridgeMode(value);

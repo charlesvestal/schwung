@@ -100,14 +100,14 @@ function world(answers, mirror, opts) {
   const save = lift("saveMasterFxChainConfigOnMaster", [
     "activeSlotStateDir", "adoptMasterFxShimModule", "cachedLatencyCompEnabled",
     "cachedLinkAudioPublish", "cachedLinkAudioRouting", "cachedMasterFxMidiChannel",
-    "cachedResampleBridgeMode", "cachedUsbcOutPersist", "CONTRACT_SETTLE_MS",
+    "cachedResampleBridgeMode", "CONTRACT_SETTLE_MS",
     "currentMasterPresetName", "debugLog", "getMasterFxChainParams",
     "host_read_file", "host_write_file", "MASTER_FX_OPTIONS", "MASTER_FX_SLOTS",
     "masterFxConfig", "masterFxModuleWriteAt", "masterFxShimSlot",
     "masterFxShimSnapshot", "overlay_knobs_get_mode", "shadow_get_param",
     "tts_get_debounce",
   ])(
-    "/state", adoptPair.adopt, 0, 0, 0, 0, 0, 0, CONTRACT_SETTLE_MS, "",
+    "/state", adoptPair.adopt, 0, 0, 0, 0, 0, CONTRACT_SETTLE_MS, "",
     () => {}, () => [], (p) => files[p], (p, v) => { files[p] = v; writes.push(p); },
     opts.options || [], MASTER_FX_SLOTS, masterFxConfig, masterFxModuleWriteAt,
     shimSlot, shimSnapshot, undefined, shadow_get_param, undefined);

@@ -76,9 +76,7 @@ const OFF_ON = { options: ["Off", "On"], short_options: ["OFF", "ON"] };
  * They were wrong even for the grid. `labelForCell` / `WORD_ABBREV` in
  * render_page_movy.mjs already squeeze a name into a cell, per WORD and with a
  * fixed mnemonic per concept — that is a renderer's job, and doing it by hand
- * here both duplicates it and does it worse. Same mistake as putting the
- * usbc_out_persist annotation in the option set: a display concern written
- * into the data.
+ * here both duplicates it and does it worse.
  *
  * One abbreviation did real damage. `midi_indicator_enabled` became "MIDI Ch",
  * which collides with Master FX's genuine "MIDI Ch" — its listen channel, an
@@ -128,7 +126,7 @@ export const GLOBAL_ENUM_VALUES = {
  * than a shape recovered from a 240-line if-chain.
  *
  * The hazard this table exists for: adjustMasterFxSetting is DELTA-BASED and
- * SIDE-EFFECTFUL. Six of its branches also call saveMasterFxChainConfig() and
+ * SIDE-EFFECTFUL. Five of its live branches also call saveMasterFxChainConfig() and
  * set a module-level cache var. A converted absolute write that drops either
  * sets the param, looks correct on screen, and loses it on reboot — silently.
  * So persistence is declared per key here, PERSISTING_KEYS is DERIVED from it
@@ -150,7 +148,6 @@ export const GLOBAL_ENUM_VALUES = {
  *   skipback_shortcut      | skipback_shortcut_get   | skipback_shortcut_set    | -       | -                      | -
  *   skipback_seconds       | skipback_seconds_get    | skipback_seconds_set     | -       | -                      | -
  *   browser_preview        | previewEnabled          | previewEnabled =         | own     | previewEnabled         | -
- *   usbc_out_persist       | master_fx: param (+src) | master_fx: param         | SAVE    | cachedUsbcOutPersist   | -
  *   screen_reader_enabled  | tts_get_enabled         | tts_set_enabled          | -       | -                      | -
  *   screen_reader_engine   | tts_get_engine          | tts_set_engine           | -       | -                      | -
  *   screen_reader_speed    | tts_get_speed           | tts_set_speed            | -       | -                      | -
@@ -205,7 +202,6 @@ export const GLOBAL_ROUTING = {
     skipback_shortcut:      { read: "skipback_shortcut.get",  write: "skipback_shortcut.set",  persist: null,   cache: null,                     modal: null },
     skipback_seconds:       { read: "skipback_seconds.get",   write: "skipback_seconds.set",   persist: null,   cache: null,                     modal: null },
     browser_preview:        { read: "js.previewEnabled",      write: "js.previewEnabled",      persist: "own",  cache: "previewEnabled",         modal: null },
-    usbc_out_persist:       { read: "master_fx",              write: "master_fx",              persist: "save", cache: "cachedUsbcOutPersist",   modal: null },
     /* persist: null — shadow_metronome_set writes features.json itself, the
      * same way shadow_recall_quantize_set does, because the register it also
      * writes lives in SHM and does not survive a reboot. */
@@ -270,12 +266,6 @@ export const PERSISTING_KEYS = new Set(
  * nothing.
  */
 export function globalStoredValue(key, engineValue) {
-    if (key === "usbc_out_persist") {
-        /* Four options, two states: every On index stores 1. The extra three
-         * carry only the wire annotation on the surfaces with room for it —
-         * the source is read-only, Move's own menu still chooses it. */
-        return (Number(engineValue) > 0) ? "1" : "0";
-    }
     const values = GLOBAL_ENUM_VALUES[key];
     if (!values) return String(engineValue);
     let i = Math.round(Number(engineValue));
@@ -308,15 +298,6 @@ export function globalEngineValue(key, stored) {
  * @param {{readParam:(key:string)=>string}} io
  */
 export function readGlobalParam(io, key) {
-    if (key === "usbc_out_persist") {
-        /* A bool. The source is NOT a state here -- it decorates the On label,
-         * which buildGlobalSettingsContract builds per entry. Reading it as an
-         * index would make the annotation selectable, which is what the three-
-         * and four-option spellings both got wrong. */
-        const on = io.readParam("usbc_out_persist");
-        if (on === null || on === undefined || on === "") return on;
-        return String(on) === "1" ? "1" : "0";
-    }
     return globalEngineValue(key, io.readParam(key));
 }
 
@@ -425,32 +406,6 @@ export const AUDIO_PARAMS = [
      * became a page at the end of every component.
      */
     bool("browser_preview", "Audition", 0),
-    /*
-     * usbc_out_persist IS A BOOL. The parenthetical is a readout, not a choice.
-     *
-     * It is On or Off -- whether Schwung restores the USB-C out source at boot.
-     * The "(Main Out)" suffix reports the source last seen on the wire, which
-     * matters because Move's own Settings screen keeps reading "Mic" after
-     * Schwung restores the value: this row is the only honest read of what is
-     * actually routed.
-     *
-     * IT WAS BRIEFLY MODELLED AS THREE OPTIONS, THEN FOUR, AND BOTH WERE WRONG.
-     * Putting the annotation in the option set turns one choice into three
-     * indistinguishable "On"s you have to jog past, and implies you can pick
-     * the source here. You cannot -- it is read-only and Move's own menu
-     * chooses it. Reported from the device: "it should be on or off and the ()
-     * shows the last saved value".
-     *
-     * So there are two options, and the ON LABEL IS BUILT PER ENTRY from the
-     * observed source (annotateUsbcOption, applied in buildGlobalSettingsContract).
-     * The contract is rebuilt every time Global Settings is opened, so the
-     * readout is current without the declaration pretending to be a control.
-     * With nothing observed the label is a plain "On" -- the old code omitted
-     * the parenthetical in exactly that case, and naming a source that was
-     * never seen would mislead the user who came here to check.
-     */
-    { key: "usbc_out_persist", name: "USB-C", type: "enum",
-      options: ["Off", "On"], short_options: ["OFF", "ON"], default: 1 },
     /*
      * THREE OPTIONS, NOT A BOOL, and the third one is load-bearing.
      *
@@ -783,40 +738,8 @@ export function buildGlobalSettingsContract(io) {
 
     return {
         hierarchy: { modes: null, levels },
-        chainParams: annotateUsbcOption(allGlobalParams(), io),
+        chainParams: allGlobalParams(),
     };
-}
-
-/**
- * Decorate usbc_out_persist's "On" with the source last seen on the wire.
- *
- * The parameter is a BOOL — On or Off, whether Schwung restores the USB-C out
- * source at boot. The "(Main Out)" suffix is a READOUT of a read-only value
- * that Move's own menu owns, and it belongs on the label rather than in the
- * option set: a user must not be able to jog "the source".
- *
- * Applied at contract-build time because createGlobalGridIo rebuilds the
- * contract on every entry — so the readout is current each time the screen is
- * opened, exactly as fresh as the old read-time formatter was, without the
- * declaration having to pretend the annotation is a state.
- *
- * Unobserved (-1) leaves a plain "On". Naming a source that nothing has seen
- * would mislead the one user who came here because Move's screen was lying.
- *
- * COPIES the entry rather than mutating it: GLOBAL_PARAMS is module-level and
- * shared across every entry, so writing through it would make one session's
- * annotation stick to the next.
- */
-export function annotateUsbcOption(params, io) {
-    if (!io || typeof io.readParam !== "function") return params;
-    const src = io.readParam("usbc_out_source");
-    const suffix = String(src) === "1" ? " (Main Out)"
-                 : String(src) === "0" ? " (Mic)"
-                 : "";
-    if (!suffix) return params;
-    return params.map((p) => (p && p.key === "usbc_out_persist")
-        ? { ...p, options: [p.options[0], p.options[1] + suffix] }
-        : p);
 }
 
 /**

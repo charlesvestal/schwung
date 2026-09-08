@@ -1015,7 +1015,7 @@ component load gate, and the input-dispatch order. Read it before editing
   LIST (`layout: LAYOUT_LIST`), which draws five rows and scrolls the rest.
   The planner was chunking it as a grid anyway, so a ninth param silently
   became a `<Section> - 2` page holding one row; it is handed `paginate: false`
-  now and a section is one list however long. Audio holds nine. The flag is a
+  now and a section is one list however long. Audio currently holds eight. The flag is a
   property of the CONTRACT, never inferred from the layout — the layout is
   also `LAYOUT_LIST` with the screen reader on or Param View set to List, and
   a module's pages are authored groupings that must keep their shape.
@@ -1178,20 +1178,17 @@ Shift+Copy snapshots all 4 slots + 8 Master FX, Shift+Delete puts it back.
 ### USB-C Audio-Out Source
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
-Main Out), and Move's firmware **never persists it**. Schwung remembers it instead
-— **the SysEx wire format and the boot arbitration are in `docs/SPI_PROTOCOL.md`.**
-**Global Settings → Audio → USB-C Persist** (`usbc_out_persist`, default On)
-governs whether Schwung restores it.
+Main Out), and Move's firmware does not persist it. **Schwung no longer persists
+or replays it as of 1.3.2.** The feature could leave XMOS's separate source and
+monitoring fields inconsistent: one field reported Main Out while USB-C still
+carried the microphone, while restoring the monitoring field muted the built-in
+speaker. Move owns this setting again; the Global Settings row is removed.
 
-- Selecting a value emits a **pair** of `37 12` / `37 14` messages — but Move's
-  *sampling* page emits a **lone `37 12`** that clears the monitoring bit, silently
-  reverting USB-C out to Mic while `37 14` still reads Main Out.
-- Persistence is gated **CAUSALLY, not on a deadline.** It was a ~7 s deadline, and
-  that deadline was the bug: a slow boot put Move's own Mic assert on the trusting
-  side of the line and clobbered the stored preference.
-- **Move's own Settings screen keeps reading "Mic"** even when the hardware is on
-  Main Out. Selecting "Mic" there, believing it a no-op, actually switches it off.
-- `xmos_audio_emit` is the **only** sanctioned way to put SysEx into MIDI_OUT.
+Compatibility is deliberately non-destructive: `usbc_out_state` and the old
+`shadow_config.json` key are left on disk, but config loading cannot enable the
+feature and `master_fx:usbc_out_persist` accepts old SETs only as no-ops while
+GET reports `0`. The dormant wire codec and investigation history remain in
+`docs/SPI_PROTOCOL.md`.
 ### Shadow Architecture
 
 `src/schwung_shim.c` (LD_PRELOAD, intercepts ioctl, mixes audio), `src/shadow/shadow_ui.js` (slot/patch UI), `src/host/shadow_constants.h` (SHM structs).

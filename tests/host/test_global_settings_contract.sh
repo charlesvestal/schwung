@@ -19,13 +19,11 @@ cd "$(dirname "$0")/../.."
 #     property that makes sections-as-levels work would be gone without a
 #     symptom. There is no limit on how LONG a section may be -- eight is the
 #     number of physical knobs, this screen is pinned to the list, and the
-#     planner is handed `paginate: false` to say so. Audio holds nine.
+#     planner is handed `paginate: false` to say so.
 #   - an enum with no `options` is not divable and shows a bare index.
 #   - an option longer than three characters does not overflow the enum square,
 #     it wraps across two lines of the 5x3 font and reads as gibberish
-#     ("THRU" -> "THR/U"). short_options is the one mechanism for that, and
-#     usbc_out_persist's wire annotation goes through it rather than through a
-#     per-surface special case.
+#     ("THRU" -> "THR/U"). short_options is the one mechanism for that.
 
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
@@ -197,26 +195,10 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * rather than only in aggregate: a param that moved from one section to
    * another keeps the total at 24 and both totals-based checks green. */
   /*
-   * THERE IS NO EIGHT HERE. Audio holds nine.
-   *
-   * Eight is the number of physical KNOBS: a grid page has eight cells and
-   * nowhere to put a ninth. Global Settings is pinned to the LIST, which draws
-   * five rows of a page and scrolls the rest, and knobRows() reads the keys of
-   * a page with no cap — so the length of a section is a free choice. It is
-   * planned with `paginate: false` above, the way the screen plans it.
-   *
-   * This file used to assert the opposite twice over ("Audio is at
-   * KNOBS_PER_PAGE exactly — one more and it paginates"), which was true of the
-   * PLANNER and false of the screen, and it cost a real change: Audition was
-   * moved out of Audio into Display to make room for Save Stems, for a
-   * constraint that does not apply to a scrolling list. Audition is back in
-   * Audio.
-   *
-   * What still matters is ONE PAGE PER SECTION — a section that split would put
-   * a jog step in the middle of a list — and that is what the seven-page
-   * assertion above and these per-section counts catch together.
+   * Eight is the current Audio count, not a capacity: Global Settings is pinned
+   * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
+  const WANT_COUNT = { display: 7, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -231,24 +213,12 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
            keys.length + ": " + keys.join(", "));
     }
   }
-  /*
-   * Audio is LONGER than a grid page and is still ONE page. Stated on its own,
-   * because it is the property the `paginate: false` hand-off exists to give
-   * and the one that silently regressed if that hand-off were dropped: with
-   * chunking back on, this level becomes "Audio" + "Audio - 2" and every other
-   * assertion here still passes.
-   */
+  /* Audio remains exactly one scrolling page. */
   const audio = plan.pages.find((p) => p.level === "audio");
   if (!audio) {
     fail("no Audio page");
   } else {
     const n = (audio.keys || []).filter(Boolean).length;
-    if (n <= KNOBS_PER_PAGE) {
-      fail("Audio holds " + n + " params, which no longer exceeds the " +
-           KNOBS_PER_PAGE + " of a grid page — this assertion can no longer detect " +
-           "the chunking " +
-           "coming back; pick another over-length section or drop it");
-    }
     if (plan.pages.filter((p) => p.level === "audio").length !== 1) {
       fail("Audio was split across " + plan.pages.filter((p) => p.level === "audio").length +
            " pages — a section is one scrolling list, and a split puts a jog step " +
@@ -315,67 +285,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
   }
 }
 
-/* ---- 6. usbc_out_persist IS A BOOL; the annotation is a readout ---------
- *
- * It is On or Off -- whether Schwung restores the USB-C out source at boot. The
- * "(Main Out)" suffix REPORTS the source last seen on the wire, which matters
- * because Move own Settings screen goes stale after Schwung restores the value.
- *
- * It was briefly three options, then four, and both were wrong: putting the
- * annotation in the option SET turns one choice into several indistinguishable
- * "On"s to jog past, and implies the source is selectable here. It is not --
- * it is read-only and Move own menu chooses it. Reported from the device:
- * "it should be on or off and the () shows the last saved value".
- */
-{
-  const usbc = chainParams.find((p) => p.key === "usbc_out_persist");
-  if (!usbc) fail("usbc_out_persist is missing from the contract");
-  else {
-    if (usbc.type !== "enum") fail("usbc_out_persist must be an enum");
-    const opts = (usbc.options || []).map(String);
-    if (opts.length !== 2) {
-      fail("usbc_out_persist is a BOOL and must declare exactly two options -- the " +
-           "wire source is a readout on the On label, not a state you can jog to. " +
-           "Got " + JSON.stringify(opts));
-    }
-    if (opts[0] !== "Off") fail("usbc_out_persist index 0 must be Off, got " + JSON.stringify(opts[0]));
-    if (!/^On/.test(opts[1] || "")) fail("usbc_out_persist index 1 must start with On, got " + JSON.stringify(opts[1]));
-    if (!Array.isArray(usbc.short_options) || usbc.short_options.length !== 2
-        || usbc.short_options[0] !== "OFF" || usbc.short_options[1] !== "ON") {
-      fail("usbc_out_persist square must read OFF/ON, got " + JSON.stringify(usbc.short_options));
-    }
-  }
-}
-
-/* ---- 6b. the On label reports the observed source, and only when observed --
- *
- * annotateUsbcOption is where the readout lives, applied per entry because the
- * contract is rebuilt every time the screen opens. Unobserved must leave a
- * PLAIN "On": naming a source nothing has seen misleads exactly the user who
- * came here because Move screen was lying.
- */
-{
-  const decl = () => [{ key: "usbc_out_persist", type: "enum",
-                        options: ["Off", "On"], short_options: ["OFF", "ON"] }];
-  const mk = (src) => G.annotateUsbcOption(decl(),
-      { readParam: (k) => (k === "usbc_out_source" ? src : "0") })[0].options[1];
-
-  if (mk("1") !== "On (Main Out)") fail("source 1 must annotate On (Main Out), got " + JSON.stringify(mk("1")));
-  if (mk("0") !== "On (Mic)")      fail("source 0 must annotate On (Mic), got " + JSON.stringify(mk("0")));
-  if (mk("-1") !== "On")           fail("an unobserved source must leave a plain On, got " + JSON.stringify(mk("-1")));
-  if (mk("") !== "On")             fail("an unserved source must leave a plain On, got " + JSON.stringify(mk("")));
-
-  /* Must not mutate its input: the declaration is module-level and shared, so a
-   * mutating annotate would carry one entry annotation into the next. */
-  const shared = decl();
-  G.annotateUsbcOption(shared, { readParam: () => "1" });
-  if (shared[0].options[1] !== "On") {
-    fail("annotateUsbcOption mutated its input -- the shared declaration would keep " +
-         "a previous entry annotation. Got " + JSON.stringify(shared[0].options[1]));
-  }
-}
-
-/* ---- 6c. names are written out in full ----------------------------------
+/* ---- 6. names are written out in full -----------------------------------
  *
  * The first cut spelled every name for the eight-cell knob grid -- "Pad Typ",
  * "Text Prv", "Move>Sch", "Brws Prv", "Auto Chk" -- and then the screen was
@@ -406,7 +316,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
        scroll audition as well as the file browser WAV preview, so the noun
        narrowed it to something it no longer only means. Still written out in
        full, which is what this pin is actually protecting. */
-    browser_preview: "Audition", usbc_out_persist: "USB-C",
+    browser_preview: "Audition",
     screen_reader_enabled: "Screen Reader", screen_reader_engine: "Engine",
     screen_reader_speed: "Speed", screen_reader_pitch: "Pitch",
     screen_reader_volume: "Volume", screen_reader_debounce: "Speak Delay",
@@ -514,11 +424,11 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     return s;
   };
 
-  /* Transcribed from the six saveMasterFxChainConfig() calls in
+  /* Transcribed from the five live saveMasterFxChainConfig() calls in
    * adjustMasterFxSetting. Asserted against PERSISTING_KEYS as a SET, so a key
    * that quietly stopped persisting fails here, not on a device. */
   const WANT_PERSIST = ["overlay_knobs", "link_audio_routing", "link_audio_publish",
-                        "latency_comp_enabled", "resample_bridge", "usbc_out_persist"].sort();
+                        "latency_comp_enabled", "resample_bridge"].sort();
   const got = Array.from(G.PERSISTING_KEYS).sort();
   if (got.join(",") !== WANT_PERSIST.join(",")) {
     fail("PERSISTING_KEYS should be exactly " + WANT_PERSIST.join(",") + ", got " + got.join(","));
@@ -622,32 +532,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
   }
 }
 
-/* ---- 11. usbc_out_persist: two indexes, two stored values ---------------
- *
- * The bool round-trips as itself. There is no annotated index to collapse any
- * more -- putting the annotation in the option set was the modelling mistake
- * this replaced, and the readout now rides the On LABEL (assertion 6b).
- */
-{
-  const wrote = [];
-  const io = { readParam: () => "0", writeParam: (k, v) => wrote.push(v) };
-  for (const idx of [0, 1]) G.writeGlobalParam(io, "usbc_out_persist", idx);
-  if (wrote.join(",") !== "0,1") {
-    fail("usbc_out_persist indexes 0/1 must store 0/1, got [" + wrote.join(", ") + "]");
-  }
-
-  const read = (on, src) => G.readGlobalParam({
-    readParam: (k) => (k === "usbc_out_source" ? src : on),
-  }, "usbc_out_persist");
-  /* The source must NOT move the index -- that is what made it selectable. */
-  if (read("0", "1") !== "0") fail("usbc_out_persist off must read index 0 whatever the wire says");
-  if (read("1", "1") !== "1") fail("usbc_out_persist on must read index 1 with source Main Out");
-  if (read("1", "0") !== "1") fail("usbc_out_persist on must read index 1 with source Mic");
-  if (read("1", "-1") !== "1") fail("usbc_out_persist on must read index 1 with the source unobserved");
-  if (read(null, "1") !== null) fail("a failed usbc_out_persist read must pass through as null");
-}
-
-/* ---- 6d. EVERY ROW FITS ITS OWN WIDTH -----------------------------------
+/* ---- 6b. EVERY ROW FITS ITS OWN WIDTH -----------------------------------
  *
  * A list row is one line: cursor prefix, label, gap, value, right edge. The
  * label room is therefore whatever the WIDEST value of that parameter leaves
@@ -677,11 +562,10 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — six levels (7/9/6/1/4/3 params, Connect and Help " +
+console.log("PASS: global settings contract — six levels (7/8/6/1/4/3 params, Connect and Help " +
             "among them as write-only triggers), ONE section one page and no menu, no " +
-            "length limit (Audio holds nine), every enum listable with a " +
-            "matching short_options, usbc_out_persist a bool whose On label reports the observed source, " +
-            "validator clean, no host global read, every key routed to a backend, the six " +
+            "length limit, every enum listable with matching short_options, " +
+            "validator clean, no host global read, every key routed to a backend, the five " +
             "saveMasterFxChainConfig keys persisting and four others provably not, and " +
             "resample_bridge round-tripping [0, 2] rather than its indexes");
 '
