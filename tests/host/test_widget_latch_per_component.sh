@@ -58,8 +58,10 @@ const fail = (m) => { console.log("FAIL: " + m); process.exit(1); };
  * instead of quietly creating a fresh global. */
 const preamble = `
   let widgetModuleLoaded = "";
+  let widgetLoadOk = false;
   let widgetAttemptedSig = "";
   let widgetResolvedSig = "";
+  let widgetFailedVisitSig = "";
   let widgetRetryTick = 0;
 `;
 
@@ -74,8 +76,16 @@ const stub = `
     if (!Array.isArray(chainParams) || chainParams.length === 0) return;
     registry.length = 0;                               /* clearWidgets() */
     widgetModuleLoaded = id;
+    widgetLoadOk = false;
     if (chainParams.some((p) => p && p.viz && String(p.viz.kind).startsWith("custom:")))
       registry.push(id);
+    /* Both outcomes here are settled ones -- a widget registered, or the module
+     * declares none. The stub loads nothing, so it has no failure to model; the
+     * per-visit retry that governs a FAILED load is
+     * test_widget_load_failure_retry.sh. Mirroring the real function is what
+     * keeps assertion 4 below honest: without this the tick would record a
+     * failure rather than a resolution and close the guard by the wrong door. */
+    widgetLoadOk = true;
   }
 `;
 

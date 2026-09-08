@@ -1697,6 +1697,79 @@ will do this every time.
 component stays loaded — the latch is per module id, by design, so the script is
 parsed once. Leave the component and come back to pick up a new build.
 
+#### The latch is set BEFORE the load can fail, so it cannot be the whole answer
+
+`ensureComponentWidgets` writes `widgetModuleLoaded = id` and *then* resolves the
+module directory, reads its `canvas.js`, and registers whatever came back. It
+has to be that order — the latch is what `clearWidgets()` is paired with, and
+what stops the next frame re-entering. But for a while the latch was the only
+thing recorded, which made a module whose script failed to load **byte-identical
+in state to one that had succeeded**: latched, with an empty registry.
+
+Everything downstream then agreed. `id === widgetModuleLoaded` refused every
+later attempt. The tick stamped the signature as resolved, because the latch did
+name the module in front of it. The cells fell through to the detector and drew
+ordinary dials, silently, with the fall-through doing exactly what it is for.
+The only escape was visiting a **different** module, which relatches and so
+changes the signature — which is why the device report reads *"the waveform
+sometimes appears, and later the same knobs are plain dials"*, and why switching
+away and back is the thing that fixes it. That gesture is not a diagnosis; it is
+the one state transition the code left open.
+
+The latch is a two-part answer now: **which module, and whether its widgets are
+settled** (`widgetLoadOk`). Two states count as settled, and neither is retried:
+
+- a widget registered, and
+- **the module declares no custom kind at all** — a finished answer, not a
+  failure. Forgetting this half turns the fix into a permanent retry loop on the
+  large majority of modules, which declare no widget.
+
+Anything else is an attempt still owed. But *when* it is owed matters as much,
+because the two obvious policies are both wrong. Recording a failure as resolved
+is the bug above. Not recording it at all re-reads and re-parses a genuinely
+broken `canvas.js` ~4x/sec for as long as its page is up — the exact cost the
+throttle exists to prevent.
+
+**A visit is the unit.** Within one visit a second attempt cannot learn anything
+the first did not: the module directory and its script are the same bytes. So it
+stops, against its own record (`widgetFailedVisitSig`) held apart from
+`widgetResolvedSig` — leaving the grid clears one and not the other, because a
+success is a fact about the module and a failure is a fact about one attempt.
+Leaving and returning is a new visit and asks once more, which is also exactly
+the gesture available to someone who has just installed or repaired the module.
+
+Two details that are not optional:
+
+- **The visit boundary must reset the throttle too.** Clearing only the failure
+  record leaves `widgetAttemptedSig` describing the component being returned to,
+  so the next frame takes the throttle branch rather than the attempt-at-once
+  one — and it resumes from wherever `widgetRetryTick` was left, so a short
+  visit can end before the retry ever lands. A new visit is a new situation in
+  precisely the sense that branch means, and is spelled the same way.
+- **The one-strike disable must survive a retry.** A widget that threw while
+  drawing is disabled for the session, and that set is cleared by
+  `clearWidgets()` — so a retry that re-registered the module would quietly
+  re-arm a widget already known to crash. It cannot happen, structurally rather
+  than by a guard: a throw can only follow a successful registration, which
+  settles the module, and a settled module is never re-attempted.
+
+Only a failure to *reach* an overlay is retried. A script that loaded and
+registered nothing usable — a typo in the kind, no `drawCell` — is **settled**,
+because re-reading the same declaration gets the same answer, and the skip is
+already named in the log for its author.
+
+Which is the last piece: `if (!dir) return;` used to be silent, and an absent
+module directory is indistinguishable on screen from a module with no widget.
+It says so in `debug.log` now, as does every other way this can end.
+
+`tests/host/test_widget_load_failure_retry.sh` drives a broken `canvas.js`
+through a repair: one read on the first visit, **zero** while staying on the
+page, exactly one on each re-entry, the widget appearing once the module is
+fixed, and zero reads for a settled module or one declaring no widget. It also
+pins the *call site* of the visit boundary — the scenario drives that boundary
+directly, so nothing else could tell whether the device ever reaches it, and a
+boundary nobody calls is the original bug with more code.
+
 ### A module may declare SEVERAL widgets, and one call site said otherwise
 
 The registry has always been a `Map`, and `registerWidget` has always taken a
