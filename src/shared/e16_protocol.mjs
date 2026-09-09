@@ -41,16 +41,19 @@ export const ACK_BODY = HDR.concat([0x06, 0x53]);
  * single changed encoder costs one chunk rather than a whole-screen repaint.
  * That asymmetry is the feature's rate strategy, not an optimisation.
  *
- * Wire order is encoder, R, G, amount MSB, amount LSB, B, bipolar -- amount
- * sits between G and B, not after B. Pinned by the "ring amount split"
- * assertion in the test; get this wrong and the ring still draws (wrong
- * fields land in range for a while) so it will not fail loudly on hardware. */
+ * Chunk order is encoder, R, G, B, amount MSB, amount LSB, bipolar. An earlier
+ * revision put amount between G and B to satisfy a test assertion that was
+ * itself off by one: index 8 is the pack7 group byte, so the payload starts at
+ * 9 and the amount lands at 13/14, not 12/13. Ground truth is the Max patch on
+ * the lines thread, which sends `0 3 0 12 0 $1 0 0` -- pack byte, encoder 3,
+ * R 0, G 12, B 0, then the amount. Getting this wrong is invisible in a unit
+ * test and shows up on hardware as rings that light the wrong colour at the
+ * wrong position. */
 export function ringMsg(rings) {
     const raw = [];
     for (const x of rings) {
-        raw.push(x.enc & 0x0F, x.r & 0x7F, x.g & 0x7F,
-                 (x.amount >> 7) & 0x7F, x.amount & 0x7F,
-                 x.b & 0x7F, x.bipolar ? 1 : 0);
+        raw.push(x.enc & 0x0F, x.r & 0x7F, x.g & 0x7F, x.b & 0x7F,
+                 (x.amount >> 7) & 0x7F, x.amount & 0x7F, x.bipolar ? 1 : 0);
     }
     return msg([0x06, 0x04], raw);
 }

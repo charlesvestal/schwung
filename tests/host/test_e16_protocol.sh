@@ -29,7 +29,12 @@ eq("exit bytes", exitMsg(),
 
 const r = ringMsg([{ enc: 0, r: 0, g: 60, b: 0, amount: 16383, bipolar: 0 }]);
 eq("ring length", r.length, 1 + 5 + 2 + 8 + 1);
-eq("ring amount split", [r[12], r[13]], [0x7F, 0x7F]);
+// Payload starts at index 9: F0, five header bytes, two id bytes, then the
+// pack7 group byte. Blue precedes the amount -- pinned against the Max patch
+// chunk `0 3 0 12 0 $1 0 0` from the lines thread, which is the only public
+// ground truth for the field order.
+eq("ring chunk order", r.slice(9, 16), [0, 0, 60, 0, 0x7F, 0x7F, 0]);
+eq("ring amount split", [r[13], r[14]], [0x7F, 0x7F]);
 
 const fb = framebufferMsg(new Uint8Array(1024));
 eq("framebuffer packed length", fb.length, 1 + 5 + 2 + 1171 + 1);
