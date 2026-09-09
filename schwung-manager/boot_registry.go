@@ -209,3 +209,78 @@ func writeBootDefault(dir, id string) error {
 	chownToAbleton(path)
 	return nil
 }
+
+// bootPageRow is one row of the Boot page, in picker order.
+type bootPageRow struct {
+	ID        string
+	Name      string
+	Source    string
+	Exec      string
+	IsDefault bool
+	Missing   bool // exec does not resolve
+	Removable bool // owned by the manager, so uninstalling the payload removes it
+}
+
+// bootPageRows renders the registry in the order bs_build_rows (src/host/
+// boot_select_core.c) produces: Schwung first, then targets ascending by id,
+// Stock last. The Boot page must show the same order the device shows, or a
+// user picking "the third row" on the page and at boot picks two different
+// targets.
+func bootPageRows(entries []registryEntry, currentDefault string) []bootPageRow {
+	var schwung []bootPageRow
+	var others []bootPageRow
+	for _, e := range entries {
+		row := bootPageRow{
+			ID: e.ID, Name: e.Name, Exec: e.Exec,
+			Source:    bootSourceLabel(e.Owner),
+			IsDefault: e.ID == currentDefault,
+			Removable: e.Owner != "",
+		}
+		if e.Exec != "" {
+			if _, err := os.Stat(e.Exec); err != nil {
+				row.Missing = true
+			}
+		}
+		if e.ID == "schwung" {
+			schwung = append(schwung, row)
+			continue
+		}
+		others = append(others, row)
+	}
+	sort.Slice(others, func(i, j int) bool { return others[i].ID < others[j].ID })
+	rows := append(schwung, others...)
+	return append(rows, bootPageRow{
+		ID: "stock", Name: "Stock Move", Source: "built in",
+		IsDefault: currentDefault == "stock",
+	})
+}
+
+// bootSourceLabel names who put a row there, matching the three shapes
+// registryEntry.Owner can take.
+func bootSourceLabel(owner string) string {
+	switch {
+	case owner == "":
+		return "installed manually"
+	case strings.HasPrefix(owner, "module:"):
+		return "module: " + strings.TrimPrefix(owner, "module:")
+	case strings.HasPrefix(owner, "platform:"):
+		return "platform: " + strings.TrimPrefix(owner, "platform:")
+	default:
+		return owner
+	}
+}
+
+// setBootDefault writes the boot default, refusing anything that is neither
+// "stock" nor registered. The selector tolerates a dangling default (it falls
+// back to schwung, then stock) but there is no reason to create one here —
+// see spec section 3a: installing a payload can add a picker row, it can
+// never cause that row to boot, and neither can this handler.
+func (app *App) setBootDefault(id string) error {
+	reg := bootTargetsDir()
+	if id != "stock" {
+		if _, err := readRegistryEntry(reg, id); err != nil {
+			return fmt.Errorf("%q is not a registered boot target", id)
+		}
+	}
+	return writeBootDefault(reg, id)
+}

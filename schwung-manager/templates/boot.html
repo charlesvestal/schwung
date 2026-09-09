@@ -1,0 +1,47 @@
+{{template "base" .}}
+
+{{define "title"}}Boot - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Boot</h1>
+</div>
+
+<section class="info-card">
+    <p>What this Move boots into. Press <b>Back</b> during the boot window to
+       change it on the device; this page does the same thing.</p>
+
+    {{if .OverCap}}
+    <p class="requires-note">The picker shows only {{.Cap}} targets and
+        {{.Registered}} are registered. The ones sorted past the cap do not
+        appear at boot.</p>
+    {{end}}
+
+    <form method="POST" action="/boot/default">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <table class="asset-table">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th>Name</th>
+                    <th>Id</th>
+                    <th>Source</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Rows}}
+                <tr>
+                    <td class="asset-req"><input type="radio" name="id" value="{{.ID}}" {{if .IsDefault}}checked{{end}}></td>
+                    <td>{{.Name}}{{if .Missing}} <span class="asset-warning">(entry script missing)</span>{{end}}</td>
+                    <td><code>{{.ID}}</code></td>
+                    <td>{{.Source}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        <div class="system-actions">
+            <button type="submit" class="btn btn-primary">Set default</button>
+        </div>
+    </form>
+</section>
+{{end}}

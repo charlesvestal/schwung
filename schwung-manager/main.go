@@ -2737,6 +2737,52 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 	app.render(w, r, "system.html", data)
 }
 
+// handleBoot shows the boot registry as the picker on the device shows it:
+// Stock, Schwung, then every registered target, sorted as bs_build_rows sorts
+// them. The registered count is shown against bootPickerTargetCap because
+// bs_row_insert_sorted drops the overflow SILENTLY in id order — a dropped
+// row is otherwise unattributable from the device.
+func (app *App) handleBoot(w http.ResponseWriter, r *http.Request) {
+	reg := bootTargetsDir()
+	entries, err := listRegistryEntries(reg)
+	if err != nil {
+		app.logger.Error("listing boot targets", "err", err)
+	}
+	current, _ := readBootDefault(reg)
+	rows := bootPageRows(entries, current)
+
+	var registered int
+	for _, e := range entries {
+		if e.ID != "schwung" {
+			registered++
+		}
+	}
+	data := map[string]any{
+		"Title":      "Boot",
+		"Active":     "boot",
+		"Rows":       rows,
+		"Registered": registered,
+		"Cap":        bootPickerTargetCap,
+		"OverCap":    registered > bootPickerTargetCap,
+		"Flash":      r.URL.Query().Get("flash"),
+	}
+	app.render(w, r, "boot.html", data)
+}
+
+// handleBootSetDefault writes the chosen boot default. setBootDefault refuses
+// an id that is neither "stock" nor registered, so a typo'd or removed id
+// cannot be written here.
+func (app *App) handleBootSetDefault(w http.ResponseWriter, r *http.Request) {
+	id := r.FormValue("id")
+	if err := app.setBootDefault(id); err != nil {
+		http.Redirect(w, r, "/boot?flash="+url.QueryEscape("Could not set default: "+err.Error())+"&flash_type="+flashError,
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/boot?flash="+url.QueryEscape("Boot default is now "+id)+"&flash_type="+flashSuccess,
+		http.StatusSeeOther)
+}
+
 // handleSystemRepair shows the dedicated repair page with the SSH
 // bootstrap command + GUI installer fallback. Reachable from the
 // banner on every page (see partials/repair_banner.html).
@@ -3743,6 +3789,10 @@ func main() {
 	mux.HandleFunc("GET /modules/{id}/settings/values", app.handleConfigModuleValues)
 	mux.HandleFunc("POST /modules/{id}/settings/set", app.handleConfigModuleSet)
 	mux.HandleFunc("POST /modules/{id}/settings/clear", app.handleConfigModuleClearSecret)
+
+	// Boot — the picker's rows, from the web UI. See docs/BOOT_TARGETS.md.
+	mux.HandleFunc("GET /boot", app.handleBoot)
+	mux.HandleFunc("POST /boot/default", app.handleBootSetDefault)
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)
