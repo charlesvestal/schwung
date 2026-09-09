@@ -1477,6 +1477,17 @@
       "default_branch": "main",
       "asset_name": "pixel-walkers-module.tar.gz",
       "min_host_version": "1.3.0"
+    },
+    {
+      "id": "monksynth",
+      "name": "MonkSynth",
+      "description": "Monophonic formant (FOF) vocal synthesizer with twelve singing characters - an homage to Delay Lama. Pad pressure sweeps the vowel.",
+      "author": "Jonathan Taylor (DSP), Charles Vestal (port)",
+      "component_type": "sound_generator",
+      "github_repo": "charlesvestal/schwung-monksynth",
+      "default_branch": "main",
+      "asset_name": "monksynth-module.tar.gz",
+      "min_host_version": "1.2.1"
     }
   ]
 }
