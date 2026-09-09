@@ -91,7 +91,7 @@
     {
       "id": 10,
       "subject": "Task 11: Ownership \u2014 the E16 claims CC 1\u201316 ch 1",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** The surface and #403's CC Map can never both act on one turn.\n\n**Files:**\n- Modify: `src/modules/chain/dsp/chain_midi.c` (the CC-map lookup)\n- Create: `tests/host/test_e16_cc_claim.sh`\n\n**Acceptance Criteria:**\n- [ ] While `external_surface` is set, CC 1\u201316 on channel 1 never reaches the CC Map\n- [ ] While clear, the CC Map's behaviour is unchanged\n- [ ] The claimed range is defined once, in a header both sides read \u2014 not restated\n\n**Verify:** `bash tests/host/test_e16_cc_claim.sh` \u2192 passes; on device, map CC 1 to a parameter, enable the surface, and confirm the parameter stops following the CC Map\n\n```json:metadata\n{\"files\": [\"src/modules/chain/dsp/chain_midi.c\", \"tests/host/test_e16_cc_claim.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_cc_claim.sh\", \"acceptanceCriteria\": [\"While `external_surface` is set, CC 1\\u201316 on channel 1 never reaches the CC Map\", \"While clear, the CC Map's behaviour is unchanged\", \"The claimed range is defined once, in a header both sides read \\u2014 not restated\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         9
@@ -107,5 +107,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-10T09:53:09.040318"
+  "lastUpdated": "2026-09-10T10:04:26.199522"
 }
