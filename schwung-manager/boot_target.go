@@ -200,17 +200,29 @@ func chmodExecNoFollow(path string) error {
 // The detection replicates the host's rule exactly (first occurrence of the
 // quoted key in the raw manifest bytes) instead of approximating it, so a
 // manifest the host reads correctly is never refused.
+// hostReadManifestKeys is every key json_get_string / json_get_int pull out of
+// module.json in src/host/module_manager.c. Keep it in step with that file: a
+// key read there and missing here is a shadowing route nothing checks.
+var hostReadManifestKeys = []string{
+	"id", "name", "version", "ui", "dsp", "component_type", "scan_packs",
+}
+
 func checkBootTargetShadowing(raw []byte) error {
 	start, end, ok := jsonObjectSpan(raw, "boot_target")
 	if !ok {
 		return nil
 	}
-	for _, key := range []string{"id", "name"} {
+	// Every key json_get_string reads out of module.json, not just the two
+	// our block happens to carry today. Checking the host's ACTUAL read list
+	// against the block's ACTUAL span is exactly as precise as checking two
+	// names, and it does not quietly stop covering the block the day it grows
+	// a "version" field.
+	for _, key := range hostReadManifestKeys {
 		i := bytes.Index(raw, []byte(`"`+key+`"`))
 		if i >= start && i < end {
 			return fmt.Errorf("boot_target block precedes the manifest's own %q key: "+
 				"the host reads module.json by first occurrence, so it would read %q "+
-				"out of the block; move boot_target after \"id\" and \"name\"", key, key)
+				"out of the block; move boot_target below the manifest's own keys", key, key)
 		}
 	}
 	return nil

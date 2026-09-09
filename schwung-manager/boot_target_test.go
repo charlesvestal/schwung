@@ -286,3 +286,25 @@ func TestBootTargetRefusesBlockShadowingName(t *testing.T) {
 		t.Errorf("message must name the shadowed key, got: %v", err)
 	}
 }
+
+// A block carrying a key the host reads is refused even when that key is not
+// one of the two the block normally has.
+//
+// json_get_string reads seven keys out of module.json; the check must cover
+// the host's whole read list, or the day boot_target grows a "version" field
+// it silently stops protecting the manifest's own version.
+func TestBootTargetRefusesShadowingAnyHostReadKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "v")
+	// id and name come first, so only "version" is shadowed: the block sits
+	// between the manifest's name and its version.
+	writePayload(t, dir, `{"id":"v","name":"Real",`+
+		`"boot_target":{"name":"V","exec":"entry.sh","version":"9.9.9"},`+
+		`"version":"0.1.0"}`, "entry.sh")
+	_, err := parseBootTarget(filepath.Join(dir, "module.json"), "v", dir)
+	if err == nil {
+		t.Fatal("want a refusal: the host would read the module's version out of the block")
+	}
+	if !strings.Contains(err.Error(), "version") {
+		t.Errorf("error %q does not name the shadowed key", err)
+	}
+}
