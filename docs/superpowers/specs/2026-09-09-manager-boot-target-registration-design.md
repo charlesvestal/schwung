@@ -174,7 +174,7 @@ A manager page listing the boot registry as the user will meet it at boot:
 - Rows: `Stock Move`, `Schwung`, and every registered target, sorted as the
   picker sorts them.
 - Per row: display name, id, source (`module: <id>`, `platform: <id>`, or
-  *installed manually*), and a warning when the launcher resolves to nothing.
+  *installed manually*), and a warning when its `exec` does not resolve.
 - A radio selects the default; saving writes one bare id line to
   `boot-targets/default`.
 - Read-only otherwise. Removing a target is uninstalling its payload; editing
