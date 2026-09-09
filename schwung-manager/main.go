@@ -2738,8 +2738,10 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleBoot shows the boot registry as the picker on the device shows it:
-// Stock, Schwung, then every registered target, sorted as bs_build_rows sorts
-// them. The registered count is shown against bootPickerTargetCap because
+// Schwung first, then every registered target sorted by id, and Stock LAST —
+// the order bs_build_rows (src/host/boot_select_core.c) produces, mirrored by
+// bootPageRows. A page that lists them in another order means "the third row"
+// picks two different targets on the page and at boot. The registered count is shown against bootPickerTargetCap because
 // bs_row_insert_sorted drops the overflow SILENTLY in id order — a dropped
 // row is otherwise unattributable from the device.
 func (app *App) handleBoot(w http.ResponseWriter, r *http.Request) {

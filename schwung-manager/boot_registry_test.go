@@ -65,7 +65,7 @@ func TestBootRegistryGoldenMatchesWriter(t *testing.T) {
 	}
 }
 
-func TestBootRegistryListAndOwner(t *testing.T) {
+func TestBootRegistryListIncludesUnowned(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite := func(e registryEntry) {
 		t.Helper()
@@ -84,14 +84,17 @@ func TestBootRegistryListAndOwner(t *testing.T) {
 		t.Fatalf("listRegistryEntries = %d entries, want 2", len(entries))
 	}
 
-	// The payload id is "v-platform" but the target id is "vee": looking up by
-	// id would miss it, which is how an uninstall leaves a row behind.
-	got, ok := findEntryByOwner(entries, "module:v-platform")
-	if !ok || got.ID != "vee" {
-		t.Fatalf("findEntryByOwner = %+v, %v; want id vee", got, ok)
+	// An unowned entry is LISTED — the Boot page shows it — even though
+	// reconcile may never modify it.
+	byID := map[string]registryEntry{}
+	for _, e := range entries {
+		byID[e.ID] = e
 	}
-	if _, ok := findEntryByOwner(entries, "module:absent"); ok {
-		t.Error("findEntryByOwner matched an owner that is not present")
+	if byID["vee"].Owner != "module:v-platform" {
+		t.Errorf("vee owner = %q", byID["vee"].Owner)
+	}
+	if byID["hand"].Owner != "" {
+		t.Errorf("hand owner = %q, want empty", byID["hand"].Owner)
 	}
 }
 

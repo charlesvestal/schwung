@@ -167,21 +167,6 @@ func listRegistryEntries(dir string) ([]registryEntry, error) {
 	return out, nil
 }
 
-// findEntryByOwner locates an entry by OWNER, never by id: boot_target.id is
-// optional and may differ from the payload id, so <registry>/<payload id> is
-// the wrong door and silently leaves the row behind on uninstall.
-func findEntryByOwner(entries []registryEntry, owner string) (registryEntry, bool) {
-	if owner == "" {
-		return registryEntry{}, false
-	}
-	for _, e := range entries {
-		if e.Owner == owner {
-			return e, true
-		}
-	}
-	return registryEntry{}, false
-}
-
 func removeRegistryEntry(dir, id string) error {
 	return os.RemoveAll(filepath.Join(dir, id))
 }
