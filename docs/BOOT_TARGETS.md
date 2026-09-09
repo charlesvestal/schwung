@@ -140,11 +140,75 @@ that quietly stops warning you.
   `schwung`. The selector also tolerates a dangling default (falls back to
   Schwung, then stock), so a sloppy uninstall degrades gracefully.
 
+## Registering through Schwung Manager
+
+Anything the manager installs — an ordinary module that ships a binary, or a
+platform payload with no module in it — can declare a boot target in its
+manifest and let the manager register it, instead of you writing
+`boot-targets/<id>/` by hand:
+
+```json
+"boot_target": { "name": "V", "exec": "entry.sh" }
+```
+
+`exec` is **relative to your own payload directory**; the manager composes the
+absolute path (`resolveBootExec` in `schwung-manager/boot_target.go`). A
+payload never states where it is installed, so moving the install roots is one
+change plus one reconcile pass rather than an edit per target.
+
+Both payload shapes carry the same block: a module's `module.json`, or a
+platform's `platform.json` (`id`, `name`, `version`, `author`, and
+`boot_target`) — platform payloads install to `/data/UserData/platforms/<id>/`
+from a tarball whose top-level directory is `<id>/`.
+
+Rules, all enforced at registration with the reason logged:
+
+- `id` (optional, defaults to your payload id) matches `[a-z0-9-]+` and is not
+  `schwung` or `stock` — both reserved, for the reasons above.
+- `name` is 1–24 printable-ASCII characters and **must not contain `"` or
+  `\`**. This is not a style preference — it is what the two `boot.json`
+  readers were *measured* to survive (2026-09-09,
+  `tests/host/test_boot_target_manager_json.sh`): a value carrying a `"` is
+  truncated at it by both `bt_json_field` (awk) and `bs_json_field` (C), and
+  neither can unescape, so such a name is refused at registration rather than
+  silently mangled at boot. Two *other* shapes are just as dangerous and are
+  why the manager writes the registry the way it does rather than because
+  quoting is hard: an **unquoted** value (`"version": 3`) reads back as
+  **empty** — `bt_json_field` requires a quote after the colon — and the
+  **first textual occurrence of a key wins**, so a nested object carrying the
+  same key **shadows** the real one. Neither is a name-content rule (they are
+  about how the manager serializes the file, not what you may type), which is
+  why the registry is written flat, one field per line, string values only —
+  see `writeRegistryEntry` in `schwung-manager/boot_registry.go`.
+- `exec` is relative, does not contain `..`, resolves inside your directory
+  (symlinks included), and exists after extraction. A file that lost its
+  executable bit in transit is chmodded rather than refused.
+- The picker holds **14 targets** beside Stock and Schwung. Registration past
+  that is refused: `bs_row_insert_sorted` drops the overflow silently, in id
+  order, so a target that "did not appear" would be unattributable.
+
+The manager writes `boot.json` with an `owner` field (`module:<id>` or
+`platform:<id>`) and **only ever rewrites or deletes entries carrying an
+owner it recognises**. A target you installed by hand, as described above, has
+no `owner` and is never touched. The reverse is also true: **do not hand-edit
+an entry the manager owns** — the next reconcile pass (every install,
+uninstall, and update) will put it back.
+
+Uninstalling the payload removes its entry, and heals `boot-targets/default` to
+`schwung` if it named the removed target. Installing **never** changes the
+default: a new target is a new row in the picker, nothing more.
+
+Uninstalling Schwung removes the whole registry (`scripts/uninstall.sh`), so
+every target is deregistered at once. Platform payloads are left on disk under
+`/data/UserData/platforms/`; reinstalling Schwung brings them back as picker
+rows at the manager's next reconcile, but the previous default is gone.
+
 ## What the user sees
 
 - Every boot: `Loading <name> — press Back to change`, ~2 s.
 - Back during the window: the picker. Selecting a row boots it **and makes it
   the new default** — there is no boot-once mode, because the next boot's
   window is always an escape hatch.
-- Two failed boots of any target: the picker, with a failure banner, cursor on
-  Stock Move.
+- Three failed boots of any target: the picker, with a failure banner, cursor
+  on Stock Move. Three and not two because a power cycle inside the liveness
+  window is indistinguishable from a failed boot — see Watchdog.

@@ -1451,6 +1451,18 @@ installer). See memory `web-update-shim-bootstrap-gap`.
 
 The manager also serves a **file browser** (`/files`, under `/data/UserData/`) and per-slot module **Remote UIs** (auto-discovers `web_ui.html` per module, served in a sandboxed iframe). The file browser is keyboard- and screen-reader-accessible: rows are `tabindex=0` with spoken `aria-label`s, **Enter opens** (dir → in, file → download), **Space selects**, with a checkbox column for multi-select. Source: `schwung-manager/templates/files.html`, `remote_ui.go`.
 
+**A manager-installed payload can register a BOOT TARGET, and the registry is
+OWNER-KEYED.** `boot_target: {name, exec}` in `module.json` (or a platform's
+`platform.json`) — `exec` relative, because a payload never states where it is
+installed. The manager writes `boot-targets/<id>/boot.json` with an `owner`
+field and touches **only** entries whose owner it recognises, so a
+hand-installed target and Schwung's self-registered entry survive reconcile. A
+name carrying `"` or `\` is REFUSED, not escaped — measured, not assumed: both
+`boot.json` readers truncate a quoted value at its first `"` and neither can
+unescape. The picker holds 14 targets beside Stock and Schwung, dropping the
+overflow **silently in id order**, so registration past the cap is refused
+instead. Installing never changes `default`. See `docs/BOOT_TARGETS.md`.
+
 ### Catalog Format (v2)
 
 ```json

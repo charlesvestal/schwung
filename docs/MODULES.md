@@ -58,6 +58,27 @@ Optional fields: `description`, `author`, `ui`, `ui_chain`, `dsp`, `defaults`, `
 
   Get it wrong and the module does not load, with **no error on screen** — the only symptom is one line in `debug.log`: `dlopen failed: ... cannot open shared object file`. The failure mode is worth stating because the rules differ: copying an audio FX's build script to make a sound generator produces `<id>.so`, which is correct for the template and silently wrong for the copy. Set `dsp` to match whichever name your type requires, so the two agree.
 
+### `boot_target`
+
+A module that ships a binary worth booting into directly (or a platform
+payload's `platform.json`) can declare a top-level `boot_target` block and let
+Schwung Manager register it as a row in the boot selector's picker:
+
+```json
+"boot_target": { "id": "v", "name": "V", "exec": "entry.sh" }
+```
+
+- `id` (optional, defaults to your module id) matches `[a-z0-9-]+` and must
+  not be `schwung` or `stock`.
+- `name` is 1–24 printable-ASCII characters and must not contain `"` or `\`.
+- `exec` is **relative to your own module directory** — a payload never states
+  where it is installed, so the manager composes the absolute path.
+
+The manager writes the registry entry with an `owner` field and never touches
+one it does not own, so this is safe to declare alongside ordinary module
+fields. See `docs/BOOT_TARGETS.md` for the whole contract — validation
+details, the 14-target cap, and why the name rules are stricter than they look.
+
 ### Capabilities
 
 Add capability flags to enable special module behaviors. You can group them under

@@ -201,6 +201,9 @@ main() {
     ssh_with_retry "root" 'rm -f /usr/lib/schwung-web-shim.so' || true
     ssh_with_retry "ableton" 'rm -rf ~/schwung ~/schwung.tar.gz' || true
     ssh_with_retry "root" 'rm -f /data/UserData/move-anything' || true  # Remove backwards-compat symlink
+    # Payloads under /data/UserData/platforms are deliberately NOT removed:
+    # they are somebody else's software, installed separately. Reinstalling
+    # Schwung re-registers them at the manager's next reconcile.
     ssh_with_retry "root" 'rm -rf /data/UserData/boot-targets' || true  # Remove boot-selector registry
 
     log "Restoring MoveWebService..."
