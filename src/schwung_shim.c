@@ -70,6 +70,7 @@ extern align_capture_t g_align_capture;
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
+#include "host/usbc_emit_gate.h"
 #include "host/shadow_midi.h"
 #include "host/shadow_overtake_midi.h"
 #include "host/ext_midi_ring.h"
@@ -5884,12 +5885,15 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         }
     }
 
-    /* XMOS audio-IO SysEx emission — one active producer and one dormant path.
+    /* XMOS audio-IO SysEx emission — three producers, one slot-safe path.
      *
-     * 1. Retained USB-C replay machinery. Persistence is disabled as of 1.3.2,
-     *    so the gate below drops this before it can reach XMOS.
-     * 2. The active spi_sysex_inject debug trigger (file content = 37 12 value
-     *    byte).
+     * 1. Retained USB-C boot replay. Persistence is disabled as of 1.3.2, so
+     *    usbc_emit_select drops this before it can reach XMOS.
+     * 2. The monitor-loss repair, which is NOT persistence and is not gated by
+     *    it: it restores the mode Move's live 37 14 is advertising after Move's
+     *    own sampling page clears monitoring with a lone 37 12. See
+     *    usbc_emit_gate.h for why these two cannot share a variable.
+     * 3. The spi_sysex_inject debug trigger (file content = 37 12 value byte).
      *
      * Both go through xmos_audio_emit, which only ever writes free MIDI_OUT
      * slots. The previous implementation blind-wrote out[0..31] regardless of
@@ -5902,24 +5906,28 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         static int pending_next = 0;   /* index of the next one */
 
         if (pending_count == 0) {
-            int replay = shim_usbc_out_replay;
-            if (replay >= 0 && !usbc_out_persist_enabled) {
-                /* Persistence is retired; discard any stale worker request. */
-                shim_usbc_out_replay = -1;
-                replay = -1;
-            }
-            if (replay >= 0) {
-                shim_usbc_out_replay = -1;
-                xmos_audio_build(&xmos_audio_observed, replay, pending[0], pending[1]);
+            int emit_val = -1;
+            usbc_emit_kind_t emit_kind = usbc_emit_select(shim_usbc_out_replay,
+                                                          shim_usbc_out_reassert,
+                                                          usbc_out_persist_enabled,
+                                                          &emit_val);
+            /* Consume both requests whatever was selected: an unpicked one is
+             * stale by definition (persistence is retired, or the repair lost
+             * to nothing), and leaving it armed re-offers it every frame. */
+            shim_usbc_out_replay = -1;
+            shim_usbc_out_reassert = -1;
+
+            if (emit_kind != USBC_EMIT_NONE) {
+                xmos_audio_build(&xmos_audio_observed, emit_val, pending[0], pending[1]);
                 pending_count = 2;
                 pending_next = 0;
-                /* Neutral wording on purpose: this path serves the boot replay
-                 * AND the monitor-loss defence, and the shim cannot tell them
-                 * apart — the worker arms both through the same variable. It
-                 * logs the specific reason before arming, so saying "boot"
-                 * here mislabelled every mid-session re-assert. */
-                shadow_log(replay ? "USB-C out: re-asserting Main Out"
-                                  : "USB-C out: re-asserting Mic");
+                /* The two paths are named apart now. They shared one variable
+                 * before, so the shim could not tell them apart and every
+                 * mid-session repair was logged as a boot re-assert. */
+                shadow_log(emit_kind == USBC_EMIT_REPAIR
+                    ? "USB-C out: monitoring cleared by a lone 37 12 — restoring Main Out"
+                    : (emit_val ? "USB-C out: re-asserting Main Out"
+                                : "USB-C out: re-asserting Mic"));
             } else if (shim_pending_sysex_inject >= 0) {
                 int val_byte = shim_pending_sysex_inject;
                 shim_pending_sysex_inject = -1;

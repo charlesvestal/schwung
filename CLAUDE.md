@@ -1214,6 +1214,34 @@ Compatibility is deliberately non-destructive: `usbc_out_state` and the old
 feature and `master_fx:usbc_out_persist` accepts old SETs only as no-ops while
 GET reports `0`. The dormant wire codec and investigation history remain in
 `docs/SPI_PROTOCOL.md`.
+
+**Retiring the REPLAY retired the REPAIR with it, because one variable meant
+one gate.** They are not the same feature: the replay restores a preference
+from a FILE that Move is not advertising — that is what booted a device with
+its speaker muted and its own settings page reading Mic — while the repair
+fires only while Move's LIVE `37 14` still says Main Out, restoring the mode
+Move is advertising this second. Both were armed through
+`shim_usbc_out_replay`, so 1.3.2 fixed the muted speaker and shipped a stuck
+microphone: Move's sample/record page emits a **lone `37 12`** carrying bit1
+(monitoring) from its own stale "Mic" UI state, monitoring is *how* Main Out
+reaches USB-C, and with no `37 14` to show for it nothing re-asserted. The
+symptom is USB-C on the microphone with Move's settings page insisting on Main
+Out, unfixable until reboot **because re-picking Main Out there emits
+nothing** — from Move's side nothing changed. `usbc_emit_gate.h` splits the two
+producers and the repair is un-gated; `usbc_gate_tick_monitor` no longer
+consults the stored preference either, which had made the repair a servant of
+the feature that was switched off (a device with no state file went
+undefended).
+
+**The lone `37 12` is real, and its bit1 is not always stale** — captured on
+hardware 2026-09-09, seven of them from one mic/resample/mic pass on the
+sample/record page, every one with monitoring *preserved*, so nothing reverted
+and the repair correctly did nothing. Waiting for the failure is therefore not
+a test. Forcing it is: `echo 0 > /data/UserData/schwung/spi_sysex_inject` puts
+Move's stale message on the wire, and the repair answered 138 frames (~395 ms,
+the two-tick debounce) later with `37 12` bit1 set and `37 14 01` behind it,
+both visible in the POSThw view — bit0 preserved, so Move's input select is not
+clobbered.
 ### Shadow Architecture
 
 `src/schwung_shim.c` (LD_PRELOAD, intercepts ioctl, mixes audio), `src/shadow/shadow_ui.js` (slot/patch UI), `src/host/shadow_constants.h` (SHM structs).
