@@ -135,6 +135,8 @@ import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mj
 import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
     from '/data/UserData/schwung/shared/snapshot.mjs';
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
+import { createLifecycle as createE16Lifecycle, createSysexAssembler }
+    from '/data/UserData/schwung/shared/e16_surface.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
     ENTRY_ENTER, ENTRY_HOLD, ENTRY_FAILED,
@@ -10361,6 +10363,86 @@ function loadSaveStems() {
  * headphones in, On for one that never reports speaker at all. Neither escapes
  * Move->Schwung -- outside it Move's own enhancer is in the path.
  */
+/*
+ * EXTERNAL CONTROL SURFACE (Global Settings -> System -> Ext Surface).
+ *
+ * 0 = off, 1 = OXI E16. The lifecycle itself is pure and lives in
+ * src/shared/e16_surface.mjs; what is here is the three seams it needs -- a
+ * clock, a sender, and somewhere to put the toggle.
+ *
+ * ON DOES NOT MEAN A DEVICE IS ATTACHED, and nothing can ask: gear on Move's
+ * USB-A never enumerates in Linux (docs/SYSEX.md, issue #358). The surface
+ * SEEKS instead, sending ENTER REMOTE MODE until the device acks, and keeps a
+ * slow probe going afterwards so a replug -- which power-cycles an E16 out of
+ * remote mode without a word -- heals itself.
+ */
+let externalSurfaceMode = 0;
+const e16Lifecycle = createE16Lifecycle();
+
+/* One assembler for the port, not one per feature: the packets arrive
+ * interleaved with everything else on cable 2 and there is only one stream to
+ * reassemble. See docs/SYSEX.md for the four rules it implements. */
+const e16Assembler = createSysexAssembler({
+    onMessage: (body) => { e16Lifecycle.onSysex(body, Date.now()); },
+});
+
+/* The outbound door. It returns FALSE when the buffer is full, which means
+ * RETRY -- createLifecycle treats that as "not sent" and probes again on the
+ * next tick rather than advancing its clock past a message the device never
+ * saw. */
+function e16Send(packets) {
+    if (typeof move_midi_external_send !== "function") return false;
+    return move_midi_external_send(packets);
+}
+
+function setExternalSurfaceMode(v) {
+    const mode = (v === 1) ? 1 : 0;
+    if (mode === externalSurfaceMode) return;
+    externalSurfaceMode = mode;
+    /* EXIT is sent from here, once, or the device is left blank with the
+     * feature switched off. An EXIT the buffer refuses is owed and drained by
+     * externalSurfaceTick(). */
+    e16Lifecycle.setEnabled(mode === 1, Date.now(), e16Send);
+}
+
+function saveExternalSurfaceConfig() {
+    try {
+        const configPath = "/data/UserData/schwung/shadow_config.json";
+        let config = {};
+        try {
+            const content = host_read_file(configPath);
+            if (content) config = JSON.parse(content);
+        } catch (e) {}
+        config.external_surface = externalSurfaceMode;
+        host_write_file(configPath, JSON.stringify(config, null, 2));
+    } catch (e) {}
+}
+
+function loadExternalSurfaceConfig() {
+    try {
+        const content = host_read_file("/data/UserData/schwung/shadow_config.json");
+        if (!content) return;
+        const config = JSON.parse(content);
+        if (config.external_surface !== undefined) {
+            setExternalSurfaceMode(parseInt(config.external_surface, 10) || 0);
+        }
+    } catch (e) {}
+}
+
+/* Called every frame. Cheap by construction: while the surface is off and
+ * nothing is owed, this is two comparisons. */
+function externalSurfaceTick() {
+    e16Lifecycle.tick(Date.now(), e16Send);
+}
+
+/* Cable-2 bytes, three at a time with the CIN already stripped. Fed
+ * unconditionally: the assembler is what decides whether a run is ours, and a
+ * gate here would mean a message that began before the setting was switched on
+ * is spliced onto one that began after. */
+function externalSurfaceMidi(data) {
+    e16Assembler.feed(data);
+}
+
 let speakerEqMode = 0;                 /* 0 auto, 1 off, 2 on */
 const SPEAKER_EQ_NAMES = ["auto", "off", "on"];
 
@@ -14227,6 +14309,8 @@ function globalGridIoFor() {
                 return String(speakerEqMode);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
+            case "external_surface":
+                return String(externalSurfaceMode);
 
             /* The two doors have no state to report. They are answered anyway,
              * with option 0: an UNSERVED key makes the row announce "not read
@@ -14365,6 +14449,12 @@ function globalGridIoFor() {
                 return;
             case "analytics_enabled":
                 if (typeof host_set_analytics_enabled === "function") host_set_analytics_enabled(on ? 1 : 0);
+                return;
+            case "external_surface":
+                /* Its own saver, like pad_typing -- GLOBAL_ROUTING marks it
+                 * persist: "own", so the shared sink never fires for it. */
+                setExternalSurfaceMode(parseInt(value, 10) || 0);
+                saveExternalSurfaceConfig();
                 return;
 
             /* connect / help never arrive here: their routing names an ACTION,
@@ -24261,6 +24351,7 @@ globalThis.init = function() {
     loadPadTypingConfig();
     loadTextPreviewConfig();
     loadParamViewConfig();
+    loadExternalSurfaceConfig();
     retireFilebrowserService();
 
     /* Legacy: migrate old single master_fx config to slot 1 */
@@ -24628,6 +24719,9 @@ globalThis.tick = function() {
             }
         }
     }
+
+    /* Seek / hold the external control surface. Off, it is two comparisons. */
+    externalSurfaceTick();
 
     /* Live preset audition: debounced apply of the highlighted module preset
      * while scrolling the list (see shadow_ui_presets.mjs). Called every frame —
@@ -26833,6 +26927,10 @@ globalThis.onMidiMessageInternal = function(data) {
 };
 
 globalThis.onMidiMessageExternal = function(data) {
+    /* BEFORE the canvas dispatch, and unconditional: SysEx arrives as a run of
+     * 1-3 byte fragments, so a branch that could skip one fragment would leave
+     * the assembler holding half a message and splice the next one onto it. */
+    externalSurfaceMidi(data);
     if (dispatchCanvasMidi(data, "external")) {
         needsRedraw = true;
     }
