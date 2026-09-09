@@ -195,10 +195,10 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * rather than only in aggregate: a param that moved from one section to
    * another keeps the total at 24 and both totals-based checks green. */
   /*
-   * Eight is the current Audio count, not a capacity: Global Settings is pinned
+   * Nine is the current Audio count, not a capacity: Global Settings is pinned
    * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 8, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -328,6 +328,9 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
     /* One word, because it names the whole question the three options answer
        ("Master / Stems / Both") and the options are right beside it. */
     save_stems: "Save",
+    /* The one abbreviated name on this screen, and it is the name asked for --
+       not the width pin forcing it: "Speaker EQ" fits the row. */
+    speaker_eq: "Spkr EQ",
     /* File Browser is GONE: it started a bundled binary serving all of
        /data/UserData with --noauth on :404, and Schwung Manager serves the
        same tree at :7700/files. Analytics is the whole of the System grid
@@ -562,7 +565,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — six levels (7/8/6/1/4/3 params, Connect and Help " +
+console.log("PASS: global settings contract — six levels (7/9/6/1/4/3 params, Connect and Help " +
             "among them as write-only triggers), ONE section one page and no menu, no " +
             "length limit, every enum listable with matching short_options, " +
             "validator clean, no host global read, every key routed to a backend, the five " +

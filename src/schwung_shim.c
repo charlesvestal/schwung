@@ -180,6 +180,12 @@ static bool midi_indicator_enabled_setting = false; /* Off by default; persisted
 static int skipback_seconds_setting = SKIPBACK_DEFAULT_SECONDS; /* Skipback rolling buffer length */
 /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both. Default=both. */
 static uint8_t shadow_ui_trigger_setting = 2;
+/* Speaker EQ mode from config/features.json "speaker_eq": 0 auto, 1 off, 2 on.
+ * SEEDED INTO shadow_control at init, the same as shadow_ui_trigger_setting,
+ * so the choice holds through the BOOT WINDOW: the shadow UI pushes the value
+ * down from the same file a few seconds later, and 0 in SHM is a legitimate
+ * mode (Auto), so an unseeded register cannot be told from a real choice. */
+static uint8_t speaker_eq_setting = 0;
 /* "Keep Schwung": a plain Track tap while the shadow UI is up switches slot
  * instead of dismissing back to Move. Boot value from features.json; the live
  * value rides in shadow_control->stay_in_shadow. DEFAULT ON — a track button
@@ -267,7 +273,10 @@ static int speaker_eq_initialized = 0;
  * Trade-off: a device that only ever uses the built-in speaker (never inserts
  * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once
  * — no longer a practical concern now that the boot jack re-assert restores
- * the true state automatically. The EQ is always jack-auto (no user toggle). */
+ * the true state automatically. This whole paragraph describes AUTO, which is
+ * the default; Global Settings -> Audio -> Spkr EQ can force it Off or On
+ * (shadow_control_t.speaker_eq_mode), which is the escape for a device whose
+ * jack reading is simply wrong in one direction or the other. */
 /* Auto-mode stability: engage the EQ only when the jack has read speaker
  * (CC 115 val=0) continuously for SPK_EQ_STABLE_SEC. A val=127 (jack inserted)
  * flips us out of speaker instantly. This rejects transients and contact
@@ -1164,6 +1173,23 @@ static void load_feature_config(void)
                 while (*colon == ' ' || *colon == '\t') colon++;
                 shadow_ui_trigger_setting = (strncmp(colon, "false", 5) == 0) ? 1 : 2;
             }
+        }
+    }
+
+    /* Parse speaker_eq ("auto" | "off" | "on"; default "auto"). NOT the legacy
+     * "speaker_eq_mode" key: that belonged to the toggle removed in f418af41
+     * and a stale copy of it is still on the disk of every device that had it,
+     * so honouring it would silently revive a choice made against different
+     * jack-detect behaviour. */
+    const char *spk_eq_key = strstr(config_buf, "\"speaker_eq\"");
+    if (spk_eq_key) {
+        const char *colon = strchr(spk_eq_key, ':');
+        if (colon) {
+            colon++;
+            while (*colon == ' ' || *colon == '\t' || *colon == '"') colon++;
+            if (strncmp(colon, "off", 3) == 0)      speaker_eq_setting = 1;
+            else if (strncmp(colon, "on", 2) == 0)  speaker_eq_setting = 2;
+            else                                     speaker_eq_setting = 0;
         }
     }
 
@@ -3326,7 +3352,16 @@ skip_la_rebuild:
      * XMOS broadcasts CC 115 within ~180ms of shim init at every boot, so the
      * gate clears almost immediately on a real session. */
     {
-        int eq_on = spk_eq_speaker_stable();  /* always jack-auto (no toggle) */
+        /* Global Settings -> Audio -> Spkr EQ. Auto is the jack-following
+         * behaviour described above; Off never engages; On engages whatever
+         * the jack says. On is still confined to rebuild_from_la below --
+         * outside it Move's own enhancer is in the path and ours would double
+         * it, so "force on" cannot mean "run it twice". */
+        int spk_mode = shadow_control ? (int)shadow_control->speaker_eq_mode
+                                      : (int)speaker_eq_setting;
+        int eq_on = (spk_mode == SPEAKER_EQ_MODE_OFF) ? 0
+                  : (spk_mode == SPEAKER_EQ_MODE_ON)  ? 1
+                  : spk_eq_speaker_stable();
         if (rebuild_from_la && speaker_eq_initialized && eq_on) {
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
@@ -5364,6 +5399,7 @@ static void shim_init_subsystems(void)
         shadow_control->shadow_ui_trigger = shadow_ui_trigger_setting;
         shadow_control->midi_indicator_enabled = midi_indicator_enabled_setting ? 1 : 0;
         shadow_control->stay_in_shadow = stay_in_shadow_setting ? 1 : 0;
+        shadow_control->speaker_eq_mode = speaker_eq_setting;
         shadow_control->speaker_active = 1; /* assume speaker at boot; CC 115 will correct */
         /* Speaker-EQ auto stability clock starts now; EQ stays off until a
          * speaker reading has been stable for SPK_EQ_STABLE_SEC. */

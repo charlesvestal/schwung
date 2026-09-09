@@ -476,7 +476,40 @@ typedef struct shadow_control_t {
      * contract between two binaries. Appending is free; inserting is not.
      */
     volatile uint8_t pad_observe;
+    /*
+     * Speaker EQ (Global Settings -> Audio). 0 = Auto, 1 = Off, 2 = On.
+     *
+     * Under Move->Schwung the DAC mailbox is rebuilt from the four per-track
+     * Link Audio slots, which bypasses Move's own MoveSpeakerEnhancer, so the
+     * shim runs its emulation in its place -- but ONLY when the built-in
+     * speaker is the output, because the enhancer must never colour
+     * headphones. Auto is that jack-following behaviour, and it deliberately
+     * biases toward off (see the SPK_EQ_STABLE_SEC note in schwung_shim.c): a
+     * stuck or transient CC 115 makes headphones sound hollow, which is far
+     * worse than a speaker with less bass. Off and On are the two escapes from
+     * a jack reading that is wrong for a given device -- Off for a device whose
+     * XMOS insists on "speaker" with headphones plugged, On for one that never
+     * reports speaker at all.
+     *
+     * In every mode the EQ only runs under Move->Schwung: outside it Move's own
+     * enhancer is in the path and ours would double it. On does not change
+     * that, by construction rather than by a second condition to forget.
+     *
+     * APPENDED after pad_observe, for the reason stated on it: sizeof is a
+     * contract between two binaries. Appending is free; inserting is not.
+     *
+     * A FIELD rather than a features.json read, because load_feature_config()
+     * runs once at init and this has to be changeable without a reboot -- the
+     * same reason recall_quantize, metronome_mode and save_stems are fields.
+     * The C setter writes features.json and JS pushes it back down at startup.
+     */
+    volatile uint8_t speaker_eq_mode;
 } shadow_control_t;
+
+/* Values for shadow_control_t.speaker_eq_mode. */
+#define SPEAKER_EQ_MODE_AUTO 0
+#define SPEAKER_EQ_MODE_OFF  1
+#define SPEAKER_EQ_MODE_ON   2
 
 /* Values for shadow_control_t.save_stems. */
 #define SAVE_STEMS_MASTER 0
