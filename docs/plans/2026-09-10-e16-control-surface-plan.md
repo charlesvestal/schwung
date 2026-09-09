@@ -1024,3 +1024,27 @@ complete code and complete tests.
 `framebufferMsg`, `labelsMsg`, `packetize`, `isAck` (Task 2); `createCanvas`
 (Task 3); `decode`, `SHIFT_NOTE` (Task 4); `buildMap`, `shapeSignature`
 (Task 5); `createLifecycle` (Task 7) — used under those names throughout.
+
+---
+
+## Known gap, found during implementation
+
+**The chain DSP cannot read `shadow_control_t.external_surface`.** Task 11's
+ownership check is in `chain_midi.c`, which is a dlopen'd plugin with no
+link-time access to the shim's SHM layout, so it currently reads a file-scope
+`g_e16_surface_active` that is always 0. The claim is therefore inert: the CC
+Map's behaviour is provably unchanged, and the surface does not yet actually own
+CC 1-16.
+
+This was a hole in the plan, not in the implementation — Task 11's acceptance
+criteria assumed a flag the DSP can see, and it cannot. Closing it needs one of:
+
+- the shim writing the flag to the chain via the existing param channel
+  (`chain:external_surface`), which is the smallest change and matches how other
+  shim-to-chain state already travels; or
+- the check moving up into the shim, before the message is handed to the chain
+  at all — arguably the better home, since the shim is where the surface's
+  ownership is decided and it already reads the flag.
+
+Prefer the second on the next pass. Until then, treat Task 11 as "the predicate
+and its test are correct and pinned; the wire is not connected."
