@@ -69,3 +69,40 @@ func TestPlatformExtractionVerified(t *testing.T) {
 		t.Errorf("error %q does not name platform.json", err)
 	}
 }
+
+func TestPlatformRowsMergeCatalogAndDisk(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "schwung")
+	dir := filepath.Join(root, "platforms", "orphan")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "platform.json"),
+		[]byte(`{"id":"orphan","name":"Orphan","version":"0.1.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cat := []CatalogPlatform{{ID: "v", Name: "V"}}
+
+	rows := platformRows(base, cat, map[string]string{"v": "0.4.0"})
+	var haveOrphan, haveV bool
+	for _, r := range rows {
+		if r.ID == "orphan" {
+			haveOrphan = true
+			if !r.Installed || !r.Removable {
+				t.Errorf("orphan row = %+v; an installed platform absent from the catalog must still be removable", r)
+			}
+		}
+		if r.ID == "v" {
+			haveV = true
+			if r.Installed {
+				t.Errorf("v is not installed but row says it is: %+v", r)
+			}
+			if r.Available != "0.4.0" {
+				t.Errorf("available = %q, want 0.4.0", r.Available)
+			}
+		}
+	}
+	if !haveOrphan || !haveV {
+		t.Fatalf("rows = %+v", rows)
+	}
+}

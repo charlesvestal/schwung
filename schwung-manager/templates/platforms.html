@@ -1,0 +1,82 @@
+{{template "base" .}}
+
+{{define "title"}}Platforms - Schwung Manager{{end}}
+
+{{define "content"}}
+<div class="page-header">
+    <h1>Platforms</h1>
+    <p>Alternative firmware payloads a boot target can point to.</p>
+</div>
+
+<section class="info-card">
+    <p>Installing a platform adds it to the boot picker. It does not change what
+       this Move boots into — set that on the <a href="/boot">Boot</a> page, or by
+       pressing Back during the boot window.</p>
+</section>
+
+{{if not .Rows}}
+<div class="empty-state">
+    <p>No platforms in the catalog and none installed.</p>
+</div>
+{{else}}
+<div class="module-list">
+    <table aria-label="Platforms">
+        <thead>
+            <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Author</th>
+                <th scope="col">Version</th>
+                <th scope="col" class="col-actions">Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {{range .Rows}}
+            <tr>
+                <td>
+                    <strong>{{.Name}}</strong> <code>{{.ID}}</code>
+                    {{if .Description}}<p class="module-description">{{.Description}}</p>{{end}}
+                    {{if not .InCatalog}}<span class="asset-warning">not in catalog</span>{{end}}
+                </td>
+                <td>{{if .Author}}{{.Author}}{{else}}&mdash;{{end}}</td>
+                <td>
+                    {{if .Installed}}
+                        {{versionStr .Version}}
+                        {{if .HasUpdate}}<span class="host-summary-latest">&rarr; {{versionStr .Available}} available</span>{{end}}
+                    {{else if .Available}}
+                        {{versionStr .Available}}
+                    {{else}}
+                        &mdash;
+                    {{end}}
+                    {{if .Installed}}<span class="badge badge-installed">Installed</span>{{end}}
+                </td>
+                <td class="col-actions">
+                    {{if .Installed}}
+                        {{if .HasUpdate}}
+                        <form method="POST" action="/platforms/{{.ID}}/update" class="inline-form" data-confirm="Update {{.Name}}?" data-confirm-title="Update Platform" data-confirm-label="Update">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="return_to" value="/platforms" class="js-return-to">
+                            <button type="submit" class="btn btn-secondary btn-small">Update</button>
+                        </form>
+                        {{end}}
+                        {{if .Removable}}
+                        <form method="POST" action="/platforms/{{.ID}}/uninstall" class="inline-form" data-confirm="Uninstall {{.Name}}? This removes its boot picker row." data-confirm-title="Uninstall Platform" data-confirm-label="Uninstall">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="return_to" value="/platforms" class="js-return-to">
+                            <button type="submit" class="btn btn-danger btn-small">Uninstall</button>
+                        </form>
+                        {{end}}
+                    {{else}}
+                        <form method="POST" action="/platforms/{{.ID}}/install" class="inline-form" data-confirm="Install {{.Name}}?" data-confirm-title="Install Platform" data-confirm-label="Install">
+                            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                            <input type="hidden" name="return_to" value="/platforms" class="js-return-to">
+                            <button type="submit" class="btn btn-primary btn-small">Install</button>
+                        </form>
+                    {{end}}
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+{{end}}
+{{end}}

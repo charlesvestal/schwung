@@ -3794,6 +3794,11 @@ func main() {
 	mux.HandleFunc("GET /boot", app.handleBoot)
 	mux.HandleFunc("POST /boot/default", app.handleBootSetDefault)
 
+	mux.HandleFunc("GET /platforms", app.handlePlatforms)
+	mux.HandleFunc("POST /platforms/{id}/install", app.handlePlatformInstall)
+	mux.HandleFunc("POST /platforms/{id}/update", app.handlePlatformInstall) // install IS update
+	mux.HandleFunc("POST /platforms/{id}/uninstall", app.handlePlatformUninstall)
+
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)
 	mux.HandleFunc("GET /system/repair", app.handleSystemRepair)
