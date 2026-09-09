@@ -32,6 +32,7 @@ volatile int shim_inject_boot_jack = -1;
 volatile int shim_jack_persist = -1;
 volatile int shim_usbc_out_persist = -1;
 volatile int shim_usbc_out_replay = -1;
+volatile int shim_usbc_out_reassert = -1;
 volatile int shim_usbc_out_level = -1;
 volatile int shim_usbc_monitor = -1;
 
@@ -773,10 +774,16 @@ static void *worker_main(void *arg) {
             usbc_gate_out_t act = {0};
             usbc_gate_tick_monitor(&usbc_gate, shim_usbc_out_level,
                                    shim_usbc_monitor, &act);
-            if (act.replay && usbc_out_persist_enabled) {
-                shim_usbc_out_replay = act.replay_value;
+            /* Deliberately NOT gated on usbc_out_persist_enabled. This is a
+             * repair of the live state, not a replay of a saved one: it fires
+             * only while Move's own 37 14 still says Main Out, so it restores
+             * what Move is advertising rather than overriding it. Sharing the
+             * replay's variable — and therefore its gate — is what made
+             * retiring persistence in 1.3.2 silently retire this too. */
+            if (act.replay) {
+                shim_usbc_out_reassert = act.replay_value;
                 unified_log("shim", LOG_LEVEL_DEBUG,
-                            "USB-C out: monitoring cleared by a lone 37 12 — re-asserting Main Out");
+                            "USB-C out: monitoring cleared by a lone 37 12 — restoring Main Out");
             }
         }
 

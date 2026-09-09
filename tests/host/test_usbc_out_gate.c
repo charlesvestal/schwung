@@ -245,15 +245,39 @@ static void test_monitor_healthy_does_nothing(void)
     }
 }
 
-static void test_monitor_loss_not_defended_when_mic_stored(void)
+/* Persistence is retired, so there is no stored preference to defend and the
+ * worker force-settles the gate instead of replaying a file. The precondition
+ * is the LIVE wire — 37 14 says Main Out this second — so a device that has
+ * never written a state file must still be defended. Keying this off `stored`
+ * made the repair depend on the very feature that was switched off. */
+static void test_monitor_loss_defended_without_a_stored_preference(void)
+{
+    usbc_gate_t g;
+    usbc_gate_init(&g, -1);        /* no state file */
+    usbc_gate_force_settle(&g);    /* what the worker does with persistence off */
+    mon(&g, 1, 1);                 /* monitoring live */
+
+    mon(&g, 1, 0);
+    CHECK(OUT.replay == 0, "no-stored: debounced like any other loss");
+    mon(&g, 1, 0);
+    CHECK(OUT.replay == 1 && OUT.replay_value == 1,
+          "no-stored: the live 37 14 is the precondition, not the file");
+    CHECK(OUT.persist == 0, "no-stored: repairing persists nothing");
+}
+
+/* Same, with a stale file left by a pre-1.3.2 install. A file saying Mic
+ * cannot veto what Move is advertising right now. */
+static void test_monitor_loss_defended_over_a_stale_mic_file(void)
 {
     usbc_gate_t g;
     usbc_gate_init(&g, 0);
-    boot_replay(&g);      /* stored Mic settles immediately */
-    for (int i = 0; i < 4; i++) {
-        mon(&g, 1, 0);
-        CHECK(OUT.replay == 0, "mic-stored: nothing to defend");
-    }
+    usbc_gate_force_settle(&g);
+    mon(&g, 1, 1);
+
+    mon(&g, 1, 0);
+    mon(&g, 1, 0);
+    CHECK(OUT.replay == 1 && OUT.replay_value == 1,
+          "stale-mic-file: the live wire decides, not the file");
 }
 
 /* Boot arbitration owns the wire; the monitor defence must not cut in. */
@@ -313,7 +337,8 @@ int main(void)
     test_monitor_loss_triggers_reassert();
     test_split_mic_selection_is_not_fought();
     test_monitor_healthy_does_nothing();
-    test_monitor_loss_not_defended_when_mic_stored();
+    test_monitor_loss_defended_without_a_stored_preference();
+    test_monitor_loss_defended_over_a_stale_mic_file();
     test_monitor_defence_inert_before_settling();
     test_monitor_reasserts_are_bounded();
     test_monitor_budget_rearms_on_fresh_loss();

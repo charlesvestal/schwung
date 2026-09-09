@@ -198,12 +198,28 @@ Injecting too many MIDI events per frame causes SIGABRT. Safe limits:
 Moved here from `CLAUDE.md`, which keeps a summary. This is the `37 12` /
 `37 14` TLV pair on MIDI_OUT cable 0, and the boot arbitration around it.
 
-> **Disabled in Schwung 1.3.2.** Two field reports demonstrated that the
-> source and monitoring fields can become inconsistent: USB-C can carry the
-> microphone while the source still reports Main Out, and replaying monitoring
-> can mute the built-in speaker. Schwung no longer restores or repairs this
-> state. The codec and state file remain dormant so the change is reversible;
-> Move's own Settings screen is the sole owner of USB-C output routing.
+> **Persistence disabled in Schwung 1.3.2; the monitor-loss repair restored
+> after it.** Two field reports drove the 1.3.2 hotfix: USB-C carrying the
+> microphone while the source still reported Main Out, and replaying monitoring
+> muting the built-in speaker. The hotfix disabled *both* the boot replay and
+> the repair, because both were armed through `shim_usbc_out_replay` — one
+> variable, therefore one gate. That fixed the second report and made the first
+> permanent-until-reboot.
+>
+> They are different things and are now separated by `usbc_emit_gate.h`:
+>
+> - **boot replay — retired.** Restores a preference from a FILE that Move is
+>   not advertising. Dropped unless `usbc_out_persist_enabled`, which is a
+>   compile-time `0`. The state file and codec stay so the change is reversible.
+> - **monitor-loss repair — live, and not gated by persistence.** Fires only
+>   while Move's own `37 14` still says Main Out, so it restores the mode Move
+>   is advertising rather than overriding it. It cannot fire at boot from a
+>   file, and it consults no stored preference (requiring `stored == 1` had made
+>   it a servant of the retired feature, leaving a device with no state file
+>   undefended).
+>
+> Move's Settings screen owns the *selection*; Schwung only stops Move's own
+> sampling page from silently undoing it.
 
 Move's Settings menu picks what a connected computer receives over USB-C (Mic or
 Main Out). Move's firmware **never persists it** — there is no key in
@@ -247,7 +263,32 @@ the leading half of a split Mic selection. Two consecutive worker ticks
 `37 12 01` at f75529, our `37 12 03` at f75635 (**bit0 preserved, bit1
 restored**), then quiet.
 
-Historical flow (dormant as of 1.3.2): the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
+**Forcing the failure is the only way to test the repair.** Captured on
+hardware 2026-09-09: a full mic → resample → mic pass on Move's sample/record
+page emitted **seven lone `37 12` messages, no `37 14` anywhere** — the shape
+the repair exists for — but every one carried bit1 **set**, so monitoring
+survived, nothing reverted, and the repair correctly did nothing. Bit1 is
+carried from Move's settings-page UI state and is only sometimes stale, so a
+session that does not reproduce proves nothing. The debug trigger puts the
+stale message on the wire directly:
+
+```
+echo 0 > /data/UserData/schwung/spi_sysex_inject      # 37 12 00 — monitoring cleared
+```
+
+```
+f365650  ROUTE  37 12  monitor_bit1=0   injected failure
+f365788  ROUTE  37 12  monitor_bit1=1   repair, 138 frames (~395 ms) later
+f365789  OUTSRC 37 14  value=1
+```
+
+All three appear in the POSThw view as well as PRE, so they crossed the ioctl
+rather than merely landing in the shadow buffer, and `usbc_in_bit0` is
+unchanged through the repair — it reuses Move's own route payload, so the
+sampling input select is never clobbered. Arm the capture with
+`touch /data/UserData/schwung/log_xmos_sysex_on`.
+
+Historical flow (replay dormant as of 1.3.2): the SPI pre-transfer callback scans MIDI_OUT via `xmos_audio_scan`; the
 worker persists the value to `/data/UserData/schwung/usbc_out_state`; ~5 s after
 boot the worker arms a replay, which the SPI callback emits one message per
 frame. Only Main Out is replayed — Mic is Move's own boot default, so there is
@@ -287,7 +328,8 @@ Two behaviours worth knowing:
 The former **Global Settings → Audio → USB-C Persist** row is removed.
 `master_fx:usbc_out_persist` remains only as a compatibility parameter: SET is
 a no-op and GET reports `0`. Existing `shadow_config.json` and
-`usbc_out_state` values are preserved but ignored.
+`usbc_out_state` values are preserved but ignored — including by the repair,
+which reads the wire and not the file.
 
 Impl: `src/host/shadow_xmos_audio.c` (pure codec — no I/O, allocation or locks,
 so it is both SPI-callback-safe and host-testable; unit tests in
@@ -295,7 +337,10 @@ so it is both SPI-callback-safe and host-testable; unit tests in
 pre-transfer callback, persisted and armed in `src/host/shim_worker.c`. The
 boot arbitration is split out as `src/host/usbc_out_gate.c` — also pure state,
 with no clock of its own, which is what makes the boot orderings testable
-without a device.
+without a device. Which of the two armed requests may reach the wire is
+`src/host/usbc_emit_gate.h`, pure selection for the same reason
+(`tests/host/test_usbc_emit_gate.sh`); the wiring that silenced the repair is
+pinned in `tests/host/test_usbc_out_persist_disabled.sh`.
 
 `xmos_audio_emit` is also the only sanctioned way to put SysEx into MIDI_OUT: it
 requires a **contiguous** run of free slots, refuses while any cable-0 SysEx is
