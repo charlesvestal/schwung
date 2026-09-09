@@ -76,9 +76,26 @@ type CatalogHost struct {
 
 // Catalog is the top-level catalog structure.
 type Catalog struct {
-	CatalogVersion int             `json:"catalog_version"`
-	Host           CatalogHost     `json:"host"`
-	Modules        []CatalogModule `json:"modules"`
+	CatalogVersion int               `json:"catalog_version"`
+	Host           CatalogHost       `json:"host"`
+	Modules        []CatalogModule   `json:"modules"`
+	Platforms      []CatalogPlatform `json:"platforms,omitempty"`
+}
+
+// CatalogPlatform is a boot target with no module in it: an alternative
+// platform that wants the manager's install plumbing. It has no
+// component_type because it is never loaded by the Schwung host — it replaces
+// it at boot.
+type CatalogPlatform struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Author        string `json:"author"`
+	GithubRepo    string `json:"github_repo"`
+	DefaultBranch string `json:"default_branch"`
+	AssetName     string `json:"asset_name"`
+	MinHostVer    string `json:"min_host_version"`
+	Requires      string `json:"requires,omitempty"`
 }
 
 // ModuleAssets describes user-uploadable assets for a module.
@@ -403,14 +420,7 @@ func (cs *CatalogService) GetReleaseMeta() map[string]ReleaseMeta {
 func discoverInstalledModules(base string) map[string]InstalledModule {
 	installed := make(map[string]InstalledModule)
 	// Walk known category dirs and the root modules dir.
-	dirs := []string{
-		filepath.Join(base, "modules"),
-		filepath.Join(base, "modules", "sound_generators"),
-		filepath.Join(base, "modules", "audio_fx"),
-		filepath.Join(base, "modules", "midi_fx"),
-		filepath.Join(base, "modules", "tools"),
-		filepath.Join(base, "modules", "overtake"),
-	}
+	dirs := moduleInstallDirs(base)
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -767,6 +777,8 @@ func loadTemplates() (templateMap, error) {
 		"templates/remote_ui.html",
 		"templates/download.html",
 		"templates/repair.html",
+		"templates/boot.html",
+		"templates/platforms.html",
 	}
 
 	m := make(templateMap, len(pages))
@@ -985,9 +997,8 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 
 // findModuleDir locates the installed directory for a module by ID.
 func (app *App) findModuleDir(id string) string {
-	dirs := []string{"modules", "modules/sound_generators", "modules/audio_fx", "modules/midi_fx", "modules/tools", "modules/overtake"}
-	for _, d := range dirs {
-		candidate := filepath.Join(app.basePath, d, id)
+	for _, d := range moduleInstallDirs(app.basePath) {
+		candidate := filepath.Join(d, id)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return candidate
 		}
@@ -1132,6 +1143,8 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // getInstallSubdir maps component_type to the install subdirectory name.
+// Every value returned here MUST be in installSubdirs (payload_paths.go) —
+// TestPayloadPathsCoverEveryInstallSubdir fails if one is not.
 func getInstallSubdir(componentType string) string {
 	switch componentType {
 	case "sound_generator":
@@ -1168,6 +1181,67 @@ func (r ReleaseJSON) forModule(moduleID string) (ReleaseJSON, bool) {
 	}
 	moduleRelease, ok := r.Modules[moduleID]
 	return moduleRelease, ok
+}
+
+// resolveDownloadURL fetches release.json for a payload and returns the URL to
+// download plus the version that URL represents. Falls back to the repo's
+// latest-release asset when release.json is missing or does not carry this id.
+// Shared by module and platform installs: one release.json contract, one
+// multi-module shape, one fallback.
+func (app *App) resolveDownloadURL(repo, branch, id, assetName string) (url, version string) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json", repo, branch)
+	app.logger.Info("fetching release.json", "url", releaseURL)
+
+	if resp, err := client.Get(releaseURL); err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			var rel ReleaseJSON
+			if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil {
+				if r, ok := rel.forModule(id); ok {
+					url, version = r.DownloadURL, r.Version
+				} else {
+					app.logger.Warn("id missing from multi-module release.json; using fallback URL", "id", id)
+				}
+			} else {
+				app.logger.Warn("decoding release.json", "id", id, "err", err)
+			}
+		} else {
+			app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
+		}
+	} else {
+		app.logger.Warn("fetching release.json", "id", id, "err", err)
+	}
+	if url == "" {
+		url = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, assetName)
+	}
+	return url, version
+}
+
+// downloadToTemp saves a URL to a temp file under basePath (never /tmp — the
+// device's root FS is ~463MB and usually full). The caller removes it.
+func (app *App) downloadToTemp(url, name string) (string, error) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("downloading tarball: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	tmpPath := filepath.Join(app.basePath, name)
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("saving tarball: %w", err)
+	}
+	f.Close()
+	return tmpPath, nil
 }
 
 // installModule downloads and extracts a module from its GitHub release.
@@ -1225,67 +1299,14 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 		return err
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
-
-	// 1. Fetch release.json to get download URL.
-	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json",
-		mod.GithubRepo, mod.DefaultBranch)
-	app.logger.Info("fetching release.json", "url", releaseURL)
-
-	resp, err := client.Get(releaseURL)
-	if err != nil {
-		return fmt.Errorf("fetching release.json: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		// Fall back to latest release download URL.
-		app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
-	}
-
-	var downloadURL, releaseVersion string
-	if resp.StatusCode == http.StatusOK {
-		var rel ReleaseJSON
-		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-			return fmt.Errorf("decoding release.json: %w", err)
-		}
-		if moduleRelease, ok := rel.forModule(mod.ID); ok {
-			downloadURL = moduleRelease.DownloadURL
-			releaseVersion = moduleRelease.Version
-		} else {
-			app.logger.Warn("module missing from multi-module release.json; using fallback URL",
-				"id", mod.ID)
-		}
-	}
-	if downloadURL == "" {
-		// Fallback: use GitHub releases latest download.
-		downloadURL = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s",
-			mod.GithubRepo, mod.AssetName)
-	}
-
-	// 2. Download the tarball.
+	downloadURL, releaseVersion := app.resolveDownloadURL(
+		mod.GithubRepo, mod.DefaultBranch, mod.ID, mod.AssetName)
 	app.logger.Info("downloading module", "id", mod.ID, "url", downloadURL)
-	dlResp, err := client.Get(downloadURL)
+	tmpPath, err := app.downloadToTemp(downloadURL, ".tmp-module-download.tar.gz")
 	if err != nil {
-		return fmt.Errorf("downloading tarball: %w", err)
-	}
-	defer dlResp.Body.Close()
-	if dlResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download returned %d", dlResp.StatusCode)
-	}
-
-	// Save to temp file in /data/UserData/ (not /tmp which is on rootfs).
-	tmpPath := filepath.Join(app.basePath, ".tmp-module-download.tar.gz")
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
+		return err
 	}
 	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("saving tarball: %w", err)
-	}
-	tmpFile.Close()
 
 	// 3. Extract to the correct category directory.
 	categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(mod.ComponentType))
@@ -1334,6 +1355,13 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 	chown := exec.Command("chown", "-R", "ableton:users", modDir)
 	if out, err := chown.CombinedOutput(); err != nil {
 		app.logger.Warn("chown failed (non-fatal)", "id", mod.ID, "err", err, "output", string(out))
+	}
+
+	// Register whatever boot target the module declares. A refusal is NOT an
+	// install failure: the module works, it just gets no picker row, and the
+	// reason is in the log.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target registration", "id", mod.ID, "err", err)
 	}
 
 	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
@@ -1391,7 +1419,20 @@ func (app *App) uninstallModule(id string) error {
 			map[bool]string{true: "it", false: "those"}[len(dependents) == 1])
 	}
 	app.logger.Info("uninstalling module", "id", id, "path", modDir)
-	return os.RemoveAll(modDir)
+	if err := os.RemoveAll(modDir); err != nil {
+		return err
+	}
+	// Takes the picker row with it, found by OWNER — boot_target.id is
+	// optional and may differ from the module id.
+	//
+	// Warn-only, like the install path: the module IS gone by now, so
+	// returning reconcile's error would report "uninstall failed" for work
+	// that succeeded — and reconcile fails for reasons that have nothing to
+	// do with this module (a full picker, another payload's id collision).
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target deregistration", "id", id, "err", err)
+	}
+	return nil
 }
 
 // installedDependentsOf lists the modules PRESENT ON DISK that declare `id` in
@@ -1756,6 +1797,13 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
 		}
 
+		// Same payload shape as a catalog install, so it can declare the same
+		// boot_target block. A refusal is logged, never surfaced as a failed
+		// install.
+		if err := app.reconcileBootTargets(); err != nil {
+			app.logger.Warn("boot target registration", "id", mj.ID, "err", err)
+		}
+
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
 		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+GitHub", http.StatusSeeOther)
 
@@ -1832,6 +1880,13 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		chown := exec.Command("chown", "-R", "ableton:users", destDir)
 		if out, err := chown.CombinedOutput(); err != nil {
 			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
+		}
+
+		// Same payload shape as a catalog install, so it can declare the same
+		// boot_target block. A refusal is logged, never surfaced as a failed
+		// install.
+		if err := app.reconcileBootTargets(); err != nil {
+			app.logger.Warn("boot target registration", "id", mj.ID, "err", err)
 		}
 
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
@@ -2682,6 +2737,54 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		data["DiskPercent"] = int((diskTotal - diskFree) * 100 / diskTotal)
 	}
 	app.render(w, r, "system.html", data)
+}
+
+// handleBoot shows the boot registry as the picker on the device shows it:
+// Schwung first, then every registered target sorted by id, and Stock LAST —
+// the order bs_build_rows (src/host/boot_select_core.c) produces, mirrored by
+// bootPageRows. A page that lists them in another order means "the third row"
+// picks two different targets on the page and at boot. The registered count is shown against bootPickerTargetCap because
+// bs_row_insert_sorted drops the overflow SILENTLY in id order — a dropped
+// row is otherwise unattributable from the device.
+func (app *App) handleBoot(w http.ResponseWriter, r *http.Request) {
+	reg := bootTargetsDir()
+	entries, err := listRegistryEntries(reg)
+	if err != nil {
+		app.logger.Error("listing boot targets", "err", err)
+	}
+	current, _ := readBootDefault(reg)
+	rows := bootPageRows(entries, current)
+
+	var registered int
+	for _, e := range entries {
+		if e.ID != "schwung" {
+			registered++
+		}
+	}
+	data := map[string]any{
+		"Title":      "Boot",
+		"Active":     "boot",
+		"Rows":       rows,
+		"Registered": registered,
+		"Cap":        bootPickerTargetCap,
+		"OverCap":    registered > bootPickerTargetCap,
+		"Flash":      r.URL.Query().Get("flash"),
+	}
+	app.render(w, r, "boot.html", data)
+}
+
+// handleBootSetDefault writes the chosen boot default. setBootDefault refuses
+// an id that is neither "stock" nor registered, so a typo'd or removed id
+// cannot be written here.
+func (app *App) handleBootSetDefault(w http.ResponseWriter, r *http.Request) {
+	id := r.FormValue("id")
+	if err := app.setBootDefault(id); err != nil {
+		http.Redirect(w, r, "/boot?flash="+url.QueryEscape("Could not set default: "+err.Error())+"&flash_type="+flashError,
+			http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/boot?flash="+url.QueryEscape("Boot default is now "+id)+"&flash_type="+flashSuccess,
+		http.StatusSeeOther)
 }
 
 // handleSystemRepair shows the dedicated repair page with the SSH
@@ -3634,6 +3737,13 @@ func main() {
 	// entrypoint, so we can finish the install and reboot once.
 	app.healShimIfStale()
 
+	// Make the boot registry agree with what is on disk before anything can
+	// install, uninstall, or boot off a stale row. Never fails startup — a
+	// refused target just gets no picker row, logged.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target reconcile at startup", "err", err)
+	}
+
 	mux := http.NewServeMux()
 
 	// Static files.
@@ -3683,6 +3793,15 @@ func main() {
 	mux.HandleFunc("GET /modules/{id}/settings/values", app.handleConfigModuleValues)
 	mux.HandleFunc("POST /modules/{id}/settings/set", app.handleConfigModuleSet)
 	mux.HandleFunc("POST /modules/{id}/settings/clear", app.handleConfigModuleClearSecret)
+
+	// Boot — the picker's rows, from the web UI. See docs/BOOT_TARGETS.md.
+	mux.HandleFunc("GET /boot", app.handleBoot)
+	mux.HandleFunc("POST /boot/default", app.handleBootSetDefault)
+
+	mux.HandleFunc("GET /platforms", app.handlePlatforms)
+	mux.HandleFunc("POST /platforms/{id}/install", app.handlePlatformInstall)
+	mux.HandleFunc("POST /platforms/{id}/update", app.handlePlatformInstall) // install IS update
+	mux.HandleFunc("POST /platforms/{id}/uninstall", app.handlePlatformUninstall)
 
 	// System.
 	mux.HandleFunc("GET /system", app.handleSystem)

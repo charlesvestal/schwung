@@ -15,15 +15,36 @@ func TestLoadTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadTemplates: %v", err)
 	}
-	required := []string{
-		"config.html",
-		"module_detail.html",
-		"system_cpu.html",
+	// EVERY page template must be registered, derived from the directory
+	// rather than restated here.
+	//
+	// This list used to name three templates by hand, so it could only fail
+	// for a page that already worked. boot.html and platforms.html shipped
+	// unregistered and this test stayed green: loadTemplates parses whatever
+	// `pages` names, and a page missing from that literal is not a parse
+	// error -- it is an HTTP 500 at runtime, "template not found", visible
+	// only on the device.
+	entries, err := os.ReadDir("templates")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, name := range required {
-		if _, ok := m[name]; !ok {
-			t.Errorf("missing template %q", name)
+	var found int
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".html" {
+			continue
 		}
+		// base.html is the layout every page clone is built from, not a page.
+		if e.Name() == "base.html" {
+			continue
+		}
+		found++
+		if _, ok := m[e.Name()]; !ok {
+			t.Errorf("templates/%s exists but is not in loadTemplates' pages list; "+
+				"it will 500 with \"template not found\" at runtime", e.Name())
+		}
+	}
+	if found == 0 {
+		t.Fatal("no page templates found: this test would pass vacuously")
 	}
 }
 
