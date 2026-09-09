@@ -955,7 +955,7 @@
       "github_repo": "filliformes/forge-move",
       "default_branch": "master",
       "asset_name": "forge-module.tar.gz",
-      "min_host_version": "0.9.0"
+      "min_host_version": "1.3.0"
     },
     {
       "id": "davebox",
