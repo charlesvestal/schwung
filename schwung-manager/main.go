@@ -1422,7 +1422,15 @@ func (app *App) uninstallModule(id string) error {
 	}
 	// Takes the picker row with it, found by OWNER — boot_target.id is
 	// optional and may differ from the module id.
-	return app.reconcileBootTargets()
+	//
+	// Warn-only, like the install path: the module IS gone by now, so
+	// returning reconcile's error would report "uninstall failed" for work
+	// that succeeded — and reconcile fails for reasons that have nothing to
+	// do with this module (a full picker, another payload's id collision).
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target deregistration", "id", id, "err", err)
+	}
+	return nil
 }
 
 // installedDependentsOf lists the modules PRESENT ON DISK that declare `id` in

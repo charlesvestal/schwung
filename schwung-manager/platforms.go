@@ -116,7 +116,14 @@ func (app *App) installPlatform(p *CatalogPlatform) error {
 	}
 	chownToAbleton(payloadDir)
 
-	return app.reconcileBootTargets()
+	// A refused boot target is NOT an install failure — the payload is on
+	// disk and only its picker row is missing, with the reason logged. Same
+	// rule as installModuleWithDeps; a platform whose whole point is booting
+	// still installs, and the Boot page shows what went wrong.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target registration", "id", p.ID, "err", err)
+	}
+	return nil
 }
 
 // pinInstalledPlatformVersion mirrors pinInstalledModuleVersion: without it a
@@ -161,5 +168,10 @@ func (app *App) uninstallPlatform(id string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return err
 	}
-	return app.reconcileBootTargets()
+	// Warn-only: the payload is already gone, so reconcile's error would
+	// report a failure for work that succeeded.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target deregistration", "id", id, "err", err)
+	}
+	return nil
 }
