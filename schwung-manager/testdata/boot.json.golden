@@ -1,0 +1,6 @@
+{
+  "name": "V",
+  "exec": "/data/UserData/platforms/v/entry.sh",
+  "version": "0.3.0",
+  "owner": "platform:v"
+}
