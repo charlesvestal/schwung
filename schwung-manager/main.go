@@ -403,14 +403,7 @@ func (cs *CatalogService) GetReleaseMeta() map[string]ReleaseMeta {
 func discoverInstalledModules(base string) map[string]InstalledModule {
 	installed := make(map[string]InstalledModule)
 	// Walk known category dirs and the root modules dir.
-	dirs := []string{
-		filepath.Join(base, "modules"),
-		filepath.Join(base, "modules", "sound_generators"),
-		filepath.Join(base, "modules", "audio_fx"),
-		filepath.Join(base, "modules", "midi_fx"),
-		filepath.Join(base, "modules", "tools"),
-		filepath.Join(base, "modules", "overtake"),
-	}
+	dirs := moduleInstallDirs(base)
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -985,9 +978,8 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 
 // findModuleDir locates the installed directory for a module by ID.
 func (app *App) findModuleDir(id string) string {
-	dirs := []string{"modules", "modules/sound_generators", "modules/audio_fx", "modules/midi_fx", "modules/tools", "modules/overtake"}
-	for _, d := range dirs {
-		candidate := filepath.Join(app.basePath, d, id)
+	for _, d := range moduleInstallDirs(app.basePath) {
+		candidate := filepath.Join(d, id)
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 			return candidate
 		}
@@ -1132,6 +1124,8 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 // getInstallSubdir maps component_type to the install subdirectory name.
+// Every value returned here MUST be in installSubdirs (payload_paths.go) —
+// TestPayloadPathsCoverEveryInstallSubdir fails if one is not.
 func getInstallSubdir(componentType string) string {
 	switch componentType {
 	case "sound_generator":
