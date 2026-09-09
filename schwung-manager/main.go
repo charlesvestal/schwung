@@ -777,6 +777,8 @@ func loadTemplates() (templateMap, error) {
 		"templates/remote_ui.html",
 		"templates/download.html",
 		"templates/repair.html",
+		"templates/boot.html",
+		"templates/platforms.html",
 	}
 
 	m := make(templateMap, len(pages))
