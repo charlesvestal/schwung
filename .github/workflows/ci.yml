@@ -32,7 +32,16 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive }
       - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        # apt-get update exits 100 if ANY repo on the runner image has a bad
+        # index, and the image ships Google's Chrome repo, which we never use
+        # and which breaks CI for the whole repo whenever it is mid-republish
+        # (hit 2026-09-09: "Hash Sum mismatch", every job, both re-runs).
+        # Drop that repo, and let the refresh be best-effort -- the install
+        # below is the real gate, and it fails loudly if ripgrep is missing.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update || true
+          sudo apt-get install -y ripgrep
       - name: C unit tests (MPSC writer, etc.)
         run: make -C tests/host test
       - name: Contract / invariant / native-compile tests
@@ -132,7 +141,16 @@ jobs:
         # test_chain_host_file_split.sh uses rg. host-tests installs it in its
         # own job; this one runs the same script on the runner, not in the
         # builder container, so it needs its own copy.
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        # apt-get update exits 100 if ANY repo on the runner image has a bad
+        # index, and the image ships Google's Chrome repo, which we never use
+        # and which breaks CI for the whole repo whenever it is mid-republish
+        # (hit 2026-09-09: "Hash Sum mismatch", every job, both re-runs).
+        # Drop that repo, and let the refresh be best-effort -- the install
+        # below is the real gate, and it fails loudly if ripgrep is missing.
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update || true
+          sudo apt-get install -y ripgrep
       - name: Chain dsp.so exported-symbol invariant
         # test_chain_host_file_split.sh step 5 asserts dsp.so exports exactly
         # the chain entry points plus the unified_log set — cross-TU internals
