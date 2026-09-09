@@ -1,0 +1,111 @@
+{
+  "planPath": "docs/plans/2026-09-10-e16-control-surface-plan.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: Transcribe the OXI REMOTE protocol into the repo",
+      "status": "pending",
+      "description": "**Goal:** The protocol lives in the repo rather than in a Google Sheet that reads as private.\n\n**Files:**\n- Create: `docs/E16_REMOTE.md`\n- Modify: `CLAUDE.md` (Documentation Index \u2014 one line)\n\n**Acceptance Criteria:**\n- [ ] Every message id from the spec is documented with its payload layout\n- [ ] The 8-to-7 packing rule is stated with a worked example\n- [ ] The fixed remote-mode input mapping (CC 1\u201316 ch 1, notes 0\u201315, Shift note 16) is documented\n- [ ] `CLAUDE.md`'s Documentation Index gains one line pointing at it\n\n**Verify:** `grep -c \"06 0[1234]\" docs/E16_REMOTE.md` \u2192 at least 4\n\n```json:metadata\n{\"files\": [\"docs/E16_REMOTE.md\", \"CLAUDE.md\"], \"verifyCommand\": \"grep -c \\\"06 0[1234]\\\" docs/E16_REMOTE.md\", \"acceptanceCriteria\": [\"Every message id from the spec is documented with its payload layout\", \"The 8-to-7 packing rule is stated with a worked example\", \"The fixed remote-mode input mapping (CC 1\\u201316 ch 1, notes 0\\u201315, Shift note 16) is documented\", \"`CLAUDE.md`'s Documentation Index gains one line pointing at it\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: `e16_protocol.mjs` \u2014 packing and message builders",
+      "status": "pending",
+      "description": "**Goal:** Every byte we will ever send the E16, built and unit-tested against captures taken from real hardware.\n\n**Files:**\n- Create: `src/shared/e16_protocol.mjs`\n- Create: `tests/host/test_e16_protocol.sh`\n\n**Acceptance Criteria:**\n- [ ] `pack7` matches the worked example, including bytes with bit 7 set\n- [ ] `enterMsg()` equals the exact bytes hardware acked: `F0 00 21 5B 02 01 06 55 F7`\n- [ ] `ringMsg` emits one 7-byte chunk per encoder and accepts a 14-bit amount\n- [ ] `framebufferMsg` accepts 1024 bytes and produces 1171 packed payload bytes\n- [ ] Every builder returns flat USB-MIDI packets ready for `move_midi_external_send` (CIN 0x04/0x05/0x06/0x07, cable nibble 0)\n\n**Verify:** `bash tests/host/test_e16_protocol.sh` \u2192 all assertions pass\n\n```json:metadata\n{\"files\": [\"src/shared/e16_protocol.mjs\", \"tests/host/test_e16_protocol.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_protocol.sh\", \"acceptanceCriteria\": [\"`pack7` matches the worked example, including bytes with bit 7 set\", \"`enterMsg()` equals the exact bytes hardware acked: `F0 00 21 5B 02 01 06 55 F7`\", \"`ringMsg` emits one 7-byte chunk per encoder and accepts a 14-bit amount\", \"`framebufferMsg` accepts 1024 bytes and produces 1171 packed payload bytes\", \"Every builder returns flat USB-MIDI packets ready for `move_midi_external_send` (CIN 0x04/0x05/0x06/0x07, cable nibble 0)\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: `e16_canvas.mjs` \u2014 an offscreen 1-bit ctx",
+      "status": "pending",
+      "description": "**Goal:** Render into a 1024-byte SSD1306 buffer using the same `ctx` interface `src/shared/param_pages/` already draws through, so the E16 screen reuses the fleet's renderers instead of growing a second one.\n\n**Files:**\n- Create: `src/shared/e16_canvas.mjs`\n- Create: `tests/host/test_e16_canvas.sh`\n\n**Acceptance Criteria:**\n- [ ] Implements `fillRect(x, y, w, h, color)`, `print(x, y, text, color)`, `textWidth(text)`, `drawLine`, `clear()`\n- [ ] `toBuffer()` returns exactly 1024 bytes in SSD1306 page/column order\n- [ ] A pixel at (0,0) sets bit 0 of byte 0; a pixel at (0,7) sets bit 7 of byte 0; a pixel at (0,8) sets bit 0 of byte 128\n- [ ] Drawing outside 128\u00d764 is clipped, not thrown\n\n**Verify:** `bash tests/host/test_e16_canvas.sh` \u2192 all assertions pass\n\n```json:metadata\n{\"files\": [\"src/shared/e16_canvas.mjs\", \"tests/host/test_e16_canvas.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_canvas.sh\", \"acceptanceCriteria\": [\"Implements `fillRect(x, y, w, h, color)`, `print(x, y, text, color)`, `textWidth(text)`, `drawLine`, `clear()`\", \"`toBuffer()` returns exactly 1024 bytes in SSD1306 page/column order\", \"A pixel at (0,0) sets bit 0 of byte 0; a pixel at (0,7) sets bit 7 of byte 0; a pixel at (0,8) sets bit 0 of byte 128\", \"Drawing outside 128\\u00d764 is clipped, not thrown\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: `e16_input.mjs` \u2014 decode the fixed remote-mode input",
+      "status": "pending",
+      "description": "**Goal:** Turn raw MIDI into surface events, with the acceleration semantics the grid already uses.\n\n**Files:**\n- Create: `src/shared/e16_input.mjs`\n- Create: `tests/host/test_e16_input.sh`\n\n**Acceptance Criteria:**\n- [ ] CC 1\u201316 ch 1 \u2192 `{type:\"turn\", enc: 0-15, ticks}` with `0x01..0x08` positive and `0x7F..0x78` negative\n- [ ] Note 0\u201315 on ch 1 \u2192 `{type:\"push\", enc}` on note-on, `{type:\"release\", enc}` on note-off\n- [ ] Note 16 \u2192 `{type:\"shift\", down}` \u2014 and the surface's shift state survives a missed note-off\n- [ ] Anything else returns `null` rather than a partially-filled event\n- [ ] Decoding matches `relative_cc.h`'s two's-complement reading exactly\n\n**Verify:** `bash tests/host/test_e16_input.sh` \u2192 all assertions pass\n\n```json:metadata\n{\"files\": [\"src/shared/e16_input.mjs\", \"tests/host/test_e16_input.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_input.sh\", \"acceptanceCriteria\": [\"CC 1\\u201316 ch 1 \\u2192 `{type:\\\"turn\\\", enc: 0-15, ticks}` with `0x01..0x08` positive and `0x7F..0x78` negative\", \"Note 0\\u201315 on ch 1 \\u2192 `{type:\\\"push\\\", enc}` on note-on, `{type:\\\"release\\\", enc}` on note-off\", \"Note 16 \\u2192 `{type:\\\"shift\\\", down}` \\u2014 and the surface's shift state survives a missed note-off\", \"Anything else returns `null` rather than a partially-filled event\", \"Decoding matches `relative_cc.h`'s two's-complement reading exactly\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: `e16_map.mjs` \u2014 the Shift map model",
+      "status": "pending",
+      "description": "**Goal:** Turn the live chain shape into 16 cells: slots on the top row, the selected slot's occupied components below.\n\n**Files:**\n- Create: `src/shared/e16_map.mjs`\n- Create: `tests/host/test_e16_map.sh`\n\n**Acceptance Criteria:**\n- [ ] Cells 0\u20133 are the four slots, with `current` marked\n- [ ] Cells 4\u201315 are the selected slot's **occupied** components in chain order (MIDI FX, synth, audio FX)\n- [ ] An empty position produces no cell \u2014 holes are not destinations\n- [ ] More than 12 occupied components paginates, and `pageCount` reports it\n- [ ] The layout is recomputed only when the shape signature changes; the same chain twice returns the identical object\n- [ ] A bus cell swaps the lower 12 to that slot's buses\n\n**Verify:** `bash tests/host/test_e16_map.sh` \u2192 all assertions pass\n\n```json:metadata\n{\"files\": [\"src/shared/e16_map.mjs\", \"tests/host/test_e16_map.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_map.sh\", \"acceptanceCriteria\": [\"Cells 0\\u20133 are the four slots, with `current` marked\", \"Cells 4\\u201315 are the selected slot's **occupied** components in chain order (MIDI FX, synth, audio FX)\", \"An empty position produces no cell \\u2014 holes are not destinations\", \"More than 12 occupied components paginates, and `pageCount` reports it\", \"The layout is recomputed only when the shape signature changes; the same chain twice returns the identical object\", \"A bus cell swaps the lower 12 to that slot's buses\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 5,
+      "subject": "Task 6: Shim \u2014 forward cable-2 input to the shadow UI",
+      "status": "pending",
+      "description": "**Goal:** The encoders and buttons reach JS outside overtake mode, gated so nothing changes for anyone not using the surface.\n\n**Files:**\n- Modify: `src/schwung_shim.c:9109` (the cable-2 note-on diversion) and the CC branch below it\n- Modify: `src/host/shadow_constants.h` (one flag in `shadow_control_t`)\n- Create: `tests/host/test_e16_forward_gate.sh`\n\n**Acceptance Criteria:**\n- [ ] A new `external_surface` flag in `shadow_control_t`, consuming reserved space, `sizeof` unchanged\n- [ ] While set, cable-2 CC **and note** messages publish to the shadow UI outside overtake\n- [ ] While set, cable-2 note-ons are **not** diverted into `shadow_queue_input_led` \u2014 that diversion currently swallows every encoder button\n- [ ] While clear, behaviour is byte-identical to today\n- [ ] The source pin fails if the note-on diversion loses its gate\n\n**Verify:** `bash tests/host/test_e16_forward_gate.sh` \u2192 passes; and on device, `dd` the flag byte and confirm encoder turns reach the tool\n\n```json:metadata\n{\"files\": [\"src/host/shadow_constants.h\", \"tests/host/test_e16_forward_gate.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_forward_gate.sh\", \"acceptanceCriteria\": [\"A new `external_surface` flag in `shadow_control_t`, consuming reserved space, `sizeof` unchanged\", \"While set, cable-2 CC **and note** messages publish to the shadow UI outside overtake\", \"While set, cable-2 note-ons are **not** diverted into `shadow_queue_input_led` \\u2014 that diversion currently swallows every encoder button\", \"While clear, behaviour is byte-identical to today\", \"The source pin fails if the note-on diversion loses its gate\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 6,
+      "subject": "Task 7: Lifecycle \u2014 the setting, the ENTER heartbeat, the ACK",
+      "status": "pending",
+      "description": "**Goal:** The surface finds and holds the device with no way to ask whether one is attached.\n\n**Files:**\n- Create: `src/shared/e16_surface.mjs` (lifecycle only in this task)\n- Modify: `src/shadow/shadow_ui.js` (Global Settings contract + tick hook + `onMidiMessageExternal`)\n- Create: `tests/host/test_e16_lifecycle.sh`\n\n**Acceptance Criteria:**\n- [ ] Global Settings \u2192 System gains **External Surface**: `Off / E16`\n- [ ] While enabled and unacked, ENTER is sent every ~2 s and no more often\n- [ ] An ACK marks the device present and stops the heartbeat\n- [ ] Losing the device (no ACK to a later probe) returns to seeking, so a power-cycle self-heals\n- [ ] Disabling sends EXIT exactly once\n- [ ] The Global Settings page list is unchanged in count \u2014 a new page would violate the one-section-one-page rule\n\n**Verify:** `bash tests/host/test_e16_lifecycle.sh` \u2192 passes; on device, unplug and replug the E16 and confirm it returns to remote mode unaided\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shadow/shadow_ui.js\", \"tests/host/test_e16_lifecycle.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_lifecycle.sh\", \"acceptanceCriteria\": [\"Global Settings \\u2192 System gains **External Surface**: `Off / E16`\", \"While enabled and unacked, ENTER is sent every ~2 s and no more often\", \"An ACK marks the device present and stops the heartbeat\", \"Losing the device (no ACK to a later probe) returns to seeking, so a power-cycle self-heals\", \"Disabling sends EXIT exactly once\", \"The Global Settings page list is unchanged in count \\u2014 a new page would violate the one-section-one-page rule\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        0
+      ]
+    },
+    {
+      "id": 7,
+      "subject": "Task 8: The parameter view",
+      "status": "pending",
+      "description": "**Goal:** Two authored grid pages on the 4\u00d74, with rings showing values and turns writing parameters.\n\n**Files:**\n- Modify: `src/shared/e16_surface.mjs`\n- Create: `src/shared/e16_view.mjs`\n- Create: `tests/host/test_e16_view.sh`\n\n**Acceptance Criteria:**\n- [ ] Top 2\u00d74 is page N and bottom 2\u00d74 is page N+1 from `planPages()`, unmodified\n- [ ] Encoder \u2192 cell mapping is stable and matches the drawn layout\n- [ ] A turn goes through the grid's own knob-turn path, so enums quantize and read-only cells refuse\n- [ ] A value change sends **one** ring chunk, not a framebuffer\n- [ ] Navigation sends **one** framebuffer, and never more than one is in flight\n- [ ] A component with fewer than 9 cells leaves the bottom half dark rather than borrowing from another level\n\n**Verify:** `bash tests/host/test_e16_view.sh` \u2192 passes; on device, turn each encoder and confirm the matching parameter moves\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shared/e16_view.mjs\", \"tests/host/test_e16_view.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_view.sh\", \"acceptanceCriteria\": [\"Top 2\\u00d74 is page N and bottom 2\\u00d74 is page N+1 from `planPages()`, unmodified\", \"Encoder \\u2192 cell mapping is stable and matches the drawn layout\", \"A turn goes through the grid's own knob-turn path, so enums quantize and read-only cells refuse\", \"A value change sends **one** ring chunk, not a framebuffer\", \"Navigation sends **one** framebuffer, and never more than one is in flight\", \"A component with fewer than 9 cells leaves the bottom half dark rather than borrowing from another level\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        6
+      ]
+    },
+    {
+      "id": 8,
+      "subject": "Task 9: The map view and navigation",
+      "status": "pending",
+      "description": "**Goal:** Hold Shift to see and jump anywhere in the chain.\n\n**Files:**\n- Modify: `src/shared/e16_surface.mjs`, `src/shared/e16_view.mjs`\n- Create: `tests/host/test_e16_nav.sh`\n\n**Acceptance Criteria:**\n- [ ] Holding Shift draws the map; releasing restores the parameter view\n- [ ] Top-row push switches slot and redraws the lower 12\n- [ ] Lower push jumps focus to that component and drops back to parameters\n- [ ] Shift + turn pages within the component\n- [ ] The bus cell swaps the lower 12 to that slot's buses\n- [ ] A lost Shift note-off cannot strand the map \u2014 it clears on any parameter-view interaction\n\n**Verify:** `bash tests/host/test_e16_nav.sh` \u2192 passes; on device, navigate to a component in another slot without touching Move\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shared/e16_view.mjs\", \"tests/host/test_e16_nav.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_nav.sh\", \"acceptanceCriteria\": [\"Holding Shift draws the map; releasing restores the parameter view\", \"Top-row push switches slot and redraws the lower 12\", \"Lower push jumps focus to that component and drops back to parameters\", \"Shift + turn pages within the component\", \"The bus cell swaps the lower 12 to that slot's buses\", \"A lost Shift note-off cannot strand the map \\u2014 it clears on any parameter-view interaction\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        7
+      ]
+    },
+    {
+      "id": 9,
+      "subject": "Task 10: Follow Focus",
+      "status": "pending",
+      "description": "**Goal:** Optionally mirror the Move's screen instead of holding an independent focus.\n\n**Files:**\n- Modify: `src/shared/e16_surface.mjs`, `src/shadow/shadow_ui.js`\n- Create: `tests/host/test_e16_follow.sh`\n\n**Acceptance Criteria:**\n- [ ] Global Settings \u2192 System gains **Follow Focus** (on/off), beside External Surface\n- [ ] While on, focus tracks the shadow UI's current component and the map is disabled\n- [ ] Follow is one-way \u2014 navigating on the E16 never moves Move's screen\n- [ ] Turning it off restores the E16's own last focus rather than resetting\n\n**Verify:** `bash tests/host/test_e16_follow.sh` \u2192 passes; on device, change component on Move and watch the E16 follow\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shadow/shadow_ui.js\", \"tests/host/test_e16_follow.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_follow.sh\", \"acceptanceCriteria\": [\"Global Settings \\u2192 System gains **Follow Focus** (on/off), beside External Surface\", \"While on, focus tracks the shadow UI's current component and the map is disabled\", \"Follow is one-way \\u2014 navigating on the E16 never moves Move's screen\", \"Turning it off restores the E16's own last focus rather than resetting\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        8
+      ]
+    },
+    {
+      "id": 10,
+      "subject": "Task 11: Ownership \u2014 the E16 claims CC 1\u201316 ch 1",
+      "status": "pending",
+      "description": "**Goal:** The surface and #403's CC Map can never both act on one turn.\n\n**Files:**\n- Modify: `src/modules/chain/dsp/chain_midi.c` (the CC-map lookup)\n- Create: `tests/host/test_e16_cc_claim.sh`\n\n**Acceptance Criteria:**\n- [ ] While `external_surface` is set, CC 1\u201316 on channel 1 never reaches the CC Map\n- [ ] While clear, the CC Map's behaviour is unchanged\n- [ ] The claimed range is defined once, in a header both sides read \u2014 not restated\n\n**Verify:** `bash tests/host/test_e16_cc_claim.sh` \u2192 passes; on device, map CC 1 to a parameter, enable the surface, and confirm the parameter stops following the CC Map\n\n```json:metadata\n{\"files\": [\"src/modules/chain/dsp/chain_midi.c\", \"tests/host/test_e16_cc_claim.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_cc_claim.sh\", \"acceptanceCriteria\": [\"While `external_surface` is set, CC 1\\u201316 on channel 1 never reaches the CC Map\", \"While clear, the CC Map's behaviour is unchanged\", \"The claimed range is defined once, in a header both sides read \\u2014 not restated\"], \"modelTier\": \"standard\"}\n```",
+      "blockedBy": [
+        9
+      ]
+    },
+    {
+      "id": 11,
+      "subject": "Task 12: Hardware verification",
+      "status": "pending",
+      "description": "**Goal:** Confirm on the device what host tests structurally cannot: feel, legibility and rate.\n\n**USER-ORDERED GATE \u2014 NON-SKIPPABLE.** This task was requested by the user in the current conversation. It MUST NOT be closed by walking around it, by declaring it \"verified inline\", or by substituting a cheaper check. Close only after every item in `acceptanceCriteria` has been re-validated independently, with output captured.\n\n**Files:**\nnone \u2014 this is measurement.\n\n**Acceptance Criteria:**\n- [ ] Every encoder moves its matching parameter, and the mapping matches the drawn layout \u2014 checked on a module with more than 8 parameters\n- [ ] Navigating between two components in different slots takes under a second, measured with a stopwatch or a log timestamp\n- [ ] A framebuffer redraw arrives intact: send 20 navigations in a row and confirm no corrupted screen\n- [ ] Ring positions match parameter values across the full range, including a bipolar parameter\n- [ ] Unplugging and replugging the E16 restores remote mode with no user action\n\n**Verify:** Arm `touch /data/UserData/schwung/log_xmos_sysex_on`, run the sequence, and confirm the capture shows no truncated outbound message; disarm afterwards.\n\n```json:metadata\n{\"files\": [], \"verifyCommand\": \"Arm `touch /data/UserData/schwung/log_xmos_sysex_on`, run the sequence, and confirm the capture shows no truncated outbound message; disarm afterwards.\", \"acceptanceCriteria\": [\"Every encoder moves its matching parameter, and the mapping matches the drawn layout \\u2014 checked on a module with more than 8 parameters\", \"Navigating between two components in different slots takes under a second, measured with a stopwatch or a log timestamp\", \"A framebuffer redraw arrives intact: send 20 navigations in a row and confirm no corrupted screen\", \"Ring positions match parameter values across the full range, including a bipolar parameter\", \"Unplugging and replugging the E16 restores remote mode with no user action\"], \"modelTier\": \"standard\", \"userGate\": true, \"tags\": [\"user-gate\"], \"gateScope\": \"hardware\", \"failurePolicy\": \"stop\"}\n```",
+      "blockedBy": [
+        10
+      ]
+    }
+  ],
+  "lastUpdated": "2026-09-10T09:45:19.487540"
+}
