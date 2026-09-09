@@ -52,6 +52,9 @@ a module whose boot target was refused is still a working module:
   straight through the selector's `[ ! -x ]` check into stock Move.
 - The target id is not already owned by a different payload. A collision is
   **refused, naming the current owner**; an id is never silently stolen.
+- `name` is 1–24 characters of printable ASCII, and contains no `"` and no
+  `\`. See "Selector limits" below — this is a parser constraint, not taste.
+- Registering would not push the registry past the picker's row cap.
 
 ### 2. What the manager writes
 
@@ -115,6 +118,26 @@ the boot itself, which is what an entry that resolves the payload at boot time
 (a generated launcher script, weighed and rejected) would have bought at the
 price of a second executable per target that can itself be wrong.
 
+### 2a. Selector limits the manager must respect
+
+Three hard limits live in the selector, and the manager is the first thing that
+can trip any of them **without a human present to notice**. Each is validated
+at registration and surfaced on the Boot page rather than discovered at boot.
+
+- **The picker holds 16 rows** (`BS_MAX_ROWS`, `src/boot-select.c:60`) —
+  Stock, Schwung, and at most 14 targets, fewer while the SysEx bisect rig is
+  armed. `bs_row_insert_sorted` **silently drops** everything past the cap, in
+  id-sort order, so the row that disappears has nothing to do with what was
+  installed last. Registration past the cap is refused with a reason; the Boot
+  page shows the count against the cap.
+- **A name is 64 bytes** (`bs_row_t.name[64]`) and the boot window is 128px
+  wide, so anything long is cut twice over. Capped at registration instead.
+- **The two `boot.json` parsers disagree about escapes.** `bt_json_field`
+  (awk, `boot_target_lib.sh`) truncates a value at its first `"`;
+  `bs_json_field` (C, `boot_select_core.c`) reads the same value as malformed
+  and falls back to the directory name. Neither can unescape, so a `name`
+  carrying `"` or `\` is **rejected at registration**, never escaped.
+
 ### 3a. What registration can and cannot do
 
 Registering a boot target means a tarball from a GitHub release has added a row
@@ -137,8 +160,11 @@ of the existing `installModule` path): parse the manifest, validate, write
 `BOOT_TARGETS.md` is explicit that a default change is an explicit user choice,
 never a side effect of installing.
 
-**Uninstall**: remove the payload directory as today, then remove
-`boot-targets/<id>` **iff** its `boot.json` carries the matching `owner`. If
+**Uninstall**: remove the payload directory as today, then remove the registry
+entry **whose `boot.json` carries the matching `owner`**. Note the lookup is by
+owner and not by id: `boot_target.id` is optional and may differ from the
+payload id, so `boot-targets/<payload id>` is the wrong door. Reconcile indexes
+the registry the same way. If
 `boot-targets/default` names the removed id, rewrite it to `schwung`.
 
 **Reconcile** — runs at manager start, and after every install and uninstall.
@@ -170,7 +196,15 @@ carries the same fields as a module minus `component_type`:
 ```
 
 - Installs to `/data/UserData/platforms/<id>/`, from a tarball whose top-level
-  directory is `<id>/`, exactly like a module.
+  directory is `<id>/`, exactly like a module. **Verified after extraction:**
+  if `<root>/<id>/platform.json` is not there, the install fails loudly and
+  names the problem. A tarball with a different top-level directory otherwise
+  strews itself across the install root and then fails to register for a
+  reason that reads as unrelated.
+- User state across upgrade follows the module contract: the tarball ships
+  immutable files, and `config.json` / `secrets/` are snapshotted and restored
+  around extraction. A platform with no such state simply has nothing to
+  preserve.
 - Manifest is `platform.json`: `id`, `name`, `version`, `author`, and the
   `boot_target` block.
 - Same `release.json` fetch, version compare, and update badge as modules —
@@ -190,6 +224,9 @@ A manager page listing the boot registry as the user will meet it at boot:
   picker sorts them.
 - Per row: display name, id, source (`module: <id>`, `platform: <id>`, or
   *installed manually*), and a warning when its `exec` does not resolve.
+- A row count against the picker's 16-row cap, and a warning naming any
+  registered target the picker would silently drop — including hand-installed
+  ones the manager may not remove.
 - A radio selects the default; saving writes one bare id line to
   `boot-targets/default`.
 - Read-only otherwise. Removing a target is uninstalling its payload; editing
@@ -221,7 +258,10 @@ platforms directory it is deliberately not removing.
 ## Testing
 
 - **Go unit tests** (`schwung-manager`): manifest validation table (bad ids,
-  reserved ids, `..` escapes, absolute exec, missing exec, collisions);
+  reserved ids, `..` escapes, absolute exec, missing exec, collisions, a name
+  carrying `"` or `\`, an over-long name, registration at and one past the
+  16-row cap); uninstall of a payload whose `boot_target.id` differs from its
+  own id;
   registry writer output; reconcile table above, including the
   never-touch-unowned and never-touch-`schwung` cases; uninstall healing
   `default`.
