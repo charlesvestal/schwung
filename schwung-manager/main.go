@@ -1355,6 +1355,13 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 		app.logger.Warn("chown failed (non-fatal)", "id", mod.ID, "err", err, "output", string(out))
 	}
 
+	// Register whatever boot target the module declares. A refusal is NOT an
+	// install failure: the module works, it just gets no picker row, and the
+	// reason is in the log.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target registration", "id", mod.ID, "err", err)
+	}
+
 	app.logger.Info("module installed", "id", mod.ID, "path", categoryDir)
 	return nil
 }
@@ -1410,7 +1417,12 @@ func (app *App) uninstallModule(id string) error {
 			map[bool]string{true: "it", false: "those"}[len(dependents) == 1])
 	}
 	app.logger.Info("uninstalling module", "id", id, "path", modDir)
-	return os.RemoveAll(modDir)
+	if err := os.RemoveAll(modDir); err != nil {
+		return err
+	}
+	// Takes the picker row with it, found by OWNER — boot_target.id is
+	// optional and may differ from the module id.
+	return app.reconcileBootTargets()
 }
 
 // installedDependentsOf lists the modules PRESENT ON DISK that declare `id` in
@@ -1775,6 +1787,13 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
 		}
 
+		// Same payload shape as a catalog install, so it can declare the same
+		// boot_target block. A refusal is logged, never surfaced as a failed
+		// install.
+		if err := app.reconcileBootTargets(); err != nil {
+			app.logger.Warn("boot target registration", "id", mj.ID, "err", err)
+		}
+
 		app.logger.Info("custom module installed", "id", mj.ID, "path", destDir)
 		http.Redirect(w, r, "/modules?flash=Installed+"+modEntry.Name()+"+from+GitHub", http.StatusSeeOther)
 
@@ -1851,6 +1870,13 @@ func (app *App) handleCustomInstall(w http.ResponseWriter, r *http.Request) {
 		chown := exec.Command("chown", "-R", "ableton:users", destDir)
 		if out, err := chown.CombinedOutput(); err != nil {
 			app.logger.Warn("chown failed (non-fatal)", "id", mj.ID, "err", err, "output", string(out))
+		}
+
+		// Same payload shape as a catalog install, so it can declare the same
+		// boot_target block. A refusal is logged, never surfaced as a failed
+		// install.
+		if err := app.reconcileBootTargets(); err != nil {
+			app.logger.Warn("boot target registration", "id", mj.ID, "err", err)
 		}
 
 		app.logger.Info("tarball module installed", "id", mj.ID, "path", destDir)
@@ -3652,6 +3678,13 @@ func main() {
 	// but stale ones at the OS-level locations. We run as root via the
 	// entrypoint, so we can finish the install and reboot once.
 	app.healShimIfStale()
+
+	// Make the boot registry agree with what is on disk before anything can
+	// install, uninstall, or boot off a stale row. Never fails startup — a
+	// refused target just gets no picker row, logged.
+	if err := app.reconcileBootTargets(); err != nil {
+		app.logger.Warn("boot target reconcile at startup", "err", err)
+	}
 
 	mux := http.NewServeMux()
 

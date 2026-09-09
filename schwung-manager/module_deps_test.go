@@ -20,6 +20,9 @@ func depsApp(t *testing.T, mods []CatalogModule, installed ...string) *App {
 			t.Fatal(err)
 		}
 	}
+	// uninstallModule now reconciles boot targets; point the registry at a
+	// scratch dir so the test never touches the real device path.
+	t.Setenv("BOOT_TARGETS_DIR", filepath.Join(base, "boot-targets"))
 	return &App{
 		basePath: base,
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
