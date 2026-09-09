@@ -15,9 +15,24 @@
  * USB-C MIDI lands in the SPI mailbox on CABLE 2, the same cable as USB-A, and
  * only via that one of Move's four ports. So this needs no external MIDI gear.
  *
- * Pads (bottom row) pick the payload size. 158 bytes is the QY-70 bulk-dump
+ * Pads (bottom row) 1-4 pick the payload size. 158 bytes is the QY-70 bulk-dump
  * message from #358; 632 is deliberately past the outbound carry's high water
  * so the backpressure path gets exercised rather than just the happy one.
+ *
+ *   1-4  payload size          5  send /data/UserData/schwung/sysex_send.txt
+ *   6    E16 ENTER remote      7  E16 EXIT remote
+ *   8    E16 OLED LABELS       9  E16 LED RING
+ *   10   Program Change        11 plain CC
+ *   12   ENTER as CIN 0x0F     13 LABELS as CIN 0x0F
+ *   14   ENTER, every packet CIN 0x07
+ *   15   probe: F0 F7 in one CIN 0x06 packet
+ *   16+  send the generated payload
+ *
+ * Pads 8 and 9 are the ones that answer "did remote mode engage" without
+ * relying on anything coming back: they change what is on the E16's own
+ * screen and rings. The ACK is the better evidence when it arrives, but it is
+ * inbound SysEx and so reaches JS only in overtake mode -- which this module
+ * is, and a chain slot is not.
  */
 import { shouldFilterMessage, setLED } from '/data/UserData/schwung/shared/input_filter.mjs';
 import { Black, DullGreen, DarkGreen } from '/data/UserData/schwung/shared/constants.mjs';
@@ -76,6 +91,152 @@ const OXI_EXIT  = [0xF0].concat(OXI_HDR, [0x06, 0x00], [0xF7]);
 const OXI_ACK_ID = [0x06, 0x53];
 const OXI_PAD = 73;
 const OXI_EXIT_PAD = 74;
+const OXI_LABELS_PAD = 75;
+const OXI_RING_PAD = 76;
+
+/* Pads 10 and 11 send NON-SysEx to the same device, and that is the point.
+ *
+ * Every outbound figure in docs/SYSEX.md was measured over USB-C with Move as
+ * a USB DEVICE. Sending TO a device on USB-A, where Move is the HOST, is a
+ * different XMOS path and has never been verified -- for SysEx or for anything
+ * else. So "our SysEx does not arrive" has two readings, and nothing we have
+ * measured separates them: SysEx specifically is not forwarded on the host
+ * path, or NOTHING is.
+ *
+ * A Program Change is the discriminator, because the E16 acts on one without
+ * being in remote mode: Settings > MIDI > PC Receive Channel, then PC 1-16
+ * selects the scene, visibly, on the device's own screen. If the scene changes
+ * the host path forwards fine and the fault is SysEx-shaped. If it does not,
+ * nothing we send reaches USB-A at all and remote mode was never the problem.
+ *
+ * CC is here too because it is the one thing the MiniLab proved works INBOUND
+ * on this port, so it isolates direction from message type. */
+const PC_PAD = 77;
+const CC_PAD = 78;
+let pcProgram = 0;
+
+/* Pads 12 and 13 send the SAME SysEx bytes with a different CIN, and that is
+ * the whole experiment.
+ *
+ * Measured 2026-09-09 on this device: a plain CC (CIN 0x0B) reaches an E16 on
+ * USB-A and moves its LED ring, while the identical mailbox carrying SysEx
+ * (CIN 0x04/0x07) produces nothing -- no ACK, no screen change, nothing. Same
+ * cable, same frame, same slots, verified byte-for-byte in the shim's POSThw
+ * tap. So the XMOS's USB-HOST transmit path appears not to forward the SysEx
+ * CINs at all, which is the outbound sibling of the inbound losses in #358.
+ *
+ * CIN 0x0F is "single byte, unparsed" -- one data byte per packet, no message
+ * structure implied. An implementation that drops 0x04-0x07 may still forward
+ * these, because they need no reassembly logic to pass along. If it does, a
+ * SysEx sent one byte per packet arrives intact and remote mode is reachable
+ * from the Move after all.
+ *
+ * It costs 4 wire bytes per payload byte, so ENTER is 9 packets and LABELS is
+ * 101 -- under the 128-per-flush ceiling, and the carry keeps them in order.
+ * If this works it is a transport quirk to hide in one helper, not a thing
+ * every module author should have to know. */
+const OXI_ENTER_F_PAD = 79;
+const OXI_LABELS_F_PAD = 80;
+
+/* ---- CIN 0x04 is the suspect ---------------------------------------------
+ *
+ * Read off the E16's OWN monitor, 2026-09-09, which is the first instrument
+ * either side of this has had on the receiving end:
+ *
+ *   pad 11 (CC, CIN 0x0B)    -> "USB CH1: CC1 64"      complete and correct
+ *   pad 6  (SysEx)           -> empty messages
+ *   pad 12 (CIN 0x0F)        -> "USB SYSEX END"
+ *
+ * Both failures show a SysEx END and no content. The bytes are arriving, so
+ * the XMOS transmits on the USB-host path -- but whatever carries the F0 and
+ * the middle bytes is being lost, and that is CIN 0x04, "SysEx starts or
+ * continues". The terminating CINs (0x05/0x06/0x07) evidently get through,
+ * which is why the device sees a tail with nothing in front of it.
+ *
+ * Channel-voice messages are immune because they are a single packet with
+ * their own CIN, which is why CC and Program Change both work.
+ *
+ * PAD 14 tests the workaround: send EVERY packet as CIN 0x07 (ends with three
+ * bytes). Each is forwarded, and the device receives the correct byte stream
+ * F0 00 21 / 5B 02 01 / 06 55 F7 in order. It is malformed as USB-MIDI -- three
+ * "message ends" in a row -- but most devices reassemble SysEx from the byte
+ * stream rather than trusting CINs, so it may simply work.
+ *
+ * PAD 15 confirms the diagnosis instead of assuming it: F0 F7 alone is a legal
+ * two-byte SysEx that fits in ONE CIN 0x06 packet, with no 0x04 anywhere. If
+ * the monitor shows that arriving while pad 6 does not, CIN 0x04 is proven to
+ * be the one being dropped, and this stops being a theory.
+ *
+ * It only requires the message length to be a multiple of 3 -- pad 14 says so
+ * rather than silently sending a bad tail. */
+const OXI_ENTER_7_PAD = 81;
+const OXI_PROBE_PAD = 82;
+
+/* Every packet CIN 0x07, three payload bytes each. */
+function packetizeAllEnds(bytes) {
+    const out = [];
+    for (let i = 0; i + 2 < bytes.length; i += 3) {
+        out.push(0x07, bytes[i], bytes[i + 1], bytes[i + 2]);
+    }
+    return out;
+}
+
+function sendOxiAllEnds(msg, label) {
+    customNote = "";
+    if (msg.length % 3 !== 0) {
+        oxiState = label + " len%3!=0";
+        return;
+    }
+    const pkts = packetizeAllEnds(msg);
+    txBytes = msg.length;
+    txPackets = pkts.length / 4;
+    txRefused = move_midi_external_send(pkts) ? 0 : 1;
+    oxiState = txRefused ? (label + " REFUSED") : (label + " sent, waiting ACK");
+    if (!txRefused) oxiSentAt = ticks;
+}
+
+/* One CIN 0x0F packet per byte, cable nibble left at 0 for the host to set. */
+function packetizeSingleBytes(bytes) {
+    const out = [];
+    for (let i = 0; i < bytes.length; i++) {
+        out.push(0x0F, bytes[i], 0x00, 0x00);
+    }
+    return out;
+}
+
+function sendOxiSingle(msg, label) {
+    customNote = "";
+    const pkts = packetizeSingleBytes(msg);
+    txBytes = msg.length;
+    txPackets = pkts.length / 4;
+    txRefused = move_midi_external_send(pkts) ? 0 : 1;
+    if (txRefused) {
+        oxiState = label + " REFUSED";
+    } else {
+        oxiState = label + " sent, waiting ACK";
+        oxiSentAt = ticks;
+    }
+}
+
+/* The rest of the spec, which the first version of this file could not get.
+ *
+ * The sheet is not private -- the forum preview says so because it fetches it
+ * unauthenticated, and it EXPORTS:
+ *
+ *   curl -sL "https://docs.google.com/spreadsheets/d/\
+ *     1Yccnrluv10QL_PauMmtCt64EtYjfSeZEXKrlrw8P24w/export?format=csv&gid=1057524829"
+ *
+ *   06 01  LED           5-byte chunks: enc 0-15, led 0-15, R, G, B (0-127)
+ *   06 02  FRAMEBUFFER   1024 raw bytes, SSD1306 page/column, 128x64
+ *   06 03  LABELS        80 raw: 16-char title + 16 x 4-char label
+ *   06 04  LED RING      7-byte chunks: enc, R, G, B, amt MSB, amt LSB, bipolar
+ *
+ * FRAMEBUFFER and LABELS override each other; the framebuffer is whole-screen
+ * only. Note the geometry -- 128x64 mono is Move's own display, so mirroring a
+ * Schwung page onto an E16 is a packer, not a renderer.
+ */
+const OXI_ID_LABELS = [0x06, 0x03];
+const OXI_ID_RING   = [0x06, 0x04];
 
 /* Non-commercial / prototype manufacturer ID. Nothing on the wire acts on it,
  * which matters when the rig is a shared USB bus. */
@@ -116,6 +277,77 @@ function packetize(bytes) {
     return out;
 }
 
+/* 8-to-7 packing, which the spec names and does not define.
+ *
+ * One MSB byte per group of up to 7, holding bit 7 of each of those bytes in
+ * order, then the seven bytes with bit 7 cleared. Read off the Max patch on
+ * the lines thread rather than guessed: its LED chunk is `0 6 15 127 0 0 36`
+ * and its ring chunk `0 3 0 12 0 $1 0 0` -- a leading zero then <=7 bytes,
+ * which is exactly this with every payload byte already under 0x80. That is
+ * also what post 2's "leds msg need an additional leading 0" is describing.
+ *
+ * So for LABELS and LED RING the MSB byte is always 0 and the packing looks
+ * like padding. It is not: FRAMEBUFFER carries real pixel bytes with bit 7
+ * set, and a packer written to emit a constant zero would work on everything
+ * here and corrupt the one message that matters. */
+function pack7(raw) {
+    const out = [];
+    for (let i = 0; i < raw.length; i += 7) {
+        const n = Math.min(7, raw.length - i);
+        let msbs = 0;
+        for (let k = 0; k < n; k++) if (raw[i + k] & 0x80) msbs |= (1 << k);
+        out.push(msbs);
+        for (let k = 0; k < n; k++) out.push(raw[i + k] & 0x7F);
+    }
+    return out;
+}
+
+/* F0 + header + 2-byte ID + packed payload + F7. */
+function oxiMsg(id, raw) {
+    return [0xF0].concat(OXI_HDR, id, pack7(raw), [0xF7]);
+}
+
+/* 16-char title then 16 four-char labels, space padded. Deliberately not all
+ * the same string: a screen showing one repeated label proves the message
+ * arrived and nothing about whether the 80 bytes landed in the right order. */
+function labelsPayload() {
+    const title = "SCHWUNG E16 TEST";           /* exactly 16 */
+    const raw = [];
+    for (let i = 0; i < 16; i++) raw.push(title.charCodeAt(i));
+    for (let i = 1; i <= 16; i++) {
+        const t = (i < 10 ? "Enc" + i : "En" + i);   /* 4 chars either way */
+        for (let k = 0; k < 4; k++) raw.push(t.charCodeAt(k));
+    }
+    return raw;
+}
+
+/* The ring amount is "a 14-bit value mapping to 0-100%", which is two claims
+ * that cannot both be the encoding, and the Max patch votes for the second:
+ * it fed `random 100` into the LSB alone and called the result working.
+ *
+ * So this does not pick one. Encoders 1-8 ramp across 0-100 and 9-16 ramp
+ * across 0-16383, in two different colours. Whichever half is a ramp on the
+ * hardware is the scale, and the other half will be flat -- one press answers
+ * it, where sending a single guessed value would leave "it looked wrong"
+ * pointing at the packing, the header, or the scale with no way to separate
+ * them. */
+function ringPayload() {
+    const raw = [];
+    for (let i = 0; i < 16; i++) {
+        const pct = i < 8;
+        const amt = pct ? Math.round(100 * i / 7)
+                        : Math.round(16383 * (i - 7) / 8);
+        raw.push(i);                                  /* encoder index 0-15 */
+        raw.push(pct ? 0 : 60);                       /* R */
+        raw.push(pct ? 60 : 0);                       /* G */
+        raw.push(0);                                  /* B */
+        raw.push((amt >> 7) & 0x7F);                  /* amount MSB */
+        raw.push(amt & 0x7F);                         /* amount LSB */
+        raw.push(0);                                  /* bipolar off */
+    }
+    return raw;
+}
+
 /* Parse a hex string into bytes. Returns {bytes, error}.
  *
  * Reports WHY it failed rather than sending something wrong: a message that is
@@ -145,6 +377,7 @@ let txBytes = 0, txPackets = 0, txRefused = 0;
 let rxBytes = 0, rxExpected = 0, rxFirstBad = -1, rxVerdict = "-";
 let rxMessages = 0;
 let customNote = "";
+let lastVoice = "";       /* last channel-voice message seen from the E16 */
 let oxiState = "";        /* what the E16 pad last did / saw */
 let oxiSentAt = 0;
 let ticks = 0;
@@ -239,6 +472,28 @@ function sendOxi(msg, label) {
     }
 }
 
+/* RAW mode: the file names the PACKETS, CIN byte and all.
+ *
+ * Everything this module has been used for in the last hour varies ONE thing --
+ * the CIN nibble -- and every variation cost a cross-compile, a reinstall and a
+ * reboot. That is the wrong loop for a question this small, and it is the
+ * module's own fault: pad 5 could already send arbitrary bytes, but it ran them
+ * through packetize(), which chooses the CINs. The file could say anything
+ * except the thing under test.
+ *
+ * With `RAW` as the first token the remaining bytes go to the wire verbatim, in
+ * 4-byte groups. So a new hypothesis is now an ssh and a pad press:
+ *
+ *   echo 'RAW 06 F0 00 00  06 21 5B 00  06 02 01 00' > /data/UserData/schwung/sysex_send.txt
+ *
+ * The count must be a multiple of 4, and a bad count is REPORTED rather than
+ * rounded off -- a silently truncated final packet would look exactly like the
+ * transport fault we are chasing.
+ *
+ * (No Linux-side alternative exists: Move's kernel has no ALSA at all and
+ * devices on USB-A never enumerate in Linux -- see #358 -- so the SPI mailbox
+ * is the only route to that port and a module is the only thing that can drive
+ * it.) */
 function sendCustom() {
     if (typeof host_file_exists === "function" && !host_file_exists(CUSTOM_PATH)) {
         customNote = "no file";
@@ -251,17 +506,35 @@ function sendCustom() {
         txBytes = txPackets = 0;
         return;
     }
-    const parsed = parseHex(text);
+    const raw = /^\s*RAW\b/i.test(text);
+    const parsed = parseHex(raw ? text.replace(/^\s*RAW\b/i, " ") : text);
     if (!parsed.bytes) {
         customNote = parsed.error;
         txBytes = txPackets = 0;
         return;
     }
-    const pkts = packetize(parsed.bytes);
-    txBytes = parsed.bytes.length;
+
+    let pkts;
+    if (raw) {
+        if (parsed.bytes.length % 4 !== 0) {
+            customNote = "RAW len " + parsed.bytes.length + " %4!=0";
+            txBytes = txPackets = 0;
+            return;
+        }
+        pkts = parsed.bytes;
+    } else {
+        pkts = packetize(parsed.bytes);
+    }
+
+    txBytes = raw ? parsed.bytes.length : parsed.bytes.length;
     txPackets = pkts.length / 4;
     txRefused = move_midi_external_send(pkts) ? 0 : 1;
-    customNote = "sent file";
+    customNote = (raw ? "RAW " : "sent ") + txPackets + "p" + (txRefused ? " REFUSED" : "");
+    /* A raw send may well be a SysEx expecting a reply, so arm the ACK timer
+     * exactly as the built-in E16 pads do -- otherwise row 3 keeps whatever the
+     * last pad left there and reads as this send's result. */
+    oxiState = "RAW " + txPackets + "p sent, waiting ACK";
+    oxiSentAt = ticks;
 }
 
 /* ==================== lifecycle ==================== */
@@ -302,12 +575,78 @@ globalThis.onMidiMessageInternal = function (data) {
         if (d1 === CUSTOM_PAD) { sendCustom(); return; }
         if (d1 === OXI_PAD) { sendOxi(OXI_ENTER, "ENTER"); return; }
         if (d1 === OXI_EXIT_PAD) { sendOxi(OXI_EXIT, "EXIT"); return; }
+        if (d1 === OXI_LABELS_PAD) {
+            sendOxi(oxiMsg(OXI_ID_LABELS, labelsPayload()), "LABELS");
+            return;
+        }
+        if (d1 === OXI_RING_PAD) {
+            sendOxi(oxiMsg(OXI_ID_RING, ringPayload()), "RING");
+            return;
+        }
+        if (d1 === PC_PAD) {
+            /* Channel 1. Cycles so a repeat press is visibly a NEW scene --
+             * sending the same program twice looks identical to nothing
+             * happening, which is the ambiguity this whole module exists to
+             * remove. CIN 0x0C is Program Change, two data bytes on the wire
+             * with the third ignored. */
+            const ok = move_midi_external_send([0x0C, 0xC0, pcProgram & 0x0F, 0x00]);
+            oxiState = "PC " + ((pcProgram & 0x0F) + 1) + (ok ? " sent" : " REFUSED");
+            pcProgram++;
+            txBytes = 2; txPackets = 1; txRefused = ok ? 0 : 1;
+            oxiSentAt = 0;              /* no ACK is expected for a PC */
+            return;
+        }
+        if (d1 === CC_PAD) {
+            const ok = move_midi_external_send([0x0B, 0xB0, 0x01, 0x40]);
+            oxiState = "CC1=64 " + (ok ? "sent" : "REFUSED");
+            txBytes = 3; txPackets = 1; txRefused = ok ? 0 : 1;
+            oxiSentAt = 0;
+            return;
+        }
+        if (d1 === OXI_ENTER_F_PAD) {
+            sendOxiSingle(OXI_ENTER, "ENTER/0F");
+            return;
+        }
+        if (d1 === OXI_LABELS_F_PAD) {
+            sendOxiSingle(oxiMsg(OXI_ID_LABELS, labelsPayload()), "LBL/0F");
+            return;
+        }
+        if (d1 === OXI_ENTER_7_PAD) {
+            /* ENTER is 9 bytes -- already a multiple of 3, no padding needed. */
+            sendOxiAllEnds(OXI_ENTER, "ENTER/07");
+            return;
+        }
+        if (d1 === OXI_PROBE_PAD) {
+            /* F0 F7: a legal empty SysEx in ONE CIN 0x06 packet. No 0x04. */
+            const ok = move_midi_external_send([0x06, 0xF0, 0xF7, 0x00]);
+            oxiState = "probe F0F7 " + (ok ? "sent" : "REFUSED");
+            txBytes = 2; txPackets = 1; txRefused = ok ? 0 : 1;
+            oxiSentAt = 0;
+            return;
+        }
         /* Any other pad sends the generated payload. */
-        if (d1 > OXI_EXIT_PAD && d1 <= 99) { customNote = ""; sendOne(); }
+        if (d1 > OXI_PROBE_PAD && d1 <= 99) { customNote = ""; sendOne(); }
     }
 };
 
 globalThis.onMidiMessageExternal = function (data) {
+    /* Channel-voice traffic, reported because it is the one confirmation that
+     * does not depend on the ACK reaching us. In remote mode the E16's turns
+     * are FIXED: CC 1-16 on channel 1, relative and accelerated (0x01..0x08 /
+     * 0x7F..0x78), buttons are notes 0-15 and Shift is note 16, whatever scene
+     * the user is on. Out of remote mode the scene decides, so a button press
+     * arriving as note 0 on channel 1 says remote mode engaged even if nothing
+     * came back on the SysEx path.
+     *
+     * Guarded on asm === null so a payload byte can never be read as a status:
+     * inside a SysEx every byte is < 0x80 by construction. */
+    const st = data[0];
+    if (asm === null && st >= 0x80 && st < 0xF0) {
+        const type = st & 0xF0, ch = (st & 0x0F) + 1;
+        const kind = type === 0xB0 ? "cc" : (type === 0x90 ? "on" : (type === 0x80 ? "off" : "0x" + type.toString(16)));
+        lastVoice = kind + " " + data[1] + "=" + data[2] + " ch" + ch;
+    }
+
     /* Three bytes, CIN stripped. Feed all three; the assembler ignores the
      * padding an end-packet carries. */
     rxByte(data[0]); rxByte(data[1]); rxByte(data[2]);
@@ -332,14 +671,17 @@ function draw() {
     print(2, 0, "SysEx Test", 2);
     draw_line(0, 13, 127, 13, 1);
 
-    print(2, 16, "size " + SIZES[sizeIdx] + "B", 1);
-    print(2, 26, "tx " + txBytes + "B/" + txPackets + "p" +
+    /* FIVE rows fit between the rule and the footer at a 10px pitch, and the
+     * first version printed six -- oxiState over the rx line and customNote
+     * over the verdict, both at the same y. The pair that collided were the
+     * two the E16 test reads, so the screen looked like the tool had simply
+     * not noticed the press. */
+    print(2, 16, "sz" + SIZES[sizeIdx] + " tx" + txBytes + "B/" + txPackets + "p" +
                         (txRefused ? " REFUSED" : ""), 1);
-    if (oxiState) print(2, 36, oxiState, 1);
-    if (customNote) print(2, 46, customNote, 1);
+    print(2, 26, "rx " + rxBytes + "B n=" + rxMessages + " " + rxVerdict +
+                        (rxFirstBad >= 0 ? "@" + rxFirstBad : ""), 1);
+    print(2, 36, oxiState || "-", 1);
+    print(2, 46, lastVoice || customNote || "-", 1);
 
-    print(2, 36, "rx " + rxBytes + "B  n=" + rxMessages, 1);
-    print(2, 46, rxVerdict + (rxFirstBad >= 0 ? " @" + rxFirstBad : ""), 1);
-
-    print(2, 56, "5=file 6=E16on 7=off", 1);
+    print(2, 56, "6on 11cc 12=0F 14=07 15pr", 1);
 }
