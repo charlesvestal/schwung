@@ -59,3 +59,23 @@ func TestPayloadPathsRoots(t *testing.T) {
 		t.Errorf("bootTargetsDir env = %q", got)
 	}
 }
+
+// The Remote UI was the third place this list was restated, and it had the
+// same hole: a utility module's web_ui.html was never found, silently.
+func TestPayloadPathsRemoteUIFindsUtilityModule(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "modules", "utilities", "widget")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "web_ui.html"), []byte("<html></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ru := &RemoteUI{basePath: base}
+	if got := ru.findModuleWebUI("widget"); got == "" {
+		t.Error("findModuleWebUI did not find a utility module's web_ui.html")
+	}
+	if got := ru.findModuleWebUI("absent"); got != "" {
+		t.Errorf("findModuleWebUI invented a URL for a module that is not there: %q", got)
+	}
+}

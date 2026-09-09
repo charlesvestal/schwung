@@ -15,9 +15,12 @@ var installSubdirs = []string{
 }
 
 // moduleInstallDirs is every directory a module can be installed into,
-// including the bare modules/ root that built-ins live in. Named apart from
-// remote_ui.go's unrelated moduleCategoryDirs (a subdir-name list for
-// findModuleWebUI, not full paths) to avoid colliding with it.
+// including the bare modules/ root that built-ins live in. It is the ONLY
+// enumeration: findModuleDir, discoverInstalledModules and
+// RemoteUI.findModuleWebUI all read it. Each of those three used to keep its
+// own copy, and all three copies had drifted the same way (no "utilities", no
+// "other") -- so a module installed with component_type "utility" was
+// invisible to uninstall, to discovery, and to the Remote UI at once.
 func moduleInstallDirs(basePath string) []string {
 	dirs := []string{filepath.Join(basePath, "modules")}
 	for _, sub := range installSubdirs {

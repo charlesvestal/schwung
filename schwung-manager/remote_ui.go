@@ -1538,17 +1538,20 @@ func (ru *RemoteUI) getParamWithRetry(slot uint8, key string, maxRetries int) st
 	return ""
 }
 
-// moduleCategoryDirs lists the subdirectories under modules/ to search.
-var moduleCategoryDirs = []string{"", "sound_generators", "audio_fx", "midi_fx", "tools", "overtake"}
-
 // findModuleWebUI checks if a module has a web_ui.html file and returns its
 // URL path (e.g. "/api/remote-ui/module-assets/braids/web_ui.html"), or "".
+//
+// The directory list comes from moduleInstallDirs (payload_paths.go), which is
+// derived from the range of getInstallSubdir. This file used to carry its own
+// copy, and that copy had drifted: it omitted "utilities" and "other", so a
+// module installed with component_type "utility" -- or with none at all -- had
+// a Remote UI that simply never appeared, with nothing logged.
 func (ru *RemoteUI) findModuleWebUI(moduleID string) string {
 	if ru.basePath == "" || moduleID == "" {
 		return ""
 	}
-	for _, cat := range moduleCategoryDirs {
-		candidate := filepath.Join(ru.basePath, "modules", cat, moduleID, "web_ui.html")
+	for _, dir := range moduleInstallDirs(ru.basePath) {
+		candidate := filepath.Join(dir, moduleID, "web_ui.html")
 		if _, err := os.Stat(candidate); err == nil {
 			return "/api/remote-ui/module-assets/" + moduleID + "/web_ui.html"
 		}
