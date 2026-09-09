@@ -186,6 +186,11 @@ Rules, all enforced at registration with the reason logged:
 - The picker holds **14 targets** beside Stock and Schwung. Registration past
   that is refused: `bs_row_insert_sorted` drops the overflow silently, in id
   order, so a target that "did not appear" would be unattributable.
+- Two payloads claiming one id is refused for the **challenger**, never the
+  incumbent, and the winner is stable across passes. Only that registration is
+  refused — the rest of the pass still runs, or one bad manifest would freeze
+  the whole registry (no deregistration on uninstall, no stale-exec repair) with
+  nothing visible to say why.
 
 The manager writes `boot.json` with an `owner` field (`module:<id>` or
 `platform:<id>`) and **only ever rewrites or deletes entries carrying an
@@ -197,6 +202,13 @@ uninstall, and update) will put it back.
 Uninstalling the payload removes its entry, and heals `boot-targets/default` to
 `schwung` if it named the removed target. Installing **never** changes the
 default: a new target is a new row in the picker, nothing more.
+
+**A target that fails validation keeps its row.** Only an uninstalled payload,
+or one that has genuinely dropped its `boot_target` block, is deregistered. An
+update that ships a broken `exec` leaves the existing entry alone and logs the
+reason — deleting it would also heal away a `default` naming it, and healing is
+one-way, so your boot choice would not come back when the publisher fixed the
+next release.
 
 Uninstalling Schwung removes the whole registry (`scripts/uninstall.sh`), so
 every target is deregistered at once. Platform payloads are left on disk under

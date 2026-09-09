@@ -182,6 +182,7 @@ the registry, considering only entries with a recognised `owner`:
 | owned entry | owner absent | delete the entry; heal `default` |
 | owned entry | owner installed but no longer declares `boot_target` | delete the entry; heal `default` |
 | owned entry | name/version/exec differ, or a root moved | rewrite `boot.json` |
+| owned entry | owner installed, but its target fails validation this pass | KEEP and warn — a refusal is not a retirement |
 | missing | manifest declares a target | create |
 | no `owner`, or id `schwung` | — | leave alone, always |
 
