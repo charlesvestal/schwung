@@ -16,6 +16,14 @@
  * surface back to seeking.  That is what makes a replug self-heal with no user
  * action: the very next probe puts the device back into remote mode.
  *
+ * ONE ASSUMPTION IS UNVERIFIED ON HARDWARE: that an E16 already in remote mode
+ * ACKS a repeated ENTER.  If it does not, `present` expires every `lossMs` and
+ * the surface falls back to the fast seek cadence -- so the failure is a probe
+ * every 2 s instead of every 10, not a broken surface, because the input path
+ * does not consult `present` and re-entering remote mode is idempotent.  Check
+ * it when a device is on the bench; anything that gates DRAWING on `present`
+ * needs the answer first.
+ *
  * Everything is PURE and injected: `now` is a caller-supplied millisecond
  * clock and `send` a caller-supplied sender, so tests/host can drive the whole
  * machine with no device, no timers and no globals.  The host half is three
