@@ -198,7 +198,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * Nine is the current Audio count, not a capacity: Global Settings is pinned
    * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 3 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 4 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -336,6 +336,11 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
        same tree at :7700/files. Analytics is the whole of the System grid
        page now. */
     analytics_enabled: "Analytics",
+    /* "Ext Surface", abbreviated because the honest "External Surface" needs
+       93px in a row with 85px beside its widest value -- the width pin below
+       is what caught it, the same 8px that made "Stay in Schwung" into "Keep
+       Schwung". A plain enum row, so the section still plans ONE page. */
+    external_surface: "Ext Surface",
     /* Two DOORS, not settings — see the trigger assertions above. They are
        rows on the System page rather than a menu page of their own, which is
        what a level carrying a `menu` alongside its knobs would have cost. */
@@ -565,7 +570,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — six levels (7/9/6/1/4/3 params, Connect and Help " +
+console.log("PASS: global settings contract — six levels (7/9/6/1/4/4 params, Connect and Help " +
             "among them as write-only triggers), ONE section one page and no menu, no " +
             "length limit, every enum listable with matching short_options, " +
             "validator clean, no host global read, every key routed to a backend, the five " +

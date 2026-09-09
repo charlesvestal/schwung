@@ -233,6 +233,10 @@ export const GLOBAL_ROUTING = {
     recall_quantize:        { read: "recall_quantize.get",    write: "recall_quantize.set",    persist: null,   cache: null,                     modal: null },
 
     analytics_enabled:      { read: "host.get_analytics_enabled", write: "host.set_analytics_enabled", persist: null, cache: null,               modal: null },
+    /* persist: "own" -- the surface is a JS-side feature, so the toggle is
+     * saved beside pad_typing in shadow_config.json by the writer itself. The
+     * shared sink (saveMasterFxChainConfig) does not know this key. */
+    external_surface:       { read: "js.externalSurfaceMode",   write: "js.setExternalSurfaceMode", persist: "own", cache: "externalSurfaceMode", modal: null },
 
     /*
      * TRIGGERS, whose "backend" is an ACTION.
@@ -592,6 +596,29 @@ export const SHORTCUTS_PARAMS = [
 export const SYSTEM_PARAMS = [
     /* Opt-in, default off — see docs/plans on analytics. */
     bool("analytics_enabled", "Analytics", 0),
+    /*
+     * An external control surface, driven over its own remote protocol.
+     * `docs/E16_REMOTE.md` is the only one so far; the enum names the DEVICE
+     * rather than saying "on", because the message set is per-device and a
+     * second one is a third option here, not a second setting.
+     *
+     * A PLAIN ENUM ROW, NOT A MENU. A level carrying a `menu` alongside its
+     * knobs plans a SECOND page (page_plan.mjs, "Menu LAST"), which is the
+     * one-section-one-page property this whole screen is built on.
+     *
+     * "Ext Surface", not "External Surface": the honest name needs 93px in a
+     * row that has 85px beside its widest value, and the width pin in
+     * tests/host/test_global_settings_contract.sh catches it. The same 8px
+     * that made "Stay in Schwung" into "Keep Schwung".
+     *
+     * ON does not mean a device is attached, and nothing here can ask: gear on
+     * Move's USB-A never enumerates in Linux (docs/SYSEX.md, issue #358). It
+     * means the surface may SEEK -- see createLifecycle in e16_surface.mjs.
+     */
+    /* Both options already fit the enum square, so there is no short form to
+     * declare -- a second list to keep in step for nothing. */
+    { key: "external_surface", name: "Ext Surface", type: "enum",
+      options: ["Off", "E16"], default: 0 },
     /*
      * TWO DOORS AS TRIGGERS, ON THE SAME PAGE AS THE TOGGLE ABOVE.
      *
