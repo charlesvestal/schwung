@@ -20,8 +20,10 @@ func TestBootRegistryWriteIsFlat(t *testing.T) {
 	}
 	got := string(raw)
 
-	// The shell reader is a per-line awk matcher: every field must sit alone
-	// on its own line or the selector cannot see it.
+	// Flatness is asserted because a NESTED object carrying the same key
+	// shadows the real one in the selector's reader (measured; see
+	// tests/host/test_boot_target_manager_json.sh). One field per line is the
+	// shape shim-entrypoint.sh already writes for the "schwung" entry.
 	for _, key := range []string{"name", "exec", "version", "owner"} {
 		var found int
 		for _, line := range strings.Split(got, "\n") {

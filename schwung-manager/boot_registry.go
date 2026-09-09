@@ -26,14 +26,26 @@ type registryEntry struct {
 func ownerForModule(id string) string   { return "module:" + id }
 func ownerForPlatform(id string) string { return "platform:" + id }
 
-// writeRegistryEntry writes <dir>/<id>/boot.json FLAT: one field per line,
-// string values only.
+// writeRegistryEntry writes <dir>/<id>/boot.json FLAT: string values only,
+// no nesting, one field per line.
 //
-// This shape is a contract with two parsers that cannot handle anything else.
-// bt_json_field (awk, src/host/boot_target_lib.sh) matches per line;
-// bs_json_field (C, src/host/boot_select_core.c) scans a flat buffer. A nested
-// object, or two fields sharing a line, is invisible to the selector — which
-// presents as a target that vanishes from the picker, not as a parse error.
+// What the selector's readers can survive was MEASURED, not assumed
+// (2026-09-09, tests/host/test_boot_target_manager_json.sh). bt_json_field
+// (awk, src/host/boot_target_lib.sh) is a text matcher, and two of its rules
+// bite:
+//
+//   - VALUES MUST BE QUOTED STRINGS. `"version": 3` reads back as EMPTY --
+//     the pattern requires a quote after the colon. So even a version number
+//     is written as a string here.
+//   - THE FIRST TEXTUAL OCCURRENCE WINS, so a nested object carrying the same
+//     key SHADOWS the real one. Flat is what keeps that impossible.
+//
+// One field per line is not itself load-bearing (a single-line object reads
+// back fine) -- it is the shape shim-entrypoint.sh already writes for the
+// "schwung" entry, kept so both producers look alike.
+//
+// A violation is not a parse error on the device. It is a target that is
+// registered and simply does not appear in the picker, with nothing logged.
 func writeRegistryEntry(dir string, e registryEntry) error {
 	target := filepath.Join(dir, e.ID)
 	if err := os.MkdirAll(target, 0o755); err != nil {
@@ -73,8 +85,8 @@ func writeRegistryEntry(dir string, e registryEntry) error {
 	return nil
 }
 
-// readRegistryEntry reads one entry. Values are read with the same
-// one-field-per-line assumption the writer guarantees.
+// readRegistryEntry reads one entry, mirroring what the writer guarantees:
+// flat, string values, one field per line.
 func readRegistryEntry(dir, id string) (registryEntry, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, id, "boot.json"))
 	if err != nil {

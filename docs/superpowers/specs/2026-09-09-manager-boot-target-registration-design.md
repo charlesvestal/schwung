@@ -69,10 +69,16 @@ a module whose boot target was refused is still a working module:
 }
 ```
 
-Written **flat: one field per line, string values only.** This is not
-cosmetic. `bt_json_field` in `src/host/boot_target_lib.sh` is a per-line awk
-matcher, so a nested object or two fields on one line is invisible to the
-selector. A `tests/host` test runs `bt_json_field` against a
+Written **flat: string values only, no nesting.** What the selector's reader
+can survive was measured rather than assumed (2026-09-09). `bt_json_field` in
+`src/host/boot_target_lib.sh` is an awk text matcher, and two of its rules
+bite: **an unquoted value reads back empty** (`"version": 3` loses the field
+entirely — so even a version number is written as a string), and **the first
+textual occurrence of a key wins**, so a nested object carrying the same key
+silently shadows the real one. One field per line is not itself load-bearing —
+a single-line object reads back fine — but it is the shape
+`shim-entrypoint.sh` already writes for the `schwung` entry, so both producers
+match. A `tests/host` test runs `bt_json_field` against a
 manager-written golden file, so the Go writer and the shell reader cannot
 drift apart silently.
 
@@ -267,8 +273,8 @@ platforms directory it is deliberately not removing.
   `default`.
 - **Cross-language pin** (`tests/host/test_boot_target_manager_json.sh`): a
   golden `boot.json` as the Go writer emits it, read back with
-  `bt_json_field` for every field the selector uses. Fails if the writer stops
-  emitting one field per line.
+  `bt_json_field` for every field the selector uses, plus the two shapes that
+  silently blank a field: an unquoted value and a shadowing nested key.
 - **Root composition test**: with `BOOT_TARGETS_DIR` and the install roots
   pointed at a fixture tree, every written `exec` is composed from them —
   no path constant appears twice in the manager, and moving a root and
