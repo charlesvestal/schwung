@@ -504,6 +504,17 @@ typedef struct shadow_control_t {
      * The C setter writes features.json and JS pushes it back down at startup.
      */
     volatile uint8_t speaker_eq_mode;
+    /*
+     * External control surface (an OXI E16 on the USB-A port). 1 = also deliver
+     * cable-2 MIDI to the shadow UI outside overtake mode, where it is normally
+     * dropped, and stop diverting cable-2 note-ons into shadow_queue_input_led
+     * -- that queue is for M8-style LED protocols and coalesces per note, so it
+     * would eat the E16's encoder buttons. Default 0, so a device with nothing
+     * attached behaves exactly as before.
+     *
+     * APPENDED after speaker_eq_mode, for the reason stated on it.
+     */
+    volatile uint8_t external_surface;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */
