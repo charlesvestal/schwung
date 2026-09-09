@@ -919,6 +919,20 @@ restored by `loadSpeakerEq()` at startup — the recall_quantize / metronome_mod
 / save_stems shape exactly, because `load_feature_config()` runs once at init
 and this has to change without a reboot.
 
+**It is ALSO seeded from the file at init, which the other three are not**, and
+that is not belt-and-braces: `0` in SHM is a legitimate mode (Auto), so an
+unseeded register cannot be told from a real choice, and the gap before the
+shadow UI pushes the value down is exactly the boot window an `Off` user is
+choosing this setting to cover. `speaker_eq_setting` is parsed in
+`load_feature_config()` and written to the register beside
+`shadow_ui_trigger_setting`, which has the same shape for the same reason.
+
+**The key is `speaker_eq`, NOT the legacy `speaker_eq_mode`.** That one belonged
+to the toggle removed in `f418af41`, and a stale copy of it is still on the disk
+of every device that ever had it — honouring it would silently revive a choice
+made against different jack-detect behaviour, which for a device left on `on` is
+the hollow-headphone bug coming back on an upgrade.
+
 **On does NOT escape `rebuild_from_la`,** and that is the same rule the
 metronome's three modes obey: outside Move→Schwung Move's own enhancer is in the
 path, so "force on" would mean running it twice. The gate stays where it is,
