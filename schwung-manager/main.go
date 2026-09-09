@@ -76,9 +76,26 @@ type CatalogHost struct {
 
 // Catalog is the top-level catalog structure.
 type Catalog struct {
-	CatalogVersion int             `json:"catalog_version"`
-	Host           CatalogHost     `json:"host"`
-	Modules        []CatalogModule `json:"modules"`
+	CatalogVersion int               `json:"catalog_version"`
+	Host           CatalogHost       `json:"host"`
+	Modules        []CatalogModule   `json:"modules"`
+	Platforms      []CatalogPlatform `json:"platforms,omitempty"`
+}
+
+// CatalogPlatform is a boot target with no module in it: an alternative
+// platform that wants the manager's install plumbing. It has no
+// component_type because it is never loaded by the Schwung host — it replaces
+// it at boot.
+type CatalogPlatform struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Author        string `json:"author"`
+	GithubRepo    string `json:"github_repo"`
+	DefaultBranch string `json:"default_branch"`
+	AssetName     string `json:"asset_name"`
+	MinHostVer    string `json:"min_host_version"`
+	Requires      string `json:"requires,omitempty"`
 }
 
 // ModuleAssets describes user-uploadable assets for a module.
@@ -1164,6 +1181,67 @@ func (r ReleaseJSON) forModule(moduleID string) (ReleaseJSON, bool) {
 	return moduleRelease, ok
 }
 
+// resolveDownloadURL fetches release.json for a payload and returns the URL to
+// download plus the version that URL represents. Falls back to the repo's
+// latest-release asset when release.json is missing or does not carry this id.
+// Shared by module and platform installs: one release.json contract, one
+// multi-module shape, one fallback.
+func (app *App) resolveDownloadURL(repo, branch, id, assetName string) (url, version string) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json", repo, branch)
+	app.logger.Info("fetching release.json", "url", releaseURL)
+
+	if resp, err := client.Get(releaseURL); err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			var rel ReleaseJSON
+			if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil {
+				if r, ok := rel.forModule(id); ok {
+					url, version = r.DownloadURL, r.Version
+				} else {
+					app.logger.Warn("id missing from multi-module release.json; using fallback URL", "id", id)
+				}
+			} else {
+				app.logger.Warn("decoding release.json", "id", id, "err", err)
+			}
+		} else {
+			app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
+		}
+	} else {
+		app.logger.Warn("fetching release.json", "id", id, "err", err)
+	}
+	if url == "" {
+		url = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, assetName)
+	}
+	return url, version
+}
+
+// downloadToTemp saves a URL to a temp file under basePath (never /tmp — the
+// device's root FS is ~463MB and usually full). The caller removes it.
+func (app *App) downloadToTemp(url, name string) (string, error) {
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("downloading tarball: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	tmpPath := filepath.Join(app.basePath, name)
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("saving tarball: %w", err)
+	}
+	f.Close()
+	return tmpPath, nil
+}
+
 // installModule downloads and extracts a module from its GitHub release.
 func (app *App) installModule(mod *CatalogModule) error {
 	return app.installModuleWithDeps(mod, map[string]bool{})
@@ -1219,67 +1297,14 @@ func (app *App) installModuleWithDeps(mod *CatalogModule, seen map[string]bool) 
 		return err
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
-
-	// 1. Fetch release.json to get download URL.
-	releaseURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/release.json",
-		mod.GithubRepo, mod.DefaultBranch)
-	app.logger.Info("fetching release.json", "url", releaseURL)
-
-	resp, err := client.Get(releaseURL)
-	if err != nil {
-		return fmt.Errorf("fetching release.json: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		// Fall back to latest release download URL.
-		app.logger.Warn("release.json not found, using fallback URL", "status", resp.StatusCode)
-	}
-
-	var downloadURL, releaseVersion string
-	if resp.StatusCode == http.StatusOK {
-		var rel ReleaseJSON
-		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-			return fmt.Errorf("decoding release.json: %w", err)
-		}
-		if moduleRelease, ok := rel.forModule(mod.ID); ok {
-			downloadURL = moduleRelease.DownloadURL
-			releaseVersion = moduleRelease.Version
-		} else {
-			app.logger.Warn("module missing from multi-module release.json; using fallback URL",
-				"id", mod.ID)
-		}
-	}
-	if downloadURL == "" {
-		// Fallback: use GitHub releases latest download.
-		downloadURL = fmt.Sprintf("https://github.com/%s/releases/latest/download/%s",
-			mod.GithubRepo, mod.AssetName)
-	}
-
-	// 2. Download the tarball.
+	downloadURL, releaseVersion := app.resolveDownloadURL(
+		mod.GithubRepo, mod.DefaultBranch, mod.ID, mod.AssetName)
 	app.logger.Info("downloading module", "id", mod.ID, "url", downloadURL)
-	dlResp, err := client.Get(downloadURL)
+	tmpPath, err := app.downloadToTemp(downloadURL, ".tmp-module-download.tar.gz")
 	if err != nil {
-		return fmt.Errorf("downloading tarball: %w", err)
-	}
-	defer dlResp.Body.Close()
-	if dlResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download returned %d", dlResp.StatusCode)
-	}
-
-	// Save to temp file in /data/UserData/ (not /tmp which is on rootfs).
-	tmpPath := filepath.Join(app.basePath, ".tmp-module-download.tar.gz")
-	tmpFile, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
+		return err
 	}
 	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmpFile, dlResp.Body); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("saving tarball: %w", err)
-	}
-	tmpFile.Close()
 
 	// 3. Extract to the correct category directory.
 	categoryDir := filepath.Join(app.basePath, "modules", getInstallSubdir(mod.ComponentType))
