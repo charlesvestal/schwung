@@ -895,6 +895,35 @@ pulse error, a latency, or any mix; it took a second tempo to solve for both.
 and has no announcement to key off. Record + transport is not a sufficient
 signal. Not covered.
 
+### The speaker EQ is jack-following, and Auto is only the DEFAULT now
+
+Same construction problem as the metronome, one layer later: under
+`rebuild_from_la` the DAC mailbox is rebuilt from the four per-track Link Audio
+channels, so Move's own **MoveSpeakerEnhancer** — which sits on its master bus —
+is not in the path, and `speaker_eq_process` in `schwung_shim.c` runs an
+emulation of it in its place.
+
+It must never colour headphones, and the jack reading it depends on is the part
+that goes wrong: XMOS can broadcast a transient or uncorrected CC 115 val=0
+("speaker") while headphones are actually plugged. So the auto logic is biased
+hard toward OFF — a speaker reading is trusted only after `SPK_EQ_STABLE_SEC`
+of continuity, and the failure it prefers is *less bass on the speaker*, never
+*hollow headphones*.
+
+**That bias is a good default and a bad only-option.** A device whose XMOS
+insists on "speaker" with a jack in has no way to silence the EQ; one that never
+settles on speaker never gets it at all. **Global Settings → Audio → Spkr EQ**
+is the escape: `speaker_eq_mode` in `shadow_control_t` (0 Auto, 1 Off, 2 On),
+persisted by `js_shadow_speaker_eq_set` to `features.json` as `speaker_eq`,
+restored by `loadSpeakerEq()` at startup — the recall_quantize / metronome_mode
+/ save_stems shape exactly, because `load_feature_config()` runs once at init
+and this has to change without a reboot.
+
+**On does NOT escape `rebuild_from_la`,** and that is the same rule the
+metronome's three modes obey: outside Move→Schwung Move's own enhancer is in the
+path, so "force on" would mean running it twice. The gate stays where it is,
+once, rather than becoming a fourth mode nobody remembers to condition on.
+
 ### The preroll trim was a no-op for five months, and looked like bad timing
 
 The quantized sampler records **through** its preroll — starting on the count-in

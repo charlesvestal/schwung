@@ -10349,6 +10349,46 @@ function loadSaveStems() {
 }
 
 /*
+ * Speaker EQ. Same shape as saveStemsValue above: the setting persists in
+ * features.json, the register in SHM does not, so JS reads the file at startup
+ * and pushes the value down.
+ *
+ * Auto (the default) is what the shim has always done -- run the
+ * MoveSpeakerEnhancer emulation on the rebuilt DAC mailbox only while the jack
+ * reads built-in speaker, biased hard toward off because a wrong reading makes
+ * headphones sound hollow. Off and On exist for the devices where that reading
+ * is simply wrong in one direction: Off for one that insists on "speaker" with
+ * headphones in, On for one that never reports speaker at all. Neither escapes
+ * Move->Schwung -- outside it Move's own enhancer is in the path.
+ */
+let speakerEqMode = 0;                 /* 0 auto, 1 off, 2 on */
+const SPEAKER_EQ_NAMES = ["auto", "off", "on"];
+
+function setSpeakerEq(v) {
+    speakerEqMode = (v >= 0 && v <= 2) ? v : 0;
+    if (typeof shadow_speaker_eq_set === "function") {
+        shadow_speaker_eq_set(speakerEqMode);
+    }
+}
+
+/* Restore from features.json and push the register down. Called once at
+ * startup: the setting persists in the file, the register does not. */
+function loadSpeakerEq() {
+    let v = 0;
+    try {
+        const raw = host_read_file("/data/UserData/schwung/config/features.json");
+        if (raw) {
+            const m = /"speaker_eq"\s*:\s*"([^"]*)"/.exec(raw);
+            if (m) {
+                const i = SPEAKER_EQ_NAMES.indexOf(m[1]);
+                if (i >= 0) v = i;
+            }
+        }
+    } catch (e) { debugLog("speaker_eq read failed: " + e); }
+    setSpeakerEq(v);
+}
+
+/*
  * Metronome. Mirrors recallQuantizeValue above: the setting persists in
  * features.json, the register in SHM does not, so JS reads the file at startup
  * and pushes the value down.
@@ -14183,6 +14223,8 @@ function globalGridIoFor() {
                 return String(metronomeLevel);
             case "save_stems":
                 return String(saveStemsValue);
+            case "speaker_eq":
+                return String(speakerEqMode);
             case "analytics_enabled":
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
 
@@ -14314,6 +14356,9 @@ function globalGridIoFor() {
                 return;
             case "save_stems":
                 setSaveStems(parseInt(value, 10) || 0);
+                return;
+            case "speaker_eq":
+                setSpeakerEq(parseInt(value, 10) || 0);
                 return;
             case "shadow_ui_trigger":
                 if (typeof shadow_ui_trigger_set === "function") shadow_ui_trigger_set(parseInt(value, 10) || 0);
@@ -24303,6 +24348,7 @@ globalThis.init = function() {
     try { loadRecallQuantize(); } catch (e) { debugLog("recall_quantize load failed: " + e); }
     try { loadSaveStems(); } catch (e) { debugLog("save_stems load failed: " + e); }
     try { loadMetronome(); } catch (e) { debugLog("metronome load failed: " + e); }
+    try { loadSpeakerEq(); } catch (e) { debugLog("speaker_eq load failed: " + e); }
 
     /* Analytics: emit app_launched + census + diff against previous snapshot.
      * app_launched must emit here (not in shadow_ui.c main()) because

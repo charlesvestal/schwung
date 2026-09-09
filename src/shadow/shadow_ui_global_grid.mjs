@@ -16,7 +16,7 @@
  * put the bank bar in charge of a split nobody chose, and the split would
  * arrive silently, so tests/host/test_global_settings_contract.sh pins the
  * per-section counts rather than trusting the shapes to stay put. Audio sits
- * at exactly eight.
+ * at exactly nine.
  *
  * WHY NOT IN shadow_ui_slot_grid.mjs.
  *
@@ -115,6 +115,7 @@ export const GLOBAL_ENUM_VALUES = {
     recall_quantize: [0, 1, 2, 3],
     metronome_mode: [0, 1, 2],
     save_stems: [0, 1, 2],
+    speaker_eq: [0, 1, 2],
 };
 
 /* ------------------------------------------------------------ accessor routing
@@ -158,6 +159,7 @@ export const GLOBAL_ENUM_VALUES = {
  *   shadow_ui_trigger      | shadow_ui_trigger_get   | shadow_ui_trigger_set    | -       | -                      | -
  *   recall_quantize        | (js) recallQuantizeValue| setRecallQuantize        | -       | -                      | -
  *   save_stems             | (js) saveStemsValue     | setSaveStems             | -       | -                      | -
+ *   speaker_eq             | (js) speakerEqMode      | setSpeakerEq             | -       | -                      | -
  *   analytics_enabled      | host_get_analytics_enabled | host_set_analytics_enabled | -  | -                      | -
  *   connect                | (write-only trigger)    | runAction("connect")      | -       | -                      | -
  *   help                   | (write-only trigger)    | runAction("help")         | -       | -                      | -
@@ -211,6 +213,10 @@ export const GLOBAL_ROUTING = {
      * it also writes lives in SHM and does not survive a reboot. */
     save_stems:             { read: "save_stems.get",         write: "save_stems.set",         persist: null,   cache: null,                     modal: null },
     metronome_level:        { read: "metronome.get_level",    write: "metronome.set_level",    persist: null,   cache: null,                     modal: null },
+    /* persist: null — shadow_speaker_eq_set writes features.json itself, the
+     * same shape as save_stems and metronome_mode, because the register it
+     * also writes lives in SHM and does not survive a reboot. */
+    speaker_eq:             { read: "speaker_eq.get",         write: "speaker_eq.set",         persist: null,   cache: null,                     modal: null },
 
     screen_reader_enabled:  { read: "tts.get_enabled",        write: "tts.set_enabled",        persist: null,   cache: null,                     modal: null },
     screen_reader_engine:   { read: "tts.get_engine",         write: "tts.set_engine",         persist: null,   cache: null,                     modal: null },
@@ -465,6 +471,31 @@ export const AUDIO_PARAMS = [
     { key: "save_stems", name: "Save", type: "enum",
       options: ["Master", "Stems", "Both"],
       short_options: ["MST", "STM", "BTH"], default: 0 },
+    /*
+     * THREE OPTIONS, NOT A BOOL, because the useful default is neither Off nor
+     * On: it is "follow the headphone jack", which is what the shim has always
+     * done and what nobody who has not hit a problem should have to choose.
+     *
+     * Under Move->Schwung the DAC mailbox is rebuilt from the four per-track
+     * Link Audio slots, which bypasses Move's own MoveSpeakerEnhancer, so the
+     * shim runs an emulation of it in its place -- and only while the built-in
+     * speaker is the output, because the enhancer must never colour headphones.
+     * That jack-following is Auto, and it is biased hard toward OFF (a stuck or
+     * transient CC 115 "speaker" reading while headphones are plugged is the
+     * hollow-audio bug; less bass on the speaker is the better failure).
+     *
+     * Off and On are the two escapes from a jack reading that is wrong for a
+     * given device: Off where XMOS insists on "speaker" with headphones in, On
+     * where it never settles on speaker at all and the enhancer therefore never
+     * engages. Neither escapes Move->Schwung: outside it Move's own enhancer is
+     * in the path, so On cannot mean "run it twice".
+     *
+     * "Spkr EQ" is the one abbreviated name on this screen and it is the name
+     * the user asked for; "Speaker EQ" is 79px against the row's 85px, so it is
+     * not the width pin forcing it.
+     */
+    { key: "speaker_eq", name: "Spkr EQ", type: "enum",
+      options: ["Auto", "Off", "On"], short_options: ["AUT", "OFF", "ON"], default: 0 },
 ];
 
 /* ------------------------------------------------------------ accessibility */

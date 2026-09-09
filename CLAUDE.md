@@ -1114,6 +1114,17 @@ Mute (CC 88) is passed through to Move firmware (even while shadow UI is shown) 
   identical off-by-one and is fixed with it — the grid now lives once, in
   `src/host/transport_grid.h`, because one fact with two consumers written
   down nowhere is how both got it wrong. See `docs/SHADOW_UI.md`.
+- **The speaker EQ has the same shape, and Auto is only its DEFAULT.**
+  `rebuild_from_la` also bypasses Move's MoveSpeakerEnhancer, so the shim runs
+  an emulation of it — jack-following, and biased hard toward OFF because a
+  stray CC 115 "speaker" while headphones are plugged is the hollow-audio bug
+  and less bass on the speaker is the better failure. That bias leaves a device
+  whose jack reads wrong in either direction with no way out, so **Global
+  Settings → Audio → Spkr EQ** is Auto / Off / On
+  (`shadow_control_t.speaker_eq_mode`, persisted as `speaker_eq` in
+  features.json). **On does NOT escape `rebuild_from_la`** — outside
+  Move→Schwung Move's own enhancer is in the path, so forcing it on would run
+  it twice.
 
 ### Quantized Sampler
 

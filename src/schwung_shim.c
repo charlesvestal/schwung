@@ -267,7 +267,10 @@ static int speaker_eq_initialized = 0;
  * Trade-off: a device that only ever uses the built-in speaker (never inserts
  * a jack) runs without the enhancer EQ until a jack is plugged+unplugged once
  * — no longer a practical concern now that the boot jack re-assert restores
- * the true state automatically. The EQ is always jack-auto (no user toggle). */
+ * the true state automatically. This whole paragraph describes AUTO, which is
+ * the default; Global Settings -> Audio -> Spkr EQ can force it Off or On
+ * (shadow_control_t.speaker_eq_mode), which is the escape for a device whose
+ * jack reading is simply wrong in one direction or the other. */
 /* Auto-mode stability: engage the EQ only when the jack has read speaker
  * (CC 115 val=0) continuously for SPK_EQ_STABLE_SEC. A val=127 (jack inserted)
  * flips us out of speaker instantly. This rejects transients and contact
@@ -3326,7 +3329,16 @@ skip_la_rebuild:
      * XMOS broadcasts CC 115 within ~180ms of shim init at every boot, so the
      * gate clears almost immediately on a real session. */
     {
-        int eq_on = spk_eq_speaker_stable();  /* always jack-auto (no toggle) */
+        /* Global Settings -> Audio -> Spkr EQ. Auto is the jack-following
+         * behaviour described above; Off never engages; On engages whatever
+         * the jack says. On is still confined to rebuild_from_la below --
+         * outside it Move's own enhancer is in the path and ours would double
+         * it, so "force on" cannot mean "run it twice". */
+        int spk_mode = shadow_control ? (int)shadow_control->speaker_eq_mode
+                                      : SPEAKER_EQ_MODE_AUTO;
+        int eq_on = (spk_mode == SPEAKER_EQ_MODE_OFF) ? 0
+                  : (spk_mode == SPEAKER_EQ_MODE_ON)  ? 1
+                  : spk_eq_speaker_stable();
         if (rebuild_from_la && speaker_eq_initialized && eq_on) {
             speaker_eq_process(mailbox_audio, FRAMES_PER_BLOCK);
         }
