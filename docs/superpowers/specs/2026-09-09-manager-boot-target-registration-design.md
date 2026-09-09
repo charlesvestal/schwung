@@ -115,6 +115,20 @@ the boot itself, which is what an entry that resolves the payload at boot time
 (a generated launcher script, weighed and rejected) would have bought at the
 price of a second executable per target that can itself be wrong.
 
+### 3a. What registration can and cannot do
+
+Registering a boot target means a tarball from a GitHub release has added a row
+to the thing that decides what the device boots into, and that row runs its own
+code as `ableton` at boot. That is inherent to being a boot target; the manager
+automates the registration, it does not widen what a target may do.
+
+The guarantee that makes it safe is narrow and must stay exactly this narrow:
+**installing a payload can add a picker row; it can never cause that row to
+boot.** `boot-targets/default` is written on explicit user choice only — the
+Boot page, or the picker at boot — and never as a side effect of an install,
+an update, or reconcile. Reconcile writes `default` in one direction only:
+healing it to `schwung` when the target it names has gone away.
+
 ### 4. Install, uninstall, reconcile
 
 **Install** (after extraction, ownership fix, and version pin — i.e. at the end
@@ -134,6 +148,7 @@ the registry, considering only entries with a recognised `owner`:
 | Registry | Disk | Action |
 |---|---|---|
 | owned entry | owner absent | delete the entry; heal `default` |
+| owned entry | owner installed but no longer declares `boot_target` | delete the entry; heal `default` |
 | owned entry | name/version/exec differ, or a root moved | rewrite `boot.json` |
 | missing | manifest declares a target | create |
 | no `owner`, or id `schwung` | — | leave alone, always |
@@ -180,6 +195,18 @@ A manager page listing the boot registry as the user will meet it at boot:
 - Read-only otherwise. Removing a target is uninstalling its payload; editing
   a target's fields by hand is not offered.
 
+## Consequences worth stating
+
+`scripts/uninstall.sh` removes `/data/UserData/boot-targets` wholesale, so
+uninstalling Schwung deregisters every target, including platforms the manager
+installed. Their payloads are left on disk under `/data/UserData/platforms/`,
+unreferenced. This is defensible — the selector *is* Schwung, and stock
+`/opt/move/Move` is restored, so nothing could boot them anyway — but it is a
+surprise if undocumented: a user who reinstalls Schwung gets the payloads back
+as picker rows only after the manager's next reconcile, and their chosen
+default is gone. `BOOT_TARGETS.md` says so, and `uninstall.sh` names the
+platforms directory it is deliberately not removing.
+
 ## Out of scope
 
 - Running publisher-supplied scripts (`post_install.sh`) as root. The manager
@@ -218,6 +245,9 @@ A manager page listing the boot registry as the user will meet it at boot:
   `boot_target` block, the two payload shapes, and the statement that a
   manager-registered target must not hand-edit its registry entry (reconcile
   will revert it).
+- `docs/BOOT_TARGETS.md` — also fix a pre-existing contradiction while in
+  there: the Watchdog section says three strikes (matching `BT_STRIKE_LIMIT`),
+  "What the user sees" still says "Two failed boots".
 - `CLAUDE.md` — one bullet under Module Install / Update, pointing at
   `BOOT_TARGETS.md`.
 - `docs/MODULES.md` — the `boot_target` block in the module.json reference.
