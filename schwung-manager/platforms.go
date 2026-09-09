@@ -4,6 +4,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -63,17 +64,87 @@ func readInstalledPlatform(dir string) (InstalledPlatform, error) {
 	return p, nil
 }
 
-// verifyPlatformExtraction fails when the tarball did not carry a top-level
-// <id>/ directory. Without this the payload is strewn across the platforms
-// root and the failure surfaces later as an unrelated-looking registration
-// error.
-func verifyPlatformExtraction(basePath, id string) error {
-	manifest := filepath.Join(platformsRoot(basePath), id, "platform.json")
-	if _, err := os.Stat(manifest); err != nil {
-		return fmt.Errorf("%s: the tarball must contain a top-level %s/ directory "+
-			"with platform.json inside it", manifest, id)
+// extractPlatformPayload extracts a platform tarball into <root>/<id>.
+//
+// It extracts into a STAGING directory and renames into place only after the
+// top-level <id>/platform.json is verified. Extracting straight into the
+// platforms root meant a tarball whose top-level directory was `bar/` instead
+// of `<id>/` failed the check and reported an install failure -- while leaving
+// bar/ sitting in the root, where the next reconcile discovers it and
+// registers BAR's boot_target under platform:bar: an id the user never
+// installed and which is not in the catalog.
+//
+// The id is validated FIRST because it becomes a path. It comes from the
+// catalog, not from the payload, but it is no less remote for that: an id of
+// ".." resolved the manifest check to /data/UserData/platform.json and the
+// extraction to the parent of the platforms root.
+func extractPlatformPayload(root, id, tarballPath string) error {
+	if !bootTargetIDRe.MatchString(id) {
+		return fmt.Errorf("platform id %q: must match [a-z0-9-]+", id)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return fmt.Errorf("creating platforms dir: %w", err)
+	}
+	staging, err := os.MkdirTemp(root, ".staging-"+id+"-")
+	if err != nil {
+		return fmt.Errorf("creating staging dir: %w", err)
+	}
+	// Removed on EVERY failure path, so a rejected tarball leaves the
+	// platforms root exactly as it found it.
+	defer os.RemoveAll(staging)
+
+	if out, err := exec.Command("tar", "-xzf", tarballPath, "-C", staging).CombinedOutput(); err != nil {
+		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, out)
+	}
+	staged := filepath.Join(staging, id)
+	if _, err := os.Stat(filepath.Join(staged, "platform.json")); err != nil {
+		return fmt.Errorf("the tarball must contain a top-level %s/ directory "+
+			"with platform.json inside it", id)
+	}
+
+	// Rename cannot merge into an existing directory, so the old payload goes
+	// first. It is moved aside rather than deleted outright: a failed rename
+	// would otherwise leave no payload at all where there had been a working
+	// one. (User state was snapshotted by the caller and is restored after.)
+	final := filepath.Join(root, id)
+	backup := ""
+	if _, err := os.Stat(final); err == nil {
+		backup = final + ".replacing"
+		os.RemoveAll(backup)
+		if err := os.Rename(final, backup); err != nil {
+			return fmt.Errorf("moving the previous payload aside: %w", err)
+		}
+	}
+	if err := os.Rename(staged, final); err != nil {
+		if backup != "" {
+			os.Rename(backup, final)
+		}
+		return fmt.Errorf("installing payload: %w", err)
+	}
+	if backup != "" {
+		os.RemoveAll(backup)
 	}
 	return nil
+}
+
+// chownEach is the per-path chown, a seam so a test can observe the walk
+// without needing an `ableton` user (or root) to exist.
+var chownEach = chownToAbleton
+
+// chownTreeToAbleton is the platform-side equivalent of the module path's
+// `chown -R ableton:users`. docs/BOOT_TARGETS.md is explicit that a target is
+// exec'd AS ABLETON: with only the payload directory itself chowned, every
+// shipped file and subdirectory stays root:root and any state the platform
+// writes at boot fails EACCES -- which, if the platform treats it as fatal, is
+// three strikes and a forced picker with the cause invisible.
+func chownTreeToAbleton(root string) {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // a vanished entry is not a reason to stop
+		}
+		chownEach(path)
+		return nil
+	})
 }
 
 // installPlatform downloads and extracts a platform, then registers whatever
@@ -104,10 +175,7 @@ func (app *App) installPlatform(p *CatalogPlatform) error {
 	}
 
 	app.logger.Info("extracting platform", "id", p.ID, "dest", root)
-	if out, err := exec.Command("tar", "-xzf", tmpPath, "-C", root).CombinedOutput(); err != nil {
-		return fmt.Errorf("extracting tarball: %w\noutput: %s", err, out)
-	}
-	if err := verifyPlatformExtraction(app.basePath, p.ID); err != nil {
+	if err := extractPlatformPayload(root, p.ID, tmpPath); err != nil {
 		return err
 	}
 	if preserved != nil {
@@ -118,7 +186,7 @@ func (app *App) installPlatform(p *CatalogPlatform) error {
 	if err := pinInstalledPlatformVersion(payloadDir, releaseVersion, app.logger); err != nil {
 		app.logger.Warn("failed to pin platform.json version", "id", p.ID, "err", err)
 	}
-	chownToAbleton(payloadDir)
+	chownTreeToAbleton(payloadDir)
 
 	// A refused boot target is NOT an install failure — the payload is on
 	// disk and only its picker row is missing, with the reason logged. Same

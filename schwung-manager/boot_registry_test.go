@@ -114,3 +114,98 @@ func TestBootRegistryDefault(t *testing.T) {
 		t.Errorf("readBootDefault = %q", got)
 	}
 }
+
+// FINDING 1. A torn boot.json turns a manager-owned entry into an IMMORTAL
+// one: Owner == "" is the sentinel for "hand-installed, never touch", so a
+// half-written file (power loss during the write — this codebase already
+// documents torn .boot-attempt stamps as a real field occurrence) permanently
+// consumes a picker slot pointing at a possibly-dangling exec, and nothing in
+// the manager can rewrite or remove it.
+//
+// The observable is the INODE: an in-place os.WriteFile truncates and refills
+// the same file, so a reader can see the empty middle. A write to a temp file
+// in the same directory followed by rename never can.
+func TestBootRegistryWriteIsAtomicRename(t *testing.T) {
+	dir := t.TempDir()
+	e := registryEntry{ID: "v", Name: "V", Exec: "/x/entry.sh", Version: "1.0.0", Owner: "platform:v"}
+	if err := writeRegistryEntry(dir, e); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "v", "boot.json")
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	e.Version = "2.0.0"
+	if err := writeRegistryEntry(dir, e); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Error("boot.json was rewritten IN PLACE: a torn write leaves an entry with " +
+			"no owner, which reconcile will never rewrite or delete")
+	}
+	got, err := readRegistryEntry(dir, "v")
+	if err != nil || got != e {
+		t.Fatalf("after rewrite: %+v, %v; want %+v", got, err, e)
+	}
+	// A staging file left behind is a directory that lists as a target with a
+	// second, unreadable boot.json beside it.
+	ents, err := os.ReadDir(filepath.Join(dir, "v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 1 || ents[0].Name() != "boot.json" {
+		var names []string
+		for _, d := range ents {
+			names = append(names, d.Name())
+		}
+		t.Errorf("registry dir holds %v, want just boot.json", names)
+	}
+}
+
+// FINDING 4. setBootDefault took a form value (main.go handleBootSetDefault,
+// r.FormValue("id")) straight into filepath.Join. Join CLEANS "..", so
+// id="../evil" reads <registry>/../evil/boot.json — and a module tarball can
+// ship a file called boot.json. The check then passes and the traversal string
+// is written verbatim into boot-targets/default, where the selector's
+// bt_resolve_default / bt_exec_path run whatever that file names.
+func TestBootDefaultRefusesTraversalID(t *testing.T) {
+	root := t.TempDir()
+	reg := filepath.Join(root, "boot-targets")
+	if err := os.MkdirAll(reg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BOOT_TARGETS_DIR", reg)
+
+	// A payload directory outside the registry carrying a boot.json — exactly
+	// what a module tarball shipping that filename stages.
+	evil := filepath.Join(root, "evil")
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(evil, "boot.json"),
+		[]byte("{\n  \"name\": \"E\",\n  \"exec\": \"/bin/sh\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{basePath: filepath.Join(root, "schwung"), logger: testLogger()}
+	for _, id := range []string{"../evil", "..", "sub/dir", "Evil"} {
+		if err := app.setBootDefault(id); err == nil {
+			t.Errorf("setBootDefault(%q) was accepted", id)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(reg, "default")); !os.IsNotExist(err) {
+		raw, _ := os.ReadFile(filepath.Join(reg, "default"))
+		t.Errorf("a default was written anyway: %q", raw)
+	}
+
+	// "stock" has no directory and must still be accepted.
+	if err := app.setBootDefault("stock"); err != nil {
+		t.Errorf("setBootDefault(\"stock\") = %v, want accepted", err)
+	}
+}

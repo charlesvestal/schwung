@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // bootTargetNameMax is a registration-time cap, and it is a parser constraint
@@ -134,9 +135,46 @@ func resolveBootExec(payloadDir, exec string) (string, error) {
 		return "", fmt.Errorf("boot_target exec %q: is a directory", exec)
 	}
 	if info.Mode().Perm()&0o111 == 0 {
-		if err := os.Chmod(realExec, 0o755); err != nil {
+		if err := chmodExecNoFollow(realExec); err != nil {
 			return "", fmt.Errorf("boot_target exec %q: not executable and chmod failed: %w", exec, err)
 		}
 	}
-	return abs, nil
+	// What gets stored is the RESOLVED path, not `abs`. Containment was proven
+	// against realExec, so storing the unresolved one means the guarantee this
+	// function advertises does not bind what the selector runs: every
+	// component inside the payload belongs to user ableton, and swapping one
+	// after install silently repoints the boot entry at anything on the
+	// device.
+	//
+	// Resolution is re-anchored on the CALLER's payloadDir rather than handing
+	// back realExec verbatim. Those differ only when a component of payloadDir
+	// itself is a symlink — and payloadDir is composed by the manager from its
+	// own roots, whose parents are root-owned (a payload directory's own name
+	// cannot be swapped without write access to the install root), so there is
+	// nothing untrusted in that prefix to resolve. Everything below it, which
+	// is the whole attacker-controlled region, is resolved.
+	rel, err := filepath.Rel(realDir, realExec)
+	if err != nil {
+		return "", fmt.Errorf("boot_target exec %q: cannot be resolved inside the payload directory: %w", exec, err)
+	}
+	return filepath.Join(payloadDir, rel), nil
+}
+
+// chmodExecNoFollow makes one FILE executable, never whatever a symlink at
+// that path points to.
+//
+// The manager runs as root and the payload directory has just been handed to
+// user ableton, so between the EvalSymlinks/Stat above and this call ableton
+// can swap a path component and have root chmod 0755 an arbitrary file —
+// /etc/shadow, a private key. os.Chmod resolves the path afresh and would
+// follow it. Opening with O_NOFOLLOW and chmodding the HANDLE makes the check
+// and the change apply to the same object. Same failure class as the setuid
+// copy that needed O_NOFOLLOW on its tmp path.
+func chmodExecNoFollow(path string) error {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Chmod(0o755)
 }

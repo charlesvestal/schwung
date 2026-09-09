@@ -112,3 +112,126 @@ func TestBootTargetChmodsExec(t *testing.T) {
 		t.Errorf("exec not made executable: mode %v", info.Mode().Perm())
 	}
 }
+
+// FINDING 2. The chmod runs AS ROOT, three syscalls after the check, on a
+// directory that has just been handed to user ableton — so ableton can swap a
+// path component in between and get root to chmod 0755 an arbitrary file
+// (/etc/shadow, a private key). Same class as the setuid-copy bug that needed
+// O_NOFOLLOW on its tmp path.
+//
+// A full race is not reproducible here; what IS testable is the property the
+// fix rests on: the chmod applies to a FILE HANDLE opened O_NOFOLLOW, so it
+// can never land on the far end of a symlink.
+func TestBootExecChmodDoesNotFollowSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "entry.sh")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := chmodExecNoFollow(link); err == nil {
+		t.Error("chmodExecNoFollow followed a symlink instead of refusing it")
+	}
+	info, err := os.Stat(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("the symlink's TARGET was chmodded to %v: root just changed a file "+
+			"outside the payload directory", info.Mode().Perm())
+	}
+}
+
+// FINDING 3. Containment was proven against EvalSymlinks(abs) and then the
+// UNRESOLVED abs was stored, so a component swapped after install repoints
+// what the selector actually runs — the guarantee the function advertises does
+// not bind the path that gets executed.
+func TestBootTargetStoresResolvedExec(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "v")
+	writePayload(t, dir, `{"id":"v","name":"V","version":"0.1.0",`+
+		`"boot_target":{"name":"V","exec":"lib/entry.sh"}}`, "real/entry.sh")
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "lib")); err != nil {
+		t.Fatal(err)
+	}
+
+	bt, err := parseBootTarget(filepath.Join(dir, "module.json"), "v", dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The symlinked component INSIDE the payload — the region ableton owns —
+	// must be gone from the stored path. The payloadDir prefix is left as the
+	// caller composed it (see resolveBootExec).
+	want := filepath.Join(dir, "real", "entry.sh")
+	if bt.ExecAbs != want {
+		t.Errorf("ExecAbs = %q, want the RESOLVED %q", bt.ExecAbs, want)
+	}
+	if strings.Contains(bt.ExecAbs, "/lib/") {
+		t.Errorf("ExecAbs %q still runs through the symlink containment was proven against", bt.ExecAbs)
+	}
+}
+
+// The spec's testing section names this case and it had no test: an exec whose
+// resolved path leaves the payload directory must be refused. "..", which is
+// covered above, is caught by the textual check and never reaches the
+// symlink-aware one.
+func TestBootTargetRefusesSymlinkEscapeAndDirectory(t *testing.T) {
+	t.Run("symlink escape", func(t *testing.T) {
+		root := t.TempDir()
+		outside := filepath.Join(root, "outside.sh")
+		if err := os.WriteFile(outside, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		dir := filepath.Join(root, "v")
+		writePayload(t, dir, `{"id":"v","name":"V","version":"0.1.0",`+
+			`"boot_target":{"name":"V","exec":"entry.sh"}}`, "")
+		if err := os.Symlink(outside, filepath.Join(dir, "entry.sh")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := parseBootTarget(filepath.Join(dir, "module.json"), "v", dir)
+		if err == nil || !strings.Contains(err.Error(), "outside") {
+			t.Fatalf("err = %v, want a refusal naming the payload directory", err)
+		}
+	})
+
+	t.Run("exec is a directory", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "v")
+		writePayload(t, dir, `{"id":"v","name":"V","version":"0.1.0",`+
+			`"boot_target":{"name":"V","exec":"bin"}}`, "bin/run.sh")
+		_, err := parseBootTarget(filepath.Join(dir, "module.json"), "v", dir)
+		if err == nil || !strings.Contains(err.Error(), "directory") {
+			t.Fatalf("err = %v, want a refusal naming that it is a directory", err)
+		}
+	})
+}
+
+// An id collision between two payloads: one wins deterministically, the other
+// is recorded as UNSETTLED rather than dropped silently — an unsettled owner
+// is what stops reconcile deleting the live row out from under it.
+func TestDesiredBootTargetsIDCollision(t *testing.T) {
+	app, base, _ := newReconcileApp(t)
+	plantModuleTarget(t, base, "tools", "aaa", "vee", "A")
+	plantModuleTarget(t, base, "tools", "bbb", "vee", "B")
+
+	desired, err := app.desiredBootTargets()
+	if err == nil {
+		t.Fatal("a collision must be reported, got nil")
+	}
+	for _, want := range []string{"vee", "module:aaa", "module:bbb"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("collision error does not name %q: %v", want, err)
+		}
+	}
+	if len(desired.byID) != 1 || desired.byID["vee"].entry.Owner != "module:aaa" {
+		t.Fatalf("desired = %+v, want the sort-first claimant module:aaa alone", desired.byID)
+	}
+	if desired.unsettled["module:bbb"] == "" {
+		t.Error("the loser was not recorded as unsettled: reconcile would delete its live row")
+	}
+	if !desired.installedOwners["module:aaa"] || !desired.installedOwners["module:bbb"] {
+		t.Error("both payloads are installed; both owners must be present")
+	}
+}

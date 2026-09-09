@@ -72,16 +72,52 @@ func writeRegistryEntry(dir string, e registryEntry) error {
 	}
 	b.WriteString("\n}\n")
 
+	// Written to a temp file in the SAME directory and renamed over the
+	// target, because a rename within one filesystem is atomic and an
+	// in-place write is not.
+	//
+	// A TORN boot.json is not a corrupt file that gets noticed and fixed: the
+	// reader takes whatever fields it can parse, and `owner` is the field most
+	// likely to be missing because it is written LAST. Owner == "" is the
+	// sentinel for "hand-installed by a human, never touch", so a write
+	// interrupted by power loss (this codebase already documents torn
+	// .boot-attempt stamps as a real field occurrence) converts a
+	// manager-owned entry into an IMMORTAL one — reconcile will never rewrite
+	// it and never delete it, and it holds a picker slot forever with a
+	// possibly-dangling exec.
 	path := filepath.Join(target, "boot.json")
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
+	tmp, err := os.CreateTemp(target, ".boot.json.*")
+	if err != nil {
+		return fmt.Errorf("staging %s: %w", path, err)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpPath) // no-op once the rename has succeeded
+	}()
+	if _, err := tmp.WriteString(b.String()); err != nil {
+		return fmt.Errorf("writing %s: %w", tmpPath, err)
+	}
+	// CreateTemp makes the file 0600; the selector reads it as ableton.
+	if err := tmp.Chmod(0o644); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmpPath, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("syncing %s: %w", tmpPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing %s: %w", tmpPath, err)
 	}
 	// The selector execs the target as ableton, not root; the manager runs as
-	// root, so ownership has to be handed back explicitly. chownToAbleton
-	// (module_config.go) is per-path, not recursive, so both the directory
-	// and the file it holds need their own call.
+	// root, so ownership has to be handed back explicitly. Done BEFORE the
+	// rename so the file is never visible at `path` with the wrong owner.
+	// chownToAbleton (module_config.go) is per-path, not recursive, so the
+	// directory needs its own call.
+	chownToAbleton(tmpPath)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("installing %s: %w", path, err)
+	}
 	chownToAbleton(target)
-	chownToAbleton(path)
 	return nil
 }
 
@@ -261,6 +297,17 @@ func bootSourceLabel(owner string) string {
 // see spec section 3a: installing a payload can add a picker row, it can
 // never cause that row to boot, and neither can this handler.
 func (app *App) setBootDefault(id string) error {
+	// The id arrives from a form value (main.go handleBootSetDefault) and
+	// becomes a path component. filepath.Join CLEANS "..", so an unvalidated
+	// "../schwung/modules/tools/evil" reads that directory's boot.json — and a
+	// module tarball can ship a file with that name — after which the check
+	// passes and the traversal string is written verbatim into
+	// boot-targets/default, where the selector's bt_resolve_default /
+	// bt_exec_path run whatever it names. Every other id in this feature is
+	// regexp-checked; this one was the hole.
+	if id != "stock" && !bootTargetIDRe.MatchString(id) {
+		return fmt.Errorf("boot target id %q: must match [a-z0-9-]+", id)
+	}
 	reg := bootTargetsDir()
 	if id != "stock" {
 		if _, err := readRegistryEntry(reg, id); err != nil {
