@@ -235,3 +235,54 @@ func TestDesiredBootTargetsIDCollision(t *testing.T) {
 		t.Error("both payloads are installed; both owners must be present")
 	}
 }
+
+// json_get_string (src/host/module_manager.c:14) finds a key with strstr and
+// takes the FIRST TEXTUAL OCCURRENCE, with no nesting awareness. It reads the
+// module's own "id" and "name" that way. Our block carries "name" and "exec"
+// and optionally "id", so a manifest placing boot_target BEFORE those keys
+// makes the host read the block's values as the module's identity — the module
+// appears under the wrong name, or loads under the wrong id.
+//
+// Reproduced on hardware 2026-09-09. It bites old devices too, where no fix of
+// ours can reach, so registration is refused rather than the manifest repaired.
+func TestBootTargetAcceptsBlockAfterIdentity(t *testing.T) {
+	// vimana2r's real manifest shape: boot_target last.
+	dir := t.TempDir()
+	writePayload(t, dir, `{"id":"vimana2r","name":"Vimana","version":"1.0.0",`+
+		`"boot_target":{"name":"V","exec":"entry.sh"}}`, "entry.sh")
+	bt, err := parseBootTarget(filepath.Join(dir, "module.json"), "vimana2r", dir)
+	if err != nil {
+		t.Fatalf("the shipping manifest shape was refused: %v", err)
+	}
+	if bt == nil || bt.Name != "V" {
+		t.Fatalf("bt = %+v", bt)
+	}
+}
+
+func TestBootTargetRefusesBlockShadowingID(t *testing.T) {
+	dir := t.TempDir()
+	writePayload(t, dir, `{"boot_target":{"id":"vboot","name":"V","exec":"entry.sh"},`+
+		`"id":"vimana2r","name":"Vimana","version":"1.0.0"}`, "entry.sh")
+	_, err := parseBootTarget(filepath.Join(dir, "module.json"), "vimana2r", dir)
+	if err == nil {
+		t.Fatal("want a refusal: the host would read the module's id as \"vboot\"")
+	}
+	if !strings.Contains(err.Error(), `"id"`) {
+		t.Errorf("message must name the shadowed key, got: %v", err)
+	}
+}
+
+func TestBootTargetRefusesBlockShadowingName(t *testing.T) {
+	dir := t.TempDir()
+	// The block always carries "name", so preceding the manifest's own name is
+	// the shape any author gets by writing boot_target first.
+	writePayload(t, dir, `{"boot_target":{"name":"V","exec":"entry.sh"},`+
+		`"id":"vimana2r","name":"Vimana","version":"1.0.0"}`, "entry.sh")
+	_, err := parseBootTarget(filepath.Join(dir, "module.json"), "vimana2r", dir)
+	if err == nil {
+		t.Fatal("want a refusal: the host would read the module's name as \"V\"")
+	}
+	if !strings.Contains(err.Error(), `"name"`) {
+		t.Errorf("message must name the shadowed key, got: %v", err)
+	}
+}

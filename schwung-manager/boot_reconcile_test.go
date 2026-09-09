@@ -371,3 +371,118 @@ func TestReconcileIsSerialized(t *testing.T) {
 		t.Errorf("%d reconcile passes ran at once; the registry has no lock", got)
 	}
 }
+
+// FINDING 5. An upgrade from the pre-feature world left an UNREMOVABLE row.
+//
+// Reproduced on hardware 2026-09-09 with vimana2r, which still registers its
+// own target over SSH from its install.sh — writing boot.json with NO owner,
+// because there was no such field when it was written. Installing the same
+// module through the manager then finds an unowned entry, refuses to claim it
+// (correct: unowned means a human put it there), and can never own it. The
+// module keeps working, so nothing looks wrong — until the uninstall, which
+// removes the payload and LEAVES the row, exec pointing into a deleted
+// directory. `test -x <exec>` false was measured on the device. The selector
+// stamps a boot-attempt strike before it discovers that, so three boots later
+// the picker is forced on every boot with only SSH to fix it.
+//
+// The adoption rule is one-way and narrow: an unowned entry may be claimed
+// only when its recorded exec resolves inside the directory of the payload
+// that now declares the same target id. Nobody else could have written that
+// path.
+func TestReconcileAdoptsUnownedEntryInsideTheDeclaringPayload(t *testing.T) {
+	app, base, reg := newReconcileApp(t)
+	plantModule(t, base, "tools", "vplat", "V", true)
+	payloadExec := filepath.Join(base, "modules", "tools", "vplat", "entry.sh")
+
+	// What the module's own install.sh wrote before this feature existed.
+	if err := writeRegistryEntry(reg, registryEntry{
+		ID: "vplat", Name: "V old", Exec: payloadExec}); err != nil { // no owner
+		t.Fatal(err)
+	}
+	if err := writeBootDefault(reg, "vplat"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := app.reconcileBootTargets(); err != nil {
+		t.Fatalf("reconcile refused to adopt: %v", err)
+	}
+	e, err := readRegistryEntry(reg, "vplat")
+	if err != nil {
+		t.Fatalf("entry vanished: %v", err)
+	}
+	if e.Owner != "module:vplat" {
+		t.Errorf("owner = %q, want module:vplat — the row is still unremovable", e.Owner)
+	}
+	if e.Name != "V" || e.Exec != payloadExec || e.Version != "1.0.0" {
+		t.Errorf("adopted entry not refreshed from the manifest: %+v", e)
+	}
+
+	// The whole point: it can now be uninstalled.
+	if err := os.RemoveAll(filepath.Join(base, "modules", "tools", "vplat")); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileBootTargets(); err != nil {
+		t.Fatalf("reconcile after uninstall: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(reg, "vplat")); !os.IsNotExist(err) {
+		t.Error("uninstall left the row behind: exec now points into a deleted directory")
+	}
+	if got, _ := readBootDefault(reg); got != "schwung" {
+		t.Errorf("default = %q, want schwung — a removed target was left as the default", got)
+	}
+}
+
+// The invariant adoption must not regress: a genuine third-party target,
+// hand-installed by a human and pointing somewhere else entirely, stays
+// untouched and still produces the refusal.
+func TestReconcileDoesNotAdoptUnownedEntryPointingOutsideThePayload(t *testing.T) {
+	app, base, reg := newReconcileApp(t)
+	plantModule(t, base, "tools", "vplat", "V", true)
+	if err := writeRegistryEntry(reg, registryEntry{
+		ID: "vplat", Name: "Hand", Exec: "/opt/hand/entry.sh"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(reg, "vplat", "boot.json")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = app.reconcileBootTargets()
+	if err == nil || !strings.Contains(err.Error(), "installed by hand") {
+		t.Errorf("want the hand-installed refusal, got: %v", err)
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("hand-installed entry was deleted: %v", readErr)
+	}
+	if string(after) != string(before) {
+		t.Errorf("hand-installed entry was rewritten:\n%s\nwant:\n%s", after, before)
+	}
+}
+
+// Adoption is gated on the entry being UNOWNED, not on where its exec points.
+// An entry owned by another installed payload stays refused even when its exec
+// happens to sit inside the claimant's directory.
+func TestReconcileStillRefusesEntryOwnedByAnotherInstalledPayload(t *testing.T) {
+	app, base, reg := newReconcileApp(t)
+	plantModuleTarget(t, base, "tools", "aaa", "vee", "A")
+	plantModuleTarget(t, base, "tools", "bbb", "vee", "B")
+	aaaExec := filepath.Join(base, "modules", "tools", "aaa", "entry.sh")
+	if err := writeRegistryEntry(reg, registryEntry{
+		ID: "vee", Name: "B", Exec: aaaExec, Owner: "module:bbb"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := app.reconcileBootTargets()
+	if err == nil || !strings.Contains(err.Error(), "is owned by module:bbb") {
+		t.Errorf("want the owned-by-another refusal, got: %v", err)
+	}
+	e, readErr := readRegistryEntry(reg, "vee")
+	if readErr != nil {
+		t.Fatalf("entry vanished: %v", readErr)
+	}
+	if e.Owner != "module:bbb" {
+		t.Errorf("owner = %q, want module:bbb — another payload took an owned row", e.Owner)
+	}
+}

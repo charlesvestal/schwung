@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -21,8 +22,14 @@ import (
 const bootPickerTargetCap = 14
 
 // desiredTarget is a boot target the installed payloads say should exist.
+//
+// payloadDir is carried alongside the composed entry because the claim check
+// needs to ask where the declaring payload lives, not just what it declared:
+// it is what makes the one-way adoption of a pre-feature, self-registered
+// entry decidable. See the adoption branch in reconcileBootTargets.
 type desiredTarget struct {
-	entry registryEntry
+	entry      registryEntry
+	payloadDir string
 }
 
 // desiredSet is what the payloads on disk say the registry should hold, plus
@@ -110,7 +117,7 @@ func (app *App) desiredBootTargets() (desiredSet, error) {
 			out.unsettled[src.owner] = "another payload holds the id it declares"
 			continue
 		}
-		out.byID[bt.ID] = desiredTarget{entry: registryEntry{
+		out.byID[bt.ID] = desiredTarget{payloadDir: src.dir, entry: registryEntry{
 			ID:      bt.ID,
 			Name:    bt.Name,
 			Exec:    bt.ExecAbs,
@@ -266,10 +273,37 @@ func (app *App) reconcileBootTargets() error {
 				id, cur.Owner, d.entry.Owner))
 			continue
 		case err == nil && cur.Owner == "":
-			problems = errors.Join(problems, fmt.Errorf(
-				"boot target %q was installed by hand; %s cannot claim it",
-				id, d.entry.Owner))
-			continue
+			// ADOPTION, one way and once. Before this feature a module
+			// registered its own target over SSH from its install.sh, writing
+			// a boot.json with no owner because there was no such field —
+			// vimana2r still ships exactly that. Installed through the manager
+			// afterwards, the row keeps working (same exec) so nothing looks
+			// wrong, but the manager can never own it: uninstalling then
+			// removes the payload and LEAVES the row, exec pointing into a
+			// deleted directory. Measured on hardware 2026-09-09 — `test -x
+			// <exec>` false afterwards — and a dangling row is not cosmetic:
+			// the selector stamps a boot-attempt strike before it discovers
+			// the exec is missing, so three boots force the picker on every
+			// boot until somebody SSHes in. Nothing in the manager or the web
+			// UI could remove it.
+			//
+			// The condition is narrow ON PURPOSE: only when the recorded exec
+			// resolves inside the directory of the payload that now declares
+			// this same id. Only that payload could have written that path. A
+			// genuine third-party hand-installed target points somewhere else
+			// entirely and must stay untouched — that invariant is the reason
+			// the unowned rule exists at all.
+			if !bootExecInsidePayload(cur.Exec, d.payloadDir) {
+				problems = errors.Join(problems, fmt.Errorf(
+					"boot target %q was installed by hand; %s cannot claim it",
+					id, d.entry.Owner))
+				continue
+			}
+			// Logged plainly: this is a one-time migration of a row a human
+			// tool wrote, and someone reading the log later needs to see that
+			// the manager took ownership of it.
+			app.logger.Info("adopting self-registered boot target",
+				"id", id, "owner", d.entry.Owner, "exec", cur.Exec)
 		case err == nil:
 			if cur == d.entry {
 				continue // already correct
@@ -296,4 +330,20 @@ func (app *App) reconcileBootTargets() error {
 		}
 	}
 	return problems
+}
+
+// bootExecInsidePayload reports whether an already-recorded exec path lies
+// strictly inside payloadDir. Purely lexical on cleaned absolute paths: the
+// question is who could have WRITTEN this path, not what it resolves to today,
+// and the recorded value is the one resolveBootExec already produced for that
+// same directory.
+func bootExecInsidePayload(exec, payloadDir string) bool {
+	if exec == "" || payloadDir == "" || !filepath.IsAbs(exec) || !filepath.IsAbs(payloadDir) {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(payloadDir), filepath.Clean(exec))
+	if err != nil || rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

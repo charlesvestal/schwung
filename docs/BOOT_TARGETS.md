@@ -183,6 +183,13 @@ Rules, all enforced at registration with the reason logged:
 - `exec` is relative, does not contain `..`, resolves inside your directory
   (symlinks included), and exists after extraction. A file that lost its
   executable bit in transit is chmodded rather than refused.
+- **Put `boot_target` after your `id` and `name`.** The host reads `module.json`
+  with a matcher that takes the *first textual occurrence* of a key
+  (`json_get_string`, `src/host/module_manager.c`), and our block carries
+  `name`, `exec` and optionally `id` — so a block placed before those keys
+  renames the module, or loads it under the block's id. The manager refuses
+  such a manifest, naming the shadowed key, rather than repairing it: an old
+  device reads the same file and no fix here reaches it.
 - The picker holds **14 targets** beside Stock and Schwung. Registration past
   that is refused: `bs_row_insert_sorted` drops the overflow silently, in id
   order, so a target that "did not appear" would be unattributable.
@@ -195,7 +202,13 @@ Rules, all enforced at registration with the reason logged:
 The manager writes `boot.json` with an `owner` field (`module:<id>` or
 `platform:<id>`) and **only ever rewrites or deletes entries carrying an
 owner it recognises**. A target you installed by hand, as described above, has
-no `owner` and is never touched. The reverse is also true: **do not hand-edit
+no `owner` and is never touched. The one exception is an **adoption**: an
+unowned entry whose recorded `exec` resolves inside the directory of the
+payload that now declares the same target id is rewritten with an owner, once,
+and logged. That is a payload which registered itself over SSH before this
+feature existed — only it could have written that path — and without adoption
+its row could never be removed, because uninstalling deletes the payload and
+leaves the entry pointing into a deleted directory. The reverse is also true: **do not hand-edit
 an entry the manager owns** — the next reconcile pass (every install,
 uninstall, and update) will put it back.
 

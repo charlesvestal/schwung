@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -50,6 +51,9 @@ func parseBootTarget(manifestPath, payloadID, payloadDir string) (*BootTarget, e
 	}
 	if doc.BootTarget == nil {
 		return nil, nil
+	}
+	if err := checkBootTargetShadowing(raw); err != nil {
+		return nil, err
 	}
 	b := doc.BootTarget
 
@@ -177,4 +181,77 @@ func chmodExecNoFollow(path string) error {
 	}
 	defer f.Close()
 	return f.Chmod(0o755)
+}
+
+// checkBootTargetShadowing refuses a manifest whose boot_target block would
+// change what the HOST reads as the module's own identity.
+//
+// json_get_string (src/host/module_manager.c:14) locates a key with strstr and
+// takes the FIRST TEXTUAL OCCURRENCE, with no nesting awareness — the same
+// first-occurrence hazard documented for the two boot.json readers. It is how
+// the host reads "id" and "name" out of module.json, so a boot_target block
+// placed before those keys hands the host the block's values instead: the
+// module appears under the wrong name, or worse, loads under the wrong id.
+//
+// Reproduced on hardware 2026-09-09. Registration is refused rather than the
+// manifest rewritten, because the host on an OLD device reads the same file
+// and no fix of ours reaches it — the author has to move the block.
+//
+// The detection replicates the host's rule exactly (first occurrence of the
+// quoted key in the raw manifest bytes) instead of approximating it, so a
+// manifest the host reads correctly is never refused.
+func checkBootTargetShadowing(raw []byte) error {
+	start, end, ok := jsonObjectSpan(raw, "boot_target")
+	if !ok {
+		return nil
+	}
+	for _, key := range []string{"id", "name"} {
+		i := bytes.Index(raw, []byte(`"`+key+`"`))
+		if i >= start && i < end {
+			return fmt.Errorf("boot_target block precedes the manifest's own %q key: "+
+				"the host reads module.json by first occurrence, so it would read %q "+
+				"out of the block; move boot_target after \"id\" and \"name\"", key, key)
+		}
+	}
+	return nil
+}
+
+// jsonObjectSpan returns the byte range of `"key": { ... }`, from the opening
+// quote of the key through the closing brace, found the way the host finds it
+// (first textual occurrence) and delimited by brace counting that skips string
+// literals. Reports ok=false when the key is absent or its value is not an
+// object we can delimit — in which case there is nothing to refuse.
+func jsonObjectSpan(raw []byte, key string) (start, end int, ok bool) {
+	start = bytes.Index(raw, []byte(`"`+key+`"`))
+	if start < 0 {
+		return 0, 0, false
+	}
+	i := start + len(key) + 2
+	for i < len(raw) && (raw[i] == ' ' || raw[i] == '\t' || raw[i] == '\n' || raw[i] == '\r' || raw[i] == ':') {
+		i++
+	}
+	if i >= len(raw) || raw[i] != '{' {
+		return 0, 0, false
+	}
+	depth, inStr, esc := 0, false, false
+	for ; i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case esc:
+			esc = false
+		case inStr && c == '\\':
+			esc = true
+		case c == '"':
+			inStr = !inStr
+		case inStr:
+		case c == '{':
+			depth++
+		case c == '}':
+			depth--
+			if depth == 0 {
+				return start, i + 1, true
+			}
+		}
+	}
+	return 0, 0, false
 }
