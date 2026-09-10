@@ -475,8 +475,52 @@ export function applyClick(view, ctl, enc) {
  * device, through the same canvas and the same send path as a real frame --
  * a probe that takes a different route measures the route, not the format.
  */
-export function drawTestPattern(ctx, which) {
+export function drawTestPattern(ctx, which, meter) {
     ctx.clear();
+    /*
+     * 6 is the REFRESH METER, and it exists to answer a question the other
+     * five cannot: is the screen slow, or are the VALUES slow?
+     *
+     * Those are different subsystems with different costs and no shared knob.
+     * A repaint is a framebuffer on the wire -- 394 packets, paced. A value is
+     * an IPC read at ~2.8 ms, served on the controller's rotation of roughly
+     * one key per tick, so a full pass over sixteen cells takes far longer than
+     * a repaint does. Watching parameter numbers move measures the SUM of the
+     * two and cannot separate them, which is why "the refresh is so slow" was
+     * indistinguishable from "the values lag" from the outside -- and why
+     * changing SLOTS, which is a repaint with no value rotation in front of
+     * it, already felt quick.
+     *
+     * So this pattern draws nothing that comes from a parameter. Every element
+     * moves on the PAINT alone: a column that advances one step per frame, a
+     * counter, and the measured rate in frames per second. What you see is the
+     * repaint rate with the value path entirely removed from it.
+     *
+     * `meter` is { paints, fps } supplied by the caller, which is the only
+     * thing that knows when a send actually completed.
+     */
+    if ((which | 0) === 6) {
+        const m = meter || {};
+        const paints = m.paints | 0;
+        const fps = m.fps;
+        /* A column that steps one pixel per paint: at a glance its speed IS
+         * the frame rate, and it keeps meaning something when the number is
+         * too small to be interesting. */
+        ctx.fillRect(paints % 128, 0, 2, 18, 1);
+        /* A block that inverts every paint -- a flicker that is present at any
+         * rate at all, so "nothing is being painted" cannot be mistaken for "a
+         * slow paint". */
+        if (paints % 2) ctx.fillRect(112, 24, 14, 14, 1);
+        /* Ink 1. Omitting it drew black on black -- the bar and the flicker
+         * block appeared and the three readings did not, which on a device
+         * would have read as "the text is broken" rather than "the argument is
+         * missing". */
+        ctx.print(2, 26, "PAINTS " + paints, 1);
+        ctx.print(2, 38, "FPS " + (fps === undefined || fps === null
+            ? "--" : (Math.round(fps * 10) / 10)), 1);
+        ctx.print(2, 50, "MS " + (fps ? Math.round(1000 / fps) : "--"), 1);
+        return;
+    }
     const n = (which | 0) % 6;
     if (n === 0) ctx.fillRect(0, 0, 128, 1, 1);
     else if (n === 1) ctx.fillRect(0, 0, 1, 64, 1);
