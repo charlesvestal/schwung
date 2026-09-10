@@ -2263,3 +2263,25 @@ code {
 /* The explanatory paragraph after a definition list needs its own air, or it
    reads as a runaway third <dd>. */
 .info-card dl + p { margin-top: var(--space-md); }
+
+/* Subcategory badge and tag pills. Deliberately quieter than the category
+   badge: the category is the primary axis and must stay the loudest thing on
+   the card. */
+.badge-sub {
+    background: transparent;
+    border: 1px solid currentColor;
+    opacity: 0.75;
+}
+.tag-pill {
+    display: inline-block;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    padding: 0 0.4em;
+    margin: 0 0.2em 0.2em 0;
+    border-radius: 0.5em;
+    opacity: 0.6;
+    border: 1px solid currentColor;
+}
+#subcategory-filters .filter-btn {
+    font-size: 0.85em;
+}

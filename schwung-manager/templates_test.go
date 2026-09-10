@@ -5,8 +5,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -232,5 +234,92 @@ func TestResolveModuleDefaultSource_Containment(t *testing.T) {
 	}
 	if got := resolveModuleDefaultSource(tmp, "/etc/passwd"); got != "" {
 		t.Errorf("absolute path allowed: %q", got)
+	}
+}
+
+// renderModulesPage executes modules.html the way App.render does, minus the
+// HTTP plumbing: same templateMap, same ExecuteTemplate-by-name.
+func renderModulesPage(t *testing.T, data map[string]any) string {
+	t.Helper()
+	m, err := loadTemplates()
+	if err != nil {
+		t.Fatalf("loadTemplates: %v", err)
+	}
+	tpl, ok := m["modules.html"]
+	if !ok {
+		t.Fatal("modules.html is not registered in loadTemplates")
+	}
+	var buf bytes.Buffer
+	if err := tpl.ExecuteTemplate(&buf, "modules.html", data); err != nil {
+		t.Fatalf("execute modules.html: %v", err)
+	}
+	return buf.String()
+}
+
+// The subcategory axis is only useful if it reaches the MARKUP. A card without
+// data-subcategory is invisible to the filter, and that failure shows up as a
+// chip that silently matches nothing -- never as an error.
+func TestModulesTemplateRendersSubcategory(t *testing.T) {
+	tax := CatalogTaxonomy{
+		Version: 1,
+		Subcategories: map[string][]CatalogSubcategory{
+			"sound_generator": {{ID: "virtual-analog", Label: "Virtual Analog"}},
+			"audio_fx":        {{ID: "reverb", Label: "Reverb"}},
+		},
+		Tags: []string{"polyphonic", "vintage-emulation"},
+	}
+	data := map[string]any{
+		"Title":    "Modules",
+		"Active":   "modules",
+		"Taxonomy": tax,
+		"Modules": []CatalogModule{{
+			ID:            "obxd",
+			Name:          "OB-Xd",
+			ComponentType: "sound_generator",
+			Subcategory:   "virtual-analog",
+			Tags:          []string{"polyphonic", "vintage-emulation"},
+		}},
+		"Installed":   map[string]InstalledModule{},
+		"ReleaseMeta": map[string]ReleaseMeta{},
+		"FlashType":   "info",
+	}
+
+	out := renderModulesPage(t, data)
+
+	for _, want := range []string{
+		`id="subcategory-filters"`,
+		`data-subfilter="virtual-analog"`,
+		`data-parent="sound_generator"`,
+		`data-subcategory="virtual-analog"`,
+		`Virtual Analog`,
+		`vintage-emulation`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered modules page is missing %q", want)
+		}
+	}
+}
+
+// An unknown slug must print as ITSELF. A blank badge is indistinguishable from
+// a module that has no subcategory, which is the state this axis exists to make
+// visible.
+func TestSubcategoryLabelForUnknownSlug(t *testing.T) {
+	tax := CatalogTaxonomy{
+		Subcategories: map[string][]CatalogSubcategory{
+			"sound_generator": {{ID: "virtual-analog", Label: "Virtual Analog"}},
+		},
+	}
+	if got := subcategoryLabelFor(tax, "sound_generator", "virtual-analog"); got != "Virtual Analog" {
+		t.Errorf("known slug: got %q, want %q", got, "Virtual Analog")
+	}
+	if got := subcategoryLabelFor(tax, "sound_generator", "not-in-vocab"); got != "not-in-vocab" {
+		t.Errorf("unknown slug: got %q, want it echoed back", got)
+	}
+	if got := subcategoryLabelFor(tax, "sound_generator", ""); got != "" {
+		t.Errorf("empty slug: got %q, want empty", got)
+	}
+	// A slug valid under a DIFFERENT component_type is not valid here.
+	if got := subcategoryLabelFor(tax, "audio_fx", "virtual-analog"); got != "virtual-analog" {
+		t.Errorf("cross-type slug: got %q, want it echoed back", got)
 	}
 }
