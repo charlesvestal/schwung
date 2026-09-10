@@ -1055,3 +1055,23 @@ criteria assumed a flag the DSP can see, and it cannot. Closing it needs one of:
 
 Prefer the second on the next pass. Until then, treat Task 11 as "the predicate
 and its test are correct and pinned; the wire is not connected."
+
+## Two more findings from Task 8
+
+**`pageSlotKeys` predates `as_page`, and a module-owned page would go dark.**
+It tests `kind === PAGE_KNOBS` strictly. `CLAUDE.md` records that a module can
+own a PAGE and that it is a PAGE_KNOBS page with a drawer, NOT a new kind --
+which is why three controller gates were changed to ask `pageHasKnobs` ("does it
+have keys") instead. `pageSlotKeys` is a fourth site that was not. The surface
+works around it locally, but the underlying gate is wrong for the knob grid too:
+a module-owned canvas page has keys and would answer no. Worth fixing upstream,
+out of scope here.
+
+**A bottom-half turn must move the controller's page first, and that is a
+sharing hazard.** The controller has ONE current page, so applying a turn to the
+lower 2x4 requires `goToPage(N+1, {remember:false})` before `onKnobTurn(slot)`,
+or it writes page N's key at the same slot number -- two small in-range integers,
+both valid, nothing logged. The consequence for wiring: **the surface must hold
+its own controller instance**, not share Move's, or every bottom-half turn drags
+Move's screen to the next page. The design already says the surface owns its own
+focus; this is the mechanical reason it has to.
