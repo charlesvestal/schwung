@@ -59,6 +59,10 @@
       "wet": 0.5,
       "presets": 1,
       "_why": "An FX is previewed on a real instrument playing the same phrase every other module plays, so effects are comparable with each other and with the synths. The source is chosen by MEASUREMENT, not taste: wurl renders C4 at 262.5 Hz with tight pitch and a +27.2 dB attack. The previous source (obxd, default preset) rendered at 525 Hz -- an octave high -- with a +11.7 dB attack and a detuned unison that smears whatever the effect does. A slow-attack pad is worse still: hera's Strings 1 is in tune and has -3.5 dB of attack, so a reverb has nothing to excite it. Dry/wet goes to 50% OF THE RANGE THE MODULE DECLARES."
+    },
+    "filter-eq": {
+      "sweep": "always",
+      "_why": "A filter or an EQ held still is a preview of nothing -- spectral shaping IS the module. The best candidate is swept even when it does not clear the usual threshold: a four-band console EQ moves the spectrum far less than a resonant filter does, and would otherwise get a static clip of an effect doing almost nothing."
     }
   },
   "midi_fx": {
