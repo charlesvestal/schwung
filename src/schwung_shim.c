@@ -40,6 +40,7 @@
 #include "host/plugin_api_v1.h"
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
+#include "host/e16_claim.h"
 #include "host/shadow_midi_inject_writer.h"
 #include "host/shadow_test_stream.h"
 #include "host/shadow_metronome.h"
@@ -9063,7 +9064,8 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
              * the flag is re-tested here rather than left implied by the cable
              * filter above: if that filter is ever widened for some other
              * reason, this branch must not silently swallow the cable. */
-            if (!overtake_mode && cable == 0x02 && shadow_control->external_surface) {
+            if (!overtake_mode && cable == 0x02 && shadow_control->external_surface &&
+                e16_claims_msg(1, status, d1)) {
                 shadow_ui_midi_publish(src[j], status, d1, d2);
                 continue;
             }
