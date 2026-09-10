@@ -10395,6 +10395,58 @@ function e16Send(packets) {
     return move_midi_external_send(packets);
 }
 
+/*
+ * FOLLOW FOCUS (Global Settings -> System -> Follow Focus), 0 = off, 1 = on.
+ *
+ * On, the surface mirrors whatever component Move's screen is editing instead
+ * of holding its own focus, and its map is disabled while it does. It is
+ * ONE-WAY by construction: this side only ever READS currentEditFocus(), so
+ * there is no path by which the E16 could move Move's screen.
+ *
+ * The mode lives here rather than in e16_surface.mjs because it is a SETTING --
+ * persisted, reachable from the grid -- while the surface module is pure. The
+ * surface is told on the edge (setFollow) and polls the source itself.
+ */
+let externalSurfaceFollow = 0;
+
+/*
+ * The surface's navigator, once something constructs it.
+ *
+ * NULL TODAY: the view from Tasks 8-9 is not built in this file yet, so this
+ * is the seam rather than a live object -- declared here so the edge below is
+ * a plain null check instead of a name that does not exist, and so there is
+ * exactly one place to wire the surface up.
+ */
+let e16Nav = null;
+
+function setExternalSurfaceFollow(v) {
+    const mode = (parseInt(v, 10) || 0) ? 1 : 0;
+    if (mode === externalSurfaceFollow) return;
+    externalSurfaceFollow = mode;
+    /* The surface parks its own focus on the OFF->ON edge and restores it on
+     * the way back, so it must see the EDGE, not poll the setting. Guarded
+     * because the view from Tasks 8-9 is not constructed in this file yet --
+     * `e16Nav` is the seam it will land on. */
+    if (e16Nav) e16Nav.setFollow(mode === 1, Date.now());
+}
+
+/*
+ * The follow SOURCE: what the E16 mirrors, or null.
+ *
+ * Handed to createNav as `followFocusOf`. NULL IS AN ANSWER -- it means "there
+ * is nothing to follow right now", and the surface leaves its focus where it
+ * is rather than defaulting to slot 0. Collapsing the two would drag the
+ * surface to slot 0 on every tick where the shadow UI is on a view with no
+ * component, and back off it the moment there is one, which reads as a
+ * flickering surface rather than as a missing answer.
+ */
+function e16FollowFocus() {
+    if (!externalSurfaceFollow) return null;
+    const f = currentEditFocus();
+    if (typeof f.slot !== "number" || f.slot < 0 || !f.component) return null;
+    return f;
+}
+
 function setExternalSurfaceMode(v) {
     const mode = (v === 1) ? 1 : 0;
     if (mode === externalSurfaceMode) return;
@@ -10414,6 +10466,7 @@ function saveExternalSurfaceConfig() {
             if (content) config = JSON.parse(content);
         } catch (e) {}
         config.external_surface = externalSurfaceMode;
+        config.external_surface_follow = externalSurfaceFollow;
         host_write_file(configPath, JSON.stringify(config, null, 2));
     } catch (e) {}
 }
@@ -10425,6 +10478,9 @@ function loadExternalSurfaceConfig() {
         const config = JSON.parse(content);
         if (config.external_surface !== undefined) {
             setExternalSurfaceMode(parseInt(config.external_surface, 10) || 0);
+        }
+        if (config.external_surface_follow !== undefined) {
+            setExternalSurfaceFollow(config.external_surface_follow);
         }
     } catch (e) {}
 }
@@ -14311,6 +14367,8 @@ function globalGridIoFor() {
                 return bit(typeof host_get_analytics_enabled === "function" && host_get_analytics_enabled());
             case "external_surface":
                 return String(externalSurfaceMode);
+            case "follow_focus":
+                return String(externalSurfaceFollow);
 
             /* The two doors have no state to report. They are answered anyway,
              * with option 0: an UNSERVED key makes the row announce "not read
@@ -14454,6 +14512,13 @@ function globalGridIoFor() {
                 /* Its own saver, like pad_typing -- GLOBAL_ROUTING marks it
                  * persist: "own", so the shared sink never fires for it. */
                 setExternalSurfaceMode(parseInt(value, 10) || 0);
+                saveExternalSurfaceConfig();
+                return;
+            case "follow_focus":
+                /* Same saver as the row above -- the two settings share one
+                 * block in shadow_config.json, so there is one writer for
+                 * both and no way for them to be persisted apart. */
+                setExternalSurfaceFollow(value);
                 saveExternalSurfaceConfig();
                 return;
 
@@ -19164,6 +19229,29 @@ function reconcileExternalSurface() {
     host_external_surface(externalSurfaceMode ? 1 : 0);
 }
 
+/*
+ * WHICH COMPONENT IS THIS SCREEN EDITING? -- the one derivation, two consumers.
+ *
+ * The knob grid keeps its own slot/component (enterParamPages never touches
+ * hierEditorSlot), so on that view the identity comes from the grid and
+ * everywhere else from the list editor's pair. Written down once because it is
+ * now asked by reconcileCcClaim (which uses it as the memo key for a ~2.8 ms
+ * module-id read) AND by Follow Focus, and this codebase's recurring failure is
+ * one fact with two consumers drifting apart.
+ *
+ * It is the FOLLOW SOURCE: `createNav({ followFocusOf })` in
+ * src/shared/e16_surface.mjs polls this and mirrors it. That direction is the
+ * whole of the coupling -- nothing on the surface side writes back here, which
+ * is what makes follow one-way rather than a negotiation.
+ */
+function currentEditFocus() {
+    const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
+    return {
+        slot: onGrid ? paramPagesSlot() : hierEditorSlot,
+        component: onGrid ? paramPagesComponent() : hierEditorComponent,
+    };
+}
+
 function reconcileCcClaim() {
     if (typeof host_claim_ccs !== "function") return;
     const onScreen = !!CC_CLAIM_VIEWS[view] ||
@@ -19172,12 +19260,9 @@ function reconcileCcClaim() {
      * blocking get_param round-trip (~2.8 ms), so it is consulted only when
      * this tuple changes -- not on every one of the ~44 ticks/sec. A module
      * SWAP always transits COMPONENT_SELECT, which moves `view`, so the tuple
-     * catches swaps too. The knob grid keeps its own slot/component
-     * (enterParamPages never touches hierEditorSlot), so on that view the
-     * identity comes from the grid. */
+     * catches swaps too. */
     const onGrid = view === VIEWS.PARAM_PAGES && paramPagesActive();
-    const slot = onGrid ? paramPagesSlot() : hierEditorSlot;
-    const comp = onGrid ? paramPagesComponent() : hierEditorComponent;
+    const { slot, component: comp } = currentEditFocus();
     /*
      * THE DISPLAY MODE IS PART OF THE IDENTITY, because the SHIM CLEARS THE
      * CLAIM AND DOES NOT TELL US.
