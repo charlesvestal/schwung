@@ -109,7 +109,7 @@
     {
       "id": 12,
       "subject": "Task 13: assemble the surface",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         7,
         8,
@@ -118,5 +118,5 @@
       "description": "**Goal:** Construct and wire the components Tasks 1-11 built, so the surface actually runs.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui.js`\n- Create: `tests/host/test_e16_wiring.sh`\n\n**Acceptance Criteria:**\n- [ ] Setting on + acked device + component change produces a framebuffer on the wire, asserted end to end\n- [ ] Setting off sends nothing\n- [ ] A turn arriving as raw MIDI moves a parameter, whole path\n- [ ] The surface holds its OWN controller instance, not Move's\n\n**Verify:** `bash tests/host/test_e16_wiring.sh`\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"tests/host/test_e16_wiring.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_wiring.sh\", \"acceptanceCriteria\": [\"end-to-end framebuffer on component change\", \"nothing sent when off\", \"raw MIDI turn moves a parameter\", \"own controller instance\"], \"modelTier\": \"standard\"}\n```"
     }
   ],
-  "lastUpdated": "2026-09-10T10:52:26.514908"
+  "lastUpdated": "2026-09-10T11:23:03.223700"
 }
