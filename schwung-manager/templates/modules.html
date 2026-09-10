@@ -57,6 +57,11 @@
                 {{end}}
             {{end}}
         </div>
+        <div class="filter-group" id="tag-filters" role="group" aria-label="Filter by tag">
+            {{range .Taxonomy.Tags}}
+            <button class="filter-btn tag-btn" data-tagfilter="{{.}}" aria-pressed="false">{{.}}</button>
+            {{end}}
+        </div>
         <div class="toolbar-right">
             <label class="sr-only" for="sort-select">Sort modules</label>
             <select id="sort-select" class="sort-select" aria-label="Sort modules">
@@ -74,10 +79,6 @@
         </div>
     </div>
     <span class="module-count" aria-live="polite">Showing <span id="visible-count">{{len .Modules}}</span> modules</span>
-    <span id="tag-filter-note" class="tag-filter-note" style="display:none">
-        Tag: <strong id="tag-filter-label"></strong>
-        <button type="button" id="tag-filter-clear" class="tag-filter-clear" aria-label="Clear tag filter">&times;</button>
-    </span>
 </div>
 
 <!-- Card view -->
@@ -386,6 +387,7 @@
     var currentSubFilter = 'all';
     var currentTagFilter = '';
     var subBtns = document.querySelectorAll('#subcategory-filters .sub-btn');
+    var tagBtns = document.querySelectorAll('#tag-filters .tag-btn');
 
     /*
      * Where you were, kept across a navigation.
@@ -603,6 +605,7 @@
              * so they must be recomputed BEFORE the list is filtered -- this is
              * also what releases a subcategory the new category cannot satisfy. */
             updateSubcategoryButtons();
+            updateTagButtons();
             applyFilters();
             saveView({ scroll: 0 });
         });
@@ -616,6 +619,9 @@
                 subBtns[t].classList.toggle('active', on);
                 subBtns[t].setAttribute('aria-pressed', on ? 'true' : 'false');
             }
+            /* The tag chips describe what the CATEGORY + SUBCATEGORY leave, so
+             * narrowing the type has to re-derive them. */
+            updateTagButtons();
             applyFilters();
             saveView({ scroll: 0 });
         });
@@ -670,24 +676,69 @@
             pills[i].classList.toggle('active', on);
             pills[i].setAttribute('aria-pressed', on ? 'true' : 'false');
         }
-        var note = document.getElementById('tag-filter-note');
-        if (note) {
-            note.style.display = currentTagFilter ? '' : 'none';
-            var label = document.getElementById('tag-filter-label');
-            if (label) label.textContent = currentTagFilter;
+        /* The row chip and the inline pill are the SAME control in two places:
+         * a pill on a card is a shortcut into the tag row, so both carry the
+         * selected state or clicking one leaves the other looking unset. */
+        for (var t = 0; t < tagBtns.length; t++) {
+            var chipOn = tagBtns[t].getAttribute('data-tagfilter') === currentTagFilter && currentTagFilter !== '';
+            tagBtns[t].classList.toggle('active', chipOn);
+            tagBtns[t].setAttribute('aria-pressed', chipOn ? 'true' : 'false');
+        }
+    }
+
+    /* Which tag chips this list can still satisfy. Computed from the set the
+     * CATEGORY and SUBCATEGORY leave, deliberately ignoring the tag filter
+     * itself -- narrowing by the visible set instead would delete every chip
+     * that does not co-occur with the active one, so you could never move from
+     * `tape` to `granular` without first clearing. */
+    function updateTagButtons() {
+        if (currentFilter === 'all') {
+            releaseTagFilter();
+            document.getElementById('tag-filters').style.display = 'none';
+            return;
+        }
+        var present = {};
+        var items = document.querySelectorAll('[data-tags]');
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].getAttribute('data-category') !== currentFilter) continue;
+            var sub = items[i].getAttribute('data-subcategory') || '';
+            if (currentSubFilter !== 'all' && sub !== currentSubFilter) continue;
+            var ts = (items[i].getAttribute('data-tags') || '').split(' ');
+            for (var k = 0; k < ts.length; k++) if (ts[k]) present[ts[k]] = true;
+        }
+        var anyShown = false;
+        for (var j = 0; j < tagBtns.length; j++) {
+            var on = !!present[tagBtns[j].getAttribute('data-tagfilter')];
+            tagBtns[j].style.display = on ? '' : 'none';
+            if (on) anyShown = true;
+        }
+        if (currentTagFilter !== '' && !present[currentTagFilter]) releaseTagFilter();
+        document.getElementById('tag-filters').style.display = anyShown ? '' : 'none';
+    }
+
+    function releaseTagFilter() {
+        currentTagFilter = '';
+        for (var k = 0; k < tagBtns.length; k++) {
+            tagBtns[k].classList.remove('active');
+            tagBtns[k].setAttribute('aria-pressed', 'false');
+        }
+        var pills = document.querySelectorAll('.tag-pill.active');
+        for (var p = 0; p < pills.length; p++) {
+            pills[p].classList.remove('active');
+            pills[p].setAttribute('aria-pressed', 'false');
         }
     }
 
     document.addEventListener('click', function(e) {
-        var pill = e.target.closest ? e.target.closest('.tag-pill') : null;
+        if (!e.target.closest) return;
+        var chip = e.target.closest('.tag-btn');
+        if (chip) { toggleTagFilter(chip.getAttribute('data-tagfilter')); return; }
+        var pill = e.target.closest('.tag-pill');
         if (!pill) return;
         e.preventDefault();
         e.stopPropagation();
         toggleTagFilter(pill.getAttribute('data-tag'));
     });
-
-    var clearTagBtn = document.getElementById('tag-filter-clear');
-    if (clearTagBtn) clearTagBtn.addEventListener('click', function() { toggleTagFilter(currentTagFilter); });
 
     // Clickable rows and cards. Record the view on the way out so Back lands
     // on the filter and position the module was opened from.
@@ -747,6 +798,7 @@
     updateCategoryButtons();
     syncTagPills();
     updateSubcategoryButtons();
+    updateTagButtons();
     applyFilters();
     syncReturnTo();
 
@@ -767,6 +819,7 @@
             subBtns[rj].setAttribute('aria-pressed', isSubAll ? 'true' : 'false');
         }
         updateSubcategoryButtons();
+        updateTagButtons();
         applyFilters();
         saveView({ scroll: 0 });
     } else if (saved && saved.scroll) {

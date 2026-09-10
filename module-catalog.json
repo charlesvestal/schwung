@@ -13,8 +13,16 @@
     "subcategories": {
       "sound_generator": [
         {
-          "id": "virtual-analog",
-          "label": "Virtual Analog"
+          "id": "polysynth",
+          "label": "Polysynth"
+        },
+        {
+          "id": "mono-bass",
+          "label": "Mono & Bass"
+        },
+        {
+          "id": "west-coast",
+          "label": "West Coast"
         },
         {
           "id": "fm",
@@ -270,7 +278,7 @@
       "description": "Virtual analog synthesizer based on Oberheim OB-X",
       "author": "reales (port: charlesvestal)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "polyphonic",
         "vintage-emulation"
@@ -457,7 +465,7 @@
       "description": "Juno-60 emulation synthesizer with BBD chorus",
       "author": "jpcima (port: charlesvestal)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "polyphonic",
         "vintage-emulation"
@@ -490,7 +498,7 @@
       "description": "Monophonic synthesizer with 4 oscillators and Moog ladder filter",
       "author": "Nicolas Roulet, Julian Palladino (port: charlesvestal)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "mono-bass",
       "tags": [
         "mono",
         "vintage-emulation"
@@ -686,7 +694,7 @@
       "description": "Access Virus DSP56300 emulator via Gearmulator JIT engine",
       "author": "dsp56300/gearmulator (port: charlesvestal)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "needs-assets",
         "polyphonic",
@@ -808,7 +816,7 @@
       "description": "Monophonic subtractive synthesizer emulating the Roland SH-101",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "mono-bass",
       "tags": [
         "bass",
         "mono",
@@ -825,7 +833,7 @@
       "description": "Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "polyphonic"
       ],
@@ -1194,7 +1202,7 @@
       "description": "Monophonic West Coast synthesizer inspired by Serge Modular: bipolar modulation matrix, complex oscillators, stiffness-based geometry & portamento",
       "author": "filliformes",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "west-coast",
       "tags": [
         "mono"
       ],
@@ -1337,7 +1345,7 @@
       "description": "TB-303 emulator (Open303 + Devilfish + Soft/RAT drive)",
       "author": "Robin Schmidt / midilab / davemollen (port: charlesvestal)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "mono-bass",
       "tags": [
         "bass",
         "mono",
@@ -1505,7 +1513,7 @@
       "description": "Chord-based polyphonic synth — one pad in, 4 voices out, with 16 chord types, 25 scales, FM matrix, morphing level/pan, modulation routing, and 30 presets",
       "author": "charlesvestal",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "chord",
         "polyphonic"
@@ -1536,7 +1544,7 @@
       "description": "Polyphonic synthesizer with effects and powerful modulation system",
       "author": "Matt Tytel (port: andree182)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "polyphonic"
       ],
@@ -1563,7 +1571,7 @@
       "description": "Korg MS-10/MS-20 hybrid mono synth: KORG-35/OTA filter cascade, source-side patchbay, ESP line-in processor, analog drift, 41 presets",
       "author": "filliformes",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "mono-bass",
       "tags": [
         "mono",
         "vintage-emulation"
@@ -1757,7 +1765,7 @@
       "description": "Virtual-analog synth ported from TAL NoiseMaker (Patrick Kunz). 6-voice, dual osc + sub, 12 multimode filters, 2 LFOs, spline mod-envelope, chorus + reverb + delay. 256 factory presets.",
       "author": "Patrick Kunz / TAL (engine) · port: legsmechanical",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "polyphonic"
       ],
@@ -2064,7 +2072,7 @@
       "description": "Monophonic Moog Labyrinth-style thru-zero oscillator / wavefolder / state-variable filter voice. Chainable sound generator.",
       "author": "sd88me",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "west-coast",
       "tags": [
         "mono"
       ],
@@ -2079,7 +2087,7 @@
       "description": "Roland JP-8000 SuperSaw emulator (Gearmulator JE-8086) with patch and performance banks",
       "author": "dsp56300/gearmulator (port: charlesvestal)",
       "component_type": "sound_generator",
-      "subcategory": "virtual-analog",
+      "subcategory": "polysynth",
       "tags": [
         "needs-assets",
         "polyphonic",

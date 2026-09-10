@@ -2296,9 +2296,8 @@ code {
     font-size: 0.85em;
 }
 
-/* An active tag is the only filter with no chip of its own in the toolbar, so
-   it says so beside the count -- otherwise a filter set from a card down the
-   page has no visible control anywhere near the top to unset it. */
+/* A tag has a CHIP in the toolbar and a PILL on each card, and they are one
+   control in two places -- so they carry the same selected state. */
 .tag-pill.active {
     color: var(--accent);
     border-color: var(--accent);
@@ -2306,22 +2305,10 @@ code {
     opacity: 1;
 }
 .tag-pill:hover { opacity: 1; }
-.tag-filter-note {
-    margin-left: 0.75rem;
-    font-size: 0.85em;
-    color: var(--text-muted);
+#tag-filters .filter-btn {
+    font-size: 0.8em;
+    opacity: 0.85;
 }
-.tag-filter-note strong { color: var(--accent); font-weight: 600; }
-.tag-filter-clear {
-    appearance: none;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    font-size: 1.1em;
-    line-height: 1;
-    padding: 0 0.25em;
-}
-.tag-filter-clear:hover { color: var(--text); }
+#tag-filters .filter-btn.active { opacity: 1; }
 /* Tags column: let it wrap rather than widen the table past the viewport. */
 .col-tags { max-width: 22ch; }
