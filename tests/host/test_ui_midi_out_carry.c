@@ -54,6 +54,16 @@ static int packetize(const uint8_t *msg, int len, uint8_t *out)
     return n;
 }
 
+/*
+ * NOTE: the drain is PACED at UI_MIDI_CARRY_PACKETS_PER_FRAME packets per
+ * frame. It used to fill every free slot in the mailbox, which sent a long
+ * SysEx at ~6900 packets/s -- measured on hardware 2026-09-10, a 394-packet
+ * message arrived with most of its middle missing, because the loss on that
+ * path is rate dependent (docs/SYSEX.md: 31 packets alone byte-perfect, 34
+ * amid traffic losing 8). These expectations therefore count the CAP, not the
+ * free space, wherever the two differ.
+ */
+
 static void test_fits_in_one_frame(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
@@ -64,9 +74,11 @@ static void test_fits_in_one_frame(void)
         CHECK(ui_midi_carry_push(&c, pkt), "small push accepted");
     }
     int placed = ui_midi_carry_drain(&c, region, REGION);
-    CHECK(placed == 5, "all five placed in one frame");
-    CHECK(c.len == 0, "carry empty after a drain that fit");
-    CHECK(region_used(region) == 5, "five slots used");
+    CHECK(placed == UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "the per-frame cap is placed, not everything that fits");
+    CHECK(c.len == (5 - UI_MIDI_CARRY_PACKETS_PER_FRAME) * 4,
+          "the remainder waits for the next frame");
+    CHECK(region_used(region) == UI_MIDI_CARRY_PACKETS_PER_FRAME, "the cap decides how many slots are used");
 }
 
 static void test_overflow_is_held_not_dropped(void)
@@ -80,9 +92,11 @@ static void test_overflow_is_held_not_dropped(void)
         ui_midi_carry_push(&c, pkt);
     }
     int placed = ui_midi_carry_drain(&c, region, REGION);
-    CHECK(placed == 20, "one frame places exactly the 20 the mailbox holds");
+    CHECK(placed == UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "one frame places the per-frame cap");
     /* THE REGRESSION. The old code discarded these. */
-    CHECK(c.len == (53 - 20) * 4, "the other 33 are HELD, not discarded");
+    CHECK(c.len == (53 - UI_MIDI_CARRY_PACKETS_PER_FRAME) * 4,
+          "the remainder is HELD, not discarded");
     CHECK(c.drops == 0, "holding is not dropping");
 }
 
@@ -107,7 +121,8 @@ static void test_large_sysex_survives_three_frames(void)
     /* Drain frame by frame, reassembling from the mailbox as the XMOS would. */
     uint8_t got[256];
     int got_len = 0, frames = 0;
-    while (c.len > 0 && frames < 10) {
+    /* Enough frames for the paced rate: ceil(53/cap) plus slack. */
+    while (c.len > 0 && frames < 53) {
         uint8_t region[REGION]; memset(region, 0, sizeof(region));
         ui_midi_carry_drain(&c, region, REGION);
         for (int i = 0; i < REGION; i += 4) {
@@ -120,7 +135,8 @@ static void test_large_sysex_survives_three_frames(void)
         frames++;
     }
 
-    CHECK(frames == 3, "53 packets take three frames at 20 per frame");
+    CHECK(frames == (53 + UI_MIDI_CARRY_PACKETS_PER_FRAME - 1) / UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "53 packets take ceil(53/cap) frames");
     CHECK(got_len == (int)sizeof(msg), "every byte arrived");
     CHECK(memcmp(got, msg, sizeof(msg)) == 0,
           "reassembled message is byte-identical - order preserved");
@@ -138,15 +154,30 @@ static void test_order_across_a_partial_frame(void)
     }
     uint8_t region[REGION]; memset(region, 0, sizeof(region));
     ui_midi_carry_drain(&c, region, REGION);
-    CHECK(c.buf[1] == 20, "head of the carry is packet 20, not packet 0");
+    CHECK(c.buf[1] == UI_MIDI_CARRY_PACKETS_PER_FRAME,
+          "head of the carry is the first UNPLACED packet, not packet 0");
 
     /* Append after the partial drain, then finish. New work must land BEHIND. */
     uint8_t late[4] = { 0x24, 0xEE, 0, 0 };
     ui_midi_carry_push(&c, late);
     memset(region, 0, sizeof(region));
     ui_midi_carry_drain(&c, region, REGION);
-    CHECK(region[1] == 20, "next frame resumes at packet 20");
-    CHECK(region[10 * 4 + 1] == 0xEE, "the late packet is last, not first");
+    CHECK(region[1] == UI_MIDI_CARRY_PACKETS_PER_FRAME, "next frame resumes where the last stopped");
+
+    /* Drain to empty and check ORDER rather than a fixed slot: with a paced
+     * drain the late packet's position depends on the cap, but the property
+     * that matters is that new work lands BEHIND what was already queued.
+     * Asserting a slot index would pin the rate; asserting the order pins the
+     * invariant. */
+    uint8_t last_seen = 0;
+    int guard = 0;
+    while (c.len > 0 && guard++ < 64) {
+        memset(region, 0, sizeof(region));
+        ui_midi_carry_drain(&c, region, REGION);
+        for (int i = 0; i < REGION; i += 4)
+            if (region[i]) last_seen = region[i + 1];
+    }
+    CHECK(last_seen == 0xEE, "the late packet is last, not first");
 }
 
 static void test_partially_occupied_region(void)
@@ -161,8 +192,10 @@ static void test_partially_occupied_region(void)
         ui_midi_carry_push(&c, pkt);
     }
     int placed = ui_midi_carry_drain(&c, region, REGION);
-    CHECK(placed == 10, "only the ten free slots are used");
-    CHECK(c.len == 20 * 4, "the rest is held for the next frame");
+    CHECK(placed == (10 < UI_MIDI_CARRY_PACKETS_PER_FRAME ? 10 : UI_MIDI_CARRY_PACKETS_PER_FRAME),
+          "free space and the cap both bound a frame, whichever is smaller");
+    CHECK(c.len == (30 - (10 < UI_MIDI_CARRY_PACKETS_PER_FRAME ? 10 : UI_MIDI_CARRY_PACKETS_PER_FRAME)) * 4,
+          "the rest is held for the next frame");
     CHECK(region[0] == 0x09, "an occupied slot is never overwritten");
 }
 
