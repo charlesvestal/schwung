@@ -46,7 +46,7 @@
     {
       "id": 5,
       "subject": "Task 6: Shim \u2014 forward cable-2 input to the shadow UI",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** The encoders and buttons reach JS outside overtake mode, gated so nothing changes for anyone not using the surface.\n\n**Files:**\n- Modify: `src/schwung_shim.c:9109` (the cable-2 note-on diversion) and the CC branch below it\n- Modify: `src/host/shadow_constants.h` (one flag in `shadow_control_t`)\n- Create: `tests/host/test_e16_forward_gate.sh`\n\n**Acceptance Criteria:**\n- [ ] A new `external_surface` flag in `shadow_control_t`, consuming reserved space, `sizeof` unchanged\n- [ ] While set, cable-2 CC **and note** messages publish to the shadow UI outside overtake\n- [ ] While set, cable-2 note-ons are **not** diverted into `shadow_queue_input_led` \u2014 that diversion currently swallows every encoder button\n- [ ] While clear, behaviour is byte-identical to today\n- [ ] The source pin fails if the note-on diversion loses its gate\n\n**Verify:** `bash tests/host/test_e16_forward_gate.sh` \u2192 passes; and on device, `dd` the flag byte and confirm encoder turns reach the tool\n\n```json:metadata\n{\"files\": [\"src/host/shadow_constants.h\", \"tests/host/test_e16_forward_gate.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_forward_gate.sh\", \"acceptanceCriteria\": [\"A new `external_surface` flag in `shadow_control_t`, consuming reserved space, `sizeof` unchanged\", \"While set, cable-2 CC **and note** messages publish to the shadow UI outside overtake\", \"While set, cable-2 note-ons are **not** diverted into `shadow_queue_input_led` \\u2014 that diversion currently swallows every encoder button\", \"While clear, behaviour is byte-identical to today\", \"The source pin fails if the note-on diversion loses its gate\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         0
@@ -55,7 +55,7 @@
     {
       "id": 6,
       "subject": "Task 7: Lifecycle \u2014 the setting, the ENTER heartbeat, the ACK",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** The surface finds and holds the device with no way to ask whether one is attached.\n\n**Files:**\n- Create: `src/shared/e16_surface.mjs` (lifecycle only in this task)\n- Modify: `src/shadow/shadow_ui.js` (Global Settings contract + tick hook + `onMidiMessageExternal`)\n- Create: `tests/host/test_e16_lifecycle.sh`\n\n**Acceptance Criteria:**\n- [ ] Global Settings \u2192 System gains **External Surface**: `Off / E16`\n- [ ] While enabled and unacked, ENTER is sent every ~2 s and no more often\n- [ ] An ACK marks the device present and stops the heartbeat\n- [ ] Losing the device (no ACK to a later probe) returns to seeking, so a power-cycle self-heals\n- [ ] Disabling sends EXIT exactly once\n- [ ] The Global Settings page list is unchanged in count \u2014 a new page would violate the one-section-one-page rule\n\n**Verify:** `bash tests/host/test_e16_lifecycle.sh` \u2192 passes; on device, unplug and replug the E16 and confirm it returns to remote mode unaided\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shadow/shadow_ui.js\", \"tests/host/test_e16_lifecycle.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_lifecycle.sh\", \"acceptanceCriteria\": [\"Global Settings \\u2192 System gains **External Surface**: `Off / E16`\", \"While enabled and unacked, ENTER is sent every ~2 s and no more often\", \"An ACK marks the device present and stops the heartbeat\", \"Losing the device (no ACK to a later probe) returns to seeking, so a power-cycle self-heals\", \"Disabling sends EXIT exactly once\", \"The Global Settings page list is unchanged in count \\u2014 a new page would violate the one-section-one-page rule\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         0
@@ -107,5 +107,5 @@
       ]
     }
   ],
-  "lastUpdated": "2026-09-10T10:04:26.199522"
+  "lastUpdated": "2026-09-10T10:10:58.859451"
 }
