@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Source pin: the external control surface (cable 2) reaches JS, and every one
+# of the three sites that lets it through is GATED on external_surface.
+#
+# The shim cannot be compiled on a dev Mac, so this is a source pin rather than
+# a unit. What it defends:
+#
+# 1. `external_surface` exists on shadow_control_t. Nothing else in the shim can
+#    ask "is a control surface plugged in", so a rename that misses one side
+#    silently turns the feature off rather than failing a build.
+#
+# 2. The cable-2 note-on diversion into shadow_queue_input_led keeps its gate.
+#    That diversion is right for an M8-style LED protocol -- it COALESCES per
+#    note and never publishes the event as input -- and fatal for a surface,
+#    where every encoder BUTTON press is a note-on. Ungated, the buttons are
+#    eaten with nothing logged, which is the failure this file exists for.
+#
+# 3. The non-overtake path still refuses cable 2 unless the flag is set. Without
+#    that half, an external keyboard's notes would start arriving at the shadow
+#    UI for every user, none of whom asked for a control surface.
+#
+# The gate condition is read from the STATEMENT, with comment lines stripped:
+# the prose above these branches names external_surface, so a matcher that
+# looked at raw context would pass on the comment alone and defend nothing.
+set -u
+
+SHIM="$(dirname "$0")/../../src/schwung_shim.c"
+HDR="$(dirname "$0")/../../src/host/shadow_constants.h"
+fails=0
+fail() { echo "FAIL: $*" >&2; fails=$((fails + 1)); }
+
+[ -f "$SHIM" ] || { echo "FAIL: cannot find $SHIM" >&2; exit 1; }
+[ -f "$HDR" ] || { echo "FAIL: cannot find $HDR" >&2; exit 1; }
+
+# Drop whole-line comments; a `/* ... */` opened mid-line stays, which is fine
+# because the code before it is what we are reading.
+strip_comments() { grep -vE '^[[:space:]]*(/\*|\*|//)'; }
+
+# --- 1. The flag exists, as a field ---------------------------------------
+if ! strip_comments < "$HDR" | grep -qE '^[[:space:]]*volatile uint8_t external_surface;'; then
+    fail "shadow_control_t has no external_surface field — nothing can ask whether a surface is attached"
+fi
+
+# --- 2. The note-on diversion is gated ------------------------------------
+# Find the statement that hands a cable-2 note-on to shadow_queue_input_led and
+# read the `if` that guards it: everything from the nearest preceding
+# non-comment `if (` down to the call. Joining the whole statement, rather than
+# taking that one line, is what lets the condition wrap -- which it does, and a
+# single-line matcher reported the gate missing while it was right there.
+call_line=$(grep -nE '^[^*/]*shadow_queue_input_led\(' "$SHIM" | head -1 | cut -d: -f1)
+if [ -z "$call_line" ]; then
+    fail "no shadow_queue_input_led call site found — has the M8 LED path moved?"
+else
+    guard=$(head -n "$call_line" "$SHIM" | strip_comments \
+        | awk '/^[[:space:]]*if \(/ { n = 0 } { buf[n++] = $0 }
+               END { for (i = 0; i < n; i++) printf "%s ", buf[i] }')
+    case "$guard" in
+        *external_surface*) ;;
+        *) fail "the cable-2 note-on diversion at line $call_line is not gated on external_surface (guard: ${guard:-none}) — every encoder button press is coalesced away" ;;
+    esac
+    case "$guard" in
+        *"cable == 0x02"*) ;;
+        *) fail "the guard above line $call_line no longer names cable 0x02 — the wrong branch was measured" ;;
+    esac
+fi
+
+# --- 3. The non-overtake cable filter admits cable 2 under the flag -------
+# Pinned by its own exact form, not by "the flag appears somewhere". This check
+# once counted `cable == 0x02 && shadow_control->external_surface` anywhere in
+# the file, and check 4's site carries that same phrase -- so deleting the
+# filter's widening still left a match and the mutation passed. A pin that can
+# be satisfied by a DIFFERENT site defends neither.
+if ! strip_comments < "$SHIM" \
+    | grep -qE 'cable != 0x00 &&[[:space:]]*$'; then
+    fail "the post-ioctl cable filter no longer continues its condition — cable 2 is admitted unconditionally or not at all"
+fi
+if ! strip_comments < "$SHIM" \
+    | grep -qE '^[[:space:]]*!\(cable == 0x02 && shadow_control->external_surface\)\) continue;'; then
+    fail "the cable filter does not admit cable 2 under external_surface — the surface's encoders never reach the shadow UI"
+fi
+
+# --- 4. The non-overtake publish site is gated too -------------------------
+# The filter above is not the only thing standing between a stray cable and
+# this branch: it re-tests the flag itself so a later widening of that filter
+# for some other reason cannot make this `continue` swallow the cable whole.
+if ! strip_comments < "$SHIM" \
+    | grep -qE '^[[:space:]]*if \(!overtake_mode && cable == 0x02 && shadow_control->external_surface\) \{'; then
+    fail "the non-overtake cable-2 publish is missing or ungated — the surface either never reaches JS, or swallows a cable it was not given"
+fi
+
+if [ "$fails" -ne 0 ]; then
+    echo "$fails check(s) failed" >&2
+    exit 1
+fi
+echo "PASS: cable 2 reaches JS only behind external_surface, and its note-ons are not diverted to the LED queue"
