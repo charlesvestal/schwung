@@ -14,7 +14,10 @@ import { loadJson, validate, embedBlock } from "./taxonomy.mjs";
 
 const args = process.argv.slice(2);
 const write = args.includes("--write");
-const requireSubcategory = args.includes("--require-subcategory");
+// Every catalogued module now has one, so absence is an error rather than a
+// module the taxonomy has not reached yet. --allow-missing-subcategory exists
+// only for bisecting a catalog from before Task 2.
+const requireSubcategory = !args.includes("--allow-missing-subcategory");
 
 const taxonomy = loadJson("taxonomy.json");
 const catalogPath = "module-catalog.json";

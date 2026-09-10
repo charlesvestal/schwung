@@ -28,7 +28,7 @@ const taxonomy = loadJson("taxonomy.json");
 const catalog  = loadJson("module-catalog.json");
 
 // 1. The real catalog validates clean.
-const errs = validate(taxonomy, catalog);
+const errs = validate(taxonomy, catalog, { requireSubcategory: true });
 if (errs.length) fail("real catalog does not validate:\n  " + errs.join("\n  "));
 
 // A deep copy per mutation, so one mutation cannot leak into the next.
@@ -92,6 +92,19 @@ const expectError = (what, mutated, needle) => {
   const c = clone();
   c.taxonomy = { taxonomy_version: 0, subcategories: {}, tags: [] };
   expectError("stale embed", c, "out of date");
+}
+
+// 8b. A module with no subcategory fails once completeness is required. This is
+//     the rule that catches module 134 arriving untagged.
+{
+  const c = clone();
+  delete c.modules[0].subcategory;
+  const e = validate(taxonomy, c, { requireSubcategory: true });
+  if (!e.some((s) => s.includes("no subcategory")))
+    fail("missing subcategory: expected an error, got [" + e.join(" | ") + "]");
+  const lenient = validate(taxonomy, c);
+  if (lenient.some((s) => s.includes("no subcategory")))
+    fail("missing subcategory: must be tolerated when not required");
 }
 
 // 9. derivedTags is exactly the restatement of `requires`, both ways.

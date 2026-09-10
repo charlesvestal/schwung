@@ -187,6 +187,13 @@
       "description": "6-operator FM synthesizer (Dexed/MSFA) with .syx patch support",
       "author": "Dexed/MSFA by google/asb2m10 (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "fm",
+      "tags": [
+        "fm",
+        "needs-assets",
+        "polyphonic",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-dx7",
       "default_branch": "main",
       "asset_name": "dexed-module.tar.gz",
@@ -199,6 +206,11 @@
       "description": "SoundFont (.sf2) synthesizer using FluidLite",
       "author": "FluidLite by Robin Lobel (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "needs-assets",
+        "sample-based"
+      ],
       "github_repo": "charlesvestal/schwung-sf2",
       "default_branch": "main",
       "asset_name": "sf2-module.tar.gz",
@@ -211,6 +223,11 @@
       "description": "SFZ and DecentSampler (.dspreset) sample player using sfizz engine",
       "author": "sfizz by sfztools (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "needs-assets",
+        "sample-based"
+      ],
       "github_repo": "charlesvestal/schwung-sfz",
       "default_branch": "main",
       "asset_name": "sfz-module.tar.gz",
@@ -223,6 +240,7 @@
       "description": "Novation Launchpad Pro emulation for Dirtywave M8",
       "author": "bobbydigitales (port: charlesvestal)",
       "component_type": "overtake",
+      "subcategory": "controller",
       "github_repo": "charlesvestal/schwung-m8",
       "default_branch": "main",
       "asset_name": "m8-module.tar.gz",
@@ -234,6 +252,12 @@
       "description": "ROM-based PCM rompler emulator",
       "author": "nukeykt/giulioz (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "needs-assets",
+        "sample-based",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-jv880",
       "default_branch": "main",
       "asset_name": "minijv-module.tar.gz",
@@ -246,6 +270,11 @@
       "description": "Virtual analog synthesizer based on Oberheim OB-X",
       "author": "reales (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-obxd",
       "default_branch": "main",
       "asset_name": "obxd-module.tar.gz",
@@ -257,6 +286,7 @@
       "description": "Algorithmic reverb by Ghost Note Audio",
       "author": "Ghost Note Audio (port: charlesvestal)",
       "component_type": "audio_fx",
+      "subcategory": "reverb",
       "github_repo": "charlesvestal/schwung-cloudseed",
       "default_branch": "main",
       "asset_name": "cloudseed-module.tar.gz",
@@ -268,6 +298,7 @@
       "description": "3-band multiband upward+downward compressor (vitOTTx port)",
       "author": "Matt Tytel (Vital DSP) · Yegor Suslin (vitOTT) · port: legsmechanical",
       "component_type": "audio_fx",
+      "subcategory": "dynamics",
       "github_repo": "legsmechanical/schwung-ottx",
       "default_branch": "main",
       "asset_name": "ottx-module.tar.gz",
@@ -279,6 +310,12 @@
       "description": "Alesis Midiverb / Midifex / Midiverb II emulator (lo-fi 23.4 kHz reverb)",
       "author": "thement (DSP) · Charles Vestal (port)",
       "component_type": "audio_fx",
+      "subcategory": "reverb",
+      "tags": [
+        "lo-fi",
+        "needs-assets",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-midiverb",
       "default_branch": "main",
       "asset_name": "midiverb-module.tar.gz",
@@ -291,6 +328,11 @@
       "description": "Tape saturation and degradation effect",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
+      "subcategory": "distortion-saturation",
+      "tags": [
+        "lo-fi",
+        "tape"
+      ],
       "github_repo": "charlesvestal/schwung-tapescam",
       "default_branch": "main",
       "asset_name": "tapescam-module.tar.gz",
@@ -302,6 +344,11 @@
       "description": "PlayStation 1 SPU reverb emulation",
       "author": "Charles Vestal",
       "component_type": "audio_fx",
+      "subcategory": "reverb",
+      "tags": [
+        "lo-fi",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-psxverb",
       "default_branch": "main",
       "asset_name": "psxverb-module.tar.gz",
@@ -313,6 +360,7 @@
       "description": "Algorithmic plate reverb based on Martin Eastwood's MVerb",
       "author": "Andre Louis (DSP: Martin Eastwood)",
       "component_type": "audio_fx",
+      "subcategory": "reverb",
       "github_repo": "charlesvestal/schwung-mverb",
       "default_branch": "main",
       "asset_name": "mverb-module.tar.gz",
@@ -324,6 +372,10 @@
       "description": "Tape delay with flutter and tone shaping. Light on CPU — fits on every slot.",
       "author": "cyrusasfa (port: charlesvestal)",
       "component_type": "audio_fx",
+      "subcategory": "delay-echo",
+      "tags": [
+        "tape"
+      ],
       "github_repo": "charlesvestal/schwung-space-delay",
       "default_branch": "main",
       "asset_name": "tapedelay-module.tar.gz",
@@ -335,6 +387,11 @@
       "description": "Component-modeled vintage three-head tape echo with spring reverb: 12 head/reverb modes, in-loop tape saturation, wow & flutter, tape age, and tempo sync with the reference machine's leading-head note tables. CPU-heavy: about two instances fit.",
       "author": "Tape Echo 2 by Dusk Audio (GPL-3.0) · port: athousanddetails",
       "component_type": "audio_fx",
+      "subcategory": "delay-echo",
+      "tags": [
+        "tape",
+        "vintage-emulation"
+      ],
       "github_repo": "athousanddetails/schwung-tape-echo2",
       "default_branch": "main",
       "asset_name": "tape-echo2-module.tar.gz",
@@ -346,6 +403,7 @@
       "description": "Frequency-shifting feedback delay for metallic echoes, phasing, flanging, and inharmonic dub textures",
       "author": "mestela",
       "component_type": "audio_fx",
+      "subcategory": "delay-echo",
       "github_repo": "mestela/schwung-ruminant",
       "default_branch": "main",
       "asset_name": "ruminant-module.tar.gz",
@@ -357,6 +415,10 @@
       "description": "Junologue Chorus - Juno-60 chorus emulation (I, I+II, II modes)",
       "author": "Peter Allwin (port: charlesvestal)",
       "component_type": "audio_fx",
+      "subcategory": "modulation",
+      "tags": [
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-junologue-chorus",
       "default_branch": "main",
       "asset_name": "junologue-chorus-module.tar.gz",
@@ -368,6 +430,7 @@
       "description": "MIDI controller for SIDaster III synthesizer",
       "author": "charlesvestal",
       "component_type": "overtake",
+      "subcategory": "controller",
       "github_repo": "charlesvestal/schwung-sidcontrol",
       "default_branch": "main",
       "asset_name": "sidcontrol-module.tar.gz",
@@ -379,6 +442,10 @@
       "description": "Macro oscillator with 47 synthesis algorithms (Mutable Instruments)",
       "author": "Emilie Gillet (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": [
+        "mono"
+      ],
       "github_repo": "charlesvestal/schwung-braids",
       "default_branch": "main",
       "asset_name": "braids-module.tar.gz",
@@ -390,6 +457,11 @@
       "description": "Juno-60 emulation synthesizer with BBD chorus",
       "author": "jpcima (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-hera",
       "default_branch": "main",
       "asset_name": "hera-module.tar.gz",
@@ -401,6 +473,12 @@
       "description": "Hybrid synthesizer - wavetable, FM, subtractive, and physical modeling with 600+ presets",
       "author": "Surge Synth Team (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": [
+        "fm",
+        "polyphonic",
+        "wavetable"
+      ],
       "github_repo": "charlesvestal/schwung-surge",
       "default_branch": "main",
       "asset_name": "surge-module.tar.gz",
@@ -412,6 +490,11 @@
       "description": "Monophonic synthesizer with 4 oscillators and Moog ladder filter",
       "author": "Nicolas Roulet, Julian Palladino (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "mono",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-moog",
       "default_branch": "main",
       "asset_name": "moog-module.tar.gz",
@@ -423,6 +506,10 @@
       "description": "Web audio search and streaming generator with bundled yt-dlp + ffmpeg runtime",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "streaming"
+      ],
       "github_repo": "charlesvestal/schwung-webstream",
       "default_branch": "main",
       "asset_name": "webstream-module.tar.gz",
@@ -434,6 +521,10 @@
       "description": "Neural Amp Modeler - neural network guitar amp/effect emulation",
       "author": "NeuralAudio by Mike Oliphant (port: charlesvestal)",
       "component_type": "audio_fx",
+      "subcategory": "distortion-saturation",
+      "tags": [
+        "needs-assets"
+      ],
       "github_repo": "charlesvestal/schwung-nam",
       "default_branch": "main",
       "asset_name": "nam-module.tar.gz",
@@ -446,6 +537,7 @@
       "description": "MIDI-triggered sidechain ducker - classic pumping without an audio sidechain",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "dynamics",
       "github_repo": "charlesvestal/schwung-ducker",
       "default_branch": "main",
       "asset_name": "ducker-module.tar.gz",
@@ -457,6 +549,7 @@
       "description": "Creative sidechain effects for dummies - a tempo-synced curve shaper that ducks/boosts volume and/or sweeps a multimode filter, locked to the beat",
       "author": "legsmechanical",
       "component_type": "audio_fx",
+      "subcategory": "dynamics",
       "github_repo": "legsmechanical/schwung-pushnpull",
       "default_branch": "main",
       "asset_name": "pushnpull-module.tar.gz",
@@ -468,6 +561,10 @@
       "description": "Browse and stream live radio from 200 cities worldwide via Radio Garden",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "streaming"
+      ],
       "github_repo": "charlesvestal/schwung-radiogarden",
       "default_branch": "main",
       "asset_name": "radiogarden-module.tar.gz",
@@ -479,6 +576,10 @@
       "description": "AirPlay audio receiver - stream from iPhone, iPad, or Mac to Move's signal chain",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "streaming"
+      ],
       "github_repo": "charlesvestal/schwung-airplay",
       "default_branch": "main",
       "asset_name": "airplay-module.tar.gz",
@@ -490,6 +591,10 @@
       "description": "Local RTSP audio receiver for Android ScreenStream and other RTSP senders",
       "author": "dom",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "streaming"
+      ],
       "github_repo": "handcraftedcc/schwung-StreamRTSP",
       "default_branch": "main",
       "asset_name": "streamrtsp-module.tar.gz",
@@ -501,6 +606,7 @@
       "description": "Airwindows audio effects (500+ plugins via airwin2rack)",
       "author": "charlesvestal, Chris Johnson (Airwindows)",
       "component_type": "audio_fx",
+      "subcategory": "multi-fx",
       "github_repo": "charlesvestal/schwung-airwindows",
       "default_branch": "main",
       "asset_name": "clap-module.tar.gz",
@@ -512,6 +618,7 @@
       "description": "Noise gate and downward expander",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "dynamics",
       "github_repo": "charlesvestal/schwung-gate",
       "default_branch": "main",
       "asset_name": "gate-module.tar.gz",
@@ -523,6 +630,7 @@
       "description": "Custom MIDI controller with 16 banks of configurable pads/knobs/buttons",
       "author": "chaolue",
       "component_type": "overtake",
+      "subcategory": "controller",
       "github_repo": "chaolue/move-anything-control",
       "default_branch": "main",
       "asset_name": "control-module.tar.gz",
@@ -534,6 +642,11 @@
       "description": "NES 2A03 & Game Boy DMG chiptune synthesizer with 32 presets",
       "author": "blargg (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "chiptune-retro",
+      "tags": [
+        "lo-fi",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-chiptune",
       "default_branch": "main",
       "asset_name": "chiptune-module.tar.gz",
@@ -545,6 +658,7 @@
       "description": "Detects the musical key of audio passing through it",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "utility",
       "github_repo": "charlesvestal/schwung-keydetect",
       "default_branch": "main",
       "asset_name": "keydetect-module.tar.gz",
@@ -556,6 +670,11 @@
       "description": "Channel vocoder - uses mic/line-in as modulator to shape synth carrier",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": [
+        "needs-line-in",
+        "vocal"
+      ],
       "github_repo": "charlesvestal/schwung-vocoder",
       "default_branch": "main",
       "asset_name": "vocoder-module.tar.gz",
@@ -567,6 +686,12 @@
       "description": "Access Virus DSP56300 emulator via Gearmulator JIT engine",
       "author": "dsp56300/gearmulator (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "needs-assets",
+        "polyphonic",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-virus",
       "default_branch": "main",
       "asset_name": "osirus-module.tar.gz",
@@ -579,6 +704,7 @@
       "description": "Scale and curve incoming note velocities.",
       "author": "Charles Vestal",
       "component_type": "midi_fx",
+      "subcategory": "routing-utility",
       "github_repo": "charlesvestal/schwung-velocity-scale",
       "default_branch": "main",
       "asset_name": "velocity_scale-module.tar.gz",
@@ -590,6 +716,7 @@
       "description": "Advanced MIDI arpeggiator with progression patterns, rhythm presets, and seeded modifiers",
       "author": "handcraftedcc",
       "component_type": "midi_fx",
+      "subcategory": "arpeggiator",
       "github_repo": "handcraftedcc/move-everything-superarp",
       "default_branch": "main",
       "asset_name": "superarp-module.tar.gz",
@@ -601,6 +728,11 @@
       "description": "Deterministic 4-lane Euclidean MIDI sequencer with held/scale note registers, retrigger modes, and seeded modulation",
       "author": "handcraftedcc",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "euclidean",
+        "generative"
+      ],
       "github_repo": "handcraftedcc/move-everything-eucalypso",
       "default_branch": "main",
       "asset_name": "eucalypso-module.tar.gz",
@@ -612,6 +744,11 @@
       "description": "Granular sample instrument with scan controls and file browser",
       "author": "handcraftedcc",
       "component_type": "sound_generator",
+      "subcategory": "granular",
+      "tags": [
+        "granular",
+        "sample-based"
+      ],
       "github_repo": "handcraftedcc/move-everything-granny",
       "default_branch": "main",
       "asset_name": "granny-grain-module.tar.gz",
@@ -623,6 +760,10 @@
       "description": "MicroFreak-inspired macro oscillator based on Mutable Instruments Plaits",
       "author": "handcraftedcc",
       "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": [
+        "mono"
+      ],
       "github_repo": "handcraftedcc/move-everything-mrhyde",
       "default_branch": "main",
       "asset_name": "freak-module.tar.gz",
@@ -634,6 +775,11 @@
       "description": "16-pad sample drum module with per-pad controls and dynamic pad editing",
       "author": "handcraftedcc",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "sample-based"
+      ],
       "github_repo": "handcraftedcc/move-everything-mrdrums",
       "default_branch": "main",
       "asset_name": "mrdrums-module.tar.gz",
@@ -645,6 +791,11 @@
       "description": "Propellerhead ReCycle (.rx2/.rex) slice player with DWOP lossless decoder",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "needs-assets",
+        "sample-based"
+      ],
       "github_repo": "charlesvestal/schwung-rex",
       "default_branch": "main",
       "asset_name": "rex-module.tar.gz",
@@ -657,6 +808,12 @@
       "description": "Monophonic subtractive synthesizer emulating the Roland SH-101",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "bass",
+        "mono",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-hush1",
       "default_branch": "main",
       "asset_name": "hush1-module.tar.gz",
@@ -668,6 +825,10 @@
       "description": "Polyphonic detuned multi-saw synthesizer with resonant filter, dual envelopes, chorus, and delay",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "polyphonic"
+      ],
       "github_repo": "charlesvestal/schwung-nusaw",
       "default_branch": "main",
       "asset_name": "nusaw-module.tar.gz",
@@ -679,6 +840,7 @@
       "description": "Stereo utility - channel select, width, bass mono, gain, pan, phase, mute, DC filter",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "utility",
       "github_repo": "charlesvestal/schwung-usefulity",
       "default_branch": "main",
       "asset_name": "usefulity-module.tar.gz",
@@ -690,6 +852,11 @@
       "description": "Autosample external MIDI gear to create multisampled SFZ instruments",
       "author": "charlesvestal",
       "component_type": "tool",
+      "subcategory": "sampling-editing",
+      "tags": [
+        "needs-assets",
+        "needs-line-in"
+      ],
       "github_repo": "charlesvestal/schwung-autosample",
       "default_branch": "main",
       "asset_name": "samplerobot-module.tar.gz",
@@ -702,6 +869,7 @@
       "description": "Trim, gain adjust, and edit audio files on the Move",
       "author": "charlesvestal",
       "component_type": "tool",
+      "subcategory": "sampling-editing",
       "github_repo": "charlesvestal/schwung-waveform-editor",
       "default_branch": "main",
       "asset_name": "waveform-editor-module.tar.gz",
@@ -713,6 +881,7 @@
       "description": "Real-time audio time stretching with Bungee",
       "author": "charlesvestal",
       "component_type": "tool",
+      "subcategory": "sampling-editing",
       "github_repo": "charlesvestal/schwung-stretch",
       "default_branch": "main",
       "asset_name": "stretch-module.tar.gz",
@@ -724,6 +893,10 @@
       "description": "Separate audio into stems: drums, vocals, accompaniment (0.85x realtime)",
       "author": "charlesvestal",
       "component_type": "tool",
+      "subcategory": "sampling-editing",
+      "tags": [
+        "cpu-heavy"
+      ],
       "github_repo": "charlesvestal/schwung-stems",
       "default_branch": "main",
       "asset_name": "stems-module.tar.gz",
@@ -735,6 +908,10 @@
       "description": "Macro oscillator with 24 synthesis engines (Mutable Instruments Plaits)",
       "author": "Emilie Gillet (port: Justin Joe)",
       "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": [
+        "mono"
+      ],
       "github_repo": "j3threejay/move-anything-plaits",
       "default_branch": "master",
       "asset_name": "plaits-module.tar.gz",
@@ -746,6 +923,10 @@
       "description": "Real-time granular audio effect with live input capture & MIDI sync",
       "author": "Alessandro Gaiba (port: filliformes)",
       "component_type": "audio_fx",
+      "subcategory": "granular-spectral",
+      "tags": [
+        "granular"
+      ],
       "github_repo": "filliformes/boris-move",
       "default_branch": "main",
       "asset_name": "boris-granular-module.tar.gz",
@@ -757,6 +938,7 @@
       "description": "OTO Boum-inspired master bus destructor: 10 preamp models, multimode saturation, 8-band filterbank with vocoder mode, creative compressor, EQ & tape output stage",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "distortion-saturation",
       "github_repo": "filliformes/super-boom-move",
       "default_branch": "main",
       "asset_name": "super-boom-module.tar.gz",
@@ -768,6 +950,7 @@
       "description": "32 punch-in audio FX with pressure control, latch, and tempo sync",
       "author": "charlesvestal",
       "component_type": "overtake",
+      "subcategory": "performance-fx",
       "github_repo": "charlesvestal/schwung-performance-fx",
       "default_branch": "main",
       "asset_name": "performance-fx-module.tar.gz",
@@ -779,6 +962,7 @@
       "description": "CDJ/turntable-style 4-track stem player with Bungee timestretch/pitchshift",
       "author": "DJ Hard Rich",
       "component_type": "tool",
+      "subcategory": "performance",
       "github_repo": "djhardrich/move-anything-dj",
       "default_branch": "main",
       "asset_name": "dj-module.tar.gz",
@@ -790,6 +974,11 @@
       "description": "Transient-detecting sample slicer with 32-pad polyphonic playback",
       "author": "Justin Joe",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "needs-assets",
+        "sample-based"
+      ],
       "github_repo": "j3threejay/move-anything-slicer",
       "default_branch": "main",
       "asset_name": "slicer-module.tar.gz",
@@ -802,6 +991,10 @@
       "description": "Mutable Instruments Clouds granular processor: granular, stretch, looper & spectral modes with output filters & limiter",
       "author": "Emilie Gillet (port: filliformes)",
       "component_type": "audio_fx",
+      "subcategory": "granular-spectral",
+      "tags": [
+        "granular"
+      ],
       "github_repo": "filliformes/verglas-move",
       "default_branch": "main",
       "asset_name": "verglas-module.tar.gz",
@@ -813,6 +1006,10 @@
       "description": "Chromatic tuner for guitar (and any other instrument). Nearest note and cents deviation on the OLED; big letter glyph on the pad grid. Uses the Move's mic or 3.5mm line-in.",
       "author": "eightfour",
       "component_type": "tool",
+      "subcategory": "tuner-analysis",
+      "tags": [
+        "needs-line-in"
+      ],
       "github_repo": "eightfour-dev/schwung-guitar-tuner",
       "default_branch": "main",
       "asset_name": "guitar-tuner-module.tar.gz",
@@ -824,6 +1021,10 @@
       "description": "Chromatic and instrument tuner with step guide feedback",
       "author": "Jeremiah Ticket",
       "component_type": "tool",
+      "subcategory": "tuner-analysis",
+      "tags": [
+        "needs-line-in"
+      ],
       "github_repo": "CatsAreCool710/Move-Everything-Tuner",
       "default_branch": "main",
       "asset_name": "tuner-module.tar.gz",
@@ -835,6 +1036,7 @@
       "description": "Dragonfly Hall Reverb — lush hall reverb with 25 presets and full parameter control",
       "author": "bradcoomber",
       "component_type": "audio_fx",
+      "subcategory": "reverb",
       "github_repo": "wolfrenegade1976/move-anything-dragonfly-hall",
       "default_branch": "main",
       "asset_name": "dragonfly-hall-module.tar.gz",
@@ -846,6 +1048,7 @@
       "description": "PO-33 style punch-in effects: 16 pressure-sensitive FX on the left 4x4 pad grid",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "looper-sampler-fx",
       "github_repo": "filliformes/punchfx-move",
       "default_branch": "main",
       "asset_name": "punchfx-module.tar.gz",
@@ -857,6 +1060,10 @@
       "description": "Musique concrete sound deconstructor/reconstructor: 8 algorithmic modes with per-grain DJ filtering, randomization & sequencer",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "granular-spectral",
+      "tags": [
+        "granular"
+      ],
       "github_repo": "filliformes/structor-move",
       "default_branch": "main",
       "asset_name": "structor-module.tar.gz",
@@ -868,6 +1075,10 @@
       "description": "8-voice analog drum machine: 64 kits, 41 voice presets, dynamic pad-selected voice editing & master bus FX",
       "author": "dfilaretti (port: filliformes)",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums"
+      ],
       "github_repo": "filliformes/weird-dreams-move",
       "default_branch": "master",
       "asset_name": "weird-dreams-module.tar.gz",
@@ -879,6 +1090,10 @@
       "description": "Spectral smearing pad generator: dissolves transients into evolving ambient pads via FFT magnitude analysis & random phase reconstruction",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "granular-spectral",
+      "tags": [
+        "spectral"
+      ],
       "github_repo": "filliformes/dissolver-move",
       "default_branch": "master",
       "asset_name": "dissolver-module.tar.gz",
@@ -890,6 +1105,10 @@
       "description": "Multiband spectral resonator: pitch-tracking SVF resonator bank with scale quantizer, 12 scales x 12 roots & chord drift",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "filter-eq",
+      "tags": [
+        "spectral"
+      ],
       "github_repo": "filliformes/spectra-move",
       "default_branch": "master",
       "asset_name": "spectra-module.tar.gz",
@@ -901,6 +1120,11 @@
       "description": "32-voice rhythmic oscillator swarm: polyphonic self-triggering voices with envelope→FM, SVF filtering, LFO modulation routing, scale quantization, delay & saturation",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": [
+        "generative",
+        "polyphonic"
+      ],
       "github_repo": "filliformes/essaim-move",
       "default_branch": "main",
       "asset_name": "essaim-module.tar.gz",
@@ -912,6 +1136,10 @@
       "description": "Analog tape model with Jiles-Atherton magnetic hysteresis, loss filter, wow & flutter, chew, and degradation",
       "author": "Jatin Chowdhury (port: charlesvestal)",
       "component_type": "audio_fx",
+      "subcategory": "distortion-saturation",
+      "tags": [
+        "tape"
+      ],
       "github_repo": "charlesvestal/schwung-chowtape",
       "default_branch": "main",
       "asset_name": "chowtape-module.tar.gz",
@@ -923,6 +1151,10 @@
       "description": "Ambient effect chain: rolling looper -> granular shimmer -> freeze layer -> modulated reverb. Tempo-aware, 4 mode presets, 8-knob performance.",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "multi-fx",
+      "tags": [
+        "granular"
+      ],
       "github_repo": "charlesvestal/schwung-ambiotica",
       "default_branch": "main",
       "asset_name": "ambiotica-module.tar.gz",
@@ -934,6 +1166,7 @@
       "description": "Multi-mode filter: SVF (LP/HP/BP/notch/peak/allpass) + Schwoog (warm 4-pole ladder), envelope follower, tempo-synced LFO, drive, dry/wet",
       "author": "charlesvestal",
       "component_type": "audio_fx",
+      "subcategory": "filter-eq",
       "github_repo": "charlesvestal/schwung-filter",
       "default_branch": "main",
       "asset_name": "filter-module.tar.gz",
@@ -945,6 +1178,11 @@
       "description": "Physically-modeled Wurlitzer 200A electric piano (OpenWurli port)",
       "author": "hal0zer0 (port: filliformes)",
       "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic",
+        "vintage-emulation"
+      ],
       "github_repo": "filliformes/wurl-move",
       "default_branch": "master",
       "asset_name": "wurl-module.tar.gz",
@@ -956,6 +1194,10 @@
       "description": "Monophonic West Coast synthesizer inspired by Serge Modular: bipolar modulation matrix, complex oscillators, stiffness-based geometry & portamento",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "mono"
+      ],
       "github_repo": "filliformes/denis-move",
       "default_branch": "main",
       "asset_name": "denis-module.tar.gz",
@@ -967,6 +1209,10 @@
       "description": "Generative note and chord sequencer with 7 generation modes, stutter engine with beat-repeat, 20 scales, chord stacking, capture/loop & humanize",
       "author": "filliformes",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "generative"
+      ],
       "github_repo": "filliformes/genera-move",
       "default_branch": "master",
       "asset_name": "genera-module.tar.gz",
@@ -978,6 +1224,12 @@
       "description": "8-lane generative Euclidean drum sequencer: 32 presets, polymetric rates, mutation/drift & per-lane freq/decay CC output. Purpose-built companion for Weird Dreams.",
       "author": "filliformes",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "drums",
+        "euclidean",
+        "generative"
+      ],
       "github_repo": "filliformes/euclidrum-move",
       "default_branch": "master",
       "asset_name": "euclidrum-module.tar.gz",
@@ -989,6 +1241,11 @@
       "description": "Grids drum maps with per-lane Branches-style note branching",
       "author": "Mutable Instruments ideas / port for Schwung Move",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "drums",
+        "generative"
+      ],
       "github_repo": "broduoliviercontact-web/Schwung-Midi-Fx-branchages-Multi-Random-generator",
       "default_branch": "main",
       "asset_name": "branchage-module.tar.gz",
@@ -1000,6 +1257,10 @@
       "description": "Dual-grid overtake sampler with 16 banks, auto-slicing, per-pad controls, MIDI loopers and session management",
       "author": "jrucho",
       "component_type": "overtake",
+      "subcategory": "sampler-looper",
+      "tags": [
+        "sample-based"
+      ],
       "github_repo": "jrucho/schwung-twinsampler",
       "default_branch": "main",
       "asset_name": "twinsampler-module.tar.gz",
@@ -1011,6 +1272,10 @@
       "description": "Advanced chord generator with strumming and clock-synced retriggering",
       "author": "mestela",
       "component_type": "midi_fx",
+      "subcategory": "chord-harmony",
+      "tags": [
+        "chord"
+      ],
       "github_repo": "mestela/schwung-impressive-chords",
       "default_branch": "main",
       "asset_name": "impressive-chords.tar.gz",
@@ -1022,6 +1287,10 @@
       "description": "Play .mid files into the slot's sound generator, synced to Move's clock",
       "author": "Charles Vestal",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "needs-assets"
+      ],
       "github_repo": "charlesvestal/schwung-midi-player",
       "default_branch": "main",
       "asset_name": "midi-player-module.tar.gz",
@@ -1034,6 +1303,11 @@
       "description": "Voice-driven manual for Ableton Move and Schwung. Hold a bottom-row pad to ask, release to send. Configure provider + API keys at move.local:7700/modules/ai-manual.",
       "author": "eightfour",
       "component_type": "tool",
+      "subcategory": "assistant",
+      "tags": [
+        "ai",
+        "needs-assets"
+      ],
       "github_repo": "eightfour-dev/schwung-ai-manual",
       "default_branch": "main",
       "asset_name": "ai-manual-module.tar.gz",
@@ -1046,6 +1320,11 @@
       "description": "General-purpose voice assistant on Move. Best for songwriting prompts, creative sparks, and brainstorming. Long-form replies, optionally read aloud via TTS. Configure provider + API keys at move.local:7700/modules/ai-assistant.",
       "author": "eightfour",
       "component_type": "tool",
+      "subcategory": "assistant",
+      "tags": [
+        "ai",
+        "needs-assets"
+      ],
       "github_repo": "eightfour-dev/schwung-ai-assistant",
       "default_branch": "main",
       "asset_name": "ai-assistant-module.tar.gz",
@@ -1058,6 +1337,12 @@
       "description": "TB-303 emulator (Open303 + Devilfish + Soft/RAT drive)",
       "author": "Robin Schmidt / midilab / davemollen (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "bass",
+        "mono",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-303",
       "default_branch": "main",
       "asset_name": "303-module.tar.gz",
@@ -1069,6 +1354,11 @@
       "description": "Generative 303-style acid-bassline sequencer with dual slots and 303 CC mode",
       "author": "djphazer / Hemisphere Suite (port: charlesvestal)",
       "component_type": "tool",
+      "subcategory": "sequencer",
+      "tags": [
+        "bass",
+        "generative"
+      ],
       "github_repo": "charlesvestal/schwung-tb3po",
       "default_branch": "main",
       "asset_name": "tb3po-module.tar.gz",
@@ -1080,6 +1370,11 @@
       "description": "Breakbeat generator with algorithmic slicing, retriggering, fills, and per-sample chance blending",
       "author": "mestela",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "drums",
+        "sample-based"
+      ],
       "github_repo": "mestela/schwung-breakbeat",
       "default_branch": "main",
       "asset_name": "breakbeat-module.tar.gz",
@@ -1091,6 +1386,10 @@
       "description": "16-voice drum synthesizer based on the libpo32/Tonic engine, with GM drum layout, three bundled kits, per-voice noise filter and envelope controls, and role-aware randomizer",
       "author": "mestela",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums"
+      ],
       "github_repo": "mestela/schwung-libpo32",
       "default_branch": "main",
       "asset_name": "po32-drum-module.tar.gz",
@@ -1102,6 +1401,11 @@
       "description": "Polymetric microsound rhythm generator with breakbeat engine & Scene A/B morph",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "generative"
+      ],
       "github_repo": "filliformes/signal-move",
       "default_branch": "master",
       "asset_name": "signal-module.tar.gz",
@@ -1113,6 +1417,11 @@
       "description": "16-voice tonal drum machine modeled on the 1969 Elka Drummer One, with V72/A80/Synthi pre-FX, EP-3/Echorec/RE-201 delay, EMT 140/BX20/chamber reverb & EMT 156-style bus comp",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "vintage-emulation"
+      ],
       "github_repo": "filliformes/krautdrums-move",
       "default_branch": "main",
       "asset_name": "krautdrums-module.tar.gz",
@@ -1124,6 +1433,11 @@
       "description": "8-voice FM/subtractive hybrid drum synthesiser for Ableton Move — Kit A↔B morph across 16 pads, 5 voice algorithms, a self-oscillating ladder filter, dedicated noise oscillator, enveloped FM, per-voice resonator, Ctrl-All performance macros, three concurrent FX buses, 137 factory kits & per-voice CC control (Movy)",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "fm"
+      ],
       "github_repo": "filliformes/forge-move",
       "default_branch": "master",
       "asset_name": "forge-module.tar.gz",
@@ -1135,6 +1449,7 @@
       "description": "8-track creative MIDI sequencer with per-clip effects chains, polyrhythmic drum lanes, live recording, and a 24-mod performance mode",
       "author": "legsmechanical",
       "component_type": "tool",
+      "subcategory": "sequencer",
       "github_repo": "legsmechanical/schwung-davebox",
       "default_branch": "main",
       "asset_name": "davebox-module.tar.gz",
@@ -1146,6 +1461,10 @@
       "description": "Real-time chord & note recognizer for Move's pads. Names the chord on screen and routes MIDI to a Move track so you hear the chord through any loaded instrument.",
       "author": "dony01001",
       "component_type": "tool",
+      "subcategory": "tuner-analysis",
+      "tags": [
+        "chord"
+      ],
       "github_repo": "dony01001/ChordDex",
       "default_branch": "main",
       "asset_name": "chorddex-module.tar.gz",
@@ -1157,6 +1476,11 @@
       "description": "Chromatic single-sample player with AHDSR, multimode filter, LFO, loop+crossfade. Loads WAV/MP3/FLAC/AIFF.",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "sampler-rompler",
+      "tags": [
+        "needs-assets",
+        "sample-based"
+      ],
       "github_repo": "charlesvestal/schwung-mrsample",
       "default_branch": "main",
       "asset_name": "mrsample-module.tar.gz",
@@ -1169,6 +1493,7 @@
       "description": "Ambient drone workstation (standalone takeover)",
       "author": "boorch",
       "component_type": "tool",
+      "subcategory": "performance",
       "github_repo": "boorch/dronage-move-release",
       "default_branch": "master",
       "asset_name": "dronage-tool-module.tar.gz",
@@ -1180,6 +1505,11 @@
       "description": "Chord-based polyphonic synth — one pad in, 4 voices out, with 16 chord types, 25 scales, FM matrix, morphing level/pan, modulation routing, and 30 presets",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "chord",
+        "polyphonic"
+      ],
       "github_repo": "charlesvestal/schwung-chordism",
       "default_branch": "main",
       "asset_name": "chordism-module.tar.gz",
@@ -1191,6 +1521,10 @@
       "description": "SysEx patch editor and controller for Roland Alpha Juno 1/2 and MKS-50",
       "author": "madeinspace",
       "component_type": "overtake",
+      "subcategory": "controller",
+      "tags": [
+        "vintage-emulation"
+      ],
       "github_repo": "madeinspace/move-juno-controller",
       "default_branch": "main",
       "asset_name": "juno_control-module.tar.gz",
@@ -1202,6 +1536,10 @@
       "description": "Polyphonic synthesizer with effects and powerful modulation system",
       "author": "Matt Tytel (port: andree182)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "polyphonic"
+      ],
       "github_repo": "andree182/schwung-helm",
       "default_branch": "master",
       "asset_name": "helm-module.tar.gz",
@@ -1213,6 +1551,7 @@
       "description": "MIDI channel splitter and router module",
       "author": "andree182",
       "component_type": "midi_fx",
+      "subcategory": "routing-utility",
       "github_repo": "andree182/schwung-fork",
       "default_branch": "main",
       "asset_name": "fork-module.tar.gz",
@@ -1224,6 +1563,11 @@
       "description": "Korg MS-10/MS-20 hybrid mono synth: KORG-35/OTA filter cascade, source-side patchbay, ESP line-in processor, analog drift, 41 presets",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "mono",
+        "vintage-emulation"
+      ],
       "github_repo": "filliformes/aphex-move",
       "default_branch": "master",
       "asset_name": "aphex-module.tar.gz",
@@ -1235,6 +1579,10 @@
       "description": "Granular/glitch/delay/looper multi-FX: 11 effects x 4 variations, shimmer reverb + tone, generative Motion/Evolve, Hold sampler, resonant filter, 60s looper",
       "author": "seajay",
       "component_type": "audio_fx",
+      "subcategory": "multi-fx",
+      "tags": [
+        "granular"
+      ],
       "github_repo": "seajaysec/war-bells",
       "default_branch": "main",
       "asset_name": "war_bells-module.tar.gz",
@@ -1246,6 +1594,7 @@
       "description": "Elektron-style knob UI + 4-track sequencer with per-step parameters, parameter automation, and live recording",
       "author": "megadake",
       "component_type": "tool",
+      "subcategory": "sequencer",
       "github_repo": "DimaDake/schwung-movy",
       "default_branch": "main",
       "asset_name": "movy-module.tar.gz",
@@ -1257,6 +1606,10 @@
       "description": "Stereo cassette/tape looper + recorder: two 30 s tape sides, overdub, 9 tape models, varspeed/reverse/scrub/scan/stutter, tempo-synced loops, WAV load/export",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "looper-sampler-fx",
+      "tags": [
+        "tape"
+      ],
       "github_repo": "filliformes/magneto-move",
       "default_branch": "main",
       "asset_name": "magneto-module.tar.gz",
@@ -1268,6 +1621,10 @@
       "description": "Polyphonic simplex physical-modeling synth: two coupled resonators (string/beam/plate/membrane), tension modulation, 12-voicing analog filter, poly aftertouch, dual LFOs, full FX chain",
       "author": "filliformes",
       "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "polyphonic"
+      ],
       "github_repo": "filliformes/fizzik-move",
       "default_branch": "master",
       "asset_name": "fizzik-module.tar.gz",
@@ -1279,6 +1636,7 @@
       "description": "4-slot serial multi-effect — 24 reorderable effects, per-slot drift, feedback + tempo sync (Chroma Console reimagined)",
       "author": "filliformes",
       "component_type": "audio_fx",
+      "subcategory": "multi-fx",
       "github_repo": "filliformes/palette-move",
       "default_branch": "master",
       "asset_name": "palette-module.tar.gz",
@@ -1290,6 +1648,7 @@
       "description": "Quantized live-loop capture with 26 seeded per-slice glitch effects, slice reordering, A/B punch, step editing, and Pad Play",
       "author": "timncox",
       "component_type": "audio_fx",
+      "subcategory": "looper-sampler-fx",
       "github_repo": "timncox/schwung-smack",
       "default_branch": "main",
       "asset_name": "smack-module.tar.gz",
@@ -1301,6 +1660,10 @@
       "description": "Standalone mic/line/USB-C build of Smack with the same 26-effect seeded slice engine, Pad Play, and browser step editor",
       "author": "timncox",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "needs-line-in"
+      ],
       "github_repo": "timncox/schwung-smack",
       "default_branch": "main",
       "asset_name": "smack-in-module.tar.gz",
@@ -1312,6 +1675,7 @@
       "description": "Full-surface Smack input looper: whole-grid step-FX editing, palette pinning, pressure punch effects, dual-mono lanes, and browser editor",
       "author": "timncox",
       "component_type": "overtake",
+      "subcategory": "sampler-looper",
       "github_repo": "timncox/schwung-smack",
       "default_branch": "main",
       "asset_name": "oversmack-module.tar.gz",
@@ -1323,6 +1687,7 @@
       "description": "RC-505-style 5-track live loop station with per-track record/overdub and insert FX, quantized sync, undo/redo, 16 sessions, single mode, and browser mixer",
       "author": "timncox",
       "component_type": "overtake",
+      "subcategory": "sampler-looper",
       "github_repo": "timncox/schwung-mark",
       "default_branch": "main",
       "asset_name": "mark-module.tar.gz",
@@ -1334,6 +1699,10 @@
       "description": "Live vocal processor for Signal Chain and Master FX: autotune, four scale-aware harmonies, HARD punch, tuner strip, doubler, and formant shift",
       "author": "timncox",
       "component_type": "audio_fx",
+      "subcategory": "utility",
+      "tags": [
+        "vocal"
+      ],
       "github_repo": "timncox/schwung-belt",
       "default_branch": "main",
       "asset_name": "belt-module.tar.gz",
@@ -1345,6 +1714,11 @@
       "description": "Standalone mic/line/USB-C Belt: tuned lead vocal, four scale-aware harmonies, HARD punch, tuner strip, doubler, and formant shift in one slot",
       "author": "timncox",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "needs-line-in",
+        "vocal"
+      ],
       "github_repo": "timncox/schwung-belt",
       "default_branch": "main",
       "asset_name": "belt-in-module.tar.gz",
@@ -1356,6 +1730,7 @@
       "description": "Six-track Elektron-style machine synth and sequencer with parameter locks, arpeggiators, routing, pattern tools, and browser editor",
       "author": "timncox",
       "component_type": "overtake",
+      "subcategory": "sequencer",
       "github_repo": "timncox/schwung-mono",
       "default_branch": "main",
       "asset_name": "mono-module.tar.gz",
@@ -1367,6 +1742,10 @@
       "description": "Elektron-style digital machine synth voice with SuperWave, SID, DigiPRO, FM, deep modulation, and arp latch",
       "author": "timncox",
       "component_type": "sound_generator",
+      "subcategory": "macro-hybrid",
+      "tags": [
+        "mono"
+      ],
       "github_repo": "timncox/schwung-mono",
       "default_branch": "main",
       "asset_name": "mono-voice-module.tar.gz",
@@ -1378,6 +1757,10 @@
       "description": "Virtual-analog synth ported from TAL NoiseMaker (Patrick Kunz). 6-voice, dual osc + sub, 12 multimode filters, 2 LFOs, spline mod-envelope, chorus + reverb + delay. 256 factory presets.",
       "author": "Patrick Kunz / TAL (engine) · port: legsmechanical",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "polyphonic"
+      ],
       "github_repo": "legsmechanical/schwung-noisemaker",
       "default_branch": "master",
       "asset_name": "noisemaker-module.tar.gz",
@@ -1389,6 +1772,7 @@
       "description": "Twenty-six Tonverk-inspired machines in two insert slots — twenty-one effects and five sample sources — with three FX LFOs, a modulation envelope and MIDI CC/NRPN",
       "author": "timncox",
       "component_type": "audio_fx",
+      "subcategory": "multi-fx",
       "github_repo": "timncox/schwung-work",
       "default_branch": "main",
       "asset_name": "work-module.tar.gz",
@@ -1400,6 +1784,10 @@
       "description": "The same twenty-six machines on the live input — mic, line or USB-C — with feedback protection",
       "author": "timncox",
       "component_type": "sound_generator",
+      "subcategory": "streaming-live-input",
+      "tags": [
+        "needs-line-in"
+      ],
       "github_repo": "timncox/schwung-work-in",
       "default_branch": "main",
       "asset_name": "work-in-module.tar.gz",
@@ -1411,6 +1799,7 @@
       "description": "Full-surface Work: hold a step and turn a knob to parameter-lock it. Sample browser, 16-pattern bank, song mode, live recording and presets",
       "author": "timncox",
       "component_type": "overtake",
+      "subcategory": "sampler-looper",
       "github_repo": "timncox/schwung-overwork",
       "default_branch": "main",
       "asset_name": "overwork-module.tar.gz",
@@ -1422,6 +1811,7 @@
       "description": "Overwork fed by what the Move is playing instead of the jack: granulate the mix live, sample it with the Sample button, play it back from the samplers, sequence all of it. End-of-chain placement; Shift + volume is its master",
       "author": "timncox",
       "component_type": "overtake",
+      "subcategory": "sampler-looper",
       "github_repo": "timncox/schwung-overwork-mix",
       "default_branch": "main",
       "asset_name": "overwork-mix-module.tar.gz",
@@ -1433,6 +1823,10 @@
       "description": "Library of standard drum patterns from editable .beat files — pick a pattern, it prints one bar into Move.",
       "author": "Mission Minnow",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "drums"
+      ],
       "github_repo": "mission-minnow/beatbank",
       "default_branch": "main",
       "asset_name": "beatbank-module.tar.gz",
@@ -1444,6 +1838,10 @@
       "description": "Retrigger the chord you hold on a library of standard rhythm templates — genre-first grooves, played by your hands.",
       "author": "Mission Minnow",
       "component_type": "midi_fx",
+      "subcategory": "chord-harmony",
+      "tags": [
+        "chord"
+      ],
       "github_repo": "mission-minnow/groovebank",
       "default_branch": "main",
       "asset_name": "groovebank-module.tar.gz",
@@ -1455,6 +1853,12 @@
       "description": "Chip-level emulation of an 80s Micro Rack digital reverb: rooms, halls, plates, multi-tap delay, reverse and gate",
       "author": "Sergey V. Mikayev (MUNT gate-array emulation) · giulioz (ROM research) · port: legsmechanical",
       "component_type": "audio_fx",
+      "subcategory": "reverb",
+      "tags": [
+        "lo-fi",
+        "needs-assets",
+        "vintage-emulation"
+      ],
       "github_repo": "legsmechanical/schwung-rrverb10",
       "default_branch": "main",
       "asset_name": "rrverb10-module.tar.gz",
@@ -1467,6 +1871,11 @@
       "description": "TR-909 style drum machine. Circuit-modelled kick (sub/tube/drift), snare, toms, rim and clap; sampled hats and cymbals. Per-voice and master drive/distortion, RD-9 style pad editor, remote web panel, Movy template.",
       "author": "athousanddetails",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "vintage-emulation"
+      ],
       "github_repo": "athousanddetails/schwung-9W9",
       "default_branch": "main",
       "asset_name": "9w9-module.tar.gz",
@@ -1478,6 +1887,11 @@
       "description": "TR-606 style drum machine. Every voice synthesized, no samples: kick, snare, low and hi tom, closed and open hat, cymbal, plus a clap. Fitted against recordings of a hardware 606 — the cymbal and the hi-hat metal bank are measured partial tables, and the default pot positions are the machine. Switchable hat choke (off / closed cuts open / mutual), per-voice and master drive/distortion, pad editor, remote web panel that follows the pad you hit, Movy template.",
       "author": "athousanddetails; voices after 606-Inspired-Synth-Drums (Matthew Fecher / AudioKit Pro)",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "vintage-emulation"
+      ],
       "github_repo": "athousanddetails/schwung-6W6",
       "default_branch": "main",
       "asset_name": "6w6-module.tar.gz",
@@ -1489,6 +1903,11 @@
       "description": "2-osc wavetable synth. Position morphing, bend, formant shift and 4-voice unison; sub and noise; multimode filter with its own ADSR. Four envelopes: amp, filter, and two spare ones you can point at wavetable position, level, tune, bend, formant, pan, cutoff, resonance, sub, noise or amp with a bipolar amount. 8 voices poly or mono with glide. 115 seeded wavetables and Serum/Vital/Ableton tables of any frame size via Move Manager. Web panel with a live display of the loaded wavetable.",
       "author": "athousanddetails; after Wavetable by Roland Rabien (FigBug)",
       "component_type": "sound_generator",
+      "subcategory": "wavetable",
+      "tags": [
+        "polyphonic",
+        "wavetable"
+      ],
       "github_repo": "athousanddetails/schwung-tablor",
       "default_branch": "main",
       "asset_name": "tablor-module.tar.gz",
@@ -1500,6 +1919,11 @@
       "description": "Scale-aware chord progression finder with 16 ranked chord choices, root-driven revoicing, a piano-note display, and eight-slot MIDI loop capture.",
       "author": "lukeco11",
       "component_type": "tool",
+      "subcategory": "tuner-analysis",
+      "tags": [
+        "chord",
+        "needs-assets"
+      ],
       "github_repo": "lukeco11/chord-finder-for-move",
       "default_branch": "main",
       "asset_name": "chord-finder-module.tar.gz",
@@ -1512,6 +1936,7 @@
       "description": "Live keyframe time stretcher with transient re-anchoring, by Heavylight Industries",
       "author": "Heavylight Industries (port: charlesvestal)",
       "component_type": "audio_fx",
+      "subcategory": "granular-spectral",
       "github_repo": "charlesvestal/schwung-capicola",
       "default_branch": "main",
       "asset_name": "capicola-module.tar.gz",
@@ -1523,6 +1948,10 @@
       "description": "British console EQ for the master bus: four calibrated bands, stepped high- and low-pass filters, and the Brown and Black circuit revisions with their own control laws and band interactions. About 6.6% of one core at the 2x default.",
       "author": "4K EQ 2 by Dusk Audio (GPL-3.0) · port: athousanddetails",
       "component_type": "audio_fx",
+      "subcategory": "filter-eq",
+      "tags": [
+        "vintage-emulation"
+      ],
       "github_repo": "athousanddetails/schwung-4keq",
       "default_branch": "main",
       "asset_name": "4k-eq-module.tar.gz",
@@ -1534,6 +1963,7 @@
       "description": "A Song Builder, Performance, and Jam module that turns a library of (GM drum) MIDI clips into arranged songs you can compose, rehearse, and perform live",
       "author": "chaolue",
       "component_type": "overtake",
+      "subcategory": "sequencer",
       "github_repo": "chaolue/schwung-arranger",
       "default_branch": "master",
       "asset_name": "arranger-module.tar.gz",
@@ -1545,6 +1975,11 @@
       "description": "TR-808 style drum machine. Sixteen voices, all synthesized, no samples — fifteen are circuit models built from the service notes and the published analyses, and the rim shot is a transcription of sc808, kept because two circuit builds lost to it by ear. Decay is loop gain on the kick and the toms rather than an envelope, one free-running metal bank feeds the hats, cymbal and cowbell as the hardware wires it, and velocity reaches most voices as a trigger voltage rather than a gain. Seven distortion characters per voice and on the master, bit-exactly bypassed at zero; reverb and delay sends on every voice but the kick; one-knob bus compressor; pad editor, remote web panel, Movy template.",
       "author": "athousanddetails; circuit models from the TR-808 service notes and Werner/Abel/Smith; rim shot transcribed from sc808 (Yoshinosuke Horiuchi / Sam Aaron, Sonic Pi)",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "vintage-emulation"
+      ],
       "github_repo": "athousanddetails/schwung-8W8",
       "default_branch": "main",
       "asset_name": "8w8-module.tar.gz",
@@ -1556,6 +1991,11 @@
       "description": "Roland CR-78 style drum machine. Fourteen voices, all synthesized, no samples — every one a circuit model built from the 1979 service notes and held to Roland's own factory alignment table. The machine's 34 preset rhythms ship with it, transcribed from the same document, transport-synced with the A/B variation lever live on all seventeen style buttons. Decay is loop gain on the kick, bongos, conga and snare shell rather than an envelope; one noise source feeds the hats, maracas, tambourine and the snare's snap as the hardware busses it. Seven distortion characters per voice and on the master, bit-exactly bypassed at zero; reverb and delay sends on every voice but the kick; one-knob bus compressor; CR-78-style remote web panel with the hardware's own rhythm buttons, Movy template.",
       "author": "athousanddetails; every voice modelled from the Roland CR-78 service notes (June 1979), VG-11A voicing board",
       "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "drums",
+        "vintage-emulation"
+      ],
       "github_repo": "athousanddetails/schwung-cw-78",
       "default_branch": "main",
       "asset_name": "cw78-module.tar.gz",
@@ -1567,6 +2007,10 @@
       "description": "One live input sent by hand into four tape memories, each one already forgetting itself — drifting out of tune, breaking up, until it's gone",
       "author": "kliegsablaze",
       "component_type": "audio_fx",
+      "subcategory": "looper-sampler-fx",
+      "tags": [
+        "tape"
+      ],
       "github_repo": "kliegsablaze/forgetful",
       "default_branch": "main",
       "asset_name": "forgetful-module.tar.gz",
@@ -1578,6 +2022,7 @@
       "description": "Six loops recorded from the input, each keeping its own tempo, sliding out of alignment and back over minutes — tape phasing on eight knobs",
       "author": "kliegsablaze",
       "component_type": "audio_fx",
+      "subcategory": "looper-sampler-fx",
       "github_repo": "kliegsablaze/wayward",
       "default_branch": "main",
       "asset_name": "wayward-module.tar.gz",
@@ -1589,6 +2034,10 @@
       "description": "Dual generative sequencer (Moog Labyrinth style) with pad + step-button control. Overtake tool.",
       "author": "sd88me",
       "component_type": "tool",
+      "subcategory": "sequencer",
+      "tags": [
+        "generative"
+      ],
       "github_repo": "sd88me/schwung-maze",
       "default_branch": "main",
       "asset_name": "maze_seq-module.tar.gz",
@@ -1600,6 +2049,10 @@
       "description": "Dual generative clock-synced sequencer (Moog Labyrinth style). Slot MIDI FX.",
       "author": "sd88me",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "generative"
+      ],
       "github_repo": "sd88me/schwung-maze",
       "default_branch": "main",
       "asset_name": "maze_seq_lite-module.tar.gz",
@@ -1611,6 +2064,10 @@
       "description": "Monophonic Moog Labyrinth-style thru-zero oscillator / wavefolder / state-variable filter voice. Chainable sound generator.",
       "author": "sd88me",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "mono"
+      ],
       "github_repo": "sd88me/schwung-maze",
       "default_branch": "main",
       "asset_name": "maze-voice-module.tar.gz",
@@ -1622,6 +2079,12 @@
       "description": "Roland JP-8000 SuperSaw emulator (Gearmulator JE-8086) with patch and performance banks",
       "author": "dsp56300/gearmulator (port: charlesvestal)",
       "component_type": "sound_generator",
+      "subcategory": "virtual-analog",
+      "tags": [
+        "needs-assets",
+        "polyphonic",
+        "vintage-emulation"
+      ],
       "github_repo": "charlesvestal/schwung-je8086",
       "default_branch": "main",
       "asset_name": "jp8000-module.tar.gz",
@@ -1634,6 +2097,10 @@
       "description": "Two-operator FM on eight knobs, one page: ratio, brightness, bite, one envelope pair, noise and a tone sweep. 32 presets",
       "author": "charlesvestal",
       "component_type": "sound_generator",
+      "subcategory": "fm",
+      "tags": [
+        "fm"
+      ],
       "github_repo": "charlesvestal/schwung-hank",
       "default_branch": "main",
       "asset_name": "hank-module.tar.gz",
@@ -1645,6 +2112,10 @@
       "description": "Animated gravity MIDI sequencer where played notes become tiny walkers and retrigger as they land and bounce across platforms",
       "author": "mestela",
       "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": [
+        "generative"
+      ],
       "github_repo": "mestela/schwung-pixel-walkers",
       "default_branch": "main",
       "asset_name": "pixel-walkers-module.tar.gz",
@@ -1656,6 +2127,11 @@
       "description": "Monophonic formant (FOF) vocal synthesizer with twelve singing characters - an homage to Delay Lama. Pad pressure sweeps the vowel.",
       "author": "Jonathan Taylor (DSP), Charles Vestal (port)",
       "component_type": "sound_generator",
+      "subcategory": "physical-modeling",
+      "tags": [
+        "mono",
+        "vocal"
+      ],
       "github_repo": "charlesvestal/schwung-monksynth",
       "default_branch": "main",
       "asset_name": "monksynth-module.tar.gz",
