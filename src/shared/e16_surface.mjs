@@ -39,8 +39,32 @@ export const PROBE_MS = 2000;
  * silence before deciding it is gone.  The grace is deliberately longer than
  * one keepalive period: a single dropped ACK must not blank a working surface,
  * and the send path is lossy on purpose (a full buffer returns false). */
-export const KEEPALIVE_MS = 10000;
-export const LOSS_MS = 25000;
+/*
+ * THE KEEPALIVE IS ALSO THE ABSENCE DETECTOR, and it has to be fast enough to
+ * SEE a replug.
+ *
+ * These were 10 s and 25 s. Nothing draws on `present`, so a slow expiry looked
+ * free -- and it was not, because the presence EDGE is what repaints a device
+ * that has come back. Unplug the cable and plug it in again inside 25 s and
+ * `now - lastAck` never crosses the threshold: `present` stays true the whole
+ * time, no edge occurs, and the surface believes it has already painted a
+ * device whose screen and rings were wiped by losing power. The next keepalive
+ * ENTER puts it back INTO remote mode, which is why the symptom is so
+ * misleading -- measured on hardware 2026-09-10 as "it did go back into remote
+ * mode" and "replug didnt recover".
+ *
+ * A gap test cannot help: a replug that lands between two keepalives produces a
+ * perfectly ordinary 10 s gap. The only fix is to probe fast enough that an
+ * absence must miss one. ENTER is NINE BYTES, so 2 s costs nothing on a wire
+ * whose expensive message is 1171.
+ *
+ * LOSS_MS is three keepalives, not one: a single dropped ACK -- the send path
+ * returns false when the buffer is full, on purpose -- must not expire a
+ * working surface. And a spurious expiry is the SAFE direction, costing one
+ * extra framebuffer and never a blank screen.
+ */
+export const KEEPALIVE_MS = 2000;
+export const LOSS_MS = 6000;
 
 /**
  * The seek / hold / release machine.

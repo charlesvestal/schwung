@@ -44,6 +44,42 @@ changed.slots[0].fx[1] = "gate";
 eq("signature moves on shape change",
    shapeSignature(changed) !== shapeSignature(chain), true);
 
+
+/* ---------------------------------------------------------------------------
+ * THE FIELD SHAPE: four slots, each one bare synth, no FX at all.
+ *
+ * Reported from hardware 2026-09-10 as "9w9 listed in slot 9", which would be
+ * a component sitting in the slot row -- the one thing the top/bottom split
+ * exists to prevent. It was not: the frame was truncated by a carry overflow
+ * and the map was correct. Pinned anyway, against the ACTUAL device chain
+ * rather than a synthetic one, because the claim was specific and the next
+ * person to read that report deserves the answer rather than the anecdote.
+ *
+ * The invariant is the load-bearing half: cells 0-3 are ALWAYS slots and a
+ * component is ALWAYS at 4 or beyond, whatever the chain holds.
+ * ------------------------------------------------------------------------- */
+{
+  const LIVE = { slots: [
+    { synth: "9w9" }, { synth: "hank" }, { synth: "hank" }, { synth: "bouba-kiki" },
+  ]};
+  for (let sel = 0; sel < 4; sel++) {
+    const m = buildMap(LIVE, { slot: sel });
+    for (let i = 0; i < 4; i++) {
+      eq("live slot " + sel + ": cell " + i + " is a slot",
+         m.cells[i] && m.cells[i].kind, "slot");
+    }
+    eq("live slot " + sel + ": synth is at cell 4 (encoder 5), never the slot row",
+       m.cells[4] && m.cells[4].component, "synth");
+    eq("live slot " + sel + ": and it names the module",
+       m.cells[4] && m.cells[4].label, LIVE.slots[sel].synth);
+    for (let i = 5; i < 16; i++) {
+      eq("live slot " + sel + ": cell " + i + " is empty", m.cells[i], null);
+    }
+    eq("live slot " + sel + ": the selected slot is the current one",
+       m.cells[sel].current, true);
+  }
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '

@@ -41,7 +41,8 @@ fi
 # the real line.
 node --input-type=module -e '
 const R = process.cwd();
-const { createSurface } = await import(R + "/src/shared/e16_surface.mjs");
+const { createSurface, KEEPALIVE_MS, LOSS_MS } =
+  await import(R + "/src/shared/e16_surface.mjs");
 const { createController } = await import(R + "/src/shared/param_pages/page_controller.mjs");
 
 let fails = 0;
@@ -373,7 +374,12 @@ function rig(opts) {
    * meet is a budget asserted about nothing. */
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift -> map: a repaint is owed */
   const b = r.send.log.length;
-  r.ticks(1, 11000);                        /* past KEEPALIVE_MS */
+  /* Past the keepalive but INSIDE the loss window, both read from the module.
+   * This was a hard-coded 11000, chosen when the keepalive was 10 s; when the
+   * constants were retuned so a replug expires presence (2 s / 6 s), that jump
+   * silently became an ABSENCE and the test was measuring the seek path
+   * instead of the collision it names. Deriving it keeps the two in step. */
+  r.ticks(1, KEEPALIVE_MS + 100);
   eq("a keepalive tick sends the keepalive ALONE", r.send.log.length - b, 1);
   eq("and it is the ENTER", msgId(r.send.log[b]), ENTER);
   r.ticks(1);
