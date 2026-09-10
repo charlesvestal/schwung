@@ -477,7 +477,7 @@ export function applyClick(view, ctl, enc) {
  */
 export function drawTestPattern(ctx, which) {
     ctx.clear();
-    const n = (which | 0) % 5;
+    const n = (which | 0) % 6;
     if (n === 0) ctx.fillRect(0, 0, 128, 1, 1);
     else if (n === 1) ctx.fillRect(0, 0, 1, 64, 1);
     else if (n === 2) ctx.fillRect(0, 0, 128, 8, 1);
@@ -491,5 +491,17 @@ export function drawTestPattern(ctx, which) {
      * is our content; if it does not, the device is truncating and no amount
      * of drawing will fix it.
      */
-    else ctx.fillRect(0, 56, 128, 8, 1);
+    else if (n === 4) ctx.fillRect(0, 56, 128, 8, 1);
+    /*
+     * 5 lights EVERY pixel the buffer can address.
+     *
+     * Content was observed SURVIVING an off/on cycle, which a full frame of
+     * zeros cannot allow: either the device ORs rather than replaces, or our
+     * 1024 bytes do not span the whole panel. Filling everything separates
+     * them by inspection -- if the entire screen goes white, we address all of
+     * it and the persistence is a clear/replace question; if only part does,
+     * that part IS what 1024 bytes covers and the rest is a geometry we have
+     * not accounted for.
+     */
+    else ctx.fillRect(0, 0, 128, 64, 1);
 }

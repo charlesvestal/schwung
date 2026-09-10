@@ -723,7 +723,7 @@ export function createNav(opts) {
  */
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
-import { buildView, renderView, ringFor, applyTurn, applyClick } from "./e16_view.mjs";
+import { buildView, renderView, ringFor, ringsFor, applyTurn, applyClick } from "./e16_view.mjs";
 
 /**
  * @param {object} io
@@ -838,7 +838,28 @@ export function createSurface(io) {
     function syncPresence() {
         if (lifecycle.present === wasPresent) return;
         wasPresent = lifecycle.present;
-        if (wasPresent) display.invalidate();
+        if (!wasPresent) return;
+        display.invalidate();
+        /*
+         * THE RINGS COME BACK TOO, and they are a SEPARATE resend.
+         *
+         * A ring is only ever sent when one CHANGES, which is right in use --
+         * one chunk per detent instead of a repaint -- and wrong at exactly
+         * this edge: a device that has just come back has sixteen dark rings
+         * and no change has occurred, so the panel recovered its screen and
+         * kept its values invisible until a knob was turned. Measured on
+         * hardware 2026-09-10 by unplugging the cable: remote mode returned,
+         * the screen returned, the rings did not.
+         *
+         * Restating them all here rather than tracking what the device has is
+         * the same call the shim's pad_block flag makes: the E16 forgets
+         * unilaterally and never says so, so a mirror of its LED state latches
+         * and is wrong exactly when it matters. The queue coalesces per
+         * encoder and all sixteen ride in one 113-byte message, so a full
+         * restate costs one send.
+         */
+        if (!ensureController()) return;
+        for (const desc of ringsFor(viewNow())) display.ringChanged(desc);
     }
 
     return {

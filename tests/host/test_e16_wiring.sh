@@ -392,6 +392,52 @@ function rig(opts) {
      "a device that comes back is repainted, with no other gesture");
 }
 
+/* ===========================================================================
+ * RULE 7 -- A REPLUG RESTORES THE RINGS, NOT ONLY THE SCREEN.
+ *
+ * Unplug the cable and the device forgets everything: remote mode, the screen,
+ * and all sixteen LED rings. The lifecycle re-enters and the presence edge
+ * repaints -- that half worked. The rings did not, and could not: a ring is
+ * only ever put on the wire when one CHANGES, which is exactly right in use
+ * (one 113-byte chunk per detent instead of a 1171-byte repaint) and leaves
+ * nothing owed at this edge, because no value moved while the cable was out.
+ *
+ * The symptom is a surface that looks recovered -- correct page, correct
+ * labels -- with every value invisible until a knob is touched. Measured on
+ * hardware 2026-09-10: "it did not fully recover, it did go back into remote
+ * mode".
+ *
+ * Driven through presence EXPIRY rather than by calling a seam, so the test
+ * exercises the same path the cable does.
+ * ========================================================================= */
+{
+  const r = rig();
+  r.surface.setEnabled(true);
+  r.ticks(1);
+  r.ack();
+  /* Settle: the entry repaint and anything it owes go out. */
+  r.ticks(60);
+  const settled = r.send.log.length;
+  ok(r.surface.present, "replug: present after the ACK");
+
+  /* The cable comes out. Nothing acks, so presence expires after LOSS_MS. */
+  r.ticks(40, 1000);
+  ok(!r.surface.present, "replug: presence expires with no ACK");
+
+  /* Back in: the device acks the next probe. */
+  const before = r.send.log.length;
+  r.ack();
+  r.ticks(40);
+  ok(r.surface.present, "replug: present again after the ACK");
+
+  const after = r.send.log.slice(before).map(msgId).map(j);
+  ok(after.includes(j(FRAMEBUFFER)), "replug: the screen is repainted");
+  ok(after.includes(j(RING)),
+     "replug: the rings are restated -- without this the panel recovers its "
+     + "screen and shows no values until a knob is turned");
+  ok(r.send.log.length > settled, "replug: recovery actually sent something");
+}
+
 if (fails) { console.log("FAILED " + fails); process.exit(1); }
 console.log("PASS: the surface runs end to end");
 '
