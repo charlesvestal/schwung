@@ -446,8 +446,35 @@ static sweep_t spectral_change(mod_t *src, mod_t *fx, const char *key,
  * exactly as a slot runs it: an FX rendered ALONE processes a silent buffer
  * and would publish 30 s of nothing. `fx` may be NULL for a plain synth.
  */
+/*
+ * A knob moving while the score plays.
+ *
+ * WHERE it moves matters. The sweep runs over the CHORD section, because that
+ * is the only stretch of the score with a sustained tone to hear it on -- a
+ * filter opening under an arpeggio is heard as the arpeggio changing, not as
+ * the filter. The arp and melody keep the patch's static character, so a
+ * preview shows both.
+ *
+ * It goes lo -> hi -> lo so the clip ends where it started and the module is
+ * not left mis-set for whatever renders next.
+ */
+typedef struct {
+    const char *key;
+    double lo, hi, t0, t1;
+    int active;
+} sweep_plan_t;
+
+static void apply_sweep(mod_t *m, const sweep_plan_t *sw, double t) {
+    if (!sw->active || t < sw->t0 || t > sw->t1) return;
+    double u = (t - sw->t0) / (sw->t1 - sw->t0);      /* 0..1 across the window */
+    double tri = u < 0.5 ? u * 2 : (1 - u) * 2;       /* up then back down */
+    char buf[64];
+    snprintf(buf, sizeof buf, "%g", sw->lo + (sw->hi - sw->lo) * tri);
+    mod_set(m, sw->key, buf);
+}
+
 static void render_chain(mod_t *src, mod_t *fx, const score_t *s, int shift,
-                         double stretch, int16_t *pcm) {
+                         double stretch, const sweep_plan_t *sw, int16_t *pcm) {
     memset(pcm, 0, (size_t)s->frames * 4);
     int e = 0;
     for (int o = 0; o + BLK <= s->frames; o += BLK) {
@@ -464,8 +491,14 @@ static void render_chain(mod_t *src, mod_t *fx, const score_t *s, int shift,
             }
             e++;
         }
+        if (sw && sw->active) apply_sweep(fx ? fx : src, sw, o / (double)SR);
         mod_render(src, pcm + (size_t)o * 2, BLK);
         if (fx) mod_render(fx, pcm + (size_t)o * 2, BLK);
+    }
+    /* Leave it where it was found. */
+    if (sw && sw->active) {
+        char buf[64]; snprintf(buf, sizeof buf, "%g", sw->lo);
+        mod_set(fx ? fx : src, sw->key, buf);
     }
 }
 
@@ -492,13 +525,16 @@ static void usage(void) {
       "  --adaptive-density  spread the phrase to suit the preset's measured release.\n"
       "  --octave-fit  shift the score by whole octaves so the patch lands in\n"
       "                register, and REVERT if the shift does not verify.\n"
-      "  --set k=v     applied after the preset, before rendering.\n", stderr);
+      "  --set k=v     applied after the preset, before rendering.\n"
+      "  --sweep key:lo:hi[:t0:t1]  move a knob while the score plays; defaults to\n"
+      "                the chord section, the only part with a sustained tone.\n", stderr);
 }
 
 int main(int argc, char **argv) {
     const char *dir = NULL, *so = NULL, *score_path = NULL, *out = NULL, *id = "module";
     int want_contract = 0, want_render = 0, npresets = 1, fit = 0, adapt = 0, want_sweepscan = 0;
     const char *sweeps[64]; int nsweeps = 0;
+    const char *sweep_spec = NULL;
     const char *sets[32]; int nsets = 0;
     const char *src_dir = NULL, *src_so = NULL;
 
@@ -514,6 +550,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--adaptive-density")) adapt = 1;
         else if (!strcmp(argv[i], "--sweep-scan") && i + 1 < argc) { want_sweepscan = 1; dir = argv[++i]; }
         else if (!strcmp(argv[i], "--try") && i + 1 < argc && nsweeps < 64) sweeps[nsweeps++] = argv[++i];
+        else if (!strcmp(argv[i], "--sweep") && i + 1 < argc) sweep_spec = argv[++i];
         else if (!strcmp(argv[i], "--source-dir") && i + 1 < argc) src_dir = argv[++i];
         else if (!strcmp(argv[i], "--source-so")  && i + 1 < argc) src_so  = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc && nsets < 32) sets[nsets++] = argv[++i];
@@ -599,6 +636,23 @@ int main(int argc, char **argv) {
     fprintf(stderr, "probe: %s\n", has_presets ? "stepping the module's own preset bank"
                                                : "no preset bank declared -- one render");
 
+    /* --sweep key:lo:hi[:t0:t1] -- defaults to the chord section of the demo
+     * score, which is the part with a sustained tone. */
+    sweep_plan_t sweep = { NULL, 0, 0, 8.4, 16.8, 0 };
+    if (sweep_spec) {
+        static char sb[256];
+        snprintf(sb, sizeof sb, "%s", sweep_spec);
+        char *f[5] = { sb, NULL, NULL, NULL, NULL };
+        int nf = 1;
+        for (char *q = sb; *q && nf < 5; q++) if (*q == ':') { *q = 0; f[nf++] = q + 1; }
+        if (nf >= 3) {
+            sweep.key = f[0]; sweep.lo = atof(f[1]); sweep.hi = atof(f[2]);
+            if (nf >= 5) { sweep.t0 = atof(f[3]); sweep.t1 = atof(f[4]); }
+            sweep.active = 1;
+            fprintf(stderr, "probe: sweeping %s %g..%g over %.1f-%.1fs\n",
+                    sweep.key, sweep.lo, sweep.hi, sweep.t0, sweep.t1);
+        }
+    }
     int16_t *pcm     = calloc((size_t)s.frames * 2, sizeof(int16_t));
     int16_t *scratch = calloc((size_t)SR * SCRATCH_SECONDS * 2, sizeof(int16_t));
 
@@ -636,7 +690,7 @@ int main(int argc, char **argv) {
             if (stretch > 4.0) stretch = 4.0;
             snprintf(density, sizeof density, "release %.2fs -> spacing x%.2f", rel, stretch);
         }
-        render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, stretch, pcm);
+        render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, stretch, &sweep, pcm);
         double db = rms_dbfs(pcm, (long)s.frames * 2);
 
         char path[1024];
