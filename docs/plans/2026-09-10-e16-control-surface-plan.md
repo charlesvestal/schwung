@@ -1212,3 +1212,27 @@ general lesson is the transport one: **outbound SysEx loss on USB-A is a
 function of RATE, not of message size** — #358's outbound twin — and fixing it
 in the carry rather than inside this feature is what makes it available to every
 module that sends SysEx.
+
+## Task 12 status, 2026-09-10
+
+Four of five criteria verified on hardware; one is blocked on a physical action
+and is left OPEN rather than inferred.
+
+| criterion | state |
+|---|---|
+| framebuffer displays correctly | VERIFIED on hardware |
+| encoder turn moves the mapped parameter | VERIFIED on hardware |
+| rings render, bipolar centred | VERIFIED — rings on hardware; the bipolar rule is pinned in `test_e16_view.sh` (negative min ⇒ `bipolar: true`, a symmetric range's zero ⇒ amount at ring centre). That is the whole of Schwung's half; the centre-anchored drawing is the E16 firmware acting on the flag. |
+| Shift map navigation | VERIFIED on hardware — and the "9w9 in slot 9" report was the truncated frame, not a mapping fault: rendered against the device's real chain, 9w9 is at cell 4 (encoder 5). Pinned in `test_e16_map.sh` against that chain. |
+| replug recovery | **OPEN.** Two fixes shipped and confirmed byte-identical on the device; not retested. |
+
+**The replug fix has been wrong once already, so do not assume it.** The first
+attempt (restate the rings on the presence edge) was correct in itself and
+could not work, because the edge never fired: `LOSS_MS` 25 s against a 10 s
+keepalive means a cable out and back inside 25 s never expires `present`, while
+the next keepalive ENTER puts the device back into remote mode. That is the
+whole of the misleading symptom — it re-enters and does not recover. The second
+fix retunes to 2 s / 6 s so an absence must miss a probe.
+
+Both are deployed. Neither is verified. The next session should pull the cable,
+wait ~8 s, plug it back in, and expect screen and rings within a few seconds.
