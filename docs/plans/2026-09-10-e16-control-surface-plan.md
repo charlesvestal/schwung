@@ -1163,3 +1163,20 @@ Three rules were found by writing the assembly and are enforced there:
 
 **Task 12 (hardware verification) is still open**; nothing here has been on a
 device.
+
+## The CC claim, resolved
+
+The shim now claims only the surface's OWN messages -- CC 1-16, notes 0-16, all
+on channel 1 -- via `e16_claims_msg()` in `src/host/e16_claim.h`, rather than
+consuming the whole cable whenever the setting is on. Consuming the cable was
+too broad in a way no test would have caught: it silences the CC Map for any
+other device sharing cable 2 for as long as the surface is switched on, which is
+one feature's setting breaking a different feature with nothing on screen to
+explain it.
+
+That also resolves the "Known gap" above. The chain-side check in
+`chain_midi.c` reads a static that is always 0, and it is now REDUNDANT rather
+than broken: a claimed message never reaches the chain, because the shim
+consumes it first. The shim is the enforcement point the gap note preferred --
+it already reads the flag, and ownership belongs where the message is routed.
+Removing the chain-side remnant is tidy-up, not a fix.

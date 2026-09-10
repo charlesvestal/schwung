@@ -54,10 +54,36 @@
  * anyone not using the surface — the CC Map behaves exactly as it did before
  * this header existed.
  */
+/* Shift is note 16; the encoder buttons are notes 0-15. */
+#define E16_SHIFT_NOTE 16
+
 static inline int e16_claims_cc(int surface_active, int channel, int cc) {
     if (!surface_active) return 0;
     if (channel != E16_CLAIMED_CHANNEL) return 0;
     return cc >= E16_CLAIMED_CC_LOW && cc <= E16_CLAIMED_CC_HIGH;
+}
+
+
+/* The whole of what the surface owns on the wire, not just its CCs.
+ *
+ * Remote mode emits exactly three things: encoder turns as CC 1-16, encoder
+ * buttons as notes 0-15, and Shift as note 16 -- all on channel 1. Consuming
+ * the entire cable instead was the first implementation, and it is too broad:
+ * it silences the CC Map for any OTHER device sharing cable 2 for as long as
+ * the surface is switched on, which is a setting in one feature breaking a
+ * different one with nothing to explain it.
+ *
+ * Narrowing here is also what makes the chain-side check redundant: a claimed
+ * message never reaches the chain, because the shim consumes it first.
+ */
+static inline int e16_claims_msg(int surface_active, int status, int d1) {
+    const int type = status & 0xF0;
+    const int channel = status & 0x0F;
+    if (!surface_active) return 0;
+    if (channel != E16_CLAIMED_CHANNEL) return 0;
+    if (type == 0xB0) return e16_claims_cc(surface_active, channel, d1);
+    if (type == 0x90 || type == 0x80) return d1 >= 0 && d1 <= E16_SHIFT_NOTE;
+    return 0;
 }
 
 #endif /* E16_CLAIM_H */
