@@ -80,6 +80,31 @@ _Static_assert(UI_MIDI_CARRY_BYTES == SHADOW_MIDI_OUT_BUFFER_SIZE,
 /* Stop accepting new work from the SHM buffer while the carry is at least this
  * full. See ui_midi_carry_wants_more() for why this is backpressure and not
  * just a threshold. */
+/*
+ * Packets placed into MIDI_OUT per SPI frame.
+ *
+ * The mailbox holds 20 and the carry used to fill every free slot, so a long
+ * SysEx went out at ~6900 packets/s. Measured on an OXI E16 over USB-A
+ * 2026-09-10: a 394-packet framebuffer arrived with most of its middle
+ * missing -- a full-width bar drawn at the bottom rendered as a fragment
+ * partway up the screen, because every lost packet shifts what follows
+ * earlier. Handing the same frame over at 6 packets per frame put the bar
+ * exactly where it was drawn.
+ *
+ * The loss is RATE dependent, not size dependent, which is the same shape as
+ * the inbound losses in #358: docs/SYSEX.md measures 31 packets sent alone
+ * arriving byte-perfect and 34 amid other traffic losing 8. So the fix belongs
+ * HERE, in the transport, not in any one producer -- every module sending a
+ * bulk dump hits the same wall, and a rate chosen per-caller would be a rate
+ * nobody else benefits from.
+ *
+ * 3 x 344 Hz is ~1000 packets/s, still a third above DIN rate, and it costs
+ * nothing that is felt: a repaint follows a deliberate action, and the common
+ * case -- a knob turn -- is a single 7-byte message that goes out in one frame
+ * either way.
+ */
+#define UI_MIDI_CARRY_PACKETS_PER_FRAME 3
+
 #define UI_MIDI_CARRY_HIGH_WATER (UI_MIDI_CARRY_BYTES / 2)
 
 typedef struct {
@@ -161,6 +186,10 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
         slot += 4;
         read += 4;
         placed++;
+        /* Pace: see UI_MIDI_CARRY_PACKETS_PER_FRAME. The remainder stays in
+         * the carry and goes out on following frames, in order, exactly as it
+         * does when the region fills. */
+        if (placed >= UI_MIDI_CARRY_PACKETS_PER_FRAME) break;
     }
 
     if (read > 0) {
