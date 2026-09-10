@@ -9021,7 +9021,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 if (cin < 0x04 || cin > 0x0E) continue;
             } else {
                 if (cin < 0x08 || cin > 0x0E) continue;
-                if (cable != 0x00) continue;  /* Only internal cable 0 (Move hardware) */
+                /* Only internal cable 0 (Move hardware) -- unless an external
+                 * control surface is configured, which is the one case where
+                 * cable 2 has a consumer outside overtake mode. The flag is
+                 * the whole gate: with it clear this is the same single
+                 * comparison it always was, so a device with a keyboard on
+                 * USB-A sees no change in what reaches the shadow UI. */
+                if (cable != 0x00 &&
+                    !(cable == 0x02 && shadow_control->external_surface)) continue;
             }
             /* Cable 14 ("system") carries internal signaling — e.g. the power
              * button's CC, whose value on a long hold (0x3A = 58) happens to
@@ -9038,6 +9045,28 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             uint8_t type = status & 0xF0;
             uint8_t d1 = src[j + 2];
             uint8_t d2 = src[j + 3];
+
+            /* External control surface, outside overtake mode. Publish the
+             * whole cable-2 event -- CCs (the E16's encoders) and notes (its
+             * encoder buttons) alike -- and STOP here.
+             *
+             * Publishing with the raw head byte keeps cable 2 in its high
+             * nibble, which is what routes it to onMidiMessageExternal in
+             * shadow_ui.c rather than into Move's own control handlers.
+             *
+             * The `continue` is the load-bearing half. Everything below is
+             * written for Move's own surface: the CC branch tests d1 against
+             * jog/track/knob NUMBERS, the note branch broadcasts pad notes to
+             * every audio FX, and neither means anything for a device whose
+             * CC 1-16 are encoders. Falling through would route the surface
+             * into Move's gestures by numeric coincidence. Which is also why
+             * the flag is re-tested here rather than left implied by the cable
+             * filter above: if that filter is ever widened for some other
+             * reason, this branch must not silently swallow the cable. */
+            if (!overtake_mode && cable == 0x02 && shadow_control->external_surface) {
+                shadow_ui_midi_publish(src[j], status, d1, d2);
+                continue;
+            }
 
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP
@@ -9105,8 +9134,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * Move won't play it because sh_midi has the patched note-off. */
 
                 /* Queue cable 2 note-on messages (external LED commands like M8)
-                 * for rate-limited forwarding to prevent buffer overflow */
-                if (cable == 0x02 && type == 0x90) {
+                 * for rate-limited forwarding to prevent buffer overflow.
+                 *
+                 * NOT for a control surface. This queue COALESCES per note and
+                 * never publishes the event as input -- exactly what an M8's
+                 * LED stream wants and exactly wrong for an E16, whose encoder
+                 * buttons are note-ons. Ungated, every button press is dropped
+                 * with nothing logged, which is indistinguishable from the
+                 * device not sending them. So a configured surface takes the
+                 * ordinary publish below instead. */
+                if (cable == 0x02 && type == 0x90 &&
+                    !shadow_control->external_surface) {
                     shadow_queue_input_led(src[j], status, d1, d2);
                     continue;
                 }
