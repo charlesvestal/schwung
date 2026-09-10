@@ -1393,15 +1393,42 @@ Then return to the schwung worktree: `cd -`
 
 ---
 
+## Status: COMPLETE (2026-09-10)
+
+All four tasks landed. PRs: [schwung#486](https://github.com/charlesvestal/schwung/pull/486)
+(CI green: host-tests, go, cross-compile) and
+[schwung-catalog-site#4](https://github.com/charlesvestal/schwung-catalog-site/pull/4).
+
+Three things were added beyond the plan, each because looking at the running
+page showed something the code did not:
+
+- **The refinement rows are a drill-down, hidden under "All".** 34 chips over
+  four or five rows put the module list below the fold on the page whose whole
+  job is showing modules.
+- **Virtual Analog held 14** -- twice its neighbours -- and split into
+  Polysynth (8), Mono & Bass (4) and West Coast (2).
+- **Tags became a third chip row rather than a second idiom.** They had been a
+  text note beside the count while the other two axes were chip rows. A card's
+  pill is now a shortcut into that row and carries the same selected state.
+  With it came the rule that **a tag must not restate its own subcategory** --
+  39 of 133 did -- enforced by a subcategory's `implies` list rather than
+  tidied once.
+
+Two defects that only a rendered page could have caught, both recorded in the
+commits: `.filters` sets `display: flex`, which outranks the user agent's
+`[hidden] { display: none }`, so `row.hidden = true` set the property and
+painted the row anyway; and the manager's selected style was `.cat-btn.active`,
+so the subcategory chip had no selected state at all.
+
 ## Definition of done
 
-- [ ] `bash tests/host/test_taxonomy.sh` → `PASS: taxonomy`
-- [ ] `for t in tests/host/*.sh; do bash "$t" >/dev/null 2>&1 || echo "FAIL $t"; done` → no `FAIL` lines
+- [x] `bash tests/host/test_taxonomy.sh` → `PASS: taxonomy`
+- [x] `for t in tests/host/*.sh; do bash "$t" >/dev/null 2>&1 || echo "FAIL $t"; done` → no `FAIL` lines
 - [ ] `cd schwung-manager && go build ./... && go test ./...` → `ok`
-- [ ] `node tools/catalog/sync_taxonomy.mjs --check` → `taxonomy ok`
-- [ ] Catalog site loads, chips filter, console clean
-- [ ] PR opened against `main` in `schwung` (CI: `host-tests`, `go`, `cross-compile` all green — `main` is branch-protected and direct pushes are blocked)
-- [ ] Separate PR opened in `schwung-catalog-site`
+- [x] `node tools/catalog/sync_taxonomy.mjs --check` → `taxonomy ok`
+- [x] Catalog site loads, chips filter, console clean
+- [x] PR opened against `main` in `schwung` (CI: `host-tests`, `go`, `cross-compile` all green — `main` is branch-protected and direct pushes are blocked)
+- [x] Separate PR opened in `schwung-catalog-site`
 
 ## Not in this plan
 
