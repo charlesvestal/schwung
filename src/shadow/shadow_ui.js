@@ -135,8 +135,10 @@ import { knobInit, knobStep } from '/data/UserData/schwung/shared/knob_engine.mj
 import { parseSlotSnapshot, parseMasterFxSnapshot, planRestore, recallMessage }
     from '/data/UserData/schwung/shared/snapshot.mjs';
 import { drawSnapshotToast } from '/data/UserData/schwung/shared/snapshot_toast.mjs';
-import { createLifecycle as createE16Lifecycle, createSysexAssembler }
+import { createSurface as createE16Surface }
     from '/data/UserData/schwung/shared/e16_surface.mjs';
+import { createController as createPageController }
+    from '/data/UserData/schwung/shared/param_pages/page_controller.mjs';
 import {
     decideComponentEntry, holdProbeIntervalTicks,
     ENTRY_ENTER, ENTRY_HOLD, ENTRY_FAILED,
@@ -10377,22 +10379,37 @@ function loadSaveStems() {
  * remote mode without a word -- heals itself.
  */
 let externalSurfaceMode = 0;
-const e16Lifecycle = createE16Lifecycle();
-
-/* One assembler for the port, not one per feature: the packets arrive
- * interleaved with everything else on cable 2 and there is only one stream to
- * reassemble. See docs/SYSEX.md for the four rules it implements. */
-const e16Assembler = createSysexAssembler({
-    onMessage: (body) => { e16Lifecycle.onSysex(body, Date.now()); },
-});
 
 /* The outbound door. It returns FALSE when the buffer is full, which means
- * RETRY -- createLifecycle treats that as "not sent" and probes again on the
- * next tick rather than advancing its clock past a message the device never
- * saw. */
+ * RETRY -- the surface treats that as "not sent" and tries again on the next
+ * tick rather than advancing its clock past a message the device never saw. */
 function e16Send(packets) {
     if (typeof move_midi_external_send !== "function") return false;
     return move_midi_external_send(packets);
+}
+
+/*
+ * The chain, in the shape e16_map.buildMap wants: four slots of module NAMES.
+ *
+ * chainConfigs holds entries, not ids (`{module, params}` or null), and
+ * buildMap stringifies whatever it is given -- so handing it the raw config
+ * fills every map cell with "[object Object]". Read from the in-memory mirror
+ * rather than the DSP because the map is rebuilt on a held Shift, and a param
+ * round trip per position under a modifier is a screen that arrives after the
+ * finger has left it.
+ */
+function e16ChainShape() {
+    const idOf = (entry) => (entry && entry.module ? String(entry.module) : null);
+    const slotsOut = [];
+    for (let s = 0; s < 4; s++) {
+        const cfg = chainConfigs[s] || createEmptyChainConfig();
+        slotsOut.push({
+            midiFx: (cfg.midiFx || []).map(idOf),
+            synth: idOf(cfg.synth),
+            fx: (cfg.fx || []).map(idOf),
+        });
+    }
+    return { slots: slotsOut };
 }
 
 /*
@@ -10410,24 +10427,48 @@ function e16Send(packets) {
 let externalSurfaceFollow = 0;
 
 /*
- * The surface's navigator, once something constructs it.
+ * THE SURFACE. Lifecycle, navigator, view, display pacing and its own page
+ * controller, assembled in src/shared/e16_surface.mjs so the whole path is
+ * runnable in tests/host -- this file cannot be imported under node, and a
+ * component that only a grep can check is how the first eleven tasks of this
+ * feature shipped green with nothing wired together.
  *
- * NULL TODAY: the view from Tasks 8-9 is not built in this file yet, so this
- * is the seam rather than a live object -- declared here so the edge below is
- * a plain null check instead of a name that does not exist, and so there is
- * exactly one place to wire the surface up.
+ * Constructed unconditionally and INERT until the setting turns it on: its
+ * tick() returns after the lifecycle's two comparisons while disabled, so
+ * there is nothing to gate here and no second place where "is it on" is
+ * answered.
  */
-let e16Nav = null;
+const e16Surface = createE16Surface({
+    now: () => Date.now(),
+    send: e16Send,
+    chainOf: e16ChainShape,
+    followFocusOf: e16FollowFocus,
+    /*
+     * A FACTORY, and the surface gets a controller of its OWN.
+     *
+     * A page controller has ONE current page, and the surface's lower eight
+     * encoders drive page N+1 -- which it reaches by moving the controller
+     * before applying the turn. Sharing the grid's controller would therefore
+     * drag Move's screen to the next page on every lower-row knob: two small
+     * in-range page indices disagreeing, with nothing logged.
+     *
+     * `focus` is a LIVE view of the surface's slot/component, not a snapshot,
+     * because one controller outlives many jumps -- one closed over the slot it
+     * was born with would keep addressing that slot after the first jump.
+     */
+    makeController: (focus) => createPageController({
+        getParam: (key) => getSlotParam(focus.slot, key),
+        setParam: (key, value) => setSlotParam(focus.slot, key, value),
+    }),
+});
 
 function setExternalSurfaceFollow(v) {
     const mode = (parseInt(v, 10) || 0) ? 1 : 0;
     if (mode === externalSurfaceFollow) return;
     externalSurfaceFollow = mode;
     /* The surface parks its own focus on the OFF->ON edge and restores it on
-     * the way back, so it must see the EDGE, not poll the setting. Guarded
-     * because the view from Tasks 8-9 is not constructed in this file yet --
-     * `e16Nav` is the seam it will land on. */
-    if (e16Nav) e16Nav.setFollow(mode === 1, Date.now());
+     * the way back, so it must see the EDGE, not poll the setting. */
+    e16Surface.setFollow(mode === 1);
 }
 
 /*
@@ -10454,7 +10495,7 @@ function setExternalSurfaceMode(v) {
     /* EXIT is sent from here, once, or the device is left blank with the
      * feature switched off. An EXIT the buffer refuses is owed and drained by
      * externalSurfaceTick(). */
-    e16Lifecycle.setEnabled(mode === 1, Date.now(), e16Send);
+    e16Surface.setEnabled(mode === 1);
 }
 
 function saveExternalSurfaceConfig() {
@@ -10488,15 +10529,16 @@ function loadExternalSurfaceConfig() {
 /* Called every frame. Cheap by construction: while the surface is off and
  * nothing is owed, this is two comparisons. */
 function externalSurfaceTick() {
-    e16Lifecycle.tick(Date.now(), e16Send);
+    e16Surface.tick();
 }
 
 /* Cable-2 bytes, three at a time with the CIN already stripped. Fed
- * unconditionally: the assembler is what decides whether a run is ours, and a
- * gate here would mean a message that began before the setting was switched on
- * is spliced onto one that began after. */
+ * unconditionally: the surface's assembler is what decides whether a run is
+ * ours, and a gate here would mean a message that began before the setting was
+ * switched on is spliced onto one that began after. Everything downstream of
+ * the assembler is gated on the setting inside the surface. */
 function externalSurfaceMidi(data) {
-    e16Assembler.feed(data);
+    e16Surface.feedMidi(data);
 }
 
 let speakerEqMode = 0;                 /* 0 auto, 1 off, 2 on */

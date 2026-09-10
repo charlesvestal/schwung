@@ -301,7 +301,14 @@ process.exit(fails ? 1 : 0);
 # reported to the caller through onFocus; a nav that set a param itself would
 # pass every assertion above and still be the second value-application path
 # e16_view.mjs is explicitly written not to have.
-if grep -nE 'setParam|host_module_set_param|shadow_set_param' src/shared/e16_surface.mjs; then
+#
+# COMMENT LINES ARE EXCLUDED, and that is not a loosening. This file also holds
+# the assembly (createSurface), whose whole job is to describe the controller
+# the HOST must build -- so the words are unavoidable in its documentation, and
+# a pin that fires on prose would be silenced by deleting the prose, which is
+# the wrong repair. The rule is about code, so the grep is about code.
+if sed -e 's,//.*,,' -e '/^[[:space:]]*\*/d' src/shared/e16_surface.mjs \
+   | grep -nE 'setParam|host_module_set_param|shadow_set_param'; then
     echo "FAIL: e16_surface.mjs writes parameters itself -- navigation reports"
     echo "      focus to the caller, it does not apply values."
     exit 1

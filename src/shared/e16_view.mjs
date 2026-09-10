@@ -420,3 +420,25 @@ export function applyTurn(view, ctl, enc, ticks, nowMs) {
     for (let i = 0; i < n; i++) ctl.onKnobTurn(cell.slot, dir, nowMs, { fine: false });
     return { key: cell.key, enc, ticks: n * dir };
 }
+
+/**
+ * Route an encoder PUSH to the grid's own click path.
+ *
+ * Same page swap and the same reason as applyTurn -- `onClick(slot)` resolves
+ * the slot against the controller's current page, so a push on the bottom half
+ * would otherwise click page N's cell. Everything a click MEANS (a two-option
+ * flip, a trigger firing, a door opening) lives in the controller, and must
+ * stay there: this file has no second answer to any of it.
+ *
+ * @returns {{key: string, enc: number}|null} what was clicked, or null for an
+ *          empty encoder.
+ */
+export function applyClick(view, ctl, enc) {
+    const cell = view && view.cells ? view.cells[enc] : null;
+    if (!cell || !ctl || typeof ctl.onClick !== "function") return null;
+    if (ctl.pageIndex !== cell.pageIndex && ctl.goToPage) {
+        ctl.goToPage(cell.pageIndex, { remember: false });
+    }
+    ctl.onClick(cell.slot);
+    return { key: cell.key, enc };
+}

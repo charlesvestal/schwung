@@ -686,3 +686,281 @@ export function createNav(opts) {
         get followEnabled() { return follow; },
     };
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * THE SURFACE ITSELF -- the assembly.
+ *
+ * Everything above this line is a component, and Tasks 1-11 shipped every one
+ * of them with green tests while NOTHING CONSTRUCTED ANY OF THEM: `e16Nav` was
+ * null in shadow_ui.js, `createNav` and `createDisplay` were never called, and
+ * a device attached to a Move running that code entered remote mode and then
+ * drew nothing. Each half was correct; the seam between two files belonged to
+ * neither task, so nobody owned it and nothing failed when it was missing.
+ *
+ * WHY THE ASSEMBLY IS HERE AND NOT IN shadow_ui.js. That file cannot be
+ * imported under node -- it opens on `import * as os from "os"` and every path
+ * in it is an on-device absolute -- so anything living there can only ever be
+ * GREPPED, and a grep is precisely what could not see the gap this is being
+ * written to close. Composed here, the whole path (a setting, a clock, raw MIDI
+ * bytes in, USB-MIDI packets out) runs in tests/host with no device and no
+ * shim. What is left in shadow_ui.js is five injected seams and two calls.
+ *
+ * THE SURFACE HOLDS ITS OWN CONTROLLER, and that is not tidiness. A page
+ * controller has ONE current page, and a bottom-half turn has to
+ * `goToPage(N+1)` before applying it (see applyTurn) -- so sharing Move's
+ * controller would drag Move's screen to the next page on every lower-row knob.
+ * `makeController` is therefore a FACTORY the host supplies, not a controller:
+ * a host that handed over the one it already has could not be told apart from
+ * one that built a second, and the symptom is two small in-range page indices
+ * disagreeing, with nothing logged.
+ *
+ * NOTHING RUNS WHILE THE SETTING IS OFF. tick() drains an owed EXIT and then
+ * returns before the nav, the controller reads and the display -- so an off
+ * surface is a comparison, and in particular it puts no bytes on a port
+ * somebody else's gear is listening to.
+ * ---------------------------------------------------------------------------
+ */
+import { decode } from "./e16_input.mjs";
+import { createCanvas } from "./e16_canvas.mjs";
+import { buildView, renderView, ringFor, applyTurn, applyClick } from "./e16_view.mjs";
+
+/**
+ * @param {object} io
+ * @param {function} [io.now]            () -> ms
+ * @param {function} [io.send]           packets -> boolean (false = REFUSED)
+ * @param {function} [io.chainOf]        () -> the chain shape buildMap wants
+ * @param {function} [io.followFocusOf]  () -> {slot, component} | null
+ * @param {function} io.makeController   (focus) -> a NEW page controller whose
+ *        getParam/setParam read `focus.slot` LIVE. It is handed a live view of
+ *        the surface's focus rather than a slot number because one controller
+ *        outlives many jumps, and a controller closed over the slot it was born
+ *        with would keep addressing that slot after the first one.
+ * @param {object} [io.canvas]           test seam; an e16 canvas
+ */
+export function createSurface(io) {
+    const o = io || {};
+    const now = o.now || (() => Date.now());
+    const send = o.send || (() => false);
+    const chainOf = o.chainOf || (() => ({ slots: [] }));
+    const followFocusOf = o.followFocusOf || (() => null);
+    const makeController = o.makeController || null;
+    const canvas = o.canvas || createCanvas();
+
+    const lifecycle = createLifecycle(o.lifecycle);
+    const display = createDisplay();
+
+    let ctl = null;
+    /* "<slot>:<component>" of the load the controller is currently holding.
+     * Null means it has never been loaded. */
+    let loaded = null;
+    /* The presence the last tick saw, so the false->true edge can repaint. */
+    let wasPresent = false;
+
+    /* The ONE focus, as a live view. Passed to the host's controller factory so
+     * its param accessors follow a jump; read nowhere else. */
+    const focus = {
+        get slot() { return nav ? nav.slot : 0; },
+        get component() { return nav ? nav.component : "synth"; },
+    };
+
+    const metaOf = (key) =>
+        (ctl && ctl.metaIndex ? ctl.metaIndex.getOrGuess(key) : null);
+    /* From the controller's own value cache, never a fresh read: this is called
+     * per cell per view build, and an IPC round trip is ~2.8 ms against a 1.68
+     * ms whole-page render (CLAUDE.md). The cache is what ctl.tick() refreshes
+     * on its staggered cursor, exactly as the knob grid does. */
+    const valueOf = (key) =>
+        (ctl && ctl.state && ctl.state.values ? ctl.state.values[key] : undefined);
+
+    /* Rebuilt on demand rather than cached. buildView is pure and reads only
+     * the two lookups above, so it costs no IPC -- and a cached view is a
+     * fourth thing that can disagree with the controller about which page is
+     * current. */
+    const viewNow = () =>
+        buildView(ctl ? ctl.pages : [], nav ? nav.pageIndex : 0, { metaOf, valueOf });
+
+    const nav = createNav({
+        display,
+        chainOf,
+        followFocusOf,
+        pageCountOf: () => (ctl && ctl.pages ? ctl.pages.length : 1),
+        renderParams: (ctx) => renderView(ctx, viewNow()),
+        /* The jump has already moved nav's focus; the controller catches up in
+         * syncFocus() on the next tick. Reloading from here instead would put a
+         * contract read (two blocking param round trips) on the MIDI callback
+         * that delivered the button press. */
+        onFocus: () => {},
+    });
+
+    const asm = createSysexAssembler({
+        onMessage: (body) => { lifecycle.onSysex(body, now()); },
+    });
+
+    function ensureController() {
+        if (ctl || !makeController) return ctl;
+        ctl = makeController(focus);
+        return ctl;
+    }
+
+    /*
+     * Point the controller at whatever the nav is focused on.
+     *
+     * Guarded on the PAIR rather than calling load() every tick: load() is safe
+     * to repeat, but it reads `<prefix>:ui_hierarchy` and `<prefix>:chain_params`
+     * to decide whether anything changed, and two blocking reads per frame is
+     * most of a frame.
+     */
+    function syncFocus() {
+        if (!ensureController()) return;
+        const sig = nav.slot + ":" + nav.component;
+        if (sig === loaded) return;
+        loaded = sig;
+        ctl.load({ slot: nav.slot, component: nav.component, prefix: nav.component });
+        /* A different component is a different screen. */
+        display.invalidate();
+    }
+
+    /*
+     * Repaint when the device becomes ours.
+     *
+     * A frame sent before the ACK is a frame sent to nothing -- and, worse, the
+     * device that acks a moment later is left showing whatever the last process
+     * put on it, with the surface believing it has painted. The EDGE is watched
+     * rather than the state, so a device that drops out and comes back repaints
+     * itself; nothing DRAWS on presence (see createLifecycle's note on the
+     * unverified re-ACK assumption), so a spurious expiry costs one extra
+     * framebuffer, never a blank screen.
+     */
+    function syncPresence() {
+        if (lifecycle.present === wasPresent) return;
+        wasPresent = lifecycle.present;
+        if (wasPresent) display.invalidate();
+    }
+
+    return {
+        /** The setting. Idempotent; EXIT is sent by the lifecycle, once. */
+        setEnabled(on) { lifecycle.setEnabled(!!on, now(), send); },
+
+        /** Follow Focus. The surface parks its own focus on the OFF->ON edge,
+         *  so this must be told the EDGE and not poll a setting. */
+        setFollow(on) { nav.setFollow(!!on, now()); },
+
+        /**
+         * Cable-2 bytes, 1-3 at a time with the USB-MIDI CIN already stripped.
+         *
+         * The assembler is fed UNCONDITIONALLY -- a SysEx message arrives as a
+         * run of fragments and a gate here would splice a message that began
+         * before the setting was switched on onto one that began after. Every
+         * other consumer is gated, so a shared port carries no risk of the
+         * surface acting on somebody else's gear.
+         */
+        feedMidi(data) {
+            asm.feed(data);
+            if (!lifecycle.enabled) return null;
+            const ev = decode(data);
+            if (!ev) return null;
+            const t = now();
+            const act = nav.handle(ev, t);
+            if (!act || !ctl) return act;
+
+            if (act.action === "turn") {
+                const moved = applyTurn(viewNow(), ctl, act.enc, act.ticks, t);
+                /* ONE RING, NEVER A REPAINT. This is the common case -- a knob
+                 * under a hand makes one of these per detent -- and turning it
+                 * into a framebuffer is how a surface that measured fine in
+                 * isolation drops packets in use (docs/E16_REMOTE.md). The view
+                 * is rebuilt AFTER the write so the ring carries the new value.
+                 */
+                if (moved) display.ringChanged(ringFor(viewNow(), act.enc));
+                return act;
+            }
+            if (act.action === "click") {
+                const before = ctl.pageIndex;
+                const hit = applyClick(viewNow(), ctl, act.enc);
+                /* A click can flip a value (a ring) or open a door (a new
+                 * page). Only the second is worth a screen. */
+                if (ctl.pageIndex !== before) display.invalidate();
+                else if (hit) display.ringChanged(ringFor(viewNow(), act.enc));
+                return act;
+            }
+            return act;
+        },
+
+        /** One frame. Off, this is the lifecycle's two comparisons. */
+        tick() {
+            const t = now();
+            /*
+             * AT MOST ONE MESSAGE PER TICK, ACROSS BOTH PRODUCERS.
+             *
+             * createDisplay enforces that rule inside itself, but it can only
+             * see its own sends -- and the lifecycle is a second producer on
+             * the same port. A keepalive ENTER landing in the same tick as a
+             * 391-packet framebuffer is exactly the "amid other traffic" case
+             * that lost 8 whole packets on the wire (docs/E16_REMOTE.md). The
+             * two are joined here because here is the only place that can see
+             * both. A REFUSED send does not count: nothing went out, so nothing
+             * was crowded.
+             */
+            let sentThisTick = false;
+            const oneSend = (packets) => {
+                const res = send(packets);
+                if (res !== false) sentThisTick = true;
+                return res;
+            };
+            lifecycle.tick(t, oneSend);
+            if (!lifecycle.enabled) return;
+            syncPresence();
+            /*
+             * NO DEVICE, NO READS.
+             *
+             * ctl.tick() is a staggered PARAMETER READ -- ~2.8 ms of IPC, more
+             * than a whole page render costs (CLAUDE.md) -- and it exists only
+             * to keep the values the rings and the screen show fresh. With
+             * nothing on the port there is nothing to show them to, and a
+             * surface left switched on with the E16 in a bag would otherwise
+             * spend that every frame forever.
+             *
+             * Safe to skip wholesale: with no device there is no input either,
+             * so the focus cannot move and nav.tick has no stranded modifier to
+             * expire. The first tick after an ACK does all of it.
+             */
+            if (!lifecycle.present) return;
+            /* Before the display's tick: nav.tick() is the stranded-Shift
+             * escape and may invalidate, and a repaint noticed after the send
+             * would wait a whole frame. */
+            nav.tick(t);
+            syncFocus();
+            if (ctl) ctl.tick();
+            /*
+             * NOTHING IS DRAWN AT A DEVICE THAT HAS NOT ANSWERED.
+             *
+             * A frame sent while seeking goes nowhere -- and the E16 that acks
+             * a moment later comes up showing whatever the last process left on
+             * it, while the surface believes it has painted. The repaint is
+             * therefore OWED across the wait (fbOwed is a boolean, so the whole
+             * seek costs one frame however long it takes) and syncPresence
+             * re-owes it on every false->true edge, which is what makes a
+             * replug -- the E16 has no battery, so unplugging clears its screen
+             * -- redraw itself with no user action.
+             *
+             * This gates the SEND, never the state: nothing here decides what
+             * the surface IS from `present`, so the unverified re-ACK
+             * assumption in createLifecycle can cost at worst a second of stale
+             * rings, never a dead surface.
+             */
+            if (sentThisTick) return;
+            display.tick(oneSend, () => { nav.render(canvas, t); return canvas.toBuffer(); });
+        },
+
+        /* Read-only views, for the host's settings rows and for tests. */
+        get enabled() { return lifecycle.enabled; },
+        get present() { return lifecycle.present; },
+        get slot() { return nav.slot; },
+        get component() { return nav.component; },
+        get controller() { return ctl; },
+        get nav() { return nav; },
+        get display() { return display; },
+        view: viewNow,
+    };
+}
