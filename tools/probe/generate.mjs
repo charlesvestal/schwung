@@ -31,9 +31,13 @@ const ids = args.filter((a) => !a.startsWith("--") && args[args.indexOf(a) - 1]?
 /** The score rule for a module: its subcategory, else the type's `_all`. */
 export function scoreFor(mod) {
   const table = SCORES[mod.component_type] || {};
-  const rule = table[mod.subcategory] || table._all || null;
-  if (!rule) return null;
-  let out = { ...SCORES.default, ...rule };
+  /* `_all` is the BASE for a component type and the subcategory REFINES it --
+   * not an either/or. Treating them as alternatives cost audio_fx/filter-eq
+   * its `source`, and an FX with no source refuses to render at all. */
+  const base = table._all || null;
+  const sub = table[mod.subcategory] || null;
+  if (!base && !sub) return null;
+  let out = { ...SCORES.default, ...(base || {}), ...(sub || {}) };
   /* A TAG overrides the subcategory rule. `bass` is the case: a bass patch
    * previewed in the treble is a preview of the wrong instrument, and it can
    * sit outside the Mono & Bass subcategory -- tb3po is a tool. Set, never
@@ -304,7 +308,10 @@ function renderAudio(mod, rule, dir, so, outDir) {
            * well it scores. 4k-eq's lf_gain scored a perfect 1.000 and drove
            * the module into silence it never recovered from -- 60% of the clip
            * was digital silence behind a loud arp. */
-          .filter((r) => r.verdict === "SWEEP" && !r.mutes)
+          /* `sweep: "always"` takes the best candidate whatever it scored --
+           * see scores.json. `mutes` still disqualifies: a knob that kills the
+           * module is never worth moving. */
+          .filter((r) => !r.mutes && (rule.sweep === "always" || r.verdict === "SWEEP"))
           .sort((a, b) => b.shape - a.shape);
         if (scored.length) {
           const win = cands.find((c) => c.key === scored[0].key);
