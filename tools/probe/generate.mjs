@@ -142,9 +142,20 @@ async function generate(mod) {
   try {
     dir = fetchTarball(mod);
     so = findSo(dir, mod.id);
-    if (!so) throw new Error("no .so in the tarball");
   } catch (e) {
     entry.screens = entry.audio = { status: "error", detail: String(e.message) };
+    return entry;
+  }
+  if (!so) {
+    /* A module with no DSP is not a failure -- an overtake or tool module is
+     * JS and owns the whole surface, so it has no plugin to load and no knob
+     * grid to plan. Its screens need the separate QuickJS pass. */
+    const expected = mod.component_type === "overtake" || mod.component_type === "tool";
+    const st = expected ? "js-only" : "error";
+    const detail = expected ? "no DSP plugin; screens need the JS UI pass"
+                            : "no .so in the tarball";
+    entry.screens = { status: st, detail };
+    entry.audio = { status: expected ? "not-applicable" : "error", detail };
     return entry;
   }
 
