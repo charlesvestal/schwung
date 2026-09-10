@@ -1075,3 +1075,54 @@ both valid, nothing logged. The consequence for wiring: **the surface must hold
 its own controller instance**, not share Move's, or every bottom-half turn drags
 Move's screen to the next page. The design already says the surface owns its own
 focus; this is the mechanical reason it has to.
+
+---
+
+## Task 13: assemble the surface (NOT DONE — the plan's own gap)
+
+**Tasks 1-11 build every component and wire none of them together.** The
+lifecycle runs; the shim gate is written and restated; the view, the map, the
+navigation and follow focus are complete, pure and mutation-tested. Nothing
+constructs them. `e16Nav` is `null` in `shadow_ui.js` and `createNav` /
+`createDisplay` are never called, so with a device attached Schwung enters remote
+mode and then draws nothing.
+
+**This is a planning error, and it happened three times in one plan** — the same
+shape each time:
+
+| gap | who could see it |
+|---|---|
+| the CC claim reads a static that is always 0 | neither Task 6 nor Task 11 |
+| the setting never reached `shadow_control->external_surface` | neither Task 6 nor Task 7 |
+| nothing constructs the view or nav | none of Tasks 8, 9, 10 |
+
+Every task was scoped to its own files and passed its own tests. The seams
+between them belonged to no task, so nobody was responsible for them and nothing
+failed when they were missing. **A plan that enumerates components must also name
+the assembly, and give it acceptance criteria that only pass when the thing
+actually runs.** Component tests cannot see this: each half is correct.
+
+### What remains
+
+- Construct `createDisplay()`, `createNav()` and the existing lifecycle together
+  in `shadow_ui.js`, and hold the result where the tick can reach it.
+- Give the nav its sources: the chain shape for `buildMap` (read the same way the
+  chain editor reads it), a page plan for the focused component, and parameter
+  reads for the view.
+- **The surface needs its OWN controller instance**, not Move's — see the
+  shared-controller hazard above. A bottom-half turn moves the controller's page
+  before applying the turn, so a shared controller drags Move's screen along with
+  every lower-row knob.
+- Route `onMidiMessageExternal` through `decode()` into the nav, after the
+  lifecycle's assembler has had the SysEx.
+- Drain the paced sender through `packetize()` + `move_midi_external_send()`,
+  honouring the `false`-means-retry contract.
+
+### Acceptance criteria that would have caught all three gaps
+
+- [ ] With the setting on and a fake device acking, a scripted component change
+      produces a framebuffer on the wire — asserted end to end, from the setting
+      to the bytes, not from any one module's unit
+- [ ] With the setting off, nothing is sent at all
+- [ ] A turn arriving as raw MIDI bytes moves a parameter — the whole path,
+      `onMidiMessageExternal` to `set_param`
