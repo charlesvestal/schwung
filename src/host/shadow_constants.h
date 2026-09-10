@@ -144,7 +144,7 @@
  * letting the caller spin -- the size must be big enough for the largest single
  * message any producer sends, and the refusal is the backstop for when it
  * is not. */
-#define SHADOW_MIDI_OUT_BUFFER_SIZE 2048
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 4096
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
 /* MIDI inject ring capacity is SHADOW_MIDI_INJECT_SLOTS (defined with the
  * struct below) — the old flat byte-buffer size is gone. */
