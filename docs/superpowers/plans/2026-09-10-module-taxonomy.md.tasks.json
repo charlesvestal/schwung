@@ -4,13 +4,13 @@
     {
       "id": 0,
       "subject": "Task 1: Vocabulary, validator, CI gate",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** `taxonomy.json` exists, a pure validator enforces it, and `tests/host/test_taxonomy.sh` gates that validator in CI \u2014 with the catalog still carrying no per-module assignments.\n\n**Files:**\n- Create: `taxonomy.json`\n- Create: `tools/catalog/taxonomy.mjs`\n- Create: `tools/catalog/sync_taxonomy.mjs`\n- Create: `tests/host/test_taxonomy.sh`\n- Modify: `module-catalog.json` (top-level `taxonomy` block only)\n\n**Acceptance Criteria:**\n- [ ] `taxonomy.json` lists the 5 component_types with subcategory slugs and labels, plus the known tag list\n- [ ] `validate()` returns [] for the real catalog (no module has a subcategory yet)\n- [ ] Every validation rule is proven able to FAIL by a mutation in the test\n- [ ] `module-catalog.json` carries a `taxonomy` block byte-identical to `--write` output; `--check` fails on drift\n- [ ] `bash tests/host/test_taxonomy.sh` exits 0\n\n**Verify:** `bash tests/host/test_taxonomy.sh` \u2192 prints `PASS: taxonomy` and exits 0\n\n**Steps:** See plan Task 1 Steps 1-9: write taxonomy.json; write tools/catalog/taxonomy.mjs (loadJson/derivedTags/embedBlock/validate); write tools/catalog/sync_taxonomy.mjs (--check/--write); write tests/host/test_taxonomy.sh with 10 mutation rules; run test (fails: embed out of date); run --write; rerun test (PASS); confirm --write is idempotent; run whole tests/host suite; commit.\n\n```json:metadata\n{\"files\": [\"taxonomy.json\", \"tools/catalog/taxonomy.mjs\", \"tools/catalog/sync_taxonomy.mjs\", \"tests/host/test_taxonomy.sh\", \"module-catalog.json\"], \"verifyCommand\": \"bash tests/host/test_taxonomy.sh\", \"acceptanceCriteria\": [\"taxonomy.json lists 5 component_types with slugs and labels plus known tags\", \"validate() returns empty for the real catalog\", \"every rule is proven able to fail by a mutation\", \"embedded taxonomy block matches --write output and --check fails on drift\", \"tests/host/test_taxonomy.sh exits 0\"], \"modelTier\": \"standard\"}\n```"
     },
     {
       "id": 1,
       "subject": "Task 2: Assign all 133 modules",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         0
       ],
@@ -19,7 +19,7 @@
     {
       "id": 2,
       "subject": "Task 3: Manager filters by subcategory",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
@@ -28,12 +28,12 @@
     {
       "id": 3,
       "subject": "Task 4: Catalog site filters by subcategory",
-      "status": "pending",
+      "status": "completed",
       "blockedBy": [
         1
       ],
       "description": "**Goal:** schwung.dev/catalog.html gains subcategory chips built from the taxonomy block, tag pills on each card, and a synced catalog copy.\n\n**Files:**\n- Modify: `../../schwung-catalog-site/data/module-catalog.json`\n- Modify: `../../schwung-catalog-site/catalog.html`\n- Modify: `../../schwung-catalog-site/app.js`\n- Modify: `../../schwung-catalog-site/style.css`\n\n**Acceptance Criteria:**\n- [ ] data/module-catalog.json is byte-identical to the schwung repo's\n- [ ] A subcategory chip row renders under the existing category filter, built at RUNTIME from the catalog's taxonomy block\n- [ ] Category and subcategory filters intersect\n- [ ] Tag pills render on each card\n- [ ] catalog.html loads with no console errors and the filters work\n\n**Verify:** `cd ../../schwung-catalog-site && python3 -m http.server 8765` then open http://localhost:8765/catalog.html \u2014 chips render, filtering works, console clean\n\n**Steps:** See plan Task 4 Steps 1-7: cp the catalog and diff; add the hidden chip container; build chips at runtime keyed on the (component_type, subcategory) pair, add the visibility/release pass, filter in getFiltered, call the pass first in render(); render badge + tag pills via subcategoryLabel(); style; verify in a browser; commit HUNKS ONLY \u2014 manual.html in that repo is dirty with an unmerged Boot menu section, never git add it or use git add -A.\n\n```json:metadata\n{\"files\": [\"../../schwung-catalog-site/data/module-catalog.json\", \"../../schwung-catalog-site/catalog.html\", \"../../schwung-catalog-site/app.js\", \"../../schwung-catalog-site/style.css\"], \"verifyCommand\": \"diff -q module-catalog.json ../../schwung-catalog-site/data/module-catalog.json\", \"acceptanceCriteria\": [\"catalog copy byte-identical\", \"chip row built at runtime from the taxonomy block\", \"category and subcategory filters intersect\", \"tag pills render\", \"page loads with a clean console\"], \"modelTier\": \"standard\"}\n```"
     }
   ],
-  "lastUpdated": "2026-09-10T06:03:03.465375+00:00"
+  "lastUpdated": "2026-09-10T06:44:28.682971+00:00"
 }
