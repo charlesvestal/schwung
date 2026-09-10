@@ -45,34 +45,14 @@ if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
     # Build schwung-manager (Go, ARM64 cross-compile) BEFORE the Docker
     # build: package.sh runs inside the container and picks the binary up
     # from build/ via its existing conditional — no tarball injection.
-    # Prefer local `go` (fast); fall back to a golang container.
+    #
+    # ONE BUILDER, because there were two and they did not agree -- see
+    # scripts/build-manager.sh for what that cost.
     if [ -d "$REPO_ROOT/schwung-manager" ]; then
-        echo "=== Building schwung-manager (Go) ==="
-        mkdir -p "$REPO_ROOT/build"
-        if command -v go &>/dev/null; then
-            cd "$REPO_ROOT/schwung-manager"
-            GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .
-            cd "$REPO_ROOT"
-        elif command -v docker &>/dev/null; then
-            echo "Local 'go' not found — building via golang:1.26-bookworm container"
-            mkdir -p "$REPO_ROOT/.cache/go-cache" "$REPO_ROOT/.cache/go-mod-cache"
-            docker run --rm \
-                -v "$REPO_ROOT/schwung-manager:/src" \
-                -v "$REPO_ROOT/build:/out" \
-                -v "$REPO_ROOT/.cache/go-cache:/gocache" \
-                -v "$REPO_ROOT/.cache/go-mod-cache:/go-mod-cache" \
-                -u "$(id -u):$(id -g)" \
-                -w /src \
-                -e GOOS=linux -e GOARCH=arm64 -e CGO_ENABLED=0 \
-                -e GOCACHE=/gocache -e GOMODCACHE=/go-mod-cache \
-                golang:1.26-bookworm \
-                go build -buildvcs=false -o /out/schwung-manager -ldflags="-s -w" .
-        else
-            echo "ERROR: neither 'go' nor 'docker' available — cannot build schwung-manager."
-            echo "       The web manager will be missing from the tarball."
-        fi
-        [ -f "$REPO_ROOT/build/schwung-manager" ] && \
-            echo "Built: schwung-manager ($(wc -c < "$REPO_ROOT/build/schwung-manager" | tr -d ' ') bytes)"
+        "$REPO_ROOT/scripts/build-manager.sh" || {
+            echo "ERROR: schwung-manager build failed."
+            exit 1
+        }
     fi
 
     # Run build inside container
