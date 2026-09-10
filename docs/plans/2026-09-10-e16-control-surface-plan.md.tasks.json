@@ -64,7 +64,7 @@
     {
       "id": 7,
       "subject": "Task 8: The parameter view",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Two authored grid pages on the 4\u00d74, with rings showing values and turns writing parameters.\n\n**Files:**\n- Modify: `src/shared/e16_surface.mjs`\n- Create: `src/shared/e16_view.mjs`\n- Create: `tests/host/test_e16_view.sh`\n\n**Acceptance Criteria:**\n- [ ] Top 2\u00d74 is page N and bottom 2\u00d74 is page N+1 from `planPages()`, unmodified\n- [ ] Encoder \u2192 cell mapping is stable and matches the drawn layout\n- [ ] A turn goes through the grid's own knob-turn path, so enums quantize and read-only cells refuse\n- [ ] A value change sends **one** ring chunk, not a framebuffer\n- [ ] Navigation sends **one** framebuffer, and never more than one is in flight\n- [ ] A component with fewer than 9 cells leaves the bottom half dark rather than borrowing from another level\n\n**Verify:** `bash tests/host/test_e16_view.sh` \u2192 passes; on device, turn each encoder and confirm the matching parameter moves\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shared/e16_view.mjs\", \"tests/host/test_e16_view.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_view.sh\", \"acceptanceCriteria\": [\"Top 2\\u00d74 is page N and bottom 2\\u00d74 is page N+1 from `planPages()`, unmodified\", \"Encoder \\u2192 cell mapping is stable and matches the drawn layout\", \"A turn goes through the grid's own knob-turn path, so enums quantize and read-only cells refuse\", \"A value change sends **one** ring chunk, not a framebuffer\", \"Navigation sends **one** framebuffer, and never more than one is in flight\", \"A component with fewer than 9 cells leaves the bottom half dark rather than borrowing from another level\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         6
@@ -73,7 +73,7 @@
     {
       "id": 8,
       "subject": "Task 9: The map view and navigation",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Hold Shift to see and jump anywhere in the chain.\n\n**Files:**\n- Modify: `src/shared/e16_surface.mjs`, `src/shared/e16_view.mjs`\n- Create: `tests/host/test_e16_nav.sh`\n\n**Acceptance Criteria:**\n- [ ] Holding Shift draws the map; releasing restores the parameter view\n- [ ] Top-row push switches slot and redraws the lower 12\n- [ ] Lower push jumps focus to that component and drops back to parameters\n- [ ] Shift + turn pages within the component\n- [ ] The bus cell swaps the lower 12 to that slot's buses\n- [ ] A lost Shift note-off cannot strand the map \u2014 it clears on any parameter-view interaction\n\n**Verify:** `bash tests/host/test_e16_nav.sh` \u2192 passes; on device, navigate to a component in another slot without touching Move\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shared/e16_view.mjs\", \"tests/host/test_e16_nav.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_nav.sh\", \"acceptanceCriteria\": [\"Holding Shift draws the map; releasing restores the parameter view\", \"Top-row push switches slot and redraws the lower 12\", \"Lower push jumps focus to that component and drops back to parameters\", \"Shift + turn pages within the component\", \"The bus cell swaps the lower 12 to that slot's buses\", \"A lost Shift note-off cannot strand the map \\u2014 it clears on any parameter-view interaction\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         7
@@ -82,7 +82,7 @@
     {
       "id": 9,
       "subject": "Task 10: Follow Focus",
-      "status": "pending",
+      "status": "completed",
       "description": "**Goal:** Optionally mirror the Move's screen instead of holding an independent focus.\n\n**Files:**\n- Modify: `src/shared/e16_surface.mjs`, `src/shadow/shadow_ui.js`\n- Create: `tests/host/test_e16_follow.sh`\n\n**Acceptance Criteria:**\n- [ ] Global Settings \u2192 System gains **Follow Focus** (on/off), beside External Surface\n- [ ] While on, focus tracks the shadow UI's current component and the map is disabled\n- [ ] Follow is one-way \u2014 navigating on the E16 never moves Move's screen\n- [ ] Turning it off restores the E16's own last focus rather than resetting\n\n**Verify:** `bash tests/host/test_e16_follow.sh` \u2192 passes; on device, change component on Move and watch the E16 follow\n\n```json:metadata\n{\"files\": [\"src/shared/e16_surface.mjs\", \"src/shadow/shadow_ui.js\", \"tests/host/test_e16_follow.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_follow.sh\", \"acceptanceCriteria\": [\"Global Settings \\u2192 System gains **Follow Focus** (on/off), beside External Surface\", \"While on, focus tracks the shadow UI's current component and the map is disabled\", \"Follow is one-way \\u2014 navigating on the E16 never moves Move's screen\", \"Turning it off restores the E16's own last focus rather than resetting\"], \"modelTier\": \"standard\"}\n```",
       "blockedBy": [
         8
@@ -105,7 +105,18 @@
       "blockedBy": [
         10
       ]
+    },
+    {
+      "id": 12,
+      "subject": "Task 13: assemble the surface",
+      "status": "pending",
+      "blockedBy": [
+        7,
+        8,
+        9
+      ],
+      "description": "**Goal:** Construct and wire the components Tasks 1-11 built, so the surface actually runs.\n\n**Files:**\n- Modify: `src/shadow/shadow_ui.js`\n- Create: `tests/host/test_e16_wiring.sh`\n\n**Acceptance Criteria:**\n- [ ] Setting on + acked device + component change produces a framebuffer on the wire, asserted end to end\n- [ ] Setting off sends nothing\n- [ ] A turn arriving as raw MIDI moves a parameter, whole path\n- [ ] The surface holds its OWN controller instance, not Move's\n\n**Verify:** `bash tests/host/test_e16_wiring.sh`\n\n```json:metadata\n{\"files\": [\"src/shadow/shadow_ui.js\", \"tests/host/test_e16_wiring.sh\"], \"verifyCommand\": \"bash tests/host/test_e16_wiring.sh\", \"acceptanceCriteria\": [\"end-to-end framebuffer on component change\", \"nothing sent when off\", \"raw MIDI turn moves a parameter\", \"own controller instance\"], \"modelTier\": \"standard\"}\n```"
     }
   ],
-  "lastUpdated": "2026-09-10T10:10:58.859451"
+  "lastUpdated": "2026-09-10T10:52:26.514908"
 }
