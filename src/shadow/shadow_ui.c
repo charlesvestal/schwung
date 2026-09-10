@@ -2813,6 +2813,33 @@ static JSValue js_host_claim_ccs(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
+/* host_external_surface(mode) -> bool
+ *
+ * Tells the shim whether an external control surface owns cable 2. The shim
+ * reads this on the SPI callback to decide two things it cannot decide for
+ * itself: whether to publish cable-2 CCs and notes to the shadow UI outside
+ * overtake, and whether to keep diverting cable-2 note-ons into the LED
+ * coalescing queue (which would swallow every encoder button).
+ *
+ * IDEMPOTENT against the SHM, for the same reason as pad_block below: the
+ * segment does not survive a shim restart, so JS has to be free to RESTATE
+ * this every tick without memoising. A mirror latches and the surface dies
+ * silently the first time the shim is restarted under it; the SHM cannot.
+ */
+static JSValue js_host_external_surface(JSContext *ctx, JSValueConst this_val,
+                                        int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    val = val ? 1 : 0;
+    if (shadow_control->external_surface == (uint8_t)val) return JS_TRUE;
+    shadow_control->external_surface = (uint8_t)val;
+    shadow_ui_log_line(val ? "shadow_ui: external_surface ON"
+                           : "shadow_ui: external_surface OFF");
+    return JS_TRUE;
+}
+
 static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
     (void)this_val;
@@ -3311,6 +3338,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_display_overlay", JS_NewCFunction(ctx, js_shadow_set_display_overlay, "shadow_set_display_overlay", 5));
 
     /* Register pad block function */
+    JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_claim_ccs", JS_NewCFunction(ctx, js_host_claim_ccs, "host_claim_ccs", 1));

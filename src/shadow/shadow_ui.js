@@ -19152,6 +19152,18 @@ function reconcilePadBlock() {
     if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
 }
 
+/* The shim's copy of "is a surface attached" is RESTATED, never memoised.
+ *
+ * /dev/shm does not survive a shim restart, so the flag comes back as 0 with
+ * nothing telling JS it happened -- the surface would go dark and stay dark,
+ * with the setting still reading E16 on screen. Same rule, and the same
+ * reason, as reconcilePadBlock() below. The binding compares against the SHM
+ * and returns early when unchanged, so a per-tick restate is a byte compare. */
+function reconcileExternalSurface() {
+    if (typeof host_external_surface !== "function") return;
+    host_external_surface(externalSurfaceMode ? 1 : 0);
+}
+
 function reconcileCcClaim() {
     if (typeof host_claim_ccs !== "function") return;
     const onScreen = !!CC_CLAIM_VIEWS[view] ||
@@ -24655,6 +24667,7 @@ globalThis.tick = function() {
      * table above reconcileCcClaim(). */
     reconcileCcClaim();
     reconcilePadBlock();
+    reconcileExternalSurface();
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
