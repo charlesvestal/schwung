@@ -29,10 +29,29 @@
  */
 
 import { fontWidth4x5, fontPrint4x5 } from "./param_pages/font4x5.mjs";
+import { asciiFold } from './param_pages/render_page.mjs';
 
 const WIDTH = 128;
 const HEIGHT = 64;
 const BUFFER_SIZE = 1024; /* (WIDTH * HEIGHT) / 8 */
+
+/*
+ * font4x5 has NO LOWERCASE. Its CHARS run is uppercase, digits and
+ * punctuation, so `print("cutoff")` draws precisely nothing -- and
+ * `fontWidth4x5` still returns a width for it, so a layout reserves space for
+ * glyphs that never appear. Measured on hardware 2026-09-10: the E16 drew its
+ * header bar and a grid of identical value readouts with every parameter name
+ * missing, which reads as a corrupted framebuffer rather than as absent text.
+ *
+ * render_page_movy.mjs has always folded and upper-cased before drawing
+ * (`caps()`), which is why the knob grid never showed this. Doing it HERE
+ * rather than in the callers keeps print() and textWidth() describing the same
+ * string -- the width lie is half the bug, and a caller that upper-cases for
+ * one and not the other reintroduces it.
+ */
+function caps(s) {
+    return asciiFold(String(s === null || s === undefined ? "" : s)).toUpperCase();
+}
 
 export function createCanvas() {
     const buf = new Uint8Array(BUFFER_SIZE);
@@ -59,8 +78,11 @@ export function createCanvas() {
     /* font4x5 draws by calling ctx.fillRect itself (it runs solid spans, not
      * pixel-by-pixel), so handing it THIS canvas's own fillRect is enough —
      * no separate glyph blitter to keep in sync with the one the grid uses. */
-    const print = (x, y, text, color) => fontPrint4x5({ fillRect }, x, y, text, color);
-    const textWidth = (text) => fontWidth4x5(text);
+    /* Both go through caps() -- see the note above it. Keeping them in step is
+     * the point: a width that describes a string the print cannot draw is how
+     * this hid. */
+    const print = (x, y, text, color) => fontPrint4x5({ fillRect }, x, y, caps(text), color);
+    const textWidth = (text) => fontWidth4x5(caps(text));
 
     /* Bresenham, ported from js_display_draw_line the same way the harness's
      * ctx.line does — horizontal/vertical runs short-circuited, general case
