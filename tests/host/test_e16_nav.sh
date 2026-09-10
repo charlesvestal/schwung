@@ -117,7 +117,7 @@ function rig(opts) {
   eq("starts on parameters", r.nav.mapVisible(r.now()), false);
 
   eq("shift down raises the map",
-     r.ev({ type: "shift", down: true }).action, "map");
+     r.ev({ type: "shift", down: true }), { action: "map" });
   eq("...and the map is up", r.nav.mapVisible(r.now()), true);
 
   eq("a top-row push switches slot",
@@ -197,7 +197,7 @@ function rig(opts) {
   /* And the escape is not a one-shot: a fresh press works afterwards. */
   r.at(1000 + MAP_MAX_HOLD_MS + 50);
   eq("a fresh press raises the map again",
-     r.ev({ type: "shift", down: true }).action, "map");
+     r.ev({ type: "shift", down: true }), { action: "map" });
   eq("...and it is up", r.nav.mapVisible(r.now()), true);
 }
 
