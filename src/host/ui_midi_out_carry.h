@@ -118,6 +118,37 @@ _Static_assert(UI_MIDI_CARRY_BYTES == SHADOW_MIDI_OUT_BUFFER_SIZE,
  */
 #define UI_MIDI_CARRY_PACKETS_PER_FRAME 3
 
+/*
+ * THE PACE IS TUNABLE AT RUNTIME, because 3 was never measured -- it was the
+ * first value that stopped the garbling after "everything at once" failed, and
+ * a ceiling nobody searched for is a ceiling nobody knows.
+ *
+ * It decides the only number the user actually feels: a 394-packet framebuffer
+ * takes ceil(394 / pace) SPI frames at 2.90 ms each, so 3 is 383 ms and 12
+ * would be 96. Rebuilding to try a value costs a full cross-compile and a
+ * device restart, which is why the search never happened; reading it from
+ * /data/UserData/schwung/e16_pace turns the experiment into an echo and a knob
+ * turn.
+ *
+ * Read on the CONTROL side and published here as a plain int -- never opened
+ * from the drain, which runs on the SPI callback where file I/O is forbidden.
+ * Clamped on the way in, so a typo in the file cannot stall the wire (0) or
+ * restore the unpaced behaviour that lost packets in the first place.
+ */
+#define UI_MIDI_CARRY_PACE_MIN 1
+#define UI_MIDI_CARRY_PACE_MAX 64
+
+static int ui_midi_carry_pace = UI_MIDI_CARRY_PACKETS_PER_FRAME;
+
+static inline void ui_midi_carry_set_pace(int pace)
+{
+    if (pace < UI_MIDI_CARRY_PACE_MIN) pace = UI_MIDI_CARRY_PACE_MIN;
+    if (pace > UI_MIDI_CARRY_PACE_MAX) pace = UI_MIDI_CARRY_PACE_MAX;
+    ui_midi_carry_pace = pace;
+}
+
+static inline int ui_midi_carry_get_pace(void) { return ui_midi_carry_pace; }
+
 #define UI_MIDI_CARRY_HIGH_WATER (UI_MIDI_CARRY_BYTES / 2)
 
 typedef struct {
@@ -201,8 +232,11 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
         placed++;
         /* Pace: see UI_MIDI_CARRY_PACKETS_PER_FRAME. The remainder stays in
          * the carry and goes out on following frames, in order, exactly as it
-         * does when the region fills. */
-        if (placed >= UI_MIDI_CARRY_PACKETS_PER_FRAME) break;
+         * does when the region fills. Read through the accessor so the value
+         * can be searched on hardware without a rebuild; it is a plain int
+         * written by the control side, so a torn read is not possible on any
+         * platform this runs on and a stale one costs one frame. */
+        if (placed >= ui_midi_carry_pace) break;
     }
 
     if (read > 0) {

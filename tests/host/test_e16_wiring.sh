@@ -226,8 +226,15 @@ function rig(opts) {
   r.ack();
   r.ticks(2);
   ok(r.send.log.some(isScreen), "an acked device is painted");
-  ok(r.send.log.some((p) => j(msgId(p)) === j(LABELS)),
-     "...and the parameter view paints LABELS, an eleventh of a framebuffer");
+  /* The parameter view is a FRAMEBUFFER. LABELS is an eleventh of the cost and
+   * was tried here; four characters per encoder is not enough for a parameter
+   * name, tested on the device. The mode machinery stays because the protocol
+   * fact survives the decision -- the two modes override each other -- so this
+   * asserts only that a SCREEN was painted, and deliberately does not name
+   * which mode. Pinning the mode here would make the next experiment look like
+   * a regression. */
+  ok(r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
+     "...and the parameter view paints a picture, since 4 chars cannot hold a name");
   ok(r.params.reads.length > readsBefore,
      "...and only then does it read the contract");
 

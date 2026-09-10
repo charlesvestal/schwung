@@ -19,6 +19,13 @@ cc -I src/host tests/host/test_e16_claim_msg.c -o "$out"
 
 # The shim must actually consult it. Without this the header is correct and
 # unused -- which is precisely the shape of the gap this plan hit three times.
-grep -q "e16_claims_msg(1, status, d1)" src/schwung_shim.c \
+#
+# Matched on the CALL, not on the argument spelling. This pin named
+# `(1, status, d1)` verbatim, so moving the claim out of the display-gated
+# block -- where its locals are called `st` and `e_d1` -- failed it, reporting
+# "the shim does not consult e16_claims_msg" about a shim that consults it on
+# the very next line. A pin that fails on a rename defends a spelling rather
+# than a fact, and the noise teaches you to edit the test.
+grep -qE "e16_claims_msg\([^)]*\)" src/schwung_shim.c \
   || { echo "FAIL: the shim does not consult e16_claims_msg"; exit 1; }
 echo "PASS: the shim claims only the surface's own messages"

@@ -10464,6 +10464,39 @@ function e16TestPattern() {
     return e16ProbeValue;
 }
 
+/*
+ * PACING PROBE. Same shape as the test pattern above, and for the same reason:
+ * the value it sets decides how long a framebuffer takes to cross the wire
+ * (394 packets at N per SPI frame, 2.90 ms a frame), and 3 was never measured
+ * -- it was the first value that stopped the garbling. Searching upward used to
+ * mean a cross-compile and a restart per try; it is now an echo:
+ *
+ *   ssh ableton@move.local "echo 8 > /data/UserData/schwung/e16_pace"
+ *
+ * Absent or 0 means the compiled default. Checked once a second, so a change
+ * lands within a second with nothing to restart.
+ */
+let e16PaceCheckedAt = 0;
+let e16PaceValue = 0;
+function e16ReconcilePace() {
+    const now = Date.now();
+    if (now - e16PaceCheckedAt < 1000) return;
+    e16PaceCheckedAt = now;
+    let want = 0;
+    try {
+        const path = "/data/UserData/schwung/e16_pace";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+            if (!isNaN(n) && n > 0) want = n;
+        }
+    } catch (e) {}
+    if (want === e16PaceValue) return;
+    e16PaceValue = want;
+    try {
+        if (typeof host_ui_midi_pace === "function") host_ui_midi_pace(want);
+    } catch (e) {}
+}
+
 const e16Surface = createE16Surface({
     now: () => Date.now(),
     send: e16Send,
@@ -24822,6 +24855,7 @@ globalThis.tick = function() {
     reconcileCcClaim();
     reconcilePadBlock();
     reconcileExternalSurface();
+    e16ReconcilePace();
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance

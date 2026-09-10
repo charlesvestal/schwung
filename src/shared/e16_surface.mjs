@@ -66,6 +66,18 @@ export const PROBE_MS = 2000;
 export const KEEPALIVE_MS = 2000;
 export const LOSS_MS = 6000;
 
+/*
+ * How long a hand has to be still before the printed numbers are redrawn.
+ *
+ * 180 ms is about one slow detent apart: fast enough that letting go of a knob
+ * feels like the screen answers, slow enough that a continuous spin -- which
+ * makes detents far closer than this -- pays ONE repaint at the end instead of
+ * one per detent. The rings carry the value throughout, so nothing is missing
+ * while this is pending; only the digits lag, and only while you are still
+ * moving them.
+ */
+export const SETTLE_MS = 180;
+
 /**
  * The seek / hold / release machine.
  *
@@ -872,6 +884,13 @@ export function createSurface(io) {
      * when you look up a second later to read the value you just set.
      */
     let focusEnc = null;
+    /* When the last detent arrived, and whether the repaint it owes has gone
+     * out. Two variables rather than one timestamp cleared on paint, because
+     * "nothing has been turned yet" and "the turn has been drawn" are
+     * different states and collapsing them repaints once at startup for no
+     * reason. */
+    let turnedAt = -Infinity;
+    let settlePainted = true;
 
     /* The LABELS screen for this frame: sixteen four-character names plus the
      * title. Cheap enough to rebuild per tick (it is string work over a view
@@ -1007,6 +1026,21 @@ export function createSurface(io) {
                  */
                 if (moved) {
                     display.ringChanged(ringFor(viewNow(), act.enc));
+                    /*
+                     * THE NUMBER FOLLOWS THE HAND, ONE REPAINT PER GESTURE.
+                     *
+                     * A framebuffer has no partial update, so the printed
+                     * value cannot move without redrawing all 1024 bytes --
+                     * 383 ms, which is not payable per detent and is what made
+                     * the screen feel frozen while the rings moved. Paying it
+                     * per GESTURE instead is the whole difference: the ring
+                     * tracks the value live at 46 ms while the hand is moving,
+                     * and the settle below redraws once the hand stops, so the
+                     * digits are correct whenever anybody is actually reading
+                     * them.
+                     */
+                    turnedAt = t;
+                    settlePainted = false;
                     /* The TITLE is the only surface carrying the full name and
                      * the reading, so a turn owes one -- but as a separate,
                      * lower-priority debt than the ring. A spin makes many
@@ -1096,6 +1130,14 @@ export function createSurface(io) {
              * assumption in createLifecycle can cost at worst a second of stale
              * rings, never a dead surface.
              */
+            /* The settle. Deliberately BEFORE the send budget is spent, so the
+             * repaint it owes is picked up by this same tick rather than the
+             * next one. */
+            if (!settlePainted && t - turnedAt >= SETTLE_MS) {
+                settlePainted = true;
+                display.invalidate();
+            }
+
             if (sentThisTick) return;
             /*
              * WHICH MODE THIS FRAME WANTS.
@@ -1110,9 +1152,23 @@ export function createSurface(io) {
              * display, so that the display stays a pure pacing machine with no
              * opinion about what a map is.
              */
-            const probeArmed = testPattern() >= 0;
-            const wantsPicture = probeArmed || nav.mapVisible(t);
-            const screen = wantsPicture ? { kind: "framebuffer" } : labelScreen();
+            /*
+             * BOTH VIEWS ARE PICTURES, and that is a measured decision rather
+             * than a default.
+             *
+             * LABELS is an eleventh of a framebuffer (35 ms against 383) and
+             * was tried for the parameter view. It gives FOUR characters per
+             * encoder and that is not enough for a parameter name -- tested on
+             * the device: "the 4 characters isn't enough actually". CUTO, OSCL
+             * and ENVA are guesses, and two of them collide as soon as a
+             * module has both Env Attack and Env Amount.
+             *
+             * The machinery stays because the protocol fact it encodes is
+             * permanent -- the two modes override each other, so a future
+             * LABELS overlay must still resend the picture behind it -- and
+             * because it is what keeps the device honest across a replug.
+             */
+            const screen = { kind: "framebuffer" };
             display.tick(oneSend, () => {
                 /* A layout probe overrides the view. See drawTestPattern:
                  * "the screen is garbled" cannot tell a wrong bit direction

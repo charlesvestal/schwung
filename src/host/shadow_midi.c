@@ -602,6 +602,16 @@ void shadow_inject_ui_midi_out(void)
      * flush since last time", which is a 60 Hz question, while the mailbox
      * empties at 344 Hz. Anything held over has to go out on frames where JS
      * said nothing, or the extra frames buy us nothing at all. */
+    /* Pace from the control block when it names one. An int assignment, which
+     * is all this is, is safe on the callback; the FILE it ultimately comes
+     * from is read by shadow_ui, which is allowed to. */
+    {
+        /* Through host_shadow_control, the injected indirection this file
+         * already uses -- it has no `shadow_control` global of its own, and
+         * the shim's is a different translation unit. */
+        shadow_control_t *sc = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc && sc->ui_midi_pace) ui_midi_carry_set_pace(sc->ui_midi_pace);
+    }
     ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
     shim_ui_midi_out_drops = ui_midi_carry.drops;
 

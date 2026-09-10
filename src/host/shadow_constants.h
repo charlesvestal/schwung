@@ -528,6 +528,23 @@ typedef struct shadow_control_t {
      * APPENDED after speaker_eq_mode, for the reason stated on it.
      */
     volatile uint8_t external_surface;
+
+    /*
+     * Outbound USB-MIDI packets per SPI frame, or 0 for the compiled default.
+     *
+     * Here rather than in a header constant because the value it controls is
+     * the one the user feels -- a 394-packet framebuffer is ceil(394/pace)
+     * frames at 2.90 ms, so 3 is 383 ms and 12 would be 96 -- and 3 was never
+     * measured. It was the first value that stopped the garbling after
+     * "everything at once" failed, and a ceiling nobody searched for is a
+     * ceiling nobody knows. Trying one more value cost a cross-compile and a
+     * device restart; through this field it costs an echo.
+     *
+     * Written by shadow_ui (SCHED_OTHER, may read files), read by the shim's
+     * drain on the SPI callback, which may not. One byte, so no tearing, and a
+     * stale read costs exactly one frame.
+     */
+    volatile uint8_t ui_midi_pace;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */
