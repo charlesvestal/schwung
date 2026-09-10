@@ -5,19 +5,24 @@
     "",
     "`audio: null` means NO AUDIO PREVIEW, deliberately -- streaming, live-input,",
     "assistant and tuner modules have nothing deterministic to render, and a",
-    "synthesised clip for them would be a fabrication rather than a preview."
+    "synthesised clip for them would be a fabrication rather than a preview.",
+    "`adaptive_density` spreads the phrase to suit each PRESET's measured release. The score fires a note every ~0.28 s and releases across the fleet run 0.00-3.40 s, so without it a long-release preset stacks a dozen voices and turns to mud.",
+    "`_by_tag` overrides the subcategory rule for a module carrying that tag."
   ],
   "default": {
     "midi": "wtk1-prelude1.mid",
     "seconds": 27,
     "tail": 3,
     "presets": 4,
-    "octave_fit": true
+    "octave_fit": true,
+    "adaptive_density": true
   },
   "sound_generator": {
     "polysynth": {},
     "mono-bass": {
-      "presets": 3
+      "presets": 3,
+      "transpose": -12,
+      "_why": "A bass patch previewed in the treble is a preview of the wrong instrument. The octave fit puts note 60 where note 60 belongs; this then moves the PHRASE down an octave, which is a musical decision the fit cannot make."
     },
     "west-coast": {
       "presets": 3
@@ -79,6 +84,12 @@
     "_all": {
       "audio": null,
       "_why": "An overtake module owns the whole surface and is not fed MIDI from a slot; there is no score that means anything."
+    }
+  },
+  "_by_tag": {
+    "bass": {
+      "transpose": -12,
+      "_why": "Applies to a bass patch that is NOT in the Mono & Bass subcategory -- tb3po is a tool, and a bass preset can live inside a polysynth. A tag rule overrides the subcategory's, and stacks with nothing: transpose is set, not accumulated."
     }
   }
 }

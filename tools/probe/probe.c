@@ -28,6 +28,9 @@
 #define BLK 128
 #define SR  44100
 #define CONTRACT_BUF (1 << 18)   /* 256 KB: the host's own contract ceiling */
+/* The scratch buffer is shared by every measurement, so it is sized for the
+ * LONGEST of them (the release tail), not the first one written. */
+#define SCRATCH_SECONDS 5
 
 /* Every module guards `if (host->fn)`, so an all-zero host is safe and is what
  * lets this run with no host at all. */
@@ -269,15 +272,72 @@ static void wav_write(const char *path, const int16_t *pcm, int frames) {
 }
 
 /*
+ * How long does this patch take to get out of its own way? Hold a note,
+ * release it, measure the decay to -40 dB.
+ *
+ * WHY IT MATTERS: the score fires a note every ~0.28 s. Measured across the
+ * fleet, releases run from 0.00 s to 3.40 s -- so on a long-release preset a
+ * dozen voices ring at once and the preview is mud, while the score itself
+ * never holds more than three notes. Density has to follow the PRESET, not
+ * the music.
+ *
+ * NOTE THE STRADDLE. `if (o == HOLD)` is wrong and silently so: o steps by
+ * BLK and HOLD is rarely a multiple of it, so the note-off never fires and
+ * every patch measures as an infinite release. This has now cost three
+ * separate measurements; test the interval, never the instant.
+ */
+/*
+ * Let whatever is still sounding die away.
+ *
+ * A module keeps state across presets, so the PREVIOUS preset's tail is still
+ * ringing when the next one is measured -- and a measurement taken over it
+ * reports the tail rather than the patch. Sub Bass measured 0.10 s alone and
+ * 4.00 s in sequence for exactly this reason.
+ */
+static void settle(mod_t *m, int16_t *scratch) {
+    uint8_t all_off[3] = { 0xB0, 123, 0 };      /* All Notes Off */
+    mod_midi(m, all_off, 3);
+    const int F = SR * 2;
+    for (int o = 0; o + BLK <= F; o += BLK) mod_render(m, scratch + (size_t)(o % (SR)) * 2, BLK);
+}
+
+static double release_seconds(mod_t *m, int16_t *scratch) {
+    const int HOLD = SR, F = SR * SCRATCH_SECONDS;
+    settle(m, scratch);
+    memset(scratch, 0, (size_t)F * 4);
+    uint8_t on[3] = { 0x90, 60, 100 }, off[3] = { 0x80, 60, 0 };
+    mod_midi(m, on, 3);
+    for (int o = 0; o + BLK <= F; o += BLK) {
+        if (o <= HOLD && o + BLK > HOLD) mod_midi(m, off, 3);
+        mod_render(m, scratch + (size_t)o * 2, BLK);
+    }
+    double ref = 0; int n = 0;
+    for (int i = HOLD - SR / 4; i < HOLD; i++) { ref += (double)scratch[i*2] * scratch[i*2]; n++; }
+    ref = sqrt(ref / n);
+    if (ref <= 0) return 0;
+    const double thr = ref / 100.0;              /* -40 dB */
+    for (int w = HOLD; w + SR/20 < F; w += SR/20) {
+        double e = 0;
+        for (int i = w; i < w + SR/20; i++) e += (double)scratch[i*2] * scratch[i*2];
+        if (sqrt(e / (SR/20)) < thr) return (w - HOLD) / (double)SR;
+    }
+    return (F - HOLD) / (double)SR;
+}
+
+/*
  * Render the score. The chain form is source synth -> effect, block by block,
  * exactly as a slot runs it: an FX rendered ALONE processes a silent buffer
  * and would publish 30 s of nothing. `fx` may be NULL for a plain synth.
  */
-static void render_chain(mod_t *src, mod_t *fx, const score_t *s, int shift, int16_t *pcm) {
+static void render_chain(mod_t *src, mod_t *fx, const score_t *s, int shift,
+                         double stretch, int16_t *pcm) {
     memset(pcm, 0, (size_t)s->frames * 4);
     int e = 0;
     for (int o = 0; o + BLK <= s->frames; o += BLK) {
-        while (e < s->n && s->ev[e].sample < o + BLK) {
+        /* Stretching SPREADS the same phrase over the same window, so a
+         * long-release patch simply plays fewer notes rather than a slower
+         * tune -- events past the end are dropped. */
+        while (e < s->n && (long)(s->ev[e].sample * stretch) < o + BLK) {
             int note = s->ev[e].d1 + 12 * shift;
             if (note >= 0 && note <= 127) {
                 uint8_t msg[3] = { (uint8_t)s->ev[e].status, (uint8_t)note, (uint8_t)s->ev[e].d2 };
@@ -310,6 +370,7 @@ static void usage(void) {
       "\n"
       "  --presets N   render N presets spread across the module's own bank.\n"
       "                A module declaring none gets one render; no bank is invented.\n"
+      "  --adaptive-density  spread the phrase to suit the preset's measured release.\n"
       "  --octave-fit  shift the score by whole octaves so the patch lands in\n"
       "                register, and REVERT if the shift does not verify.\n"
       "  --set k=v     applied after the preset, before rendering.\n", stderr);
@@ -317,7 +378,7 @@ static void usage(void) {
 
 int main(int argc, char **argv) {
     const char *dir = NULL, *so = NULL, *score_path = NULL, *out = NULL, *id = "module";
-    int want_contract = 0, want_render = 0, npresets = 1, fit = 0;
+    int want_contract = 0, want_render = 0, npresets = 1, fit = 0, adapt = 0;
     const char *sets[32]; int nsets = 0;
     const char *src_dir = NULL, *src_so = NULL;
 
@@ -330,6 +391,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-o")         && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "--presets")  && i + 1 < argc) npresets = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--octave-fit")) fit = 1;
+        else if (!strcmp(argv[i], "--adaptive-density")) adapt = 1;
         else if (!strcmp(argv[i], "--source-dir") && i + 1 < argc) src_dir = argv[++i];
         else if (!strcmp(argv[i], "--source-so")  && i + 1 < argc) src_so  = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc && nsets < 32) sets[nsets++] = argv[++i];
@@ -379,7 +441,7 @@ int main(int argc, char **argv) {
                                                : "no preset bank declared -- one render");
 
     int16_t *pcm     = calloc((size_t)s.frames * 2, sizeof(int16_t));
-    int16_t *scratch = calloc((size_t)SR * 2, sizeof(int16_t));
+    int16_t *scratch = calloc((size_t)SR * SCRATCH_SECONDS * 2, sizeof(int16_t));
 
     printf("[\n");
     for (int j = 0; j < k; j++) {
@@ -402,9 +464,20 @@ int main(int argc, char **argv) {
         }
 
         char why[256] = "not requested";
+        char density[128] = "1.00";
         int shift = fit ? octave_fit(chained ? &source : &m, 60, scratch, why, sizeof why) : 0;
 
-        render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, pcm);
+            /* Density follows the preset's own release. Spacing of ~0.28 s
+         * against a 3.4 s release is a dozen overlapping voices. */
+        double stretch = 1.0;
+        if (adapt) {
+            double rel = release_seconds(chained ? &source : &m, scratch);
+            stretch = rel / 0.28;
+            if (stretch < 1.0) stretch = 1.0;
+            if (stretch > 4.0) stretch = 4.0;
+            snprintf(density, sizeof density, "release %.2fs -> spacing x%.2f", rel, stretch);
+        }
+        render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, stretch, pcm);
         double db = rms_dbfs(pcm, (long)s.frames * 2);
 
         char path[1024];
@@ -420,8 +493,8 @@ int main(int argc, char **argv) {
         printf("  {\"slot\": %d, \"preset\": ", j);
         if (has_presets) printf("%d", idx); else printf("null");
         printf(", \"name\": \"%s\", \"file\": \"%s\", "
-               "\"rms_dbfs\": %.1f, \"octave_shift\": %d, \"fit\": \"%s\"}%s\n",
-               name, path, db, shift, why, j + 1 < k ? "," : "");
+               "\"rms_dbfs\": %.1f, \"octave_shift\": %d, \"fit\": \"%s\", \"density\": \"%s\"}%s\n",
+               name, path, db, shift, why, density, j + 1 < k ? "," : "");
         fprintf(stderr, "  [%d] preset %-4d %-24s %6.1f dBFS  oct %+d  (%s)\n",
                 j, idx, name, db, shift, why);
     }
