@@ -10438,11 +10438,38 @@ let externalSurfaceFollow = 0;
  * there is nothing to gate here and no second place where "is it on" is
  * answered.
  */
+/*
+ * Layout probe arming, read from a file so a pattern can be changed without a
+ * rebuild -- the whole point is a fast loop against the device.
+ *
+ * Throttled to ~1 Hz: it is an eMMC stat on the shadow_ui loop, and this exists
+ * for a debugging session, not for the steady state. Absent file, or an
+ * unparseable one, means -1: draw the real view.
+ */
+let e16ProbeValue = -1;
+let e16ProbeCheckedAt = 0;
+function e16TestPattern() {
+    const now = Date.now();
+    if (now - e16ProbeCheckedAt < 1000) return e16ProbeValue;
+    e16ProbeCheckedAt = now;
+    e16ProbeValue = -1;
+    try {
+        const path = "/data/UserData/schwung/e16_testpattern";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const raw = host_read_file(path);
+            const n = parseInt(String(raw == null ? "" : raw).trim(), 10);
+            if (!isNaN(n) && n >= 0) e16ProbeValue = n;
+        }
+    } catch (e) {}
+    return e16ProbeValue;
+}
+
 const e16Surface = createE16Surface({
     now: () => Date.now(),
     send: e16Send,
     chainOf: e16ChainShape,
     followFocusOf: e16FollowFocus,
+    testPatternOf: e16TestPattern,
     /*
      * A FACTORY, and the surface gets a controller of its OWN.
      *
