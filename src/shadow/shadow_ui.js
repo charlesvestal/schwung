@@ -19641,6 +19641,9 @@ function openCanvasPreview(paramKey, meta) {
     }
 
     canvasRuntime.ctx = createCanvasRuntimeContext();
+    /* onOpen has just read everything it wants; start the poll metronome here
+     * so the first tick does not read it all again a frame later. */
+    canvasRuntime.pollMs = Date.now();
     invokeCanvasOverlayHook("onOpen", {
         param_key: canvasParamKey,
         module_id: canvasRuntime.moduleId,
@@ -19663,9 +19666,41 @@ function closeCanvasPreview(cancelled) {
     needsRedraw = true;
 }
 
+/*
+ * A TAKEOVER MUST BE ABLE TO ASK AGAIN, AND A FRAME IS NOT THE PLACE.
+ *
+ * draw and tick have the accessors removed on purpose (DRAW_PATH_HOOKS above):
+ * one read is ~2.8ms against a 1.68ms whole render, so an overlay reading per
+ * frame halves its own frame rate and everything drawn with it.
+ *
+ * But a takeover owns the screen for minutes at a stretch, and things change
+ * under it that none of ITS OWN input caused -- a worker thread finishing, a
+ * Remote UI panel in a browser editing the same module. With reads only on
+ * events, the screen tells the truth only when the user touches something,
+ * which reads as "the device did not get the change" rather than as a missing
+ * refresh.
+ *
+ * So `onPoll` is an EVENT ON A METRONOME: the full ctx, at most one call every
+ * CANVAS_POLL_MS. At 250ms a single read is ~1% of the frame budget -- the same
+ * order as the knob rotation, which has always read on a metronome for exactly
+ * this reason. It is OPT-IN: an overlay that does not define it costs nothing,
+ * and one that does is expected to read a HANDFUL of keys, not a page.
+ */
+const CANVAS_POLL_MS = 250;
+
+function pollCanvasOverlay() {
+    if (!canvasRuntime || !canvasRuntime.overlay) return;
+    if (typeof canvasRuntime.overlay.onPoll !== "function") return;
+    const now = Date.now();
+    if (now - (canvasRuntime.pollMs || 0) < CANVAS_POLL_MS) return;
+    canvasRuntime.pollMs = now;
+    invokeCanvasOverlayHook("onPoll", { nowMs: now });
+}
+
 function tickCanvasPreview() {
     if (view !== VIEWS.CANVAS) return;
     invokeCanvasOverlayHook("tick", {});
+    pollCanvasOverlay();
 }
 
 function drawCanvasPreview() {
