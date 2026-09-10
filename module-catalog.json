@@ -2115,6 +2115,17 @@
       "default_branch": "master",
       "asset_name": "dr32-module.tar.gz",
       "min_host_version": "1.3.0"
+    },
+    {
+      "id": "busdriver",
+      "name": "Bus Driver",
+      "description": "Drum-bus glue: one-knob compression that only ever attenuates, a spectrum-neutral saturator, and orthogonal attack/sustain transient shaping. Measured, not guessed.",
+      "author": "legsmechanical",
+      "component_type": "audio_fx",
+      "github_repo": "legsmechanical/schwung-busdriver",
+      "default_branch": "main",
+      "asset_name": "busdriver-module.tar.gz",
+      "min_host_version": "0.9.0"
     }
   ]
 }
