@@ -227,6 +227,7 @@ function renderScreens(mod, contract, version, outDir, dir) {
 function renderAudio(mod, rule, dir, so, outDir) {
   const audioDir = path.join(outDir, "audio");
   fs.mkdirSync(audioDir, { recursive: true });
+  let sourceUsed = null;
 
   const scorePath = path.join(outDir, "score.json");
   if (!rule.midi) return { status: "not-applicable", detail: "no melodic score for this subcategory yet" };
@@ -248,6 +249,11 @@ function renderAudio(mod, rule, dir, so, outDir) {
     const srcSo = findSo(srcDir, srcMod.id);
     if (!srcSo) throw new Error(`source ${rule.source} has no .so`);
     a.push("--source-dir", srcDir, "--source-so", srcSo);
+    /* Record WHICH source and which version rendered this. An FX preview is
+     * only comparable with another while the instrument in front of it is the
+     * same one, so a change of source has to be visible rather than inferred
+     * from the sound. */
+    sourceUsed = { id: srcMod.id, version: readVersion(srcDir) };
   }
 
   /* Dry/wet at 50% of the DECLARED range, or not at all. */
@@ -277,7 +283,7 @@ function renderAudio(mod, rule, dir, so, outDir) {
    * would amplify the noise floor and publish it as a preview. */
   const usable = clips.filter((c) => c.rms_dbfs > -60);
   if (!usable.length) return { status: "error", detail: "every render was silent" };
-  return { status: "ok", score: rule.midi, wet, clips: usable,
+  return { status: "ok", score: rule.midi, wet, source: sourceUsed, clips: usable,
            dropped: clips.length - usable.length || undefined };
 }
 
@@ -288,7 +294,14 @@ const wanted = args.includes("--all")
 if (!wanted.length) { console.error("usage: generate.mjs <id>... | --all  --out DIR"); process.exit(2); }
 
 fs.mkdirSync(OUT, { recursive: true });
-const index = { generated_at: new Date().toISOString(), harness_version: "1", modules: {} };
+/* MERGE, never replace. Regenerating three modules must not delete the other
+ * hundred and thirty: a partial run is the normal case (a module released, a
+ * score changed) and a whole-index rewrite silently unpublishes everything it
+ * did not touch. */
+const indexPath = path.join(OUT, "index.json");
+const prior = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, "utf8")) : { modules: {} };
+const index = { generated_at: new Date().toISOString(), harness_version: "1",
+                modules: { ...(prior.modules || {}) } };
 for (const mod of wanted) {
   process.stderr.write(`\n=== ${mod.id} (${mod.component_type}/${mod.subcategory})\n`);
   const e = await generate(mod);
