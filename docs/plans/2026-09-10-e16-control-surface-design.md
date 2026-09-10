@@ -236,3 +236,56 @@ a shim change is a cross-compile, a reinstall and a reboot.
   cost proves prohibitive.
 - **On-device chain editing** (adding or swapping modules from the E16). The map
   navigates; it does not edit shape.
+
+---
+
+## Hardware findings, 2026-09-10
+
+The bench pass found six defects that 325 host tests could not, and settled two
+questions the design had guessed at. Recorded here because every one of them is
+the kind of thing the next person re-derives.
+
+**Six bugs, all invisible to host tests:**
+
+1. **The claim excluded SysEx.** Narrowing the shim's cable-2 claim to CC and
+   notes meant the E16's ACK was never published to JS, so `present` never
+   flipped and every frame was withheld. The device sat in remote mode, blank.
+2. **The ACK died at a CIN gate.** `cin < 0x08 || cin > 0x0E` drops SysEx before
+   any cable test -- the gate `docs/SYSEX.md` names as why a chain slot is
+   write-only for SysEx. Widening the CABLE condition was not enough. Both
+   halves were individually correct; only the composition failed.
+3. **`font4x5` has no lowercase.** `print("cutoff")` drew nothing while
+   `fontWidth4x5` still returned a width, so layouts reserved space for glyphs
+   that never appeared. `render_page_movy` has always called `caps()`; we did
+   not. The original test passed because it used `"Hi"` -- the capital H inks.
+4. **The outbound buffer was 1024 bytes against a 1576-byte frame.** The send
+   wrote what fit, dropped the rest and returned false; the caller correctly
+   re-owed the repaint and retried forever, six truncated bursts a second.
+5. **A message too large to ever fit was retried, not refused.** "False means
+   retry" is right for a full buffer because it drains; it is a livelock when
+   the message can never fit.
+6. **`short_name` was read from the wrong object.** It lives on
+   `page.shortNames`, collected by `page_plan`; `getOrGuess` never carries it,
+   so every cell fell through to the raw parameter id.
+
+**The transport finding, which is the general one:** outbound SysEx loss on
+USB-A is a function of RATE, not size. The carry filled every free MIDI_OUT
+slot, sending ~6900 packets/s; a 394-packet framebuffer arrived with most of its
+middle gone. Paced to a few packets per frame, a full-width bar drawn at the
+bottom of the buffer landed exactly there. **This is #358's outbound twin and
+the fix is transport-level** (`UI_MIDI_CARRY_PACKETS_PER_FRAME`), so every
+module sending a bulk dump benefits.
+
+**Two design guesses, now answered:**
+
+- An E16 already in remote mode **does** re-ACK a repeated ENTER, so the
+  keepalive design holds. Task 7 flagged this as unverified.
+- The framebuffer **is** viable on this hardware, which the author who
+  reverse-engineered the protocol never achieved. Lua was considered as an
+  alternative and rejected on evidence: its entire display surface is a 15-char
+  title, sixteen 4-char labels and the rings -- no pixel API at all -- so it is
+  the same surface as the LABELS message plus a per-device App upload.
+
+**Still open:** whether 1024 bytes spans the whole panel. Probe 5 (fill
+everything) is armed and answers it by inspection; content was observed
+surviving an off/on cycle, which a full frame of zeros should not allow.
