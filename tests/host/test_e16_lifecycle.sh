@@ -25,7 +25,8 @@ cd "$(dirname "$0")/../.."
 if ! command -v node >/dev/null 2>&1; then echo "FAIL: node required" >&2; exit 1; fi
 
 node --input-type=module -e '
-import { createLifecycle, createSysexAssembler } from "./src/shared/e16_surface.mjs";
+import { createLifecycle, createSysexAssembler, KEEPALIVE_MS, LOSS_MS }
+    from "./src/shared/e16_surface.mjs";
 import { enterMsg, exitMsg, packetize, ACK_BODY } from "./src/shared/e16_protocol.mjs";
 import { GLOBAL_SECTIONS, GLOBAL_ROUTING, buildGlobalSettingsContract }
     from "./src/shadow/shadow_ui_global_grid.mjs";
@@ -204,6 +205,47 @@ function recorder() {
   eq("the lifecycle is ticked", /externalSurfaceTick\(/.test(src), true);
   eq("external SysEx is fed to the assembler",
      /onMidiMessageExternal[\s\S]{0,400}externalSurfaceMidi\(/.test(src), true);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * A REPLUG MUST PRODUCE AN EDGE.
+ *
+ * The presence edge is the ONLY thing that repaints a device which has come
+ * back, so an expiry slower than a realistic replug is not a conservative
+ * choice -- it is the bug. With KEEPALIVE 10s / LOSS 25s, a cable out and back
+ * inside 25 s never crossed the threshold: present stayed true, no edge fired,
+ * and the surface believed it had painted a panel that had been wiped by losing
+ * power. The next keepalive ENTER put it back into remote mode with a blank
+ * screen, which is why it was reported as "it did go back into remote mode"
+ * and "replug didnt recover".
+ *
+ * Pinned as a RELATIONSHIP, not as two numbers: whatever the constants become,
+ * a plausible replug has to expire presence, and one dropped ACK must not.
+ * ------------------------------------------------------------------------- */
+{
+  eq("loss tolerates a dropped ACK (" + LOSS_MS + " vs keepalive " + KEEPALIVE_MS + ")",
+     LOSS_MS >= KEEPALIVE_MS * 2, true);
+  eq("an absence of a few seconds EXPIRES -- a replug must produce the edge "
+     + "that repaints (LOSS_MS=" + LOSS_MS + ")", LOSS_MS <= 8000, true);
+
+  /* Drive the real machine across a replug shorter than the old LOSS_MS. */
+  const sent = [];
+  const send = (p) => { sent.push(p); return true; };
+  let t = 0;
+  const lc = createLifecycle();
+  lc.setEnabled(true, t, send);
+  lc.tick(t, send);
+  lc.onSysex(ACK_BODY, t);
+  eq("replug: present after the ACK", lc.present, true);
+
+  /* Cable out for 8 s -- well inside the OLD 25 s window. */
+  for (let i = 0; i < 40; i++) { t += 200; lc.tick(t, send); }
+  eq("replug: an 8 s absence expires presence -- with the old constants this "
+     + "stayed true and no repaint ever happened", lc.present, false);
+
+  lc.onSysex(ACK_BODY, t);
+  eq("replug: present again on the ACK, which is the repaint edge", lc.present, true);
 }
 
 console.log(fails ? "FAILED " + fails : "PASS");
