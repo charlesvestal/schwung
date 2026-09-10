@@ -1215,8 +1215,7 @@ module that sends SysEx.
 
 ## Task 12 status, 2026-09-10
 
-Four of five criteria verified on hardware; one is blocked on a physical action
-and is left OPEN rather than inferred.
+All five criteria verified on hardware. Task 12 DONE.
 
 | criterion | state |
 |---|---|
@@ -1224,7 +1223,7 @@ and is left OPEN rather than inferred.
 | encoder turn moves the mapped parameter | VERIFIED on hardware |
 | rings render, bipolar centred | VERIFIED — rings on hardware; the bipolar rule is pinned in `test_e16_view.sh` (negative min ⇒ `bipolar: true`, a symmetric range's zero ⇒ amount at ring centre). That is the whole of Schwung's half; the centre-anchored drawing is the E16 firmware acting on the flag. |
 | Shift map navigation | VERIFIED on hardware — and the "9w9 in slot 9" report was the truncated frame, not a mapping fault: rendered against the device's real chain, 9w9 is at cell 4 (encoder 5). Pinned in `test_e16_map.sh` against that chain. |
-| replug recovery | **OPEN.** Two fixes shipped and confirmed byte-identical on the device; not retested. |
+| replug recovery | VERIFIED on hardware 2026-09-11 ("unplugging and replugging does work"), after the two fixes below. |
 
 **The replug fix has been wrong once already, so do not assume it.** The first
 attempt (restate the rings on the presence edge) was correct in itself and
@@ -1234,5 +1233,7 @@ the next keepalive ENTER puts the device back into remote mode. That is the
 whole of the misleading symptom — it re-enters and does not recover. The second
 fix retunes to 2 s / 6 s so an absence must miss a probe.
 
-Both are deployed. Neither is verified. The next session should pull the cable,
-wait ~8 s, plug it back in, and expect screen and rings within a few seconds.
+Both are deployed and both were needed: the first was correct in itself and
+rode on an edge that never fired, which is the whole lesson -- a fix hung off a
+condition that cannot occur is indistinguishable from no fix at all, and only
+the hardware retest could tell them apart.
