@@ -194,3 +194,105 @@ export function createSysexAssembler(opts) {
         get pending() { return buf ? buf.length : -1; },
     };
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * THE PACED DISPLAY
+ *
+ * The rate discipline IS the display strategy here, not an optimisation on top
+ * of one. Measured outbound on 2026-09-09: 31 packets sent alone arrived
+ * byte-perfect; 34 packets sent amid other traffic lost 8 whole packets. A
+ * framebuffer is 1024 raw bytes -> 1171 packed -> ~391 USB-MIDI packets, so it
+ * is only ever sendable when nothing else is going out.
+ *
+ * Hence the asymmetry:
+ *
+ *   navigation   -> ONE framebuffer, and only on a discrete human action
+ *   value change -> ONE LED RING chunk, ~15 bytes on the wire
+ *
+ * A value change must NEVER redraw the screen. It is the common case -- a knob
+ * under a hand produces one of these per detent -- and turning it into a
+ * repaint is how a surface that measured fine in isolation drops packets in
+ * use. The rings carry values; the framebuffer carries layout.
+ *
+ * Three rules, all enforced here rather than at the call sites:
+ *
+ *   1. AT MOST ONE MESSAGE PER TICK. A framebuffer plus rings in the same tick
+ *      is precisely the "amid other traffic" case that lost packets.
+ *   2. NEVER MORE THAN ONE FRAMEBUFFER IN FLIGHT. `fbOwed` is a BOOLEAN, not a
+ *      counter: three navigations inside one tick are one repaint, and a
+ *      refused send stays owed rather than queueing a second copy.
+ *   3. RINGS COALESCE PER ENCODER. A fast spin makes many events for one
+ *      encoder and only the last position is true, so they collapse into one
+ *      chunk keyed by encoder -- and every pending encoder rides in a single
+ *      message, because sixteen chunks is still 113 bytes.
+ *
+ * Pure and injected like the lifecycle: `send` and the frame producer are the
+ * caller's, so tests drive the whole thing with no device.
+ * ---------------------------------------------------------------------------
+ */
+import { framebufferMsg, ringMsg } from "./e16_protocol.mjs";
+
+export function createDisplay() {
+    let fbOwed = false;
+    /* enc -> the latest ring descriptor for it. A Map because insertion order
+     * is stable, so chunks go out in the order the encoders moved. */
+    const rings = new Map();
+
+    const emitMsg = (send, bytes) => {
+        try { return send(packetize(bytes)) !== false; }
+        catch (e) { return false; }
+    };
+
+    return {
+        /**
+         * The layout changed -- a page pair, a component, a focus jump. Marks
+         * one repaint owed; calling it ten times still owes one.
+         */
+        invalidate() { fbOwed = true; },
+
+        /**
+         * One encoder's value moved. Takes a descriptor from
+         * `e16_view.ringFor()`; a null (empty cell) is ignored rather than
+         * queueing a chunk for an encoder that drives nothing.
+         */
+        ringChanged(desc) {
+            if (!desc || typeof desc.enc !== "number") return;
+            rings.set(desc.enc, desc);
+        },
+
+        /**
+         * Send at most one message.
+         *
+         * @param {function} send        packets -> boolean (false = refused)
+         * @param {function} frameBytes  () -> 1024-byte framebuffer. Called
+         *        ONLY when a repaint is actually going out, so a caller can
+         *        render lazily and a tick that owes nothing costs no drawing.
+         * @returns {"framebuffer"|"rings"|null} what went out, for tests and
+         *        for a caller that wants to log its send budget.
+         */
+        tick(send, frameBytes) {
+            if (fbOwed) {
+                /* Rings deliberately wait: see rule 1. The repaint is the
+                 * expensive send and it goes out alone. */
+                if (emitMsg(send, framebufferMsg(frameBytes()))) {
+                    fbOwed = false;
+                    return "framebuffer";
+                }
+                return null;
+            }
+            if (!rings.size) return null;
+            const chunks = Array.from(rings.values());
+            if (!emitMsg(send, ringMsg(chunks))) return null;
+            /* Cleared only on an ACCEPTED send. A refused ring message leaves
+             * the positions owed -- the same reason the lifecycle latches an
+             * owed EXIT rather than trusting the send. */
+            rings.clear();
+            return "rings";
+        },
+
+        /* Test seams. */
+        get framebufferOwed() { return fbOwed; },
+        get ringsPending() { return rings.size; },
+    };
+}
