@@ -296,3 +296,256 @@ export function createDisplay() {
         get ringsPending() { return rings.size; },
     };
 }
+
+/*
+ * ---------------------------------------------------------------------------
+ * NAVIGATION -- the Shift-held map, and what the sixteen buttons mean.
+ *
+ * =================== THE MODIFIER CANNOT BE A LATCH =========================
+ *
+ * There is exactly one piece of modifier state here and it is a TIMESTAMP, not
+ * a boolean. `mapVisible(now)` is COMPUTED from it on every read; nothing
+ * anywhere stores "the map is up".
+ *
+ * That shape is chosen against a specific, expensive failure. CLAUDE.md's
+ * account of `pad_block` is the precedent: a flag that could only be lowered by
+ * an event stuck on a field device for THIRTEEN HOURS across two shim inits,
+ * and enumerating the ways it could end failed on hardware TWICE -- once for a
+ * jump that keeps the module loaded, once for co-run. The conclusion recorded
+ * there is that such a flag is released by an INVARIANT restated every frame,
+ * never by an exit list.
+ *
+ * Shift is the same problem with a worse channel. The note-off is one MIDI
+ * message on a USB-A port that is known to drop whole packets under traffic
+ * (docs/E16_REMOTE.md; 34 packets amid other traffic lost 8), the E16 has no
+ * battery so unplugging it silently power-cycles it mid-hold, and the shim's
+ * forwarding gate can be closed while a finger is down. Every one of those is a
+ * note-on with no note-off, and NONE of them generates an event we could add to
+ * an exit list -- which is precisely why the escape cannot be one.
+ *
+ * So the hold EXPIRES. `MAP_MAX_HOLD_MS` after the press, `mapVisible` answers
+ * false because time moved, with no message, no tick, and no cooperation from
+ * anything. There is no state that could be left behind, because the only
+ * state is a number being compared against a clock that only goes forwards.
+ * The map is momentary by design -- it exists while the modifier is held and
+ * there is no mode to be lost in -- and this keeps that true even when the
+ * device stops talking to us mid-gesture.
+ *
+ * Two consequences worth stating so they are not later "fixed":
+ *
+ *   - A DOWN WHILE THE MAP IS ALREADY UP DOES NOT RE-ARM IT. Refreshing the
+ *     deadline from input would make a stranded hold immortal for exactly the
+ *     user who is trying to work through it: a hand turning knobs would keep
+ *     feeding the very state that is eating its turns.
+ *   - A LOWER PUSH CONSUMES THE HOLD. The jump ends the gesture, so the surface
+ *     you land on is the one you can see. It is also the common-case escape:
+ *     most strandings end on the next thing the user does anyway.
+ *
+ * `tick()` is the restatement. It compares the DERIVED visibility against what
+ * was last actually drawn and invalidates on a difference -- so the expiry
+ * repaints itself with no event, the same way `reconcilePadBlock()` restates
+ * its flag every frame rather than trusting the exits.
+ *
+ * =================== WHY THE CURRENT SLOT'S OWN CELL IS THE BUS DOOR ========
+ *
+ * The design asks for "a dedicated cell" that swaps the lower twelve to buses,
+ * and `buildMap` leaves none: all sixteen are slots or components. Stealing one
+ * of the twelve would shrink the component capacity of every slot to pay for a
+ * view most slots have nothing to show in. So the door is the top-row cell of
+ * the slot you are ALREADY on -- a press there cannot mean "switch to this
+ * slot", which makes it free, and it reads as the slot's own handle: press it
+ * to change what is listed beneath it, turn it to page that list.
+ *
+ * Everything is pure and injected, like the rest of this file: the chain, the
+ * page count, the parameter renderer and the focus callback are all the
+ * caller's. This module never reads or writes a parameter -- a jump is
+ * REPORTED through `onFocus`, and `e16_view.mjs` remains the only path a value
+ * can travel.
+ * ---------------------------------------------------------------------------
+ */
+import { buildMap } from "./e16_map.mjs";
+import { renderMap, pageStep } from "./e16_view.mjs";
+
+/* How long a Shift hold can live without a note-off.
+ *
+ * Ten seconds is a judgement, and the direction of the error is the point. The
+ * map is a jump-target picker: every hold that produces a jump ends when the
+ * jump does, so a hold that has produced nothing for ten seconds is far more
+ * likely to be a lost note-off than a decision. Erring long strands the
+ * surface; erring short costs one more press. */
+export const MAP_MAX_HOLD_MS = 10000;
+
+/* The top row is the four slots; everything below is the selected slot's
+ * content. Both halves of that split are already `e16_map.mjs`'s, and this is
+ * the input side of the same fact. */
+const SLOT_CELLS = 4;
+
+export function createNav(opts) {
+    const o = opts || {};
+    const display = o.display || null;
+    const chainOf = o.chainOf || (() => ({ slots: [] }));
+    const onFocus = o.onFocus || (() => {});
+    const renderParams = o.renderParams || (() => {});
+    const pageCountOf = o.pageCountOf || (() => 1);
+    const maxHoldMs = o.maxHoldMs === undefined ? MAP_MAX_HOLD_MS : o.maxHoldMs;
+
+    /* THE ONLY MODIFIER STATE. Null means no hold; a number is when it began.
+     * Never a boolean -- see the header. */
+    let shiftDownAt = null;
+
+    let slot = o.slot | 0;
+    let component = o.component || "synth";
+    let pageIndex = 0;
+    let mapPage = 0;
+    let showBuses = false;
+
+    /* What the last framebuffer that actually went out was showing. Compared
+     * against the derived visibility in tick(); it is a record of the PAST, so
+     * it cannot be the thing that decides the present. */
+    let shownMap = false;
+
+    const mapVisible = (now) =>
+        shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
+
+    const invalidate = () => { if (display) display.invalidate(); };
+
+    const currentMap = () =>
+        buildMap(chainOf(), { slot, page: mapPage, showBuses });
+
+    return {
+        /**
+         * One surface event -- whatever `e16_input.decode()` produced.
+         *
+         * @returns a description of what happened, or null for an event that
+         *          meant nothing here. A push or turn arriving while the map is
+         *          DOWN is handed straight back as `click` / `turn` for the
+         *          caller to route through the grid: this module decides what a
+         *          gesture MEANS, never what a parameter becomes.
+         */
+        handle(ev, now) {
+            if (!ev) return null;
+
+            if (ev.type === "shift") {
+                if (ev.down) {
+                    /* Deliberately not a re-arm: a repeat down while up leaves
+                     * the original deadline standing (see the header). */
+                    if (mapVisible(now)) return null;
+                    shiftDownAt = now;
+                    mapPage = 0;
+                    showBuses = false;
+                    invalidate();
+                    return { action: "map" };
+                }
+                if (!mapVisible(now)) {
+                    /* The hold already ended -- by a jump, or by expiring. A
+                     * repaint here would be a second framebuffer for a screen
+                     * that is already correct. */
+                    shiftDownAt = null;
+                    return null;
+                }
+                shiftDownAt = null;
+                invalidate();
+                return { action: "params" };
+            }
+
+            /* A button release is inert. Pushes act on the DOWN edge, so acting
+             * on the up edge too would run every gesture twice -- and a jump
+             * run twice is a second onFocus for a component the user selected
+             * once. */
+            if (ev.type === "release") return null;
+
+            if (ev.type === "push") {
+                if (!mapVisible(now)) return { action: "click", enc: ev.enc };
+                const enc = ev.enc | 0;
+                if (enc < SLOT_CELLS) {
+                    if (enc === slot) {
+                        showBuses = !showBuses;
+                        mapPage = 0;
+                        invalidate();
+                        return { action: "buses", showBuses };
+                    }
+                    slot = enc;
+                    mapPage = 0;
+                    /* Leaving bus view on a slot change is not tidiness: the
+                     * new slot's components would otherwise be hidden behind a
+                     * mode the user set while looking at a different slot. */
+                    showBuses = false;
+                    invalidate();
+                    return { action: "slot", slot };
+                }
+                const cell = currentMap().cells[enc];
+                /* A hole is not a destination (e16_map.mjs). Nothing moves and
+                 * nothing repaints -- in particular the hold is NOT consumed,
+                 * or a mis-hit would drop the map the user is still reading. */
+                if (!cell) return null;
+                slot = cell.slot;
+                component = cell.component;
+                pageIndex = 0;
+                shiftDownAt = null;   /* the jump ends the gesture */
+                onFocus(slot, component);
+                invalidate();
+                return { action: "focus", slot, component };
+            }
+
+            if (ev.type === "turn") {
+                if (!mapVisible(now)) {
+                    return { action: "turn", enc: ev.enc, ticks: ev.ticks };
+                }
+                if ((ev.enc | 0) < SLOT_CELLS) {
+                    /* The slot row owns the map's own list, so turning it pages
+                     * that list. Splitting the two paging axes by WHICH encoder
+                     * moved keeps both available at once; deciding by whether
+                     * the map happens to overflow would make one gesture mean
+                     * two things depending on the rig. */
+                    const count = currentMap().pageCount;
+                    const next = Math.max(0, Math.min(count - 1,
+                        mapPage + (ev.ticks > 0 ? 1 : -1)));
+                    if (next === mapPage) return { action: "mapPage", mapPage };
+                    mapPage = next;
+                    invalidate();
+                    return { action: "mapPage", mapPage };
+                }
+                const next = pageStep(pageIndex, ev.ticks, pageCountOf());
+                if (next === pageIndex) return { action: "page", pageIndex };
+                pageIndex = next;
+                invalidate();
+                return { action: "page", pageIndex };
+            }
+
+            return null;
+        },
+
+        /**
+         * Restate the invariant. Call every frame, before the display's tick.
+         *
+         * This is the whole stranded-modifier escape made visible: the hold can
+         * end with no event, so something has to notice that the screen no
+         * longer matches the derived state. Comparing against what was last
+         * DRAWN (rather than tracking transitions) means it is self-correcting
+         * from any starting point -- including a shim restart that left the
+         * device showing a map this process never drew.
+         */
+        tick(now) {
+            if (mapVisible(now) !== shownMap) invalidate();
+        },
+
+        /**
+         * Draw whichever view is current. Handed to the display's tick as the
+         * frame producer, so it runs ONLY when a repaint is actually going out.
+         */
+        render(ctx, now) {
+            const up = mapVisible(now);
+            if (up) renderMap(ctx, currentMap(), { page: mapPage });
+            else renderParams(ctx);
+            shownMap = up;
+        },
+
+        mapVisible,
+
+        get slot() { return slot; },
+        get component() { return component; },
+        get pageIndex() { return pageIndex; },
+        get mapPage() { return mapPage; },
+        get showBuses() { return showBuses; },
+    };
+}

@@ -274,6 +274,119 @@ export function renderView(ctx, view) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * THE MAP VIEW -- what Shift shows.
+ *
+ * The model is `buildMap()` in e16_map.mjs and it is not restated here: this
+ * function only turns its sixteen cells into pixels. Same division as the
+ * parameters view, and for the same reason -- the layout rules (holes are not
+ * destinations, twelve cells with pagination past that) have to be runnable in
+ * tests/host without a renderer, and the renderer has to be checkable in
+ * PIXELS without re-deriving the layout.
+ *
+ * Geometry is the 4x4 the device IS: 32 x 16 per cell, so a cell sits exactly
+ * under its own encoder. There is no header bar -- unlike the parameters view
+ * there is nothing to name that the sixteen cells do not already say, and 8 px
+ * of chrome would cost the bottom row a readable second line.
+ * ------------------------------------------------------------------------- */
+export const MAP_ROWS = 4;
+export const MAP_CELL_W = WIDTH / COLS;          /* 32 */
+export const MAP_CELL_H = (HALF_H * HALVES) / MAP_ROWS;  /* 16 */
+
+/** The rect a map cell is drawn in. Row-major, so cell i is under encoder i. */
+export function mapCellRect(i) {
+    return {
+        x: (i % COLS) * MAP_CELL_W,
+        y: Math.floor(i / COLS) * MAP_CELL_H,
+        w: MAP_CELL_W,
+        h: MAP_CELL_H,
+    };
+}
+
+/**
+ * Draw a map.
+ *
+ * @param {object} ctx  an e16 canvas (or any param_pages draw context)
+ * @param {object} map  buildMap()'s return: { cells, pageCount }
+ * @param {object} [opts]
+ * @param {number} [opts.page]  which map page is shown, for the indicator
+ *
+ * A cell is drawn ONLY where the model put one. An empty lower cell leaves
+ * blank pixels rather than an outline, because an outline is an affordance and
+ * `e16_map.mjs` is explicit that a hole is not a destination -- drawing the box
+ * anyway would offer a button that does nothing, which is the exact thing the
+ * compaction rule exists to prevent, reintroduced one layer down.
+ *
+ * Each component cell carries TWO lines: the module's name and its position id
+ * ("fx2", "midi_fx1", "bus1"). The id is not decoration -- two Freeverbs in one
+ * slot are indistinguishable by name, and the id is what the press addresses.
+ */
+export function renderMap(ctx, map, opts) {
+    const o = opts || {};
+    const page = o.page | 0;
+    const cells = (map && map.cells) || [];
+    const pageCount = (map && map.pageCount) || 1;
+    ctx.clear();
+
+    for (let i = 0; i < ENCODERS; i++) {
+        const cell = cells[i];
+        if (!cell) continue;
+        const r = mapCellRect(i);
+        const isSlot = cell.kind === "slot";
+        /* The current slot is INVERTED rather than merely outlined: this is the
+         * one fact the eye has to find before it reads anything else, since
+         * every lower cell means something different depending on it. */
+        const fill = isSlot && cell.current;
+        if (fill) ctx.fillRect(r.x, r.y, r.w - 1, r.h - 1, 1);
+        const ink = fill ? 0 : 1;
+        if (isSlot && !fill) {
+            ctx.drawLine(r.x, r.y, r.x + r.w - 2, r.y, 1);
+            ctx.drawLine(r.x, r.y + r.h - 2, r.x + r.w - 2, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x, r.y, r.x, r.y + r.h - 2, 1);
+            ctx.drawLine(r.x + r.w - 2, r.y, r.x + r.w - 2, r.y + r.h - 2, 1);
+        }
+        ctx.print(r.x + 2, r.y + 2, clip(ctx, cell.label, r.w - 4), ink);
+        if (!isSlot) {
+            ctx.print(r.x + 2, r.y + 9, clip(ctx, cell.component, r.w - 4), ink);
+        } else if (fill && pageCount > 1) {
+            /* The indicator lives on the CURRENT SLOT cell because that is the
+             * cell whose list is being paged -- a page number floating in a
+             * corner would belong to nothing on a screen that is otherwise
+             * entirely made of cells. */
+            const pos = `${page + 1}/${pageCount}`;
+            ctx.print(r.x + r.w - 2 - ctx.textWidth(pos), r.y + 9, pos, ink);
+        }
+    }
+}
+
+/**
+ * Step the parameter view's page pair.
+ *
+ * BY TWO, not by one. The screen shows N in the top half and N+1 in the
+ * bottom, so a single-page step would put the page you were just reading under
+ * the other eight encoders -- half the surface would appear not to have moved
+ * while every one of its knobs quietly changed which parameter it drives.
+ *
+ * A step that would run past the last page is REFUSED rather than clamped to
+ * `pageCount - 1`: clamping changes the parity of the pair, so a six-page
+ * component paged 0/1 -> 2/3 -> 4/5 would come back 5/-, i.e. one page shown
+ * twice in a row and one never reachable as a top half. Refusing keeps the
+ * pairing an invariant of the whole traversal rather than of one step.
+ */
+export function pageStep(pageIndex, ticks, pageCount) {
+    let i = Math.max(0, pageIndex | 0);
+    const last = Math.max(0, (pageCount | 0) - 1);
+    if (!ticks) return Math.min(i, last);
+    const dir = ticks > 0 ? HALVES : -HALVES;
+    const n = Math.min(Math.abs(ticks | 0), MAX_TICKS_PER_TURN);
+    for (let k = 0; k < n; k++) {
+        const next = i + dir;
+        if (next < 0 || next > last) break;
+        i = next;
+    }
+    return i;
+}
+
 /**
  * Route an encoder turn to the grid's own knob-turn path.
  *
