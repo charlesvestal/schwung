@@ -383,7 +383,7 @@ export function createDisplay() {
  * ---------------------------------------------------------------------------
  */
 import { buildMap } from "./e16_map.mjs";
-import { renderMap, pageStep } from "./e16_view.mjs";
+import { renderMap, pageStep, drawTestPattern } from "./e16_view.mjs";
 
 /* How long a Shift hold can live without a note-off.
  *
@@ -746,6 +746,9 @@ export function createSurface(io) {
     const followFocusOf = o.followFocusOf || (() => null);
     const makeController = o.makeController || null;
     const canvas = o.canvas || createCanvas();
+    /* -1 means "draw the real view". Injected because the surface is pure and
+     * the arming lives in a file the host owns; see drawTestPattern. */
+    const testPattern = o.testPatternOf || (() => -1);
 
     const lifecycle = createLifecycle(o.lifecycle);
     const display = createDisplay();
@@ -950,7 +953,16 @@ export function createSurface(io) {
              * rings, never a dead surface.
              */
             if (sentThisTick) return;
-            display.tick(oneSend, () => { nav.render(canvas, t); return canvas.toBuffer(); });
+            display.tick(oneSend, () => {
+                /* A layout probe overrides the view. See drawTestPattern:
+                 * "the screen is garbled" cannot tell a wrong bit direction
+                 * from a wrong page order, and both look like noise. Armed by
+                 * a file so it needs no rebuild to change pattern. */
+                const probe = testPattern();
+                if (probe >= 0) drawTestPattern(canvas, probe);
+                else nav.render(canvas, t);
+                return canvas.toBuffer();
+            });
         },
 
         /* Read-only views, for the host's settings rows and for tests. */

@@ -442,3 +442,36 @@ export function applyClick(view, ctl, enc) {
     ctl.onClick(cell.slot);
     return { key: cell.key, enc };
 }
+
+/*
+ * A layout probe, for reading the framebuffer convention off the device.
+ *
+ * "The screen is garbled" cannot distinguish a wrong bit direction from a
+ * wrong page order from a wrong stride -- every one of them produces
+ * structured nonsense, and describing structured nonsense over a chat window
+ * is unreliable. Each of these draws ONE unambiguous thing, so the question
+ * becomes "is there a line along the top?" rather than "what does it look
+ * like?".
+ *
+ *   0  a single lit row at y=0        -> top row. If it appears at the BOTTOM
+ *                                       of the first band, bit order in the
+ *                                       page is inverted; if 8 rows down, the
+ *                                       page stride is wrong.
+ *   1  a single lit column at x=0     -> left edge. Diagonal or repeated means
+ *                                       the row stride is wrong.
+ *   2  page 0 filled solid            -> the top 8 rows only. Anywhere else and
+ *                                       the page order is not what we assume.
+ *   3  a 16px box at the origin       -> corner, orientation and scale at once.
+ *
+ * Kept in the view module rather than a test file because it has to run on the
+ * device, through the same canvas and the same send path as a real frame --
+ * a probe that takes a different route measures the route, not the format.
+ */
+export function drawTestPattern(ctx, which) {
+    ctx.clear();
+    const n = (which | 0) % 4;
+    if (n === 0) ctx.fillRect(0, 0, 128, 1, 1);
+    else if (n === 1) ctx.fillRect(0, 0, 1, 64, 1);
+    else if (n === 2) ctx.fillRect(0, 0, 128, 8, 1);
+    else ctx.fillRect(0, 0, 16, 16, 1);
+}
