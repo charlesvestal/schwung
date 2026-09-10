@@ -724,6 +724,20 @@ int main(int argc, char **argv) {
             if (stretch > 4.0) stretch = 4.0;
             snprintf(density, sizeof density, "release %.2fs -> spacing x%.2f", rel, stretch);
         }
+        /*
+         * SILENCE WHATEVER THE MEASUREMENTS LEFT RINGING.
+         *
+         * octave_fit and the release probe both PLAY NOTES, and their tails
+         * are still sounding when the score starts -- so the clip opens on a
+         * decaying note nobody asked for. Audible on braids' Pad, whose
+         * release is 1.45 s.
+         *
+         * settle() was added for the release measurement (a preset measured
+         * over the previous preset's tail reads as the tail). The render
+         * needs it for the same reason and did not have it.
+         */
+        settle(chained ? &source : &m, scratch);
+        if (chained) settle(&m, scratch);
         render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, stretch, &sweep, pcm);
         double db = rms_dbfs(pcm, (long)s.frames * 2);
         double sil = longest_silence(pcm, s.frames, 7.0);
