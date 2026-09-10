@@ -1513,6 +1513,31 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
     JS_ToInt32(ctx, &len, len_val);
     JS_FreeValue(ctx, len_val);
 
+    /* A message too large to EVER fit is not a transient refusal.
+     *
+     * The caller's contract is "false means retry", and that is right for a
+     * full buffer -- it drains. It is a LIVELOCK when the message can never
+     * fit: the caller re-owes the send, retries next tick, and pushes another
+     * truncated burst at the device forever. Measured on hardware 2026-09-10
+     * with an E16 framebuffer (394 packets against a 256-packet buffer): six
+     * short frames a second and a wedged device.
+     *
+     * Report that case distinctly so a producer can tell "wait" from "never",
+     * and so the log names the size rather than leaving someone to infer it
+     * from a device that has gone quiet. */
+    if (len > (int)SHADOW_MIDI_OUT_BUFFER_SIZE) {
+        static time_t last_oversize = 0;
+        time_t now_os = time(NULL);
+        if (now_os != last_oversize) {
+            last_oversize = now_os;
+            unified_log("shadow_ui", LOG_LEVEL_DEBUG,
+                        "shadow MIDI out: message of %d bytes exceeds the %d-byte "
+                        "buffer and can never be sent -- refusing rather than "
+                        "truncating", len, (int)SHADOW_MIDI_OUT_BUFFER_SIZE);
+        }
+        return JS_FALSE;
+    }
+
     /* Process 4 bytes at a time (USB-MIDI packet format) */
     int dropped = 0;
     for (int i = 0; i < len; i += 4) {

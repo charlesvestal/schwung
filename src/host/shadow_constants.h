@@ -131,7 +131,20 @@
  * shadow_shm_map() refuses a short attach rather than handing back a mapping
  * whose tail is SIGBUS. write_idx is a uint16_t byte offset and still addresses
  * this fine; the _Static_assert below fails if that ever stops being true. */
-#define SHADOW_MIDI_OUT_BUFFER_SIZE 1024
+/* 2048 = 512 packets. Raised from 1024 (256 packets) because a single E16
+ * OLED FRAMEBUFFER message is 1180 bytes -> 394 packets -> 1576 bytes, which
+ * did not fit. js_shadow_midi_send wrote the 256 that fit, dropped 138, and
+ * returned false; the caller correctly read false as "not sent" and re-owed the
+ * repaint, so it retried every tick forever, shoving another truncated burst at
+ * the device each time. Measured on hardware 2026-09-10: six framebuffers a
+ * second, every one of them short, and an E16 wedged by the flood.
+ *
+ * A message that can NEVER fit turns a correct retry into a livelock, which is
+ * why ui_midi_carry.h now refuses an oversized send outright rather than
+ * letting the caller spin -- the size must be big enough for the largest single
+ * message any producer sends, and the refusal is the backstop for when it
+ * is not. */
+#define SHADOW_MIDI_OUT_BUFFER_SIZE 2048
 #define SHADOW_MIDI_DSP_BUFFER_SIZE 512  /* MIDI to DSP buffer from shadow UI (128 packets) */
 /* MIDI inject ring capacity is SHADOW_MIDI_INJECT_SLOTS (defined with the
  * struct below) — the old flat byte-buffer size is gone. */

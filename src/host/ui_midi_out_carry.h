@@ -61,7 +61,7 @@
  * against the mailbox: a 158-byte SysEx is 53 packets, so this holds ~4.8 of
  * them back-to-back. Matching SHADOW_UI_MIDI_BYTES/4 on the inbound side is
  * deliberate — a tool that can be SENT a burst of that size can answer one. */
-#define UI_MIDI_CARRY_PACKETS 256
+#define UI_MIDI_CARRY_PACKETS 512
 #define UI_MIDI_CARRY_BYTES   (UI_MIDI_CARRY_PACKETS * 4)
 
 /* The carry must hold whatever one flush of the SHM buffer can deliver.
