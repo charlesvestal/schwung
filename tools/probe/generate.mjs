@@ -239,10 +239,15 @@ function renderAudio(mod, rule, dir, so, outDir) {
   let sourceUsed = null;
 
   const scorePath = path.join(outDir, "score.json");
-  if (!rule.midi) return { status: "not-applicable", detail: "no melodic score for this subcategory yet" };
-  const scoreArgs = [path.join(ROOT, "tools/probe/mid2score.mjs"),
-                     path.join(ROOT, "tools/probe", rule.midi), scorePath,
-                     "--seconds", String(rule.seconds)];
+  if (!rule.score && !rule.midi) {
+    return { status: "not-applicable", detail: "no score for this subcategory yet" };
+  }
+  /* The built-in demo score by default; a module may name its own .mid in a
+   * preview.json instead. */
+  const scoreArgs = rule.midi
+    ? [path.join(ROOT, "tools/probe/mid2score.mjs"), path.join(ROOT, "tools/probe", rule.midi), scorePath,
+       "--seconds", String(rule.seconds)]
+    : [path.join(ROOT, "tools/probe/scores/demo_score.mjs"), scorePath, "--seconds", String(rule.seconds + rule.tail)];
   if (rule.transpose) scoreArgs.push("--transpose", String(rule.transpose));
   sh("node", scoreArgs, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
 
