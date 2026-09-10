@@ -35,11 +35,14 @@ static host_api_v1_t g_host;
 
 typedef enum { KIND_NONE, KIND_SYNTH, KIND_FX } kind_t;
 
+typedef void (*fx_on_midi_fn)(void *, const uint8_t *, int, int);
+
 typedef struct {
     kind_t kind;
     void *inst;
     plugin_api_v2_t   *s;
     audio_fx_api_v2_t *x;
+    fx_on_midi_fn fx_on_midi;   /* dlsym'd, NEVER the struct field -- see below */
 } mod_t;
 
 static const char *kind_name(kind_t k) {
@@ -58,6 +61,22 @@ static int mod_open(mod_t *m, const char *so, const char *dir) {
         audio_fx_init_v2_fn f = (audio_fx_init_v2_fn)dlsym(h, AUDIO_FX_INIT_V2_SYMBOL);
         m->x = f(&g_host);
         if (!m->x) { fprintf(stderr, "probe: %s returned NULL\n", AUDIO_FX_INIT_V2_SYMBOL); return 0; }
+        /*
+         * MIDI TO AN AUDIO FX COMES FROM A dlsym, NEVER FROM `x->on_midi`.
+         *
+         * That field is past the end of the struct several shipped modules
+         * actually return, and what is there is NON-NULL GARBAGE: measured
+         * 0xc0000000000 on cloudseed, gate and tapescam, 0xc000000 on psxverb
+         * -- four of seven audio FX sampled -- while every one of them reports
+         * api_version 2. So `if (x->on_midi) x->on_midi(...)` passes its own
+         * guard and jumps into nothing. This crashed the probe.
+         *
+         * chain_host.c has always done it this way (`inst->fx_on_midi[slot] =
+         * dlsym(handle, "move_audio_fx_on_midi")`), which is why Schwung
+         * itself is not affected. Same defect shape as the breakbeat header
+         * drift in CLAUDE.md: a guard testing memory owned by someone else.
+         */
+        m->fx_on_midi = (fx_on_midi_fn)dlsym(h, "move_audio_fx_on_midi");
         m->inst = m->x->create_instance(dir, NULL);
     } else if (dlsym(h, "move_plugin_init_v2")) {
         m->kind = KIND_SYNTH;
@@ -84,8 +103,10 @@ static void mod_set(mod_t *m, const char *key, const char *val) {
     else                       { if (m->x->set_param) m->x->set_param(m->inst, key, val); }
 }
 static void mod_midi(mod_t *m, const uint8_t *msg, int len) {
+    /* The synth API's on_midi is a real field and is safe. The FX one is not
+     * -- see mod_open. */
     if (m->kind == KIND_SYNTH) { if (m->s->on_midi) m->s->on_midi(m->inst, msg, len, 0); }
-    else                       { if (m->x->on_midi) m->x->on_midi(m->inst, msg, len, 0); }
+    else if (m->fx_on_midi)    { m->fx_on_midi(m->inst, msg, len, 0); }
 }
 static void mod_render(mod_t *m, int16_t *out, int frames) {
     if (m->kind == KIND_SYNTH) m->s->render_block(m->inst, out, frames);
@@ -247,7 +268,12 @@ static void wav_write(const char *path, const int16_t *pcm, int frames) {
     fwrite(h, 1, 44, f); fwrite(pcm, 1, data, f); fclose(f);
 }
 
-static void render_score(mod_t *m, const score_t *s, int shift, int16_t *pcm) {
+/*
+ * Render the score. The chain form is source synth -> effect, block by block,
+ * exactly as a slot runs it: an FX rendered ALONE processes a silent buffer
+ * and would publish 30 s of nothing. `fx` may be NULL for a plain synth.
+ */
+static void render_chain(mod_t *src, mod_t *fx, const score_t *s, int shift, int16_t *pcm) {
     memset(pcm, 0, (size_t)s->frames * 4);
     int e = 0;
     for (int o = 0; o + BLK <= s->frames; o += BLK) {
@@ -255,11 +281,14 @@ static void render_score(mod_t *m, const score_t *s, int shift, int16_t *pcm) {
             int note = s->ev[e].d1 + 12 * shift;
             if (note >= 0 && note <= 127) {
                 uint8_t msg[3] = { (uint8_t)s->ev[e].status, (uint8_t)note, (uint8_t)s->ev[e].d2 };
-                mod_midi(m, msg, 3);
+                mod_midi(src, msg, 3);
+                /* A ducker or a sidechain FX is driven by the same notes. */
+                if (fx) mod_midi(fx, msg, 3);
             }
             e++;
         }
-        mod_render(m, pcm + (size_t)o * 2, BLK);
+        mod_render(src, pcm + (size_t)o * 2, BLK);
+        if (fx) mod_render(fx, pcm + (size_t)o * 2, BLK);
     }
 }
 
@@ -290,6 +319,7 @@ int main(int argc, char **argv) {
     const char *dir = NULL, *so = NULL, *score_path = NULL, *out = NULL, *id = "module";
     int want_contract = 0, want_render = 0, npresets = 1, fit = 0;
     const char *sets[32]; int nsets = 0;
+    const char *src_dir = NULL, *src_so = NULL;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--contract") && i + 1 < argc) { want_contract = 1; dir = argv[++i]; }
@@ -300,6 +330,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-o")         && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "--presets")  && i + 1 < argc) npresets = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--octave-fit")) fit = 1;
+        else if (!strcmp(argv[i], "--source-dir") && i + 1 < argc) src_dir = argv[++i];
+        else if (!strcmp(argv[i], "--source-so")  && i + 1 < argc) src_so  = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc && nsets < 32) sets[nsets++] = argv[++i];
         else { usage(); return 2; }
     }
@@ -315,11 +347,30 @@ int main(int argc, char **argv) {
     score_t s = {0};
     if (!score_load(&s, score_path)) return 1;
 
+    /* An FX is previewed THROUGH a source instrument. Without one it processes
+     * a silent buffer and we would publish 30 s of nothing. */
+    mod_t source = {0};
+    int chained = 0;
+    if (src_dir && src_so) {
+        if (!mod_open(&source, src_so, src_dir)) return 1;
+        if (source.kind != KIND_SYNTH) { fprintf(stderr, "probe: --source must be a synth\n"); return 1; }
+        chained = 1;
+        fprintf(stderr, "probe: source instrument loaded, rendering through the effect\n");
+    } else if (m.kind == KIND_FX) {
+        fprintf(stderr, "probe: refusing to render an audio FX with no --source "
+                        "(it would process silence)\n");
+        return 1;
+    }
+
     /* How many presets does the MODULE say it has? Only the module can answer
      * "which presets"; cloudseed answers "none" by declaring no such params. */
+    /* Presets belong to whichever module is the SUBJECT of the preview: the
+     * synth normally, and still the synth when it is only the source for an
+     * FX -- an FX with a preset bank steps its own below. */
+    mod_t *subject = chained ? &m : &m;
     char buf[4096];
     int count = 1, has_presets = 0;
-    if (mod_get(&m, "preset_count", buf, sizeof buf) > 0) {
+    if (mod_get(subject, "preset_count", buf, sizeof buf) > 0) {
         count = atoi(buf);
         if (count > 0) has_presets = 1; else count = 1;
     }
@@ -351,9 +402,9 @@ int main(int argc, char **argv) {
         }
 
         char why[256] = "not requested";
-        int shift = fit ? octave_fit(&m, 60, scratch, why, sizeof why) : 0;
+        int shift = fit ? octave_fit(chained ? &source : &m, 60, scratch, why, sizeof why) : 0;
 
-        render_score(&m, &s, shift, pcm);
+        render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, pcm);
         double db = rms_dbfs(pcm, (long)s.frames * 2);
 
         char path[1024];

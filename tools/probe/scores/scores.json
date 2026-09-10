@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Which score a module gets, keyed on its taxonomy SUBCATEGORY.",
+    "A module may override any of this with a preview.json in its own repo.",
+    "",
+    "`audio: null` means NO AUDIO PREVIEW, deliberately -- streaming, live-input,",
+    "assistant and tuner modules have nothing deterministic to render, and a",
+    "synthesised clip for them would be a fabrication rather than a preview."
+  ],
+  "default": { "midi": "wtk1-prelude1.mid", "seconds": 27, "tail": 3, "presets": 4, "octave_fit": true },
+
+  "sound_generator": {
+    "polysynth":            {},
+    "mono-bass":            { "presets": 3 },
+    "west-coast":           { "presets": 3 },
+    "fm":                   {},
+    "wavetable":            {},
+    "macro-hybrid":         {},
+    "physical-modeling":    {},
+    "chiptune-retro":       {},
+    "sampler-rompler":      {},
+    "granular":             {},
+    "drum-machine":         { "midi": null, "octave_fit": false, "presets": 3,
+                              "_why": "A drum machine is played on its own voices, not on a melodic line; the score is built from the module's declared voices at render time." },
+    "streaming-live-input": { "audio": null, "_why": "no deterministic source" }
+  },
+  "audio_fx": {
+    "_all":                 { "source": "obxd", "wet": 0.5, "presets": 1,
+                              "_why": "An FX is previewed on a real instrument playing the same phrase every other module plays, so effects are comparable with each other and with the synths. Dry/wet goes to 50% OF THE RANGE THE MODULE DECLARES -- CloudSeed defaults to 0.30, which over a transient is inaudible." }
+  },
+  "midi_fx": {
+    "_all":                 { "source": "obxd", "presets": 1,
+                              "_why": "Driven into ONE reference synth, pinned, so a preview that changes means the MIDI FX changed." }
+  },
+  "tool": {
+    "sequencer":            { "source": "obxd", "presets": 1 },
+    "sampling-editing":     { "audio": null },
+    "tuner-analysis":       { "audio": null, "_why": "nothing to render without an input" },
+    "assistant":            { "audio": null, "_why": "needs an API key and a person" },
+    "performance":          { "audio": null }
+  },
+  "overtake": {
+    "_all":                 { "audio": null,
+                              "_why": "An overtake module owns the whole surface and is not fed MIDI from a slot; there is no score that means anything." }
+  }
+}
