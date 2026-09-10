@@ -1,0 +1,85 @@
+name: previews
+
+# Generate module preview assets: knob-grid screenshots and audio.
+#
+# Runs on ARM64 because that is what modules are: the job dlopens each
+# module's released .so, so it needs the architecture and the runtime they
+# were built for. `ubuntu-24.04-arm` is free for public repositories.
+#
+# This does not publish anywhere yet -- it uploads an artifact so the output
+# can be inspected before any of it is pointed at a public URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      modules:
+        description: 'Space-separated module ids, or "--all"'
+        required: false
+        default: 'obxd cloudseed braids'
+  pull_request:
+    paths:
+      - 'tools/probe/**'
+      - 'module-catalog.json'
+      - '.github/workflows/previews.yml'
+
+jobs:
+  previews:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build the probe
+        # Already on arm64 Linux, so build directly rather than through Docker.
+        run: CROSS_PREFIX= tools/probe/build.sh
+        env:
+          CROSS_PREFIX: ''
+
+      - name: Sanity-check the probe
+        # A build that produces a binary which cannot load anything is worse
+        # than a build failure, because the generate step reports it per module
+        # as "error" and looks like 133 broken modules rather than one broken
+        # probe.
+        run: |
+          test -x build/probe
+          ./build/probe 2>&1 | grep -q 'usage:' && echo "probe responds"
+
+      - name: Generate previews
+        run: |
+          MODULES='${{ github.event.inputs.modules }}'
+          [ -z "$MODULES" ] && MODULES='obxd cloudseed braids'
+          node tools/probe/generate.mjs $MODULES --out build/previews
+
+      - name: Summarise
+        # The status breakdown is the thing worth reading, and it belongs in
+        # the job summary rather than buried in the log.
+        run: |
+          node -e '
+            const i = require("./build/previews/index.json");
+            const tally = (k) => {
+              const t = {};
+              for (const e of Object.values(i.modules)) t[e[k].status] = (t[e[k].status] || 0) + 1;
+              return Object.entries(t).map(([s, n]) => `${s}: ${n}`).join(", ");
+            };
+            const rows = Object.entries(i.modules).map(([id, e]) =>
+              `| ${id} | ${e.screens.status} | ${e.audio.status} | ${(e.audio.clips || []).length} |`);
+            console.log([
+              `### Previews`, ``,
+              `**screens** — ${tally("screens")}`, ``,
+              `**audio** — ${tally("audio")}`, ``,
+              `| module | screens | audio | clips |`, `|---|---|---|---|`, ...rows,
+            ].join("\n"));
+          ' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previews
+          path: build/previews
+          retention-days: 14
