@@ -274,7 +274,9 @@ typedef struct shadow_control_t {
     volatile uint8_t wake_slots;       /* 1=clear all slot idle flags (auto-clears after read) */
     volatile uint8_t skipback_require_volume; /* 0=Shift+Capture, 1=Shift+Vol+Capture */
     volatile uint8_t preview_cmd;          /* 0=none, 1=play (path in file), 2=stop */
-    volatile uint8_t pad_block;            /* 1=suppress pad notes (68-99) from reaching Move */
+    volatile uint8_t pad_block;            /* 1=pads belong to whoever is on screen: their
+                                              notes do not reach Move, and Move's LED writes
+                                              for 68-99 do not reach the hardware */
     volatile uint8_t suspend_overtake;  /* 1=suspend (skip exit hook), 0=normal exit */
     volatile uint8_t open_tool_cmd;     /* 0=none, 1=open tool (path in /data/UserData/schwung/open_tool_cmd.json) */
     volatile uint8_t shadow_ui_trigger; /* Shadow UI trigger mode: 0=long-press only, 1=Shift+Vol only, 2=both */

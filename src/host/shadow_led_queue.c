@@ -440,6 +440,43 @@ void shadow_clear_move_leds_if_overtake(void) {
 
     prev_overtake_mode = cur_overtake;
 
+    /*
+     * IF THE PADS ARE YOURS, SO ARE THEIR LIGHTS.
+     *
+     * `pad_block` stops pad PRESSES reaching Move and hands them to whoever is
+     * on screen. It said nothing about the LEDs, so Move went on lighting the
+     * pad of every note sounding on the track -- and a MIDI FX plays notes on
+     * that track, so its own chords wrote their pitches onto the grid, on top
+     * of whatever the owner had drawn. Reported from the device as the played
+     * notes "shining through" the pads.
+     *
+     * It cannot be fixed from the owner's side. Its writes are diffed against
+     * what it believes each pad shows, and Move overwriting a pad falsifies
+     * exactly that belief; even reconciling against this cache only turns a
+     * permanent bleed into a fight, because Move re-asserts a pad whose colour
+     * has not changed and the cache cannot see a repaint of the same value.
+     *
+     * So the block owns both directions. Stripped AFTER the caching scan
+     * above, deliberately: `move_note_led_state` keeps tracking what Move
+     * WANTS the grid to look like, which is what the release replays -- the
+     * owner's colours come off and Move's picture comes back without Move ever
+     * having to repaint it.
+     *
+     * Notes only, and only the pad range. This is the same surgery the co-run
+     * block below performs per surface group, with the group being "the pads"
+     * and the claim being pad_block.
+     */
+    if (ctrl && ctrl->pad_block) {
+        for (int i = 0; i < HW_MIDI_OUT_SIZE; i += 4) {
+            if (((midi_out[i] >> 4) & 0x0F) != 0) continue;   /* cable 0 only */
+            uint8_t type = midi_out[i + 1] & 0xF0;
+            uint8_t d1 = midi_out[i + 2];
+            if ((type != 0x90 && type != 0x80) || d1 < 68 || d1 > 99) continue;
+            midi_out[i] = 0; midi_out[i + 1] = 0;
+            midi_out[i + 2] = 0; midi_out[i + 3] = 0;
+        }
+    }
+
     /* During overtake: clear Move's cable-0 LED packets from MIDI_OUT
      * so the overtake module has full LED control.
      * If skip_led_clear is set, let Move's LEDs pass through (e.g. song-mode
