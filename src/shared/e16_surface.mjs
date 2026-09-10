@@ -518,12 +518,16 @@ export function createNav(opts) {
         /**
          * Restate the invariant. Call every frame, before the display's tick.
          *
-         * This is the whole stranded-modifier escape made visible: the hold can
-         * end with no event, so something has to notice that the screen no
-         * longer matches the derived state. Comparing against what was last
-         * DRAWN (rather than tracking transitions) means it is self-correcting
-         * from any starting point -- including a shim restart that left the
-         * device showing a map this process never drew.
+         * This is the stranded-modifier escape made visible: the hold can end
+         * with no event, so something has to notice that the screen no longer
+         * matches the derived state. It compares against what was last DRAWN
+         * rather than tracking transitions, so it cannot miss one -- a
+         * transition counter has to be right at every site that changes the
+         * state, and this has to be right once.
+         *
+         * (It reconciles what THIS process has drawn. A device still showing a
+         * frame from a previous process is the lifecycle's problem, not this
+         * one's -- see createLifecycle.)
          */
         tick(now) {
             if (mapVisible(now) !== shownMap) invalidate();
