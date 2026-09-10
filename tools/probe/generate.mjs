@@ -273,6 +273,48 @@ function renderAudio(mod, rule, dir, so, outDir) {
     sourceUsed = { id: srcMod.id, version: readVersion(srcDir) };
   }
 
+  /* WHICH KNOB, IF ANY, TO MOVE.
+   *
+   * A filter or an EQ held still shows almost nothing. The candidate is
+   * chosen by MEASUREMENT (probe --sweep-scan renders the param across its
+   * range and reports how far the spectrum moves), never by its name.
+   *
+   * Level controls are excluded by name even when they score well, and that
+   * is the one place a name is trusted: `mix` sweeping is the effect fading
+   * in and out rather than doing anything, and `output` is just a volume ride.
+   * Both are set deliberately elsewhere.
+   */
+  let sweep = null;
+  if (rule.sweep !== false && rule.source) {
+    const LEVELISH = /^(mix|dry_?wet|wet|output|out_?gain|input|in_?gain|level|volume|gain)$/i;
+    const cands = paramsFromModuleJson(dir)
+      .filter((p) => p.min != null && p.max != null && p.min !== p.max)
+      .filter((p) => !p.type || p.type === "float" || p.type === "int")
+      .filter((p) => !LEVELISH.test(p.key))
+      .slice(0, 10);
+    if (cands.length) {
+      const srcMod = CATALOG.modules.find((x) => x.id === rule.source);
+      const srcDir = fetchTarball(srcMod), srcSo = findSo(srcDir, srcMod.id);
+      const scanArgs = ["--sweep-scan", dir, "--so", so, "--id", mod.id,
+                        "--source-dir", srcDir, "--source-so", srcSo];
+      for (const p of cands) scanArgs.push("--try", `${p.key}:${p.min}:${p.max}`);
+      try {
+        const scored = JSON.parse(runProbe(scanArgs))
+          .filter((r) => r.verdict === "SWEEP")
+          .sort((a, b) => b.shape - a.shape);
+        if (scored.length) {
+          const win = cands.find((c) => c.key === scored[0].key);
+          /* Start a little inside the minimum: an endpoint is often degenerate
+           * -- filter's cutoff at 0 is silence, which opens the clip on
+           * nothing. */
+          const lo = win.min + (win.max - win.min) * 0.15;
+          sweep = { key: win.key, lo, hi: win.max, shape: scored[0].shape };
+          a.push("--sweep", `${win.key}:${lo}:${win.max}`);
+        }
+      } catch { /* a scan that fails leaves the preview static, not broken */ }
+    }
+  }
+
   /* Dry/wet at 50% of the DECLARED range, or not at all. */
   let wet = null;
   if (rule.wet != null) {
@@ -300,7 +342,7 @@ function renderAudio(mod, rule, dir, so, outDir) {
    * would amplify the noise floor and publish it as a preview. */
   const usable = clips.filter((c) => c.rms_dbfs > -60);
   if (!usable.length) return { status: "error", detail: "every render was silent" };
-  return { status: "ok", score: rule.midi, wet, source: sourceUsed, clips: usable,
+  return { status: "ok", score: rule.score || rule.midi, wet, sweep, source: sourceUsed, clips: usable,
            dropped: clips.length - usable.length || undefined };
 }
 
