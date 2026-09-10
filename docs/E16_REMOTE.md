@@ -1,0 +1,111 @@
+# OXI E16 remote mode
+
+What the E16 accepts when a host takes it over, and the fixed input map that
+comes with it. Everything here is confirmed on hardware (2026-09-09) unless
+marked otherwise.
+
+## Getting the spec
+
+OXI publishes it as a Google Sheet. The forum preview renders it as *"This
+Sheet is private"* — that is the unauthenticated preview, not the sheet. It
+exports:
+
+```bash
+curl -sL "https://docs.google.com/spreadsheets/d/1Yccnrluv10QL_PauMmtCt64EtYjfSeZEXKrlrw8P24w/export?format=csv&gid=1057524829"
+```
+
+Linked from [the lines thread on remote-controlling the E16](https://llllllll.co/t/remote-control-of-oxi-e16-with-maxmsp/74110),
+which is also where the packing rule below was worked out.
+
+## Messages
+
+Header `f0 00 21 5b 02 01`, then a two-byte message id, then a packed payload,
+then `f7`.
+
+| id | message | payload |
+|---|---|---|
+| `06 55` | ENTER REMOTE MODE | none |
+| `06 53` | REMOTE MODE ENTERED **ACK** (device to host) | none |
+| `06 00` | EXIT REMOTE MODE | none |
+| `06 01` | LED | 5-byte chunks: encoder 0-15, led 0-15, R, G, B (each 0-127) |
+| `06 04` | LED RING | 7-byte chunks: encoder, R, G, B, amount MSB, amount LSB, bipolar |
+| `06 02` | OLED FRAMEBUFFER | 1024 raw bytes, SSD1306 page/column, 128x64 |
+| `06 03` | OLED LABELS | 80 raw bytes: 16-char title + 16 x 4-char labels |
+
+LED and LED RING are **variable length** — repeat the chunk per encoder — which
+is why a single changed value costs one chunk rather than a repaint.
+
+The ring amount is 14 bits and maps to 0-100% of the ring; `bipolar` renders it
+centred, extending left or right, instead of as an arc from zero.
+
+FRAMEBUFFER replaces the whole screen; there is no partial update, and sending
+one overrides LABELS and vice versa. Note the geometry: **128x64 mono is Move's
+own display**, so mirroring a Schwung page onto an E16 is a packer rather than a
+renderer.
+
+## 8-to-7 packing
+
+Payloads are 7-bit packed: for each group of up to 7 raw bytes, emit one byte
+holding bit 7 of each following byte (bit *k* corresponds to byte *k*), then
+those bytes with bit 7 cleared.
+
+```
+raw     FF 00 80 7F 01 FE 55   AA
+packed  25 7F 00 00 7F 01 7E 55   01 2A
+        ^^                        ^^
+        bits 0,2,5 set            bit 0 set
+```
+
+**This is easy to get wrong in a way that tests do not catch.** For LABELS and
+LED RING every payload byte is already below `0x80`, so the MSB byte is always
+zero and the packing looks like padding — the lines thread describes it as *"leds
+msg need an additional leading 0"*. FRAMEBUFFER carries real pixel bytes with
+bit 7 set, so a packer that emits a constant zero works on everything except the
+one message that matters.
+
+Sizes: LABELS is 80 raw to 92 packed; FRAMEBUFFER is 1024 raw to 1171 packed.
+
+## Input is fixed in remote mode
+
+Whatever scene the device is on, once in remote mode:
+
+| control | message |
+|---|---|
+| encoder turn | CC **1-16** on **channel 1**, relative with acceleration: `0x01..0x08` clockwise, `0x7F..0x78` counter-clockwise |
+| encoder button | note **0-15**, channel 1 |
+| Shift | note **16**, channel 1 |
+
+That relative encoding is two's complement 7-bit — the same reading
+`src/modules/chain/dsp/relative_cc.h` documents, and that header names the E16
+in its own comment. Keep the two in agreement.
+
+Because the map is fixed, the surface needs no per-device configuration and a
+user's own scene cannot break it.
+
+## Entering and leaving
+
+There is no way to ask whether an E16 is attached: devices on Move's USB-A never
+enumerate in Linux (see `docs/SYSEX.md` and issue #358). So a host seeks by
+sending ENTER until an ACK arrives. Nine bytes is cheap enough to repeat.
+
+Entering is visible — the device blanks its screen and rings, because the host
+now owns them. The E16 has no battery, so unplugging it power-cycles it out of
+remote mode; a periodic probe restores it with no user action.
+
+Send EXIT when giving the device back, or it stays blank.
+
+## The USB-A limitation
+
+**Move's XMOS USB-host cannot exchange SysEx with a multi-jack USB-MIDI device.**
+Measured 2026-09-09: CC and Program Change reach an E16 on USB-A and work, SysEx
+never takes effect, and nothing the device sends ever arrives. Every device that
+works on that port — an Arturia MiniLab, a WIDI BLE dongle, the DIN adapter in
+issue #358 — presents a single jack. The E16 presents three (`Port 1/2/3`).
+
+Patching the E16's firmware to enumerate one port makes remote mode work over
+plain USB-A in **both** directions: ENTER acks, the 101-byte labels message
+renders, and the encoders send. Two bytes, `bNumEmbMIDIJack` 3 to 1 in both
+CS_ENDPOINT descriptors, no code touched.
+
+So remote mode over USB-A needs OXI to make the port count configurable. This is
+not Move-specific — any host with a limited USB-MIDI stack will hit it.

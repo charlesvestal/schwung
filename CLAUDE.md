@@ -1566,6 +1566,7 @@ inline is how this file got to 151 KB.
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
+- `docs/E16_REMOTE.md` — **OXI E16 remote mode**, and the fixed input map it forces. The spec sheet is not private; it exports as CSV. Payloads are 8-to-7 packed, and the MSB byte is always zero for LABELS and RING — so a packer that emits a constant zero works on everything except the FRAMEBUFFER, which is the one that matters. **SysEx does not reach a MULTI-JACK USB device on USB-A** (three ports on an E16); one jack fixes both directions.
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)
 - `BUILDING.md` — Build system, cross-compilation
