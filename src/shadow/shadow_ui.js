@@ -19054,12 +19054,72 @@ function moduleClaimedCcs(moduleId) {
  * returns without writing or logging, which is also what lets this restate
  * rather than memoise — the shim drops the flag unilaterally on the
  * display-mode edge and at init, and a JS mirror of that would latch. */
+let padBlockWanted = false;
+
 function reconcilePadBlock() {
-    if (isTextEntryActive()) return;
+    if (typeof host_pad_block !== "function") return;
+    /*
+     * THE DISPLAY MUST ACTUALLY BE SHOWING.
+     *
+     * `view` is where the shadow UI would RESUME, not what is on screen:
+     * dismiss it with a view still open -- Menu, a Track tap, going off to a
+     * sound module -- and `view` stays put while Move owns the screen again.
+     * Testing the view alone keeps the pads blocked for exactly the case this
+     * net exists to catch, which is somebody leaving to use another module.
+     */
+    const shown = (typeof shadow_get_display_mode !== "function")
+                || shadow_get_display_mode() === 1;
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
                            loadedModuleUi && loadedModuleUi.tick &&
                            !coRunUiActive();
-    if (!moduleOwnsPads && typeof host_pad_block === "function") host_pad_block(0);
+    /*
+     * A CANVAS TAKEOVER OWNS THE PADS TOO, and this did not know it.
+     *
+     * A module page that is a picture (`type: "canvas"` + `as_page`) takes the
+     * pads in its onOpen -- that is how an overlay puts its own grid under your
+     * hand. With only COMPONENT_EDIT counted as an owner, the reconciler
+     * cleared the block on the very next tick, so Move went on handling the
+     * pads underneath the overlay: every pad press played the track's
+     * instrument and moved Move's selection while the overlay thought it had
+     * them. The block was being taken and revoked ~60 times a second.
+     */
+    const canvasOwnsPads = (view === VIEWS.CANVAS)
+                        || (coRunUiActive() && coRunView === VIEWS.CANVAS);
+    if (shown && (moduleOwnsPads || canvasOwnsPads || isTextEntryActive())) {
+        padBlockWanted = true;
+        return;                       /* leave it to the owner */
+    }
+
+    /* Unconditional, as before: a block stranded by something we never saw
+     * take it still has to come off, and this call is idempotent. */
+    host_pad_block(0);
+
+    /*
+     * GIVE MOVE ITS PAD LEDS BACK, do not just stop blocking.
+     *
+     * Move writes a pad LED only when its OWN value changes, so a pad left in
+     * a colour the overlay chose -- or blanked -- stays that way on that track
+     * until something else moves it. Handing the pads back dark reads as "the
+     * pads are dead": they respond, and they are invisible. It is the same
+     * failure `shadow_restore_knob_leds` exists to prevent for the rings.
+     *
+     * Once, on the release, rather than every tick -- hence the latch above,
+     * which also says we are restoring after an owner we actually saw. The
+     * shim mirrors Move's own pad LED state into overlay SHM continuously, so
+     * what Move wants is already there to be replayed. Doing it HERE rather
+     * than in the owner's close hook is deliberate: that hook is not
+     * guaranteed to run, which is the whole reason this reconciler exists.
+     */
+    if (!padBlockWanted) return;
+    padBlockWanted = false;
+    if (typeof shadow_get_pad_led_snapshot !== "function") return;
+    if (typeof move_midi_internal_send !== "function") return;
+    const snap = shadow_get_pad_led_snapshot();
+    if (!snap) return;
+    for (let note = 68; note <= 99; note++) {
+        const c = snap[String(note)];
+        move_midi_internal_send([0x09, 0x90, note, (c | 0) & 0x7F]);
+    }
 }
 
 function reconcileCcClaim() {
