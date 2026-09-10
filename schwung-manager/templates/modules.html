@@ -450,6 +450,17 @@
      * with that (component_type, subcategory) pair -- keying on the slug alone
      * would show `sequencer` under Audio FX, where nothing can match it. */
     function updateSubcategoryButtons() {
+        /* The row is a DRILL-DOWN and is hidden under "All": every subcategory
+         * of every category at once is 33 chips over five rows, which pushes
+         * the module list off the screen before a single module is visible.
+         * It also means the three `sequencer` buttons -- midi_fx, tool and
+         * overtake each get one, since a button keys on the PAIR -- can never
+         * share a screen and read as a duplicated control. */
+        if (currentFilter === 'all') {
+            releaseSubFilter();
+            document.getElementById('subcategory-filters').style.display = 'none';
+            return;
+        }
         var pairs = {};
         var items = document.querySelectorAll('[data-subcategory]');
         for (var i = 0; i < items.length; i++) {
@@ -472,15 +483,21 @@
         for (var key in pairs) {
             if (key.split('/')[1] === currentSubFilter) { stillValid = true; break; }
         }
-        if (currentSubFilter !== 'all' && !stillValid) {
-            currentSubFilter = 'all';
-            for (var k = 0; k < subBtns.length; k++) {
-                var isAll = subBtns[k].getAttribute('data-subfilter') === 'all';
-                subBtns[k].classList.toggle('active', isAll);
-                subBtns[k].setAttribute('aria-pressed', isAll ? 'true' : 'false');
-            }
-        }
+        if (currentSubFilter !== 'all' && !stillValid) releaseSubFilter();
         document.getElementById('subcategory-filters').style.display = anyShown ? '' : 'none';
+    }
+
+    /* Drop back to "All types" and put the buttons back in step. Split out
+     * because BOTH exits above need it: hiding the row under "All" leaves a
+     * live subFilter that would otherwise keep filtering with no visible
+     * control that set it -- the same failure as the release path below. */
+    function releaseSubFilter() {
+        currentSubFilter = 'all';
+        for (var k = 0; k < subBtns.length; k++) {
+            var isAll = subBtns[k].getAttribute('data-subfilter') === 'all';
+            subBtns[k].classList.toggle('active', isAll);
+            subBtns[k].setAttribute('aria-pressed', isAll ? 'true' : 'false');
+        }
     }
 
     function applyFilters() {
