@@ -244,6 +244,30 @@ d.ringChanged(ringFor(v, 8));
 eq("refused rings report nothing sent", d.tick(send, frame), null);
 eq("...and stay pending", d.ringsPending, 1);
 
+
+/* The authored short label lives on the PAGE (page_plan collects
+ * { key: short_name } into page.shortNames, which render_page_movy reads), NOT
+ * on the param meta -- getOrGuess never carries it. Reading only meta.short_name
+ * meant every cell fell through to the raw parameter id, and on hardware four
+ * columns of truncated ids over four columns of digits read as a corrupted
+ * screen rather than as text that does not fit. */
+{
+    const pg = { kind: PAGE_KNOBS, name: "P", level: "P",
+                 keys: ["env_attack", "filter_cutoff"],
+                 shortNames: { env_attack: "Atk", filter_cutoff: "Cut" } };
+    const v = buildView([pg], 0, { metaOf: (k) => ({ min: 0, max: 127, label: k }),
+                                   valueOf: () => 64 });
+    eq("page shortNames win over the key",
+       v.cells.filter(Boolean).map(c => c.label).join(","), "Atk,Cut");
+
+    /* And the fallback still holds for a module that declares none. */
+    const bare = { kind: PAGE_KNOBS, name: "P", level: "P", keys: ["some_param"] };
+    const v2 = buildView([bare], 0, { metaOf: (k) => ({ min: 0, max: 1, label: "lbl" }),
+                                      valueOf: () => 0 });
+    eq("falls back when no short name is declared",
+       v2.cells[0].label, "lbl");
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
