@@ -170,7 +170,7 @@ async function generate(mod) {
        * let it become a plan, a default, or a published picture. */
       entry.screens = { status: "no-screens", detail: "ui_hierarchy unserved" };
     } else {
-      const shots = renderScreens(mod, c, entry.version, outDir);
+      const shots = renderScreens(mod, c, entry.version, outDir, dir);
       entry.screens = shots.length
         ? { status: "ok", kind: "grid-synthesised", hero: shots[0], gallery: shots.slice(1) }
         : { status: "no-screens", detail: "the planner produced no pages" };
@@ -199,7 +199,7 @@ function readVersion(dir) {
 }
 
 /** Feed the contract to the renderer the DEVICE uses (movy), not the dial grid. */
-function renderScreens(mod, contract, version, outDir) {
+function renderScreens(mod, contract, version, outDir, dir) {
   const fixture = {
     _source: "Captured off-device by tools/probe.",
     generated_at: new Date().toISOString(), module_count: 1, not_captured: [],
@@ -212,9 +212,14 @@ function renderScreens(mod, contract, version, outDir) {
   fs.writeFileSync(fx, JSON.stringify(fixture));
   const shotDir = path.join(outDir, "screens");
   fs.mkdirSync(shotDir, { recursive: true });
-  sh("node", [path.join(ROOT, "tools/param-pages/preview.mjs"), mod.id,
-              "--fixture", fx, "--all", "--layout", "movy", "--png", shotDir, "--scale", "4"],
-     { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  const a = [path.join(ROOT, "tools/param-pages/preview.mjs"), mod.id,
+             "--fixture", fx, "--all", "--layout", "movy", "--png", shotDir, "--scale", "4"];
+  /* A module's OWN widgets, if it ships any. Without this every `custom:` kind
+   * falls through to a built-in dial -- a correct fallback and a WRONG
+   * PICTURE, with nothing logged, so the page looks fine and is not what the
+   * device draws. */
+  if (fs.existsSync(path.join(dir, "canvas.js"))) a.push("--widgets", dir);
+  sh("node", a, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
   return fs.readdirSync(shotDir).filter((f) => f.endsWith(".png")).sort()
            .map((f) => `${mod.id}/screens/${f}`);
 }
