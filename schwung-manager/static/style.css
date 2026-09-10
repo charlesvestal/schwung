@@ -810,8 +810,12 @@ tbody tr:hover {
     background: rgba(74, 158, 142, 0.1);
 }
 
-/* Category filter buttons - gold accent */
-.cat-btn.active {
+/* Filter buttons - gold accent when selected.
+ *
+ * Scoped to .filter-btn, NOT .cat-btn: the subcategory row's buttons are
+ * .sub-btn, so a .cat-btn-only rule left them with no selected state at all --
+ * the filter applied and nothing on screen said which chip did it. */
+.filter-btn.active {
     color: var(--accent);
     border-color: var(--accent);
     background: rgba(232, 168, 76, 0.1);
@@ -2263,3 +2267,48 @@ code {
 /* The explanatory paragraph after a definition list needs its own air, or it
    reads as a runaway third <dd>. */
 .info-card dl + p { margin-top: var(--space-md); }
+
+/* Subcategory badge and tag pills. Deliberately quieter than the category
+   badge: the category is the primary axis and must stay the loudest thing on
+   the card. */
+.badge-sub {
+    background: transparent;
+    border: 1px solid currentColor;
+    opacity: 0.75;
+}
+.tag-pill {
+    display: inline-block;
+    /* A <button>, so it needs the UA button chrome stripped -- it has to read
+       as a label until you notice it is clickable. */
+    appearance: none;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    padding: 0 0.4em;
+    margin: 0 0.2em 0.2em 0;
+    border-radius: 0.5em;
+    opacity: 0.6;
+    border: 1px solid currentColor;
+}
+#subcategory-filters .filter-btn {
+    font-size: 0.85em;
+}
+
+/* A tag has a CHIP in the toolbar and a PILL on each card, and they are one
+   control in two places -- so they carry the same selected state. */
+.tag-pill.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(232, 168, 76, 0.12);
+    opacity: 1;
+}
+.tag-pill:hover { opacity: 1; }
+#tag-filters .filter-btn {
+    font-size: 0.8em;
+    opacity: 0.85;
+}
+#tag-filters .filter-btn.active { opacity: 1; }
+/* Tags column: let it wrap rather than widen the table past the viewport. */
+.col-tags { max-width: 22ch; }

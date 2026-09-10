@@ -49,6 +49,19 @@
             <button class="filter-btn cat-btn" data-filter="tool" aria-pressed="false">Tools</button>
             <button class="filter-btn cat-btn" data-filter="utility" aria-pressed="false">Utilities</button>
         </div>
+        <div class="filter-group" id="subcategory-filters" role="group" aria-label="Filter by subcategory">
+            <button class="filter-btn sub-btn active" data-subfilter="all" aria-pressed="true">All types</button>
+            {{range $ct, $list := .Taxonomy.Subcategories}}
+                {{range $list}}
+            <button class="filter-btn sub-btn" data-subfilter="{{.ID}}" data-parent="{{$ct}}" aria-pressed="false">{{.Label}}</button>
+                {{end}}
+            {{end}}
+        </div>
+        <div class="filter-group" id="tag-filters" role="group" aria-label="Filter by tag">
+            {{range .Taxonomy.Tags}}
+            <button class="filter-btn tag-btn" data-tagfilter="{{.}}" aria-pressed="false">{{.}}</button>
+            {{end}}
+        </div>
         <div class="toolbar-right">
             <label class="sr-only" for="sort-select">Sort modules</label>
             <select id="sort-select" class="sort-select" aria-label="Sort modules">
@@ -74,7 +87,7 @@
     <h2 class="section-header" id="grid-installed-header">Installed</h2>
     <div class="module-grid" id="module-grid-installed">
         {{range .Modules}}{{if isInstalled .ID $.Installed}}
-        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
+        <article class="module-card" data-category="{{.ComponentType}}" data-subcategory="{{.Subcategory}}" data-tags="{{range $i, $t := .Tags}}{{if $i}} {{end}}{{$t}}{{end}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
                 <h3><a href="/modules/{{.ID}}">{{.Name}}</a> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a></h3>
                 <span class="badge badge-installed">Installed</span>
@@ -82,6 +95,8 @@
             <p class="module-description">{{.Description}}</p>
             <div class="module-meta">
                 <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
+                {{with subcategoryLabel $.Taxonomy .ComponentType .Subcategory}}<span class="badge badge-sub">{{.}}</span>{{end}}
+                {{template "tag-pills" .Tags}}
                 <span>by {{.Author}}</span>
             </div>
             <div class="module-actions">
@@ -105,13 +120,15 @@
     <h2 class="section-header" id="grid-available-header">Available</h2>
     <div class="module-grid" id="module-grid-available">
         {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
-        <article class="module-card" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
+        <article class="module-card" data-category="{{.ComponentType}}" data-subcategory="{{.Subcategory}}" data-tags="{{range $i, $t := .Tags}}{{if $i}} {{end}}{{$t}}{{end}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" role="link" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
             <div class="module-card-header">
                 <h3><a href="/modules/{{.ID}}">{{.Name}}</a>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</h3>
             </div>
             <p class="module-description">{{.Description}}</p>
             <div class="module-meta">
                 <span class="badge badge-{{.ComponentType}}">{{categoryLabel .ComponentType}}</span>
+                {{with subcategoryLabel $.Taxonomy .ComponentType .Subcategory}}<span class="badge badge-sub">{{.}}</span>{{end}}
+                {{template "tag-pills" .Tags}}
                 <span>by {{.Author}}</span>
             </div>
             <div class="module-actions">
@@ -136,15 +153,17 @@
                 <tr>
                     <th scope="col">Name</th>
                     <th scope="col">Category</th>
+                    <th scope="col">Tags</th>
                     <th scope="col">Author</th>
                     <th scope="col" class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {{range .Modules}}{{if isInstalled .ID $.Installed}}
-                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
+                <tr class="module-row" data-category="{{.ComponentType}}" data-subcategory="{{.Subcategory}}" data-tags="{{range $i, $t := .Tags}}{{if $i}} {{end}}{{$t}}{{end}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="yes" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
                     <td><span class="module-list-name">{{.Name}}</span> <a class="module-version-inline" href="{{releaseURL .GithubRepo (index $.Installed .ID).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (index $.Installed .ID).Version}}</a></td>
-                    <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
+                    <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span>{{with subcategoryLabel $.Taxonomy .ComponentType .Subcategory}} <span class="badge badge-sub badge-inline">{{.}}</span>{{end}}</td>
+                    <td class="col-tags">{{template "tag-pills" .Tags}}</td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td class="col-actions">
                         {{if hasUpdate .ID $.Installed $.ReleaseMeta}}
@@ -173,15 +192,17 @@
                 <tr>
                     <th scope="col">Name</th>
                     <th scope="col">Category</th>
+                    <th scope="col">Tags</th>
                     <th scope="col">Author</th>
                     <th scope="col" class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {{range .Modules}}{{if not (isInstalled .ID $.Installed)}}
-                <tr class="module-row" data-category="{{.ComponentType}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
+                <tr class="module-row" data-category="{{.ComponentType}}" data-subcategory="{{.Subcategory}}" data-tags="{{range $i, $t := .Tags}}{{if $i}} {{end}}{{$t}}{{end}}" data-name="{{.Name}}" data-author="{{.Author}}" data-installed="no" data-released="{{(releaseMeta .ID $.ReleaseMeta).FirstRelease}}" data-updated="{{(releaseMeta .ID $.ReleaseMeta).LastUpdated}}" data-href="/modules/{{.ID}}" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();window.location.href=this.dataset.href}" style="cursor:pointer">
                     <td><span class="module-list-name">{{.Name}}</span>{{if (releaseMeta .ID $.ReleaseMeta).Version}} <a class="module-version-inline" href="{{releaseURL .GithubRepo (releaseMeta .ID $.ReleaseMeta).Version}}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">{{versionStr (releaseMeta .ID $.ReleaseMeta).Version}}</a>{{end}}</td>
-                    <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span></td>
+                    <td><span class="badge badge-{{.ComponentType}} badge-inline">{{categoryLabel .ComponentType}}</span>{{with subcategoryLabel $.Taxonomy .ComponentType .Subcategory}} <span class="badge badge-sub badge-inline">{{.}}</span>{{end}}</td>
+                    <td class="col-tags">{{template "tag-pills" .Tags}}</td>
                     <td class="module-list-author" title="{{.Author}}">{{.Author}}</td>
                     <td class="col-actions">
                         <form method="POST" action="/modules/{{.ID}}/install" class="inline-form" onclick="event.stopPropagation()" data-confirm="Install {{.Name}}?" data-confirm-title="Install Module" data-confirm-label="Install">
@@ -363,6 +384,10 @@
     var listBtn = document.getElementById('view-list-btn');
     var isListView = true;
     var currentFilter = 'all';
+    var currentSubFilter = 'all';
+    var currentTagFilter = '';
+    var subBtns = document.querySelectorAll('#subcategory-filters .sub-btn');
+    var tagBtns = document.querySelectorAll('#tag-filters .tag-btn');
 
     /*
      * Where you were, kept across a navigation.
@@ -387,7 +412,7 @@
     }
     function saveView(extra) {
         try {
-            var v = { filter: currentFilter, list: isListView,
+            var v = { filter: currentFilter, subFilter: currentSubFilter, tag: currentTagFilter, list: isListView,
                       sort: sortSelect ? sortSelect.value : null,
                       scroll: window.scrollY || 0 };
             if (extra) { for (var k in extra) v[k] = extra[k]; }
@@ -432,13 +457,75 @@
         }
     }
 
+    /* A subcategory button is shown only when the list actually holds a module
+     * with that (component_type, subcategory) pair -- keying on the slug alone
+     * would show `sequencer` under Audio FX, where nothing can match it. */
+    function updateSubcategoryButtons() {
+        /* The row is a DRILL-DOWN and is hidden under "All": every subcategory
+         * of every category at once is 33 chips over five rows, which pushes
+         * the module list off the screen before a single module is visible.
+         * It also means the three `sequencer` buttons -- midi_fx, tool and
+         * overtake each get one, since a button keys on the PAIR -- can never
+         * share a screen and read as a duplicated control. */
+        if (currentFilter === 'all') {
+            releaseSubFilter();
+            document.getElementById('subcategory-filters').style.display = 'none';
+            return;
+        }
+        var pairs = {};
+        var items = document.querySelectorAll('[data-subcategory]');
+        for (var i = 0; i < items.length; i++) {
+            var cat = items[i].getAttribute('data-category');
+            if (currentFilter !== 'all' && cat !== currentFilter) continue;
+            pairs[cat + '/' + items[i].getAttribute('data-subcategory')] = true;
+        }
+        var anyShown = false;
+        for (var j = 0; j < subBtns.length; j++) {
+            var f = subBtns[j].getAttribute('data-subfilter');
+            if (f === 'all') continue;
+            var p = subBtns[j].getAttribute('data-parent') + '/' + f;
+            var on = !!pairs[p];
+            subBtns[j].style.display = on ? '' : 'none';
+            if (on) anyShown = true;
+        }
+        /* A filter the visible list can no longer satisfy must be released, or
+         * the page shows an empty list with no visible control that emptied it. */
+        var stillValid = false;
+        for (var key in pairs) {
+            if (key.split('/')[1] === currentSubFilter) { stillValid = true; break; }
+        }
+        if (currentSubFilter !== 'all' && !stillValid) releaseSubFilter();
+        document.getElementById('subcategory-filters').style.display = anyShown ? '' : 'none';
+    }
+
+    /* Drop back to "All types" and put the buttons back in step. Split out
+     * because BOTH exits above need it: hiding the row under "All" leaves a
+     * live subFilter that would otherwise keep filtering with no visible
+     * control that set it -- the same failure as the release path below. */
+    function releaseSubFilter() {
+        currentSubFilter = 'all';
+        for (var k = 0; k < subBtns.length; k++) {
+            var isAll = subBtns[k].getAttribute('data-subfilter') === 'all';
+            subBtns[k].classList.toggle('active', isAll);
+            subBtns[k].setAttribute('aria-pressed', isAll ? 'true' : 'false');
+        }
+    }
+
     function applyFilters() {
         var allItems = [allCards, allRows];
         for (var v = 0; v < allItems.length; v++) {
             var items = allItems[v];
             for (var i = 0; i < items.length; i++) {
                 var cat = items[i].getAttribute('data-category');
-                items[i].style.display = (currentFilter === 'all' || cat === currentFilter) ? '' : 'none';
+                var sub = items[i].getAttribute('data-subcategory') || '';
+                var catOk = (currentFilter === 'all' || cat === currentFilter);
+                var subOk = (currentSubFilter === 'all' || sub === currentSubFilter);
+                /* Split on ' ' and compare whole entries: a substring test makes
+                 * `mono` match `mono-voice`-shaped tags and quietly widens the
+                 * filter. */
+                var tags = (items[i].getAttribute('data-tags') || '').split(' ');
+                var tagOk = (currentTagFilter === '' || tags.indexOf(currentTagFilter) !== -1);
+                items[i].style.display = (catOk && subOk && tagOk) ? '' : 'none';
             }
         }
         // Hide section headers if no visible items in that section
@@ -514,6 +601,27 @@
             this.classList.add('active');
             this.setAttribute('aria-pressed', 'true');
             currentFilter = this.getAttribute('data-filter');
+            /* The visible subcategory buttons are a function of the category,
+             * so they must be recomputed BEFORE the list is filtered -- this is
+             * also what releases a subcategory the new category cannot satisfy. */
+            updateSubcategoryButtons();
+            updateTagButtons();
+            applyFilters();
+            saveView({ scroll: 0 });
+        });
+    }
+
+    for (var s = 0; s < subBtns.length; s++) {
+        subBtns[s].addEventListener('click', function () {
+            currentSubFilter = this.getAttribute('data-subfilter');
+            for (var t = 0; t < subBtns.length; t++) {
+                var on = subBtns[t] === this;
+                subBtns[t].classList.toggle('active', on);
+                subBtns[t].setAttribute('aria-pressed', on ? 'true' : 'false');
+            }
+            /* The tag chips describe what the CATEGORY + SUBCATEGORY leave, so
+             * narrowing the type has to re-derive them. */
+            updateTagButtons();
             applyFilters();
             saveView({ scroll: 0 });
         });
@@ -551,10 +659,96 @@
         setView(false);
     }
 
+    /* Tag pills filter. Clicking the ACTIVE tag clears it -- the pill is the
+     * only control that sets this axis, so it has to be the one that unsets it
+     * or a tag filter becomes a trap. */
+    function toggleTagFilter(tag) {
+        currentTagFilter = (currentTagFilter === tag) ? '' : tag;
+        syncTagPills();
+        applyFilters();
+        saveView();
+    }
+
+    function syncTagPills() {
+        var pills = document.querySelectorAll('.tag-pill');
+        for (var i = 0; i < pills.length; i++) {
+            var on = pills[i].getAttribute('data-tag') === currentTagFilter && currentTagFilter !== '';
+            pills[i].classList.toggle('active', on);
+            pills[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+        /* The row chip and the inline pill are the SAME control in two places:
+         * a pill on a card is a shortcut into the tag row, so both carry the
+         * selected state or clicking one leaves the other looking unset. */
+        for (var t = 0; t < tagBtns.length; t++) {
+            var chipOn = tagBtns[t].getAttribute('data-tagfilter') === currentTagFilter && currentTagFilter !== '';
+            tagBtns[t].classList.toggle('active', chipOn);
+            tagBtns[t].setAttribute('aria-pressed', chipOn ? 'true' : 'false');
+        }
+    }
+
+    /* Which tag chips this list can still satisfy. Computed from the set the
+     * CATEGORY and SUBCATEGORY leave, deliberately ignoring the tag filter
+     * itself -- narrowing by the visible set instead would delete every chip
+     * that does not co-occur with the active one, so you could never move from
+     * `tape` to `granular` without first clearing. */
+    function updateTagButtons() {
+        if (currentFilter === 'all') {
+            releaseTagFilter();
+            document.getElementById('tag-filters').style.display = 'none';
+            return;
+        }
+        var present = {};
+        var items = document.querySelectorAll('[data-tags]');
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].getAttribute('data-category') !== currentFilter) continue;
+            var sub = items[i].getAttribute('data-subcategory') || '';
+            if (currentSubFilter !== 'all' && sub !== currentSubFilter) continue;
+            var ts = (items[i].getAttribute('data-tags') || '').split(' ');
+            for (var k = 0; k < ts.length; k++) if (ts[k]) present[ts[k]] = true;
+        }
+        var anyShown = false;
+        for (var j = 0; j < tagBtns.length; j++) {
+            var on = !!present[tagBtns[j].getAttribute('data-tagfilter')];
+            tagBtns[j].style.display = on ? '' : 'none';
+            if (on) anyShown = true;
+        }
+        if (currentTagFilter !== '' && !present[currentTagFilter]) releaseTagFilter();
+        document.getElementById('tag-filters').style.display = anyShown ? '' : 'none';
+    }
+
+    function releaseTagFilter() {
+        currentTagFilter = '';
+        for (var k = 0; k < tagBtns.length; k++) {
+            tagBtns[k].classList.remove('active');
+            tagBtns[k].setAttribute('aria-pressed', 'false');
+        }
+        var pills = document.querySelectorAll('.tag-pill.active');
+        for (var p = 0; p < pills.length; p++) {
+            pills[p].classList.remove('active');
+            pills[p].setAttribute('aria-pressed', 'false');
+        }
+    }
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest) return;
+        var chip = e.target.closest('.tag-btn');
+        if (chip) { toggleTagFilter(chip.getAttribute('data-tagfilter')); return; }
+        var pill = e.target.closest('.tag-pill');
+        if (!pill) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTagFilter(pill.getAttribute('data-tag'));
+    });
+
     // Clickable rows and cards. Record the view on the way out so Back lands
     // on the filter and position the module was opened from.
     document.querySelectorAll('.module-row[data-href]').forEach(function(row) {
-        row.addEventListener('click', function() {
+        row.addEventListener('click', function(e) {
+            /* A tag pill is a <button> INSIDE the row, and the row navigates on
+             * click -- without this the pill opens the module instead of
+             * filtering. The card handler already had this guard; the row did
+             * not, because until now it held no controls of its own. */
+            if (e.target.closest('a, button')) return;
             saveView();
             window.location.href = row.getAttribute('data-href');
         });
@@ -588,24 +782,44 @@
                 if (isMatch) currentFilter = saved.filter;
             }
         }
+        if (saved.tag) currentTagFilter = saved.tag;
+        if (saved.subFilter) {
+            for (var sfi = 0; sfi < subBtns.length; sfi++) {
+                var subMatch = subBtns[sfi].getAttribute('data-subfilter') === saved.subFilter;
+                subBtns[sfi].classList.toggle('active', subMatch);
+                subBtns[sfi].setAttribute('aria-pressed', subMatch ? 'true' : 'false');
+                if (subMatch) currentSubFilter = saved.subFilter;
+            }
+        }
     }
 
     // Initial sort and hide empty categories
     applySort(sortSelect.value);
     updateCategoryButtons();
+    syncTagPills();
+    updateSubcategoryButtons();
+    updateTagButtons();
     applyFilters();
     syncReturnTo();
 
     /* A filter the catalogue no longer has anything for (a category emptied by
      * an uninstall) would leave an empty page with no way to tell why, so fall
      * back to All rather than restoring it. */
-    if (currentFilter !== 'all' && parseInt(countEl.textContent, 10) === 0) {
+    if ((currentFilter !== 'all' || currentSubFilter !== 'all') && parseInt(countEl.textContent, 10) === 0) {
         currentFilter = 'all';
+        currentSubFilter = 'all';
         for (var ri = 0; ri < catBtns.length; ri++) {
             var isAll = catBtns[ri].getAttribute('data-filter') === 'all';
             catBtns[ri].classList.toggle('active', isAll);
             catBtns[ri].setAttribute('aria-pressed', isAll ? 'true' : 'false');
         }
+        for (var rj = 0; rj < subBtns.length; rj++) {
+            var isSubAll = subBtns[rj].getAttribute('data-subfilter') === 'all';
+            subBtns[rj].classList.toggle('active', isSubAll);
+            subBtns[rj].setAttribute('aria-pressed', isSubAll ? 'true' : 'false');
+        }
+        updateSubcategoryButtons();
+        updateTagButtons();
         applyFilters();
         saveView({ scroll: 0 });
     } else if (saved && saved.scroll) {

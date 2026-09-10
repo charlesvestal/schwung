@@ -50,11 +50,18 @@ type CatalogModule struct {
 	Description   string `json:"description"`
 	Author        string `json:"author"`
 	ComponentType string `json:"component_type"`
-	GithubRepo    string `json:"github_repo"`
-	DefaultBranch string `json:"default_branch"`
-	AssetName     string `json:"asset_name"`
-	MinHostVer    string `json:"min_host_version"`
-	Requires      string `json:"requires,omitempty"`
+	// Subcategory is the second categorisation axis: exactly one per module,
+	// from the vocabulary in the catalog's Taxonomy block. ComponentType still
+	// decides menu placement and install path; this only drives filtering.
+	Subcategory string `json:"subcategory,omitempty"`
+	// Tags are open, cross-cutting facets. Some are derived by CI from other
+	// catalog fields (needs-assets from Requires) and must not be hand-edited.
+	Tags          []string `json:"tags,omitempty"`
+	GithubRepo    string   `json:"github_repo"`
+	DefaultBranch string   `json:"default_branch"`
+	AssetName     string   `json:"asset_name"`
+	MinHostVer    string   `json:"min_host_version"`
+	Requires      string   `json:"requires,omitempty"`
 	// RequiresModules names other catalog modules this one cannot work without.
 	//
 	// Distinct from Requires, which is PROSE shown to the user about external
@@ -74,12 +81,47 @@ type CatalogHost struct {
 	MinHostVersion string `json:"min_host_version"`
 }
 
+// CatalogTaxonomy is the vocabulary, embedded in the catalog so a single fetch
+// carries display labels. Generated from taxonomy.json in the schwung repo by
+// tools/catalog/sync_taxonomy.mjs; never edited here.
+type CatalogTaxonomy struct {
+	Version       int                             `json:"taxonomy_version"`
+	Subcategories map[string][]CatalogSubcategory `json:"subcategories"`
+	Tags          []string                        `json:"tags"`
+}
+
+// CatalogSubcategory is one vocabulary entry: the slug stored on a module, and
+// the label shown to a person.
+type CatalogSubcategory struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 // Catalog is the top-level catalog structure.
 type Catalog struct {
 	CatalogVersion int               `json:"catalog_version"`
 	Host           CatalogHost       `json:"host"`
 	Modules        []CatalogModule   `json:"modules"`
 	Platforms      []CatalogPlatform `json:"platforms,omitempty"`
+	Taxonomy       CatalogTaxonomy   `json:"taxonomy"`
+}
+
+// subcategoryLabelFor resolves a slug to its display label using the catalog's
+// own embedded vocabulary.
+//
+// An unknown slug returns ITSELF, never "". A blank badge is indistinguishable
+// from a module that has no subcategory at all, and "this module was never
+// categorised" is exactly the state this axis exists to make visible.
+func subcategoryLabelFor(tax CatalogTaxonomy, componentType, id string) string {
+	if id == "" {
+		return ""
+	}
+	for _, sc := range tax.Subcategories[componentType] {
+		if sc.ID == id {
+			return sc.Label
+		}
+	}
+	return id
 }
 
 // CatalogPlatform is a boot target with no module in it: an alternative
@@ -510,6 +552,7 @@ var funcMap = template.FuncMap{
 		}
 		return ct
 	},
+	"subcategoryLabel": subcategoryLabelFor,
 	"isInstalled": func(id string, installed map[string]InstalledModule) bool {
 		_, ok := installed[id]
 		return ok
@@ -978,9 +1021,18 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		hostUpdateAvailable = hostLatestVersion != "" && hostLatestVersion != hostVersion
 	}
 
+	// A nil catalog (offline, or first boot before the first fetch) yields the
+	// zero value, which renders no chips rather than panicking -- the module
+	// list must still work with no network.
+	var taxonomy CatalogTaxonomy
+	if cat != nil {
+		taxonomy = cat.Taxonomy
+	}
+
 	data := map[string]any{
 		"Title":               "Modules",
 		"Modules":             modules,
+		"Taxonomy":            taxonomy,
 		"Installed":           installed,
 		"HasInstalled":        len(installed) > 0,
 		"HasAnyUpdate":        hasAnyUpdate,
