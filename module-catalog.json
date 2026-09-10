@@ -1574,14 +1574,14 @@
     {
       "id": "movy",
       "name": "Movy",
-      "description": "Elektron-style knob UI + 4-track sequencer with per-step parameters, parameter automation, and live recording",
+      "description": "Elektron-style knob UI + 16-track sequencer with per-step parameters, parameter automation, and live recording",
       "author": "megadake",
       "component_type": "tool",
       "subcategory": "sequencer",
       "github_repo": "DimaDake/schwung-movy",
       "default_branch": "main",
       "asset_name": "movy-module.tar.gz",
-      "min_host_version": "0.9.13"
+      "min_host_version": "1.1.0"
     },
     {
       "id": "magneto",
