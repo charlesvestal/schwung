@@ -300,7 +300,11 @@ function renderAudio(mod, rule, dir, so, outDir) {
       for (const p of cands) scanArgs.push("--try", `${p.key}:${p.min}:${p.max}`);
       try {
         const scored = JSON.parse(runProbe(scanArgs))
-          .filter((r) => r.verdict === "SWEEP")
+          /* A knob that MUTES somewhere in its range is disqualified however
+           * well it scores. 4k-eq's lf_gain scored a perfect 1.000 and drove
+           * the module into silence it never recovered from -- 60% of the clip
+           * was digital silence behind a loud arp. */
+          .filter((r) => r.verdict === "SWEEP" && !r.mutes)
           .sort((a, b) => b.shape - a.shape);
         if (scored.length) {
           const win = cands.find((c) => c.key === scored[0].key);
@@ -334,14 +338,26 @@ function renderAudio(mod, rule, dir, so, outDir) {
                   "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "44100",
                   "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", m4a]);
     fs.unlinkSync(r.file);
-    clips.push({ preset: r.preset, name: r.name, rms_dbfs: r.rms_dbfs,
+    clips.push({ preset: r.preset, name: r.name, rms_dbfs: r.rms_dbfs, dead_seconds: r.dead_seconds,
                  octave_shift: r.octave_shift, fit: r.fit, density: r.density,
                  file: path.relative(OUT, m4a) });
   }
   /* A clip that is effectively silent is a FAILURE, not an asset: loudnorm
-   * would amplify the noise floor and publish it as a preview. */
-  const usable = clips.filter((c) => c.rms_dbfs > -60);
-  if (!usable.length) return { status: "error", detail: "every render was silent" };
+   * would amplify the noise floor and publish it as a preview.
+   *
+   * WHOLE-CLIP RMS IS NOT ENOUGH. A module that dies partway through leaves a
+   * loud opening carrying the average past any threshold -- 4k-eq measured
+   * -18.5 dBFS over its arp and digital silence for the last 18 seconds, and
+   * passed. Ask how much of the clip is dead, not how loud it is on average. */
+  /* The score's own longest rest is 3.0 s, so anything past ~4 s of unbroken
+   * silence is the module having stopped rather than the music resting. */
+  const usable = clips.filter((c) => c.rms_dbfs > -60 && (c.dead_seconds ?? 0) < 4.0);
+  if (!usable.length) {
+    const dead = clips.find((c) => (c.dead_seconds ?? 0) >= 4.0);
+    return { status: "error",
+             detail: dead ? `went silent for ${dead.dead_seconds.toFixed(1)}s mid-clip`
+                          : "every render was silent" };
+  }
   return { status: "ok", score: rule.score || rule.midi, wet, sweep, source: sourceUsed, clips: usable,
            dropped: clips.length - usable.length || undefined };
 }

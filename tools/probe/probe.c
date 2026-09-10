@@ -379,7 +379,7 @@ static void band_energies(const int16_t *x, int n, double *out) {
  */
 #define SWEEP_STEPS 5
 
-typedef struct { double shape, level_db; } sweep_t;
+typedef struct { double shape, level_db; int mutes; } sweep_t;
 
 static sweep_t spectral_change(mod_t *src, mod_t *fx, const char *key,
                                double lo, double hi, int16_t *scratch) {
@@ -422,7 +422,7 @@ static sweep_t spectral_change(mod_t *src, mod_t *fx, const char *key,
         for (int i = a; i < N; i++) sq += (double)scratch[i*2] * scratch[i*2];
         rms[step] = sqrt(sq / n);
     }
-    sweep_t r = { 0, 0 };
+    sweep_t r = { 0, 0, 0 };
     /* Total variation along the sweep, so a monotonic control and a control
      * that returns to where it started are told apart. */
     for (int step = 1; step < SWEEP_STEPS; step++) {
@@ -438,6 +438,11 @@ static sweep_t spectral_change(mod_t *src, mod_t *fx, const char *key,
     }
     r.level_db = (hi_r > 0 && lo_r > 0) ? 20 * log10(hi_r / lo_r)
                : (hi_r > 0 ? 99.0 : 0.0);
+    /* Does some setting of this knob KILL the signal? Sweeping through such a
+     * value publishes the wreckage: 4k-eq's lf_gain drove the module into a
+     * state it never came back from, and 60% of the clip was digital silence
+     * behind a loud arp that carried the overall RMS past the guard. */
+    r.mutes = (hi_r > 0 && lo_r < hi_r / 300.0);   /* a step > 50 dB below the loudest */
     return r;
 }
 
@@ -500,6 +505,33 @@ static void render_chain(mod_t *src, mod_t *fx, const score_t *s, int shift,
         char buf[64]; snprintf(buf, sizeof buf, "%g", sw->lo);
         mod_set(fx ? fx : src, sw->key, buf);
     }
+}
+
+/*
+ * The longest UNBROKEN silence, in seconds, before the score's final tail.
+ *
+ * Not the total: the score is deliberately full of rests -- 34% of it is
+ * silence by design, and a dry patch with a short release is silent for
+ * roughly that much legitimately. Counting the total flags a healthy preview.
+ *
+ * A module that DIES partway through is a different shape: one long dead
+ * stretch running to the end. 4k-eq drove itself into silence at 12 s and
+ * never came back, behind an arp loud enough to carry the average.
+ *
+ * The last `tail` seconds are excluded because silence there is the correct
+ * answer for anything without a long release.
+ */
+static double longest_silence(const int16_t *pcm, int frames, double tail_s) {
+    const int win = SR / 10;
+    const int limit = frames - (int)(tail_s * SR);
+    int run = 0, best = 0;
+    for (int o = 0; o + win <= limit; o += win) {
+        double sq = 0;
+        for (int i = o; i < o + win; i++) sq += (double)pcm[i*2] * pcm[i*2];
+        if (sqrt(sq / win) / 32768.0 < 1e-4) { if (++run > best) best = run; }
+        else run = 0;
+    }
+    return best / 10.0;
 }
 
 static double rms_dbfs(const int16_t *pcm, long n) {
@@ -589,11 +621,13 @@ int main(int argc, char **argv) {
             /* A sweep is worth animating when it moves the SHAPE. A big level
              * move with a flat shape is a gain control -- reported, but not a
              * candidate, or every module would "need" its output swept. */
-            const char *verdict = r.shape > 0.35 ? "SWEEP"
+            const char *verdict = r.mutes ? "mutes"
+                                : r.shape > 0.35 ? "SWEEP"
                                 : r.level_db > 12 ? "gain-like"
                                 : r.shape > 0.15 ? "mild" : "inert";
-            printf("%s  {\"key\": \"%s\", \"shape\": %.3f, \"level_db\": %.1f, \"verdict\": \"%s\"}",
-                   first ? "" : ",\n", spec, r.shape, r.level_db, verdict);
+            printf("%s  {\"key\": \"%s\", \"shape\": %.3f, \"level_db\": %.1f, "
+                   "\"mutes\": %s, \"verdict\": \"%s\"}",
+                   first ? "" : ",\n", spec, r.shape, r.level_db, r.mutes ? "true" : "false", verdict);
             first = 0;
             fprintf(stderr, "  %-20s shape %.3f  level %5.1f dB   %s\n", spec, r.shape, r.level_db, verdict);
         }
@@ -638,7 +672,7 @@ int main(int argc, char **argv) {
 
     /* --sweep key:lo:hi[:t0:t1] -- defaults to the chord section of the demo
      * score, which is the part with a sustained tone. */
-    sweep_plan_t sweep = { NULL, 0, 0, 8.4, 16.8, 0 };
+    sweep_plan_t sweep = { NULL, 0, 0, 4.4, 12.8, 0 };   /* the chord section */
     if (sweep_spec) {
         static char sb[256];
         snprintf(sb, sizeof sb, "%s", sweep_spec);
@@ -692,6 +726,7 @@ int main(int argc, char **argv) {
         }
         render_chain(chained ? &source : &m, chained ? &m : NULL, &s, shift, stretch, &sweep, pcm);
         double db = rms_dbfs(pcm, (long)s.frames * 2);
+        double sil = longest_silence(pcm, s.frames, 7.0);
 
         char path[1024];
         if (k > 1) {
@@ -706,8 +741,8 @@ int main(int argc, char **argv) {
         printf("  {\"slot\": %d, \"preset\": ", j);
         if (has_presets) printf("%d", idx); else printf("null");
         printf(", \"name\": \"%s\", \"file\": \"%s\", "
-               "\"rms_dbfs\": %.1f, \"octave_shift\": %d, \"fit\": \"%s\", \"density\": \"%s\"}%s\n",
-               name, path, db, shift, why, density, j + 1 < k ? "," : "");
+               "\"rms_dbfs\": %.1f, \"dead_seconds\": %.1f, \"octave_shift\": %d, \"fit\": \"%s\", \"density\": \"%s\"}%s\n",
+               name, path, db, sil, shift, why, density, j + 1 < k ? "," : "");
         fprintf(stderr, "  [%d] preset %-4d %-24s %6.1f dBFS  oct %+d  (%s)\n",
                 j, idx, name, db, shift, why);
     }
