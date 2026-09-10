@@ -33,7 +33,16 @@ export function scoreFor(mod) {
   const table = SCORES[mod.component_type] || {};
   const rule = table[mod.subcategory] || table._all || null;
   if (!rule) return null;
-  return { ...SCORES.default, ...rule };
+  let out = { ...SCORES.default, ...rule };
+  /* A TAG overrides the subcategory rule. `bass` is the case: a bass patch
+   * previewed in the treble is a preview of the wrong instrument, and it can
+   * sit outside the Mono & Bass subcategory -- tb3po is a tool. Set, never
+   * accumulated, so two tags cannot transpose something twice. */
+  for (const t of mod.tags || []) {
+    const tagRule = (SCORES._by_tag || {})[t];
+    if (tagRule) out = { ...out, ...tagRule };
+  }
+  return out;
 }
 
 const sh = (cmd, a, opts = {}) => execFileSync(cmd, a, { encoding: "utf8", ...opts });
@@ -231,13 +240,16 @@ function renderAudio(mod, rule, dir, so, outDir) {
 
   const scorePath = path.join(outDir, "score.json");
   if (!rule.midi) return { status: "not-applicable", detail: "no melodic score for this subcategory yet" };
-  sh("node", [path.join(ROOT, "tools/probe/mid2score.mjs"),
-              path.join(ROOT, "tools/probe/scores", "..", rule.midi), scorePath,
-              "--seconds", String(rule.seconds)], { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
+  const scoreArgs = [path.join(ROOT, "tools/probe/mid2score.mjs"),
+                     path.join(ROOT, "tools/probe", rule.midi), scorePath,
+                     "--seconds", String(rule.seconds)];
+  if (rule.transpose) scoreArgs.push("--transpose", String(rule.transpose));
+  sh("node", scoreArgs, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] });
 
   const a = ["--render", dir, "--so", so, "--id", mod.id, "--score", scorePath,
              "-o", path.join(audioDir, `${mod.id}.wav`), "--presets", String(rule.presets)];
   if (rule.octave_fit) a.push("--octave-fit");
+  if (rule.adaptive_density) a.push("--adaptive-density");
 
   /* An FX or a MIDI FX is previewed THROUGH a reference instrument, pinned, so
    * that a preview which changes means the MODULE changed -- and so effects
@@ -276,7 +288,7 @@ function renderAudio(mod, rule, dir, so, outDir) {
                   "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", m4a]);
     fs.unlinkSync(r.file);
     clips.push({ preset: r.preset, name: r.name, rms_dbfs: r.rms_dbfs,
-                 octave_shift: r.octave_shift, fit: r.fit,
+                 octave_shift: r.octave_shift, fit: r.fit, density: r.density,
                  file: path.relative(OUT, m4a) });
   }
   /* A clip that is effectively silent is a FAILURE, not an asset: loudnorm
@@ -288,6 +300,12 @@ function renderAudio(mod, rule, dir, so, outDir) {
 }
 
 // ------------------------------------------------------------------ driver
+/* Guarded, so the module can be imported -- by a test, or by anything wanting
+ * scoreFor() -- without the driver running and calling process.exit. */
+const isMain = process.argv[1] && process.argv[1].endsWith("generate.mjs");
+if (isMain) await main();
+
+async function main() {
 const wanted = args.includes("--all")
   ? CATALOG.modules
   : CATALOG.modules.filter((m) => ids.includes(m.id));
@@ -313,4 +331,5 @@ for (const mod of wanted) {
 }
 fs.writeFileSync(path.join(OUT, "index.json"), JSON.stringify(index, null, 2));
 process.stderr.write(`\nwrote ${path.join(OUT, "index.json")}\n`);
+}
 
