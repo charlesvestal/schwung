@@ -14,11 +14,17 @@
       "sound_generator": [
         {
           "id": "polysynth",
-          "label": "Polysynth"
+          "label": "Polysynth",
+          "implies": [
+            "polyphonic"
+          ]
         },
         {
           "id": "mono-bass",
-          "label": "Mono & Bass"
+          "label": "Mono & Bass",
+          "implies": [
+            "mono"
+          ]
         },
         {
           "id": "west-coast",
@@ -26,19 +32,31 @@
         },
         {
           "id": "fm",
-          "label": "FM"
+          "label": "FM",
+          "implies": [
+            "fm"
+          ]
         },
         {
           "id": "wavetable",
-          "label": "Wavetable"
+          "label": "Wavetable",
+          "implies": [
+            "wavetable"
+          ]
         },
         {
           "id": "sampler-rompler",
-          "label": "Sampler & Rompler"
+          "label": "Sampler & Rompler",
+          "implies": [
+            "sample-based"
+          ]
         },
         {
           "id": "drum-machine",
-          "label": "Drum Machine"
+          "label": "Drum Machine",
+          "implies": [
+            "drums"
+          ]
         },
         {
           "id": "physical-modeling",
@@ -50,7 +68,10 @@
         },
         {
           "id": "granular",
-          "label": "Granular"
+          "label": "Granular",
+          "implies": [
+            "granular"
+          ]
         },
         {
           "id": "macro-hybrid",
@@ -114,7 +135,10 @@
         },
         {
           "id": "chord-harmony",
-          "label": "Chord & Harmony"
+          "label": "Chord & Harmony",
+          "implies": [
+            "chord"
+          ]
         },
         {
           "id": "routing-utility",
@@ -181,7 +205,6 @@
       "polyphonic",
       "sample-based",
       "spectral",
-      "streaming",
       "tape",
       "vintage-emulation",
       "vocal",
@@ -197,7 +220,6 @@
       "component_type": "sound_generator",
       "subcategory": "fm",
       "tags": [
-        "fm",
         "needs-assets",
         "polyphonic",
         "vintage-emulation"
@@ -216,8 +238,7 @@
       "component_type": "sound_generator",
       "subcategory": "sampler-rompler",
       "tags": [
-        "needs-assets",
-        "sample-based"
+        "needs-assets"
       ],
       "github_repo": "charlesvestal/schwung-sf2",
       "default_branch": "main",
@@ -233,8 +254,7 @@
       "component_type": "sound_generator",
       "subcategory": "sampler-rompler",
       "tags": [
-        "needs-assets",
-        "sample-based"
+        "needs-assets"
       ],
       "github_repo": "charlesvestal/schwung-sfz",
       "default_branch": "main",
@@ -263,7 +283,6 @@
       "subcategory": "sampler-rompler",
       "tags": [
         "needs-assets",
-        "sample-based",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-jv880",
@@ -280,7 +299,6 @@
       "component_type": "sound_generator",
       "subcategory": "polysynth",
       "tags": [
-        "polyphonic",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-obxd",
@@ -467,7 +485,6 @@
       "component_type": "sound_generator",
       "subcategory": "polysynth",
       "tags": [
-        "polyphonic",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-hera",
@@ -500,7 +517,6 @@
       "component_type": "sound_generator",
       "subcategory": "mono-bass",
       "tags": [
-        "mono",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-moog",
@@ -515,9 +531,6 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "subcategory": "streaming-live-input",
-      "tags": [
-        "streaming"
-      ],
       "github_repo": "charlesvestal/schwung-webstream",
       "default_branch": "main",
       "asset_name": "webstream-module.tar.gz",
@@ -570,9 +583,6 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "subcategory": "streaming-live-input",
-      "tags": [
-        "streaming"
-      ],
       "github_repo": "charlesvestal/schwung-radiogarden",
       "default_branch": "main",
       "asset_name": "radiogarden-module.tar.gz",
@@ -585,9 +595,6 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "subcategory": "streaming-live-input",
-      "tags": [
-        "streaming"
-      ],
       "github_repo": "charlesvestal/schwung-airplay",
       "default_branch": "main",
       "asset_name": "airplay-module.tar.gz",
@@ -600,9 +607,6 @@
       "author": "dom",
       "component_type": "sound_generator",
       "subcategory": "streaming-live-input",
-      "tags": [
-        "streaming"
-      ],
       "github_repo": "handcraftedcc/schwung-StreamRTSP",
       "default_branch": "main",
       "asset_name": "streamrtsp-module.tar.gz",
@@ -697,7 +701,6 @@
       "subcategory": "polysynth",
       "tags": [
         "needs-assets",
-        "polyphonic",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-virus",
@@ -754,7 +757,6 @@
       "component_type": "sound_generator",
       "subcategory": "granular",
       "tags": [
-        "granular",
         "sample-based"
       ],
       "github_repo": "handcraftedcc/move-everything-granny",
@@ -785,7 +787,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "sample-based"
       ],
       "github_repo": "handcraftedcc/move-everything-mrdrums",
@@ -801,8 +802,7 @@
       "component_type": "sound_generator",
       "subcategory": "sampler-rompler",
       "tags": [
-        "needs-assets",
-        "sample-based"
+        "needs-assets"
       ],
       "github_repo": "charlesvestal/schwung-rex",
       "default_branch": "main",
@@ -819,7 +819,6 @@
       "subcategory": "mono-bass",
       "tags": [
         "bass",
-        "mono",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-hush1",
@@ -834,9 +833,6 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "subcategory": "polysynth",
-      "tags": [
-        "polyphonic"
-      ],
       "github_repo": "charlesvestal/schwung-nusaw",
       "default_branch": "main",
       "asset_name": "nusaw-module.tar.gz",
@@ -984,8 +980,7 @@
       "component_type": "sound_generator",
       "subcategory": "sampler-rompler",
       "tags": [
-        "needs-assets",
-        "sample-based"
+        "needs-assets"
       ],
       "github_repo": "j3threejay/move-anything-slicer",
       "default_branch": "main",
@@ -1084,9 +1079,6 @@
       "author": "dfilaretti (port: filliformes)",
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
-      "tags": [
-        "drums"
-      ],
       "github_repo": "filliformes/weird-dreams-move",
       "default_branch": "master",
       "asset_name": "weird-dreams-module.tar.gz",
@@ -1281,9 +1273,6 @@
       "author": "mestela",
       "component_type": "midi_fx",
       "subcategory": "chord-harmony",
-      "tags": [
-        "chord"
-      ],
       "github_repo": "mestela/schwung-impressive-chords",
       "default_branch": "main",
       "asset_name": "impressive-chords.tar.gz",
@@ -1348,7 +1337,6 @@
       "subcategory": "mono-bass",
       "tags": [
         "bass",
-        "mono",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-303",
@@ -1380,8 +1368,7 @@
       "component_type": "sound_generator",
       "subcategory": "sampler-rompler",
       "tags": [
-        "drums",
-        "sample-based"
+        "drums"
       ],
       "github_repo": "mestela/schwung-breakbeat",
       "default_branch": "main",
@@ -1395,9 +1382,6 @@
       "author": "mestela",
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
-      "tags": [
-        "drums"
-      ],
       "github_repo": "mestela/schwung-libpo32",
       "default_branch": "main",
       "asset_name": "po32-drum-module.tar.gz",
@@ -1411,7 +1395,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "generative"
       ],
       "github_repo": "filliformes/signal-move",
@@ -1427,7 +1410,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "vintage-emulation"
       ],
       "github_repo": "filliformes/krautdrums-move",
@@ -1443,7 +1425,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "fm"
       ],
       "github_repo": "filliformes/forge-move",
@@ -1486,8 +1467,7 @@
       "component_type": "sound_generator",
       "subcategory": "sampler-rompler",
       "tags": [
-        "needs-assets",
-        "sample-based"
+        "needs-assets"
       ],
       "github_repo": "charlesvestal/schwung-mrsample",
       "default_branch": "main",
@@ -1515,8 +1495,7 @@
       "component_type": "sound_generator",
       "subcategory": "polysynth",
       "tags": [
-        "chord",
-        "polyphonic"
+        "chord"
       ],
       "github_repo": "charlesvestal/schwung-chordism",
       "default_branch": "main",
@@ -1545,9 +1524,6 @@
       "author": "Matt Tytel (port: andree182)",
       "component_type": "sound_generator",
       "subcategory": "polysynth",
-      "tags": [
-        "polyphonic"
-      ],
       "github_repo": "andree182/schwung-helm",
       "default_branch": "master",
       "asset_name": "helm-module.tar.gz",
@@ -1573,7 +1549,6 @@
       "component_type": "sound_generator",
       "subcategory": "mono-bass",
       "tags": [
-        "mono",
         "vintage-emulation"
       ],
       "github_repo": "filliformes/aphex-move",
@@ -1766,9 +1741,6 @@
       "author": "Patrick Kunz / TAL (engine) · port: legsmechanical",
       "component_type": "sound_generator",
       "subcategory": "polysynth",
-      "tags": [
-        "polyphonic"
-      ],
       "github_repo": "legsmechanical/schwung-noisemaker",
       "default_branch": "master",
       "asset_name": "noisemaker-module.tar.gz",
@@ -1847,9 +1819,6 @@
       "author": "Mission Minnow",
       "component_type": "midi_fx",
       "subcategory": "chord-harmony",
-      "tags": [
-        "chord"
-      ],
       "github_repo": "mission-minnow/groovebank",
       "default_branch": "main",
       "asset_name": "groovebank-module.tar.gz",
@@ -1881,7 +1850,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "vintage-emulation"
       ],
       "github_repo": "athousanddetails/schwung-9W9",
@@ -1897,7 +1865,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "vintage-emulation"
       ],
       "github_repo": "athousanddetails/schwung-6W6",
@@ -1913,8 +1880,7 @@
       "component_type": "sound_generator",
       "subcategory": "wavetable",
       "tags": [
-        "polyphonic",
-        "wavetable"
+        "polyphonic"
       ],
       "github_repo": "athousanddetails/schwung-tablor",
       "default_branch": "main",
@@ -1985,7 +1951,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "vintage-emulation"
       ],
       "github_repo": "athousanddetails/schwung-8W8",
@@ -2001,7 +1966,6 @@
       "component_type": "sound_generator",
       "subcategory": "drum-machine",
       "tags": [
-        "drums",
         "vintage-emulation"
       ],
       "github_repo": "athousanddetails/schwung-cw-78",
@@ -2090,7 +2054,6 @@
       "subcategory": "polysynth",
       "tags": [
         "needs-assets",
-        "polyphonic",
         "vintage-emulation"
       ],
       "github_repo": "charlesvestal/schwung-je8086",
@@ -2106,9 +2069,6 @@
       "author": "charlesvestal",
       "component_type": "sound_generator",
       "subcategory": "fm",
-      "tags": [
-        "fm"
-      ],
       "github_repo": "charlesvestal/schwung-hank",
       "default_branch": "main",
       "asset_name": "hank-module.tar.gz",

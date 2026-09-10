@@ -5,11 +5,17 @@
     "sound_generator": [
       {
         "id": "polysynth",
-        "label": "Polysynth"
+        "label": "Polysynth",
+        "implies": [
+          "polyphonic"
+        ]
       },
       {
         "id": "mono-bass",
-        "label": "Mono & Bass"
+        "label": "Mono & Bass",
+        "implies": [
+          "mono"
+        ]
       },
       {
         "id": "west-coast",
@@ -17,19 +23,31 @@
       },
       {
         "id": "fm",
-        "label": "FM"
+        "label": "FM",
+        "implies": [
+          "fm"
+        ]
       },
       {
         "id": "wavetable",
-        "label": "Wavetable"
+        "label": "Wavetable",
+        "implies": [
+          "wavetable"
+        ]
       },
       {
         "id": "sampler-rompler",
-        "label": "Sampler & Rompler"
+        "label": "Sampler & Rompler",
+        "implies": [
+          "sample-based"
+        ]
       },
       {
         "id": "drum-machine",
-        "label": "Drum Machine"
+        "label": "Drum Machine",
+        "implies": [
+          "drums"
+        ]
       },
       {
         "id": "physical-modeling",
@@ -41,7 +59,10 @@
       },
       {
         "id": "granular",
-        "label": "Granular"
+        "label": "Granular",
+        "implies": [
+          "granular"
+        ]
       },
       {
         "id": "macro-hybrid",
@@ -105,7 +126,10 @@
       },
       {
         "id": "chord-harmony",
-        "label": "Chord & Harmony"
+        "label": "Chord & Harmony",
+        "implies": [
+          "chord"
+        ]
       },
       {
         "id": "routing-utility",
@@ -172,10 +196,10 @@
     "polyphonic",
     "sample-based",
     "spectral",
-    "streaming",
     "tape",
     "vintage-emulation",
     "vocal",
     "wavetable"
-  ]
+  ],
+  "_implies_note": "A subcategory's `implies` names tags it ALREADY SAYS. Carrying one is an error, not a duplicate: `granular` on a module whose subcategory is Granular adds nothing, while the same tag on a Multi-FX is the only thing that says so. Granular & Spectral implies NEITHER -- the subcategory is a union and the two tags are what tell its members apart."
 }

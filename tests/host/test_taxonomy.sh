@@ -107,6 +107,30 @@ const expectError = (what, mutated, needle) => {
     fail("missing subcategory: must be tolerated when not required");
 }
 
+// 8c. A tag that a module OWN subcategory already says is an error -- and the
+//     SAME tag elsewhere must stay legal, or the rule is a global ban and the
+//     tag stops meaning anything where it is the only thing that says so.
+{
+  const c = clone();
+  const m = c.modules.find((x) => x.subcategory === "drum-machine");
+  if (!m) fail("fixture: no drum-machine module");
+  else {
+    m.tags = [...new Set([...(m.tags || []), "drums"])].sort();
+    expectError("implied tag", c, "already said by subcategory");
+  }
+}
+{
+  const c = clone();
+  const m = c.modules.find((x) => x.subcategory === "sequencer" && x.component_type === "midi_fx");
+  if (!m) fail("fixture: no midi_fx sequencer");
+  else {
+    m.tags = [...new Set([...(m.tags || []), "drums"])].sort();
+    const e = validate(taxonomy, c, { requireSubcategory: true });
+    if (e.some((s) => s.includes("already said by subcategory")))
+      fail("implied tag: `drums` on a SEQUENCER is informative and must stay legal");
+  }
+}
+
 // 9. derivedTags is exactly the restatement of `requires`, both ways.
 if (JSON.stringify(derivedTags({ requires: "a ROM" })) !== JSON.stringify(["needs-assets"]))
   fail("derivedTags: a non-empty requires must derive needs-assets");

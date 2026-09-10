@@ -46,6 +46,11 @@ export function validate(taxonomy, catalog, opts = {}) {
   const errors = [];
 
   const byType = new Map();
+  /* subcategory id -> the tags it already says. A tag a module's own
+   * subcategory implies adds nothing to that module, while the SAME tag
+   * elsewhere is the only thing that says so, so this is per-module, never a
+   * global ban. */
+  const impliedBy = new Map();
   for (const [ct, list] of Object.entries(taxonomy.subcategories || {})) {
     const ids = new Set();
     for (const sc of list || []) {
@@ -55,6 +60,7 @@ export function validate(taxonomy, catalog, opts = {}) {
       }
       if (ids.has(sc.id)) errors.push(`taxonomy: ${ct} lists "${sc.id}" twice`);
       ids.add(sc.id);
+      if (sc.implies) impliedBy.set(ct + "/" + sc.id, sc.implies);
     }
     byType.set(ct, ids);
   }
@@ -102,6 +108,13 @@ export function validate(taxonomy, catalog, opts = {}) {
     const derived = derivedTags(m);
     for (const d of derived) {
       if (!tags.includes(d)) errors.push(`${where}: missing derived tag "${d}"`);
+    }
+    for (const imp of impliedBy.get(m.component_type + "/" + m.subcategory) || []) {
+      if (tags.includes(imp)) {
+        errors.push(
+          `${where}: tag "${imp}" is already said by subcategory "${m.subcategory}"`
+        );
+      }
     }
     for (const d of ["needs-assets"]) {
       if (tags.includes(d) && !derived.includes(d)) {
