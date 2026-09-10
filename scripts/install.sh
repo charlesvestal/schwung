@@ -1148,12 +1148,25 @@ ssh_root_with_retry "if [ ! -L /data/UserData/move-anything ] && [ ! -d /data/Us
 # then re-run package.sh — the single packaging authority — instead of
 # injecting into the existing tarball (the old gunzip/append/gzip dance was
 # the third copy of that logic; see the 2026-06-11 cleanup review C-8).
-if [ "$use_local" = true ] && command -v go &>/dev/null && [ -d "$REPO_ROOT/schwung-manager" ] && [ -d "$REPO_ROOT/build" ]; then
-    echo "Rebuilding schwung-manager..."
-    if (cd "$REPO_ROOT/schwung-manager" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$REPO_ROOT/build/schwung-manager" -ldflags="-s -w" .); then
+#
+# THE `go` GUARD WAS THE BUG. This was `command -v go && ...`, so on a machine
+# with Docker but no local Go the whole block evaluated to false and was
+# skipped IN SILENCE -- the only warning sat on the build-failed branch INSIDE
+# an if that never ran. `install.sh local` then uploaded whatever
+# schwung-manager happened to be in the existing tarball and reported success,
+# so a manager fix could be deployed, confirmed deployed, and still not be
+# running. Same defect the link sidecar already has a war story for: a build
+# step that can be skipped silently defeats every bisect that follows.
+#
+# scripts/build-manager.sh is the shared builder (go, else Docker, else a hard
+# failure). SCHWUNG_ALLOW_STALE_MANAGER=1 opts out deliberately and says so.
+if [ "$use_local" = true ] && [ -d "$REPO_ROOT/schwung-manager" ] && [ -d "$REPO_ROOT/build" ]; then
+    if [ "${SCHWUNG_ALLOW_STALE_MANAGER:-0}" = "1" ]; then
+        echo "SCHWUNG_ALLOW_STALE_MANAGER=1 — shipping the schwung-manager already in the tarball"
+    elif "$REPO_ROOT/scripts/build-manager.sh"; then
         "$REPO_ROOT/scripts/package.sh" && echo "Repackaged tarball with fresh schwung-manager"
     else
-        echo "Warning: schwung-manager build failed, using existing binary in tarball"
+        fail "schwung-manager build failed — refusing to ship a stale one (SCHWUNG_ALLOW_STALE_MANAGER=1 to override)"
     fi
 fi
 
