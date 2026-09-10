@@ -1180,3 +1180,35 @@ than broken: a claimed message never reaches the chain, because the shim
 consumes it first. The shim is the enforcement point the gap note preferred --
 it already reads the flag, and ownership belongs where the message is routed.
 Removing the chain-side remnant is tidy-up, not a fix.
+
+## Hardware findings — the bench pass, 2026-09-10
+
+Seven defects, none of which 325 green host tests could see. The first six are
+recorded in `docs/E16_REMOTE.md`; these two are the ones the *fix* for the
+display created, and they are worth keeping together because they are the price
+of that fix rather than an argument against it.
+
+**A replug restored the screen and not the rings** (`e16_surface.mjs`,
+`syncPresence`). The presence edge invalidated the framebuffer, which was half
+of recovery. A ring is only ever sent when one CHANGES — right in use, one
+113-byte chunk per detent instead of a 1171-byte repaint — and nothing changes
+while the cable is out, so the panel came back with correct labels and sixteen
+dark rings until a knob was touched. Reported as *"it did not fully recover, it
+did go back into remote mode"*. The edge now restates all sixteen: the same
+call the shim's `pad_block` flag makes, for the same reason — the device forgets
+unilaterally and never says so, so a mirror of its LED state latches and is
+wrong exactly when it matters.
+
+**The carry could not hold two framebuffers** (`ui_midi_out_carry.h`). 394
+packets each against a 512-packet carry, and pacing makes one take ~130 SPI
+frames to drain — which is exactly the window in which a second repaint gets
+requested: raise the Shift map, release it, and the parameter view is owed while
+the map frame is still going out. The second frame's tail was dropped and the
+device drew a truncated screen (*"shows the slot list, then garbled"*). Depth
+now covers two; `/dev/shm` is tmpfs and allocates by page, so it is free.
+
+Both are consequences of the pacing that made the framebuffer work at all. The
+general lesson is the transport one: **outbound SysEx loss on USB-A is a
+function of RATE, not of message size** — #358's outbound twin — and fixing it
+in the carry rather than inside this feature is what makes it available to every
+module that sends SysEx.
