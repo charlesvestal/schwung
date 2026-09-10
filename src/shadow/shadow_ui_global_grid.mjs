@@ -237,6 +237,9 @@ export const GLOBAL_ROUTING = {
      * saved beside pad_typing in shadow_config.json by the writer itself. The
      * shared sink (saveMasterFxChainConfig) does not know this key. */
     external_surface:       { read: "js.externalSurfaceMode",   write: "js.setExternalSurfaceMode", persist: "own", cache: "externalSurfaceMode", modal: null },
+    /* persist: "own" for the same reason as the row above -- the pair lives in
+     * shadow_config.json and is written by its own saver. */
+    follow_focus:           { read: "js.externalSurfaceFollow", write: "js.setExternalSurfaceFollow", persist: "own", cache: "externalSurfaceFollow", modal: null },
 
     /*
      * TRIGGERS, whose "backend" is an ACTION.
@@ -619,6 +622,27 @@ export const SYSTEM_PARAMS = [
      * declare -- a second list to keep in step for nothing. */
     { key: "external_surface", name: "Ext Surface", type: "enum",
       options: ["Off", "E16"], default: 0 },
+    /*
+     * Does the surface mirror Move's screen, or hold its own focus?
+     *
+     * IMMEDIATELY AFTER the row above, because the two are one question asked
+     * twice and a row between them makes them read as unrelated settings.
+     *
+     * The honest name FITS here -- 67px against the 85px a two-option Off/On
+     * row leaves -- unlike "External Surface" beside it, which needed 93px and
+     * became "Ext Surface". Measured through tools/param-pages/measure_labels
+     * with the real device font, not estimated; the width pin in
+     * tests/host/test_global_settings_contract.sh is what would have caught it.
+     *
+     * A PLAIN ENUM ROW, NOT A MENU, for the same reason as everything else on
+     * this screen: a level carrying a `menu` alongside its knobs plans a SECOND
+     * page, and one section / one page is what makes sections-as-levels work.
+     *
+     * While it is on, the E16's own map is DISABLED and follow is ONE-WAY --
+     * navigating on the E16 never moves Move's screen. See createNav in
+     * src/shared/e16_surface.mjs for why there is no mode where both navigate.
+     */
+    bool("follow_focus", "Follow Focus", 0),
     /*
      * TWO DOORS AS TRIGGERS, ON THE SAME PAGE AS THE TOGGLE ABOVE.
      *
