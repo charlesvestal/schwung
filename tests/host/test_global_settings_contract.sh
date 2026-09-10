@@ -198,7 +198,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
    * Nine is the current Audio count, not a capacity: Global Settings is pinned
    * to the scrolling LIST and is still planned with `paginate: false`.
    */
-  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 4 };
+  const WANT_COUNT = { display: 7, audio: 9, accessibility: 6, set_pages: 1, shortcuts: 4, system: 5 };
   for (const p of plan.pages) {
     if (p.kind !== PAGE_KNOBS) continue;
     const keys = (p.keys || []).filter(Boolean);
@@ -341,6 +341,10 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
        is what caught it, the same 8px that made "Stay in Schwung" into "Keep
        Schwung". A plain enum row, so the section still plans ONE page. */
     external_surface: "Ext Surface",
+    /* "Follow Focus" written out in full, because it FITS: 67px against the
+       85px an Off/On row leaves. The row beside it did not, which is why that
+       one is abbreviated and this one is not -- measured, not guessed. */
+    follow_focus: "Follow Focus",
     /* Two DOORS, not settings — see the trigger assertions above. They are
        rows on the System page rather than a menu page of their own, which is
        what a level carrying a `menu` alongside its knobs would have cost. */
@@ -570,7 +574,7 @@ const plan = planPages({ hierarchy, chainParams, paginate: false });
 }
 
 if (failures) process.exit(1);
-console.log("PASS: global settings contract — six levels (7/9/6/1/4/4 params, Connect and Help " +
+console.log("PASS: global settings contract — six levels (7/9/6/1/4/5 params, Connect and Help " +
             "among them as write-only triggers), ONE section one page and no menu, no " +
             "length limit, every enum listable with matching short_options, " +
             "validator clean, no host global read, every key routed to a backend, the five " +

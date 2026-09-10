@@ -356,11 +356,30 @@ export function createDisplay() {
  * slot", which makes it free, and it reads as the slot's own handle: press it
  * to change what is listed beneath it, turn it to page that list.
  *
+ * =================== FOLLOW FOCUS: ONE VARIABLE, TWO SOURCES ===============
+ *
+ * With follow on, Move's screen writes the focus and the E16 mirrors it. The
+ * mode is deliberately narrow, and the narrowness is the design:
+ *
+ *   - ONE FOCUS VARIABLE. Follow does not add a focus; it decides who writes
+ *     the one there is. Two owners is a surface that disagrees with itself.
+ *   - THE MAP IS DISABLED. That is what stops the two surfaces fighting, and
+ *     it is what lets the setting mean one sentence -- is the E16 showing what
+ *     Move shows, or its own thing? A mode where both can navigate has no
+ *     answer to "who wins", so there is no such mode.
+ *   - ONE-WAY. Nothing on this side ever reports focus back: navigating the
+ *     E16 must never move Move's screen. In code that is simply "applyFollow
+ *     does not call onFocus", and it is pinned in tests/host because the
+ *     tempting future edit -- telling the caller what we are showing, for
+ *     symmetry -- would read as helpful.
+ *   - OFF RESTORES, IT DOES NOT RESET. Follow is something you switch on to
+ *     look at something; `parked` is what you come back to.
+ *
  * Everything is pure and injected, like the rest of this file: the chain, the
- * page count, the parameter renderer and the focus callback are all the
- * caller's. This module never reads or writes a parameter -- a jump is
- * REPORTED through `onFocus`, and `e16_view.mjs` remains the only path a value
- * can travel.
+ * page count, the parameter renderer, the follow source and the focus callback
+ * are all the caller's. This module never reads or writes a parameter -- a
+ * jump is REPORTED through `onFocus`, and `e16_view.mjs` remains the only path
+ * a value can travel.
  * ---------------------------------------------------------------------------
  */
 import { buildMap } from "./e16_map.mjs";
@@ -388,6 +407,18 @@ export function createNav(opts) {
     const renderParams = o.renderParams || (() => {});
     const pageCountOf = o.pageCountOf || (() => 1);
     const maxHoldMs = o.maxHoldMs === undefined ? MAP_MAX_HOLD_MS : o.maxHoldMs;
+    /*
+     * FOLLOW FOCUS -- the second source for the ONE focus variable below.
+     *
+     * `followFocusOf()` answers what Move's own screen is showing, as
+     * `{ slot, component }`, or NULL when it could not answer. There is no
+     * second focus here and there must never be one: `slot` / `component` /
+     * `pageIndex` are the surface's focus whichever source is writing them, and
+     * a mode with its own copy is a surface that disagrees with itself -- the
+     * rings drawn for one component, the screen for another, with nothing
+     * logged because both halves are behaving correctly.
+     */
+    const followFocusOf = o.followFocusOf || (() => null);
 
     /* THE ONLY MODIFIER STATE. Null means no hold; a number is when it began.
      * Never a boolean -- see the header. */
@@ -399,15 +430,67 @@ export function createNav(opts) {
     let mapPage = 0;
     let showBuses = false;
 
+    /* Is Move's screen the source right now? */
+    let follow = !!o.follow;
+    /*
+     * The E16's OWN focus, set aside while follow owns the variables above.
+     *
+     * NOT a second owner: nothing reads this while follow is on, and nothing
+     * writes it except the OFF->ON edge. It exists because the user turns
+     * follow on TEMPORARILY -- to see what Move is doing -- and expects to come
+     * back to where they were. Resetting to slot 0 / synth instead is the
+     * plausible-looking wrong answer, and it is invisible on any rig whose own
+     * focus happened to be slot 0 / synth.
+     */
+    let parked = null;
+
     /* What the last framebuffer that actually went out was showing. Compared
      * against the derived visibility in tick(); it is a record of the PAST, so
      * it cannot be the thing that decides the present. */
     let shownMap = false;
 
+    /*
+     * THE MAP IS DISABLED WHILE FOLLOW IS ON, and it is disabled HERE rather
+     * than at each gesture.
+     *
+     * Every branch in handle() already asks this one question, so one term
+     * closes all of them at once -- a push under a held Shift falls through to
+     * the ordinary `click` path, a Shift+turn to the ordinary `turn`. Gating
+     * the gestures individually instead would leave whichever branch was
+     * written next as a way to navigate while following, and that is the mode
+     * with no answer to "who wins": Move drives the E16, and the E16 must not
+     * be able to drive back.
+     */
     const mapVisible = (now) =>
-        shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
+        !follow && shiftDownAt !== null && (now - shiftDownAt) < maxHoldMs;
 
     const invalidate = () => { if (display) display.invalidate(); };
+
+    /*
+     * Take one reading from the follow source.
+     *
+     * A NULL IS NOT A PLAN. CLAUDE.md's tri-state rule: a read that did not
+     * complete must never become a default. The source is consulted every
+     * frame, so collapsing null into "slot 0, synth" would drag the surface to
+     * slot 0 on any tick the shadow UI could not answer and drag it back on the
+     * next -- which reads as a flickering surface rather than as a failed read.
+     *
+     * It reports NOTHING through onFocus. That silence is the one-way rule:
+     * onFocus is the only channel this module has to move anything outside
+     * itself, and firing it here would be Move's screen jumping because the
+     * E16 mirrored Move's screen.
+     */
+    const applyFollow = () => {
+        const f = followFocusOf();
+        if (!f || typeof f.slot !== "number" || !f.component) return;
+        if (f.slot === slot && f.component === component) return;
+        slot = f.slot | 0;
+        component = f.component;
+        /* A different component is a different page plan, so the page index
+         * from the last one means nothing on this one. */
+        pageIndex = 0;
+        invalidate();
+    };
 
     const currentMap = () =>
         buildMap(chainOf(), { slot, page: mapPage, showBuses });
@@ -426,6 +509,12 @@ export function createNav(opts) {
             if (!ev) return null;
 
             if (ev.type === "shift") {
+                /* The modifier itself is inert while following. `mapVisible`
+                 * already answers false, but without this the DOWN edge would
+                 * still arm `shiftDownAt` and repaint -- and the hold would
+                 * then be live the instant follow was switched off, with the
+                 * map appearing under a finger that is no longer on Shift. */
+                if (follow) return null;
                 if (ev.down) {
                     /* Deliberately not a re-arm: a repeat down while up leaves
                      * the original deadline standing (see the header). */
@@ -529,7 +618,50 @@ export function createNav(opts) {
          * frame from a previous process is the lifecycle's problem, not this
          * one's -- see createLifecycle.)
          */
+        /**
+         * Switch the focus SOURCE. Idempotent, and the idempotence is not
+         * tidiness: the park happens on the OFF->ON edge only, so a
+         * setFollow(true) that parked unconditionally would, on its second
+         * call, park the FOLLOW source as if it were the user's own focus --
+         * and the user's real focus would be gone with no gesture that could
+         * bring it back.
+         */
+        setFollow(on, now) {
+            on = !!on;
+            if (on === follow) return;
+            follow = on;
+            if (on) {
+                parked = { slot, component, pageIndex, mapPage, showBuses };
+                /* A hold in progress cannot survive: the map is gone, so its
+                 * modifier would be a note-off owed to a view that no longer
+                 * exists. The timestamp shape means dropping it is the whole
+                 * job -- there is no latch anywhere else to unwind. */
+                shiftDownAt = null;
+                applyFollow();
+                invalidate();
+                return;
+            }
+            if (parked) {
+                slot = parked.slot;
+                component = parked.component;
+                pageIndex = parked.pageIndex;
+                mapPage = parked.mapPage;
+                showBuses = parked.showBuses;
+                parked = null;
+            }
+            invalidate();
+        },
+
         tick(now) {
+            /* Follow is a POLL, not a subscription: shadow_ui.js does not tell
+             * anyone when its component changes, and adding a notification for
+             * this one consumer would be a second thing to keep in step with
+             * every path that moves that focus (see reconcileCcClaim, which
+             * re-derives the same tuple for the same reason). Reading it is
+             * cheap -- the shadow UI already holds it -- and applyFollow
+             * repaints only on a CHANGE, so an unchanged source costs nothing
+             * on the wire. */
+            if (follow) applyFollow();
             if (mapVisible(now) !== shownMap) invalidate();
         },
 
@@ -551,5 +683,6 @@ export function createNav(opts) {
         get pageIndex() { return pageIndex; },
         get mapPage() { return mapPage; },
         get showBuses() { return showBuses; },
+        get followEnabled() { return follow; },
     };
 }
