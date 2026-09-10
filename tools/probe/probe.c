@@ -324,6 +324,123 @@ static double release_seconds(mod_t *m, int16_t *scratch) {
     return (F - HOLD) / (double)SR;
 }
 
+/* ---------------------------------------------------------- param probing */
+
+/*
+ * WHICH KNOB IS WORTH SWEEPING?
+ *
+ * A filter or an EQ held at one setting shows almost nothing -- the interest
+ * is in the movement. But "sweep the cutoff" cannot be decided from the NAME:
+ * a param called `cutoff` may be inert on a given preset while `tone` does
+ * everything, and half the fleet does not use either word.
+ *
+ * So ask the audio. Render the same input with the param at its minimum and
+ * at its maximum, and compare the two SPECTRA. The parameters that change the
+ * spectrum most are the ones a preview should move.
+ *
+ * LEVEL IS NORMALISED OUT FIRST, deliberately. A gain or a mix control changes
+ * every band by the same amount and would otherwise win every time while being
+ * the least interesting thing to sweep -- what we want is a change of SHAPE.
+ */
+#define NBANDS 20
+
+static void band_energies(const int16_t *x, int n, double *out) {
+    for (int b = 0; b < NBANDS; b++) {
+        double f = 40.0 * pow(2.0, b * 0.45);          /* 40 Hz .. ~16 kHz */
+        if (f > SR / 2.2) { out[b] = 0; continue; }
+        double w = 2 * M_PI * f / SR, c = 2 * cos(w), s1 = 0, s2 = 0;
+        for (int i = 0; i < n; i++) { double s0 = x[i*2] + c*s1 - s2; s2 = s1; s1 = s0; }
+        out[b] = sqrt(fabs(s1*s1 + s2*s2 - c*s1*s2)) / n;
+    }
+    /* Normalise to unit sum: compare SHAPE, not loudness. */
+    double sum = 0;
+    for (int b = 0; b < NBANDS; b++) sum += out[b];
+    if (sum > 0) for (int b = 0; b < NBANDS; b++) out[b] /= sum;
+}
+
+/*
+ * What does this parameter DO? Sample it across its range and report two
+ * quantities, because they mean different things and one hides the other:
+ *
+ *   shape  -- how much the normalised spectrum moves. A filter sweep, a tone
+ *             control, a wavefolder. This is what is worth animating.
+ *   level  -- how much the loudness moves, in dB. A gain or a mix control.
+ *
+ * NORMALISING LEVEL OUT OF `shape` IS NECESSARY AND NOT SUFFICIENT. Without
+ * it a gain control wins every comparison while being the least interesting
+ * thing to sweep. With it ALONE, a parameter that MUTES the signal reads as
+ * inert -- filter's `cutoff` at 0 renders -80.9 dBFS, the most effective
+ * control on the module, and scored 0.03 because the residue still had a
+ * shape. Both numbers, always.
+ *
+ * SAMPLED ACROSS THE RANGE, not just at the ends: an endpoint is often
+ * degenerate (silence, self-oscillation) and two extremes can coincidentally
+ * resemble each other while everything between them differs.
+ */
+#define SWEEP_STEPS 5
+
+typedef struct { double shape, level_db; } sweep_t;
+
+static sweep_t spectral_change(mod_t *src, mod_t *fx, const char *key,
+                               double lo, double hi, int16_t *scratch) {
+    double band[SWEEP_STEPS][NBANDS], rms[SWEEP_STEPS];
+    const int N = SR / 2;
+    mod_t *target = fx ? fx : src;
+
+    /*
+     * REMEMBER WHERE THIS PARAM WAS, AND PUT IT BACK.
+     *
+     * Without this, each scan leaves its parameter at the MAXIMUM and every
+     * later scan runs on top of it. It reads as a confident, wrong answer
+     * rather than as an error: five of 4k-eq's bands and three of cloudseed's
+     * controls scored exactly 0.000 -- masked by whatever had been swept
+     * before them, not inert.
+     */
+    char saved[128] = "";
+    int have_saved = 0;
+    {
+        int n = mod_get(target, key, saved, (int)sizeof saved - 1);
+        if (n > 0) { saved[n] = 0; have_saved = 1; }
+    }
+    for (int step = 0; step < SWEEP_STEPS; step++) {
+        double v = lo + (hi - lo) * step / (double)(SWEEP_STEPS - 1);
+        char buf[64]; snprintf(buf, sizeof buf, "%g", v);
+        mod_set(fx ? fx : src, key, buf);
+        settle(src, scratch);
+        if (fx) settle(fx, scratch);
+        memset(scratch, 0, (size_t)N * 4);
+        uint8_t on[3] = { 0x90, 60, 100 }, off[3] = { 0x80, 60, 0 };
+        mod_midi(src, on, 3);
+        for (int o = 0; o + BLK <= N; o += BLK) {
+            mod_render(src, scratch + (size_t)o * 2, BLK);
+            if (fx) mod_render(fx, scratch + (size_t)o * 2, BLK);
+        }
+        mod_midi(src, off, 3);
+        const int a = SR / 16, n = N - a;
+        band_energies(scratch + (size_t)a * 2, n, band[step]);
+        double sq = 0;
+        for (int i = a; i < N; i++) sq += (double)scratch[i*2] * scratch[i*2];
+        rms[step] = sqrt(sq / n);
+    }
+    sweep_t r = { 0, 0 };
+    /* Total variation along the sweep, so a monotonic control and a control
+     * that returns to where it started are told apart. */
+    for (int step = 1; step < SWEEP_STEPS; step++) {
+        double d = 0;
+        for (int i = 0; i < NBANDS; i++) d += fabs(band[step][i] - band[step-1][i]);
+        r.shape += d / 2.0;
+    }
+    if (have_saved) { mod_set(target, key, saved); settle(src, scratch); if (fx) settle(fx, scratch); }
+    double lo_r = 1e30, hi_r = 0;
+    for (int step = 0; step < SWEEP_STEPS; step++) {
+        if (rms[step] < lo_r) lo_r = rms[step];
+        if (rms[step] > hi_r) hi_r = rms[step];
+    }
+    r.level_db = (hi_r > 0 && lo_r > 0) ? 20 * log10(hi_r / lo_r)
+               : (hi_r > 0 ? 99.0 : 0.0);
+    return r;
+}
+
 /*
  * Render the score. The chain form is source synth -> effect, block by block,
  * exactly as a slot runs it: an FX rendered ALONE processes a silent buffer
@@ -365,6 +482,8 @@ static void usage(void) {
     fputs(
       "usage:\n"
       "  probe --contract <module-dir> --so <file> [--id ID] [-o out.json]\n"
+      "  probe --sweep-scan <module-dir> --so <file> --try key:lo:hi [--try ...]\n"
+      "         [--source-dir D --source-so F]\n"
       "  probe --render   <module-dir> --so <file> --score S.json -o out.wav\n"
       "         [--presets N] [--octave-fit] [--set k=v ...] [--id ID]\n"
       "\n"
@@ -378,7 +497,8 @@ static void usage(void) {
 
 int main(int argc, char **argv) {
     const char *dir = NULL, *so = NULL, *score_path = NULL, *out = NULL, *id = "module";
-    int want_contract = 0, want_render = 0, npresets = 1, fit = 0, adapt = 0;
+    int want_contract = 0, want_render = 0, npresets = 1, fit = 0, adapt = 0, want_sweepscan = 0;
+    const char *sweeps[64]; int nsweeps = 0;
     const char *sets[32]; int nsets = 0;
     const char *src_dir = NULL, *src_so = NULL;
 
@@ -392,18 +512,57 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--presets")  && i + 1 < argc) npresets = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--octave-fit")) fit = 1;
         else if (!strcmp(argv[i], "--adaptive-density")) adapt = 1;
+        else if (!strcmp(argv[i], "--sweep-scan") && i + 1 < argc) { want_sweepscan = 1; dir = argv[++i]; }
+        else if (!strcmp(argv[i], "--try") && i + 1 < argc && nsweeps < 64) sweeps[nsweeps++] = argv[++i];
         else if (!strcmp(argv[i], "--source-dir") && i + 1 < argc) src_dir = argv[++i];
         else if (!strcmp(argv[i], "--source-so")  && i + 1 < argc) src_so  = argv[++i];
         else if (!strcmp(argv[i], "--set") && i + 1 < argc && nsets < 32) sets[nsets++] = argv[++i];
         else { usage(); return 2; }
     }
-    if (!dir || !so || (!want_contract && !want_render)) { usage(); return 2; }
+    if (!dir || !so || (!want_contract && !want_render && !want_sweepscan)) { usage(); return 2; }
 
     mod_t m = {0};
     if (!mod_open(&m, so, dir)) return 1;
     fprintf(stderr, "probe: %s loaded as %s\n", id, kind_name(m.kind));
 
     if (want_contract) return cmd_contract(&m, id, out);
+
+    if (want_sweepscan) {
+        /* An FX needs an instrument in front of it or every param scores zero
+         * for the same reason a silent render does. */
+        mod_t src = {0};
+        int chained = 0;
+        if (src_dir && src_so) {
+            if (!mod_open(&src, src_so, src_dir)) return 1;
+            chained = 1;
+        } else if (m.kind == KIND_FX) {
+            fprintf(stderr, "probe: --sweep-scan on an audio FX needs --source\n");
+            return 1;
+        }
+        int16_t *scratch = calloc((size_t)SR * SCRATCH_SECONDS * 2, sizeof(int16_t));
+        printf("[\n");
+        int first = 1;
+        for (int i = 0; i < nsweeps; i++) {
+            char spec[256]; snprintf(spec, sizeof spec, "%s", sweeps[i]);
+            /* key:lo:hi */
+            char *c1 = strchr(spec, ':'); if (!c1) continue; *c1 = 0;
+            char *c2 = strchr(c1 + 1, ':'); if (!c2) continue; *c2 = 0;
+            sweep_t r = spectral_change(chained ? &src : &m, chained ? &m : NULL,
+                                        spec, atof(c1 + 1), atof(c2 + 1), scratch);
+            /* A sweep is worth animating when it moves the SHAPE. A big level
+             * move with a flat shape is a gain control -- reported, but not a
+             * candidate, or every module would "need" its output swept. */
+            const char *verdict = r.shape > 0.35 ? "SWEEP"
+                                : r.level_db > 12 ? "gain-like"
+                                : r.shape > 0.15 ? "mild" : "inert";
+            printf("%s  {\"key\": \"%s\", \"shape\": %.3f, \"level_db\": %.1f, \"verdict\": \"%s\"}",
+                   first ? "" : ",\n", spec, r.shape, r.level_db, verdict);
+            first = 0;
+            fprintf(stderr, "  %-20s shape %.3f  level %5.1f dB   %s\n", spec, r.shape, r.level_db, verdict);
+        }
+        printf("\n]\n");
+        return 0;
+    }
 
     if (!score_path || !out) { usage(); return 2; }
     score_t s = {0};
