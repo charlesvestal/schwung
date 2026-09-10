@@ -810,8 +810,12 @@ tbody tr:hover {
     background: rgba(74, 158, 142, 0.1);
 }
 
-/* Category filter buttons - gold accent */
-.cat-btn.active {
+/* Filter buttons - gold accent when selected.
+ *
+ * Scoped to .filter-btn, NOT .cat-btn: the subcategory row's buttons are
+ * .sub-btn, so a .cat-btn-only rule left them with no selected state at all --
+ * the filter applied and nothing on screen said which chip did it. */
+.filter-btn.active {
     color: var(--accent);
     border-color: var(--accent);
     background: rgba(232, 168, 76, 0.1);
@@ -2274,6 +2278,12 @@ code {
 }
 .tag-pill {
     display: inline-block;
+    /* A <button>, so it needs the UA button chrome stripped -- it has to read
+       as a label until you notice it is clickable. */
+    appearance: none;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
     font-size: 0.72rem;
     line-height: 1.4;
     padding: 0 0.4em;
@@ -2285,3 +2295,33 @@ code {
 #subcategory-filters .filter-btn {
     font-size: 0.85em;
 }
+
+/* An active tag is the only filter with no chip of its own in the toolbar, so
+   it says so beside the count -- otherwise a filter set from a card down the
+   page has no visible control anywhere near the top to unset it. */
+.tag-pill.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(232, 168, 76, 0.12);
+    opacity: 1;
+}
+.tag-pill:hover { opacity: 1; }
+.tag-filter-note {
+    margin-left: 0.75rem;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+.tag-filter-note strong { color: var(--accent); font-weight: 600; }
+.tag-filter-clear {
+    appearance: none;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 1.1em;
+    line-height: 1;
+    padding: 0 0.25em;
+}
+.tag-filter-clear:hover { color: var(--text); }
+/* Tags column: let it wrap rather than widen the table past the viewport. */
+.col-tags { max-width: 22ch; }
