@@ -6,16 +6,24 @@
     "`audio: null` means NO AUDIO PREVIEW, deliberately -- streaming, live-input,",
     "assistant and tuner modules have nothing deterministic to render, and a",
     "synthesised clip for them would be a fabrication rather than a preview.",
-    "`adaptive_density` spreads the phrase to suit each PRESET's measured release. The score fires a note every ~0.28 s and releases across the fleet run 0.00-3.40 s, so without it a long-release preset stacks a dozen voices and turns to mud.",
+    "",
+    "`score: demo_score` is scores/demo_score.mjs: arp, chords, melody, each",
+    "section ending in a rest. EVERY MODULE PLAYS IT AT THE SAME TEMPO -- that is",
+    "the point of a shared score, and an earlier attempt to spread the phrase to",
+    "suit each preset's release made every preset play at a different speed, which",
+    "made nothing comparable to anything. The space is written into the score",
+    "instead: 34% of it is silence and the longest rest is 3.0 s, which is longer",
+    "than the longest release measured across the fleet.",
+    "",
     "`_by_tag` overrides the subcategory rule for a module carrying that tag."
   ],
   "default": {
-    "midi": "wtk1-prelude1.mid",
     "seconds": 27,
     "tail": 3,
     "presets": 4,
     "octave_fit": true,
-    "adaptive_density": true
+    "adaptive_density": false,
+    "score": "demo_score"
   },
   "sound_generator": {
     "polysynth": {},
@@ -35,10 +43,10 @@
     "sampler-rompler": {},
     "granular": {},
     "drum-machine": {
-      "midi": null,
       "octave_fit": false,
       "presets": 3,
-      "_why": "A drum machine is played on its own voices, not on a melodic line; the score is built from the module's declared voices at render time."
+      "_why": "A drum machine is played on its own voices, not on a melodic line; the score is built from the module's declared voices at render time.",
+      "score": null
     },
     "streaming-live-input": {
       "audio": null,
