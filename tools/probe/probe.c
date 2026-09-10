@@ -32,9 +32,28 @@
  * LONGEST of them (the release tail), not the first one written. */
 #define SCRATCH_SECONDS 5
 
-/* Every module guards `if (host->fn)`, so an all-zero host is safe and is what
- * lets this run with no host at all. */
+/*
+ * The host struct handed to every module.
+ *
+ * A ZEROED HOST IS NOT SAFE, and the usual reasoning for why it is -- "every
+ * module guards `if (host->fn)`" -- covers only the FUNCTION POINTERS. There
+ * is no way to guard a plain int, and `sample_rate` is one.
+ *
+ * 4k-eq is the case. With sample_rate 0 it passes audio at its defaults and
+ * falls SILENT the moment any float parameter changes: a biquad recomputing
+ * 2*pi*freq/sample_rate divides by zero, produces NaN, and outputs nothing.
+ * Enums were unaffected because they touch no coefficients, which is why
+ * `bypass` and `oversampling` worked and every gain and frequency did not --
+ * and why it read, wrongly, as a module that breaks on any parameter change.
+ *
+ * So: fill in every non-pointer field a real host would set. The function
+ * pointers stay NULL, which the guards do handle.
+ */
 static host_api_v1_t g_host;
+
+static void host_init(void) {
+    g_host.sample_rate = SR;
+}
 
 typedef enum { KIND_NONE, KIND_SYNTH, KIND_FX } kind_t;
 
@@ -589,6 +608,8 @@ int main(int argc, char **argv) {
         else { usage(); return 2; }
     }
     if (!dir || !so || (!want_contract && !want_render && !want_sweepscan)) { usage(); return 2; }
+
+    host_init();
 
     mod_t m = {0};
     if (!mod_open(&m, so, dir)) return 1;
