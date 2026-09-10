@@ -1,0 +1,74 @@
+{
+  "taxonomy_version": 1,
+  "_comment": "Vocabulary for module-catalog.json's per-module subcategory and tags. Regenerate the catalog's embedded copy with: node tools/catalog/sync_taxonomy.mjs --write",
+  "subcategories": {
+    "sound_generator": [
+      { "id": "virtual-analog", "label": "Virtual Analog" },
+      { "id": "fm", "label": "FM" },
+      { "id": "wavetable", "label": "Wavetable" },
+      { "id": "sampler-rompler", "label": "Sampler & Rompler" },
+      { "id": "drum-machine", "label": "Drum Machine" },
+      { "id": "physical-modeling", "label": "Physical Modeling" },
+      { "id": "chiptune-retro", "label": "Chiptune & Retro" },
+      { "id": "granular", "label": "Granular" },
+      { "id": "macro-hybrid", "label": "Macro & Hybrid" },
+      { "id": "streaming-live-input", "label": "Streaming & Live Input" }
+    ],
+    "audio_fx": [
+      { "id": "reverb", "label": "Reverb" },
+      { "id": "delay-echo", "label": "Delay & Echo" },
+      { "id": "modulation", "label": "Modulation" },
+      { "id": "distortion-saturation", "label": "Distortion & Saturation" },
+      { "id": "dynamics", "label": "Dynamics" },
+      { "id": "filter-eq", "label": "Filter & EQ" },
+      { "id": "granular-spectral", "label": "Granular & Spectral" },
+      { "id": "looper-sampler-fx", "label": "Looper & Sampler FX" },
+      { "id": "multi-fx", "label": "Multi-FX" },
+      { "id": "utility", "label": "Utility" }
+    ],
+    "midi_fx": [
+      { "id": "arpeggiator", "label": "Arpeggiator" },
+      { "id": "sequencer", "label": "Sequencer" },
+      { "id": "chord-harmony", "label": "Chord & Harmony" },
+      { "id": "routing-utility", "label": "Routing & Utility" }
+    ],
+    "tool": [
+      { "id": "sequencer", "label": "Sequencer" },
+      { "id": "sampling-editing", "label": "Sampling & Editing" },
+      { "id": "tuner-analysis", "label": "Tuner & Analysis" },
+      { "id": "assistant", "label": "Assistant" },
+      { "id": "performance", "label": "Performance" }
+    ],
+    "overtake": [
+      { "id": "controller", "label": "Controller" },
+      { "id": "sequencer", "label": "Sequencer" },
+      { "id": "sampler-looper", "label": "Sampler & Looper" },
+      { "id": "performance-fx", "label": "Performance FX" }
+    ]
+  },
+  "tags": [
+    "ai",
+    "bass",
+    "chord",
+    "cpu-heavy",
+    "drums",
+    "euclidean",
+    "fm",
+    "generative",
+    "granular",
+    "has-remote-ui",
+    "lo-fi",
+    "mono",
+    "mpe",
+    "needs-assets",
+    "needs-line-in",
+    "polyphonic",
+    "sample-based",
+    "spectral",
+    "streaming",
+    "tape",
+    "vintage-emulation",
+    "vocal",
+    "wavetable"
+  ]
+}
