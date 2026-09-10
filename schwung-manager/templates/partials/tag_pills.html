@@ -1,0 +1,9 @@
+{{/*
+  tag-pills -- a module's tags, each one a filter control.
+
+  Takes a []string (pass `.Tags`). Rendered in FOUR places (two cards, two list
+  rows), which is why it is a partial: the pill is a <button>, and the card's
+  click-to-open handler already skips `a, button`, so making it anything else
+  navigates away instead of filtering.
+*/}}
+{{define "tag-pills"}}{{range .}}<button type="button" class="tag-pill" data-tag="{{.}}" aria-pressed="false" title="Filter by {{.}}">{{.}}</button>{{end}}{{end}}
