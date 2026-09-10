@@ -209,6 +209,28 @@ static inline int ui_midi_carry_push(ui_midi_carry_t *c, const uint8_t pkt[4])
  * Placement stops at the first packet that does not fit; it does not skip
  * ahead to find a smaller gap, because that would reorder the run.
  */
+/*
+ * INTERLEAVE COUNTER -- foreign cable-2 packets seen in the mailbox while a
+ * message of ours is still going out.
+ *
+ * MIDI_OUT is a SHARED 20-slot region: Move's own external output and the LED
+ * flush write into it too. A USB-MIDI SysEx is a RUN of CIN-0x04 packets, and
+ * the receiving device assembles it as one message -- so anything Move
+ * transmits on the same cable mid-run is spliced into the middle of our
+ * framebuffer, and the E16 draws the result.
+ *
+ * That is rate-INDEPENDENT, which is what makes it worth a counter of its own.
+ * It was mistaken for a rate limit for most of this feature's life; the
+ * evidence against that came from the device -- "even at 1 i dont get stable
+ * draws" -- where a framebuffer occupies the wire for 1.14 s and so offers the
+ * LARGEST possible window for somebody else to write into it. Slowing down
+ * makes this worse, not better, which is the exact opposite of the response a
+ * rate problem wants.
+ */
+static int ui_midi_carry_foreign = 0;
+
+static inline int ui_midi_carry_foreign_count(void) { return ui_midi_carry_foreign; }
+
 static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
                                       int region_bytes)
 {
@@ -217,6 +239,16 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
     int placed = 0;
     int slot = 0;
     int read = 0;
+
+    /* Count foreign cable-2 traffic BEFORE placing anything, so we measure what
+     * Move put there and never our own packets from this frame. Only while the
+     * carry is non-empty: a packet from Move between two complete messages of
+     * ours is ordinary MIDI, not interference. */
+    for (int q = 0; q + 4 <= region_bytes; q += 4) {
+        if (!midi_out[q] && !midi_out[q + 1] && !midi_out[q + 2] && !midi_out[q + 3])
+            continue;
+        if (((midi_out[q] >> 4) & 0x0F) == 0x02) ui_midi_carry_foreign++;
+    }
 
     while (read < c->len) {
         while (slot + 4 <= region_bytes &&
