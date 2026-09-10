@@ -98,6 +98,38 @@ if ! strip_comments < "$SHIM" \
     fail "the publish site claims the whole cable, not just the surface own messages"
 fi
 
+
+# --- 6. Inbound SysEx reaches JS, and is NOT swallowed ---------------------
+# Measured on hardware 2026-09-10: with the claim narrowed to channel-voice
+# messages, the E16's ACK reached the mailbox and was never handed to JS, so
+# the lifecycle sought forever and withheld every frame. The device entered
+# remote mode and stayed blank -- eleven ENTERs out, not one framebuffer.
+#
+# The absence of `continue` is pinned too. A chain slot declaring
+# capabilities.wants_sysex must still receive this; the surface is one consumer
+# of inbound SysEx, not its owner.
+if ! strip_comments < "$SHIM" \
+    | grep -qE '^[[:space:]]*cin >= 0x04 && cin <= 0x07\) \{'; then
+    fail "inbound SysEx is not published to JS -- the ACK never arrives and the surface withholds every frame"
+fi
+if strip_comments < "$SHIM" \
+    | grep -A2 -E '^[[:space:]]*cin >= 0x04 && cin <= 0x07\) \{' \
+    | grep -qE '^[[:space:]]*continue;'; then
+    fail "the SysEx publish swallows the cable -- a wants_sysex slot would stop receiving"
+fi
+
+
+# --- 7. SysEx survives the CIN gate for a configured surface ---------------
+# The non-overtake path drops CINs 0x04-0x07 before any cable test. That is the
+# gate docs/SYSEX.md names as the reason a chain slot is write-only for SysEx.
+# The surface's ACK is SysEx, so widening only the CABLE condition is not
+# enough: measured on hardware 2026-09-10, the ACK died here, `present` never
+# flipped, and the device sat in remote mode with every frame withheld.
+if ! strip_comments < "$SHIM" \
+    | grep -qE 'cin >= 0x04 && cin <= 0x07 && cable == 0x02 &&'; then
+    fail "SysEx does not survive the CIN gate -- the ACK never reaches JS and the surface withholds every frame"
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed" >&2
     exit 1

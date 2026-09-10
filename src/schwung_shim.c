@@ -9021,7 +9021,26 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (overtake_mode) {
                 if (cin < 0x04 || cin > 0x0E) continue;
             } else {
-                if (cin < 0x08 || cin > 0x0E) continue;
+                /* This CIN gate is the one docs/SYSEX.md names as the reason a
+                 * chain slot is WRITE-ONLY for SysEx: it excludes 0x04-0x07
+                 * before any cable or channel test, so SysEx "falls out the
+                 * bottom of it". It was written as a channel-voice filter and
+                 * has no comment saying so.
+                 *
+                 * An external surface's REPLIES are SysEx -- the ACK that tells
+                 * the lifecycle a device is present. Measured on hardware
+                 * 2026-09-10: with only the CABLE condition widened below, the
+                 * ACK reached the mailbox and died here, `present` never
+                 * flipped, and the E16 sat in remote mode with every frame
+                 * withheld. Eleven ENTERs out, not one framebuffer, and the 2 s
+                 * seek cadence running forever.
+                 *
+                 * So SysEx survives this gate for cable 2 when a surface is
+                 * configured, and only then. */
+                if (cin < 0x08 || cin > 0x0E) {
+                    if (!(cin >= 0x04 && cin <= 0x07 && cable == 0x02 &&
+                          shadow_control->external_surface)) continue;
+                }
                 /* Only internal cable 0 (Move hardware) -- unless an external
                  * control surface is configured, which is the one case where
                  * cable 2 has a consumer outside overtake mode. The flag is
@@ -9068,6 +9087,25 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 e16_claims_msg(1, status, d1)) {
                 shadow_ui_midi_publish(src[j], status, d1, d2);
                 continue;
+            }
+
+            /* The surface's REPLIES are SysEx, and they are not channel-voice
+             * messages, so e16_claims_msg() does not name them -- it describes
+             * what the encoders emit. Publishing only those was measured on
+             * hardware to withhold every frame: the E16 entered remote mode and
+             * stayed blank, because the ACK reached this mailbox, was never
+             * handed to JS, and the lifecycle went on seeking at its 2 s
+             * cadence forever while gating frames on a presence it could not
+             * observe. Eleven ENTERs went out and not one framebuffer.
+             *
+             * NO `continue` HERE, deliberately. A chain slot that declared
+             * capabilities.wants_sysex must still receive this -- the surface
+             * is one consumer of inbound SysEx, not its owner, and swallowing
+             * the cable is the exact over-reach the claim above exists to
+             * avoid. Publishing is additive; the dispatch below is unchanged. */
+            if (!overtake_mode && cable == 0x02 && shadow_control->external_surface &&
+                cin >= 0x04 && cin <= 0x07) {
+                shadow_ui_midi_publish(src[j], status, d1, d2);
             }
 
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
