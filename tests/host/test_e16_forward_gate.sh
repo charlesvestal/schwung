@@ -130,6 +130,32 @@ if ! strip_comments < "$SHIM" \
     fail "SysEx does not survive the CIN gate -- the ACK never reaches JS and the surface withholds every frame"
 fi
 
+
+# --- 8. A CLAIMED message is SWALLOWED, not merely skipped ----------------
+# `continue` skips Schwung own dispatch and does nothing at all about the
+# mailbox MOVE reads, so a claimed message was consumed by us and PLAYED by
+# Move at the same time. Shift is note 16 on channel 1 -- a very low note on
+# whatever slot 1 holds -- and encoder 1 is CC 1, the mod wheel. Reported from
+# hardware 2026-09-11 as "i hear a note from the e16 when i press the shift
+# button".
+#
+# This was the twelfth instance of the defect CLAUDE.md records eleven of, and
+# it arrived the same way: `continue` LOOKS like blocking.
+#
+# Pinned by ADJACENCY -- the swallow must be inside the claim branch, not
+# merely present somewhere in the file, since the file has eighteen other
+# swallow sites that would satisfy a bare grep.
+claim_line=$(grep -n "e16_claims_msg(1, status, d1)) {" "$SHIM" | head -1 | cut -d: -f1)
+if [ -z "$claim_line" ]; then
+    fail "the claim branch is gone -- the surface either takes the whole cable or none of it"
+else
+    body=$(sed -n "${claim_line},$((claim_line + 25))p" "$SHIM")
+    case "$body" in
+        *"midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)"*) ;;
+        *) fail "a claimed surface message is not swallowed from Move mailbox — every encoder press also plays a note" ;;
+    esac
+fi
+
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed" >&2
     exit 1

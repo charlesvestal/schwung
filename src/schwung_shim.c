@@ -9086,6 +9086,21 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             if (!overtake_mode && cable == 0x02 && shadow_control->external_surface &&
                 e16_claims_msg(1, status, d1)) {
                 shadow_ui_midi_publish(src[j], status, d1, d2);
+                /*
+                 * BOTH BUFFERS. `continue` skips SCHWUNG's dispatch and does
+                 * nothing whatever about the mailbox MOVE reads -- so a claimed
+                 * message was consumed by us and played by Move at the same
+                 * time. Shift is note 16 on channel 1, which is a very low note
+                 * on whatever slot 1 is holding; encoder 1 is CC 1, the mod
+                 * wheel. Reported from the device as "i hear a note from the
+                 * e16 when i press the shift button".
+                 *
+                 * This is the twelfth instance of the defect CLAUDE.md records
+                 * eleven of, arrived at the same way: `continue` LOOKS like
+                 * blocking, and the leak is silent until one of the claimed
+                 * numbers happens to mean something audible.
+                 */
+                midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                 continue;
             }
 

@@ -109,3 +109,42 @@ CS_ENDPOINT descriptors, no code touched.
 
 So remote mode over USB-A needs OXI to make the port count configurable. This is
 not Move-specific — any host with a limited USB-MIDI stack will hit it.
+
+## Which mode to use, and what each costs
+
+Measured at the carry's pacing (3 packets per SPI frame, 2.90 ms a frame):
+
+| message | bytes | packets | time |
+|---|---|---|---|
+| `06 02` FRAMEBUFFER | 1576 | 394 | **383 ms** |
+| `06 03` LABELS | 136 | 34 | **35 ms** |
+| `06 04` RING (all 16) | 184 | 46 | **46 ms** |
+
+There is no partial framebuffer, so a value that moved on a detent cannot be
+worth a repaint — 383 ms is the whole cost of one, every time. The protocol's
+own answer is the other mode, and Schwung uses both:
+
+- **the LABEL carries the NAME** — 16 × 4 characters, redrawn when the page
+  changes, which is rare
+- **the RING carries the VALUE** — one chunk per detent, which is what a hand on
+  a knob actually generates
+- **the TITLE carries the READING** — 16 characters naming what is being turned
+  and what it now says, since four characters cannot hold both
+
+So the parameter view is LABELS and the Shift map is a FRAMEBUFFER, because a
+map is a picture and a parameter page is sixteen names.
+
+**The two modes OVERRIDE each other — they are not layers.** That makes
+"nothing changed" different from "nothing to send": dismissing the map leaves
+the map's picture on the panel while the surface believes the parameter view is
+up, and every later value change goes out as a ring with no name beside it.
+`createDisplay` therefore tracks what the DEVICE was last told (`shownKind`),
+not what the surface last decided, and resends on a difference. It is the same
+shape as the presence edge one layer in, and for the same reason: the device
+forgets and never says so.
+
+Four characters is the entire budget for a name, so the abbreviation drops
+separators and takes the first four (`Osc Level` → `OSCL`, `Cutoff` → `CUTO`).
+Initials were tried first and spend the budget badly — `Osc Level` → `OL` uses
+two of four columns, and neither rule avoids collisions, so the simpler one
+wins and the title disambiguates whatever is under the hand.

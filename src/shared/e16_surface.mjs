@@ -255,10 +255,27 @@ export function createSysexAssembler(opts) {
  * caller's, so tests drive the whole thing with no device.
  * ---------------------------------------------------------------------------
  */
-import { framebufferMsg, ringMsg } from "./e16_protocol.mjs";
+import { framebufferMsg, labelsMsg, ringMsg } from "./e16_protocol.mjs";
 
 export function createDisplay() {
     let fbOwed = false;
+    /*
+     * THE MODE THE DEVICE IS IN, and why "nothing changed" is not "nothing to
+     * send".
+     *
+     * FRAMEBUFFER and LABELS are mutually exclusive -- sending one OVERRIDES
+     * the other (docs/E16_REMOTE.md). So leaving the map puts the device on a
+     * screen the surface never chose: the framebuffer raised for the map is
+     * still there, and the parameter view owes a LABELS message even though
+     * not one label changed while Shift was held. Tracking what the DEVICE was
+     * last told, rather than what the surface last decided, is what makes that
+     * transition visible -- the same shape as the presence edge, one layer in.
+     */
+    let shownKind = null;
+    /* The title/name text, owed separately from the screen KIND: a detent
+     * changes the reading without changing the mode, and it must not cost a
+     * repaint. */
+    let labelsOwed = false;
     /* enc -> the latest ring descriptor for it. A Map because insertion order
      * is stable, so chunks go out in the order the encoders moved. */
     const rings = new Map();
@@ -274,6 +291,14 @@ export function createDisplay() {
          * one repaint owed; calling it ten times still owes one.
          */
         invalidate() { fbOwed = true; },
+
+        /**
+         * The label text moved -- a new reading under the hand, a renamed
+         * page. Costs 34 packets against the framebuffer's 394, and is
+         * deliberately LOWER priority than a ring: the ring is the feedback a
+         * turning hand is actually watching.
+         */
+        invalidateLabels() { labelsOwed = true; },
 
         /**
          * One encoder's value moved. Takes a descriptor from
@@ -295,17 +320,35 @@ export function createDisplay() {
          * @returns {"framebuffer"|"rings"|null} what went out, for tests and
          *        for a caller that wants to log its send budget.
          */
-        tick(send, frameBytes) {
-            if (fbOwed) {
-                /* Rings deliberately wait: see rule 1. The repaint is the
+        tick(send, frameBytes, screen) {
+            /*
+             * A screen is owed when the surface says so OR when the device is
+             * in the wrong MODE for what is being shown. The second half is
+             * not an optimisation: without it, dismissing the map leaves the
+             * framebuffer on the panel with every later value change going out
+             * as rings nobody can read a name for.
+             */
+            const want = screen ? screen.kind : "framebuffer";
+            if (fbOwed || shownKind !== want) {
+                /* Rings deliberately wait: see rule 1. The screen is the
                  * expensive send and it goes out alone. */
-                if (emitMsg(send, framebufferMsg(frameBytes()))) {
+                const bytes = want === "labels"
+                    ? labelsMsg(screen.title, screen.labels)
+                    : framebufferMsg(frameBytes());
+                if (emitMsg(send, bytes)) {
                     fbOwed = false;
-                    return "framebuffer";
+                    labelsOwed = false;
+                    shownKind = want;
+                    return want;
                 }
                 return null;
             }
-            if (!rings.size) return null;
+            if (!rings.size) {
+                if (!labelsOwed || want !== "labels") return null;
+                if (!emitMsg(send, labelsMsg(screen.title, screen.labels))) return null;
+                labelsOwed = false;
+                return "labels";
+            }
             const chunks = Array.from(rings.values());
             if (!emitMsg(send, ringMsg(chunks))) return null;
             /* Cleared only on an ACCEPTED send. A refused ring message leaves
@@ -317,6 +360,11 @@ export function createDisplay() {
 
         /* Test seams. */
         get framebufferOwed() { return fbOwed; },
+        get labelsTextOwed() { return labelsOwed; },
+        get shownKind() { return shownKind; },
+        /* A replug wipes the panel, so what the device was told is no longer
+         * true. Forgetting it is what makes the presence edge resend. */
+        forgetShown() { shownKind = null; },
         get ringsPending() { return rings.size; },
     };
 }
@@ -708,6 +756,12 @@ export function createNav(opts) {
         get mapPage() { return mapPage; },
         get showBuses() { return showBuses; },
         get followEnabled() { return follow; },
+        /* The DISPLAY MODE depends on this: a map is a picture and the
+         * parameter view is sixteen labels, and the two modes override each
+         * other on the device. Exposed rather than re-derived at the call site
+         * -- the hold has a timeout, so "is the map up" is a question only this
+         * object can answer correctly. */
+        mapVisible(now) { return mapVisible(now); },
     };
 }
 
@@ -747,7 +801,8 @@ export function createNav(opts) {
  */
 import { decode } from "./e16_input.mjs";
 import { createCanvas } from "./e16_canvas.mjs";
-import { buildView, renderView, ringFor, ringsFor, applyTurn, applyClick } from "./e16_view.mjs";
+import { buildView, renderView, ringFor, ringsFor, labelsFor, applyTurn, applyClick }
+    from "./e16_view.mjs";
 
 /**
  * @param {object} io
@@ -807,6 +862,31 @@ export function createSurface(io) {
     const viewNow = () =>
         buildView(ctl ? ctl.pages : [], nav ? nav.pageIndex : 0, { metaOf, valueOf });
 
+    /*
+     * THE ENCODER UNDER THE HAND, which is what the 16-character title names.
+     *
+     * A number, not a boolean: the title has to say WHICH parameter is moving,
+     * and the labels beneath it are four characters each, so the title is the
+     * only place a full name and a full reading ever appear. It is cleared by
+     * nothing -- the last thing touched stays named, which is what you want
+     * when you look up a second later to read the value you just set.
+     */
+    let focusEnc = null;
+
+    /* The LABELS screen for this frame: sixteen four-character names plus the
+     * title. Cheap enough to rebuild per tick (it is string work over a view
+     * that is itself rebuilt per tick and costs no IPC), and rebuilding is what
+     * keeps the reading in the title honest without a second staleness stamp to
+     * get wrong. */
+    const labelScreen = () => {
+        const l = labelsFor(viewNow(), {
+            component: nav ? nav.component : "",
+            focusEnc,
+            metaOf,
+        });
+        return { kind: "labels", title: l.title, labels: l.labels };
+    };
+
     const nav = createNav({
         display,
         chainOf,
@@ -863,6 +943,11 @@ export function createSurface(io) {
         if (lifecycle.present === wasPresent) return;
         wasPresent = lifecycle.present;
         if (!wasPresent) return;
+        /* A replug wipes the panel, so what the device was last TOLD is no
+         * longer what it is showing -- and the mode is part of that. Without
+         * this, a device that came back while the parameter view was up matched
+         * `shownKind` and was sent nothing at all. */
+        display.forgetShown();
         display.invalidate();
         /*
          * THE RINGS COME BACK TOO, and they are a SEPARATE resend.
@@ -920,7 +1005,17 @@ export function createSurface(io) {
                  * isolation drops packets in use (docs/E16_REMOTE.md). The view
                  * is rebuilt AFTER the write so the ring carries the new value.
                  */
-                if (moved) display.ringChanged(ringFor(viewNow(), act.enc));
+                if (moved) {
+                    display.ringChanged(ringFor(viewNow(), act.enc));
+                    /* The TITLE is the only surface carrying the full name and
+                     * the reading, so a turn owes one -- but as a separate,
+                     * lower-priority debt than the ring. A spin makes many
+                     * detents and the display sends one message per tick, so
+                     * the ring (the thing being watched) goes first and the
+                     * text catches up when the hand pauses. */
+                    display.invalidateLabels();
+                }
+                focusEnc = act.enc;
                 return act;
             }
             if (act.action === "click") {
@@ -929,7 +1024,11 @@ export function createSurface(io) {
                 /* A click can flip a value (a ring) or open a door (a new
                  * page). Only the second is worth a screen. */
                 if (ctl.pageIndex !== before) display.invalidate();
-                else if (hit) display.ringChanged(ringFor(viewNow(), act.enc));
+                else if (hit) {
+                    display.ringChanged(ringFor(viewNow(), act.enc));
+                    display.invalidateLabels();
+                }
+                focusEnc = act.enc;
                 return act;
             }
             return act;
@@ -998,6 +1097,22 @@ export function createSurface(io) {
              * rings, never a dead surface.
              */
             if (sentThisTick) return;
+            /*
+             * WHICH MODE THIS FRAME WANTS.
+             *
+             * The map is a picture -- boxes, names, a highlighted slot -- and
+             * has to be a framebuffer. The parameter view is sixteen names and
+             * a reading, which LABELS carries for an eleventh of the cost, so
+             * a detent no longer pays 383 ms to move a number. The probe is a
+             * framebuffer by definition: it exists to show raw bit layout.
+             *
+             * Computed HERE and handed down, rather than asked for inside the
+             * display, so that the display stays a pure pacing machine with no
+             * opinion about what a map is.
+             */
+            const probeArmed = testPattern() >= 0;
+            const wantsPicture = probeArmed || nav.mapVisible(t);
+            const screen = wantsPicture ? { kind: "framebuffer" } : labelScreen();
             display.tick(oneSend, () => {
                 /* A layout probe overrides the view. See drawTestPattern:
                  * "the screen is garbled" cannot tell a wrong bit direction
@@ -1007,7 +1122,7 @@ export function createSurface(io) {
                 if (probe >= 0) drawTestPattern(canvas, probe);
                 else nav.render(canvas, t);
                 return canvas.toBuffer();
-            });
+            }, screen);
         },
 
         /* Read-only views, for the host's settings rows and for tests. */
