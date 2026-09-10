@@ -182,7 +182,15 @@ export function buildView(pages, pageIndex, io) {
                 slot,
                 pageIndex: idx + half,
                 key,
-                label: meta.short_name || meta.label || key,
+                /* The authored short label lives on the PAGE, not the
+                 * meta: page_plan collects { key: short_name } into
+                 * page.shortNames and render_page_movy reads it there.
+                 * getOrGuess never carries it, so meta.short_name is
+                 * essentially always undefined and this fell through to the
+                 * raw parameter id -- which at 4px per character is a
+                 * fragment, and four columns of fragments read as noise. */
+                label: (p.shortNames && p.shortNames[key]) ||
+                       meta.short_name || meta.label || key,
                 value: valueOf(key),
                 min,
                 max,
@@ -469,9 +477,19 @@ export function applyClick(view, ctl, enc) {
  */
 export function drawTestPattern(ctx, which) {
     ctx.clear();
-    const n = (which | 0) % 4;
+    const n = (which | 0) % 5;
     if (n === 0) ctx.fillRect(0, 0, 128, 1, 1);
     else if (n === 1) ctx.fillRect(0, 0, 1, 64, 1);
     else if (n === 2) ctx.fillRect(0, 0, 128, 8, 1);
-    else ctx.fillRect(0, 0, 16, 16, 1);
+    else if (n === 3) ctx.fillRect(0, 0, 16, 16, 1);
+    /*
+     * 4 marks the FAR END of the buffer: the bottom 8 rows are page 7, bytes
+     * 896-1023, the last thing in the message. The header (page 0, bytes
+     * 0-127) renders correctly while everything below it does not, and that is
+     * exactly the shape of a device that accepts the front of the message and
+     * not the back. If this band appears, the whole buffer lands and the fault
+     * is our content; if it does not, the device is truncating and no amount
+     * of drawing will fix it.
+     */
+    else ctx.fillRect(0, 56, 128, 8, 1);
 }
