@@ -48,12 +48,19 @@ export const HALVES = 2;
 /* Screen geometry, 128x64. A half is 32 px: an 8 px header bar and two 12 px
  * cell rows (8 + 12 + 12 = 32). Exported because the encoder-to-cell mapping
  * and the drawn layout have to be THE SAME FACT -- a surface where knob 5 is
- * under the cell knob 6 draws in is not a bug you find by reading code. */
+ * under the cell knob 6 draws in is not a bug you find by reading code.
+ *
+ * `HEADER_BAR_H` rather than `HEADER_H`: that name is one of twelve list-chrome
+ * constants `tests/host/test_list_behavior.sh` requires to have EXACTLY ONE
+ * definition in src/, because a forked copy of the list geometry once left the
+ * whole movy re-skin inert on the device while the test stayed green. This is a
+ * different screen with its own geometry, so it takes its own name rather than
+ * a second definition of theirs. */
 export const WIDTH = 128;
 export const HALF_H = 32;
-export const HEADER_H = 8;
+export const HEADER_BAR_H = 8;
 export const CELL_W = WIDTH / COLS;             /* 32 */
-export const CELL_H = (HALF_H - HEADER_H) / 2;  /* 12 */
+export const CELL_H = (HALF_H - HEADER_BAR_H) / 2;  /* 12 */
 
 /* The header names its page in the LEFT half of the bar and leaves the right
  * half for the page position. 64 px of font4x5 is about fifteen characters,
@@ -92,7 +99,7 @@ export function cellRect(enc) {
     const slot = encSlot(enc);
     return {
         x: (slot % COLS) * CELL_W,
-        y: half * HALF_H + HEADER_H + Math.floor(slot / COLS) * CELL_H,
+        y: half * HALF_H + HEADER_BAR_H + Math.floor(slot / COLS) * CELL_H,
         w: CELL_W,
         h: CELL_H,
     };
@@ -252,7 +259,7 @@ export function renderView(ctx, view) {
         const y = half * HALF_H;
         /* Inverted header bar, so the eye finds the two pages before it reads
          * either -- the split is the whole point of this screen. */
-        ctx.fillRect(0, y, WIDTH, HEADER_H - 1, 1);
+        ctx.fillRect(0, y, WIDTH, HEADER_BAR_H - 1, 1);
         ctx.print(1, y + 1, clip(ctx, h.name, HEADER_TEXT_W - 2), 0);
         const pos = `${h.index + 1}/${h.count}`;
         ctx.print(WIDTH - 1 - ctx.textWidth(pos), y + 1, pos, 0);
