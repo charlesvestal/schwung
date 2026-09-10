@@ -14,13 +14,18 @@
  *
  * So the space is written IN, and the tempo is the same for everything:
  *
- *     0.0- 7.2s   ARP      eighth notes, one voice   -- attack, transient, timbre
- *     7.2- 8.4s   rest                               -- the arp's tail, alone
- *     8.4-16.8s   CHORDS   three, held, with gaps    -- voicing, detune, width
- *    16.8-18.0s   rest
- *    18.0-25.2s   MELODY   mixed rhythm, one voice   -- how it plays a line
- *    25.2-27.0s   final chord, held
- *    27.0-30.0s   silence                            -- the tail, undisturbed
+ *     0.0- 3.6s   ARP      eighth notes, one voice   -- attack, transient, timbre
+ *     3.6- 4.4s   rest                               -- the arp's tail, alone
+ *     4.4-12.8s   CHORDS   three, held, with gaps    -- voicing, width, and
+ *                                                       where a knob is swept
+ *    12.8-14.0s   rest
+ *    14.0-21.0s   MELODY   mixed rhythm, one voice   -- how it plays a line
+ *    21.0-23.0s   final chord, held
+ *    23.0-30.0s   silence                            -- the tail, undisturbed
+ *
+ * The arp used to run to 7.2 s and the chords to 8.4 s, which is a long wait
+ * for the part a listener is there for -- and, on an FX, a long wait before
+ * anything moves.
  *
  * Every section ends in a rest, so a 3.4 s release is heard as a release
  * rather than smeared into the next phrase, and a 0.05 s one simply sounds
@@ -46,15 +51,15 @@ function build() {
 
     // ---- ARP: up and down over the triad, eighth notes, one voice.
     const arp = [57, 60, 64, 69, 72, 69, 64, 60];
-    for (let i = 0; i < 24; i++) {
-        const bar = Math.floor(i / 8);
+    for (let i = 0; i < 12; i++) {
+        const bar = Math.floor(i / 4) % 3;
         const chord = [Am, F, G][bar];
         const step = arp[i % 8] - 57 + chord[0];
         add(i * BEAT * 0.5, BEAT * 0.45, step, 92 + (i % 8 === 0 ? 20 : 0));
     }
 
     // ---- CHORDS: held, with a real gap after each.
-    let t = 8.4;
+    let t = 4.4;
     for (const ch of [Am, F, G]) {
         for (const n of ch) add(t, BEAT * 3, n, 88);
         t += BEAT * 4.667;              // ~2.8 s: 1.8 s sounding, 1.0 s of air
@@ -63,10 +68,10 @@ function build() {
     // ---- MELODY: a line with breath in it.
     const mel = [[0, 2, 69], [2, 1, 72], [3, 1, 71], [4, 2, 69], [6, 2, 67],
                  [9, 2, 65], [11, 1, 64], [12, 3, 62], [16, 4, 60]];
-    for (const [beat, len, note] of mel) add(18.0 + beat * BEAT * 0.5, BEAT * 0.5 * len * 0.9, note, 100);
+    for (const [beat, len, note] of mel) add(14.0 + beat * BEAT * 0.5, BEAT * 0.5 * len * 0.9, note, 100);
 
     // ---- Final chord, then silence for the tail.
-    for (const n of Am) add(25.2, BEAT * 3, n, 84);
+    for (const n of Am) add(21.0, BEAT * 3, n, 84);
     return ev;
 }
 
