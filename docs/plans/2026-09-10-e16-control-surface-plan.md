@@ -1078,7 +1078,7 @@ focus; this is the mechanical reason it has to.
 
 ---
 
-## Task 13: assemble the surface (NOT DONE — the plan's own gap)
+## Task 13: assemble the surface (DONE)
 
 **Tasks 1-11 build every component and wire none of them together.** The
 lifecycle runs; the shim gate is written and restated; the view, the map, the
@@ -1120,9 +1120,46 @@ actually runs.** Component tests cannot see this: each half is correct.
 
 ### Acceptance criteria that would have caught all three gaps
 
-- [ ] With the setting on and a fake device acking, a scripted component change
+- [x] With the setting on and a fake device acking, a scripted component change
       produces a framebuffer on the wire — asserted end to end, from the setting
       to the bytes, not from any one module's unit
-- [ ] With the setting off, nothing is sent at all
-- [ ] A turn arriving as raw MIDI bytes moves a parameter — the whole path,
+- [x] With the setting off, nothing is sent at all
+- [x] A turn arriving as raw MIDI bytes moves a parameter — the whole path,
       `onMidiMessageExternal` to `set_param`
+
+### What was built, and where the assembly actually lives
+
+`createSurface()` in `src/shared/e16_surface.mjs`, not in `shadow_ui.js`.
+
+That is the whole answer to "why did eleven green tasks ship a feature that did
+not run": **`shadow_ui.js` cannot be imported under node**, so anything living
+there can only ever be GREPPED — and a grep is precisely what could not see this
+gap. Composed in a `.mjs`, the entire path (a setting, a clock, raw MIDI bytes
+in, USB-MIDI packets out) is driven by `tests/host/test_e16_wiring.sh` with no
+device and no shim. What is left in `shadow_ui.js` is five injected seams and two
+calls, and only those are source-pinned.
+
+Three rules were found by writing the assembly and are enforced there:
+
+- **The surface holds its OWN controller**, built from a `makeController`
+  FACTORY the host supplies. A host that handed over the grid's existing
+  controller would be indistinguishable from one that built a second, and the
+  symptom — Move's screen dragged to page N+1 by every lower-row knob — is two
+  small in-range integers disagreeing with nothing logged. The factory takes a
+  LIVE view of the focus, not a slot number: one controller outlives many jumps.
+- **At most one message per tick, across BOTH producers.** `createDisplay`
+  enforces that budget inside itself but cannot see the lifecycle, which sends
+  on the same port. A keepalive ENTER landing in the same tick as a 391-packet
+  framebuffer is exactly the "amid other traffic" case that lost 8 whole
+  packets. The two are joined in `tick()` because that is the only place that
+  can see both.
+- **No device, no frames and no reads.** A frame sent while seeking goes
+  nowhere, and the device that acks a moment later comes up showing the last
+  process's screen while the surface believes it has painted; `ctl.tick()` is a
+  ~2.8 ms staggered IPC read whose only consumer is a screen nobody is looking
+  at. Both are gated on `present`, and the repaint is re-owed on every
+  false->true edge — which is what makes a replug (the E16 has no battery, so
+  unplugging clears its screen) redraw itself with no user action.
+
+**Task 12 (hardware verification) is still open**; nothing here has been on a
+device.
