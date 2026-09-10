@@ -8,12 +8,23 @@
 #include "chain_pre_inject.h"
 #include "chain_midi_chain.h"
 #include "relative_cc.h"
+#include "host/e16_claim.h"
 
 /* Clock availability state for sync-aware MIDI FX (arp, etc.). */
 static int g_clock_output_enabled = 1;              /* midiClockMode == "output" */
 static int g_clock_transport_running = 0;           /* Start/Continue seen without Stop */
 static uint64_t g_clock_last_tick_ms = 0;           /* Last 0xF8 tick timestamp */
 static uint64_t g_clock_next_refresh_ms = 0;        /* Settings.json refresh gate */
+
+/* Mirror of shadow_control_t.external_surface (the flag that says an OXI E16
+ * is the active control surface). chain_midi.c is a dlopen'd plugin with no
+ * link-time access to the shim's SHM layout, and e16_claim.h is deliberately
+ * pure and does not depend on that struct either — so the flag arrives here
+ * as a plain 0/1, and this is the one place that holds it for the CC-map
+ * lookup below. The shim/lifecycle side that flips this bit is separate work
+ * (docs/plans/2026-09-10-e16-control-surface-plan.md, tasks 6-7); until it is
+ * wired, this stays 0 and the CC Map's behaviour is unchanged for everyone. */
+static int g_e16_surface_active = 0;
 
 static int chain_read_clock_output_enabled(void) {
     FILE *f = fopen(MOVE_SETTINGS_JSON_PATH, "r");
@@ -797,6 +808,18 @@ void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
     /* Handle knob CC mappings */
     if (len >= 3 && (msg[0] & 0xF0) == 0xB0) {
         uint8_t cc = msg[1];
+        int channel = msg[0] & 0x0F;
+
+        /* The E16 remote surface owns CC 1-16 on channel 1 outright while it
+         * is active — see e16_claim.h for why. Refuse the message here,
+         * before it ever reaches the mapping table, rather than at whatever
+         * CC range the table happens to be configured for today: the
+         * ownership boundary must hold regardless of what a future CC Map
+         * change widens that range to. */
+        if (e16_claims_cc(g_e16_surface_active, channel, cc)) {
+            return;
+        }
+
         if (cc >= KNOB_CC_START && cc <= KNOB_CC_END) {
             for (int i = 0; i < inst->knob_mapping_count; i++) {
                 if (inst->knob_mappings[i].cc == cc) {
