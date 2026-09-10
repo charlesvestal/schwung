@@ -43,7 +43,7 @@ const twoPages = [
 ];
 const sixKeyFirst = [
   page("Amp", ["a", "b", "c", "d", "e", "f"]),
-  page("Filter", ["flt_cut", "flt_res"]),
+  page("Filter", ["flt_cut", "flt_res", "f3", "f4", "f5", "f6", "f7", "f8"]),
 ];
 const onePage = [ page("Only", ["x", "y", "z"]) ];
 
@@ -80,6 +80,18 @@ for (let e = 0; e < ENCODERS; e++) {
 eq("rects agree with the half/slot mapping", geomBad, []);
 eq("enc 8 is the bottom page slot 0", [encHalf(8), encSlot(8)], [1, 0]);
 eq("enc 15 is the bottom page slot 7", [encHalf(15), encSlot(15)], [1, 7]);
+
+/* buildView places a key by its own arithmetic; assert it lands where the
+ * EXPORTED mapping says it should, or the two can drift apart silently and the
+ * only symptom is a knob editing its neighbour. */
+let mapBad = [];
+for (let e = 0; e < ENCODERS; e++) {
+  const src = twoPages[encHalf(e)];
+  const want = (src && src.keys[encSlot(e)]) || null;
+  const got = (v.cells[e] && v.cells[e].key) || null;
+  if (got !== want) mapBad.push(e + ":" + got + "!=" + want);
+}
+eq("cells land where encHalf/encSlot say", mapBad, []);
 
 /* ---- 2. fewer than nine cells leaves the bottom half DARK ---- */
 const small = buildView(onePage, 0, { metaOf, valueOf });
