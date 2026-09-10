@@ -84,8 +84,18 @@ fi
 # this branch: it re-tests the flag itself so a later widening of that filter
 # for some other reason cannot make this `continue` swallow the cable whole.
 if ! strip_comments < "$SHIM" \
-    | grep -qE '^[[:space:]]*if \(!overtake_mode && cable == 0x02 && shadow_control->external_surface\) \{'; then
+    | grep -qE '^[[:space:]]*if \(!overtake_mode && cable == 0x02 && shadow_control->external_surface &&$'; then
     fail "the non-overtake cable-2 publish is missing or ungated — the surface either never reaches JS, or swallows a cable it was not given"
+fi
+# ...and it must be NARROW. The first version consumed every cable-2 event
+# while the setting was on, which silences the CC Map for any other device
+# sharing the cable for as long as the surface is switched on. Pinned
+# separately from the flag because dropping either one is silent: without
+# the flag the cable is swallowed unconditionally, without the claim it is
+# swallowed whenever the surface is on.
+if ! strip_comments < "$SHIM" \
+    | grep -qE '^[[:space:]]*e16_claims_msg\(1, status, d1\)\) \{'; then
+    fail "the publish site claims the whole cable, not just the surface own messages"
 fi
 
 if [ "$fails" -ne 0 ]; then
