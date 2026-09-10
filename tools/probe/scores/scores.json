@@ -7,40 +7,78 @@
     "assistant and tuner modules have nothing deterministic to render, and a",
     "synthesised clip for them would be a fabrication rather than a preview."
   ],
-  "default": { "midi": "wtk1-prelude1.mid", "seconds": 27, "tail": 3, "presets": 4, "octave_fit": true },
-
+  "default": {
+    "midi": "wtk1-prelude1.mid",
+    "seconds": 27,
+    "tail": 3,
+    "presets": 4,
+    "octave_fit": true
+  },
   "sound_generator": {
-    "polysynth":            {},
-    "mono-bass":            { "presets": 3 },
-    "west-coast":           { "presets": 3 },
-    "fm":                   {},
-    "wavetable":            {},
-    "macro-hybrid":         {},
-    "physical-modeling":    {},
-    "chiptune-retro":       {},
-    "sampler-rompler":      {},
-    "granular":             {},
-    "drum-machine":         { "midi": null, "octave_fit": false, "presets": 3,
-                              "_why": "A drum machine is played on its own voices, not on a melodic line; the score is built from the module's declared voices at render time." },
-    "streaming-live-input": { "audio": null, "_why": "no deterministic source" }
+    "polysynth": {},
+    "mono-bass": {
+      "presets": 3
+    },
+    "west-coast": {
+      "presets": 3
+    },
+    "fm": {},
+    "wavetable": {},
+    "macro-hybrid": {},
+    "physical-modeling": {},
+    "chiptune-retro": {},
+    "sampler-rompler": {},
+    "granular": {},
+    "drum-machine": {
+      "midi": null,
+      "octave_fit": false,
+      "presets": 3,
+      "_why": "A drum machine is played on its own voices, not on a melodic line; the score is built from the module's declared voices at render time."
+    },
+    "streaming-live-input": {
+      "audio": null,
+      "_why": "no deterministic source"
+    }
   },
   "audio_fx": {
-    "_all":                 { "source": "obxd", "wet": 0.5, "presets": 1,
-                              "_why": "An FX is previewed on a real instrument playing the same phrase every other module plays, so effects are comparable with each other and with the synths. Dry/wet goes to 50% OF THE RANGE THE MODULE DECLARES -- CloudSeed defaults to 0.30, which over a transient is inaudible." }
+    "_all": {
+      "source": "wurl",
+      "wet": 0.5,
+      "presets": 1,
+      "_why": "An FX is previewed on a real instrument playing the same phrase every other module plays, so effects are comparable with each other and with the synths. The source is chosen by MEASUREMENT, not taste: wurl renders C4 at 262.5 Hz with tight pitch and a +27.2 dB attack. The previous source (obxd, default preset) rendered at 525 Hz -- an octave high -- with a +11.7 dB attack and a detuned unison that smears whatever the effect does. A slow-attack pad is worse still: hera's Strings 1 is in tune and has -3.5 dB of attack, so a reverb has nothing to excite it. Dry/wet goes to 50% OF THE RANGE THE MODULE DECLARES."
+    }
   },
   "midi_fx": {
-    "_all":                 { "source": "obxd", "presets": 1,
-                              "_why": "Driven into ONE reference synth, pinned, so a preview that changes means the MIDI FX changed." }
+    "_all": {
+      "source": "wurl",
+      "presets": 1,
+      "_why": "Driven into ONE reference instrument, the same one the audio FX use, so a preview that changes means the MIDI FX changed."
+    }
   },
   "tool": {
-    "sequencer":            { "source": "obxd", "presets": 1 },
-    "sampling-editing":     { "audio": null },
-    "tuner-analysis":       { "audio": null, "_why": "nothing to render without an input" },
-    "assistant":            { "audio": null, "_why": "needs an API key and a person" },
-    "performance":          { "audio": null }
+    "sequencer": {
+      "source": "wurl",
+      "presets": 1
+    },
+    "sampling-editing": {
+      "audio": null
+    },
+    "tuner-analysis": {
+      "audio": null,
+      "_why": "nothing to render without an input"
+    },
+    "assistant": {
+      "audio": null,
+      "_why": "needs an API key and a person"
+    },
+    "performance": {
+      "audio": null
+    }
   },
   "overtake": {
-    "_all":                 { "audio": null,
-                              "_why": "An overtake module owns the whole surface and is not fed MIDI from a slot; there is no score that means anything." }
+    "_all": {
+      "audio": null,
+      "_why": "An overtake module owns the whole surface and is not fed MIDI from a slot; there is no score that means anything."
+    }
   }
 }
