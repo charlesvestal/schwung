@@ -61,7 +61,20 @@
  * against the mailbox: a 158-byte SysEx is 53 packets, so this holds ~4.8 of
  * them back-to-back. Matching SHADOW_UI_MIDI_BYTES/4 on the inbound side is
  * deliberate — a tool that can be SENT a burst of that size can answer one. */
-#define UI_MIDI_CARRY_PACKETS 512
+/* 1024 packets = 4096 bytes: room for TWO full-screen framebuffers.
+ *
+ * A framebuffer is 394 packets. At 512 the carry could hold one and a fragment
+ * of the next, so a repaint queued while another was still draining -- raise
+ * the Shift map, release it, and the parameter view is owed immediately -- had
+ * its tail dropped, and the device drew a truncated screen. Observed on
+ * hardware 2026-09-10 as "shows the slot list, then garbled".
+ *
+ * The pacing above makes a frame take ~130 SPI frames to drain, which widens
+ * exactly the window in which a second repaint can be requested, so the depth
+ * has to cover two. /dev/shm is tmpfs and allocates by page, so this is free;
+ * SHADOW_MIDI_OUT_BUFFER_SIZE must move with it, and the assert below fails if
+ * it does not. */
+#define UI_MIDI_CARRY_PACKETS 1024
 #define UI_MIDI_CARRY_BYTES   (UI_MIDI_CARRY_PACKETS * 4)
 
 /* The carry must hold whatever one flush of the SHM buffer can deliver.

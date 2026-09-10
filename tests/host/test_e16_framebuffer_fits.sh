@@ -30,6 +30,19 @@ need=$(( ( (1180 + 2) / 3 ) * 4 ))
 # return value -- the exact shape ui_midi_out_carry.h exists to remove.
 [ "$(( carry * 4 ))" -eq "$buf" ] || note "carry ${carry}pkt ($((carry*4))B) != buffer ${buf}B"
 
+
+# The carry must hold TWO frames, not one.
+#
+# Pacing makes a frame take ~130 SPI frames to drain, which is exactly the
+# window in which a second repaint gets requested -- raise the Shift map,
+# release it, and the parameter view is owed while the map frame is still
+# going out. At one frame's depth the second one's tail was dropped and the
+# device drew a truncated screen ("shows the slot list, then garbled",
+# hardware, 2026-09-10).
+frames=$(( ( ( (1180 + 2) / 3 ) * 4 ) ))
+[ "$buf" -ge "$(( frames * 2 ))" ] \
+  || note "outbound buffer $buf holds fewer than two frames ($frames bytes each)"
+
 grep -q "can never be sent" src/shadow/shadow_ui.c \
   || note "no oversize refusal -- an unsendable message would be retried forever"
 
