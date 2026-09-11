@@ -909,6 +909,21 @@ export function createSurface(io) {
     let paints = 0;
     let lastPaintAt = null;
     let paintFps = null;
+    /*
+     * The probe value the screen was last drawn FROM.
+     *
+     * Arming or disarming the probe changes what should be on the panel and
+     * nothing else does -- no focus moved, no knob turned, no mode changed --
+     * so without this the display sits believing the device is already
+     * correct and the last probe frame stays up forever. Observed on hardware
+     * as "it's still on the test screen, but frozen" after the probe file was
+     * removed; the panel was not frozen at all, it was showing the last thing
+     * anybody had sent it.
+     *
+     * Initialised to a value no probe can take, so the FIRST tick after the
+     * surface comes up owes a frame rather than matching by accident.
+     */
+    let shownProbe = -2;
 
     /* The LABELS screen for this frame: sixteen four-character names plus the
      * title. Cheap enough to rebuild per tick (it is string work over a view
@@ -1188,6 +1203,12 @@ export function createSurface(io) {
              * because it is what keeps the device honest across a replug.
              */
             const screen = { kind: "framebuffer" };
+
+            /* Arming or disarming the probe is a screen change like any other. */
+            if (probe !== shownProbe) {
+                shownProbe = probe;
+                display.invalidate();
+            }
 
             /* The meter repaints CONTINUOUSLY -- that is the measurement. It
              * owes a frame every tick, so the rate it reports is the fastest
