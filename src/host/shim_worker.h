@@ -86,6 +86,14 @@ extern volatile int shim_usbc_out_persist;
  * then); the RT consumer emits the SysEx pair and swaps it back to -1. */
 extern volatile int shim_usbc_out_replay;
 
+/* Monitor-loss repair, armed by the same RT consumer contract as
+ * shim_usbc_out_replay above but kept SEPARATE from it on purpose: the replay
+ * restores a saved preference and is retired, while this restores the mode
+ * Move's live 37 14 is advertising right now. One variable meant one gate, so
+ * retiring the first silenced the second and left USB-C stuck on the
+ * microphone until reboot. See usbc_emit_gate.h. */
+extern volatile int shim_usbc_out_reassert;
+
 /* Live view of the two bits that together decide whether Main Out actually
  * reaches USB-C, republished by the RT path every frame (-1 until observed).
  * Unlike shim_usbc_out_persist these are levels, not edges: the worker polls

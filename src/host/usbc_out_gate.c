@@ -110,8 +110,15 @@ void usbc_gate_tick_monitor(usbc_gate_t *g, int usbc_out, int monitor,
 {
     /* Boot arbitration owns the wire until it settles — it is already
      * re-asserting on its own budget, and two defences bidding at once would
-     * double-spend. */
-    if (g->phase != USBC_GATE_PHASE_SETTLED || g->stored != 1) {
+     * double-spend.
+     *
+     * The stored preference is deliberately NOT consulted. This defence used
+     * to require `g->stored == 1`, which made it a servant of persistence:
+     * with persistence retired nothing writes an authoritative file, and a
+     * device with none (or with a stale Mic left by an older install) went
+     * undefended. `usbc_out == 1` below is the real precondition — Move's
+     * live 37 14 says Main Out this second — and it needs no help from disk. */
+    if (g->phase != USBC_GATE_PHASE_SETTLED) {
         g->monitor_pending = 0;
         return;
     }
