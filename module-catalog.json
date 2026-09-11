@@ -2128,6 +2128,21 @@
       "default_branch": "main",
       "asset_name": "busdriver-module.tar.gz",
       "min_host_version": "0.9.0"
+    },
+    {
+      "id": "sophie",
+      "name": "Sophie",
+      "description": "Sixteen-pad metallic FM percussion synthesizer with per-pad synthesis, filtering, distortion, and resonant ring delay",
+      "author": "mestela",
+      "component_type": "sound_generator",
+      "subcategory": "drum-machine",
+      "tags": [
+        "fm"
+      ],
+      "github_repo": "mestela/schwung-sophie",
+      "default_branch": "main",
+      "asset_name": "sophie-module.tar.gz",
+      "min_host_version": "1.0.0"
     }
   ]
 }
