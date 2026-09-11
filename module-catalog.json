@@ -2161,6 +2161,25 @@
       "default_branch": "main",
       "asset_name": "bouba-kiki-module.tar.gz",
       "min_host_version": "1.2.1"
+    },
+    {
+      "id": "kit-builder",
+      "name": "Kit Builder",
+      "description": "Randomly builds, auditions and exports 16-pad drum kits from your Move sample library, with loudness matching and an audition step sequencer",
+      "author": "sd88me",
+      "component_type": "overtake",
+      "subcategory": "sampler-looper",
+      "tags": [
+        "drums",
+        "generative",
+        "needs-assets",
+        "sample-based"
+      ],
+      "github_repo": "sd88me/schwung-kit-builder",
+      "default_branch": "main",
+      "asset_name": "kit-builder-module.tar.gz",
+      "min_host_version": "1.0.0",
+      "requires": "Drum samples in /data/UserData/UserLibrary/Samples (or /data/CoreLibrary/Samples), sorted into role folders (Kick, Snare, Hats, ...)"
     }
   ]
 }
