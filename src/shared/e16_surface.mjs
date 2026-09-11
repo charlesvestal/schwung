@@ -892,6 +892,24 @@ export function createSurface(io) {
     let turnedAt = -Infinity;
     let settlePainted = true;
 
+    /*
+     * REFRESH METER state (test pattern 6).
+     *
+     * Counted HERE because the display is the only thing that knows when a
+     * send actually completed -- a refused send is not a paint, and counting
+     * invalidations instead would report a rate the device never achieved,
+     * which is the one answer this instrument must not give.
+     *
+     * The rate is a moving average rather than an instant reading: a single
+     * interval is dominated by whichever SPI frame the send happened to land
+     * on, so the raw number jitters by a factor of two while the underlying
+     * rate is steady, and a jittering number is one nobody can read off a
+     * moving screen.
+     */
+    let paints = 0;
+    let lastPaintAt = null;
+    let paintFps = null;
+
     /* The LABELS screen for this frame: sixteen four-character names plus the
      * title. Cheap enough to rebuild per tick (it is string work over a view
      * that is itself rebuilt per tick and costs no IPC), and rebuilding is what
@@ -1152,6 +1170,7 @@ export function createSurface(io) {
              * display, so that the display stays a pure pacing machine with no
              * opinion about what a map is.
              */
+            const probe = testPattern();
             /*
              * BOTH VIEWS ARE PICTURES, and that is a measured decision rather
              * than a default.
@@ -1169,16 +1188,38 @@ export function createSurface(io) {
              * because it is what keeps the device honest across a replug.
              */
             const screen = { kind: "framebuffer" };
-            display.tick(oneSend, () => {
+
+            /* The meter repaints CONTINUOUSLY -- that is the measurement. It
+             * owes a frame every tick, so the rate it reports is the fastest
+             * the wire and the pacing together can go, with no parameter read
+             * anywhere in it. */
+            if (probe === 6) display.invalidate();
+            const sent = display.tick(oneSend, () => {
                 /* A layout probe overrides the view. See drawTestPattern:
                  * "the screen is garbled" cannot tell a wrong bit direction
                  * from a wrong page order, and both look like noise. Armed by
                  * a file so it needs no rebuild to change pattern. */
-                const probe = testPattern();
-                if (probe >= 0) drawTestPattern(canvas, probe);
+                /* The HOISTED probe, not a second read: the file is checked
+                 * once a second, so two reads in one tick can straddle an
+                 * arming and paint a pattern the mode decision did not choose. */
+                if (probe >= 0) drawTestPattern(canvas, probe, { paints, fps: paintFps });
                 else nav.render(canvas, t);
                 return canvas.toBuffer();
             }, screen);
+
+            /* A PAINT is a completed send, never an intent. */
+            if (sent === "framebuffer" || sent === "labels") {
+                paints++;
+                if (lastPaintAt !== null) {
+                    const dt = t - lastPaintAt;
+                    if (dt > 0) {
+                        const inst = 1000 / dt;
+                        paintFps = paintFps === null
+                            ? inst : paintFps + (inst - paintFps) * 0.2;
+                    }
+                }
+                lastPaintAt = t;
+            }
         },
 
         /* Read-only views, for the host's settings rows and for tests. */

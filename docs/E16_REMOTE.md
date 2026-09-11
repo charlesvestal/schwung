@@ -148,3 +148,42 @@ separators and takes the first four (`Osc Level` → `OSCL`, `Cutoff` → `CUTO`
 Initials were tried first and spend the budget badly — `Osc Level` → `OL` uses
 two of four columns, and neither rule avoids collisions, so the simpler one
 wins and the title disambiguates whatever is under the hand.
+
+## Measuring it: pace and the refresh meter
+
+Two switches, both file-armed, both off by default.
+
+**Pace** — `/data/UserData/schwung/e16_pace`, outbound packets per SPI frame.
+Read by shadow_ui once a second and published on the control block; the drain
+consults it on the callback. A 394-packet framebuffer takes `ceil(394 / pace)`
+frames at 2.90 ms each:
+
+| pace | full repaint |
+|---|---|
+| 3 | 383 ms |
+| 6 | 192 ms |
+| 8 | 144 ms |
+| 12 | 96 ms |
+| 16 | 72 ms |
+
+3 was never measured — it was the first value that stopped the garbling after
+sending a framebuffer all at once failed. Walk up until the screen tears, then
+back off one.
+
+**Refresh meter** — `echo 6 > /data/UserData/schwung/e16_testpattern`. It
+repaints continuously and draws a stepping column, a per-paint flicker block,
+and `PAINTS` / `FPS` / `MS`.
+
+**It exists because a slow SCREEN and slow VALUES are different subsystems and
+look identical from outside.** A repaint is 394 paced packets. A value is an
+IPC read at ~2.8 ms, served on the controller's rotation of roughly one key per
+tick, so a full pass over sixteen cells takes far longer than a repaint — and
+on top of that the settle waits for the hand to stop. Watching parameter
+numbers move measures the sum of all three. Changing SLOTS is a repaint with no
+value rotation in front of it, which is why that already felt quick while the
+numbers felt slow.
+
+Nothing on the meter comes from a parameter, so what it reports is the repaint
+rate alone. It counts COMPLETED sends, never intents: a refused send is not a
+paint, and a meter that climbed while the wire refused would be worse than no
+meter.
