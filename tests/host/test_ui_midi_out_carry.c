@@ -291,6 +291,13 @@ static void test_quiet_start_gives_up_rather_than_starving(void)
           "ALTOGETHER -- the defer is capped and we go anyway");
 }
 
+/*
+ * The retry is OFF by default (UI_MIDI_CARRY_MSG_RETRIES == 0) because at this
+ * link's collision rate it made the garbling WORSE -- see the constant. These
+ * two tests drive the machinery at a non-zero cap so it stays correct for
+ * whoever turns it on, and are skipped when the cap is 0 rather than deleted.
+ */
+#if UI_MIDI_CARRY_MSG_RETRIES > 0
 static void test_collided_run_is_requeued_whole(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
@@ -331,6 +338,9 @@ static void test_collided_run_is_requeued_whole(void)
           "the re-queued copy is byte-for-byte the original run");
 }
 
+#endif /* UI_MIDI_CARRY_MSG_RETRIES > 0 */
+
+/* Valid at ANY cap, including 0: a clean run is never resent. */
 static void test_clean_run_is_not_requeued(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
@@ -351,6 +361,7 @@ static void test_clean_run_is_not_requeued(void)
     CHECK(c.len == 0, "and the carry is empty afterwards");
 }
 
+#if UI_MIDI_CARRY_MSG_RETRIES > 0
 static void test_retry_is_capped(void)
 {
     ui_midi_carry_t c; ui_midi_carry_reset(&c);
@@ -376,6 +387,39 @@ static void test_retry_is_capped(void)
           "A RETRY MUST NEVER COST A DROP -- repairing a garble by dropping a "
           "packet is the identical fault one buffer along");
 }
+#endif /* UI_MIDI_CARRY_MSG_RETRIES > 0 */
+
+/*
+ * THE DEFAULT MUST BE OFF, and this is the pin that says so.
+ *
+ * Turning the retry back on without measuring the collision rate again is the
+ * mistake that produced "now even worse"; the constant carries the reasoning
+ * and this fails if somebody flips it without reading it.
+ */
+static void test_retry_is_off_by_default(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[24], pkts[64];
+    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 24, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* Collide every single frame. */
+    for (int f = 0; f < 60 && c.len > 0; f++) {
+        uint8_t region[REGION] = {0};
+        put_foreign(region, 19);
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+
+    CHECK(UI_MIDI_CARRY_MSG_RETRIES == 0,
+          "the retry ships OFF -- it AMPLIFIES at this link's collision rate, "
+          "and at idle the heartbeat is the only traffic there is, so tripling "
+          "it triples the corrupt messages reaching the screen");
+    CHECK(ui_midi_carry_retry_count() == before,
+          "with the cap at 0 a collided run is never re-queued");
+}
 
 int main(void)
 {
@@ -388,9 +432,12 @@ int main(void)
     test_backpressure_threshold();
     test_quiet_start_defers_into_a_dirty_mailbox();
     test_quiet_start_gives_up_rather_than_starving();
+#if UI_MIDI_CARRY_MSG_RETRIES > 0
     test_collided_run_is_requeued_whole();
-    test_clean_run_is_not_requeued();
     test_retry_is_capped();
+#endif
+    test_clean_run_is_not_requeued();
+    test_retry_is_off_by_default();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");

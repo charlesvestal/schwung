@@ -1546,6 +1546,8 @@ volatile int shim_ui_midi_out_drops = 0;
 volatile int shim_ui_midi_out_placed = 0;
 volatile int shim_ui_midi_out_stranded = 0;
 volatile int shim_ui_midi_out_foreign = 0;
+volatile int shim_ui_midi_out_retries = 0;
+volatile int shim_ui_midi_out_unretryable = 0;
 
 /* Audio-thread producer for an overtake DSP (host_api midi_send_external). */
 static int overtake_midi_send_external(const uint8_t *msg, int len) {

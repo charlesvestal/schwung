@@ -180,16 +180,30 @@ static inline int ui_midi_carry_get_pace(void) { return ui_midi_carry_pace; }
  */
 #define UI_MIDI_CARRY_MSG_BYTES   2048
 /*
- * How many times one message may be re-queued.
+ * How many times one message may be re-queued. DEFAULT ZERO -- OFF.
  *
- * Not unbounded, and the reason is amplification: under continuous playing
- * every attempt can collide, and a message that re-queues itself forever turns
- * a display glitch into a wire full of retries that starves the next real
- * update. Two attempts take the ~15% single-attempt collision rate measured on
- * 2026-09-11 down to well under 1%, which is past the point where anyone sees
- * it.
+ * IT WAS 2, AND IT MADE THE GARBLING WORSE. Measured on hardware 2026-09-11:
+ * "still get garbles with move playing, now even worse, with no knobs turning".
+ *
+ * The reasoning that produced 2 assumed a ~15% collision rate, inferred from
+ * one spin in run B. The idle data from run C was already on the table and
+ * said otherwise -- foreign traffic in 39% of windows at the LOWEST duty cycle
+ * we ever run at -- and with notes flowing continuously it is higher still.
+ *
+ * A retry does not remove the failure; the corrupt copy has already gone out.
+ * It only adds a second chance, so its value falls with the success rate while
+ * its cost -- more of our packets on the wire, and therefore more collisions --
+ * rises. Past some rate it is strictly negative, and this link is past it. At
+ * idle it is worse than anywhere else, because the 1.5 s heartbeat is the ONLY
+ * traffic there is: tripling it triples the corrupt messages reaching a screen
+ * that would otherwise have sat there correct.
+ *
+ * Kept, at zero, rather than deleted: the machinery is measured and tested, and
+ * the retry is the right answer on a quieter link (a device on its own port
+ * with nothing else on that cable). Raising this is an experiment somebody can
+ * run, not a default anybody should ship.
  */
-#define UI_MIDI_CARRY_MSG_RETRIES 2
+#define UI_MIDI_CARRY_MSG_RETRIES 0
 /*
  * How many consecutive frames a message may be held back waiting for a mailbox
  * with no foreign traffic in it.

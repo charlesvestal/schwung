@@ -86,6 +86,8 @@ extern volatile int shim_ui_midi_out_drops;
 extern volatile int shim_ui_midi_out_placed;
 extern volatile int shim_ui_midi_out_stranded;
 extern volatile int shim_ui_midi_out_foreign;
+extern volatile int shim_ui_midi_out_retries;
+extern volatile int shim_ui_midi_out_unretryable;
 
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),
  * -1 until observed. Worker persists it on change and re-asserts it at boot —

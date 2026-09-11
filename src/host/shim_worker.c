@@ -697,6 +697,40 @@ static void ui_midi_out_stranded_tick(void)
     LOG_DEBUG("shim", msg);
 }
 
+/*
+ * Messages re-sent because Move's own notes were spliced into them.
+ *
+ * THE POSITIVE CONTROL FOR THE FIX, and the reason it is a number rather than
+ * an inference from the screen: "it stopped garbling" is equally consistent
+ * with the retry working and with the retry never firing while something else
+ * changed. A count tells those apart; eyes do not -- and this feature has
+ * already lost two days to a capture that read clean while measuring nothing.
+ *
+ * `unretryable` is a message too long for the retry buffer. Counted rather
+ * than skipped, because a repair that quietly does not happen looks exactly
+ * like one that happened and collided again.
+ */
+static void ui_midi_out_retry_tick(void)
+{
+    static int last_total = 0;
+    static int last_unret = 0;
+    int total = shim_ui_midi_out_retries;
+    int unret = shim_ui_midi_out_unretryable;
+    int delta = total - last_total;
+    int udelta = unret - last_unret;
+    if (delta <= 0 && udelta <= 0) { last_total = total; last_unret = unret; return; }
+    last_total = total;
+    last_unret = unret;
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d message(s) RESENT this window (%d total) after "
+             "Move's own notes were spliced into them; %d too long to resend "
+             "(%d total)",
+             delta, total, udelta, unret);
+    LOG_DEBUG("shim", msg);
+}
+
 static void ui_midi_out_foreign_tick(void)
 {
     static int last_total = 0;
@@ -902,6 +936,7 @@ static void *worker_main(void *arg) {
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
     ui_midi_out_foreign_tick();
+    ui_midi_out_retry_tick();
     ui_midi_out_stranded_tick();
     ui_midi_out_volume_tick();
             param_slow_tick();        /* always on; silent unless one overran */
