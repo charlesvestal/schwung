@@ -2149,6 +2149,18 @@
       "default_branch": "main",
       "asset_name": "sophie-module.tar.gz",
       "min_host_version": "1.0.0"
+    },
+    {
+      "id": "bouba-kiki",
+      "name": "Bouba-Kiki",
+      "description": "Contour synth: six geometric controls deform a shape, and the shape is the wave. Six voices, amp ADSR, six presets",
+      "author": "charlesvestal",
+      "component_type": "sound_generator",
+      "subcategory": "fm",
+      "github_repo": "charlesvestal/schwung-bouba-kiki",
+      "default_branch": "main",
+      "asset_name": "bouba-kiki-module.tar.gz",
+      "min_host_version": "1.2.1"
     }
   ]
 }
