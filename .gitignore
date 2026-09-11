@@ -55,3 +55,7 @@ out/
 *.rx2
 *.rex
 tools/param-pages/assets.local.json
+
+# probe build output
+/build/probe
+/build/audio/
