@@ -72,13 +72,38 @@ type CatalogModule struct {
 }
 
 // CatalogHost describes the host entry in the catalog.
+//
+// Channels is the optional beta/stable extension for the host itself
+// (see module_channel.go). Old catalogs that only set the top-level
+// LatestVersion/DownloadURL still resolve as stable — the field is
+// strictly additive.
 type CatalogHost struct {
-	Name           string `json:"name"`
-	GithubRepo     string `json:"github_repo"`
-	AssetName      string `json:"asset_name"`
-	LatestVersion  string `json:"latest_version"`
-	DownloadURL    string `json:"download_url"`
-	MinHostVersion string `json:"min_host_version"`
+	Name           string      `json:"name"`
+	GithubRepo     string      `json:"github_repo"`
+	AssetName      string      `json:"asset_name"`
+	LatestVersion  string      `json:"latest_version"`
+	DownloadURL    string      `json:"download_url"`
+	MinHostVersion string      `json:"min_host_version"`
+	Channels       *ChannelSet `json:"channels,omitempty"`
+}
+
+// hostResolveForChannel picks the host version + download URL for a
+// given channel. Same rules as resolveReleaseForChannel: stable users
+// see channels.stable (fallback to top-level), beta users see
+// channels.beta only when it is strictly newer than stable. Returns
+// which channel actually served the request so the UI can badge the
+// upgrade button when the offered build is a beta.
+func hostResolveForChannel(h CatalogHost, want string) (version, downloadURL, served string) {
+	// Reuse the module resolver by projecting the CatalogHost onto a
+	// ReleaseJSON. This keeps the two channel rules literally the same
+	// code path, so host and modules cannot drift.
+	rel := ReleaseJSON{
+		Version:     h.LatestVersion,
+		DownloadURL: h.DownloadURL,
+		Channels:    h.Channels,
+	}
+	entry, servedCh := resolveReleaseForChannel(rel, want)
+	return entry.Version, entry.DownloadURL, servedCh
 }
 
 // CatalogTaxonomy is the vocabulary, embedded in the catalog so a single fetch
@@ -329,10 +354,32 @@ func (s *FileService) ListDir(dir string) ([]FileEntry, error) {
 }
 
 // ReleaseMeta holds release dates for a module.
+//
+// Channels is the optional per-channel version snapshot the catalog-site
+// generator produces so the Store UI can show what's on each channel
+// WITHOUT round-tripping each module's release.json at page-render time.
+// Old metadata files without a channels field still work — the UI
+// treats Version as the stable version and skips the beta hints.
 type ReleaseMeta struct {
-	FirstRelease string `json:"first_release"`
-	LastUpdated  string `json:"last_updated"`
-	Version      string `json:"version"`
+	FirstRelease string      `json:"first_release"`
+	LastUpdated  string      `json:"last_updated"`
+	Version      string      `json:"version"`
+	Channels     *ChannelSet `json:"channels,omitempty"`
+	// Releases is every release the generator could see, oldest first,
+	// each with a FULL published_at timestamp. It is what lets update
+	// detection order two versions by when they were published rather
+	// than by parsing their names. Absent on metadata written before
+	// that landed (including a stale copy in manager-cache/), which is
+	// why every reader falls back to the version compare.
+	Releases []ReleaseRef `json:"releases,omitempty"`
+}
+
+// ReleaseRef is one published release: the tag, when it went out, and
+// whether its author marked it a prerelease.
+type ReleaseRef struct {
+	Tag         string `json:"tag"`
+	PublishedAt string `json:"published_at"`
+	Prerelease  bool   `json:"prerelease"`
 }
 
 // CatalogService fetches and caches the remote module catalog.
@@ -341,7 +388,9 @@ type ReleaseMeta struct {
 // The disk cache lets the manager render — and let users remove/repair
 // installed modules — when the network is down or GitHub Pages is flaky.
 type CatalogService struct {
-	URL         string
+	URL     string
+	MetaURL string // release-metadata.json; overridable so the update
+	//        // logic can be exercised against a fixture
 	CacheDir    string // root directory for persisted cache files
 	catalog     *Catalog
 	releaseMeta map[string]ReleaseMeta
@@ -349,11 +398,18 @@ type CatalogService struct {
 	client      *http.Client
 }
 
-const releaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
+// defaultReleaseMetaURL is where the catalog site publishes the release
+// snapshot. It is a var behind a flag rather than a const because update
+// detection now reads publish DATES out of this file, and a hardcoded
+// production URL makes that logic impossible to exercise end to end
+// without touching live data. Mirrors -catalog-url, which exists for
+// the same reason.
+const defaultReleaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
 
-func NewCatalogService(url, cacheDir string) *CatalogService {
+func NewCatalogService(url, metaURL, cacheDir string) *CatalogService {
 	cs := &CatalogService{
 		URL:      url,
+		MetaURL:  metaURL,
 		CacheDir: cacheDir,
 		client:   &http.Client{Timeout: 15 * time.Second},
 	}
@@ -433,7 +489,11 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	cs.saveToDisk(cs.catalogCachePath(), &cat)
 
 	// Fetch release metadata (best-effort, don't fail if unavailable).
-	if metaResp, err := cs.client.Get(releaseMetaURL); err == nil {
+	metaURL := cs.MetaURL
+	if metaURL == "" {
+		metaURL = defaultReleaseMetaURL
+	}
+	if metaResp, err := cs.client.Get(metaURL); err == nil {
 		defer metaResp.Body.Close()
 		if metaResp.StatusCode == http.StatusOK {
 			var meta map[string]ReleaseMeta
@@ -645,16 +705,61 @@ var funcMap = template.FuncMap{
 		}
 		return template.HTML(sb.String())
 	},
-	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta) bool {
+	"hasUpdate": func(id string, installed map[string]InstalledModule, meta map[string]ReleaseMeta, channel string) bool {
 		inst, ok := installed[id]
 		if !ok {
 			return false
 		}
-		rm, ok := meta[id]
-		if !ok || rm.Version == "" {
+		rm := meta[id]
+		v := channelVersion(rm, channel)
+		if v == "" {
 			return false // Can't tell — don't show update button
 		}
-		return isNewerSemver(rm.Version, inst.Version)
+		return updateAvailable(rm, v, inst.Version)
+	},
+	// channelVersion returns the version string of the release the
+	// user's current channel would install. Empty when metadata has
+	// nothing to say about this module.
+	"channelVersion": func(rm ReleaseMeta, channel string) string {
+		return channelVersion(rm, channel)
+	},
+	// channelIsBeta reports whether the version channelVersion would
+	// return comes from the beta channel (rather than falling back to
+	// stable). Used to tag versions in the UI.
+	"channelIsBeta": func(rm ReleaseMeta, channel string) bool {
+		if channel != ChannelBeta || rm.Channels == nil || rm.Channels.Beta == nil {
+			return false
+		}
+		beta := rm.Channels.Beta.Version
+		stable := channelStableVersion(rm)
+		return beta != "" && versionNewer(beta, stable)
+	},
+	// installedIsBeta reports whether the version currently INSTALLED
+	// was published as a prerelease, so the installed list can say
+	// "you are running a beta build" — a fact that otherwise appears
+	// nowhere on the page.
+	"installedIsBeta": func(rm ReleaseMeta, version string) bool {
+		return installedIsPrerelease(rm, version)
+	},
+	// betaTeaser returns the beta version string when the user is on
+	// stable, the module publishes a beta, and that beta is newer than
+	// what stable would offer. Empty otherwise. Callers use this to
+	// nudge users toward opting in without popping a modal.
+	"betaTeaser": func(rm ReleaseMeta, channel string) string {
+		if channel == ChannelBeta {
+			return ""
+		}
+		if rm.Channels == nil || rm.Channels.Beta == nil {
+			return ""
+		}
+		beta := rm.Channels.Beta.Version
+		if beta == "" {
+			return ""
+		}
+		if !versionNewer(beta, channelStableVersion(rm)) {
+			return ""
+		}
+		return beta
 	},
 	"humanSize": func(b int64) string {
 		const unit = 1024
@@ -860,6 +965,7 @@ type App struct {
 	tmpl          templateMap
 	fileSvc       *FileService
 	catalogSvc    *CatalogService
+	channelPref   *ChannelPref
 	basePath      string // e.g. /data/UserData/schwung
 	logger        *slog.Logger
 	shm           *ShmConfig    // shared memory for live config sync (nil if not on device)
@@ -872,6 +978,15 @@ type App struct {
 	upgradeStatus string        // current upgrade step (empty = not upgrading)
 	downloadJobs  map[string]*downloadJob
 	downloadMu    sync.Mutex
+}
+
+// channel returns the manager's current channel preference, safe on a
+// nil pref (returns stable).
+func (app *App) channel() string {
+	if app == nil {
+		return ChannelStable
+	}
+	return app.channelPref.Channel()
 }
 
 func (app *App) render(w http.ResponseWriter, r *http.Request, name string, data map[string]any) {
@@ -993,14 +1108,18 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 
 	releaseMeta := app.catalogSvc.GetReleaseMeta()
 
-	// Check if any installed module has an update available.
+	// Check if any installed module has an update available. Uses the
+	// channel-resolved version so a beta user's "update all" button
+	// doesn't stay dark when the only update is a beta.
+	currentChannel := app.channel()
 	hasAnyUpdate := false
 	for id, inst := range installed {
-		rm, ok := releaseMeta[id]
-		if !ok || rm.Version == "" {
+		rm := releaseMeta[id]
+		v := channelVersion(rm, currentChannel)
+		if v == "" {
 			continue
 		}
-		if isNewerSemver(rm.Version, inst.Version) {
+		if updateAvailable(rm, v, inst.Version) {
 			hasAnyUpdate = true
 			break
 		}
@@ -1013,12 +1132,25 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 	if hostVersion == "" {
 		hostVersion = "unknown"
 	}
-	var hostLatestVersion, hostRepo string
-	var hostUpdateAvailable bool
+	var hostLatestVersion, hostRepo, hostServedChannel, hostBetaTeaser string
+	var hostUpdateAvailable, hostOfferedIsBeta bool
 	if cat != nil {
-		hostLatestVersion = cat.Host.LatestVersion
 		hostRepo = cat.Host.GithubRepo
+		hostLatestVersion, _, hostServedChannel = hostResolveForChannel(cat.Host, currentChannel)
 		hostUpdateAvailable = hostLatestVersion != "" && hostLatestVersion != hostVersion
+		hostOfferedIsBeta = hostServedChannel == ChannelBeta
+		// Stable users get the same "beta X.Y.Z available" nudge that
+		// modules do, when the host publishes a beta ahead of stable.
+		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+			beta := cat.Host.Channels.Beta.Version
+			stable := cat.Host.LatestVersion
+			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
+				stable = cat.Host.Channels.Stable.Version
+			}
+			if beta != "" && versionNewer(beta, stable) {
+				hostBetaTeaser = beta
+			}
+		}
 	}
 
 	// A nil catalog (offline, or first boot before the first fetch) yields the
@@ -1037,14 +1169,32 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"HasInstalled":        len(installed) > 0,
 		"HasAnyUpdate":        hasAnyUpdate,
 		"ReleaseMeta":         releaseMeta,
+		"Channel":             currentChannel,
 		"Active":              "modules",
 		"HostVersion":         hostVersion,
 		"HostLatestVersion":   hostLatestVersion,
 		"HostRepo":            hostRepo,
 		"HostUpdateAvailable": hostUpdateAvailable,
+		"HostOfferedIsBeta":   hostOfferedIsBeta,
+		"HostBetaTeaser":      hostBetaTeaser,
 		"Flash":               r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "modules.html", data)
+}
+
+// handleModulesChannelSet updates the manager-global module channel
+// preference. Redirects back to /modules on success so the change is
+// reflected in the page render — the toggle is not htmx-driven because
+// every update/install button on the page depends on the channel and
+// re-rendering the whole list is cleaner than dozens of partial swaps.
+func (app *App) handleModulesChannelSet(w http.ResponseWriter, r *http.Request) {
+	value := r.FormValue("channel")
+	if !app.channelPref.SetChannel(value) {
+		http.Redirect(w, r, "/modules?flash=Unknown+channel", http.StatusSeeOther)
+		return
+	}
+	app.logger.Info("module channel changed", "channel", app.channel())
+	http.Redirect(w, r, "/modules?flash=Channel+set+to+"+app.channel(), http.StatusSeeOther)
 }
 
 // findModuleDir locates the installed directory for a module by ID.
@@ -1185,6 +1335,7 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		"AssetGroups":    assetGroups,
 		"BuiltIn":        builtIn,
 		"ReleaseMeta":    app.catalogSvc.GetReleaseMeta(),
+		"Channel":        app.channel(),
 		"Active":         "modules",
 		"ModuleSchema":   moduleSchema,
 		"SettingValues":  settingValues,
@@ -1217,9 +1368,15 @@ func getInstallSubdir(componentType string) string {
 }
 
 // ReleaseJSON is the structure of a module's release.json file.
+//
+// The Channels field is the beta/stable extension (see module_channel.go).
+// Old release.json files (Version+DownloadURL only) still parse and are
+// treated as a stable release by resolveReleaseForChannel — the channel
+// feature is strictly additive.
 type ReleaseJSON struct {
 	Version     string                 `json:"version"`
 	DownloadURL string                 `json:"download_url"`
+	Channels    *ChannelSet            `json:"channels,omitempty"`
 	Modules     map[string]ReleaseJSON `json:"modules,omitempty"`
 }
 
@@ -1251,7 +1408,11 @@ func (app *App) resolveDownloadURL(repo, branch, id, assetName string) (url, ver
 			var rel ReleaseJSON
 			if err := json.NewDecoder(resp.Body).Decode(&rel); err == nil {
 				if r, ok := rel.forModule(id); ok {
-					url, version = r.DownloadURL, r.Version
+					entry, served := resolveReleaseForChannel(r, app.channel())
+					url, version = entry.DownloadURL, entry.Version
+					app.logger.Info("release.json resolved", "id", id,
+						"requested_channel", app.channel(),
+						"served_channel", served, "version", version)
 				} else {
 					app.logger.Warn("id missing from multi-module release.json; using fallback URL", "id", id)
 				}
@@ -1958,17 +2119,35 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	installed := discoverInstalledModules(app.basePath)
+	releaseMeta := app.catalogSvc.GetReleaseMeta()
+	channel := app.channel()
 	type apiModule struct {
 		CatalogModule
 		Installed        bool   `json:"installed"`
 		InstalledVersion string `json:"installed_version,omitempty"`
+		Channel          string `json:"channel"`
+		OfferedVersion   string `json:"offered_version,omitempty"`
+		OfferedIsBeta    bool   `json:"offered_is_beta,omitempty"`
+		BetaAvailable    string `json:"beta_available,omitempty"`
 	}
 	var result []apiModule
 	for _, m := range cat.Modules {
-		am := apiModule{CatalogModule: m}
+		am := apiModule{CatalogModule: m, Channel: channel}
 		if inst, ok := installed[m.ID]; ok {
 			am.Installed = true
 			am.InstalledVersion = inst.Version
+		}
+		rm := releaseMeta[m.ID]
+		am.OfferedVersion = channelVersion(rm, channel)
+		if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
+			b := rm.Channels.Beta.Version
+			am.OfferedIsBeta = b != "" && versionNewer(b, channelStableVersion(rm))
+		}
+		if channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
+			b := rm.Channels.Beta.Version
+			if b != "" && versionNewer(b, channelStableVersion(rm)) {
+				am.BetaAvailable = b
+			}
 		}
 		result = append(result, am)
 	}
@@ -2754,14 +2933,29 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		version = strings.TrimSpace(string(verBytes))
 	}
 
-	// Best-effort catalog fetch for update check.
-	var latestVersion, hostRepo string
-	var updateAvailable bool
+	// Best-effort catalog fetch for update check. Route through the
+	// channel resolver so beta users see the newest beta build (and
+	// their Upgrade button installs it).
+	var latestVersion, hostRepo, hostBetaTeaser string
+	var updateAvailable, offeredIsBeta bool
+	currentChannel := app.channel()
 	cat, err := app.catalogSvc.Fetch()
 	if err == nil && cat != nil {
-		latestVersion = cat.Host.LatestVersion
 		hostRepo = cat.Host.GithubRepo
+		var served string
+		latestVersion, _, served = hostResolveForChannel(cat.Host, currentChannel)
 		updateAvailable = latestVersion != "" && latestVersion != version
+		offeredIsBeta = served == ChannelBeta
+		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
+			beta := cat.Host.Channels.Beta.Version
+			stable := cat.Host.LatestVersion
+			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
+				stable = cat.Host.Channels.Stable.Version
+			}
+			if beta != "" && versionNewer(beta, stable) {
+				hostBetaTeaser = beta
+			}
+		}
 	}
 
 	// Disk usage via stat (simplified).
@@ -2778,6 +2972,9 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		"LatestVersion":   latestVersion,
 		"HostRepo":        hostRepo,
 		"UpdateAvailable": updateAvailable,
+		"OfferedIsBeta":   offeredIsBeta,
+		"BetaTeaser":      hostBetaTeaser,
+		"Channel":         currentChannel,
 		"DiskTotal":       int64(diskTotal),
 		"DiskFree":        int64(diskFree),
 		"DiskUsed":        int64(diskTotal - diskFree),
@@ -2875,7 +3072,12 @@ func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) 
 		http.Redirect(w, r, "/system?flash=Failed+to+check:+"+err.Error(), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/system?flash=Latest+version:+"+cat.Host.LatestVersion, http.StatusSeeOther)
+	version, _, served := hostResolveForChannel(cat.Host, app.channel())
+	msg := "Latest+version:+" + version
+	if served == ChannelBeta {
+		msg += "+(beta)"
+	}
+	http.Redirect(w, r, "/system?flash="+msg, http.StatusSeeOther)
 }
 
 func (app *App) setUpgradeStatus(status string) {
@@ -2905,11 +3107,17 @@ func (app *App) handleSystemUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Compare versions.
+	// 2. Compare versions. Route through the channel resolver so a
+	// beta user's Upgrade button installs the beta build, not the
+	// stable one, and quietly falls back onto stable once stable
+	// catches up.
 	verBytes, _ := os.ReadFile(filepath.Join(app.basePath, "host", "version.txt"))
 	installedVersion := strings.TrimSpace(string(verBytes))
-	latestVersion := cat.Host.LatestVersion
-	downloadURL := cat.Host.DownloadURL
+	latestVersion, downloadURL, servedChannel := hostResolveForChannel(cat.Host, app.channel())
+	app.logger.Info("host upgrade resolved",
+		"requested_channel", app.channel(),
+		"served_channel", servedChannel,
+		"version", latestVersion)
 
 	if latestVersion != "" && latestVersion == installedVersion {
 		http.Redirect(w, r, "/system?flash=Already+up+to+date+("+installedVersion+")", http.StatusSeeOther)
@@ -3715,6 +3923,9 @@ func main() {
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
+	releaseMetaURL := flag.String("release-meta-url", "",
+		"Override the release-metadata.json URL (default: the catalog site). "+
+			"Lets update detection be exercised against a fixture.")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
 	// Deprecated flags — accepted but ignored for backwards compatibility with old entrypoints.
 	flag.String("move-backend", "", "(deprecated, ignored)")
@@ -3769,7 +3980,8 @@ func main() {
 	app := &App{
 		tmpl:         tmpl,
 		fileSvc:      &FileService{AllowedRoots: allowedRoots},
-		catalogSvc:   NewCatalogService(*catalogURL, basePath),
+		catalogSvc:   NewCatalogService(*catalogURL, *releaseMetaURL, basePath),
+		channelPref:  NewChannelPref(basePath),
 		basePath:     basePath,
 		logger:       logger,
 		shm:          shm,
@@ -3814,6 +4026,7 @@ func main() {
 	mux.HandleFunc("POST /modules/update-all", app.handleModuleUpdateAll)
 	mux.HandleFunc("POST /modules/install-all", app.handleModuleInstallAll)
 	mux.HandleFunc("POST /modules/install-custom", app.handleCustomInstall)
+	mux.HandleFunc("POST /modules/channel", app.handleModulesChannelSet)
 
 	// Module assets.
 	mux.HandleFunc("GET /modules/{id}/assets", app.handleModuleAssets)
