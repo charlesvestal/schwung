@@ -136,7 +136,26 @@ _Static_assert(UI_MIDI_CARRY_BYTES == SHADOW_MIDI_OUT_BUFFER_SIZE,
  * restore the unpaced behaviour that lost packets in the first place.
  */
 #define UI_MIDI_CARRY_PACE_MIN 1
-#define UI_MIDI_CARRY_PACE_MAX 64
+
+/*
+ * THE MAILBOX IS SHARED, SO WE MAY NOT TAKE ALL OF IT.
+ *
+ * MIDI_OUT is 20 slots per SPI frame and Move's own output and the LED flush
+ * write into it too (see the drain's "free means all four bytes zero"). A pace
+ * of 20 therefore fills every slot on every frame we have anything to send,
+ * leaving Move's firmware nowhere to put its own MIDI -- measured on hardware
+ * 2026-09-11 as "pace 20 has frozen the device", which needed a restart.
+ *
+ * 12 leaves 8 slots. It is not a tuning preference: it is the reserve that
+ * keeps a SHARED region shared, and the ceiling was 64 only because the field
+ * was sized before anyone asked what the region could actually give away.
+ *
+ * A framebuffer at 12 is 33 frames, 96 ms -- close enough to the 58 ms that
+ * pace 20 would buy that the difference is not worth a device that stops
+ * responding.
+ */
+#define UI_MIDI_CARRY_PACE_RESERVE 8
+#define UI_MIDI_CARRY_PACE_MAX 12
 
 static int ui_midi_carry_pace = UI_MIDI_CARRY_PACKETS_PER_FRAME;
 
