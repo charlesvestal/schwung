@@ -1538,6 +1538,52 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
         return JS_FALSE;
     }
 
+    /*
+     * ALL OR NOTHING, and this is the whole difference between a message that
+     * is late and a message that is CORRUPT.
+     *
+     * The guard above already refuses a message larger than the entire buffer,
+     * with the right words on it -- "refusing rather than truncating". It only
+     * ever covered the whole buffer, though, and the loop below then did the
+     * very thing that guard exists to prevent whenever the message was merely
+     * larger than the REMAINING ROOM: it wrote packets one at a time until the
+     * buffer filled and counted the rest as dropped.
+     *
+     * For an LED flush that costs a few LEDs. For a SysEx it is fatal in a way
+     * that is invisible here: a USB-MIDI SysEx is a RUN of packets the device
+     * assembles into one message, so a prefix landing and a tail vanishing is
+     * a truncated message, and the receiver draws whatever the fragment
+     * decodes to. Measured on the device at 07:42 UTC on 2026-09-11 -- among
+     * whole-frame refusals of 394 packets sat "dropped 158" and "dropped 3",
+     * which are the partial ones, and they line up exactly with a screen that
+     * "sometimes garbles and then comes back".
+     *
+     * This is why the fault survived every pacing change and got WORSE at
+     * pace 1: a slower drain means less room, which means more refusals land
+     * mid-message rather than at a message boundary. It was read as a rate
+     * problem for most of this feature's life. It is not one.
+     *
+     * Refusing the whole message returns false, which callers already treat as
+     * "still owed" and retry -- the same contract the oversize guard uses.
+     */
+    {
+        int room = SHADOW_MIDI_OUT_BUFFER_SIZE - shadow_midi_out->write_idx;
+        if (len > room) {
+            shadow_midi_out_drops += len / 4;
+            time_t now = time(NULL);
+            static time_t last_partial_report = 0;
+            if (now != last_partial_report) {
+                last_partial_report = now;
+                unified_log("shadow_ui", LOG_LEVEL_DEBUG,
+                            "shadow MIDI out: refusing a %d-byte message with "
+                            "%d bytes free (%d total dropped) -- a partial "
+                            "write would truncate it on the wire",
+                            len, room, shadow_midi_out_drops);
+            }
+            return JS_FALSE;
+        }
+    }
+
     /* Process 4 bytes at a time (USB-MIDI packet format) */
     int dropped = 0;
     for (int i = 0; i < len; i += 4) {
