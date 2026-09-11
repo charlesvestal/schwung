@@ -270,6 +270,23 @@ static int ui_midi_carry_foreign = 0;
  */
 #define UI_MIDI_CARRY_TRACK 24
 
+/*
+ * PACKETS PLACED -- the positive control, and the reason the others mean
+ * anything.
+ *
+ * Every counter beside this one fires only on FAILURE, so a window of zeros
+ * cannot tell "nothing went wrong" from "nothing happened". That ambiguity
+ * wasted three measurements on 2026-09-11: a capture taken while nobody was
+ * turning a knob reads exactly like a clean run, and was very nearly reported
+ * as one.
+ *
+ * So count the successes too. A window with placements and no drops is
+ * evidence; a window with neither is an empty capture and says nothing.
+ */
+static int ui_midi_carry_placed_total = 0;
+
+static inline int ui_midi_carry_placed_count(void) { return ui_midi_carry_placed_total; }
+
 static int ui_midi_carry_stranded = 0;
 static int ui_midi_carry_last_n = 0;
 static int ui_midi_carry_last_slot[UI_MIDI_CARRY_TRACK];
@@ -321,6 +338,7 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
         if (slot + 4 > region_bytes) break;  /* full this frame — retry next */
 
         memcpy(&midi_out[slot], &c->buf[read], 4);
+        ui_midi_carry_placed_total++;
         if (ui_midi_carry_last_n < UI_MIDI_CARRY_TRACK) {
             const int q = ui_midi_carry_last_n++;
             ui_midi_carry_last_slot[q] = slot;
