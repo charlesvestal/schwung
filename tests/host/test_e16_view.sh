@@ -367,10 +367,12 @@ for (let i = 0; i < 40; i++) {
   if (got === "framebuffer") screenTicks++;
 }
 eq("a spin is mostly rings", ringTicks > screenTicks, true);
-eq("...but the numbers DO move during the turn -- strict priority froze them",
-   screenTicks > 0, true);
-eq("...without the repaint taking over the wire (" + screenTicks + " in 1 s)",
-   screenTicks <= 5, true);
+/* NO repaint during a continuous spin: the wire cannot carry both, and a
+ * framebuffer cutting in every 250 ms left the rings four updates a second
+ * where they had forty -- "jumpy where they were smooth before". */
+eq("the repaint never cuts into a spin (" + screenTicks + " in 1 s)",
+   screenTicks, 0);
+eq("...and it is still owed, not lost", d.framebufferOwed, true);
 
 /* And with the hand still, the owed repaint lands immediately. */
 d = createDisplay(); send = mkSend(); clock = 0;

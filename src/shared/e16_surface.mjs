@@ -396,10 +396,30 @@ export function createDisplay() {
                 }
                 return null;
             }
-            /* A repaint starved this long cuts ahead of the rings. Without
-             * this the digits are frozen for the whole duration of a turn. */
-            const starved = fbOwed && fbOwedAt !== null && nowMs !== undefined &&
-                            (nowMs - fbOwedAt) >= SCREEN_STARVE_MS;
+            /*
+             * A repaint NEVER cuts ahead of the rings.
+             *
+             * It did briefly, every SCREEN_STARVE_MS, so the printed numbers
+             * would move during a turn as well as after it. The wire cannot
+             * carry both: a framebuffer occupies it for ~144 ms at the usual
+             * pace, and rings need it every tick to look continuous, so
+             * letting the screen in every 250 ms left the rings about 25 ms in
+             * every 250 -- four updates a second where there had been forty.
+             * Reported from the device as the rings being "jumpy where they
+             * were smooth before", which is exactly what that arithmetic
+             * predicts.
+             *
+             * The ring is the feedback a hand is watching while it moves; the
+             * number is what you read when it stops. So rings win outright,
+             * and the repaint lands on the first tick with none pending --
+             * within a frame of the gesture ending, and without the 180 ms
+             * settle timer this replaced.
+             *
+             * The constant is kept, and kept unused, because the next person
+             * to want numbers during a spin should find the measurement rather
+             * than rediscover it.
+             */
+            const starved = false;
             if (starved) {
                 const bytes = want === "labels"
                     ? labelsMsg(screen.title, screen.labels)
