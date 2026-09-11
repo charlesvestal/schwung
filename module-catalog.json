@@ -6,7 +6,13 @@
     "asset_name": "schwung.tar.gz",
     "latest_version": "1.4.0",
     "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.4.0/schwung.tar.gz",
-    "min_host_version": "0.1.0"
+    "min_host_version": "0.1.0",
+    "channels": {
+      "stable": {
+        "version": "1.4.0",
+        "download_url": "https://github.com/charlesvestal/schwung/releases/download/v1.4.0/schwung.tar.gz"
+      }
+    }
   },
   "taxonomy": {
     "taxonomy_version": 1,
