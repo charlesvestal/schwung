@@ -689,9 +689,10 @@ static void ui_midi_out_stranded_tick(void)
 
     char msg[200];
     snprintf(msg, sizeof(msg),
-             "ui-midi-out: %d packet(s) STRANDED in the mailbox this window "
-             "(%d total) - we wrote them to a free slot and Move did not take "
-             "them; they never reached the wire",
+             "ui-midi-out: %d packet(s) would have REPEATED this window (%d "
+             "total) - still in the mailbox a frame later and cleared before "
+             "they could be transmitted twice; a repeat corrupts a SysEx as "
+             "badly as a drop",
              delta, total);
     LOG_DEBUG("shim", msg);
 }
