@@ -234,3 +234,24 @@ That is the case for driving the device with SHORT messages and letting it draw
 its own UI, which is what OXI's own Lua scripting API exists for. LABELS (34
 packets) is the same idea within remote mode, and was rejected only because
 four characters cannot hold a parameter name.
+
+## Decoding the firmware image (and the byte that ruins it)
+
+The `.syx` is an unencrypted STM32 image, which is how the Lua API surface was
+recovered when OXI published no reference for it. 163 messages, each
+`F0 | 00 21 5B 02 01 | 00 7E | 4098 nibbles | F7`, high nibble first.
+
+**Each block decodes to 2049 bytes and only 2048 of them are image: the last is
+a checksum.** Keeping it inserts a stray byte every 2048, and the failure is
+maddeningly partial — `strings` still works, because a one-byte shift leaves
+most strings intact, so the image looks fine and every conclusion drawn from it
+is worthless. Code does not survive it: the vector table is right (it is in the
+first block) while everything after decodes as noise, which reads as "this
+firmware must be compressed" rather than as a decoder bug.
+
+Sanity check before trusting any analysis: the image must be exactly
+163 x 2048 = 333,824 bytes, and `0x08030000 + 0x8a0` must disassemble as
+coherent Thumb-2 (`--triple=thumbv7em-none-eabi`, base `0x08030000`, from the
+reset vector `0x080308A1`).
+
+Capstone reads it; Xcode's `llvm-objdump` will not take a raw binary at all.
