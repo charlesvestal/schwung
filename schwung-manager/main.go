@@ -388,7 +388,9 @@ type ReleaseRef struct {
 // The disk cache lets the manager render — and let users remove/repair
 // installed modules — when the network is down or GitHub Pages is flaky.
 type CatalogService struct {
-	URL         string
+	URL     string
+	MetaURL string // release-metadata.json; overridable so the update
+	//        // logic can be exercised against a fixture
 	CacheDir    string // root directory for persisted cache files
 	catalog     *Catalog
 	releaseMeta map[string]ReleaseMeta
@@ -396,11 +398,18 @@ type CatalogService struct {
 	client      *http.Client
 }
 
-const releaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
+// defaultReleaseMetaURL is where the catalog site publishes the release
+// snapshot. It is a var behind a flag rather than a const because update
+// detection now reads publish DATES out of this file, and a hardcoded
+// production URL makes that logic impossible to exercise end to end
+// without touching live data. Mirrors -catalog-url, which exists for
+// the same reason.
+const defaultReleaseMetaURL = "https://charlesvestal.github.io/schwung-catalog-site/data/release-metadata.json"
 
-func NewCatalogService(url, cacheDir string) *CatalogService {
+func NewCatalogService(url, metaURL, cacheDir string) *CatalogService {
 	cs := &CatalogService{
 		URL:      url,
+		MetaURL:  metaURL,
 		CacheDir: cacheDir,
 		client:   &http.Client{Timeout: 15 * time.Second},
 	}
@@ -480,7 +489,11 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	cs.saveToDisk(cs.catalogCachePath(), &cat)
 
 	// Fetch release metadata (best-effort, don't fail if unavailable).
-	if metaResp, err := cs.client.Get(releaseMetaURL); err == nil {
+	metaURL := cs.MetaURL
+	if metaURL == "" {
+		metaURL = defaultReleaseMetaURL
+	}
+	if metaResp, err := cs.client.Get(metaURL); err == nil {
 		defer metaResp.Body.Close()
 		if metaResp.StatusCode == http.StatusOK {
 			var meta map[string]ReleaseMeta
@@ -3903,6 +3916,9 @@ func main() {
 	catalogURL := flag.String("catalog-url",
 		"https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json",
 		"URL for the module catalog JSON")
+	releaseMetaURL := flag.String("release-meta-url", "",
+		"Override the release-metadata.json URL (default: the catalog site). "+
+			"Lets update detection be exercised against a fixture.")
 	displayBackend := flag.String("display-backend", "127.0.0.1:7681", "Address of display server")
 	// Deprecated flags — accepted but ignored for backwards compatibility with old entrypoints.
 	flag.String("move-backend", "", "(deprecated, ignored)")
@@ -3957,7 +3973,7 @@ func main() {
 	app := &App{
 		tmpl:         tmpl,
 		fileSvc:      &FileService{AllowedRoots: allowedRoots},
-		catalogSvc:   NewCatalogService(*catalogURL, basePath),
+		catalogSvc:   NewCatalogService(*catalogURL, *releaseMetaURL, basePath),
 		channelPref:  NewChannelPref(basePath),
 		basePath:     basePath,
 		logger:       logger,
