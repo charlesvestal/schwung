@@ -79,80 +79,67 @@ if ! strip_comments < "$SHIM" \
     fail "the cable filter does not admit cable 2 under external_surface — the surface's encoders never reach the shadow UI"
 fi
 
-# --- 4. The non-overtake publish site is gated too -------------------------
-# The filter above is not the only thing standing between a stray cable and
-# this branch: it re-tests the flag itself so a later widening of that filter
-# for some other reason cannot make this `continue` swallow the cable whole.
-if ! strip_comments < "$SHIM" \
-    | grep -qE '^[[:space:]]*if \(!overtake_mode && cable == 0x02 && shadow_control->external_surface &&$'; then
-    fail "the non-overtake cable-2 publish is missing or ungated — the surface either never reaches JS, or swallows a cable it was not given"
+# --- 4. The claim lives in the UNCONDITIONAL walk, not the gated block ----
+# A surface we own is ours whether or not our screen is up. The first version
+# sat inside `if (shadow_display_mode ...)`, so stepping onto a Move track
+# stopped the whole block and nothing swallowed: the E16's Shift (note 16,
+# channel 1) played on slot 1 and its encoders sent CC 1, the mod wheel.
+# Measured on hardware 2026-09-11, twice -- the second time AFTER a swallow had
+# been added in the gated block, which is what identified the gate itself as
+# the fault.
+#
+# Pinned as a NEGATIVE plus a POSITIVE, because either alone is satisfiable by
+# the bug: the claim must not appear inside the display-gated block, and it
+# must appear before it.
+gate_line=$(grep -n "if (shadow_display_mode && shadow_control && hardware_mmap_addr)" "$SHIM" \
+            | head -1 | cut -d: -f1)
+claim_line=$(grep -n "e16_claims_msg(1, st, e_d1)" "$SHIM" | head -1 | cut -d: -f1)
+
+if [ -z "$claim_line" ]; then
+    fail "no claim site found -- the surface either takes the whole cable or none of it"
+elif [ -z "$gate_line" ]; then
+    fail "the shadow_display_mode block is gone; this pin needs rewriting against whatever replaced it"
+elif [ "$claim_line" -gt "$gate_line" ]; then
+    fail "the claim sits inside the shadow_display_mode block (line $claim_line > $gate_line) — every E16 control reaches Move the moment the Schwung screen is not up"
 fi
-# ...and it must be NARROW. The first version consumed every cable-2 event
-# while the setting was on, which silences the CC Map for any other device
-# sharing the cable for as long as the surface is switched on. Pinned
-# separately from the flag because dropping either one is silent: without
-# the flag the cable is swallowed unconditionally, without the claim it is
-# swallowed whenever the surface is on.
-if ! strip_comments < "$SHIM" \
-    | grep -qE '^[[:space:]]*e16_claims_msg\(1, status, d1\)\) \{'; then
+
+# ...and it must SWALLOW, adjacently. The file has eighteen other swallow sites,
+# so a bare grep would pass with this one missing.
+if [ -n "$claim_line" ]; then
+    body=$(sed -n "${claim_line},$((claim_line + 12))p" "$SHIM")
+    case "$body" in
+        *"midi_in_swallow(sh_midi, hw_midi, j)"*) ;;
+        *) fail "a claimed surface message is not swallowed from Move mailbox — every encoder press also plays a note" ;;
+    esac
+fi
+
+# --- 5. The claim is NARROW ------------------------------------------------
+# Consuming every cable-2 event while the setting is on silences the CC Map for
+# any other device sharing the port for as long as the surface is switched on.
+if ! strip_comments < "$SHIM" | grep -qE 'e16_claims_msg\(1, st, e_d1\)\) \{'; then
     fail "the publish site claims the whole cable, not just the surface own messages"
 fi
 
-
 # --- 6. Inbound SysEx reaches JS, and is NOT swallowed ---------------------
-# Measured on hardware 2026-09-10: with the claim narrowed to channel-voice
-# messages, the E16's ACK reached the mailbox and was never handed to JS, so
-# the lifecycle sought forever and withheld every frame. The device entered
-# remote mode and stayed blank -- eleven ENTERs out, not one framebuffer.
+# With the claim narrowed to channel-voice messages, the E16 ACK reached the
+# mailbox and was never handed to JS, so the lifecycle sought forever and
+# withheld every frame: the device entered remote mode and stayed blank.
 #
-# The absence of `continue` is pinned too. A chain slot declaring
-# capabilities.wants_sysex must still receive this; the surface is one consumer
-# of inbound SysEx, not its owner.
-if ! strip_comments < "$SHIM" \
-    | grep -qE '^[[:space:]]*cin >= 0x04 && cin <= 0x07\) \{'; then
+# It must ride in the same unconditional walk for the same reason the claim
+# does -- presence cannot depend on which screen the Move is showing -- and it
+# must NOT swallow, since a chain slot declaring capabilities.wants_sysex is
+# still entitled to it.
+if ! strip_comments < "$SHIM" | grep -qE 'if \(cin >= 0x04 && cin <= 0x07\) \{'; then
     fail "inbound SysEx is not published to JS -- the ACK never arrives and the surface withholds every frame"
 fi
-if strip_comments < "$SHIM" \
-    | grep -A2 -E '^[[:space:]]*cin >= 0x04 && cin <= 0x07\) \{' \
-    | grep -qE '^[[:space:]]*continue;'; then
-    fail "the SysEx publish swallows the cable -- a wants_sysex slot would stop receiving"
+sysex_line=$(grep -n "if (cin >= 0x04 && cin <= 0x07) {" "$SHIM" | head -1 | cut -d: -f1)
+if [ -n "$sysex_line" ] && [ -n "$gate_line" ] && [ "$sysex_line" -gt "$gate_line" ]; then
+    fail "the SysEx publish is inside the display-gated block — the surface loses presence whenever the Schwung screen is not up"
 fi
-
-
-# --- 7. SysEx survives the CIN gate for a configured surface ---------------
-# The non-overtake path drops CINs 0x04-0x07 before any cable test. That is the
-# gate docs/SYSEX.md names as the reason a chain slot is write-only for SysEx.
-# The surface's ACK is SysEx, so widening only the CABLE condition is not
-# enough: measured on hardware 2026-09-10, the ACK died here, `present` never
-# flipped, and the device sat in remote mode with every frame withheld.
-if ! strip_comments < "$SHIM" \
-    | grep -qE 'cin >= 0x04 && cin <= 0x07 && cable == 0x02 &&'; then
-    fail "SysEx does not survive the CIN gate -- the ACK never reaches JS and the surface withholds every frame"
-fi
-
-
-# --- 8. A CLAIMED message is SWALLOWED, not merely skipped ----------------
-# `continue` skips Schwung own dispatch and does nothing at all about the
-# mailbox MOVE reads, so a claimed message was consumed by us and PLAYED by
-# Move at the same time. Shift is note 16 on channel 1 -- a very low note on
-# whatever slot 1 holds -- and encoder 1 is CC 1, the mod wheel. Reported from
-# hardware 2026-09-11 as "i hear a note from the e16 when i press the shift
-# button".
-#
-# This was the twelfth instance of the defect CLAUDE.md records eleven of, and
-# it arrived the same way: `continue` LOOKS like blocking.
-#
-# Pinned by ADJACENCY -- the swallow must be inside the claim branch, not
-# merely present somewhere in the file, since the file has eighteen other
-# swallow sites that would satisfy a bare grep.
-claim_line=$(grep -n "e16_claims_msg(1, status, d1)) {" "$SHIM" | head -1 | cut -d: -f1)
-if [ -z "$claim_line" ]; then
-    fail "the claim branch is gone -- the surface either takes the whole cable or none of it"
-else
-    body=$(sed -n "${claim_line},$((claim_line + 25))p" "$SHIM")
-    case "$body" in
-        *"midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j)"*) ;;
-        *) fail "a claimed surface message is not swallowed from Move mailbox — every encoder press also plays a note" ;;
+if [ -n "$sysex_line" ]; then
+    sbody=$(sed -n "${sysex_line},$((sysex_line + 6))p" "$SHIM")
+    case "$sbody" in
+        *"midi_in_swallow"*) fail "the SysEx publish swallows the cable -- a wants_sysex slot would stop receiving" ;;
     esac
 fi
 

@@ -8008,6 +8008,54 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
     for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8) {
         uint8_t cin = hw_midi[j] & 0x0F;
         uint8_t cable = (hw_midi[j] >> 4) & 0x0F;
+
+        /*
+         * === EXTERNAL CONTROL SURFACE (cable 2) ===
+         *
+         * THIS WALK, and not the shadow_display_mode block below, because a
+         * surface we own is ours WHETHER OR NOT OUR SCREEN IS UP. The first
+         * version of this lived down there and was correct only while the
+         * Schwung UI happened to be on the OLED; step onto a Move track and
+         * the whole block stops running, so nothing swallowed and the E16's
+         * own controls went straight to Move. Shift is note 16 on channel 1 --
+         * a very low note on whatever slot 1 holds -- and encoder 1 is CC 1,
+         * the mod wheel. Reported from hardware as "i hear a note from the e16
+         * when i press the shift button", and still heard after the swallow
+         * was added in the wrong place, which is what pointed here.
+         *
+         * CLAUDE.md records the same trap for capabilities.claims_ccs: a claim
+         * enforced inside the shadow_display_mode branch hands Move the event
+         * the moment the display closes. The claim latch needs a drain down
+         * there because it is a Move BUTTON whose press was already withheld;
+         * this is a different device entirely, and it never wanted that gate.
+         *
+         * ONE OWNER. The publish moved with the swallow deliberately: the
+         * swallow zeroes the hardware mailbox, which is exactly what the block
+         * below reads, so leaving the publish there would have starved it of
+         * the events this walk had already taken. Splitting them is a surface
+         * whose screen works and whose encoders do nothing.
+         */
+        if (!overtake_mode && cable == 0x02 && shadow_control &&
+            shadow_control->external_surface) {
+            uint8_t st = hw_midi[j + 1];
+            uint8_t e_d1 = hw_midi[j + 2];
+            uint8_t e_d2 = hw_midi[j + 3];
+            if (cin >= 0x04 && cin <= 0x07) {
+                /* The ACK. NO swallow: a chain slot declaring
+                 * capabilities.wants_sysex must still receive this -- the
+                 * surface is one consumer of inbound SysEx, not its owner. */
+                shadow_ui_midi_publish(hw_midi[j], st, e_d1, e_d2);
+            } else if (e16_claims_msg(1, st, e_d1)) {
+                shadow_ui_midi_publish(hw_midi[j], st, e_d1, e_d2);
+                /* BOTH BUFFERS. `continue` alone skips only OUR dispatch and
+                 * leaves the event in the mailbox Move reads, which is how a
+                 * claimed message gets consumed by us and played by Move at
+                 * the same time. */
+                midi_in_swallow(sh_midi, hw_midi, j);
+                continue;
+            }
+        }
+
         if (cable != 0x00) continue;  /* Only internal cable */
         if (cin == 0x0B) {  /* Control Change */
             uint8_t d1 = hw_midi[j + 2];
@@ -9083,45 +9131,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
              * the flag is re-tested here rather than left implied by the cable
              * filter above: if that filter is ever widened for some other
              * reason, this branch must not silently swallow the cable. */
-            if (!overtake_mode && cable == 0x02 && shadow_control->external_surface &&
-                e16_claims_msg(1, status, d1)) {
-                shadow_ui_midi_publish(src[j], status, d1, d2);
-                /*
-                 * BOTH BUFFERS. `continue` skips SCHWUNG's dispatch and does
-                 * nothing whatever about the mailbox MOVE reads -- so a claimed
-                 * message was consumed by us and played by Move at the same
-                 * time. Shift is note 16 on channel 1, which is a very low note
-                 * on whatever slot 1 is holding; encoder 1 is CC 1, the mod
-                 * wheel. Reported from the device as "i hear a note from the
-                 * e16 when i press the shift button".
-                 *
-                 * This is the twelfth instance of the defect CLAUDE.md records
-                 * eleven of, arrived at the same way: `continue` LOOKS like
-                 * blocking, and the leak is silent until one of the claimed
-                 * numbers happens to mean something audible.
-                 */
-                midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
-                continue;
-            }
-
-            /* The surface's REPLIES are SysEx, and they are not channel-voice
-             * messages, so e16_claims_msg() does not name them -- it describes
-             * what the encoders emit. Publishing only those was measured on
-             * hardware to withhold every frame: the E16 entered remote mode and
-             * stayed blank, because the ACK reached this mailbox, was never
-             * handed to JS, and the lifecycle went on seeking at its 2 s
-             * cadence forever while gating frames on a presence it could not
-             * observe. Eleven ENTERs went out and not one framebuffer.
-             *
-             * NO `continue` HERE, deliberately. A chain slot that declared
-             * capabilities.wants_sysex must still receive this -- the surface
-             * is one consumer of inbound SysEx, not its owner, and swallowing
-             * the cable is the exact over-reach the claim above exists to
-             * avoid. Publishing is additive; the dispatch below is unchanged. */
-            if (!overtake_mode && cable == 0x02 && shadow_control->external_surface &&
-                cin >= 0x04 && cin <= 0x07) {
-                shadow_ui_midi_publish(src[j], status, d1, d2);
-            }
+            /* The external surface is handled in the UNCONDITIONAL walk
+             * earlier in this function, never here. It was here first, and
+             * that was wrong in a way only hardware showed: this whole block
+             * is gated on shadow_display_mode, so a surface we own was left
+             * un-swallowed -- its Shift audible as a note on slot 1 -- the
+             * moment the Schwung screen was not the one on the OLED. Both the
+             * publish and the swallow moved together, because the swallow
+             * zeroes the very mailbox this block reads. */
 
             /* Deliver internal cable-0 note events (d1 >= 10, excludes
              * knob-touch reserved range 0–9) to the loaded overtake DSP

@@ -2865,6 +2865,35 @@ static JSValue js_host_external_surface(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
+/*
+ * Outbound packets per SPI frame, or 0 for the compiled default.
+ *
+ * A knob for an EXPERIMENT that was never run: 3 packets/frame was the first
+ * value that stopped the garbling after sending a framebuffer all at once
+ * failed, and nobody searched upward from it. It decides the only latency the
+ * user feels -- 394 packets at 3/frame is 383 ms, at 12 it would be 96 -- and
+ * until now trying a value meant a cross-compile and a restart.
+ *
+ * Clamped in the carry rather than here, so every writer gets the same bounds.
+ */
+static JSValue js_host_ui_midi_pace(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    if (val < 0) val = 0;
+    if (val > 255) val = 255;
+    if (shadow_control->ui_midi_pace == (uint8_t)val) return JS_TRUE;
+    shadow_control->ui_midi_pace = (uint8_t)val;
+    {
+        char line[96];
+        snprintf(line, sizeof(line), "shadow_ui: ui_midi_pace = %d", val);
+        shadow_ui_log_line(line);
+    }
+    return JS_TRUE;
+}
+
 static JSValue js_host_pad_block(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv) {
     (void)this_val;
@@ -3364,6 +3393,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register pad block function */
     JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_claim_ccs", JS_NewCFunction(ctx, js_host_claim_ccs, "host_claim_ccs", 1));
