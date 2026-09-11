@@ -170,17 +170,77 @@ static inline int ui_midi_carry_get_pace(void) { return ui_midi_carry_pace; }
 
 #define UI_MIDI_CARRY_HIGH_WATER (UI_MIDI_CARRY_BYTES / 2)
 
+/*
+ * RETRY STATE -- see "A COLLIDED MESSAGE IS RE-QUEUED" below.
+ *
+ * Sized to hold the largest single message we ever send, which is a 394-packet
+ * framebuffer (1576 bytes). A message longer than this cannot be retried; that
+ * is recorded rather than silently skipped, because a retry that quietly does
+ * not happen is indistinguishable from one that did and collided again.
+ */
+#define UI_MIDI_CARRY_MSG_BYTES   2048
+/*
+ * How many times one message may be re-queued.
+ *
+ * Not unbounded, and the reason is amplification: under continuous playing
+ * every attempt can collide, and a message that re-queues itself forever turns
+ * a display glitch into a wire full of retries that starves the next real
+ * update. Two attempts take the ~15% single-attempt collision rate measured on
+ * 2026-09-11 down to well under 1%, which is past the point where anyone sees
+ * it.
+ */
+#define UI_MIDI_CARRY_MSG_RETRIES 2
+/*
+ * How many consecutive frames a message may be held back waiting for a mailbox
+ * with no foreign traffic in it.
+ *
+ * The quiet-start below is an OPTIMISATION, never a precondition: notes are
+ * sparse against 344 frames/sec so almost every frame is clear, but a dense
+ * enough stream must not be able to stop the screen updating altogether. At
+ * 2.90 ms a frame this is ~186 ms, after which we go regardless and let the
+ * retry handle whatever happens.
+ */
+#define UI_MIDI_CARRY_START_DEFER_MAX 64
+
 typedef struct {
     uint8_t buf[UI_MIDI_CARRY_BYTES];
     int len;        /* bytes currently held, always a multiple of 4 */
     int drops;      /* packets refused because the carry was full */
+
+    /* The SysEx run currently being placed, kept so it can be re-queued. */
+    uint8_t msg[UI_MIDI_CARRY_MSG_BYTES];
+    int msg_len;        /* bytes of the open run placed so far; 0 = no run */
+    int msg_collided;   /* foreign cable-2 traffic landed inside this run */
+    int msg_retries;    /* re-queues already spent on this run */
+    int msg_overflow;   /* run outgrew msg[] -- cannot be retried */
+    int start_defers;   /* consecutive frames a new run has been held back */
 } ui_midi_carry_t;
+
+/* Counters, for the same reason every other failure here has one. */
+static int ui_midi_carry_retries = 0;    /* messages re-queued after a collision */
+static int ui_midi_carry_unretryable = 0;/* collided, but too long to re-queue */
+
+static inline int ui_midi_carry_retry_count(void)      { return ui_midi_carry_retries; }
+static inline int ui_midi_carry_unretryable_count(void){ return ui_midi_carry_unretryable; }
+
+/* USB-MIDI CIN (low nibble of byte 0). 0x4 starts or continues a SysEx run;
+ * 0x5/0x6/0x7 end one. 0x5 is ALSO a lone single-byte message, so it only
+ * closes a run when one is actually open -- which is why every test below
+ * asks about msg_len rather than about the CIN alone. */
+#define UI_MIDI_CIN(pkt) ((pkt)[0] & 0x0F)
+static inline int ui_midi_cin_opens_run(uint8_t cin)  { return cin == 0x04; }
+static inline int ui_midi_cin_closes_run(uint8_t cin) { return cin >= 0x05 && cin <= 0x07; }
 
 static inline void ui_midi_carry_reset(ui_midi_carry_t *c)
 {
     if (!c) return;
     c->len = 0;
     c->drops = 0;
+    c->msg_len = 0;
+    c->msg_collided = 0;
+    c->msg_retries = 0;
+    c->msg_overflow = 0;
+    c->start_defers = 0;
 }
 
 /*
@@ -304,6 +364,7 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
     int placed = 0;
     int slot = 0;
     int read = 0;
+    int run_closed = 0;
 
     /*
      * LAST FRAME'S PACKETS MUST NOT BE SENT TWICE.
@@ -345,11 +406,39 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
      * Move put there and never our own packets from this frame. Only while the
      * carry is non-empty: a packet from Move between two complete messages of
      * ours is ordinary MIDI, not interference. */
+    int foreign_this_frame = 0;
     for (int q = 0; q + 4 <= region_bytes; q += 4) {
         if (!midi_out[q] && !midi_out[q + 1] && !midi_out[q + 2] && !midi_out[q + 3])
             continue;
-        if (((midi_out[q] >> 4) & 0x0F) == 0x02) ui_midi_carry_foreign++;
+        if (((midi_out[q] >> 4) & 0x0F) == 0x02) {
+            ui_midi_carry_foreign++;
+            foreign_this_frame++;
+        }
     }
+
+    /* Were we already mid-run when this frame began? A foreign packet now is
+     * unambiguously INSIDE our message in that case, whatever slot it sits in. */
+    const int was_mid_run = (c->msg_len > 0);
+
+    /*
+     * QUIET-START: do not OPEN a run into a mailbox that already has foreign
+     * cable-2 traffic in it.
+     *
+     * Free, and it removes the easiest collisions: the note is already in the
+     * region, so starting here splices it into the message we are about to
+     * begin. Waiting one frame costs 2.90 ms and notes are sparse against 344
+     * frames/sec, so almost every frame is clear.
+     *
+     * It is an optimisation and NEVER a precondition -- a dense enough stream
+     * must not be able to stop the screen updating, so the defer is capped and
+     * we go anyway after it, leaving the retry to handle the outcome.
+     */
+    if (!was_mid_run && foreign_this_frame > 0 &&
+        c->start_defers < UI_MIDI_CARRY_START_DEFER_MAX) {
+        c->start_defers++;
+        return 0;
+    }
+    c->start_defers = 0;
 
     while (read < c->len) {
         while (slot + 4 <= region_bytes &&
@@ -361,6 +450,34 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
 
         memcpy(&midi_out[slot], &c->buf[read], 4);
         ui_midi_carry_placed_total++;
+
+        /*
+         * Keep a copy of the run being placed, so it can be re-sent whole.
+         *
+         * Framing comes from the CIN nibble rather than from anything the
+         * caller tells us: the carry is a flat packet stream and the producer
+         * has already forgotten where its message boundaries were by the time
+         * the packets reach here, several frames later.
+         */
+        {
+            const uint8_t cin = UI_MIDI_CIN(&c->buf[read]);
+            if (c->msg_len == 0 && ui_midi_cin_opens_run(cin)) {
+                c->msg_collided = 0;
+                c->msg_overflow = 0;
+            }
+            if (c->msg_len > 0 || ui_midi_cin_opens_run(cin)) {
+                if (c->msg_len + 4 <= UI_MIDI_CARRY_MSG_BYTES) {
+                    memcpy(&c->msg[c->msg_len], &c->buf[read], 4);
+                    c->msg_len += 4;
+                } else {
+                    /* Too long to hold. Keep the run OPEN (msg_len stays put)
+                     * so the close below still fires and clears the state --
+                     * it simply cannot be retried. */
+                    c->msg_overflow = 1;
+                }
+                if (ui_midi_cin_closes_run(cin)) run_closed = 1;
+            }
+        }
         if (ui_midi_carry_last_n < UI_MIDI_CARRY_TRACK) {
             const int q = ui_midi_carry_last_n++;
             ui_midi_carry_last_slot[q] = slot;
@@ -383,6 +500,81 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
         if (remain > 0) memmove(c->buf, &c->buf[read], (size_t)remain);
         c->len = remain;
     }
+
+    /*
+     * A COLLIDED MESSAGE IS RE-QUEUED, WHOLE.
+     *
+     * Only System Realtime bytes (0xF8-0xFF) may appear inside a SysEx. A Note
+     * On spliced into one is a protocol violation and a conformant receiver
+     * MUST abort the message -- so when Move's own cable-2 output lands in the
+     * mailbox mid-run, the E16 is RIGHT to draw nothing useful, and no amount
+     * of pacing changes that.
+     *
+     * Isolated on hardware 2026-09-11 with the transport STOPPED both ways:
+     * playing notes with Move's MIDI out ON garbles, MIDI out OFF is clean.
+     * The same session sent 559 packets/sec with no foreign traffic and stayed
+     * perfectly clean, which is what rules out the rate explanation this bug
+     * wore for three sessions. (The earlier "interleave ruled out" verdict came
+     * from disabling MIDI *sync* while note output stayed on, so `foreign`
+     * never reached zero and the experiment measured nothing.)
+     *
+     * We cannot stop Move sending notes -- that is real MIDI somebody's gear is
+     * listening to, and holding it back would put ~15 ms of jitter on the wire
+     * to spare a screen. So the message is simply SENT AGAIN: the corrupt copy
+     * has already gone out, and the good one follows ~15 ms later instead of
+     * waiting up to 1.5 s for the surface's self-heal heartbeat. A visible
+     * garble becomes a flicker.
+     *
+     * Re-queued at the TAIL, never the head: anything already behind it in the
+     * carry was produced later and must still go out in order, and a retry that
+     * jumped the queue would reorder two of our own messages to fix one.
+     */
+    if (run_closed) {
+        const int collided = c->msg_collided ||
+                             (foreign_this_frame > 0 && (was_mid_run || placed > 0));
+        if (collided && c->msg_overflow) {
+            /* Counted rather than skipped: a retry that quietly does not happen
+             * looks exactly like one that happened and collided again. */
+            ui_midi_carry_unretryable++;
+        } else if (collided && c->msg_retries < UI_MIDI_CARRY_MSG_RETRIES &&
+                   /*
+                    * A RETRY MUST NEVER COST A DROP.
+                    *
+                    * `msg_retries` lives on the CARRY, not on the message, so
+                    * two messages interleaving can reset each other's count and
+                    * evade the cap above -- rare (the carry is usually empty by
+                    * the time a run closes) but not impossible while knobs are
+                    * being spun. Requiring half the carry free bounds the
+                    * amplification structurally instead of relying on the
+                    * count: retries can only happen when there is room for
+                    * them, so they can never push a real message out. Dropping
+                    * a packet to repair a garble would be repairing it with the
+                    * identical fault one buffer along.
+                    */
+                   c->len + c->msg_len <= UI_MIDI_CARRY_BYTES / 2) {
+            const int retries = c->msg_retries + 1;
+            memcpy(&c->buf[c->len], c->msg, (size_t)c->msg_len);
+            c->len += c->msg_len;
+            ui_midi_carry_retries++;
+            /* Carried across the re-queue, or the copy we just appended starts
+             * from zero attempts and the cap never binds. */
+            c->msg_retries = retries;
+            c->msg_len = 0;
+            c->msg_collided = 0;
+            c->msg_overflow = 0;
+            return placed;
+        }
+        c->msg_len = 0;
+        c->msg_collided = 0;
+        c->msg_retries = 0;
+        c->msg_overflow = 0;
+    } else if (foreign_this_frame > 0 && (was_mid_run || c->msg_len > 0)) {
+        /* The run is still open and a foreign packet landed during it. Latch
+         * it now -- by the time the run closes, several frames later, this
+         * frame's mailbox is long gone. */
+        c->msg_collided = 1;
+    }
+
     return placed;
 }
 
