@@ -623,6 +623,33 @@ void shadow_inject_ui_midi_out(void)
      * advance last_ready — this snapshot is deferred, not skipped. */
     if (!ui_midi_carry_wants_more(&ui_midi_carry)) return;
 
+    /*
+     * THE WHOLE SNAPSHOT FITS, OR WE TAKE NONE OF IT.
+     *
+     * ui_midi_carry_push() drops the NEWEST packet when the carry is full, one
+     * packet at a time -- so a snapshot that overruns the carry leaves a
+     * message's head queued and its tail discarded. That is a truncated SysEx
+     * on the wire, which the receiver renders as a garbled screen: exactly the
+     * fault just fixed in js_shadow_midi_send(), one buffer further along, and
+     * the carry's own comment warns of it ("Refusing the newest packet
+     * truncates one message").
+     *
+     * The existing `wants_more` backpressure is necessary and not sufficient:
+     * it only asks whether the carry is below half, while a snapshot can be
+     * the full 1024 packets, so 511 + 1024 overruns by 511 -- and the overrun
+     * lands mid-message.
+     *
+     * Deferring is free and already the established response here: write_idx
+     * is left alone, `last_ready` is NOT advanced, and the same snapshot is
+     * taken whole on a later frame once the carry has drained. It costs
+     * latency, never a corrupt message.
+     */
+    {
+        int pending = midi_out_shm->write_idx;
+        int free_bytes = UI_MIDI_CARRY_BYTES - ui_midi_carry.len;
+        if (pending > free_bytes) return;
+    }
+
     last_ready = midi_out_shm->ready;
     if (host_init_led_queue) host_init_led_queue();
 
