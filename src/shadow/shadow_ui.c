@@ -1636,6 +1636,33 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
     return JS_TRUE;
 }
 
+/* move_midi_cable_send(cable, [cin, status, data1, data2, ...]) -> bool
+ *
+ * DIAGNOSTIC. The other two senders hardcode their cable -- 0 for Move's own
+ * hardware, 2 for the external USB port -- and those are the only two values
+ * anything has ever used. The SPI mailbox carries a full 4-bit cable nibble
+ * per packet though (schwung_encode_usb_midi takes it as a parameter), and
+ * what the XMOS does with the other fourteen values is simply unknown.
+ *
+ * It matters because a separate cable is the ONE thing that would make our
+ * SysEx immune: two cables cannot splice into each other, so Move's notes
+ * could not land inside a screen update. Today we share cable 2 with them and
+ * any message spanning more than one SPI frame is exposed.
+ *
+ * So this exists to ASK the hardware rather than reason about it. Paired with
+ * /data/UserData/schwung/e16_blast_cable, the whole experiment is an echo.
+ * The CIN nibble is still overwritten per packet by js_shadow_midi_send, so a
+ * malformed cable cannot produce a malformed packet -- only a packet that goes
+ * somewhere else, or nowhere. */
+static JSValue js_move_midi_cable_send(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    if (argc < 2) return JS_FALSE;
+    int32_t cable = 0;
+    if (JS_ToInt32(ctx, &cable, argv[0])) return JS_FALSE;
+    if (cable < 0 || cable > 15) return JS_FALSE;
+    return js_shadow_midi_send(cable, ctx, this_val, argc - 1, argv + 1);
+}
+
 /* move_midi_external_send([cin, status, data1, data2, ...]) -> bool
  * Queues MIDI to be sent to USB-A (cable 2).
  */
@@ -3355,6 +3382,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
 
     /* Register MIDI output functions for overtake modules */
     JS_SetPropertyStr(ctx, global_obj, "move_midi_external_send", JS_NewCFunction(ctx, js_move_midi_external_send, "move_midi_external_send", 1));
+    JS_SetPropertyStr(ctx, global_obj, "move_midi_cable_send", JS_NewCFunction(ctx, js_move_midi_cable_send, "move_midi_cable_send", 2));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_internal_send", JS_NewCFunction(ctx, js_move_midi_internal_send, "move_midi_internal_send", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_send_midi_to_dsp", JS_NewCFunction(ctx, js_shadow_send_midi_to_dsp, "shadow_send_midi_to_dsp", 1));
     JS_SetPropertyStr(ctx, global_obj, "move_midi_inject_to_move", JS_NewCFunction(ctx, js_move_midi_inject_to_move, "move_midi_inject_to_move", 1));
