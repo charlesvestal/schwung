@@ -91,6 +91,60 @@ export const LOSS_MS = 6000;
 export const SCREEN_HEARTBEAT_MS = 1500;
 
 /*
+ * How long after Move's last transmission the restate is allowed to resume.
+ *
+ * THE HEARTBEAT IS PURE REPAIR, AND WHILE MOVE IS TALKING IT IS ALSO THE MOST
+ * LIKELY THING TO BE BROKEN.
+ *
+ * Isolated on hardware 2026-09-11: Move's own notes, aftertouch and clock go
+ * out on the cable our screen SysEx must share -- the E16 has to enumerate as
+ * a SINGLE jack for Move's XMOS to carry SysEx at all, so there is exactly one
+ * stream and no way to separate them (see docs/E16_REMOTE.md). A 34-packet
+ * LABELS spans ~5 SPI frames, and anything Move emits inside that window is
+ * spliced into the message, which a conformant receiver must then discard.
+ *
+ * At idle the restate is the ONLY traffic there is. So repeating it once a
+ * second while Move plays does not repair a corruption -- it MANUFACTURES one,
+ * on a screen that would otherwise have sat there correct, because nothing
+ * changed and nothing needed sending.
+ *
+ * Suppressing it costs nothing by construction: a restate carries no new
+ * information. What must NOT be suppressed is a real CHANGE -- a page turn
+ * while the transport runs has to arrive, or the panel shows labels belonging
+ * to a different page while the encoders drive this one. A stale screen that
+ * looks correct is a worse failure than a garbled one that obviously isn't.
+ *
+ * So the two are separated: repair waits for quiet, change goes now and
+ * retries. That distinction is also why an earlier blanket retry made things
+ * WORSE -- applied to a once-a-second heartbeat it tripled the standing
+ * traffic, while applied to a rare human action it is a few packets nobody
+ * sees.
+ *
+ * 250 ms is about two beats of sixteenths at 120 BPM: long enough that a
+ * continuous part keeps the restate parked, short enough that letting go of
+ * the keys brings the text back before you look up.
+ *
+ * ---------------------------------------------------------------------------
+ * IT DID NOT WORK, AND THE GATE IS OFF. Measured on hardware 2026-09-11: the
+ * screen still garbled, and the slot page markedly WORSE than before.
+ *
+ * The reasoning above has a hole. "If we do not send, nothing breaks" is only
+ * true if the restate is the ONLY thing we send -- and it is not. A change
+ * must still go out, and every recovery of the device's presence repaints,
+ * and those sends are corrupted exactly as before. Suppressing the repair
+ * while leaving the corruption in place means a garble that used to be fixed
+ * within 1.5 s now PERSISTS until something else happens to repaint. Strictly
+ * worse, and obviously so on the device.
+ *
+ * Suppressing repair only helps once the corruption itself is gone. That needs
+ * messages short enough not to span an SPI frame -- the Lua path plus
+ * per-element addressing -- not a smarter send policy. Transport-level
+ * mitigation is exhausted: quiet-start, retry and suppression have each been
+ * built, measured and found not to fix it.
+ */
+export const FOREIGN_QUIET_MS = 250;
+
+/*
  * How long a hand has to be still before the printed numbers are redrawn.
  *
  * 180 ms is about one slow detent apart: fast enough that letting go of a knob
@@ -874,6 +928,35 @@ export function createSurface(io) {
     /* -1 means "draw the real view". Injected because the surface is pure and
      * the arming lives in a file the host owns; see drawTestPattern. */
     const testPattern = o.testPatternOf || (() => -1);
+    /*
+     * "framebuffer" (default) or "labels".
+     *
+     * The framebuffer IS the interface -- a drawn 128x64 panel, two headers,
+     * real names. LABELS was adopted as a reliability stopgap: 34 packets
+     * against 394, so it garbles far less often, but it costs the picture and
+     * caps every cell at FOUR characters, which is the device's own limit and
+     * not a budget we can spend our way out of.
+     *
+     * That trade is the user's to make, not ours. The corruption is not fixed
+     * either way (2026-09-11: it is Move's own notes sharing the one cable the
+     * XMOS will carry SysEx on, and quiet-start, retry and restate-suppression
+     * were each built and measured and none of them fix it) -- so the honest
+     * choice is a better-looking screen that sometimes breaks versus a poorer
+     * one that breaks less. Default to the real interface.
+     *
+     * Injected, and read from a file by the host, so switching is an echo:
+     *   echo labels > /data/UserData/schwung/e16_screen
+     *   rm          /data/UserData/schwung/e16_screen     (back to framebuffer)
+     */
+    const screenModeOf = o.screenModeOf || (() => "framebuffer");
+    /*
+     * The shim's running count of Move's own cable-2 packets that landed in
+     * the mailbox mid-message. Injected like everything else here, and
+     * defaulting to a constant so the surface stays pure and testable: with no
+     * host it reads 0 forever, foreignBusy() is always false, and the
+     * heartbeat behaves exactly as it did before this existed.
+     */
+    const foreignOf = o.foreignOf || (() => 0);
 
     const lifecycle = createLifecycle(o.lifecycle);
     const display = createDisplay();
@@ -925,6 +1008,40 @@ export function createSurface(io) {
      * reason. */
     let turnedAt = -Infinity;
     let settlePainted = true;
+
+    /*
+     * "Has Move transmitted recently?" -- from the DELTA of a free-running
+     * counter, never its value.
+     *
+     * A rise means Move put cable-2 traffic in the mailbox while a message of
+     * ours was going out. The absolute number is meaningless (it never
+     * resets), and a counter that has stopped rising is exactly the quiet we
+     * are waiting for, so the delta is the whole signal.
+     *
+     * Called once per tick and only from the heartbeat gate. It must stay
+     * cheap: it is a shared-memory word, not a param read.
+     */
+    /*
+     * CURRENTLY UNUSED, AND DELIBERATELY KEPT. Gating the heartbeat on this
+     * was tried on hardware 2026-09-11 and made things WORSE -- see
+     * FOREIGN_QUIET_MS. The plumbing behind it (the shim's published counter,
+     * host_ui_midi_foreign) is sound and measured, so the signal is here for
+     * the next idea that needs "is Move transmitting right now"; only the
+     * conclusion drawn from it was wrong.
+     */
+    let foreignSeen = -1;
+    let foreignAt = -Infinity;
+    // eslint-disable-next-line no-unused-vars
+    function foreignBusy(t) {
+        let n = 0;
+        try { n = foreignOf() | 0; } catch (e) { return false; }
+        if (foreignSeen < 0) { foreignSeen = n; return false; }
+        if (n !== foreignSeen) {
+            foreignSeen = n;
+            foreignAt = t;
+        }
+        return (t - foreignAt) < FOREIGN_QUIET_MS;
+    }
 
     /*
      * REFRESH METER state (test pattern 6).
@@ -1290,12 +1407,31 @@ export function createSurface(io) {
              * Reliability is the thing being bought here; density is the thing
              * being spent.
              */
+            /* The picture unless the user has asked for the text fallback.
+             * mapScreen()/labelScreen() build the LABELS form; the framebuffer
+             * form is drawn by nav.render() in the frameBytes callback below,
+             * which never stopped working -- only the choice to use it. */
+            const wantLabels = screenModeOf() === "labels";
             const screen = probe >= 0 ? { kind: "framebuffer" }
-                         : (nav.mapVisible(t) ? mapScreen() : labelScreen());
+                         : (wantLabels
+                             ? (nav.mapVisible(t) ? mapScreen() : labelScreen())
+                             : { kind: "framebuffer" });
 
-            /* SELF-HEAL. The link drops packets, so a screen that has stood
-             * untouched for a while is restated -- 34 packets to repair a
-             * corruption we cannot prevent and cannot detect. */
+            /*
+             * SELF-HEAL, BUT ONLY WHILE MOVE IS QUIET.
+             *
+             * The link drops packets, so a screen that has stood untouched is
+             * restated -- 34 packets to repair a corruption we cannot prevent
+             * and cannot detect. While Move is transmitting on the shared
+             * cable, though, that restate is the most likely message to be
+             * corrupted AND the only traffic we have, so it breaks more than
+             * it fixes. See FOREIGN_QUIET_MS.
+             *
+             * Nothing else is gated. A real change -- a page turn, a focus
+             * jump, new label text -- goes out through invalidate() regardless
+             * of what Move is doing, because a stale screen that looks correct
+             * is worse than a garbled one that obviously is not.
+             */
             const age = display.screenAge(t);
             if (age !== null && age >= SCREEN_HEARTBEAT_MS &&
                 settlePainted && !display.ringsPending) {

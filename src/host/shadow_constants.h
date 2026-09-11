@@ -545,6 +545,31 @@ typedef struct shadow_control_t {
      * stale read costs exactly one frame.
      */
     volatile uint8_t ui_midi_pace;
+
+    /*
+     * Cable-2 packets MOVE put in the mailbox while a message of ours was
+     * still going out -- the interleave counter, published so JS can see it.
+     *
+     * The E16 surface needs one fact the UI process cannot observe for itself:
+     * is Move transmitting RIGHT NOW. Its own notes, aftertouch and clock go
+     * out on the external port, and shadow_ui never sees them -- pads arrive
+     * on cable 0 and a playing clip arrives nowhere at all, so there is no way
+     * to infer it from the UI side.
+     *
+     * It matters because the surface's 1.5 s self-heal restate is pure repair:
+     * it exists to fix a corruption we cannot detect. While Move is talking,
+     * that restate is also the most likely thing to BE corrupted, and it is
+     * the only traffic we have at idle -- so repeating it is how a screen that
+     * would have sat there correct gets broken once a second. Suppressing it
+     * while Move is busy costs nothing (nothing changed) and removes the
+     * exposure entirely.
+     *
+     * Free-running, never reset; JS reads the DELTA. Written by the shim on
+     * the SPI callback and read by shadow_ui, so it is a plain uint32 with no
+     * handshake -- a torn read is impossible on ARM64 for a naturally aligned
+     * word, and a stale one costs one tick.
+     */
+    volatile uint32_t ui_midi_foreign;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */
