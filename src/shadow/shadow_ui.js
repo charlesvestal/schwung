@@ -10448,6 +10448,82 @@ let externalSurfaceFollow = 0;
  */
 let e16ProbeValue = -1;
 let e16ProbeCheckedAt = 0;
+
+/*
+ * TRANSPORT TESTER -- is the loss the E16, or the link?
+ *
+ * Every buffer Schwung owns reports zero drops under load while the screen
+ * visibly corrupts (measured 2026-09-11, four hand-offs, twice). That puts the
+ * loss downstream of Move's mailbox, where we have no instrument -- so the only
+ * way forward is to put a DIFFERENT receiver on the same wire and see whether
+ * it loses packets too.
+ *
+ * The surface itself cannot do that: it withholds every frame until the device
+ * ACKs, and a Mac or a BLE adapter will never send an E16 ACK. Hence a sender
+ * that answers to nothing but a file.
+ *
+ * The message is SELF-VERIFYING, because "did it arrive intact" must not
+ * depend on anyone eyeballing 1180 bytes:
+ *
+ *   F0 00 21 5B 02 01 7F <seq> <ramp...> F7
+ *
+ *   seq   increments per message, so a WHOLE message lost is visible as a gap
+ *   ramp  byte i is (i & 0x7F), so ANY missing or altered byte breaks the
+ *         sequence at a nameable offset
+ *
+ * Armed with the payload length, so the same rig can compare a framebuffer-
+ * sized message against a labels-sized one on the same link:
+ *
+ *   echo 1171 > /data/UserData/schwung/e16_blast    # framebuffer-sized
+ *   echo 92   > /data/UserData/schwung/e16_blast    # labels-sized
+ *   rm        /data/UserData/schwung/e16_blast
+ */
+let e16BlastLen = 0;
+let e16BlastCheckedAt = 0;
+let e16BlastSentAt = 0;
+let e16BlastSeq = 0;
+const E16_BLAST_INTERVAL_MS = 250;
+
+function e16BlastTick() {
+    const now = Date.now();
+    if (now - e16BlastCheckedAt >= 1000) {
+        e16BlastCheckedAt = now;
+        e16BlastLen = 0;
+        try {
+            const path = "/data/UserData/schwung/e16_blast";
+            if (typeof host_file_exists === "function" && host_file_exists(path)) {
+                const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+                if (!isNaN(n) && n > 0) e16BlastLen = Math.min(n, 4000);
+            }
+        } catch (e) {}
+    }
+    if (!e16BlastLen) return;
+    if (now - e16BlastSentAt < E16_BLAST_INTERVAL_MS) return;
+    e16BlastSentAt = now;
+
+    const msg = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x7F, e16BlastSeq & 0x7F];
+    for (let i = 0; i < e16BlastLen; i++) msg.push(i & 0x7F);
+    msg.push(0xF7);
+    e16BlastSeq++;
+
+    /* Straight down the same path a frame takes -- packetize, cable 2, the
+     * carry, the mailbox -- so the test measures the wire this feature uses
+     * and not some other one. */
+    try {
+        const packets = [];
+        let i = 0;
+        while (msg.length - i > 3) {
+            packets.push(0x04, msg[i], msg[i + 1], msg[i + 2]);
+            i += 3;
+        }
+        const left = msg.length - i;
+        packets.push(left === 1 ? 0x05 : left === 2 ? 0x06 : 0x07,
+                     msg[i] || 0, msg[i + 1] || 0, msg[i + 2] || 0);
+        if (typeof move_midi_external_send === "function") {
+            move_midi_external_send(packets);
+        }
+    } catch (e) {}
+}
 function e16TestPattern() {
     const now = Date.now();
     if (now - e16ProbeCheckedAt < 1000) return e16ProbeValue;
@@ -24856,6 +24932,7 @@ globalThis.tick = function() {
     reconcilePadBlock();
     reconcileExternalSurface();
     e16ReconcilePace();
+    e16BlastTick();
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
