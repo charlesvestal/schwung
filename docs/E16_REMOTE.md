@@ -187,3 +187,50 @@ Nothing on the meter comes from a parameter, so what it reports is the repaint
 rate alone. It counts COMPLETED sends, never intents: a refused send is not a
 paint, and a meter that climbed while the wire refused would be worse than no
 meter.
+
+## Why the framebuffer never became reliable
+
+Measured across a full day on hardware, 2026-09-11. Recorded because the
+conclusion is the opposite of where the evidence seemed to point at every
+individual step.
+
+**Four buffers sit between a drawn frame and the device, and every one of them
+dropped packets INDIVIDUALLY when full.** A 1171-byte framebuffer is a RUN of
+394 USB-MIDI packets that the receiver assembles into one message, so losing
+any packet in the middle is not a late frame — it is a corrupt one, rendered as
+a garbled screen. Three separate truncations were found and fixed, each hidden
+behind the one above it:
+
+1. `js_shadow_midi_send` wrote packets one at a time and dropped individually
+   once the SHM buffer filled. The same function already refused an oversize
+   message with the words *"refusing rather than truncating"* — that guard
+   covered only a message larger than the WHOLE buffer, never one larger than
+   the remaining room.
+2. `ui_midi_carry_push` does the same at the carry, and its own comment says so
+   (*"Refusing the newest packet truncates one message"*). The existing
+   `wants_more` backpressure asks whether the carry is below half, while a
+   snapshot can be the full buffer — so half-full plus a full snapshot
+   overruns, mid-message. Snapshots are taken whole or deferred whole now.
+3. A third source remains. After both fixes the screen went from constantly
+   garbled to occasionally garbled and no further.
+
+**And the pacing intuition was backwards the entire time.** 3 packets/frame was
+never measured — it was the first value that stopped the original garbling,
+which was really defect 1. Every later experiment contradicted the rate theory:
+
+- pace 1 (1.14 s per frame) garbles BADLY — a slower drain leaves less room, so
+  more refusals land mid-message rather than at a boundary
+- pace 12 is worse than pace 8 — `MIDI_OUT` is a SHARED 20-slot region and the
+  loss scales with how much of it we take
+- pace 20 wedged the device outright and needed a replug; the cap is 12 now,
+  with 8 slots reserved, and even 12 is too high in practice
+
+There is no pace that is reliably clean. **The framebuffer approach is fighting
+the transport's design**: a 394-packet message must survive four buffers intact
+every single time, and a short parameter message has to survive none of them —
+a 3-byte CC is one atomic packet that nothing on this path can split.
+
+That is the case for driving the device with SHORT messages and letting it draw
+its own UI, which is what OXI's own Lua scripting API exists for. LABELS (34
+packets) is the same idea within remote mode, and was rejected only because
+four characters cannot hold a parameter name.
