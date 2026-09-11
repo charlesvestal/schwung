@@ -667,7 +667,7 @@ static void ui_midi_out_drop_tick(void)
 static void ui_midi_out_volume_tick(void)
 {
     static int last_total = 0;
-    int total = ui_midi_carry_placed_count();
+    int total = shim_ui_midi_out_placed;
     int delta = total - last_total;
     if (delta <= 0) { last_total = total; return; }
     last_total = total;
@@ -682,7 +682,7 @@ static void ui_midi_out_volume_tick(void)
 static void ui_midi_out_stranded_tick(void)
 {
     static int last_total = 0;
-    int total = ui_midi_carry_stranded_count();
+    int total = shim_ui_midi_out_stranded;
     int delta = total - last_total;
     if (delta <= 0) { last_total = total; return; }
     last_total = total;
@@ -699,7 +699,7 @@ static void ui_midi_out_stranded_tick(void)
 static void ui_midi_out_foreign_tick(void)
 {
     static int last_total = 0;
-    int total = ui_midi_carry_foreign_count();
+    int total = shim_ui_midi_out_foreign;
     int delta = total - last_total;
     if (delta <= 0) { last_total = total; return; }
     last_total = total;

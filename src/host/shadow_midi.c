@@ -614,6 +614,9 @@ void shadow_inject_ui_midi_out(void)
     }
     ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
     shim_ui_midi_out_drops = ui_midi_carry.drops;
+    shim_ui_midi_out_placed = ui_midi_carry_placed_count();
+    shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
+    shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
 
     if (midi_out_shm->ready == last_ready) return;
 
@@ -691,6 +694,9 @@ void shadow_inject_ui_midi_out(void)
 
     ui_midi_carry_drain(&ui_midi_carry, midi_out, HW_MIDI_OUT_SIZE);
     shim_ui_midi_out_drops = ui_midi_carry.drops;
+    shim_ui_midi_out_placed = ui_midi_carry_placed_count();
+    shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
+    shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
 }
 
 /* ---- Shim-originated packets bound for Move's firmware --------------------
