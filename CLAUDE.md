@@ -701,6 +701,13 @@ in `src/shadow/shadow_ui.js`.** The load-bearing claims, so you know when to loo
   all: no `getParam` on that path, and the card script is its own closure, so it
   cannot see what the module's `drawCell` set. The first module to need it used
   `globalThis` and a staleness stamp, which worked and was a side channel.
+- **A TAKEOVER MUST BE ABLE TO ASK AGAIN, and a frame is not the place.**
+  `draw` and `tick` are DRAW_PATH_HOOKS with the accessors stripped, so a
+  fullscreen canvas could read only on its own input -- and it owns the screen
+  for minutes while a worker finishes or a Remote UI panel edits the same
+  module from a browser. `onPoll` is the event on a metronome: optional, full
+  ctx, at most one call per `CANVAS_POLL_MS` (250ms, ~1% of the budget, the
+  same order as the knob rotation). Read a handful of keys there, never a page.
 - **A module's OTHER draw surface is a CARD, and it FLOATS.** `drawCell` gives it
   one cell; `card_script` gives it the page — a bordered picture raised while a
   knob is held, gone on release. It is centred in the page's **FRAME**, not on

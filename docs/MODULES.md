@@ -2442,7 +2442,17 @@ Behavior notes:
 
 - Clicking the parameter enters a dedicated fullscreen canvas view.
 - Set `show_value: false` for button-style canvas entries that should not show a value.
-- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+- The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onPoll`, `onClose`, `onExit`.
+- **`draw` and `tick` have `getParam`/`setParam` REMOVED** — one read is ~2.8ms
+  against a 1.68ms whole render, so a per-frame read halves the frame rate of
+  everything on screen. Every other hook keeps them, because those are events.
+- **`onPoll` is the event on a metronome**: optional, full ctx, called at most
+  every `CANVAS_POLL_MS` (250ms) while the takeover is up. It exists because a
+  takeover owns the screen for minutes and things change under it that its own
+  input did not cause — a worker thread finishing, or a Remote UI panel editing
+  the same module from a browser. Without it a takeover tells the truth only
+  when the user touches something, which reads as a device that missed the
+  change. Read a HANDFUL of keys there, not a page.
 
 #### Custom widgets (`drawCell`)
 
