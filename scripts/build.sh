@@ -112,6 +112,29 @@ needs_rebuild() {
     return 1
 }
 
+#
+# EVERY HEADER, DERIVED -- NEVER ENUMERATED.
+#
+# The shim's dependency list was hand-written, and five headers had fallen out
+# of it: ui_midi_out_carry.h, ui_midi_out_ring.h, recall_quantize.h,
+# transport_grid.h, chain_idle_tick.h. Editing any of them left the shim NOT
+# rebuilt while package.sh repackaged anyway -- so the tarball got a fresh
+# timestamp around an unchanged binary, install.sh reported success, and the
+# device ran code nobody had compiled.
+#
+# That cost three deploys on 2026-09-11 and, worse, a WRONG CONCLUSION: a fix
+# was reported as "even worse" and reverted, when the binary under test had
+# never contained it. A silent staleness does not merely waste a cycle, it
+# inverts the experiment -- the same lesson as build.sh skipping the Link
+# sidecar and defeating a three-version bisect.
+#
+# Enumerating fixes it once and re-breaks it the next time somebody adds a
+# header, which is exactly how it reached five. Deriving the list cannot rot:
+# a new header is covered the day it is written. Over-approximating costs an
+# occasional needless rebuild; under-approximating ships the wrong binary.
+#
+SRC_HEADERS="$(ls src/host/*.h src/lib/*.h src/modules/chain/dsp/*.h 2>/dev/null)"
+
 SCREEN_READER_ENABLED=1
 if [ "$DISABLE_SCREEN_READER" = "1" ]; then
     SCREEN_READER_ENABLED=0
@@ -264,7 +287,8 @@ if needs_rebuild build/schwung-shim.so \
     src/host/schwung_trace.h \
     src/host/audio_fx_api_v2.h src/host/lfo_common.h src/host/fx_midi_filter.h \
     src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
-    src/host/link_audio.h src/host/shadow_shm_util.h; then
+    src/host/link_audio.h src/host/shadow_shm_util.h \
+    $SRC_HEADERS; then
     echo "Building shim..."
     "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
         -o build/schwung-shim.so \
