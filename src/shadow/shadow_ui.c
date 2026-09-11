@@ -31,6 +31,7 @@
 
 #include "host/js_display.h"
 #include "host/shadow_constants.h"
+#include "host/ui_midi_out_ring.h"   /* SPSC discipline for /schwung-midi-out */
 #include "host/shadow_shm_util.h"
 #include "host/js_host_common.h"
 #include "host/shadow_midi_inject_writer.h"
@@ -1525,15 +1526,15 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
      * Report that case distinctly so a producer can tell "wait" from "never",
      * and so the log names the size rather than leaving someone to infer it
      * from a device that has gone quiet. */
-    if (len > (int)SHADOW_MIDI_OUT_BUFFER_SIZE) {
+    if (len > (int)UI_MIDI_OUT_CAPACITY) {
         static time_t last_oversize = 0;
         time_t now_os = time(NULL);
         if (now_os != last_oversize) {
             last_oversize = now_os;
             unified_log("shadow_ui", LOG_LEVEL_DEBUG,
                         "shadow MIDI out: message of %d bytes exceeds the %d-byte "
-                        "buffer and can never be sent -- refusing rather than "
-                        "truncating", len, (int)SHADOW_MIDI_OUT_BUFFER_SIZE);
+                        "ring capacity and can never be sent -- refusing rather "
+                        "than truncating", len, (int)UI_MIDI_OUT_CAPACITY);
         }
         return JS_FALSE;
     }
@@ -1567,7 +1568,7 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
      * "still owed" and retry -- the same contract the oversize guard uses.
      */
     {
-        int room = SHADOW_MIDI_OUT_BUFFER_SIZE - shadow_midi_out->write_idx;
+        int room = ui_midi_out_free(shadow_midi_out);
         if (len > room) {
             shadow_midi_out_drops += len / 4;
             time_t now = time(NULL);
@@ -1584,8 +1585,20 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
         }
     }
 
-    /* Process 4 bytes at a time (USB-MIDI packet format) */
-    int dropped = 0;
+    /*
+     * ASSEMBLE LOCALLY, THEN PUBLISH ONCE.
+     *
+     * The old loop marshalled each packet straight into the SHM buffer and
+     * advanced write_idx per packet, which made every intermediate state of a
+     * multi-packet SysEx visible to the shim: it could snapshot a run whose
+     * tail had not been written yet, and the tail then arrived as a separate
+     * snapshot behind whatever else got queued in between. The capacity check
+     * above cannot prevent that — it only guarantees the room exists.
+     *
+     * Marshalling into a local buffer first means write_idx moves exactly once
+     * per message, so the shim either sees the whole run or none of it.
+     */
+    uint8_t staged[SHADOW_MIDI_OUT_BUFFER_SIZE];
     for (int i = 0; i < len; i += 4) {
         uint8_t packet[4] = {0, 0, 0, 0};
 
@@ -1599,39 +1612,23 @@ static JSValue js_shadow_midi_send(int cable, JSContext *ctx, JSValueConst this_
 
         /* Override cable number in CIN byte */
         packet[0] = (packet[0] & 0x0F) | (cable << 4);
-
-        /* Find space in buffer and write */
-        int write_offset = shadow_midi_out->write_idx;
-        if (write_offset + 4 <= SHADOW_MIDI_OUT_BUFFER_SIZE) {
-            memcpy(&shadow_midi_out->buffer[write_offset], packet, 4);
-            shadow_midi_out->write_idx = (uint16_t)(write_offset + 4);
-        } else {
-            dropped++;
-        }
+        memcpy(&staged[i], packet, 4);
     }
 
-    /* Signal shim that data is ready */
-    shadow_midi_out->ready++;
-
-    /* A write that discards and reports success is how an LED goes permanently
-     * wrong: input_filter's setLED records the colour it believes the hardware
-     * now shows and suppresses the next identical repaint, so a packet lost
-     * here is never retried. Report the failure so the caller can decline to
-     * cache it, and count it so "sometimes drops LEDs" is a number rather than
-     * a feeling. Logging here is safe — shadow_ui is a separate SCHED_OTHER
-     * process, not the SPI callback — but it is rate-limited so a flood cannot
-     * turn a dropped LED into a dropped audio block. */
-    if (dropped) {
-        shadow_midi_out_drops += dropped;
+    /* Cannot fail: the capacity check above already reserved the room, and
+     * this process is the only producer. Checked anyway — a silent success on
+     * a discarded write is the defect class this whole path exists to end. */
+    if (!ui_midi_out_push(shadow_midi_out, staged, (uint16_t)len)) {
+        shadow_midi_out_drops += len / 4;
         static time_t last_report = 0;
         time_t now = time(NULL);
         if (now != last_report) {
             last_report = now;
             unified_log("shadow_ui", LOG_LEVEL_DEBUG,
-                        "shadow MIDI out: buffer full, dropped %d packet(s) "
-                        "(%ld total) - more than %d bytes queued in one flush",
-                        dropped, shadow_midi_out_drops,
-                        SHADOW_MIDI_OUT_BUFFER_SIZE);
+                        "shadow MIDI out: push of %d bytes refused after the "
+                        "capacity check passed (%ld total dropped) -- two "
+                        "producers, or the ring indices are corrupt",
+                        len, shadow_midi_out_drops);
         }
         return JS_FALSE;
     }
