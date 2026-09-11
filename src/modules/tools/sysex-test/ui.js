@@ -37,6 +37,46 @@ import { Black, DullGreen, DarkGreen } from '/data/UserData/schwung/shared/const
 const SIZES = [64, 158, 316, 632];
 const PADS = [68, 69, 70, 71];
 
+/* Pad 5 sends whatever hex is in this file, instead of a generated payload.
+ *
+ * A file rather than a hardcoded constant because the message under test is
+ * usually one nobody here can verify. The case this was built for: putting an
+ * OXI E16 into remote mode, whose SysEx spec is published only in a Google
+ * Sheet that is now private -- so the bytes have to come from whoever has
+ * them, and baking in a guess would produce a test that looks like it passes
+ * while sending something meaningless.
+ *
+ * Format is forgiving on purpose: whitespace, newlines, commas and 0x prefixes
+ * are all fine, and a # starts a comment. Include the F0 and F7 -- they are
+ * ordinary bytes to the packetizer.
+ *
+ *   echo 'F0 00 21 5D 01 ... F7' > /data/UserData/schwung/sysex_send.txt
+ */
+const CUSTOM_PATH = "/data/UserData/schwung/sysex_send.txt";
+const CUSTOM_PAD = 72;
+
+/* ---- OXI E16 remote mode -------------------------------------------------
+ *
+ * From OXI's own "OXI REMOTE" spec sheet, E16 tab. Header f0 00 21 5b 02 01,
+ * then a two-byte message ID, then F7. ENTER and its ACK carry no payload.
+ *
+ * THE ACK IS WHY THIS PAD EXISTS. "Did the message go out" is answerable by
+ * the shim's PRE tap already; what nobody could answer is whether the DEVICE
+ * received it. The E16 answers 0x06 0x53 to acknowledge entering remote mode,
+ * so a round trip is observable and the pad reports RX rather than TX.
+ *
+ * That reply is inbound SysEx, which reaches JS only in overtake mode -- this
+ * module is an overtake tool, so it sees it. The same message sent from a
+ * chain slot would go out fine and the ACK would never arrive, which is
+ * exactly the "sends fine, never answers" shape in docs/SYSEX.md.
+ */
+const OXI_HDR = [0x00, 0x21, 0x5B, 0x02, 0x01];
+const OXI_ENTER = [0xF0].concat(OXI_HDR, [0x06, 0x55], [0xF7]);
+const OXI_EXIT  = [0xF0].concat(OXI_HDR, [0x06, 0x00], [0xF7]);
+const OXI_ACK_ID = [0x06, 0x53];
+const OXI_PAD = 73;
+const OXI_EXIT_PAD = 74;
+
 /* Non-commercial / prototype manufacturer ID. Nothing on the wire acts on it,
  * which matters when the rig is a shared USB bus. */
 const MFR = 0x7D;
@@ -76,12 +116,38 @@ function packetize(bytes) {
     return out;
 }
 
+/* Parse a hex string into bytes. Returns {bytes, error}.
+ *
+ * Reports WHY it failed rather than sending something wrong: a message that is
+ * silently truncated at the first bad token is exactly the failure mode this
+ * whole module exists to find, and it would be absurd to reproduce it here.
+ * Anything > 0xFF is rejected too -- that is almost always a missing space
+ * between two bytes, which would otherwise sail through as one wrong value. */
+function parseHex(text) {
+    const cleaned = String(text).replace(/#[^\n]*/g, " ");
+    const toks = cleaned.split(/[\s,]+/).filter(t => t.length > 0);
+    const out = [];
+    for (const t of toks) {
+        const h = t.replace(/^0[xX]/, "");
+        if (!/^[0-9a-fA-F]{1,2}$/.test(h)) {
+            return { bytes: null, error: "bad token " + t.slice(0, 6) };
+        }
+        out.push(parseInt(h, 16));
+    }
+    if (out.length === 0) return { bytes: null, error: "file is empty" };
+    return { bytes: out, error: null };
+}
+
 /* ==================== state ==================== */
 
 let sizeIdx = 1;                  /* 158 bytes */
 let txBytes = 0, txPackets = 0, txRefused = 0;
 let rxBytes = 0, rxExpected = 0, rxFirstBad = -1, rxVerdict = "-";
 let rxMessages = 0;
+let customNote = "";
+let oxiState = "";        /* what the E16 pad last did / saw */
+let oxiSentAt = 0;
+let ticks = 0;
 
 /* Inbound assembler. onMidiMessageExternal hands over three bytes at a time
  * with the CIN ALREADY STRIPPED, so there is no length field to trust — the
@@ -100,8 +166,24 @@ function rxByte(b) {
     if (asm.length < 4096) asm.push(b);
 }
 
+/* Is this assembled message the E16's remote-mode ACK?
+ * `asm` holds everything between F0 and F7, so header then message ID. */
+function isOxiAck() {
+    if (asm.length !== OXI_HDR.length + OXI_ACK_ID.length) return false;
+    for (let i = 0; i < OXI_HDR.length; i++) {
+        if (asm[i] !== OXI_HDR[i]) return false;
+    }
+    return asm[OXI_HDR.length] === OXI_ACK_ID[0] &&
+           asm[OXI_HDR.length + 1] === OXI_ACK_ID[1];
+}
+
 function finishMessage() {
     rxMessages++;
+
+    if (isOxiAck()) {
+        oxiState = "E16 ACK! remote on";
+        return;   /* not one of ours to score against the generator */
+    }
     /* asm holds MFR, 0x01, then the body. */
     const body = asm.slice(2);
     rxBytes = asm.length + 2;                 /* + F0 F7, for a wire-byte count */
@@ -136,6 +218,52 @@ function sendOne() {
     if (!ok) txRefused = 1;
 }
 
+/* Send the file's contents verbatim. The point is that nothing here
+ * interprets the message -- no framing check, no manufacturer-ID guess, no
+ * "helpfully" adding F0/F7. If the bytes are wrong, that is a fact about the
+ * bytes, and the shim's PRE tap will still show exactly what went to MIDI_OUT.
+ */
+function sendOxi(msg, label) {
+    customNote = "";
+    const pkts = packetize(msg);
+    txBytes = msg.length;
+    txPackets = pkts.length / 4;
+    txRefused = move_midi_external_send(pkts) ? 0 : 1;
+    if (txRefused) {
+        oxiState = label + " REFUSED";
+    } else {
+        /* Deliberately not "sent OK" -- the send returning true only means the
+         * host queued it. Whether the E16 got it is the ACK's job to say. */
+        oxiState = label + " sent, waiting ACK";
+        oxiSentAt = ticks;
+    }
+}
+
+function sendCustom() {
+    if (typeof host_file_exists === "function" && !host_file_exists(CUSTOM_PATH)) {
+        customNote = "no file";
+        txBytes = txPackets = 0;
+        return;
+    }
+    const text = host_read_file(CUSTOM_PATH);
+    if (text === null || text === undefined) {
+        customNote = "unreadable";
+        txBytes = txPackets = 0;
+        return;
+    }
+    const parsed = parseHex(text);
+    if (!parsed.bytes) {
+        customNote = parsed.error;
+        txBytes = txPackets = 0;
+        return;
+    }
+    const pkts = packetize(parsed.bytes);
+    txBytes = parsed.bytes.length;
+    txPackets = pkts.length / 4;
+    txRefused = move_midi_external_send(pkts) ? 0 : 1;
+    customNote = "sent file";
+}
+
 /* ==================== lifecycle ==================== */
 
 let ledInitPending = true;
@@ -150,7 +278,9 @@ function setupLedBatch() {
     for (let n = 0; n < 8 && ledInitIndex < 64; n++, ledInitIndex++) {
         const note = 68 + ledInitIndex;
         const isSize = PADS.indexOf(note) >= 0;
-        setLED(note, isSize ? (PADS[sizeIdx] === note ? DullGreen : DarkGreen) : Black);
+        if (note === CUSTOM_PAD || note === OXI_PAD || note === OXI_EXIT_PAD)
+            setLED(note, DullGreen);
+        else setLED(note, isSize ? (PADS[sizeIdx] === note ? DullGreen : DarkGreen) : Black);
     }
     if (ledInitIndex >= 64) ledInitPending = false;
 }
@@ -169,8 +299,11 @@ globalThis.onMidiMessageInternal = function (data) {
     if (status === 0x90 && d2 > 0) {
         const idx = PADS.indexOf(d1);
         if (idx >= 0) { sizeIdx = idx; refreshSizeLeds(); return; }
-        /* Any other pad sends, so the size row stays a selector. */
-        if (d1 >= 72 && d1 <= 99) sendOne();
+        if (d1 === CUSTOM_PAD) { sendCustom(); return; }
+        if (d1 === OXI_PAD) { sendOxi(OXI_ENTER, "ENTER"); return; }
+        if (d1 === OXI_EXIT_PAD) { sendOxi(OXI_EXIT, "EXIT"); return; }
+        /* Any other pad sends the generated payload. */
+        if (d1 > OXI_EXIT_PAD && d1 <= 99) { customNote = ""; sendOne(); }
     }
 };
 
@@ -181,6 +314,15 @@ globalThis.onMidiMessageExternal = function (data) {
 };
 
 globalThis.tick = function () {
+    ticks++;
+    /* An ACK that never arrives has to say so. Without a timeout the screen
+     * would sit on "waiting ACK" forever, which reads as "still working" --
+     * the same ambiguity between slow and broken that made the outbound bug
+     * take so long to find. ~2 s at the ~44 Hz tick. */
+    if (oxiSentAt && (ticks - oxiSentAt) > 88) {
+        oxiState = oxiState.replace(" waiting ACK", " NO ACK (2s)");
+        oxiSentAt = 0;
+    }
     if (ledInitPending) { setupLedBatch(); return; }
     draw();
 };
@@ -193,9 +335,11 @@ function draw() {
     print(2, 16, "size " + SIZES[sizeIdx] + "B", 1);
     print(2, 26, "tx " + txBytes + "B/" + txPackets + "p" +
                         (txRefused ? " REFUSED" : ""), 1);
+    if (oxiState) print(2, 36, oxiState, 1);
+    if (customNote) print(2, 46, customNote, 1);
 
     print(2, 36, "rx " + rxBytes + "B  n=" + rxMessages, 1);
     print(2, 46, rxVerdict + (rxFirstBad >= 0 ? " @" + rxFirstBad : ""), 1);
 
-    print(2, 56, "pad1-4=size rest=send", 1);
+    print(2, 56, "5=file 6=E16on 7=off", 1);
 }
