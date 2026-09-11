@@ -272,6 +272,7 @@ func TestModulesTemplateRendersSubcategory(t *testing.T) {
 		"Title":    "Modules",
 		"Active":   "modules",
 		"Taxonomy": tax,
+		"Channel":  "stable",
 		"Modules": []CatalogModule{{
 			ID:            "obxd",
 			Name:          "OB-Xd",

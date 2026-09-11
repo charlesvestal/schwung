@@ -12,7 +12,20 @@
         <h2>Schwung Host</h2>
         <dl class="detail-list">
             <dt>Version</dt>
-            <dd>{{if .HostRepo}}<a href="{{releaseURL .HostRepo .Version}}" target="_blank" rel="noopener noreferrer">{{.Version}}</a>{{else}}{{.Version}}{{end}}</dd>
+            <dd>{{if .HostRepo}}<a href="{{releaseURL .HostRepo .Version}}" target="_blank" rel="noopener noreferrer">{{.Version}}</a>{{else}}{{.Version}}{{end}}
+                {{if .UpdateAvailable}}
+                <a class="update-available" href="{{releaseURL .HostRepo .LatestVersion}}" target="_blank" rel="noopener noreferrer">{{.LatestVersion}} available</a>
+                {{if .OfferedIsBeta}} <span class="badge badge-beta" title="Pre-release build">beta</span>{{end}}
+                {{end}}
+                {{if .BetaTeaser}}
+                <span class="beta-teaser" title="Enable Beta channel on the Modules page to install this pre-release">beta {{.BetaTeaser}} available</span>
+                {{end}}
+            </dd>
+            <dt>Channel</dt>
+            <dd>
+                <span class="channel-value">{{if eq .Channel "beta"}}Beta{{else}}Stable{{end}}</span>
+                <span class="text-muted">&mdash; <a href="/modules">change</a></span>
+            </dd>
         </dl>
         <div class="system-actions">
             <form method="POST" action="/system/check-update" class="inline-form">
@@ -21,9 +34,9 @@
             </form>
             {{if .UpdateAvailable}}
             <form method="POST" action="/system/upgrade" class="inline-form"
-                  data-confirm="Upgrade to {{.LatestVersion}}? This will restart the service." data-confirm-title="Upgrade Schwung" data-confirm-label="Upgrade">
+                  data-confirm="Upgrade to {{if .OfferedIsBeta}}beta {{end}}{{.LatestVersion}}? This will restart the service." data-confirm-title="Upgrade Schwung" data-confirm-label="Upgrade">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-                <button type="submit" class="btn btn-primary">Upgrade to {{.LatestVersion}}</button>
+                <button type="submit" class="btn btn-primary">Upgrade to {{.LatestVersion}}{{if .OfferedIsBeta}} (beta){{end}}</button>
             </form>
             <a class="release-notes-link" href="{{releaseURL .HostRepo .LatestVersion}}" target="_blank" rel="noopener noreferrer">release notes</a>
             {{end}}
