@@ -121,7 +121,7 @@ const LABELS      = [0x06, 0x03];
  * and the map is a FRAMEBUFFER -- they override each other on the device, so a
  * test that names one of them is really asserting which view happened to be up
  * rather than that anything was drawn at all. */
-const isScreen = (p) => j(msgId(p)) === j(FRAMEBUFFER) || j(msgId(p)) === j(LABELS);
+const isScreen = (p) => j(msgId(p)) === j(LABELS) || j(msgId(p)) === j(FRAMEBUFFER);
 const RING = [0x06, 0x04];
 const EXIT = [0x06, 0x00];
 const ACK_BYTES = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x06, 0x53, 0xF7];
@@ -226,15 +226,16 @@ function rig(opts) {
   r.ack();
   r.ticks(2);
   ok(r.send.log.some(isScreen), "an acked device is painted");
-  /* The parameter view is a FRAMEBUFFER. LABELS is an eleventh of the cost and
-   * was tried here; four characters per encoder is not enough for a parameter
-   * name, tested on the device. The mode machinery stays because the protocol
-   * fact survives the decision -- the two modes override each other -- so this
-   * asserts only that a SCREEN was painted, and deliberately does not name
-   * which mode. Pinning the mode here would make the next experiment look like
-   * a regression. */
-  ok(r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
-     "...and the parameter view paints a picture, since 4 chars cannot hold a name");
+  /* The parameter view is LABELS -- 34 packets against 394 for a framebuffer.
+   * The framebuffer was tried for a day on hardware and garbled occasionally
+   * with every buffer on our side proven clean; the device own ceiling is
+   * four characters a cell either way (so Lua would buy nothing here and cost
+   * a script install), and the 16-character title is what carries the focused
+   * parameter in full. */
+  ok(r.send.log.some((p) => j(msgId(p)) === j(LABELS)),
+     "...and the parameter view paints LABELS, an eleventh of a framebuffer");
+  ok(!r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
+     "...and no framebuffer is sent at all -- the 394-packet message is gone");
   ok(r.params.reads.length > readsBefore,
      "...and only then does it read the contract");
 
@@ -248,16 +249,18 @@ function rig(opts) {
   r.ticks(3);
 
   const sent = r.send.log.slice(before).map((p) => j(msgId(p)));
-  ok(sent.includes(j(FRAMEBUFFER)),
-     "a component change produces a framebuffer on the wire");
+  ok(sent.includes(j(LABELS)),
+     "a component change produces a screen on the wire");
   eq("the surface followed the jump",
      [r.surface.slot, r.surface.component], [1, "synth"]);
 
-  /* The whole payload, not just the id: a framebuffer is 1024 raw bytes packed
-   * 8-to-7 (1171) plus F0, five header bytes, two id bytes and F7. */
-  const fb = r.send.log.slice(before).find((p) => j(msgId(p)) === j(FRAMEBUFFER));
-  eq("the framebuffer is a whole screen", unpack(fb).length, 1 + 5 + 2 + 1171 + 1);
-  ok(unpack(fb).some((b, i) => i > 7 && b !== 0), "the screen is not blank");
+  /* The whole payload, not just the id. LABELS is 80 raw bytes (a 16-char
+   * title plus 16 four-char cells) packed 8-to-7 into 92, plus F0, five header
+   * bytes, two id bytes and F7 -- 101 against the 1180 a framebuffer costs,
+   * which is the entire reason this path replaced that one. */
+  const lb = r.send.log.slice(before).find((p) => j(msgId(p)) === j(LABELS));
+  eq("the labels message is a whole screen", unpack(lb).length, 1 + 5 + 2 + 92 + 1);
+  ok(unpack(lb).some((b, i) => i > 7 && b !== 0), "the screen is not blank");
 
   /* RATE DISCIPLINE: never more than one framebuffer in flight. Three
    * invalidations inside one tick is ONE repaint. */
@@ -266,7 +269,7 @@ function rig(opts) {
   r.surface.feedMidi([0x80, 0x10, 0x00]);   /* shift up    -> params */
   r.surface.feedMidi([0x90, 0x10, 0x7F]);   /* shift down  -> map again */
   r.ticks(1);
-  const fbs = r.send.log.slice(b2).filter((p) => j(msgId(p)) === j(FRAMEBUFFER));
+  const fbs = r.send.log.slice(b2).filter((p) => isScreen(p));
   eq("three invalidations in one tick are one repaint", fbs.length, 1);
 }
 
@@ -350,7 +353,7 @@ function rig(opts) {
   r2.send.refuse = false;
   r2.ticks(1);
   const late = r2.send.log.slice(b).map((p) => j(msgId(p)));
-  ok(late.includes(j(FRAMEBUFFER)),
+  ok(late.includes(j(LABELS)),
      "the owed repaint goes out when the port frees up");
 
   /* Disabling gives the device back, exactly once, and stops everything. */
@@ -398,7 +401,7 @@ function rig(opts) {
   eq("and it is the ENTER", msgId(r.send.log[b]), ENTER);
   r.ticks(1);
   const after = r.send.log.slice(b + 1).map((p) => j(msgId(p)));
-  ok(after.includes(j(FRAMEBUFFER)),
+  ok(after.includes(j(LABELS)),
      "the deferred repaint goes out on the very next tick");
 
   /* Silence past LOSS_MS: the device is gone. Then it comes back. */

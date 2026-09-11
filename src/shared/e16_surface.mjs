@@ -930,13 +930,71 @@ export function createSurface(io) {
      * that is itself rebuilt per tick and costs no IPC), and rebuilding is what
      * keeps the reading in the title honest without a second staleness stamp to
      * get wrong. */
+    /*
+     * THE MODULE'S NAME, not the position id.
+     *
+     * nav.component is "synth" / "fx1" / "midi_fx2" -- an ADDRESS, not a name
+     * -- and passing it straight to the title is why the first LABELS build
+     * showed the word "SYNTH" on the device instead of "9W9". The one
+     * affordance that makes a 4-character grid workable is a title naming what
+     * you are actually touching, so getting this wrong disabled the feature
+     * while appearing to work.
+     */
+    const moduleNameFor = (slot, component) => {
+        const chain = chainOf() || {};
+        const sl = (chain.slots || [])[slot] || {};
+        if (component === "synth") return sl.synth || "";
+        let m = /^fx(\d+)$/.exec(component);
+        if (m) return (sl.fx || [])[Number(m[1]) - 1] || "";
+        m = /^midi_fx(\d+)$/.exec(component);
+        if (m) return (sl.midiFx || [])[Number(m[1]) - 1] || "";
+        m = /^bus(\d+)$/.exec(component);
+        if (m) return (sl.buses || [])[Number(m[1]) - 1] || "";
+        return component || "";
+    };
+
     const labelScreen = () => {
         const l = labelsFor(viewNow(), {
-            component: nav ? nav.component : "",
+            component: moduleNameFor(nav ? nav.slot : 0, nav ? nav.component : ""),
             focusEnc,
             metaOf,
         });
         return { kind: "labels", title: l.title, labels: l.labels };
+    };
+
+    /*
+     * THE MAP AS LABELS TOO, so the framebuffer is never sent at all.
+     *
+     * A map cell is a slot number or a module name, both of which fit four
+     * characters as well as anything else does -- and the title says which
+     * slot's components are listed, which the framebuffer's two headers used
+     * to carry between them.
+     *
+     * The current slot is marked with a leading '>' rather than the inverted
+     * box the picture drew: four characters is not much to spend one on, and
+     * an unmarked map cannot say where you are.
+     */
+    const mapScreen = () => {
+        /* Built here from the nav's public state rather than reaching into
+         * its private one: buildMap is pure and cheap, and a second accessor
+         * on the nav would be a second thing to keep in step. */
+        const m = buildMap(chainOf(), {
+            slot: nav ? nav.slot : 0,
+            page: nav ? nav.mapPage : 0,
+            showBuses: nav ? nav.showBuses : false,
+        });
+        const labels = new Array(16).fill("");
+        for (let i = 0; i < 16; i++) {
+            const c = m.cells[i];
+            if (!c) continue;
+            const name = c.kind === "slot" ? String(c.slot + 1) : String(c.label || "");
+            labels[i] = (c.current ? ">" : "") + name;
+        }
+        return {
+            kind: "labels",
+            title: "SLOT " + ((nav ? nav.slot : 0) + 1) + " PICK",
+            labels,
+        };
     };
 
     const nav = createNav({
@@ -1187,22 +1245,19 @@ export function createSurface(io) {
              */
             const probe = testPattern();
             /*
-             * BOTH VIEWS ARE PICTURES, and that is a measured decision rather
-             * than a default.
+             * LABELS FOR BOTH VIEWS. The framebuffer is reserved for the
+             * layout probe and is otherwise never sent.
              *
-             * LABELS is an eleventh of a framebuffer (35 ms against 383) and
-             * was tried for the parameter view. It gives FOUR characters per
-             * encoder and that is not enough for a parameter name -- tested on
-             * the device: "the 4 characters isn't enough actually". CUTO, OSCL
-             * and ENVA are guesses, and two of them collide as soon as a
-             * module has both Env Attack and Env Amount.
-             *
-             * The machinery stays because the protocol fact it encodes is
-             * permanent -- the two modes override each other, so a future
-             * LABELS overlay must still resend the picture behind it -- and
-             * because it is what keeps the device honest across a replug.
+             * It is 394 packets against 34, and after a day on hardware it
+             * still garbled occasionally with every buffer on our side proven
+             * clean. LABELS costs the two page headers and arbitrary text --
+             * the device's own limit is four characters a cell, so Lua would
+             * cost exactly the same and want a script installed on top.
+             * Reliability is the thing being bought here; density is the thing
+             * being spent.
              */
-            const screen = { kind: "framebuffer" };
+            const screen = probe >= 0 ? { kind: "framebuffer" }
+                         : (nav.mapVisible(t) ? mapScreen() : labelScreen());
 
             /* Arming or disarming the probe is a screen change like any other. */
             if (probe !== shownProbe) {
