@@ -54,6 +54,22 @@ than restating one.
 
 Cross-compile via `${CROSS_PREFIX}gcc` for Move's ARM. See `BUILDING.md`.
 
+### install.sh could skip the manager build in SILENCE
+
+Its rebuild was guarded on `command -v go`, so on a machine with Docker but no
+local Go the whole block evaluated to false and was skipped without a word --
+the only warning sat on the build-FAILED branch, inside an `if` that never ran.
+`install.sh local` then uploaded whatever `schwung-manager` was already in the
+tarball and reported success, so a manager fix could be deployed, confirmed
+deployed, and still not be running.
+
+`scripts/build-manager.sh` is the single builder for both callers (local `go`,
+else a golang container, else a hard failure), and install.sh now FAILS rather
+than warns: shipping a stale manager takes `SCHWUNG_ALLOW_STALE_MANAGER=1`,
+which says so on the way past. Same defect class as the link sidecar's silent
+skip -- a build step that can be skipped silently defeats every bisect after it.
+
+
 ## Testing
 
 Static/regression suite: `for t in tests/{host,shadow,store,build}/*.sh; do bash "$t"; done`
