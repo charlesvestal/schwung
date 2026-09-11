@@ -1643,3 +1643,26 @@ and why the shim branch logs nothing: `shadow_log` calls `unified_log`.
 Tests: `tests/host/test_snapshot_plan.sh` (the planner and its counts),
 `test_snapshot_gesture.sh` (the shim branch), `test_snapshot_wiring.sh` (the JS
 wiring and toast geometry), `test_ui_flags_layout.c` (the SHM layout).
+
+## Pad ownership is derived, and the release relights the grid
+
+`host_pad_block(1)` stops pad notes reaching Move and hands them to whoever is
+on screen — for EVERY module, not just the one that asked — so a UI that
+strands it costs every later module the pads until a reboot. `reconcilePadBlock()`
+therefore only ever CLEARS, deriving ownership from what is on screen rather
+than bookkeeping it.
+
+Three things it has to get right:
+
+- **A CANVAS PAGE OWNS THE PADS TOO.** A module page that is a picture takes
+  them in its `onOpen`. Counting only a loaded module UI as an owner meant the
+  block was cleared on the next tick and Move went on handling the pads
+  underneath the overlay — taken and revoked about sixty times a second.
+- **The display must actually be SHOWING.** `view` is where the shadow UI would
+  RESUME, not what is on screen: dismiss it with a view still open and `view`
+  stays put while Move owns the screen again. Testing the view alone keeps the
+  pads blocked for exactly the case this net exists to catch.
+- **The release RELIGHTS the grid.** Move writes a pad LED only when its own
+  value changes, so handing the pads back with the owner's colours still on
+  them — or blank — leaves pads that respond and are invisible. The shim
+  mirrors Move's pad state into overlay SHM; the release replays it, once.
