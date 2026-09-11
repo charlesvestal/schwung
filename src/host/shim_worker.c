@@ -639,6 +639,35 @@ static void ui_midi_out_drop_tick(void)
 }
 
 /*
+ * Foreign cable-2 packets landing in the mailbox while a message of ours is
+ * still going out -- i.e. Move's own output spliced into the middle of a SysEx
+ * the receiving device is still assembling.
+ *
+ * Separate from the drop counter because it is a different failure with the
+ * opposite remedy: a drop says we are sending too FAST for the carry, while
+ * this says our message is on the wire too LONG and somebody else wrote into
+ * it. Reading one as the other is what kept an interleave problem being
+ * treated as a rate problem.
+ */
+static void ui_midi_out_foreign_tick(void)
+{
+    static int last_total = 0;
+    int total = ui_midi_carry_foreign_count();
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d foreign cable-2 packet(s) in the mailbox this "
+             "window (%d total) while our own message was still going out - "
+             "Move's output is interleaving with our SysEx, which corrupts it "
+             "at the receiver regardless of pace",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
+/*
  * Drain the slow-param ring.
  *
  * WHY IT IS WORTH A LOG LINE OF ITS OWN. `param=7/20051` in the spi_timing
@@ -824,6 +853,7 @@ static void *worker_main(void *arg) {
             ext_midi_drop_tick();
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
+    ui_midi_out_foreign_tick();
             param_slow_tick();        /* always on; silent unless one overran */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
