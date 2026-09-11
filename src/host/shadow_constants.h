@@ -853,7 +853,7 @@ typedef struct shadow_param_t {
  */
 typedef struct shadow_midi_out_t {
     /* uint16_t, and it MUST be: the buffer is SHADOW_MIDI_OUT_BUFFER_SIZE
-     * bytes (now 1024) and this is a BYTE offset into it. As a uint8_t it
+     * bytes (now 4096) and this counts BYTES through it. As a uint8_t it
      * saturated at 255, so
      *   - only the first 63 packets of a 128-packet buffer were addressable,
      *     and the back half was never read at all;
@@ -867,9 +867,19 @@ typedef struct shadow_midi_out_t {
      * costs nothing — it takes one of the reserved bytes, so sizeof is
      * unchanged and both mappers (shadow_ui.c:83, schwung_shim.c:3417) use
      * sizeof. */
-    volatile uint16_t write_idx;     /* Shadow UI increments after writing */
-    volatile uint8_t ready;          /* Toggle to signal new data */
-    volatile uint8_t reserved[1];
+    /* PRODUCER-OWNED (shadow_ui). Free-running byte count, not an offset. */
+    volatile uint16_t write_idx;
+    /* CONSUMER-OWNED (the shim). Same units. The shim writes THIS AND NOTHING
+     * ELSE in the segment — see src/host/ui_midi_out_ring.h for why, and for
+     * the bug that ends when it stops writing the buffer.
+     *
+     * It takes the space of the old `ready` counter and its reserved byte,
+     * which is deliberate: `ready` only ever answered "has JS flushed since
+     * last time", and `write_idx != read_idx` answers that exactly, with no
+     * wrap ambiguity. Reusing the bytes keeps sizeof unchanged, so neither
+     * mapper needs a resize and no stale-segment SIGBUS is possible on
+     * upgrade. */
+    volatile uint16_t read_idx;
     uint8_t buffer[SHADOW_MIDI_OUT_BUFFER_SIZE];  /* USB-MIDI packets (4 bytes each) */
 } shadow_midi_out_t;
 

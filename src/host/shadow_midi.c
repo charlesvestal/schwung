@@ -13,6 +13,7 @@
 #include "shadow_led_queue.h"
 #include "shadow_overlay.h"  /* MIDI channel indicator globals */
 #include "ui_midi_out_carry.h"  /* outbound packets that did not fit this frame */
+#include "ui_midi_out_ring.h"   /* SPSC discipline for the /schwung-midi-out SHM */
 #include "shim_worker.h"        /* shim_ui_midi_out_drops */
 
 static void shadow_chain_transpose_reset(void);
@@ -590,14 +591,13 @@ static ui_midi_carry_t ui_midi_carry;
 void shadow_inject_ui_midi_out(void)
 {
     shadow_midi_out_t *midi_out_shm = *host_shadow_midi_out_shm;
-    static uint8_t last_ready = 0;
 
     if (!midi_out_shm) return;
 
     /* Inject into shadow_mailbox at MIDI_OUT_OFFSET */
     uint8_t *midi_out = host_shadow_mailbox + MIDI_OUT_OFFSET;
 
-    /* Drain the carry FIRST, and unconditionally — before the `ready` check,
+    /* Drain the carry FIRST, and unconditionally — before the emptiness check,
      * not after it. The old early-return keyed the whole function to "did JS
      * flush since last time", which is a 60 Hz question, while the mailbox
      * empties at 344 Hz. Anything held over has to go out on frames where JS
@@ -618,12 +618,12 @@ void shadow_inject_ui_midi_out(void)
     shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
     shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
 
-    if (midi_out_shm->ready == last_ready) return;
+    if (ui_midi_out_used(midi_out_shm) == 0) return;
 
     /* Backpressure: leave the SHM buffer alone while the carry is deep. It
      * fills, js_shadow_midi_send() starts returning false, and a module that
      * paces on that return value is now pacing on the actual mailbox. Do NOT
-     * advance last_ready — this snapshot is deferred, not skipped. */
+     * commit read_idx — this snapshot is deferred, not skipped. */
     if (!ui_midi_carry_wants_more(&ui_midi_carry)) return;
 
     /*
@@ -639,38 +639,33 @@ void shadow_inject_ui_midi_out(void)
      *
      * The existing `wants_more` backpressure is necessary and not sufficient:
      * it only asks whether the carry is below half, while a snapshot can be
-     * the full 1024 packets, so 511 + 1024 overruns by 511 -- and the overrun
-     * lands mid-message.
+     * the full ring, so half-full plus a full snapshot overruns -- and the
+     * overrun lands mid-message.
      *
-     * Deferring is free and already the established response here: write_idx
-     * is left alone, `last_ready` is NOT advanced, and the same snapshot is
-     * taken whole on a later frame once the carry has drained. It costs
+     * Deferring is free and already the established response here: read_idx is
+     * NOT committed, so the same bytes are still queued and the same snapshot
+     * is taken whole on a later frame once the carry has drained. It costs
      * latency, never a corrupt message.
      */
+    /* ONE snapshot of the producer's index, used for the capacity test AND the
+     * copy. Re-reading it between the two would let a burst that arrived in
+     * between be admitted past a check that did not measure it. */
+    uint16_t copy_len = ui_midi_out_used(midi_out_shm);
     {
-        int pending = midi_out_shm->write_idx;
         int free_bytes = UI_MIDI_CARRY_BYTES - ui_midi_carry.len;
-        if (pending > free_bytes) return;
+        if ((int)copy_len > free_bytes) return;
     }
 
-    last_ready = midi_out_shm->ready;
     if (host_init_led_queue) host_init_led_queue();
 
-    /* Snapshot buffer first, then reset write_idx.
-     * Copy before resetting to avoid a race where the JS process writes
-     * new data between our reset and memcpy. */
-    int snapshot_len = midi_out_shm->write_idx;
+    /* Copy, then RELEASE — and nothing else is written to the segment. The
+     * consumer owns read_idx alone; write_idx and the buffer belong to
+     * shadow_ui, which is a different process. See ui_midi_out_ring.h. */
     uint8_t local_buf[SHADOW_MIDI_OUT_BUFFER_SIZE];
-    int copy_len = snapshot_len < (int)SHADOW_MIDI_OUT_BUFFER_SIZE
-                 ? snapshot_len : (int)SHADOW_MIDI_OUT_BUFFER_SIZE;
-    if (copy_len > 0) {
-        memcpy(local_buf, midi_out_shm->buffer, copy_len);
-    }
-    __sync_synchronize();
-    midi_out_shm->write_idx = 0;
-    memset(midi_out_shm->buffer, 0, SHADOW_MIDI_OUT_BUFFER_SIZE);
+    ui_midi_out_copy(midi_out_shm, local_buf, copy_len);
+    ui_midi_out_commit(midi_out_shm, copy_len);
 
-    for (int i = 0; i < copy_len; i += 4) {
+    for (int i = 0; i < (int)copy_len; i += 4) {
         uint8_t cin = local_buf[i];
         uint8_t cable = (cin >> 4) & 0x0F;
         uint8_t status = local_buf[i + 1];

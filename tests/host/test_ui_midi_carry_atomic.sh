@@ -15,6 +15,11 @@
 # Found on hardware 2026-09-11: after the display's latency was cut, the extra
 # traffic reached this path and the garbling came back ("MUCH better but
 # garbles") with the SHM-level truncation already fixed.
+#
+# The deferral used to work by not advancing a `last_ready` counter. It now
+# works by not committing read_idx (see src/host/ui_midi_out_ring.h) -- the
+# same property, one buffer's ownership rules further on, so this pin is
+# written against the COMMIT rather than against either spelling.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -26,28 +31,23 @@ fail() { echo "FAIL: $*" >&2; fails=$((fails + 1)); }
 fit_line=$(grep -n "UI_MIDI_CARRY_BYTES - ui_midi_carry.len" "$SRC" | head -1 | cut -d: -f1)
 [ -n "$fit_line" ] || fail "no whole-snapshot capacity check -- a snapshot larger than the carry's free space is truncated mid-message"
 
-# ...and it must come BEFORE write_idx is cleared, or the deferral discards the
-# very packets it was trying to protect.
-reset_line=$(grep -n "midi_out_shm->write_idx = 0;" "$SRC" | head -1 | cut -d: -f1)
-[ -n "$reset_line" ] || fail "the write_idx reset moved; this pin needs rewriting against whatever replaced it"
+# ...and it must come BEFORE the bytes are released, or the deferral discards
+# the very packets it was trying to protect.
+commit_line=$(grep -n "ui_midi_out_commit(" "$SRC" | head -1 | cut -d: -f1)
+[ -n "$commit_line" ] || fail "the consumer no longer commits read_idx; this pin needs rewriting against whatever replaced it"
 
-if [ -n "$fit_line" ] && [ -n "$reset_line" ] && [ "$fit_line" -gt "$reset_line" ]; then
-    fail "the capacity check (line $fit_line) runs AFTER write_idx is cleared (line $reset_line) -- the deferred snapshot is already gone"
+if [ -n "$fit_line" ] && [ -n "$commit_line" ] && [ "$fit_line" -gt "$commit_line" ]; then
+    fail "the capacity check (line $fit_line) runs AFTER the bytes are released (line $commit_line) -- the deferred snapshot is already gone"
 fi
 
-# And it must DEFER, not drop: returning without advancing last_ready is what
-# makes the same snapshot arrive whole on a later frame.
+# And it must DEFER, not drop: returning without committing is what makes the
+# same snapshot arrive whole on a later frame.
 if [ -n "$fit_line" ]; then
     body=$(sed -n "${fit_line},$((fit_line + 3))p" "$SRC")
     case "$body" in
         *"return"*) ;;
-        *) fail "the capacity check does not defer -- it must return without advancing last_ready" ;;
+        *) fail "the capacity check does not defer -- it must return without committing read_idx" ;;
     esac
-fi
-
-ready_line=$(grep -n "last_ready = midi_out_shm->ready;" "$SRC" | head -1 | cut -d: -f1)
-if [ -n "$fit_line" ] && [ -n "$ready_line" ] && [ "$fit_line" -gt "$ready_line" ]; then
-    fail "the check runs after last_ready is advanced -- the deferred snapshot is never retaken"
 fi
 
 [ "$fails" -eq 0 ] || { echo "$fails check(s) failed" >&2; exit 1; }
