@@ -506,3 +506,44 @@ func TestPublishedAtNormalisesTheVPrefix(t *testing.T) {
 		t.Errorf("an unknown version must be undatable, got %q", got)
 	}
 }
+
+// A user running a beta build should be able to see that they are. The
+// badge is driven by the author's prerelease FLAG, never by the tag
+// looking beta-ish — davebox's whole 1.x line is named "beta" and
+// marked prerelease on none of it.
+func TestInstalledIsPrereleaseUsesTheFlagNotTheName(t *testing.T) {
+	rm := ReleaseMeta{
+		Releases: []ReleaseRef{
+			{Tag: "v0.13.0-beta.1", PublishedAt: "2026-09-02T10:00:00Z", Prerelease: true},
+			{Tag: "v0.13.0", PublishedAt: "2026-09-05T10:00:00Z", Prerelease: false},
+		},
+	}
+	cases := []struct {
+		version string
+		want    bool
+		why     string
+	}{
+		{"0.13.0-beta.1", true, "flagged prerelease"},
+		{"v0.13.0-beta.1", true, "v prefix normalised"},
+		{"0.13.0", false, "flagged stable"},
+		{"0.9.9", false, "unknown version — never guess"},
+		{"", false, "empty version"},
+	}
+	for _, c := range cases {
+		if got := installedIsPrerelease(rm, c.version); got != c.want {
+			t.Errorf("installedIsPrerelease(%q) = %v, want %v (%s)",
+				c.version, got, c.want, c.why)
+		}
+	}
+
+	// davebox: beta-shaped tags, prerelease flag set on none of them.
+	// Badging these would tell every davebox user they are on a beta.
+	if installedIsPrerelease(daveboxMeta(), "1.0-beta.8") {
+		t.Error("an unflagged release must not be badged from its name")
+	}
+
+	// Metadata with no releases[] at all cannot answer.
+	if installedIsPrerelease(ReleaseMeta{Version: "0.13.0-beta.1"}, "0.13.0-beta.1") {
+		t.Error("without releases[] there is no flag to read; must stay silent")
+	}
+}

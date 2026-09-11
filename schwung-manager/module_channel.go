@@ -374,3 +374,35 @@ func publishedAt(rm ReleaseMeta, version string) string {
 	}
 	return ""
 }
+
+// installedIsPrerelease reports whether the version a user is RUNNING
+// was published as a prerelease.
+//
+// This is a different question from the one the Available list asks. A
+// row there shows the version that would be INSTALLED, so a badge marks
+// the offer. An installed row shows what is already on the device, so a
+// badge there has to mean "you are running a beta build" -- and that
+// fact had no marker at all: a user could sit on 0.13.0-beta.1 with
+// nothing on the page saying so, on either channel.
+//
+// Answered from the author's own prerelease FLAG in releases[], never
+// from the shape of the tag. Reading the name would badge davebox's
+// entire 1.x line, whose author has simply never cut a 1.0 and marked
+// none of it prerelease -- the same inference this codebase already
+// refuses when picking channels.
+//
+// Unknown version, or metadata without releases[]: no badge. Silence is
+// correct when we cannot answer; a guess here is a false claim about
+// what someone is running.
+func installedIsPrerelease(rm ReleaseMeta, version string) bool {
+	want := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if want == "" {
+		return false
+	}
+	for _, r := range rm.Releases {
+		if strings.TrimPrefix(r.Tag, "v") == want {
+			return r.Prerelease
+		}
+	}
+	return false
+}

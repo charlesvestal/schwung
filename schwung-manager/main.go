@@ -734,6 +734,13 @@ var funcMap = template.FuncMap{
 		stable := channelStableVersion(rm)
 		return beta != "" && versionNewer(beta, stable)
 	},
+	// installedIsBeta reports whether the version currently INSTALLED
+	// was published as a prerelease, so the installed list can say
+	// "you are running a beta build" — a fact that otherwise appears
+	// nowhere on the page.
+	"installedIsBeta": func(rm ReleaseMeta, version string) bool {
+		return installedIsPrerelease(rm, version)
+	},
 	// betaTeaser returns the beta version string when the user is on
 	// stable, the module publishes a beta, and that beta is newer than
 	// what stable would offer. Empty otherwise. Callers use this to
