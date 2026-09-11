@@ -10383,7 +10383,57 @@ let externalSurfaceMode = 0;
 /* The outbound door. It returns FALSE when the buffer is full, which means
  * RETRY -- the surface treats that as "not sent" and tries again on the next
  * tick rather than advancing its clock past a message the device never saw. */
+/*
+ * WHICH USB-MIDI CABLE THE SURFACE GOES OUT ON.
+ *
+ * Default 2, the external port, which is also where Move sends its own notes,
+ * aftertouch and clock -- and sharing it is the whole bug: a 34-packet screen
+ * update spans ~5 SPI frames, so anything Move emits in that window lands
+ * inside our SysEx, which a conformant receiver must then discard.
+ *
+ * USB-MIDI multiplexes 16 virtual cables over ONE endpoint and the RECEIVER
+ * demuxes on the cable nibble, so a different cable is a separate stream that
+ * Move's output cannot splice into -- immunity without a second physical jack,
+ * which is the thing Move's XMOS cannot give us.
+ *
+ * Measured 2026-09-11: the XMOS does emit for cables 3-8 (cable 1 produces
+ * nothing). What is NOT yet known is whether the nibble survives to the device
+ * or is flattened onto one stream on the way -- and a BLE adapter cannot
+ * answer that, because BLE MIDI has no cable concept and flattens by design.
+ * Only the E16 itself can, which is what this override is for:
+ *
+ *   ssh ableton@move.local "echo 3 > /data/UserData/schwung/e16_cable"
+ *   ssh ableton@move.local "rm /data/UserData/schwung/e16_cable"   # back to 2
+ *
+ * Screen fine and no longer garbling -> the cable separates the streams.
+ * Screen fine and still garbling     -> the XMOS flattens; cable buys nothing.
+ * Screen dead                        -> the E16 listens on one cable only.
+ */
+let e16CableCheckedAt = 0;
+let e16Cable = 2;
+function e16ReconcileCable() {
+    const now = Date.now();
+    if (now - e16CableCheckedAt < 1000) return;
+    e16CableCheckedAt = now;
+    let want = 2;
+    try {
+        const path = "/data/UserData/schwung/e16_cable";
+        if (typeof host_file_exists === "function" && host_file_exists(path)) {
+            const n = parseInt(String(host_read_file(path) || "").trim(), 10);
+            /* 0 is Move's own hardware bus and 15 is the SPI protocol itself --
+             * neither is a destination, and writing SysEx at 15 would corrupt
+             * the transport carrying it. */
+            if (!isNaN(n) && n >= 1 && n <= 14) want = n;
+        }
+    } catch (e) {}
+    e16Cable = want;
+}
+
 function e16Send(packets) {
+    e16ReconcileCable();
+    if (e16Cable !== 2 && typeof move_midi_cable_send === "function") {
+        return move_midi_cable_send(e16Cable, packets);
+    }
     if (typeof move_midi_external_send !== "function") return false;
     return move_midi_external_send(packets);
 }
@@ -10478,6 +10528,7 @@ let e16ProbeCheckedAt = 0;
  *   echo 92   > /data/UserData/schwung/e16_blast    # labels-sized
  *   rm        /data/UserData/schwung/e16_blast
  */
+let e16BlastCable = 2;
 let e16BlastLen = 0;
 let e16BlastCheckedAt = 0;
 let e16BlastSentAt = 0;
@@ -10494,6 +10545,14 @@ function e16BlastTick() {
             if (typeof host_file_exists === "function" && host_file_exists(path)) {
                 const n = parseInt(String(host_read_file(path) || "").trim(), 10);
                 if (!isNaN(n) && n > 0) e16BlastLen = Math.min(n, 4000);
+            }
+        } catch (e) {}
+        e16BlastCable = 2;
+        try {
+            const cpath = "/data/UserData/schwung/e16_blast_cable";
+            if (typeof host_file_exists === "function" && host_file_exists(cpath)) {
+                const c = parseInt(String(host_read_file(cpath) || "").trim(), 10);
+                if (!isNaN(c) && c >= 0 && c <= 15) e16BlastCable = c;
             }
         } catch (e) {}
     }
@@ -10519,7 +10578,14 @@ function e16BlastTick() {
         const left = msg.length - i;
         packets.push(left === 1 ? 0x05 : left === 2 ? 0x06 : 0x07,
                      msg[i] || 0, msg[i + 1] || 0, msg[i + 2] || 0);
-        if (typeof move_midi_external_send === "function") {
+        /* Cable from a file, default 2 -- see js_move_midi_cable_send. The
+         * question this answers is whether the XMOS emits anything at all for
+         * a cable other than 2, because a separate cable is the only thing
+         * that would make a screen update unsplittable by Move's own notes. */
+        const cable = e16BlastCable;
+        if (cable !== 2 && typeof move_midi_cable_send === "function") {
+            move_midi_cable_send(cable, packets);
+        } else if (typeof move_midi_external_send === "function") {
             move_midi_external_send(packets);
         }
     } catch (e) {}
