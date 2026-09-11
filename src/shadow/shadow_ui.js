@@ -10702,6 +10702,25 @@ const e16Surface = createE16Surface({
     chainOf: e16ChainShape,
     followFocusOf: e16FollowFocus,
     testPatternOf: e16TestPattern,
+    /* "labels" only if the file says so; the drawn panel otherwise. */
+    screenModeOf: () => {
+        try {
+            const path = "/data/UserData/schwung/e16_screen";
+            if (typeof host_file_exists === "function" && host_file_exists(path)) {
+                return String(host_read_file(path) || "").trim().toLowerCase() === "labels"
+                    ? "labels" : "framebuffer";
+            }
+        } catch (e) {}
+        return "framebuffer";
+    },
+    /* Move's own cable-2 traffic, counted by the shim. The surface gates its
+     * self-heal restate on this -- see FOREIGN_QUIET_MS in e16_surface.mjs. */
+    foreignOf: () => {
+        try {
+            return typeof host_ui_midi_foreign === "function"
+                ? host_ui_midi_foreign() : 0;
+        } catch (e) { return 0; }
+    },
     /*
      * A FACTORY, and the surface gets a controller of its OWN.
      *

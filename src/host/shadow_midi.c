@@ -617,6 +617,11 @@ void shadow_inject_ui_midi_out(void)
     shim_ui_midi_out_placed = ui_midi_carry_placed_count();
     shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
     shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
+    {   /* Publish for the UI process: the E16 surface gates its self-heal
+         * restate on this. Same indirection the pace read above uses. */
+        shadow_control_t *sc_pub = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc_pub) sc_pub->ui_midi_foreign = (uint32_t)ui_midi_carry_foreign_count();
+    }
     shim_ui_midi_out_retries = ui_midi_carry_retry_count();
     shim_ui_midi_out_unretryable = ui_midi_carry_unretryable_count();
 
@@ -694,6 +699,11 @@ void shadow_inject_ui_midi_out(void)
     shim_ui_midi_out_placed = ui_midi_carry_placed_count();
     shim_ui_midi_out_stranded = ui_midi_carry_stranded_count();
     shim_ui_midi_out_foreign = ui_midi_carry_foreign_count();
+    {   /* Publish for the UI process: the E16 surface gates its self-heal
+         * restate on this. Same indirection the pace read above uses. */
+        shadow_control_t *sc_pub = host_shadow_control ? *host_shadow_control : NULL;
+        if (sc_pub) sc_pub->ui_midi_foreign = (uint32_t)ui_midi_carry_foreign_count();
+    }
     shim_ui_midi_out_retries = ui_midi_carry_retry_count();
     shim_ui_midi_out_unretryable = ui_midi_carry_unretryable_count();
 }

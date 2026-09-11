@@ -44,6 +44,9 @@ const R = process.cwd();
 const { createSurface, KEEPALIVE_MS, LOSS_MS } =
   await import(R + "/src/shared/e16_surface.mjs");
 const { createController } = await import(R + "/src/shared/param_pages/page_controller.mjs");
+/* LABELS is no longer the default view, so its payload shape is pinned by
+ * building one directly rather than fishing it out of the wire log. */
+const { packetize, labelsMsg } = await import(R + "/src/shared/e16_protocol.mjs");
 
 let fails = 0;
 const ok = (c, m) => { if (!c) { console.log("FAIL: " + m); fails++; } else console.log("ok   " + m); };
@@ -226,16 +229,28 @@ function rig(opts) {
   r.ack();
   r.ticks(2);
   ok(r.send.log.some(isScreen), "an acked device is painted");
-  /* The parameter view is LABELS -- 34 packets against 394 for a framebuffer.
-   * The framebuffer was tried for a day on hardware and garbled occasionally
-   * with every buffer on our side proven clean; the device own ceiling is
-   * four characters a cell either way (so Lua would buy nothing here and cost
-   * a script install), and the 16-character title is what carries the focused
-   * parameter in full. */
-  ok(r.send.log.some((p) => j(msgId(p)) === j(LABELS)),
-     "...and the parameter view paints LABELS, an eleventh of a framebuffer");
-  ok(!r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
-     "...and no framebuffer is sent at all -- the 394-packet message is gone");
+  /*
+   * THE PARAMETER VIEW IS THE FRAMEBUFFER AGAIN -- and this pin was the
+   * opposite a day ago, so the reversal is worth stating rather than quietly
+   * editing.
+   *
+   * LABELS was adopted as a reliability stopgap: 34 packets against 394, so it
+   * garbles far less often. It buys that by giving up the drawn panel and
+   * capping every cell at FOUR characters, which is the device own limit and
+   * not something we can spend our way out of.
+   *
+   * The trade turned out not to be ours to make. Neither form is CORRECT --
+   * the corruption is Move splicing its own notes into our SysEx on the one
+   * cable its XMOS will carry SysEx over (2026-09-11), and quiet-start, retry
+   * and restate-suppression were each built and measured and none of them fix
+   * it. So the choice is a good screen that sometimes breaks against a poor
+   * one that breaks less often, and the user picked the screen.
+   *
+   * `screenModeOf` still returns "labels" on request, so the fallback is one
+   * echo away and this asserts the DEFAULT, not the only possibility.
+   */
+  ok(r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
+     "...and the parameter view paints the FRAMEBUFFER by default");
   ok(r.params.reads.length > readsBefore,
      "...and only then does it read the contract");
 
@@ -249,16 +264,20 @@ function rig(opts) {
   r.ticks(3);
 
   const sent = r.send.log.slice(before).map((p) => j(msgId(p)));
-  ok(sent.includes(j(LABELS)),
+  ok(sent.includes(j(FRAMEBUFFER)),
      "a component change produces a screen on the wire");
   eq("the surface followed the jump",
      [r.surface.slot, r.surface.component], [1, "synth"]);
 
-  /* The whole payload, not just the id. LABELS is 80 raw bytes (a 16-char
-   * title plus 16 four-char cells) packed 8-to-7 into 92, plus F0, five header
-   * bytes, two id bytes and F7 -- 101 against the 1180 a framebuffer costs,
-   * which is the entire reason this path replaced that one. */
-  const lb = r.send.log.slice(before).find((p) => j(msgId(p)) === j(LABELS));
+  /* The whole payload, not just the id. Built directly rather than captured
+   * from the wire: the default view is the framebuffer now, so a LABELS
+   * message no longer appears in the log -- but the encoding is still a live
+   * path behind `screenModeOf`, and its shape is worth pinning either way.
+   *
+   * LABELS is 80 raw bytes (a 16-char title plus 16 four-char cells) packed
+   * 8-to-7 into 92, plus F0, five header bytes, two id bytes and F7 -- 101
+   * against the 1180 a framebuffer costs. */
+  const lb = packetize(labelsMsg("0123456789abcdef", Array(16).fill("wxyz")));
   eq("the labels message is a whole screen", unpack(lb).length, 1 + 5 + 2 + 92 + 1);
   ok(unpack(lb).some((b, i) => i > 7 && b !== 0), "the screen is not blank");
 
@@ -353,7 +372,7 @@ function rig(opts) {
   r2.send.refuse = false;
   r2.ticks(1);
   const late = r2.send.log.slice(b).map((p) => j(msgId(p)));
-  ok(late.includes(j(LABELS)),
+  ok(late.includes(j(FRAMEBUFFER)),
      "the owed repaint goes out when the port frees up");
 
   /* Disabling gives the device back, exactly once, and stops everything. */
@@ -401,7 +420,7 @@ function rig(opts) {
   eq("and it is the ENTER", msgId(r.send.log[b]), ENTER);
   r.ticks(1);
   const after = r.send.log.slice(b + 1).map((p) => j(msgId(p)));
-  ok(after.includes(j(LABELS)),
+  ok(after.includes(j(FRAMEBUFFER)),
      "the deferred repaint goes out on the very next tick");
 
   /* Silence past LOSS_MS: the device is gone. Then it comes back. */

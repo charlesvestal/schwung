@@ -2946,6 +2946,24 @@ static JSValue js_host_external_surface(JSContext *ctx, JSValueConst this_val,
  *
  * Clamped in the carry rather than here, so every writer gets the same bounds.
  */
+/* host_ui_midi_foreign() -> number
+ *
+ * The shim's running count of cable-2 packets Move placed in the mailbox while
+ * a message of ours was still going out. Free-running; the caller reads the
+ * DELTA, because the absolute value means nothing.
+ *
+ * This is the one fact the E16 surface cannot observe for itself. Move's own
+ * notes, aftertouch and clock leave on the external port and shadow_ui never
+ * sees them -- pads arrive on cable 0, and a playing clip arrives nowhere --
+ * so "is Move transmitting right now" has to come from the shim or not at all.
+ */
+static JSValue js_host_ui_midi_foreign(JSContext *ctx, JSValueConst this_val,
+                                       int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt64(ctx, (int64_t)shadow_control->ui_midi_foreign);
+}
+
 static JSValue js_host_ui_midi_pace(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv) {
     (void)this_val;
@@ -3465,6 +3483,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register pad block function */
     JS_SetPropertyStr(ctx, global_obj, "host_external_surface", JS_NewCFunction(ctx, js_host_external_surface, "host_external_surface", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_pace", JS_NewCFunction(ctx, js_host_ui_midi_pace, "host_ui_midi_pace", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_ui_midi_foreign", JS_NewCFunction(ctx, js_host_ui_midi_foreign, "host_ui_midi_foreign", 0));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_claim_ccs", JS_NewCFunction(ctx, js_host_claim_ccs, "host_claim_ccs", 1));
