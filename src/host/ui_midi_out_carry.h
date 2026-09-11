@@ -305,8 +305,28 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
     int slot = 0;
     int read = 0;
 
-    /* Did LAST frame's packets actually leave? Checked before we write
-     * anything this frame, so what we are reading is the state Move left. */
+    /*
+     * LAST FRAME'S PACKETS MUST NOT BE SENT TWICE.
+     *
+     * Nothing clears the shadow MIDI_OUT after a transfer -- worse, the shim's
+     * post-transfer sync copies the output region back from hardware, so a
+     * packet we placed is STILL THERE afterwards. It is normally overwritten
+     * because Move rewrites the region each frame; when Move does not, our
+     * packet is transmitted a SECOND time.
+     *
+     * For channel-voice traffic a duplicate is a stuck note at worst. For a
+     * SysEx it is fatal in the same way a drop is: the receiver is assembling
+     * one message, and a repeated packet corrupts it just as thoroughly as a
+     * missing one. Measured at ~0.6/sec, which is ~3% of 34-packet LABELS
+     * messages -- matching the observed rate of occasional garbling.
+     *
+     * This was originally counted as "stranded", i.e. read as evidence that
+     * MOVE had failed to take the packet. That reading was wrong and the
+     * counter could not tell the two apart: "still present" means "not
+     * consumed" OR "consumed and copied back". Clearing it makes the question
+     * moot -- the slot is free for this frame either way, and nothing of ours
+     * can be sent twice.
+     */
     for (int q = 0; q < ui_midi_carry_last_n; q++) {
         const int sl = ui_midi_carry_last_slot[q];
         if (sl + 4 > region_bytes) continue;
@@ -314,7 +334,9 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
             midi_out[sl + 1] == ui_midi_carry_last_pkt[q][1] &&
             midi_out[sl + 2] == ui_midi_carry_last_pkt[q][2] &&
             midi_out[sl + 3] == ui_midi_carry_last_pkt[q][3]) {
-            ui_midi_carry_stranded++;
+            ui_midi_carry_stranded++;          /* now: "would have repeated" */
+            midi_out[sl] = 0; midi_out[sl + 1] = 0;
+            midi_out[sl + 2] = 0; midi_out[sl + 3] = 0;
         }
     }
     ui_midi_carry_last_n = 0;
