@@ -34,9 +34,25 @@ At ~144 ms per repaint we cannot show moving values and keep the LED rings
 smooth — the link cannot carry both, so every design trades one for the other.
 We have shipped three different compromises and users noticed all three.
 
-**Ask:** a partial framebuffer write — page/column range plus bytes, in the
-spirit of SSD1306 addressing. Even a quarter-screen region would make the
-difference between "shows values" and "shows values smoothly".
+**Checked first: it does not already exist.** The spec sheet says so outright
+("partial updates are not supported"), and nothing resembling an undocumented
+`06 xx` id appears in the decoded 1.1.0 image — no message-id dispatch table,
+no additional handler we could find short of full disassembly.
+
+**Ask:** a partial framebuffer write — `start_page (0-7), start_col (0-127),
+n_pages, n_cols` then the packed bytes, i.e. the page/column addressing the
+spec already names. Even a quarter-screen region is the difference between
+"shows values" and "shows values smoothly".
+
+Worth noting for scope: the framebuffer is documented as "SSD1306 page/column
+format", which is that controller's native windowed addressing — so the panel
+supports sub-region writes at the hardware level and this is plausibly
+exposing a window the driver already programs, rather than new capability. We
+could not confirm that from the image (no init sequence or controller string
+was recoverable), so it is offered as a question rather than an assertion.
+
+What it would cost US: almost nothing. The canvas and both renderers already
+exist; we would add dirty-rectangle tracking and send only what changed.
 
 ## 3. Text width
 
