@@ -365,6 +365,21 @@ type ReleaseMeta struct {
 	LastUpdated  string      `json:"last_updated"`
 	Version      string      `json:"version"`
 	Channels     *ChannelSet `json:"channels,omitempty"`
+	// Releases is every release the generator could see, oldest first,
+	// each with a FULL published_at timestamp. It is what lets update
+	// detection order two versions by when they were published rather
+	// than by parsing their names. Absent on metadata written before
+	// that landed (including a stale copy in manager-cache/), which is
+	// why every reader falls back to the version compare.
+	Releases []ReleaseRef `json:"releases,omitempty"`
+}
+
+// ReleaseRef is one published release: the tag, when it went out, and
+// whether its author marked it a prerelease.
+type ReleaseRef struct {
+	Tag         string `json:"tag"`
+	PublishedAt string `json:"published_at"`
+	Prerelease  bool   `json:"prerelease"`
 }
 
 // CatalogService fetches and caches the remote module catalog.
@@ -682,13 +697,12 @@ var funcMap = template.FuncMap{
 		if !ok {
 			return false
 		}
-		v := channelVersion(meta[id], channel)
+		rm := meta[id]
+		v := channelVersion(rm, channel)
 		if v == "" {
 			return false // Can't tell — don't show update button
 		}
-		// versionNewer, not isNewerSemver: a beta user sitting on
-		// 0.13.0-beta.1 must be offered the 0.13.0 that supersedes it.
-		return versionNewer(v, inst.Version)
+		return updateAvailable(rm, v, inst.Version)
 	},
 	// channelVersion returns the version string of the release the
 	// user's current channel would install. Empty when metadata has
@@ -1080,11 +1094,12 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 	currentChannel := app.channel()
 	hasAnyUpdate := false
 	for id, inst := range installed {
-		v := channelVersion(releaseMeta[id], currentChannel)
+		rm := releaseMeta[id]
+		v := channelVersion(rm, currentChannel)
 		if v == "" {
 			continue
 		}
-		if versionNewer(v, inst.Version) {
+		if updateAvailable(rm, v, inst.Version) {
 			hasAnyUpdate = true
 			break
 		}

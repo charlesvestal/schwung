@@ -309,3 +309,68 @@ func normalizeChannel(v string) string {
 	}
 	return ""
 }
+
+// ---------------------------------------------------------------------------
+// Update detection, ordered by publish date
+// ---------------------------------------------------------------------------
+
+// updateAvailable reports whether `offered` supersedes what is installed.
+//
+// It prefers PUBLISH DATE over the version string, because the version
+// string is an author convention we do not control and isNewerSemver is
+// not a SemVer compare -- it splits on "." and Atoi's each part, so
+// "1.0b2" and "1.0b" both read as [1, 0] and tie. Three davebox
+// releases (v1.0b2, b3, b4) therefore never drew an Update button for
+// anyone installed at v1.0b, silently, until a tag with a "-" in it
+// happened to give the string a third dotted component.
+//
+// Dates are a fact the catalog already collects. Ordering by them makes
+// the tag scheme irrelevant: whatever the author calls it, a release
+// published later supersedes one published earlier WITHIN the channel
+// the user asked for. The channel picks the candidate set; the date
+// picks the newest of that set.
+//
+// Falls back to versionNewer when either side cannot be dated:
+//   - metadata predating the releases[] field (a stale manager-cache/
+//     copy is the common one), so there are no dates at all
+//   - an installed version matching no tag: a sideloaded build, or one
+//     of the four catalog entries whose github_repo is not where their
+//     releases live, or a history past GitHub's page cap
+//
+// The fallback is exactly today's behaviour, so a miss is never worse
+// than not having done this.
+func updateAvailable(rm ReleaseMeta, offered, installed string) bool {
+	if offered == "" || installed == "" {
+		return false
+	}
+	if offered == installed {
+		return false
+	}
+	offeredAt := publishedAt(rm, offered)
+	installedAt := publishedAt(rm, installed)
+	if offeredAt != "" && installedAt != "" {
+		// RFC 3339 in a fixed zone (GitHub always emits Z), so a string
+		// compare orders these correctly without parsing.
+		return offeredAt > installedAt
+	}
+	return versionNewer(offered, installed)
+}
+
+// publishedAt finds a version's publish timestamp in the release list,
+// or "" when the metadata cannot date it.
+//
+// Tags are matched with the "v" prefix normalised off BOTH sides: a
+// module's module.json records "1.0b4" while its tag is "v1.0b4", and
+// that holds for 129 of the 133 catalogued modules.
+func publishedAt(rm ReleaseMeta, version string) string {
+	want := strings.TrimPrefix(strings.TrimSpace(version), "v")
+	if want == "" {
+		return ""
+	}
+	for _, r := range rm.Releases {
+		if strings.TrimPrefix(r.Tag, "v") == want {
+			return r.PublishedAt
+		}
+	}
+	return ""
+}

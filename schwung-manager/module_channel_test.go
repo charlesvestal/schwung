@@ -408,3 +408,101 @@ func TestHasUpdateOffersStableToABetaUser(t *testing.T) {
 		}
 	}
 }
+
+// daveboxMeta is davebox's real release history, taken from the GitHub
+// API on 2026-09-11. It is the fixture that matters because its tag
+// scheme is what breaks a version-string compare: "1.0b2" and "1.0b"
+// both parse to [1, 0] and tie, so three consecutive releases never
+// drew an Update button for anyone installed at v1.0b.
+//
+// Note the two SAME-DAY pairs (v1.0b/v1.0b2, beta.7/beta.8). They are
+// why the generator emits full timestamps rather than the day strings
+// the other metadata fields use — at day resolution these tie again,
+// on exactly the comparisons being fixed.
+func daveboxMeta() ReleaseMeta {
+	return ReleaseMeta{
+		Version: "v1.0-beta.8",
+		Releases: []ReleaseRef{
+			{Tag: "v0.4.0", PublishedAt: "2026-05-15T18:01:54Z"},
+			{Tag: "v1.0b", PublishedAt: "2026-05-30T01:47:25Z"},
+			{Tag: "v1.0b2", PublishedAt: "2026-05-30T17:16:08Z"},
+			{Tag: "v1.0b3", PublishedAt: "2026-05-31T01:37:42Z"},
+			{Tag: "v1.0b4", PublishedAt: "2026-06-07T23:00:11Z"},
+			{Tag: "v1.0-beta.5", PublishedAt: "2026-06-24T17:46:32Z"},
+			{Tag: "v1.0-beta.6", PublishedAt: "2026-06-25T16:19:18Z"},
+			{Tag: "v1.0-beta.7", PublishedAt: "2026-07-21T00:14:05Z"},
+			{Tag: "v1.0-beta.8", PublishedAt: "2026-07-21T14:48:40Z"},
+		},
+	}
+}
+
+func TestUpdateAvailableOrdersByPublishDate(t *testing.T) {
+	rm := daveboxMeta()
+	cases := []struct {
+		offered, installed string
+		want               bool
+		why                string
+	}{
+		{"1.0b2", "1.0b", true, "same day, nine hours apart — the version compare ties here"},
+		{"1.0b3", "1.0b2", true, "version compare ties"},
+		{"1.0b4", "1.0b3", true, "version compare ties"},
+		{"1.0-beta.5", "1.0b4", true, "tag scheme changes mid-history"},
+		{"1.0-beta.8", "1.0-beta.7", true, "same day, fourteen hours apart"},
+		{"1.0-beta.8", "1.0b", true, "three releases behind"},
+		{"1.0-beta.8", "1.0-beta.8", false, "already current"},
+		{"1.0b4", "1.0-beta.8", false, "never offer an older release"},
+		{"0.4.0", "1.0-beta.8", false, "never offer an older release"},
+	}
+	for _, c := range cases {
+		t.Run(c.offered+"_over_"+c.installed, func(t *testing.T) {
+			if got := updateAvailable(rm, c.offered, c.installed); got != c.want {
+				t.Errorf("updateAvailable(%q, %q) = %v, want %v (%s)",
+					c.offered, c.installed, got, c.want, c.why)
+			}
+		})
+	}
+}
+
+// Metadata with no releases[] — a stale manager-cache/ copy, or any
+// version the list cannot date — must fall back to the version compare
+// rather than reporting "no update" for everything.
+func TestUpdateAvailableFallsBackWhenUndatable(t *testing.T) {
+	t.Run("no releases list at all", func(t *testing.T) {
+		rm := ReleaseMeta{Version: "0.5.0"}
+		if !updateAvailable(rm, "0.5.0", "0.4.0") {
+			t.Error("with no dates, must fall back to the version compare")
+		}
+		if updateAvailable(rm, "0.4.0", "0.5.0") {
+			t.Error("fallback must not offer an older version")
+		}
+	})
+
+	t.Run("installed version matches no tag", func(t *testing.T) {
+		rm := daveboxMeta()
+		// A sideloaded build the catalog has never seen.
+		if !updateAvailable(rm, "1.0-beta.8", "0.9.0") {
+			t.Error("an undatable installed version must fall back, not block")
+		}
+	})
+
+	t.Run("beta rollback still works through the fallback", func(t *testing.T) {
+		rm := ReleaseMeta{Version: "0.13.0"}
+		if !updateAvailable(rm, "0.13.0", "0.13.0-beta.1") {
+			t.Error("stable must supersede its own prerelease")
+		}
+	})
+}
+
+// The v prefix lives on the tag and not in module.json, so matching has
+// to normalise both sides. 129 of 133 catalogued modules rely on this.
+func TestPublishedAtNormalisesTheVPrefix(t *testing.T) {
+	rm := daveboxMeta()
+	for _, v := range []string{"1.0b4", "v1.0b4"} {
+		if got := publishedAt(rm, v); got != "2026-06-07T23:00:11Z" {
+			t.Errorf("publishedAt(%q) = %q, want the v1.0b4 timestamp", v, got)
+		}
+	}
+	if got := publishedAt(rm, "9.9.9"); got != "" {
+		t.Errorf("an unknown version must be undatable, got %q", got)
+	}
+}
