@@ -2161,6 +2161,19 @@
       "default_branch": "main",
       "asset_name": "bouba-kiki-module.tar.gz",
       "min_host_version": "1.2.1"
+    },
+    {
+      "id": "acid",
+      "name": "Acid",
+      "description": "Dual generative acid-bassline sequencer, blendable algorithms, slot MIDI FX.",
+      "author": "sd88me",
+      "component_type": "midi_fx",
+      "subcategory": "sequencer",
+      "tags": ["bass", "generative"],
+      "github_repo": "sd88me/schwung-acid",
+      "default_branch": "master",
+      "asset_name": "acid-module.tar.gz",
+      "min_host_version": "1.2.0"
     }
   ]
 }
