@@ -67,6 +67,30 @@ export const KEEPALIVE_MS = 2000;
 export const LOSS_MS = 6000;
 
 /*
+ * How often the current screen is restated even though nothing changed.
+ *
+ * THE LINK LOSES PACKETS, and not because our messages are too big: a
+ * 101-byte LABELS message (34 packets) still corrupts occasionally on
+ * hardware, with every buffer on our side proven clean and the message
+ * verified well-formed -- legal framing, correct CINs, byte-exact through the
+ * device-side unpacking. The 394-packet framebuffer garbled more often for
+ * the obvious reason, not a different one.
+ *
+ * We cannot stop the loss, so the screen is made SELF-HEALING instead: a
+ * corruption is repaired within this interval by a message costing 34
+ * packets. That was unthinkable when a repaint cost 394 and is nearly free
+ * now, which is the real dividend of leaving the framebuffer behind.
+ *
+ * A RESTATE, not a retry -- there is no acknowledgement to wait for and
+ * nothing to detect, the same reason the shim restates pad_block every frame
+ * rather than tracking it. Idempotent by construction: the same labels set
+ * the same labels.
+ *
+ * Rings still outrank it, so a heartbeat never interrupts a turn.
+ */
+export const SCREEN_HEARTBEAT_MS = 1500;
+
+/*
  * How long a hand has to be still before the printed numbers are redrawn.
  *
  * 180 ms is about one slow detent apart: fast enough that letting go of a knob
@@ -284,6 +308,8 @@ export function createDisplay() {
      * transition visible -- the same shape as the presence edge, one layer in.
      */
     let shownKind = null;
+    /* When the last screen actually went out, for the heartbeat below. */
+    let shownAt = null;
     /* The title/name text, owed separately from the screen KIND: a detent
      * changes the reading without changing the mode, and it must not cost a
      * repaint. */
@@ -332,7 +358,7 @@ export function createDisplay() {
          * @returns {"framebuffer"|"rings"|null} what went out, for tests and
          *        for a caller that wants to log its send budget.
          */
-        tick(send, frameBytes, screen) {
+        tick(send, frameBytes, screen, nowMs) {
             /*
              * A screen is owed when the surface says so OR when the device is
              * in the wrong MODE for what is being shown. The second half is
@@ -351,6 +377,10 @@ export function createDisplay() {
                     fbOwed = false;
                     labelsOwed = false;
                     shownKind = want;
+                    /* Stamped on a COMPLETED send, which is what the
+                     * self-heal heartbeat measures its age from. A refused
+                     * send must not look like a fresh screen. */
+                    if (nowMs !== undefined) shownAt = nowMs;
                     return want;
                 }
                 return null;
@@ -374,6 +404,10 @@ export function createDisplay() {
         get framebufferOwed() { return fbOwed; },
         get labelsTextOwed() { return labelsOwed; },
         get shownKind() { return shownKind; },
+        /* Milliseconds since the screen last went out, or null if never. */
+        screenAge(nowMs) {
+            return shownAt === null || nowMs === undefined ? null : nowMs - shownAt;
+        },
         /* A replug wipes the panel, so what the device was told is no longer
          * true. Forgetting it is what makes the presence edge resend. */
         forgetShown() { shownKind = null; },
@@ -1259,6 +1293,15 @@ export function createSurface(io) {
             const screen = probe >= 0 ? { kind: "framebuffer" }
                          : (nav.mapVisible(t) ? mapScreen() : labelScreen());
 
+            /* SELF-HEAL. The link drops packets, so a screen that has stood
+             * untouched for a while is restated -- 34 packets to repair a
+             * corruption we cannot prevent and cannot detect. */
+            const age = display.screenAge(t);
+            if (age !== null && age >= SCREEN_HEARTBEAT_MS &&
+                settlePainted && !display.ringsPending) {
+                display.invalidate();
+            }
+
             /* Arming or disarming the probe is a screen change like any other. */
             if (probe !== shownProbe) {
                 shownProbe = probe;
@@ -1281,7 +1324,7 @@ export function createSurface(io) {
                 if (probe >= 0) drawTestPattern(canvas, probe, { paints, fps: paintFps });
                 else nav.render(canvas, t);
                 return canvas.toBuffer();
-            }, screen);
+            }, screen, t);
 
             /* A PAINT is a completed send, never an intent. */
             if (sent === "framebuffer" || sent === "labels") {
