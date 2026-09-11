@@ -83,7 +83,7 @@ func resolveReleaseForChannel(rel ReleaseJSON, want string) (ChannelEntry, strin
 			// A beta only wins when it is strictly newer than stable.
 			// Equal or older betas fall through to stable, so the
 			// beta user quietly lands on stable once it catches up.
-			if channelNewer(beta.Version, stable.Version) {
+			if versionNewer(beta.Version, stable.Version) {
 				return beta, ChannelBeta
 			}
 		}
@@ -91,27 +91,36 @@ func resolveReleaseForChannel(rel ReleaseJSON, want string) (ChannelEntry, strin
 	return stable, ChannelStable
 }
 
-// channelNewer reports whether `beta` should win over `stable` for a
-// beta user. Reuses isNewerSemver for the numeric compare but adds
-// one SemVer-2.0.0 rule the tolerant helper misses: a version WITH a
+// versionNewer reports whether version `a` supersedes version `b`.
+// Reuses isNewerSemver for the numeric compare but adds one
+// SemVer-2.0.0 rule the tolerant helper misses: a version WITH a
 // prerelease suffix (e.g. "0.13.0-beta.1") is LESS than the same
-// base version WITHOUT one ("0.13.0"). Without this, isNewerSemver
-// classifies "0.13.0-beta.1" as newer than "0.13.0" (it has more
-// dotted parts) — which would strand a beta user on the prerelease
-// after the matching stable cut, exactly the failure mode this
-// channel design is supposed to prevent.
-func channelNewer(beta, stable string) bool {
-	betaBase, betaPre := splitPrerelease(beta)
-	stableBase, stablePre := splitPrerelease(stable)
-	// Same base + exactly one side has a prerelease: the base version
-	// wins. This is the guard against isNewerSemver classifying
-	// "0.13.0-beta.1" as newer than "0.13.0". When BOTH sides have
-	// prereleases (comparing beta.2 vs beta.1) or NEITHER does, fall
-	// through to the ordinary compare.
-	if betaBase == stableBase && (betaPre == "") != (stablePre == "") {
-		return betaPre == "" // beta wins iff stable is the prerelease
+// base version WITHOUT one ("0.13.0"). isNewerSemver gets this
+// backwards in both directions, because it splits on "." and reads
+// "0-beta" as 0, leaving the prerelease with MORE dotted parts:
+//
+//	isNewerSemver("0.13.0-beta.1", "0.13.0") == true   // wrong
+//	isNewerSemver("0.13.0", "0.13.0-beta.1") == false  // wrong
+//
+// The first strands a beta user on the prerelease after the matching
+// stable cut (the resolver would keep picking the beta); the second
+// hides the Update button that would carry them back onto stable.
+// Both halves need this compare — the resolver AND the
+// installed-vs-offered check — or the rollback only half works.
+//
+// Left the general isNewerSemver untouched: checkHostCompat compares
+// a module's min_host_version against the running host, where a
+// 1.4.0-beta.1 host SHOULD satisfy a min of 1.4.0.
+func versionNewer(a, b string) bool {
+	aBase, aPre := splitPrerelease(a)
+	bBase, bPre := splitPrerelease(b)
+	// Same base + exactly one side has a prerelease: the plain base
+	// version wins. When BOTH sides carry prereleases (beta.2 vs
+	// beta.1) or NEITHER does, fall through to the ordinary compare.
+	if aBase == bBase && (aPre == "") != (bPre == "") {
+		return aPre == "" // a wins iff b is the prerelease
 	}
-	return isNewerSemver(beta, stable)
+	return isNewerSemver(a, b)
 }
 
 // splitPrerelease splits a version on the first "-" so we can compare
@@ -167,7 +176,7 @@ func channelVersion(rm ReleaseMeta, channel string) string {
 	stable := channelStableVersion(rm)
 	if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
 		beta := rm.Channels.Beta.Version
-		if beta != "" && channelNewer(beta, stable) {
+		if beta != "" && versionNewer(beta, stable) {
 			return beta
 		}
 	}
@@ -206,11 +215,16 @@ func NewChannelPref(basePath string) *ChannelPref {
 	return cp
 }
 
+// configPath is deliberately NOT under manager-cache/ — that directory
+// holds catalog.json and release-metadata.json, both of which are
+// disposable and get cleared to force a refetch. A user preference
+// living there would be silently reset by a cache clear, surfacing as
+// "the channel toggle forgot my choice" with nothing to point at.
 func (cp *ChannelPref) configPath() string {
 	if cp == nil || cp.basePath == "" {
 		return ""
 	}
-	return filepath.Join(cp.basePath, "manager-cache", "manager-config.json")
+	return filepath.Join(cp.basePath, "manager-config.json")
 }
 
 func (cp *ChannelPref) loadFromDisk() {
@@ -256,9 +270,13 @@ func (cp *ChannelPref) SetChannel(v string) bool {
 	if c == "" {
 		return false
 	}
+	// The mutex is held across the read-modify-write, not just the
+	// field assignment: the merge below reads the file, adds one key
+	// and writes the whole thing back, so two concurrent SetChannel
+	// calls could otherwise interleave and drop a sibling setting.
 	cp.mu.Lock()
+	defer cp.mu.Unlock()
 	cp.channel = c
-	cp.mu.Unlock()
 
 	p := cp.configPath()
 	if p == "" {

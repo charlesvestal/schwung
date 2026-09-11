@@ -146,7 +146,8 @@ func TestResolveMultiModule(t *testing.T) {
 	}
 }
 
-// The ChannelPref file is written to manager-cache and survives round-
+// The ChannelPref file is written beside the manager's other state
+// (NOT under manager-cache/, which is disposable) and survives round-
 // trips. An invalid value is rejected and the previous value stays.
 func TestChannelPrefRoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -175,9 +176,9 @@ func TestChannelPrefRoundTrip(t *testing.T) {
 	}
 
 	// Confirm the file lives where the docs say it does.
-	data, err := os.ReadFile(filepath.Join(dir, "manager-cache", "manager-config.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "manager-config.json"))
 	if err != nil {
-		t.Errorf("expected manager-cache/manager-config.json to exist: %v", err)
+		t.Errorf("expected manager-config.json to exist: %v", err)
 	}
 	if !strings.Contains(string(data), `"module_channel"`) {
 		t.Errorf("config file missing module_channel key: %s", data)
@@ -245,7 +246,7 @@ func TestModulesTemplateRendersWithChannel(t *testing.T) {
 	}
 }
 
-// channelNewer must treat "0.13.0-beta.1" as older than "0.13.0" —
+// versionNewer must treat "0.13.0-beta.1" as older than "0.13.0" —
 // the tolerant isNewerSemver classifies the prerelease as newer
 // because it has more dotted parts, which would strand a beta user
 // on the prerelease after the matching stable cut. This test pins
@@ -263,9 +264,9 @@ func TestChannelNewerPrereleaseLosesToBase(t *testing.T) {
 		{"1.0.0-rc.5", "1.0.0", false},
 	}
 	for _, c := range cases {
-		got := channelNewer(c.beta, c.stable)
+		got := versionNewer(c.beta, c.stable)
 		if got != c.want {
-			t.Errorf("channelNewer(%q, %q) = %v, want %v", c.beta, c.stable, got, c.want)
+			t.Errorf("versionNewer(%q, %q) = %v, want %v", c.beta, c.stable, got, c.want)
 		}
 	}
 }
@@ -345,6 +346,65 @@ func TestChannelVersionMatchesResolver(t *testing.T) {
 		helperGot := channelVersion(rm, ch)
 		if resolverGot.Version != helperGot {
 			t.Errorf("channel %q: resolver=%q helper=%q", ch, resolverGot.Version, helperGot)
+		}
+	}
+}
+
+// A beta user must be carried BACK onto stable once stable catches up.
+// The resolver half of this was covered from the start
+// (TestResolveBetaFallsBackWhenStableCatchesUp); the compare that
+// decides whether the Update button is even drawn was not, and it went
+// through the raw isNewerSemver — which answers false for
+// ("0.13.0", "0.13.0-beta.1"), because it reads "0-beta" as 0 and then
+// hands the win to whichever side has more dotted parts. The resolver
+// offered the right version to a button nothing rendered.
+func TestVersionNewerCarriesBetaUserBackToStable(t *testing.T) {
+	cases := []struct {
+		name      string
+		offered   string
+		installed string
+		want      bool
+	}{
+		{"stable supersedes the matching prerelease", "0.13.0", "0.13.0-beta.1", true},
+		{"prerelease does not supersede its own base", "0.13.0-beta.1", "0.13.0", false},
+		{"later prerelease supersedes an earlier one", "0.13.0-beta.2", "0.13.0-beta.1", true},
+		{"beta ahead of installed stable", "1.3.0-beta.1", "1.2.3", true},
+		{"same version is not an update", "0.13.0", "0.13.0", false},
+		{"older stable is not an update", "0.12.9", "0.13.0", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := versionNewer(c.offered, c.installed); got != c.want {
+				t.Errorf("versionNewer(%q, %q) = %v, want %v",
+					c.offered, c.installed, got, c.want)
+			}
+		})
+	}
+}
+
+// The same rollback, exercised through the template helper the Modules
+// page actually calls, so a future refactor that reintroduces
+// isNewerSemver at this call site fails here rather than on a device.
+func TestHasUpdateOffersStableToABetaUser(t *testing.T) {
+	hasUpdate, ok := funcMap["hasUpdate"].(func(string, map[string]InstalledModule, map[string]ReleaseMeta, string) bool)
+	if !ok {
+		t.Fatalf("hasUpdate has an unexpected signature: %T", funcMap["hasUpdate"])
+	}
+	installed := map[string]InstalledModule{
+		"wayward": {Version: "0.13.0-beta.1"},
+	}
+	meta := map[string]ReleaseMeta{
+		"wayward": {
+			Version: "0.13.0",
+			Channels: &ChannelSet{
+				Stable: &ChannelEntry{Version: "0.13.0"},
+				Beta:   &ChannelEntry{Version: "0.13.0-beta.1"},
+			},
+		},
+	}
+	for _, channel := range []string{ChannelStable, ChannelBeta} {
+		if !hasUpdate("wayward", installed, meta, channel) {
+			t.Errorf("channel %q: a user on 0.13.0-beta.1 must be offered 0.13.0", channel)
 		}
 	}
 }

@@ -686,7 +686,9 @@ var funcMap = template.FuncMap{
 		if v == "" {
 			return false // Can't tell — don't show update button
 		}
-		return isNewerSemver(v, inst.Version)
+		// versionNewer, not isNewerSemver: a beta user sitting on
+		// 0.13.0-beta.1 must be offered the 0.13.0 that supersedes it.
+		return versionNewer(v, inst.Version)
 	},
 	// channelVersion returns the version string of the release the
 	// user's current channel would install. Empty when metadata has
@@ -703,7 +705,7 @@ var funcMap = template.FuncMap{
 		}
 		beta := rm.Channels.Beta.Version
 		stable := channelStableVersion(rm)
-		return beta != "" && channelNewer(beta, stable)
+		return beta != "" && versionNewer(beta, stable)
 	},
 	// betaTeaser returns the beta version string when the user is on
 	// stable, the module publishes a beta, and that beta is newer than
@@ -720,7 +722,7 @@ var funcMap = template.FuncMap{
 		if beta == "" {
 			return ""
 		}
-		if !channelNewer(beta, channelStableVersion(rm)) {
+		if !versionNewer(beta, channelStableVersion(rm)) {
 			return ""
 		}
 		return beta
@@ -1082,7 +1084,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		if v == "" {
 			continue
 		}
-		if isNewerSemver(v, inst.Version) {
+		if versionNewer(v, inst.Version) {
 			hasAnyUpdate = true
 			break
 		}
@@ -1110,7 +1112,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
 				stable = cat.Host.Channels.Stable.Version
 			}
-			if beta != "" && channelNewer(beta, stable) {
+			if beta != "" && versionNewer(beta, stable) {
 				hostBetaTeaser = beta
 			}
 		}
@@ -2104,11 +2106,11 @@ func (app *App) handleAPIModules(w http.ResponseWriter, r *http.Request) {
 		am.OfferedVersion = channelVersion(rm, channel)
 		if channel == ChannelBeta && rm.Channels != nil && rm.Channels.Beta != nil {
 			b := rm.Channels.Beta.Version
-			am.OfferedIsBeta = b != "" && channelNewer(b, channelStableVersion(rm))
+			am.OfferedIsBeta = b != "" && versionNewer(b, channelStableVersion(rm))
 		}
 		if channel == ChannelStable && rm.Channels != nil && rm.Channels.Beta != nil {
 			b := rm.Channels.Beta.Version
-			if b != "" && channelNewer(b, channelStableVersion(rm)) {
+			if b != "" && versionNewer(b, channelStableVersion(rm)) {
 				am.BetaAvailable = b
 			}
 		}
@@ -2915,7 +2917,7 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 			if cat.Host.Channels.Stable != nil && cat.Host.Channels.Stable.Version != "" {
 				stable = cat.Host.Channels.Stable.Version
 			}
-			if beta != "" && channelNewer(beta, stable) {
+			if beta != "" && versionNewer(beta, stable) {
 				hostBetaTeaser = beta
 			}
 		}
