@@ -67,19 +67,16 @@ export const KEEPALIVE_MS = 2000;
 export const LOSS_MS = 6000;
 
 /*
- * There is no settle timer, deliberately.
+ * How long a hand has to be still before the printed numbers are redrawn.
  *
- * There was one -- 180 ms of stillness before the numbers were redrawn -- and
- * it bought exactly one thing: repaints not starving the ring feedback during
- * a spin. The display's priority buys the same thing for free, by sending
- * rings ahead of an owed repaint, so the redraw lands when the gesture
- * actually ends rather than a fixed interval after it.
- *
- * Worth remembering WHY the constant looked reasonable: it was chosen when a
- * repaint cost 383 ms, and 180 ms of coalescing was cheap beside that. The
- * repaint is 96 ms now and the truncation that made slow pacing look necessary
- * is fixed, so the timer had become most of the latency it was hiding.
+ * 180 ms is about one slow detent apart: fast enough that letting go of a knob
+ * feels like the screen answers, slow enough that a continuous spin -- which
+ * makes detents far closer than this -- pays ONE repaint at the end instead of
+ * one per detent. The rings carry the value throughout, so nothing is missing
+ * while this is pending; only the digits lag, and only while you are still
+ * moving them.
  */
+export const SETTLE_MS = 180;
 
 /**
  * The seek / hold / release machine.
@@ -272,24 +269,8 @@ export function createSysexAssembler(opts) {
  */
 import { framebufferMsg, labelsMsg, ringMsg } from "./e16_protocol.mjs";
 
-/*
- * How long an owed repaint may be starved by rings before it cuts in.
- *
- * Rings outrank the screen so a spin does not stall the feedback the hand is
- * watching -- but STRICT priority means the printed numbers never move at all
- * until the hand stops, which is the complaint this whole ordering was meant
- * to fix: "the RINGS are fine, it's the values themselves". A repaint is 96 ms
- * at the usual pace, so letting one through roughly every quarter second
- * updates the digits about four times a second during a turn while still
- * spending most ticks on rings.
- */
-export const SCREEN_STARVE_MS = 250;
-
 export function createDisplay() {
     let fbOwed = false;
-    /* When the currently-owed repaint was first asked for, so the starve rule
-     * measures the WAIT rather than the gap between sends. */
-    let fbOwedAt = null;
     /*
      * THE MODE THE DEVICE IS IN, and why "nothing changed" is not "nothing to
      * send".
@@ -321,10 +302,6 @@ export function createDisplay() {
          * The layout changed -- a page pair, a component, a focus jump. Marks
          * one repaint owed; calling it ten times still owes one.
          */
-        /* Takes no clock: the WAIT is stamped by tick(), which has one and is
-         * the only thing that can measure it. Threading a timestamp through
-         * ten nav call sites to compute a value the display already knows how
-         * to derive is how a simple rule acquires nine chances to be wrong. */
         invalidate() { fbOwed = true; },
 
         /**
@@ -355,33 +332,16 @@ export function createDisplay() {
          * @returns {"framebuffer"|"rings"|null} what went out, for tests and
          *        for a caller that wants to log its send budget.
          */
-        tick(send, frameBytes, screen, nowMs) {
+        tick(send, frameBytes, screen) {
             /*
-             * PRIORITY, and it is the reason there is no settle timer.
-             *
-             *   1. a MODE change -- the device is showing the wrong KIND of
-             *      screen, which no ring can correct
-             *   2. RINGS -- the feedback a turning hand is actually watching
-             *   3. an owed repaint
-             *
-             * Rings outranking the repaint is what lets the surface invalidate
-             * on EVERY detent without the screen starving them. A spin makes a
-             * ring per tick, so the repaint waits; the moment the hand pauses
-             * there are no rings left and it goes. That is the same behaviour a
-             * settle timer bought, self-timed from the actual gesture instead
-             * of from a guessed 180 ms -- and the guess was made when a repaint
-             * cost 383 ms, a figure that is no longer true.
-             *
-             * The mode check must stay ABOVE rings: dismissing the map leaves
-             * the map's picture on the panel, and a ring arriving over it is
-             * a value with no name beside it.
+             * A screen is owed when the surface says so OR when the device is
+             * in the wrong MODE for what is being shown. The second half is
+             * not an optimisation: without it, dismissing the map leaves the
+             * framebuffer on the panel with every later value change going out
+             * as rings nobody can read a name for.
              */
-            /* Stamp the wait on the first tick that sees a repaint owed. */
-            if (fbOwed && fbOwedAt === null && nowMs !== undefined) fbOwedAt = nowMs;
-            if (!fbOwed) fbOwedAt = null;
-
             const want = screen ? screen.kind : "framebuffer";
-            if (shownKind !== want) {
+            if (fbOwed || shownKind !== want) {
                 /* Rings deliberately wait: see rule 1. The screen is the
                  * expensive send and it goes out alone. */
                 const bytes = want === "labels"
@@ -389,44 +349,6 @@ export function createDisplay() {
                     : framebufferMsg(frameBytes());
                 if (emitMsg(send, bytes)) {
                     fbOwed = false;
-                    fbOwedAt = null;
-                    labelsOwed = false;
-                    shownKind = want;
-                    return want;
-                }
-                return null;
-            }
-            /*
-             * A repaint NEVER cuts ahead of the rings.
-             *
-             * It did briefly, every SCREEN_STARVE_MS, so the printed numbers
-             * would move during a turn as well as after it. The wire cannot
-             * carry both: a framebuffer occupies it for ~144 ms at the usual
-             * pace, and rings need it every tick to look continuous, so
-             * letting the screen in every 250 ms left the rings about 25 ms in
-             * every 250 -- four updates a second where there had been forty.
-             * Reported from the device as the rings being "jumpy where they
-             * were smooth before", which is exactly what that arithmetic
-             * predicts.
-             *
-             * The ring is the feedback a hand is watching while it moves; the
-             * number is what you read when it stops. So rings win outright,
-             * and the repaint lands on the first tick with none pending --
-             * within a frame of the gesture ending, and without the 180 ms
-             * settle timer this replaced.
-             *
-             * The constant is kept, and kept unused, because the next person
-             * to want numbers during a spin should find the measurement rather
-             * than rediscover it.
-             */
-            const starved = false;
-            if (starved) {
-                const bytes = want === "labels"
-                    ? labelsMsg(screen.title, screen.labels)
-                    : framebufferMsg(frameBytes());
-                if (emitMsg(send, bytes)) {
-                    fbOwed = false;
-                    fbOwedAt = null;
                     labelsOwed = false;
                     shownKind = want;
                     return want;
@@ -434,17 +356,6 @@ export function createDisplay() {
                 return null;
             }
             if (!rings.size) {
-                if (fbOwed) {
-                    const bytes = want === "labels"
-                        ? labelsMsg(screen.title, screen.labels)
-                        : framebufferMsg(frameBytes());
-                    if (!emitMsg(send, bytes)) return null;
-                    fbOwed = false;
-                    fbOwedAt = null;
-                    labelsOwed = false;
-                    shownKind = want;
-                    return want;
-                }
                 if (!labelsOwed || want !== "labels") return null;
                 if (!emitMsg(send, labelsMsg(screen.title, screen.labels))) return null;
                 labelsOwed = false;
@@ -973,6 +884,13 @@ export function createSurface(io) {
      * when you look up a second later to read the value you just set.
      */
     let focusEnc = null;
+    /* When the last detent arrived, and whether the repaint it owes has gone
+     * out. Two variables rather than one timestamp cleared on paint, because
+     * "nothing has been turned yet" and "the turn has been drawn" are
+     * different states and collapsing them repaints once at startup for no
+     * reason. */
+    let turnedAt = -Infinity;
+    let settlePainted = true;
 
     /*
      * REFRESH METER state (test pattern 6).
@@ -1142,22 +1060,20 @@ export function createSurface(io) {
                 if (moved) {
                     display.ringChanged(ringFor(viewNow(), act.enc));
                     /*
-                     * THE NUMBER FOLLOWS THE HAND, and the coalescing is the
-                     * DISPLAY's, not a timer's.
+                     * THE NUMBER FOLLOWS THE HAND, ONE REPAINT PER GESTURE.
                      *
-                     * A framebuffer has no partial update, so a printed value
-                     * cannot move for less than a whole redraw. Owing one per
-                     * detent is nonetheless right, because `fbOwed` is a
-                     * boolean and rings outrank it: twenty detents inside one
-                     * in-flight frame are one repaint, and while the hand keeps
-                     * moving the rings keep going out ahead of it.
-                     *
-                     * This replaced a 180 ms settle timer, which bought the
-                     * same coalescing at the cost of 180 ms added to every
-                     * gesture -- a constant chosen when a repaint cost 383 ms
-                     * and never revisited when that became 96.
+                     * A framebuffer has no partial update, so the printed
+                     * value cannot move without redrawing all 1024 bytes --
+                     * 383 ms, which is not payable per detent and is what made
+                     * the screen feel frozen while the rings moved. Paying it
+                     * per GESTURE instead is the whole difference: the ring
+                     * tracks the value live at 46 ms while the hand is moving,
+                     * and the settle below redraws once the hand stops, so the
+                     * digits are correct whenever anybody is actually reading
+                     * them.
                      */
-                    display.invalidate();
+                    turnedAt = t;
+                    settlePainted = false;
                     /* The TITLE is the only surface carrying the full name and
                      * the reading, so a turn owes one -- but as a separate,
                      * lower-priority debt than the ring. A spin makes many
@@ -1247,6 +1163,14 @@ export function createSurface(io) {
              * assumption in createLifecycle can cost at worst a second of stale
              * rings, never a dead surface.
              */
+            /* The settle. Deliberately BEFORE the send budget is spent, so the
+             * repaint it owes is picked up by this same tick rather than the
+             * next one. */
+            if (!settlePainted && t - turnedAt >= SETTLE_MS) {
+                settlePainted = true;
+                display.invalidate();
+            }
+
             if (sentThisTick) return;
             /*
              * WHICH MODE THIS FRAME WANTS.
@@ -1302,7 +1226,7 @@ export function createSurface(io) {
                 if (probe >= 0) drawTestPattern(canvas, probe, { paints, fps: paintFps });
                 else nav.render(canvas, t);
                 return canvas.toBuffer();
-            }, screen, t);
+            }, screen);
 
             /* A PAINT is a completed send, never an intent. */
             if (sent === "framebuffer" || sent === "labels") {
