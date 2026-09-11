@@ -505,3 +505,105 @@ export function drawTestPattern(ctx, which) {
      */
     else ctx.fillRect(0, 0, 128, 64, 1);
 }
+
+/* ===========================================================================
+ * LABELS -- the OTHER display mode, and the reason values can move at all.
+ *
+ * `06 02` FRAMEBUFFER replaces all 1024 bytes and has NO partial update; at the
+ * carry's pacing that is 394 packets, 132 SPI frames, 383 ms. A value that
+ * changed on a detent cannot be worth that, and there is no sub-region command
+ * to send instead -- so the protocol's own answer is the OTHER mode: `06 03`
+ * LABELS is 34 packets and 35 ms, an eleventh of the cost, and RING is 46.
+ *
+ * The division of labour that falls out of it:
+ *
+ *   the LABEL carries the NAME     16 x 4 characters, redrawn when the page
+ *                                  changes -- rarely
+ *   the RING carries the VALUE     one chunk per detent, which is what a hand
+ *                                  on a knob actually generates
+ *   the TITLE carries the READING  16 characters naming what is being turned
+ *                                  and what it now says
+ *
+ * FRAMEBUFFER and LABELS are MUTUALLY EXCLUSIVE -- sending one overrides the
+ * other, they are not layers. So a surface that shows a framebuffer map while
+ * Shift is held owes a LABELS message on the way back, and `createDisplay`
+ * cannot treat "nothing has changed" as "nothing to send" across that
+ * transition. That is what `screenKind` is for.
+ *
+ * FOUR CHARACTERS is the whole budget for a name, and the abbreviation is
+ * deliberately boring: predictable beats clever when the user has to learn it
+ * once and then read it at a glance: drop the separators and take the first
+ * four ("Osc Level" -> OSCL, "Cutoff" -> CUTO). Collisions are real ("Cutoff"
+ * and "Cutoff 2" are both CUTO) and are resolved by the title, which names in
+ * full whatever is under the hand.
+ * ========================================================================= */
+import { displayValue } from "./param_pages/render_page_movy.mjs";
+
+export const LABEL_CHARS = 4;
+export const TITLE_CHARS = 16;
+
+/* 7-bit ASCII, upper case: the wire takes `charCodeAt(0) & 0x7F`, so an
+ * accented character would arrive as an unrelated glyph rather than as itself.
+ * Folded here rather than at the packer so the abbreviation counts the
+ * characters that will actually be sent. */
+function ascii(s) {
+    return String(s === undefined || s === null ? "" : s)
+        .normalize("NFD").replace(/[̀-ͯ]/g, "")
+        .replace(/[^\x20-\x7E]/g, "")
+        .toUpperCase();
+}
+
+/**
+ * A name in four characters.
+ *
+ * Multi-word names take initials, single words take a prefix. Both are stable
+ * under re-rendering and neither depends on the value, so a label only moves
+ * when the page does.
+ */
+export function abbrev4(name) {
+    /* Separators dropped, then the first four characters. Initials were tried
+     * first and SPEND THE BUDGET BADLY: "Osc Level" -> OL and "bouba-kiki" ->
+     * BK use two of the four columns we have, and two-letter stubs are harder
+     * to read than four-letter ones, not easier. Neither rule avoids
+     * collisions anyway -- "Env Attack" and "Env Amount" are EA under initials
+     * and ENVA under this one -- so the simpler rule wins, and the title is
+     * what disambiguates. */
+    return ascii(name).replace(/[^A-Z0-9]+/g, "").slice(0, LABEL_CHARS);
+}
+
+/**
+ * labelsFor(view, { component, focusEnc, metaOf }) -> { title, labels }
+ *
+ * `labels` is always 16 entries (an empty cell is an empty string, never a
+ * placeholder -- a dark encoder should look dark). `title` names the focused
+ * parameter and its current reading, falling back to the component when
+ * nothing is under a hand.
+ *
+ * The value string comes from `displayValue`, which is documented as THE value
+ * string precisely so a second formatter is not written beside it. A knob page
+ * drawn as a list, the held-knob header and this all have to agree, or the same
+ * parameter reads two ways on two surfaces.
+ */
+export function labelsFor(view, opts) {
+    const o = opts || {};
+    const metaOf = o.metaOf || (() => null);
+    const cells = (view && view.cells) || [];
+    const labels = new Array(ENCODERS).fill("");
+    for (let e = 0; e < ENCODERS; e++) {
+        const c = cells[e];
+        if (c) labels[e] = abbrev4(c.label);
+    }
+
+    let title = ascii(o.component || "");
+    const f = typeof o.focusEnc === "number" ? cells[o.focusEnc] : null;
+    if (f) {
+        const val = ascii(displayValue(f.value, metaOf(f.key) || {}));
+        const name = ascii(f.label);
+        /* The READING is the half that must survive: the name is already under
+         * the encoder being turned, so a title too long to hold both drops
+         * characters from the name and never from the value. */
+        const room = TITLE_CHARS - val.length - 1;
+        title = room > 0 ? name.slice(0, room) + " " + val : val.slice(0, TITLE_CHARS);
+    }
+    return { title: title.slice(0, TITLE_CHARS), labels };
+}

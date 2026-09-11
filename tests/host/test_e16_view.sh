@@ -181,7 +181,8 @@ const unpack = (p) => { const out = [];
 const kindOf = (packets) => { const b = unpack(packets);
   if (b[0] !== 0xF0) return "?";
   const id = (b[6] << 8) | b[7];
-  return id === 0x0602 ? "framebuffer" : id === 0x0604 ? "ring" : "other"; };
+  return id === 0x0602 ? "framebuffer" : id === 0x0604 ? "ring"
+       : id === 0x0603 ? "labels" : "other"; };
 
 const mkSend = (accept) => { const log = [];
   const fn = (p) => { log.push(p); return accept === undefined ? true : accept(); };
@@ -189,11 +190,26 @@ const mkSend = (accept) => { const log = [];
 
 const frame = () => cv2.toBuffer();
 
-/* A value change is ONE ring message and NO framebuffer. */
+/*
+ * THE DISPLAY IS A MODE MACHINE NOW, so every one of these starts by putting
+ * the device INTO the mode under test.
+ *
+ * FRAMEBUFFER and LABELS override each other on the device, so the display
+ * sends a screen whenever what the caller wants differs from what the device
+ * was last told -- including the very first tick, when it has been told
+ * nothing. A test that skipped that priming was really measuring the initial
+ * paint and calling it a value change.
+ */
+const PICTURE = { kind: "framebuffer" };
+const TEXT = { kind: "labels", title: "T", labels: new Array(16).fill("AB") };
+const prime = (d, send, screen) => { d.tick(send, frame, screen); send.log.length = 0; };
+
+/* A value change is ONE ring message and NO screen. */
 let d = createDisplay();
 let send = mkSend();
+prime(d, send, PICTURE);
 d.ringChanged(ringFor(v, 8));
-eq("value change sends rings", d.tick(send, frame), "rings");
+eq("value change sends rings", d.tick(send, frame, PICTURE), "rings");
 eq("...exactly one message", send.log.length, 1);
 eq("...and it is a ring, not a framebuffer", kindOf(send.log[0]), "ring");
 eq("...carrying one chunk", unpack(send.log[0]).length, 1 /*F0*/ + 5 /*hdr*/
@@ -202,16 +218,18 @@ eq("nothing owed afterwards", [d.framebufferOwed, d.ringsPending], [false, 0]);
 
 /* Many detents on one encoder COALESCE. */
 d = createDisplay(); send = mkSend();
+prime(d, send, PICTURE);
 for (let i = 0; i < 20; i++) d.ringChanged(ringFor(v, 8));
 d.ringChanged(ringFor(v, 9));
-d.tick(send, frame);
+d.tick(send, frame, PICTURE);
 eq("twenty detents on one encoder are one chunk each",
    unpack(send.log[0]).length, 1 + 5 + 2 + 2 /*pack bytes for 14 payload*/ + 14 + 1);
 
 /* Navigation is ONE framebuffer however many times it is asked for. */
 d = createDisplay(); send = mkSend();
+prime(d, send, PICTURE);
 d.invalidate(); d.invalidate(); d.invalidate();
-eq("navigation sends a framebuffer", d.tick(send, frame), "framebuffer");
+eq("navigation sends a framebuffer", d.tick(send, frame, PICTURE), "framebuffer");
 eq("three invalidations are one repaint", send.log.length, 1);
 eq("...and it is a framebuffer", kindOf(send.log[0]), "framebuffer");
 eq("nothing more owed", d.tick(send, frame), null);
@@ -267,6 +285,44 @@ eq("...and stay pending", d.ringsPending, 1);
     eq("falls back when no short name is declared",
        v2.cells[0].label, "lbl");
 }
+
+
+/* ---- 6. THE TWO MODES OVERRIDE EACH OTHER ON THE DEVICE ----------------
+ *
+ * FRAMEBUFFER and LABELS are not layers: sending one replaces the other
+ * (docs/E16_REMOTE.md). So "nothing changed" is NOT "nothing to send" across a
+ * mode transition -- dismissing the Shift map leaves the map picture on the
+ * panel, and every later value change goes out as a ring nobody can read a
+ * name for. The display therefore tracks what the DEVICE was last told, not
+ * what the surface last decided.
+ * --------------------------------------------------------------------- */
+d = createDisplay(); send = mkSend();
+eq("the first tick paints, having told the device nothing yet",
+   d.tick(send, frame, TEXT), "labels");
+eq("...and a second identical tick sends nothing",
+   d.tick(send, frame, TEXT), null);
+eq("raising the map sends a FRAMEBUFFER with no invalidate at all",
+   d.tick(send, frame, PICTURE), "framebuffer");
+eq("dismissing it owes LABELS back, though not one label changed",
+   d.tick(send, frame, TEXT), "labels");
+eq("and then it settles again", d.tick(send, frame, TEXT), null);
+
+/* A value reading moved: cheap text, and LOWER priority than the ring the hand
+ * is watching. */
+d = createDisplay(); send = mkSend();
+prime(d, send, TEXT);
+d.ringChanged(ringFor(v, 8));
+d.invalidateLabels();
+eq("a ring outranks a title refresh", d.tick(send, frame, TEXT), "rings");
+eq("...and the title follows on the next tick", d.tick(send, frame, TEXT), "labels");
+eq("...then nothing is owed", d.tick(send, frame, TEXT), null);
+
+/* A replug wipes the panel, so what the device was told is no longer true. */
+d = createDisplay(); send = mkSend();
+prime(d, send, TEXT);
+eq("settled", d.tick(send, frame, TEXT), null);
+d.forgetShown();
+eq("after forgetShown the screen is resent", d.tick(send, frame, TEXT), "labels");
 
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);

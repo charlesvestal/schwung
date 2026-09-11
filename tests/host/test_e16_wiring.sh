@@ -116,6 +116,12 @@ const msgId = (packets) => unpack(packets).slice(6, 8);
 const j = JSON.stringify;
 const ENTER = [0x06, 0x55];
 const FRAMEBUFFER = [0x06, 0x02];
+const LABELS      = [0x06, 0x03];
+/* EITHER mode counts as "the device was painted". The parameter view is LABELS
+ * and the map is a FRAMEBUFFER -- they override each other on the device, so a
+ * test that names one of them is really asserting which view happened to be up
+ * rather than that anything was drawn at all. */
+const isScreen = (p) => j(msgId(p)) === j(FRAMEBUFFER) || j(msgId(p)) === j(LABELS);
 const RING = [0x06, 0x04];
 const EXIT = [0x06, 0x00];
 const ACK_BYTES = [0xF0, 0x00, 0x21, 0x5B, 0x02, 0x01, 0x06, 0x53, 0xF7];
@@ -209,8 +215,8 @@ function rig(opts) {
    * somebody else-s IPC. */
   const readsBefore = r.params.reads.length;
   r.ticks(6);
-  eq("seeking: no framebuffer before the ACK",
-     r.send.log.filter((p) => j(msgId(p)) === j(FRAMEBUFFER)).length, 0);
+  eq("seeking: no screen before the ACK",
+     r.send.log.filter(isScreen).length, 0);
   /* Nor any IPC. The controller-s staggered read is ~2.8 ms -- more than a
    * whole page render -- and it exists only to keep the rings and the screen
    * fresh, so with nothing on the port it is spent on nobody. A surface left
@@ -219,8 +225,9 @@ function rig(opts) {
 
   r.ack();
   r.ticks(2);
-  ok(r.send.log.some((p) => j(msgId(p)) === j(FRAMEBUFFER)),
-     "an acked device is painted");
+  ok(r.send.log.some(isScreen), "an acked device is painted");
+  ok(r.send.log.some((p) => j(msgId(p)) === j(LABELS)),
+     "...and the parameter view paints LABELS, an eleventh of a framebuffer");
   ok(r.params.reads.length > readsBefore,
      "...and only then does it read the contract");
 
@@ -393,8 +400,7 @@ function rig(opts) {
   const before = r.send.log.length;
   r.ack();
   r.ticks(3);
-  const back = r.send.log.slice(before).map((p) => j(msgId(p)));
-  ok(back.includes(j(FRAMEBUFFER)),
+  ok(r.send.log.slice(before).some(isScreen),
      "a device that comes back is repainted, with no other gesture");
 }
 
@@ -437,7 +443,7 @@ function rig(opts) {
   ok(r.surface.present, "replug: present again after the ACK");
 
   const after = r.send.log.slice(before).map(msgId).map(j);
-  ok(after.includes(j(FRAMEBUFFER)), "replug: the screen is repainted");
+  ok(r.send.log.slice(before).some(isScreen), "replug: the screen is repainted");
   ok(after.includes(j(RING)),
      "replug: the rings are restated -- without this the panel recovers its "
      + "screen and shows no values until a knob is turned");
