@@ -225,6 +225,158 @@ static void test_backpressure_threshold(void)
           "sees the false return that already exists");
 }
 
+
+/* ===========================================================================
+ * INTERLEAVE: quiet-start and the collision retry.
+ *
+ * Only System Realtime bytes may appear inside a SysEx, so a Note On spliced
+ * into one makes a conformant receiver abort the whole message. Isolated on
+ * hardware 2026-09-11 with the transport STOPPED both ways: playing notes with
+ * Move's MIDI out ON garbles the E16, MIDI out OFF is clean -- while 559
+ * packets/sec with no foreign traffic stayed perfectly clean, which is what
+ * rules out the rate explanation the bug wore for three sessions.
+ * ======================================================================== */
+
+/* A note-on from Move, on cable 2 -- the packet that does the damage. */
+static void put_foreign(uint8_t *region, int slot)
+{
+    region[slot*4 + 0] = 0x29;   /* cable 2, CIN 9 = note-on */
+    region[slot*4 + 1] = 0x90;
+    region[slot*4 + 2] = 60;
+    region[slot*4 + 3] = 100;
+}
+
+static void test_quiet_start_defers_into_a_dirty_mailbox(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t msg[24], pkts[64];
+    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 24, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    uint8_t region[REGION] = {0};
+    put_foreign(region, 0);
+
+    int placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed == 0,
+          "quiet-start: a run must not OPEN into a mailbox that already holds "
+          "foreign cable-2 traffic -- starting there splices the note in");
+    CHECK(region_used(region) == 1,
+          "quiet-start: nothing of ours was placed, only Move's own packet is there");
+
+    /* Next frame is clear, so it goes. */
+    memset(region, 0, REGION);
+    placed = ui_midi_carry_drain(&c, region, REGION);
+    CHECK(placed > 0, "quiet-start DEFERS, it does not drop -- the clear frame sends");
+}
+
+static void test_quiet_start_gives_up_rather_than_starving(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    uint8_t msg[24], pkts[64];
+    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 24, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* A mailbox that is never clear. The screen must still update: the
+     * quiet-start is an optimisation, never a precondition. */
+    int total = 0;
+    for (int f = 0; f < UI_MIDI_CARRY_START_DEFER_MAX + 2; f++) {
+        uint8_t region[REGION] = {0};
+        put_foreign(region, 0);
+        total += ui_midi_carry_drain(&c, region, REGION);
+    }
+    CHECK(total > 0,
+          "a dense note stream must not be able to stop the screen updating "
+          "ALTOGETHER -- the defer is capped and we go anyway");
+}
+
+static void test_collided_run_is_requeued_whole(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[24], pkts[64];
+    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)(i + 1);
+    int n = packetize(msg, 24, pkts);          /* 8 packets */
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* Frame 1: clear, opens the run and places `pace` packets. */
+    uint8_t region[REGION] = {0};
+    ui_midi_carry_drain(&c, region, REGION);
+    CHECK(c.msg_len > 0, "the run is open after the first frame");
+
+    /* Frame 2: Move drops a note in, mid-run. */
+    memset(region, 0, REGION);
+    put_foreign(region, 0);
+    ui_midi_carry_drain(&c, region, REGION);
+
+    /* Drain on clear frames until the run closes and the retry is appended --
+     * then STOP, or the next frames start draining the re-queued copy and the
+     * carry no longer holds the thing under test. */
+    for (int f = 0; f < 8; f++) {
+        if (ui_midi_carry_retry_count() != before) break;
+        memset(region, 0, REGION);
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+
+    CHECK(ui_midi_carry_retry_count() == before + 1,
+          "a run with a foreign packet inside it is re-queued exactly once");
+    CHECK(c.len == n * 4,
+          "the re-queue is the WHOLE message -- a partial resend is another "
+          "truncated SysEx, which is the fault being repaired");
+
+    /* And it is byte-identical to what went in. */
+    CHECK(memcmp(c.buf, pkts, (size_t)(n * 4)) == 0,
+          "the re-queued copy is byte-for-byte the original run");
+}
+
+static void test_clean_run_is_not_requeued(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[24], pkts[64];
+    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 24, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    for (int f = 0; f < 12 && c.len > 0; f++) {
+        uint8_t region[REGION] = {0};
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+    CHECK(ui_midi_carry_retry_count() == before,
+          "A CLEAN RUN IS NEVER RESENT -- retrying unconditionally would double "
+          "every message on the wire and make the rate problem real");
+    CHECK(c.len == 0, "and the carry is empty afterwards");
+}
+
+static void test_retry_is_capped(void)
+{
+    ui_midi_carry_t c; ui_midi_carry_reset(&c);
+    const int before = ui_midi_carry_retry_count();
+
+    uint8_t msg[24], pkts[64];
+    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
+    int n = packetize(msg, 24, pkts);
+    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
+
+    /* Every frame collides. Without a cap this re-queues forever. */
+    for (int f = 0; f < 400 && c.len > 0; f++) {
+        uint8_t region[REGION] = {0};
+        put_foreign(region, 19);   /* last slot: ours still get placed */
+        ui_midi_carry_drain(&c, region, REGION);
+    }
+
+    CHECK(ui_midi_carry_retry_count() - before <= UI_MIDI_CARRY_MSG_RETRIES,
+          "the retry is CAPPED -- under continuous playing every attempt can "
+          "collide, and a message that re-queues itself forever starves the "
+          "next real update");
+    CHECK(c.drops == 0,
+          "A RETRY MUST NEVER COST A DROP -- repairing a garble by dropping a "
+          "packet is the identical fault one buffer along");
+}
+
 int main(void)
 {
     test_fits_in_one_frame();
@@ -234,6 +386,11 @@ int main(void)
     test_partially_occupied_region();
     test_full_carry_drops_newest_and_counts();
     test_backpressure_threshold();
+    test_quiet_start_defers_into_a_dirty_mailbox();
+    test_quiet_start_gives_up_rather_than_starving();
+    test_collided_run_is_requeued_whole();
+    test_clean_run_is_not_requeued();
+    test_retry_is_capped();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");
