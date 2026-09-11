@@ -10590,6 +10590,63 @@ function e16BlastTick() {
         }
     } catch (e) {}
 }
+/*
+ * SYNTHETIC INTERFERENCE, ON A CABLE WE CHOOSE.
+ *
+ * The garbling was isolated to Move's own note output on cable 2, which our
+ * SysEx shares. Sending the surface on cable 3 instead did NOT fix it -- but
+ * that experiment has a hole: we do not control which cable Move's notes go
+ * out on, nor whether the XMOS relabels either stream on the way.
+ *
+ * This closes it by generating BOTH streams ourselves. Notes here, screen on
+ * another cable, Move's transport stopped and its output irrelevant. If the
+ * screen still garbles, SysEx reassembly downstream is not per-cable, proven
+ * with nothing of Move's in the experiment at all.
+ *
+ *   echo 5  > /data/UserData/schwung/e16_noise_cable
+ *   echo 12 > /data/UserData/schwung/e16_noise     # note pairs per tick
+ *   rm /data/UserData/schwung/e16_noise            # stop
+ *
+ * Note-ON then note-OFF every tick, so nothing is left sounding if the file is
+ * removed mid-burst -- and velocity 1 on channel 16, which is about as inert as
+ * a note can be if anything downstream is listening.
+ */
+let e16NoiseCheckedAt = 0;
+let e16NoiseCount = 0;
+let e16NoiseCable = 5;
+let e16NoiseNote = 36;
+function e16NoiseTick() {
+    const now = Date.now();
+    if (now - e16NoiseCheckedAt >= 1000) {
+        e16NoiseCheckedAt = now;
+        e16NoiseCount = 0;
+        try {
+            const p = "/data/UserData/schwung/e16_noise";
+            if (typeof host_file_exists === "function" && host_file_exists(p)) {
+                const n = parseInt(String(host_read_file(p) || "").trim(), 10);
+                if (!isNaN(n) && n > 0) e16NoiseCount = Math.min(n, 64);
+            }
+            const cp = "/data/UserData/schwung/e16_noise_cable";
+            if (typeof host_file_exists === "function" && host_file_exists(cp)) {
+                const c = parseInt(String(host_read_file(cp) || "").trim(), 10);
+                if (!isNaN(c) && c >= 1 && c <= 14) e16NoiseCable = c;
+            }
+        } catch (e) {}
+    }
+    if (!e16NoiseCount) return;
+    if (typeof move_midi_cable_send !== "function") return;
+    try {
+        const pkts = [];
+        for (let i = 0; i < e16NoiseCount; i++) {
+            const n = 36 + ((e16NoiseNote + i) % 24);
+            pkts.push(0x09, 0x9F, n, 1);    /* note-on,  ch16, vel 1 */
+            pkts.push(0x08, 0x8F, n, 0);    /* note-off, ch16        */
+        }
+        e16NoiseNote = (e16NoiseNote + 1) % 24;
+        move_midi_cable_send(e16NoiseCable, pkts);
+    } catch (e) {}
+}
+
 function e16TestPattern() {
     const now = Date.now();
     if (now - e16ProbeCheckedAt < 1000) return e16ProbeValue;
@@ -24999,6 +25056,7 @@ globalThis.tick = function() {
     reconcileExternalSurface();
     e16ReconcilePace();
     e16BlastTick();
+    e16NoiseTick();
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
