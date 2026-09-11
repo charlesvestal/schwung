@@ -649,6 +649,30 @@ static void ui_midi_out_drop_tick(void)
  * it. Reading one as the other is what kept an interleave problem being
  * treated as a rate problem.
  */
+/*
+ * Packets we placed in Move's mailbox that Move never took.
+ *
+ * The last uninstrumented hand-off on the way out. Everything upstream of it
+ * counts its own drops and reports zero under load while the screen garbles,
+ * so this is where a loss inside our own system would still be invisible.
+ */
+static void ui_midi_out_stranded_tick(void)
+{
+    static int last_total = 0;
+    int total = ui_midi_carry_stranded_count();
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d packet(s) STRANDED in the mailbox this window "
+             "(%d total) - we wrote them to a free slot and Move did not take "
+             "them; they never reached the wire",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
 static void ui_midi_out_foreign_tick(void)
 {
     static int last_total = 0;
@@ -854,6 +878,7 @@ static void *worker_main(void *arg) {
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
     ui_midi_out_foreign_tick();
+    ui_midi_out_stranded_tick();
             param_slow_tick();        /* always on; silent unless one overran */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */

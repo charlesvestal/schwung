@@ -248,6 +248,35 @@ static inline int ui_midi_carry_push(ui_midi_carry_t *c, const uint8_t pkt[4])
  */
 static int ui_midi_carry_foreign = 0;
 
+/*
+ * STRANDED PACKETS -- ones we placed in the mailbox that Move never took.
+ *
+ * This is the ONE hand-off on the outbound path that nothing has ever
+ * measured. The SHM buffer and the carry both count their own drops and both
+ * report zero under real load (measured twice on 2026-09-11, with knobs
+ * turning and playback running, while the screen was visibly garbling). But
+ * "placed in a free slot" is not "sent": we scan for four zero bytes, write
+ * ours, and never look again.
+ *
+ * If Move overwrites a slot, or does not drain on the schedule we assume, a
+ * packet dies inside our own system and every counter we have stays zero --
+ * which is exactly what we are looking at. So: remember what we wrote and
+ * where, and on the next frame check whether our bytes are still sitting
+ * there. If they are, Move did not take them.
+ *
+ * A false positive is possible in principle -- an identical packet landing in
+ * the same slot from somebody else -- and is rare enough that a non-zero
+ * count is still the answer to the question being asked.
+ */
+#define UI_MIDI_CARRY_TRACK 24
+
+static int ui_midi_carry_stranded = 0;
+static int ui_midi_carry_last_n = 0;
+static int ui_midi_carry_last_slot[UI_MIDI_CARRY_TRACK];
+static uint8_t ui_midi_carry_last_pkt[UI_MIDI_CARRY_TRACK][4];
+
+static inline int ui_midi_carry_stranded_count(void) { return ui_midi_carry_stranded; }
+
 static inline int ui_midi_carry_foreign_count(void) { return ui_midi_carry_foreign; }
 
 static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
@@ -258,6 +287,20 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
     int placed = 0;
     int slot = 0;
     int read = 0;
+
+    /* Did LAST frame's packets actually leave? Checked before we write
+     * anything this frame, so what we are reading is the state Move left. */
+    for (int q = 0; q < ui_midi_carry_last_n; q++) {
+        const int sl = ui_midi_carry_last_slot[q];
+        if (sl + 4 > region_bytes) continue;
+        if (midi_out[sl]     == ui_midi_carry_last_pkt[q][0] &&
+            midi_out[sl + 1] == ui_midi_carry_last_pkt[q][1] &&
+            midi_out[sl + 2] == ui_midi_carry_last_pkt[q][2] &&
+            midi_out[sl + 3] == ui_midi_carry_last_pkt[q][3]) {
+            ui_midi_carry_stranded++;
+        }
+    }
+    ui_midi_carry_last_n = 0;
 
     /* Count foreign cable-2 traffic BEFORE placing anything, so we measure what
      * Move put there and never our own packets from this frame. Only while the
@@ -278,6 +321,11 @@ static inline int ui_midi_carry_drain(ui_midi_carry_t *c, uint8_t *midi_out,
         if (slot + 4 > region_bytes) break;  /* full this frame — retry next */
 
         memcpy(&midi_out[slot], &c->buf[read], 4);
+        if (ui_midi_carry_last_n < UI_MIDI_CARRY_TRACK) {
+            const int q = ui_midi_carry_last_n++;
+            ui_midi_carry_last_slot[q] = slot;
+            memcpy(ui_midi_carry_last_pkt[q], &c->buf[read], 4);
+        }
         slot += 4;
         read += 4;
         placed++;
