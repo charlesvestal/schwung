@@ -324,6 +324,67 @@ eq("settled", d.tick(send, frame, TEXT), null);
 d.forgetShown();
 eq("after forgetShown the screen is resent", d.tick(send, frame, TEXT), "labels");
 
+
+/* ---- 7. RINGS OUTRANK AN OWED REPAINT, and a MODE change outranks both ----
+ *
+ * This ordering is what replaced a 180 ms settle timer. The surface owes a
+ * repaint on every detent -- fbOwed is a boolean, so a spin collapses to one
+ * -- and rings going first is what stops that repaint starving the feedback
+ * the hand is watching. When the hand stops there are no rings left and the
+ * redraw goes, self-timed from the gesture instead of from a guessed constant.
+ *
+ * The mode check has to stay ABOVE rings: dismissing the map leaves the map
+ * PICTURE on the panel, and a ring arriving over it is a value with no name
+ * beside it.
+ * ------------------------------------------------------------------------ */
+d = createDisplay(); send = mkSend();
+prime(d, send, PICTURE);
+d.invalidate();
+d.ringChanged(ringFor(v, 8));
+eq("a ring goes before an owed repaint", d.tick(send, frame, PICTURE), "rings");
+eq("...and the repaint follows once the rings are spent",
+   d.tick(send, frame, PICTURE), "framebuffer");
+eq("...then nothing is owed", d.tick(send, frame, PICTURE), null);
+
+/* A continuous spin: rings keep flowing, and a STARVED repaint cuts in.
+ *
+ * Strict priority was the first attempt and it froze the printed values for
+ * the whole duration of a turn -- reported from the device as "the RINGS are
+ * fine, it is the values themselves". So an owed repaint that has waited
+ * SCREEN_STARVE_MS goes ahead of the rings, which updates the digits about
+ * four times a second during a turn while still spending most ticks on rings.
+ */
+d = createDisplay(); send = mkSend();
+let clock = 0;
+prime(d, send, PICTURE);
+let ringTicks = 0, screenTicks = 0;
+for (let i = 0; i < 40; i++) {
+  clock += 25;                       /* ~40 Hz of detents */
+  d.invalidate();                    /* every detent owes a repaint */
+  d.ringChanged(ringFor(v, 8));
+  const got = d.tick(send, frame, PICTURE, clock);
+  if (got === "rings") ringTicks++;
+  if (got === "framebuffer") screenTicks++;
+}
+eq("a spin is mostly rings", ringTicks > screenTicks, true);
+eq("...but the numbers DO move during the turn -- strict priority froze them",
+   screenTicks > 0, true);
+eq("...without the repaint taking over the wire (" + screenTicks + " in 1 s)",
+   screenTicks <= 5, true);
+
+/* And with the hand still, the owed repaint lands immediately. */
+d = createDisplay(); send = mkSend(); clock = 0;
+prime(d, send, PICTURE);
+d.invalidate();
+eq("a still hand repaints at once", d.tick(send, frame, PICTURE, clock += 25),
+   "framebuffer");
+
+/* A mode change preempts even pending rings. */
+d = createDisplay(); send = mkSend();
+prime(d, send, TEXT);
+d.ringChanged(ringFor(v, 8));
+eq("a mode change outranks pending rings", d.tick(send, frame, PICTURE), "framebuffer");
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
