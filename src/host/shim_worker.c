@@ -656,6 +656,29 @@ static void ui_midi_out_drop_tick(void)
  * counts its own drops and reports zero under load while the screen garbles,
  * so this is where a loss inside our own system would still be invisible.
  */
+/*
+ * How many packets we actually placed this window.
+ *
+ * The positive control for every other counter here: they fire only on
+ * failure, so without this a window of zeros cannot be told from a window
+ * where nothing was sent -- which is how three separate captures on
+ * 2026-09-11 read as "clean" while proving nothing at all.
+ */
+static void ui_midi_out_volume_tick(void)
+{
+    static int last_total = 0;
+    int total = ui_midi_carry_placed_count();
+    int delta = total - last_total;
+    if (delta <= 0) { last_total = total; return; }
+    last_total = total;
+
+    char msg[140];
+    snprintf(msg, sizeof(msg),
+             "ui-midi-out: %d packet(s) placed this window (%d total)",
+             delta, total);
+    LOG_DEBUG("shim", msg);
+}
+
 static void ui_midi_out_stranded_tick(void)
 {
     static int last_total = 0;
@@ -879,6 +902,7 @@ static void *worker_main(void *arg) {
             ui_midi_out_drop_tick();
     ui_midi_out_foreign_tick();
     ui_midi_out_stranded_tick();
+    ui_midi_out_volume_tick();
             param_slow_tick();        /* always on; silent unless one overran */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
