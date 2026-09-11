@@ -70,6 +70,50 @@ for (let i = 0; i < 50; i++) { t += 30; s2.tick(); }
 eq("a refused send is not a paint", s2.display.shownKind, null);
 ok(s2.display.framebufferOwed, "...and the frame stays owed, not dropped");
 
+
+/* --- disarming the probe REPAINTS --------------------------------------
+ *
+ * Arming or disarming changes what belongs on the panel and nothing else
+ * does: no focus moved, no knob turned, no mode changed. Without an explicit
+ * invalidate the display sits believing the device is already correct, and
+ * the last probe frame stays up forever -- reported from hardware as "it is
+ * still on the test screen, but frozen". The panel was not frozen; it was
+ * showing the last thing anybody sent it.
+ * --------------------------------------------------------------------- */
+{
+  accept = true;
+  let armed = 6;
+  let tt = 0;
+  const surface = createSurface({
+    now: () => tt,
+    send: () => accept,
+    chainOf: () => ({ slots: [{ synth: "9w9" }, {}, {}, {}] }),
+    followFocusOf: () => null,
+    testPatternOf: () => armed,
+    makeController: () => ({ pages: [], pageIndex: 0, load() {}, tick() {},
+                             state: { values: {} } }),
+  });
+  surface.setEnabled(true); tt += 30; surface.tick();
+  surface.feedMidi(ACK);
+  for (let i = 0; i < 20; i++) { tt += 30; surface.tick(); }
+
+  /* Settle: with the meter armed a frame is always owed, so disarm first and
+   * let it quiesce, then assert that the DISARM itself owed one. */
+  armed = -1;
+  tt += 30; surface.tick();
+  for (let i = 0; i < 10; i++) { tt += 30; surface.tick(); }
+  eq("after disarming, the screen is not left owing a frame forever",
+     surface.display.framebufferOwed, false);
+
+  /* Re-arm: the change alone must owe a repaint, with no other gesture. */
+  armed = 3;
+  const owedBefore = surface.display.framebufferOwed;
+  eq("nothing owed before the probe changes", owedBefore, false);
+  tt += 30; surface.tick();
+  ok(surface.display.shownKind !== null,
+     "re-arming the probe repaints with no other gesture");
+}
+
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
 '
