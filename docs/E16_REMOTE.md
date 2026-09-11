@@ -255,3 +255,55 @@ coherent Thumb-2 (`--triple=thumbv7em-none-eabi`, base `0x08030000`, from the
 reset vector `0x080308A1`).
 
 Capstone reads it; Xcode's `llvm-objdump` will not take a raw binary at all.
+
+## The garbling: cause, and five attempts that did not fix it (2026-09-11)
+
+The screen corrupts because **Move splices its own MIDI into our SysEx.**
+Isolated with the transport STOPPED both ways: playing notes with Move's MIDI
+out ON garbles, MIDI out OFF is clean. Rate is not the driver — 559 packets/sec
+with no foreign traffic stayed perfectly clean while ~35 packets/sec with notes
+garbled, a 16x difference in the *opposite* direction.
+
+Only System Realtime bytes (`F8`–`FF`) may appear inside a SysEx, so a Note On
+inside one makes a conformant receiver discard the whole message. A 34-packet
+LABELS spans ~5 SPI frames (~15 ms); anything Move emits in that window lands
+inside it.
+
+**There is exactly one cable and we cannot get a second.** Move's XMOS carries
+SysEx only to a SINGLE-jack device — 2-jack and 3-jack images were built from
+`patch_e16.py` and flashed, and **both failed on every one of cables 0–13**
+(detector: the surface emits 34-packet LABELS only while the device ACKs, and
+3-packet seek probes otherwise, so receipt is readable from the 1 Hz
+`ui-midi-out: N packet(s) placed` log). The single-jack patch that made remote
+mode possible at all is what forces our screen data to share a stream with
+Move's notes, aftertouch and clock.
+
+**Do not attempt a sixth transport fix.** Each of these was built, deployed and
+measured on hardware:
+
+| attempt | outcome |
+|---|---|
+| quiet-start (don't open a run into a dirty mailbox) | kept; insufficient alone |
+| retry a collided run | kept at 2; a retry cannot win — the corrupt copy has already gone out |
+| suppress the 1.5 s self-heal while Move transmits | **reverted, made it worse**: removes the repair without removing the corruption, so a garble persists |
+| hold Move's packets clear of our run, v1 | **reverted**: held realtime too (~800 packets/s, mostly clock) and injected mid-run on cap expiry — corrupted the screen *and* delivered notes ~23 ms late, on 30% of holds |
+| same, v2 (realtime passes, 6 ms cap, message abandoned rather than a note delayed) | **reverted**: never cleanly measured, and an unproven change may not tax note timing |
+
+The exposure is **duration**, and nothing that changes *when* we send fixes a
+message that is on the wire 15 ms. The remedy is a shorter message:
+per-element addressing or `onCC` from OXI, or the Lua path. The mailbox hold
+becomes worth revisiting **only** once a message fits one SPI frame, where its
+cap is ~3 ms and inaudible — short messages plus mailbox atomicity close this;
+either alone does not.
+
+**The framebuffer garbles on its own**, with nothing playing: 394 packets,
+~130 SPI frames, ~380 ms on the wire. LABELS (34 packets) garbles far less but
+costs the drawn panel and caps every cell at four characters, which is the
+device's own limit. Neither is correct, so it is a product call —
+`echo labels > /data/UserData/schwung/e16_screen` selects the fallback, absent
+means the framebuffer.
+
+**Ext Surface is not persisted.** `host_external_surface()` writes only
+`shadow_control->external_surface` in SHM and never calls `features_json_set`,
+so every reboot turns the surface off — and a disabled surface emits *nothing*,
+which reads exactly like "the device stopped answering". Unfixed.
