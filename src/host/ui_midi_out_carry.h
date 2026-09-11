@@ -180,30 +180,30 @@ static inline int ui_midi_carry_get_pace(void) { return ui_midi_carry_pace; }
  */
 #define UI_MIDI_CARRY_MSG_BYTES   2048
 /*
- * How many times one message may be re-queued. DEFAULT ZERO -- OFF.
+ * How many times one message may be re-queued.
  *
- * IT WAS 2, AND IT MADE THE GARBLING WORSE. Measured on hardware 2026-09-11:
- * "still get garbles with move playing, now even worse, with no knobs turning".
+ * THIS WAS SET TO 0 ON A MEASUREMENT THAT NEVER HAPPENED, and the story is
+ * worth the space because the mistake was not in the reasoning.
  *
- * The reasoning that produced 2 assumed a ~15% collision rate, inferred from
- * one spin in run B. The idle data from run C was already on the table and
- * said otherwise -- foreign traffic in 39% of windows at the LOWEST duty cycle
- * we ever run at -- and with notes flowing continuously it is higher still.
+ * Deploying quiet-start + retry drew the report "still get garbles, now even
+ * worse, with no knobs turning", so it was reverted as a regression. The
+ * binary under test had never contained either change: scripts/build.sh kept a
+ * hand-written list of the shim's dependencies and this header was not in it,
+ * so the shim was not rebuilt while package.sh repackaged anyway. A fresh
+ * tarball timestamp around an unchanged binary, and install.sh reporting
+ * success. (Fixed there by DERIVING the list; tests/build/test_build_dep_headers.sh
+ * fails on a return to enumeration.)
  *
- * A retry does not remove the failure; the corrupt copy has already gone out.
- * It only adds a second chance, so its value falls with the success rate while
- * its cost -- more of our packets on the wire, and therefore more collisions --
- * rises. Past some rate it is strictly negative, and this link is past it. At
- * idle it is worse than anywhere else, because the 1.5 s heartbeat is the ONLY
- * traffic there is: tripling it triples the corrupt messages reaching a screen
- * that would otherwise have sat there correct.
+ * The build that did contain both -- picked up incidentally when the counter
+ * work touched a .c file that WAS listed -- measured clean on the same test
+ * that garbled without them.
  *
- * Kept, at zero, rather than deleted: the machinery is measured and tested, and
- * the retry is the right answer on a quieter link (a device on its own port
- * with nothing else on that cable). Raising this is an experiment somebody can
- * run, not a default anybody should ship.
+ * Two, not more: under continuous playing every attempt can collide, and a
+ * message that re-queues itself forever turns a display glitch into a wire
+ * full of retries that starves the next real update. The room check below
+ * bounds the amplification structurally in case the count is evaded.
  */
-#define UI_MIDI_CARRY_MSG_RETRIES 0
+#define UI_MIDI_CARRY_MSG_RETRIES 2
 /*
  * How many consecutive frames a message may be held back waiting for a mailbox
  * with no foreign traffic in it.

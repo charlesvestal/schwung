@@ -390,35 +390,20 @@ static void test_retry_is_capped(void)
 #endif /* UI_MIDI_CARRY_MSG_RETRIES > 0 */
 
 /*
- * THE DEFAULT MUST BE OFF, and this is the pin that says so.
- *
- * Turning the retry back on without measuring the collision rate again is the
- * mistake that produced "now even worse"; the constant carries the reasoning
- * and this fails if somebody flips it without reading it.
+ * The cap is a bounded, positive number -- it is not unlimited, and it is not
+ * zero. Zero is a real configuration (a quieter link) but it is not what this
+ * device measured well with, and it was set once on a build that never
+ * contained the code under test. See the constant.
  */
-static void test_retry_is_off_by_default(void)
+static void test_retry_cap_is_bounded_and_on(void)
 {
-    ui_midi_carry_t c; ui_midi_carry_reset(&c);
-    const int before = ui_midi_carry_retry_count();
-
-    uint8_t msg[24], pkts[64];
-    for (int i = 0; i < 24; i++) msg[i] = (uint8_t)i;
-    int n = packetize(msg, 24, pkts);
-    for (int i = 0; i < n; i++) ui_midi_carry_push(&c, &pkts[i*4]);
-
-    /* Collide every single frame. */
-    for (int f = 0; f < 60 && c.len > 0; f++) {
-        uint8_t region[REGION] = {0};
-        put_foreign(region, 19);
-        ui_midi_carry_drain(&c, region, REGION);
-    }
-
-    CHECK(UI_MIDI_CARRY_MSG_RETRIES == 0,
-          "the retry ships OFF -- it AMPLIFIES at this link's collision rate, "
-          "and at idle the heartbeat is the only traffic there is, so tripling "
-          "it triples the corrupt messages reaching the screen");
-    CHECK(ui_midi_carry_retry_count() == before,
-          "with the cap at 0 a collided run is never re-queued");
+    CHECK(UI_MIDI_CARRY_MSG_RETRIES > 0,
+          "the retry is ON -- the build that measured clean had it at 2, and "
+          "the 'even worse' report that turned it off was against a binary "
+          "that never contained it");
+    CHECK(UI_MIDI_CARRY_MSG_RETRIES <= 4,
+          "and BOUNDED -- a message that re-queues itself forever starves the "
+          "next real update");
 }
 
 int main(void)
@@ -437,7 +422,7 @@ int main(void)
     test_retry_is_capped();
 #endif
     test_clean_run_is_not_requeued();
-    test_retry_is_off_by_default();
+    test_retry_cap_is_bounded_and_on();
 
     if (failures) { printf("%d check(s) failed\n", failures); return 1; }
     printf("PASS: ui_midi_out_carry\n");
