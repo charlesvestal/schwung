@@ -168,20 +168,60 @@ def main():
             while m.get_message():   # drop anything queued at the old size
                 pass
             r = watch(m, args.secs, n)
+            #
+            # NOTHING ARRIVING IS A DEAD RIG, NOT A CLEAN LINK.
+            #
+            # A BLE MIDI port stays listed in CoreMIDI after the adapter
+            # disconnects, so the sweep opens it happily and scores silence. On
+            # 2026-09-11 that produced a full table of 0.0% corrupt -- which
+            # reads as a PASS -- while the device was verifiably sending 2766
+            # packets/sec. Two and a half minutes to measure a disconnected
+            # adapter, and the output looked like the best result of the day.
+            #
+            # Stop on the FIRST size instead. Anything else buys a page of
+            # zeros that someone will eventually quote.
+            if r["seen"] == 0:
+                print(f"\n!! nothing arrived at {n} bytes -- the receiver is not "
+                      f"hearing the device.")
+                print("   A Bluetooth adapter that has dropped its link still "
+                      "appears in CoreMIDI, so an open port proves nothing.")
+                print("   Check the link is UP (clock/notes should be visible), "
+                      "then rerun. Not scoring the remaining sizes: a table of "
+                      "zeros from a dead rig reads exactly like a pass.")
+                return 1
             total = r["intact"] + r["corrupt"]
             pct = (100.0 * r["corrupt"] / total) if total else 0.0
             shape, note = offset_shape(r["offsets"])
             flag = "  VOID(adapter merged)" if r["overlong"] else ""
             print(f"{n:>6} {r['seen']:>8} {r['intact']:>7} {r['corrupt']:>8} "
                   f"{r['lost']:>5} {pct:>8.1f}%  {shape} {note}{flag}")
-            rows.append((n, r, pct, shape))
+            rows.append((n, r, pct, shape, bool(r["overlong"])))
     finally:
         arm(args.host, 0)
 
     print("\n## What this says")
-    shapes = [s for _, _, _, s in rows if s in ("FIXED", "MOSTLY FIXED")]
-    scattered = [s for _, _, _, s in rows if s == "SCATTERED"]
-    any_corrupt = any(p > 0 for _, _, p, _ in rows)
+    #
+    # A VOID ROW IS NOT DATA, AND MUST NOT REACH A VERDICT.
+    #
+    # The first run of this sweep classified 600 and 1171 bytes as SCATTERED and
+    # concluded "size DEPENDENT" -- from the two rows it had ITSELF just marked
+    # VOID because the Bluetooth adapter merged messages. Marking a row void and
+    # then averaging it in is worse than not marking it, because the label makes
+    # the output look careful. Everything below reads `good` only.
+    good = [(n, r, p, sh) for n, r, p, sh, void in rows if not void]
+    voided = [n for n, _, _, _, void in rows if void]
+    if voided:
+        print(f"  EXCLUDED (adapter saturated, not the device): {voided}")
+        print("  Those sizes are unmeasurable on this rig -- BLE MIDI merges")
+        print("  messages well below a framebuffer at 4/sec. A smaller rate or")
+        print("  a wired receiver is needed to say anything about them.")
+    if not good:
+        print("  No valid rows. Nothing can be concluded.")
+        return 0
+
+    shapes = [sh for _, _, _, sh in good if sh in ("FIXED", "MOSTLY FIXED")]
+    scattered = [sh for _, _, _, sh in good if sh == "SCATTERED"]
+    any_corrupt = any(p > 0 for _, _, p, _ in good)
 
     if not any_corrupt:
         print("  Nothing corrupted. If this is the notes-on pass, the fault was")
@@ -194,16 +234,19 @@ def main():
         print("  Failure scales with bytes in flight, so the remedy is FEWER")
         print("  BYTES (the Lua path: ~60 packets a page, 5 bytes a value).")
     elif scattered and not shapes:
-        print("  Corruption at SCATTERED offsets, only when other cable-2 traffic")
-        print("  is present => a foreign packet spliced into the run. Only System")
-        print("  Realtime bytes may appear inside a SysEx, so the receiver is")
-        print("  right to abort -- the sender must not interleave.")
+        # Deliberately does NOT say "because of foreign traffic": this script is
+        # told a LABEL, not a condition, and cannot verify what was playing. The
+        # comparison between the two passes is the evidence; one pass is not.
+        print("  Corruption at SCATTERED offsets => consistent with a foreign")
+        print("  packet spliced into the run, NOT with a buffer boundary.")
+        print("  Compare against the other pass before concluding: a single pass")
+        print("  cannot tell you what CAUSED it, only what shape it has.")
     else:
         print("  Mixed: both a consistent boundary and scattered breaks. Likely")
         print("  BOTH mechanisms; report the per-size table rather than a verdict.")
 
-    small = [(n, p) for n, _, p, _ in rows if n <= 92]
-    large = [(n, p) for n, _, p, _ in rows if n >= 600]
+    small = [(n, p) for n, _, p, _ in good if n <= 92]
+    large = [(n, p) for n, _, p, _ in good if n >= 600]
     if small and large:
         s_avg = sum(p for _, p in small) / len(small)
         l_avg = sum(p for _, p in large) / len(large)
