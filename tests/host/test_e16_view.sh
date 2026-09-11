@@ -24,7 +24,7 @@ node --input-type=module -e '
 import { buildView, renderView, ringsFor, ringFor, applyTurn, cellRect,
          encHalf, encSlot, ENCODERS, HALF_H, RING_MAX }
     from "./src/shared/e16_view.mjs";
-import { createDisplay } from "./src/shared/e16_surface.mjs";
+import { createDisplay, SCREEN_HEARTBEAT_MS } from "./src/shared/e16_surface.mjs";
 import { createCanvas } from "./src/shared/e16_canvas.mjs";
 import { KNOBS_PER_PAGE, PAGE_KNOBS } from "./src/shared/param_pages/page_plan.mjs";
 
@@ -323,6 +323,59 @@ prime(d, send, TEXT);
 eq("settled", d.tick(send, frame, TEXT), null);
 d.forgetShown();
 eq("after forgetShown the screen is resent", d.tick(send, frame, TEXT), "labels");
+
+
+/* ---- 8. THE SCREEN SELF-HEALS, because the link loses packets -----------
+ *
+ * Not because our messages are too big: a 101-byte LABELS message still
+ * corrupts occasionally on hardware with every buffer on our side proven
+ * clean and the message verified well-formed -- legal framing, correct CINs,
+ * byte-exact through device-side unpacking. The 394-packet framebuffer
+ * garbled more often for the obvious reason, not a different one.
+ *
+ * So the screen is restated on a heartbeat: 34 packets to repair a corruption
+ * we can neither prevent nor detect. It is a RESTATE, not a retry -- there is
+ * no acknowledgement to wait for -- and idempotent, since the same labels set
+ * the same labels.
+ * --------------------------------------------------------------------- */
+let clock = 0;
+d = createDisplay(); send = mkSend();
+/* A STAMPED paint: screenAge measures from a completed send, so the first
+ * tick has to carry a clock. prime() deliberately does not, which is why the
+ * age is null until a real send happens here. */
+d.tick(send, frame, TEXT, clock);
+send.log.length = 0;
+eq("a completed send starts the clock", d.screenAge(clock), 0);
+eq("settled: nothing owed", d.tick(send, frame, TEXT, clock += 10), null);
+/* Just short of the heartbeat: still quiet. */
+eq("no restate before the interval",
+   d.tick(send, frame, TEXT, clock += (SCREEN_HEARTBEAT_MS - 200)), null);
+eq("screenAge tracks the wait",
+   d.screenAge(clock) >= SCREEN_HEARTBEAT_MS - 200, true);
+
+/* The surface is what asks for it, so drive the check the way it does. */
+{
+  let t2 = 0;
+  const dd = createDisplay(); const ss = mkSend();
+  dd.tick(ss, frame, TEXT, t2);            /* first paint */
+  const before = ss.log.length;
+  t2 += SCREEN_HEARTBEAT_MS + 50;
+  if (dd.screenAge(t2) >= SCREEN_HEARTBEAT_MS) dd.invalidate();
+  dd.tick(ss, frame, TEXT, t2);
+  eq("a stale screen is restated", ss.log.length - before, 1);
+}
+
+/* A restate must never interrupt a turn. The SCREEN outranks rings in this
+ * design (the settle timer is what keeps it out of a gesture), so the guard
+ * cannot live in the display -- the surface withholds the heartbeat entirely
+ * while a gesture is in flight or rings are pending. Asserted at that seam:
+ * a display with rings queued reports them, and the surface is what must
+ * decline to add a repaint on top. */
+d = createDisplay(); send = mkSend();
+prime(d, send, TEXT);
+d.ringChanged(ringFor(v, 8));
+eq("rings pending is visible to the caller that gates the heartbeat",
+   d.ringsPending, 1);
 
 console.log(fails ? "FAILED " + fails : "PASS");
 process.exit(fails ? 1 : 0);
