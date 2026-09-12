@@ -340,8 +340,50 @@ else
     echo "Skipping Shadow UI (up to date)"
 fi
 
+# Is the Link SDK usable, or only PARTLY checked out?
+#
+# THE GUARD BELOW USED TO ASK ONLY `[ -d libs/link/include/ableton ]`, and a
+# partially initialised submodule walks straight past that. `libs/link` is its
+# own repo with a nested submodule of its own (modules/asio-standalone), so
+# `git submodule update --init libs/link` WITHOUT --recursive leaves Ableton's
+# headers present and asio absent. The guard then says nothing, the g++ line
+# runs, and link_subscriber.cpp dies on a missing asio.hpp -- under `set -e`,
+# BEFORE the rules below it. So the artifact somebody was actually testing was
+# never built, and the failure names a file they had not touched. Twice in one
+# session. SCHWUNG_ALLOW_NO_LINK_SDK=1 could not help, because the branch that
+# reads it was never reached.
+#
+# Every path here is one the compile itself consumes: both include roots named
+# on the g++ line, the header link_subscriber.cpp includes, and the asio entry
+# point Ableton's headers pull in behind it. Naming the FILES and not just the
+# directories is what turns an SDK pinned before the public audio API into a
+# hard failure with a path on it, rather than a template error five hundred
+# lines deep.
+#
+# Prints "ok", or "absent"/"partial" followed by the first missing path, so the
+# caller can tell an uninitialised submodule from a half-initialised one --
+# they have different fixes and the recursive one is the whole point.
+# Extracted and RUN by tests/host/test_link_sdk_guard.sh; keep it self-
+# contained (no globals, no `set -u` assumptions beyond its own argument).
+link_sdk_state() {
+    local root="${1:-./libs/link}"
+    [ -d "$root" ] && [ -n "$(ls -A "$root" 2>/dev/null)" ] || {
+        echo "absent $root"; return 1; }
+    local p
+    for p in "include/ableton" \
+             "include/ableton/LinkAudio.hpp" \
+             "modules/asio-standalone/asio/include" \
+             "modules/asio-standalone/asio/include/asio.hpp"; do
+        [ -e "$root/$p" ] || { echo "partial $root/$p"; return 1; }
+    done
+    echo ok
+}
+
 # Build Link Audio subscriber (C++17, requires Link SDK)
-if [ -d "./libs/link/include/ableton" ]; then
+# `|| true`, because the assignment inherits the function's exit status and
+# `set -e` would abort here on the very case this guard exists to report.
+link_sdk="$(link_sdk_state ./libs/link)" || true
+if [ "$link_sdk" = "ok" ]; then
     if needs_rebuild build/link-subscriber \
         src/host/link_subscriber.cpp src/host/arc4random_compat.c src/host/unified_log.c \
         src/host/link_audio.h src/host/unified_log.h src/host/shadow_constants.h; then
@@ -386,14 +428,24 @@ else
     #
     # Fail instead. SCHWUNG_ALLOW_NO_LINK_SDK=1 is the deliberate opt-out for
     # anyone who really does want a build without it.
+    #
+    # A PARTIAL SDK LANDS HERE TOO, which it did not before: it fell through
+    # into the compile and killed the build before the rules after this one,
+    # with the opt-out unreachable. See link_sdk_state above.
+    link_sdk_why="${link_sdk%% *}"
+    link_sdk_path="${link_sdk#* }"
     if [ "${SCHWUNG_ALLOW_NO_LINK_SDK:-0}" = "1" ]; then
-        echo "Warning: Link SDK not found at libs/link/, skipping link-subscriber"
+        echo "Warning: Link SDK $link_sdk_why at libs/link/ ($link_sdk_path),"
+        echo "         skipping link-subscriber"
         echo "         (SCHWUNG_ALLOW_NO_LINK_SDK=1 — Move->Schwung audio will not work)"
     else
-        echo "ERROR: Link SDK not found at libs/link/ — cannot build link-subscriber." >&2
+        echo "ERROR: Link SDK $link_sdk_why — cannot build link-subscriber." >&2
+        echo "       Missing: $link_sdk_path" >&2
         echo "       Move->Schwung (Link Audio) has no reception path without it, and" >&2
         echo "       the tarball would silently ship without one." >&2
         echo "" >&2
+        # --recursive is not decoration: libs/link carries its own submodule,
+        # and without it asio is absent while Ableton's headers are present.
         echo "       Fix:  git submodule update --init --recursive libs/link" >&2
         echo "       Or:   SCHWUNG_ALLOW_NO_LINK_SDK=1 ./scripts/build.sh" >&2
         exit 1
