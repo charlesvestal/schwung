@@ -1472,23 +1472,35 @@ from a single parse.
 
 In `src/host/clip_regions.c`, extend `clip_regions_forget_deleted` to also
 report which `(track, slot)` pairs were deleted — an out-parameter bitmask is
-enough — and in the shim, on a region reload, push those to each slot:
+enough.
+
+**Do NOT push it with `set_param` from the worker.** The re-parse runs on the
+worker thread, and `v2_set_param` is a module entry point — i.e. the SPI
+callback. Calling it from the worker races every reader the callback owns, and
+the chain instance is only safe because RT is its single writer.
+
+Use the **same shape the regions table already uses to cross that boundary**: the
+worker publishes, the callback reads and pushes. Concretely — the worker stores
+the deleted mask beside `g_regions` and bumps a **generation counter**; the
+shim's per-slot loop notices a generation it has not seen and calls a second
+`dlsym`'d entry point once:
 
 ```c
-    /* A deleted clip ORPHANS its lanes. It does not delete them.
-     *
-     * Move saves Song.abl about 35 s after an edit, so "absent from the file"
-     * is a statement about the last save and not about the user's intent.
-     * Deleting recorded automation on the strength of a file diff inside that
-     * window is the wrong direction to fail in, and lanes are ~9 KB. Pruning
-     * is only ever an explicit user action (Clear Lanes, Task 9). */
-    if (deleted_mask & (1u << (track * CLIP_SLOTS + slot)))
-        shadow_plugin_v2->set_param(inst, "lanes:orphan",
-                                    /* "<track>:<slot>" */ buf);
+/* A deleted clip ORPHANS its lanes. It does not delete them.
+ *
+ * Move saves Song.abl about 35 s after an edit, so "absent from the file" is a
+ * statement about the last save, not about the user's intent. Deleting recorded
+ * automation on the strength of a file diff inside that window is the wrong
+ * direction to fail in, and a lane is small. Pruning is only ever an explicit
+ * user action (Clear Lanes, Task 9).
+ *
+ * RT: called from the per-slot loop, like chain_set_clip_phase. The worker only
+ * ever publishes the mask -- it never reaches into the instance. */
+void chain_set_clip_deleted(void *instance, int track, int slot);
 ```
 
-Handle `lanes:orphan` in `v2_set_param` by setting `orphaned = 1` on every lane
-bound to that position. `lane_eval` already refuses an orphaned lane (Task 1),
+A generation counter rather than a boolean, for the reason `chain_bus.c` records:
+a flag can be resurrected by a preempted worker, and a counter cannot. `lane_eval` already refuses an orphaned lane (Task 1),
 so it goes silent through the same release path as a stale one — and if the clip
 comes back (an undo), the fingerprint match in step 4 is what un-orphans it.
 
