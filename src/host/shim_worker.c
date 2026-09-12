@@ -738,7 +738,29 @@ static void clip_phase_check_tick(void)
                 }
             }
 
-            for (int t = 0; t < CLIP_TRACKS; t++) {
+            /* ONE TRACK IS SCORED: the selected one.
+             *
+             * The step editor shows a single track, so a playhead sighting
+             * describes that track's clip and nothing else. Walking all four
+             * and scoring each against this column measured the OTHER tracks
+             * against a playhead that was never theirs -- and it did not read
+             * as random, because clips start together, so a same-length
+             * neighbour agreed often enough to look like a real rate. It
+             * reported `seen 74, hit 21` (28%) on tracks 2 and 4 while track 1
+             * was selected, and that 28% was briefly offered as evidence about
+             * phase accuracy. Correctly attributed, the same instrument read
+             * 760/765 = 99.3%.
+             *
+             * The bar column already had this rule (it was gated on
+             * `t == clip_selected_track()`); the within-bar column did not.
+             * Both read the same `t` now, so there is no per-track loop left
+             * for the two halves to disagree in. Tracks other than the
+             * selected one simply stop accumulating -- their last diff is left
+             * where it was, which is the honest thing for a column nothing is
+             * measuring. */
+            {
+                const int t = clip_selected_track();
+                if (t < 0) continue;
                 const clip_track_state_t *tr = &cs->tracks[t];
                 if (!tr->identity_valid || tr->clip_slot < 0) continue;
                 const clip_region_t *r = &g_regions.slots[t][tr->clip_slot];
@@ -755,9 +777,8 @@ static void clip_phase_check_tick(void)
                 g_ph_lastdiff[t] = diff;
                 if (diff == 0) g_ph_hit[t]++;
 
-                /* Record a disagreement, for the selected track only -- it is
-                 * the one whose playhead this is. */
-                if (diff != 0 && t == clip_selected_track()) {
+                /* Record a disagreement. */
+                if (diff != 0) {
                     double step_pulses = res * 24.0;
                     double into = (ph - r->loop_start) / res;   /* in steps */
                     double frac = into - (double)(long)into;    /* 0..1      */
@@ -774,10 +795,8 @@ static void clip_phase_check_tick(void)
                     g_ph_miss_n++;
                 }
 
-                /* Bar level, and ONLY for the track the step editor is
-                 * showing -- a bar describes one clip's page, so comparing it
-                 * against another track's phase measures nothing. */
-                int bar = (t == clip_selected_track()) ? g_editor_bar[t] : 0;
+                /* Bar level: the same track's remembered page. */
+                int bar = g_editor_bar[t];
                 /* A DERIVED anchor was computed from this same playhead, so
                  * scoring it here measures the solver's arithmetic, not the
                  * phase. Excluded, or the bar column would read 100% by
@@ -792,7 +811,7 @@ static void clip_phase_check_tick(void)
                     /* Tie the bar outcome to the step miss just recorded for
                      * this same event, so "did both columns fail together"
                      * is a fact rather than an inference from two rates. */
-                    if (diff != 0 && t == clip_selected_track() && g_ph_miss_n) {
+                    if (diff != 0 && g_ph_miss_n) {
                         ph_miss_t *m = &g_ph_miss[(g_ph_miss_n - 1) % PH_MISS_RING];
                         if (m->pulses == ev[i].pulses) {
                             m->bar_scored = 1;
