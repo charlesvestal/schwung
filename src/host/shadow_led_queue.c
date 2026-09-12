@@ -1067,26 +1067,35 @@ static int find_contiguous_empty_block(const uint8_t *midi_out, int from, int co
  * Iterates both subcmd slots (0x00 then 0x10) for each pass.
  *
  * IMPORTANT: All 6 USB-MIDI packets for a sysex LED command must be
- * contiguous in the buffer. We clear existing cable-0 sysex first
- * to prevent interleaving with RNBO's live sysex on the same cable. */
+ * contiguous in the buffer, and must not interleave with any other cable-0
+ * sysex — the hardware's parser cannot tell two interleaved runs apart.
+ *
+ * This used to be achieved by CLEARING every cable-0 sysex packet in the
+ * buffer first, which is a different thing entirely: it made room by
+ * DESTROYING whatever was there. The comment reasoned only about RNBO's live
+ * sysex, but Move's own firmware shares that cable — its RGB LED commands AND
+ * its 37-family XMOS control messages, which are how the USB-C audio-out
+ * source is set. A destroyed 37 pair is silent: Move's screen still shows the
+ * new setting and the hardware never changed.
+ *
+ * So it defers instead. The restore is progressive (one LED per call, retried
+ * every frame over several passes), so the cost of waiting for a clear frame is
+ * a slower LED restore. The cost of the old behaviour was somebody else's
+ * message. Not a trade. */
 int led_queue_flush_jack_sysex_restore(int max_leds) {
     if (!sysex_restore_pending) return 0;
 
     uint8_t *midi_out = host.midi_out_buf;
     if (!midi_out) return 0;
 
-    /* Clear any cable-0 sysex packets already in the buffer. */
-    int cleared = 0;
+    /* Somebody else's cable-0 sysex is in flight this frame — defer rather than
+     * clear it. Returning 0 leaves sysex_restore_pending set, so the next frame
+     * tries again; nothing is lost but time. */
     for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
         uint8_t cin_type = midi_out[s] & 0x0F;
         uint8_t cable = (midi_out[s] >> 4) & 0x0F;
-        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
-            midi_out[s] = 0;
-            midi_out[s+1] = 0;
-            midi_out[s+2] = 0;
-            midi_out[s+3] = 0;
-            cleared++;
-        }
+        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07)
+            return 0;
     }
 
     int leds_sent = 0;
@@ -1270,6 +1279,9 @@ int led_queue_move_sysex_restore_pending(void) {
     return move_sysex_restore_pending;
 }
 
+/* Same contract as led_queue_flush_jack_sysex_restore above, and it had the
+ * same indiscriminate clear — with no comment at all, which is how the second
+ * copy outlived the reasoning of the first. Defer, never destroy. */
 int led_queue_flush_move_sysex_restore(int max_leds) {
     if (!move_sysex_restore_pending) return 0;
 
@@ -1279,12 +1291,8 @@ int led_queue_flush_move_sysex_restore(int max_leds) {
     for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
         uint8_t cin_type = midi_out[s] & 0x0F;
         uint8_t cable = (midi_out[s] >> 4) & 0x0F;
-        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
-            midi_out[s] = 0;
-            midi_out[s+1] = 0;
-            midi_out[s+2] = 0;
-            midi_out[s+3] = 0;
-        }
+        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07)
+            return 0;
     }
 
     int leds_sent = 0;
