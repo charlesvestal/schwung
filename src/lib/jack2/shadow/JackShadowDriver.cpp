@@ -1,10 +1,32 @@
 /*
-Copyright (C) 2026 Charles Vestal
-License: MIT
+Copyright (C) 2001 Paul Davis
+Copyright (C) 2004 Grame
+Copyright (C) 2025 Cycling '74 - Adapted for Move
+Copyright (C) 2026 Charles Vestal - Shadow driver (shared memory)
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 JackShadowDriver — JACK audio driver that shares audio/MIDI/display with
 Move's firmware via shared memory (/dev/shm/schwung_jack).
-Based on JackMoveDriver by Cycling '74 (GPL-2.0).
+
+This file is a derivative of JackMoveDriver by Cycling '74, which is itself
+derived from jack2's driver classes (Paul Davis, Grame). It is compiled
+against jack2's GPL-2.0-or-later server headers (-DSERVER_SIDE), so it is
+GPL-2.0-or-later and NOT under Schwung's MIT licence. It builds to a
+standalone jackd plugin (lib/jack/jack_shadow.so); the rest of Schwung does
+not link it. See THIRD_PARTY_LICENSES.md.
 */
 
 #define __STDC_FORMAT_MACROS
