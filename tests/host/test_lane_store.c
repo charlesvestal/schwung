@@ -499,6 +499,117 @@ int main(void) {
         }
     }
 
+    /* ---- THE PASS'S EXTENT, computed ONCE ------------------------------
+     *
+     * lane_record_point erases the span a pass sweeps; lane_tick must go
+     * silent over exactly that span. Two readings of "the pass is here" from
+     * one function, because a second copy of this arithmetic is free to
+     * disagree with the first -- and a disagreement erases points the lane is
+     * still playing, which is unrecoverable and invisible. */
+    {
+        /* Forward is the plain difference. */
+        CHECK(fabs(lane_pass_travel(2.0, 2.5, 8.0) - 0.5) < 1e-9,
+              "forward travel 2.0 -> 2.5 read %.6f",
+              lane_pass_travel(2.0, 2.5, 8.0));
+        CHECK(lane_pass_travel(2.0, 2.0, 8.0) == 0.0,
+              "no travel at all read %.6f", lane_pass_travel(2.0, 2.0, 8.0));
+
+        /* BACKWARDS IS A WRAP, and the whole point of this function: the
+         * travelled distance is (loop_len - prev) + phase. The tempting
+         * phase - prev is NEGATIVE, so it reads as "cannot tell" and hands
+         * the old curve back in the middle of a sweep across the loop
+         * boundary -- and it describes the untouched MIDDLE of the lane
+         * rather than the two swept ends. */
+        CHECK(fabs(lane_pass_travel(7.5, 0.2, 8.0) - 0.7) < 1e-9,
+              "wrapped travel 7.5 -> 0.2 in an 8-beat loop read %.6f, "
+              "expected 0.7", lane_pass_travel(7.5, 0.2, 8.0));
+        CHECK(lane_pass_travel(7.5, 0.2, 8.0) > 0.0,
+              "wrapped travel came out negative -- that is phase - prev");
+
+        /* Cannot tell, and -1.0 says so once for every caller. A real
+         * distance is never negative, so the sentinel cannot be an answer. */
+        CHECK(lane_pass_travel(7.5, 0.2, 0.0) < 0.0,
+              "a backwards phase with no loop length answered %.6f",
+              lane_pass_travel(7.5, 0.2, 0.0));
+        CHECK(lane_pass_travel(9.0, 0.2, 8.0) < 0.0,
+              "a prev past the loop end answered %.6f",
+              lane_pass_travel(9.0, 0.2, 8.0));
+        CHECK(lane_pass_travel(NAN, 1.0, 8.0) < 0.0, "a NaN prev answered a distance");
+        CHECK(lane_pass_travel(1.0, NAN, 8.0) < 0.0, "a NaN phase answered a distance");
+
+        lane_store_t lps;
+        lane_store_reset(&lps);
+        lane_fingerprint_t lfp = { 0.0, 8.0, 3, 60 };
+        lane_t *lp = lane_alloc(&lps, "synth", "cutoff", 0, 0, &lfp);
+        CHECK(lp != NULL, "a lane for the pass-window cases");
+        if (lp) {
+            /* NO PASS IS NOT A LIVE PASS. `rec_active` is 0 until the first
+             * write of a take, and the lane must play normally there. */
+            CHECK(lane_pass_live_at(lp, 2.0, 8.0) == 0,
+                  "a lane with no recording pass reads as live");
+
+            lane_record_point(lp, 2.0, 55.0f, 8.0);
+            CHECK(lp->rec_active == 1, "premise: the pass started");
+
+            /* Inside the window, forward: live. */
+            CHECK(lane_pass_live_at(lp, 2.0, 8.0) == 1,
+                  "the pass is not live at its own last write");
+            CHECK(lane_pass_live_at(lp, 2.0 + LANE_PASS_GAP_BEATS * 0.5, 8.0) == 1,
+                  "the pass is not live half a threshold ahead of itself");
+
+            /* PAST THE THRESHOLD IS NOT LIVE -- that bound is the whole
+             * difference between a punch and a recording MODE that silences
+             * the rest of the bar. */
+            CHECK(lane_pass_live_at(lp, 2.0 + LANE_PASS_GAP_BEATS * 1.5, 8.0) == 0,
+                  "a phase past the threshold still reads as the live pass");
+
+            /* AND IT AGREES WITH THE ERASE. A write at a phase the predicate
+             * calls live erases back to the previous write; one it calls dead
+             * erases nothing. Asserted as the AGREEMENT rather than as two
+             * separate expected numbers, because what matters is that the two
+             * readings cannot drift apart. */
+            lane_write(lp, 2.4, 99.0f);
+            const int live_near = lane_pass_live_at(lp, 2.5, 8.0);
+            lane_record_point(lp, 2.5, 56.0f, 8.0);
+            int survived = 0;
+            for (int i = 0; i < lp->n; i++)
+                if (fabs(lp->pts[i].phase - 2.4) < 1e-9) survived = 1;
+            CHECK(live_near == 1 && survived == 0,
+                  "live=%d but the swept point at 2.4 survived=%d -- the "
+                  "suppression and the erase disagree about the pass",
+                  live_near, survived);
+
+            lane_write(lp, 6.0, 98.0f);
+            const int live_far = lane_pass_live_at(lp, 7.0, 8.0);
+            lane_record_point(lp, 7.0, 57.0f, 8.0);
+            survived = 0;
+            for (int i = 0; i < lp->n; i++)
+                if (fabs(lp->pts[i].phase - 6.0) < 1e-9) survived = 1;
+            CHECK(live_far == 0 && survived == 1,
+                  "live=%d but the point at 6.0 survived=%d -- a write beyond "
+                  "the threshold erased a span nothing was suppressing",
+                  live_far, survived);
+
+            /* WRAPPED, THROUGH BOTH READINGS. The pass sits at 7.0; 0.3 is
+             * 1.3 beats of travel away round the loop, which is past the
+             * threshold, while 7.5 is 0.5 ahead and inside it. */
+            CHECK(lane_pass_live_at(lp, 7.5, 8.0) == 1,
+                  "the pass is not live 0.5 beats ahead of 7.0");
+            lane_record_point(lp, 7.8, 58.0f, 8.0);
+            CHECK(lane_pass_live_at(lp, 0.1, 8.0) == 1,
+                  "a pass at 7.8 is not live 0.3 beats later at phase 0.1 -- "
+                  "the wrap was measured as phase - prev");
+            CHECK(lane_pass_live_at(lp, 4.0, 8.0) == 0,
+                  "a pass at 7.8 reads as live in the untouched middle of the "
+                  "loop at phase 4.0");
+
+            /* The end of the pass is the end of the window, everywhere. */
+            lane_record_end(lp);
+            CHECK(lane_pass_live_at(lp, 7.8, 8.0) == 0,
+                  "an ended pass still reads as live at its last write");
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;
