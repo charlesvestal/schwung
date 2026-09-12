@@ -48,6 +48,7 @@
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
 #include "host/lane_store.h"
+#include "host/lane_serial.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -1212,6 +1213,8 @@ CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target
                                      const char *param, const char *val);
 CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
                                              lane_fingerprint_t *out);
+CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
+CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);

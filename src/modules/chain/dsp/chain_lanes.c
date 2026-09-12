@@ -212,3 +212,44 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
     }
     if (ln->driving) lane_release_one(inst, ln);
 }
+
+/* ---- persistence: the `lanes:state` document ---------------------------
+ *
+ * Both of these run on the SPI callback, like every other module entry point.
+ * Formatting 16 lanes x 64 points is bounded work with no allocation and no
+ * I/O -- which is the whole reason the chain only ever formats a STRING and
+ * the shadow UI does the file I/O. There is no fopen on this side of the seam
+ * and there must never be one.
+ */
+
+/* Bytes written, 0 for "this slot has no automation" (the UI then writes no
+ * file at all), or -1 when the host's buffer is too small -- which the UI
+ * reads as a FAILED read, not as an empty one, so it cannot truncate a good
+ * lanes_<i>.json with half a document. */
+int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len) {
+    if (!inst || !buf || buf_len <= 0) return -1;
+    return lane_store_serialize(&inst->lanes, buf, buf_len);
+}
+
+/* Replace the store from a document.
+ *
+ * RELEASES FIRST. The mod bus holds one override source per DRIVING lane,
+ * named "lane:<target>:<param>"; dropping the store without releasing leaves
+ * those sources asserted for lanes that no longer exist, so the parameters
+ * they were driving stick wherever the outgoing set left them and no gesture
+ * hands them back.
+ *
+ * `stale` and `orphaned` are not in the document and are not set here: the
+ * next lane_tick recomputes both from the live clip, which is the only thing
+ * that can tell a lane whose clip is present from one whose clip is gone. A
+ * lane whose fingerprint no longer matches therefore loads neutral and is
+ * marked stale on the first block with a clip fingerprint -- silent and
+ * retained, never guessed at.
+ *
+ * A malformed document leaves the store as it was (lane_store_deserialize is
+ * all-or-nothing), so a corrupt file loses nothing that is already loaded. */
+void lane_apply_state(chain_instance_t *inst, const char *doc) {
+    if (!inst || !doc) return;
+    lane_release_all(inst);
+    lane_store_deserialize(&inst->lanes, doc);
+}
