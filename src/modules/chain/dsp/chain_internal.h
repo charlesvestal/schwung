@@ -833,6 +833,11 @@ typedef struct chain_instance {
      * A lane_store_t is 18 KB and must land in neither multiplier. */
     lane_store_t lanes;
     int    lane_armed;            /* pushed from the shim: Move's Record button */
+    /* How many lanes the last `lanes:clear` threw away, read back as
+     * `lanes:cleared`. The UI announces a NUMBER: a clear that reports
+     * success without one is indistinguishable from one that cleared
+     * nothing. */
+    int    lanes_last_cleared;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
@@ -1216,6 +1221,12 @@ CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
 CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
 CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
 CHAIN_INTERNAL void lane_set_armed(chain_instance_t *inst, int armed);
+/* ONE dispatch for every "lanes:" key -- `sub` is the key past the prefix.
+ * chain_host.c carries a single branch each way; every lane key lives here. */
+CHAIN_INTERNAL void lane_param_set(chain_instance_t *inst, const char *sub,
+                                   const char *val);
+CHAIN_INTERNAL int lane_param_get(chain_instance_t *inst, const char *sub,
+                                  char *buf, int buf_len);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);

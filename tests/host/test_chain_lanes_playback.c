@@ -538,6 +538,121 @@ int main(void) {
     }
     free(fpi);
 
+    /* ---- 22. `lanes:clear`, and what makes it more than emptying the store.
+     *
+     *  The mod bus holds one override source per DRIVING lane. Dropping the
+     *  store without releasing leaves those sources asserted for lanes that
+     *  no longer exist, so every parameter they were driving sticks wherever
+     *  the lanes left it and NO GESTURE HANDS IT BACK -- the knob is dead and
+     *  nothing on screen explains why. That is the one thing this test is
+     *  for: the base value coming back is what proves the release ran, and
+     *  an empty store alone would not show it.
+     *
+     *  Driven through lane_param_set/lane_param_get rather than a direct
+     *  call, because the single "lanes:" dispatch in chain_host.c is what the
+     *  UI actually reaches and a helper nothing routes to is not a feature. */
+    {
+        chain_instance_t *ci = calloc(1, sizeof(*ci));
+        CHECK(ci != NULL, "clear-path instance");
+        if (ci) {
+            setup_fake_synth(ci);
+            ci->lane_track = 0;
+            ci->lane_clip_slot = 0;
+            ci->clip_fp_valid = 0;
+            lane_fingerprint_t cfp = { 0.0, 8.0, 3, 60 };
+
+            lane_t *a = lane_alloc(&ci->lanes, "synth", "cutoff", 0, 0, &cfp);
+            lane_t *b = lane_alloc(&ci->lanes, "synth", "octave", 0, 0, &cfp);
+            CHECK(a != NULL && b != NULL, "two lanes to clear");
+            if (a && b) {
+                lane_write(a, 0.0, 20.0f);
+                lane_write(a, 4.0, 80.0f);
+                lane_write(b, 0.0, 6.0f);
+
+                /* The knob positions the user must get back. Poked as the
+                 * BASE before anything drives, which is what chain_mod
+                 * captures; asserting against the param default instead
+                 * would pass with the release deleted on a synth whose
+                 * default happens to equal the knob. */
+                fake_poke("cutoff", "33");
+                fake_poke("octave", "2");
+
+                ci->clip_phase_valid = 1;
+                ci->clip_phase_beats = 2.0;
+                ci->clip_loop_len = 8.0;
+                lane_tick(ci);
+                CHECK(fake_value("cutoff") == 50.0f,
+                      "premise: the lane is driving cutoff (%f)",
+                      fake_value("cutoff"));
+                CHECK(chain_mod_is_target_active(ci, "synth", "cutoff") == 1,
+                      "premise: the override is registered");
+
+                /* A DRIVING LANE ALREADY READS AS MODULATED through the
+                 * existing path, so the grid's modulated/base mark needs no
+                 * new code and no new glyph: an override is an ordinary
+                 * active source on the target, and `<key>:modulated` is what
+                 * the renderer asks. */
+                char mbuf[8] = {0};
+                int mn = chain_mod_get_modulated_for_subkey(ci, "synth",
+                                                            "cutoff:modulated",
+                                                            mbuf, sizeof(mbuf));
+                CHECK(mn > 0 && strcmp(mbuf, "1") == 0,
+                      "a lane-driven param answers ':modulated' as '%s'", mbuf);
+
+                lane_param_set(ci, "clear", "1");
+
+                CHECK(fake_value("cutoff") == 33.0f,
+                      "clear left cutoff stuck at %f instead of the knob's 33 "
+                      "-- the store was emptied without releasing",
+                      fake_value("cutoff"));
+                CHECK(fake_value("octave") == 2.0f,
+                      "clear left octave stuck at %f instead of the knob's 2",
+                      fake_value("octave"));
+                CHECK(chain_mod_is_target_active(ci, "synth", "cutoff") == 0,
+                      "clear left the override registered on the mod bus");
+                int still = 0;
+                for (int i = 0; i < LANE_MAX; i++)
+                    if (ci->lanes.lanes[i].used) still++;
+                CHECK(still == 0, "clear left %d lane(s) in the store", still);
+
+                /* THE COUNT IS THE FEATURE. A clear that reports success
+                 * without one is indistinguishable from one that cleared
+                 * nothing, which is why the recall snapshot counts its
+                 * skipped positions too. */
+                char cb[16] = {0};
+                int n = lane_param_get(ci, "cleared", cb, sizeof(cb));
+                CHECK(n > 0 && strcmp(cb, "2") == 0,
+                      "lanes:cleared answered '%s', expected '2'", cb);
+
+                /* Clearing an already-empty store answers 0, not the previous
+                 * take's count: a stale number would announce two lanes
+                 * cleared on a second press that cleared none. */
+                lane_param_set(ci, "clear", "1");
+                n = lane_param_get(ci, "cleared", cb, sizeof(cb));
+                CHECK(n > 0 && strcmp(cb, "0") == 0,
+                      "a second clear answered '%s', expected '0'", cb);
+
+                /* And the UI's reason for a refused recording. 0 is UNKNOWN,
+                 * which is a third answer and not phase zero. */
+                ci->clip_phase_valid = 0;
+                n = lane_param_get(ci, "phase_valid", cb, sizeof(cb));
+                CHECK(n > 0 && strcmp(cb, "0") == 0,
+                      "phase_valid answered '%s' with no phase", cb);
+                ci->clip_phase_valid = 1;
+                n = lane_param_get(ci, "phase_valid", cb, sizeof(cb));
+                CHECK(n > 0 && strcmp(cb, "1") == 0,
+                      "phase_valid answered '%s' with a phase", cb);
+
+                /* An unknown "lanes:" subkey is a FAILED read, not an empty
+                 * one: the dispatch swallows the whole prefix, so a key it
+                 * does not know must not answer "" and be believed. */
+                n = lane_param_get(ci, "no_such_key", cb, sizeof(cb));
+                CHECK(n < 0, "an unknown lanes: subkey answered %d, not -1", n);
+            }
+            free(ci);
+        }
+    }
+
     free(inst);
     if (fails) {
         printf("FAILURES: %d\n", fails);

@@ -5564,6 +5564,10 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
+    /* Automation lanes: the only gesture that undoes a recorded knob move. No
+     * `showsValue` -- an action row draws no value by default, and asking for
+     * one here would spend a ~2.8 ms round trip per draw to print "-". */
+    { key: "clear_lanes", label: "Clear Lanes", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
@@ -10100,6 +10104,76 @@ function restoreSlotLanes(i) {
     debugLog("lanes: slot " + i + " restored from " + path);
 }
 
+/*
+ * Throw this slot's automation away, and say HOW MUCH went.
+ *
+ * One implementation for all three forms of slot settings -- the knob grid's
+ * Actions menu, the slot list's settings screen, and the chain settings list.
+ * Three copies of the read-and-announce would be three chances for one of them
+ * to announce a count it never read.
+ *
+ * THREE ANSWERS, NOT TWO. `null` is a read that did not complete and says
+ * nothing at all about the slot; `""` is served-but-empty. Announcing "0
+ * cleared" for either is the confidently-wrong answer -- the user pressed a
+ * button and was told, with a number, that there was nothing to clear.
+ *
+ * No file is written here. The autosave pass already removes lanes_<i>.json
+ * when the slot serves an empty document, and an eMMC write (~120 ms measured)
+ * inside a click handler is the cost that cache exists to avoid.
+ */
+function clearSlotLanes(slot) {
+    setSlotParam(slot, "lanes:clear", "1");
+    const raw = getSlotParam(slot, "lanes:cleared");
+    if (raw === null || raw === "") {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    announce("Cleared " + n + " lane" + (n === 1 ? "" : "s"));
+}
+
+/*
+ * A knob turn while armed with the clip phase UNKNOWN records nothing. Say so.
+ *
+ * Silence here is indistinguishable from a broken feature: Record is lit, the
+ * knob moves, and no lane appears. The refusal is the only thing that
+ * distinguishes "we could not tell where in the clip you are" from "automation
+ * does not work".
+ *
+ * ONCE PER GESTURE, AND THE READ OBEYS THE SAME RULE. A parameter round trip is
+ * ~2.8 ms against a 1.68 ms whole-page render, so a read per detent would be
+ * slower than redrawing the screen on every one of them -- the grid would feel
+ * laggy exactly while the user is turning something. So the gesture gate is
+ * decided FIRST, from a timestamp we already have, and only the first write of
+ * a spin pays for a read: 0 per frame, 0 per detent, one per gesture (a second
+ * only while actually armed, which is Record held down).
+ *
+ * A gesture ends when the writes stop. Any continuing detent extends it, which
+ * is why `at` is stamped before the early return.
+ */
+const LANE_REFUSAL_GESTURE_MS = 700;
+let laneRefusalGesture = { key: null, at: 0 };
+function noteLaneWriteRefusal(slot, key) {
+    const now = Date.now();
+    const continuing = laneRefusalGesture.key === key &&
+                       (now - laneRefusalGesture.at) < LANE_REFUSAL_GESTURE_MS;
+    laneRefusalGesture.at = now;
+    laneRefusalGesture.key = key;
+    if (continuing) return;
+
+    /* Armed first, because it is the rarer of the two: an unarmed slot is the
+     * steady state and pays exactly one read per gesture, never two. A null
+     * read answers nothing about the arm, so it stays quiet rather than
+     * claiming a refusal that may not have happened. */
+    if (getSlotParam(slot, "lanes:armed") !== "1") return;
+    if (getSlotParam(slot, "lanes:phase_valid") !== "0") return;
+    announce("Armed, clip phase unknown");
+}
+
 function autosaveOneSlot(i) {
     /* Never persist an uncommitted preset audition. While the user scrolls
      * User Presets, the live <prefix>:state is the previewed sound, not a
@@ -14027,6 +14101,13 @@ function runChainSettingAction(slot, key) {
 
     if (key === "sends") {
         enterBusSendsGrid(slot);
+        return;
+    }
+
+    /* Opens nothing: it acts and announces, so it needs no hand-off to the
+     * list the way Save/Delete do (gridActionOpenedSomething stays false). */
+    if (key === "clear_lanes") {
+        clearSlotLanes(slot);
         return;
     }
 
@@ -23693,6 +23774,12 @@ function drawHelpDetail() {
     _ctx.enterBusList = (...args) => enterBusList(...args);
     _ctx.chainSynthSplits = (slot) => chainSynthSplits(slot);
     _ctx.slotBusCountLabel = (slot) => slotBusCountLabel(slot);
+    /* ...and the same slot list's `Clear Lanes` row. One implementation, three
+     * surfaces — see clearSlotLanes. */
+    _ctx.clearSlotLanes = (slot) => clearSlotLanes(slot);
+    /* The knob grid's write path asks this whether a refused recording needs
+     * announcing (shadow_ui_param_pages.mjs). */
+    _ctx.noteLaneWriteRefusal = (slot, key) => noteLaneWriteRefusal(slot, key);
 })();
 
 /* Delegate draw/enter functions to extracted modules */
