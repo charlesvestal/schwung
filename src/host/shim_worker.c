@@ -440,6 +440,19 @@ static unsigned g_ph_total, g_ph_hit[CLIP_TRACKS], g_ph_seen[CLIP_TRACKS];
 static unsigned g_bar_seen[CLIP_TRACKS], g_bar_hit[CLIP_TRACKS];
 static int      g_bar_lastdiff[CLIP_TRACKS];
 extern volatile int shadow_editor_bar;
+extern volatile unsigned shadow_editor_bar_seq;
+
+/* Move's step-editor page PER TRACK, 1-based, 0 = unknown.
+ *
+ * The page belongs to the CLIP, not to the device: each clip has its own loop
+ * length, so its own page count, so its own remembered page. Switching track
+ * shows that track's clip at the page it was left on, with no announcement.
+ * A single global bar therefore describes whichever track was last paged
+ * while the playhead being scored belongs to the track on screen now -- which
+ * is why a global made bar-level agreement collapse to ~65%, the rate at
+ * which two unrelated pages happen to coincide. */
+static int      g_editor_bar[CLIP_TRACKS];
+static unsigned g_editor_bar_seq_seen;
 static int      g_ph_lastdiff[CLIP_TRACKS];
 static char g_set_name[128];
 static char g_set_uuid[128];
@@ -523,6 +536,7 @@ static void clip_regions_tick(void)
     if (set_changed) {
         clip_state_reset(st);
         clip_phase_check_reset();
+        memset(g_editor_bar, 0, sizeof(g_editor_bar));
     }
 
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
@@ -535,6 +549,20 @@ static void clip_regions_tick(void)
      * "phase unknown" until the user presses Play again. */
     clip_state_anchor_pending(st, (uint32_t)shadow_transport_pulses,
                               sampler_transport_playing);
+
+    /* Seed each track's remembered page from its current clip. Song.abl keeps
+     * stepEditorScrollPosition PER CLIP, which is the same fact as the page
+     * being per track -- and it means a track we have never heard a "Bar N"
+     * for still has a page. Only seeds where we do not already know one from
+     * an announcement, which is live and therefore better. */
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        if (g_editor_bar[t] > 0) continue;
+        const clip_track_state_t *tr = &st->tracks[t];
+        if (!tr->identity_valid || tr->clip_slot < 0) continue;
+        const clip_region_t *r = &g_regions.slots[t][tr->clip_slot];
+        if (!r->exists || !r->have_scroll) continue;
+        g_editor_bar[t] = (int)(r->scroll_beats / 4.0) + 1;
+    }
 }
 
 /* Zero the tallies. A score is only meaningful over a run with FIXED
@@ -553,8 +581,23 @@ static void clip_phase_check_reset(void)
     memset(g_bar_lastdiff, 0, sizeof(g_bar_lastdiff));
 }
 
+/* Apply a new "Bar N" to the track it describes: the selected one. Keyed on
+ * the sequence number rather than the value, so paging away and back to the
+ * same bar still counts as an announcement. */
+static void clip_editor_bar_tick(void)
+{
+    unsigned seq = shadow_editor_bar_seq;
+    if (seq == g_editor_bar_seq_seen) return;
+    g_editor_bar_seq_seen = seq;
+    int t = clip_selected_track();
+    int bar = shadow_editor_bar;
+    if (t >= 0 && bar > 0) g_editor_bar[t] = bar;
+}
+
 static void clip_phase_check_tick(void)
 {
+    clip_editor_bar_tick();
+
     /* A reset requested from the debug page. */
     if (access("/data/UserData/schwung/clip_check_reset", F_OK) == 0) {
         clip_phase_check_reset();
@@ -587,11 +630,10 @@ static void clip_phase_check_tick(void)
                 g_ph_lastdiff[t] = diff;
                 if (diff == 0) g_ph_hit[t]++;
 
-                /* Bar level. Move's announced bar is 1-based and names the
-                 * ordinal bar within the clip's loop; our page is
-                 * floor(step/16). A whole-bar phase error shows here and
-                 * NOWHERE else. */
-                int bar = shadow_editor_bar;
+                /* Bar level, and ONLY for the track the step editor is
+                 * showing -- a bar describes one clip's page, so comparing it
+                 * against another track's phase measures nothing. */
+                int bar = (t == clip_selected_track()) ? g_editor_bar[t] : 0;
                 if (bar > 0) {
                     int page = step / 16;
                     g_bar_seen[t]++;
@@ -693,7 +735,9 @@ static void clip_state_tick(void)
                     r ? r->loop_len : 0.0);
         }
     }
-    fprintf(jf, "],\"editor_bar\":%d,\"phase_check\":{\"events\":%u,\"tracks\":[",
+    fprintf(jf, "],\"selected_track\":%d,\"editor_bars\":[%d,%d,%d,%d],\"editor_bar\":%d,\"phase_check\":{\"events\":%u,\"tracks\":[",
+            clip_selected_track() + 1,
+            g_editor_bar[0], g_editor_bar[1], g_editor_bar[2], g_editor_bar[3],
             shadow_editor_bar, g_ph_total);
     for (int t = 0; t < CLIP_TRACKS; t++)
         fprintf(jf, "%s{\"track\":%d,\"seen\":%u,\"hit\":%u,\"last_diff\":%d,"

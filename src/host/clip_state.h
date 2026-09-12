@@ -198,6 +198,11 @@ const clip_state_t *clip_state_current(void);
  * SPI callback. NULL before the first cable-0 scan. */
 clip_state_t *clip_state_mutable(void);
 
+/* Which track Move has selected (0..3), or -1 if not known. The step editor
+ * shows THIS track, so it is the only track whose page a "Bar N" describes
+ * and the only one a bar-level comparison can speak to. */
+int clip_selected_track(void);
+
 #ifdef __cplusplus
 }
 #endif

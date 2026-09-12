@@ -12,6 +12,10 @@
 extern int shadow_transport_pulses;
 extern int sampler_transport_playing;
 
+/* Declared up here because clip_selected_track() and led_capture_record()
+ * both read host.shadow_control, and they are the first users in the file. */
+static led_queue_host_t host;
+
 /* Move's clip state, decoded from the cable-0 scan below. Written on the SPI
  * callback, read by the worker. See clip_state.h -- in particular, this MUST
  * be fed at the scan rather than from move_note_led_state[], which is indexed
@@ -34,14 +38,16 @@ const clip_state_t *clip_state_current(void) {
     clip_state_ensure();
     return &g_clip_state;
 }
+int clip_selected_track(void) {
+    shadow_control_t *c = host.shadow_control ? *host.shadow_control : 0;
+    if (!c) return -1;
+    int t = (int)c->selected_slot;
+    return (t >= 0 && t < CLIP_TRACKS) ? t : -1;
+}
 clip_state_t *clip_state_mutable(void) {
     clip_state_ensure();
     return &g_clip_state;
 }
-
-/* Declared here rather than further down: led_capture_record() below reads
- * host.shadow_control, and it is the first user in the file. */
-static led_queue_host_t host;
 
 /* ============================================================================
  * MIDI_OUT cable-0 capture ring (diagnostic)

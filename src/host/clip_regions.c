@@ -116,6 +116,14 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                     out->slots[track][slot].is_playing =
                         read_bool_after_colon(p, end);
             } else if (d_clip != D_UNSET && depth == d_clip &&
+                       key_is(p, end, "stepEditorScrollPosition")) {
+                if (track >= 0 && track < CLIP_TRACKS &&
+                    slot >= 0 && slot < CLIP_SLOTS) {
+                    out->slots[track][slot].scroll_beats =
+                        read_number_after_colon(p, end);
+                    out->slots[track][slot].have_scroll = 1;
+                }
+            } else if (d_clip != D_UNSET && depth == d_clip &&
                        key_is(p, end, "region")) {
                 d_region = depth + 1;
             } else if (d_region != D_UNSET && depth == d_region &&

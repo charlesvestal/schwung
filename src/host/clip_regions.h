@@ -37,6 +37,13 @@ typedef struct {
                           * RESTORED SELECTION, not something sounding */
     double loop_start;   /* beats */
     double loop_len;     /* beats; 0 if unknown */
+    /* Where this clip's step editor was left, in beats from the clip start.
+     * PER CLIP -- switching track shows that track's clip at its own
+     * remembered page, which is why a single global "current bar" cannot
+     * work: the bar you last heard announced belongs to whichever track was
+     * last paged, not to the one on screen now. */
+    double scroll_beats;
+    int    have_scroll;
 } clip_region_t;
 
 typedef struct {
