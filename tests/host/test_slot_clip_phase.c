@@ -112,6 +112,20 @@ static void set_region(int track, int cslot, double loop_start,
     r->exists = 1;
     r->loop_start = loop_start;
     r->loop_len = loop_len;
+    /* The ABSENT content fingerprint, which is what the parser writes into a
+     * clip with no notes -- not the zero memset leaves. Note 0 is a real note
+     * number, so the default here has to be the one the parser would produce. */
+    r->note_count = 0;
+    r->first_note = -1;
+}
+
+/* A clip's CONTENT, set separately: most cases here only care about geometry,
+ * and the two halves of a fingerprint answer different questions. */
+static void set_region_notes(int track, int cslot, int note_count,
+                             int first_note) {
+    clip_region_t *r = &fake_regions.slots[track][cslot];
+    r->note_count = note_count;
+    r->first_note = first_note;
 }
 
 static void reset_world(void) {
@@ -183,6 +197,22 @@ int main(void) {
     CHECK(fpv == 1, "an unanchored track did not publish a fingerprint");
     CHECK(fp[0] == 8.0 && fp[1] == 4.0,
           "fingerprint geometry is %f/%f, expected 8/4", fp[0], fp[1]);
+    /* THE CONTENT HALF REACHES THE CHAIN, and it is the clip's own numbers.
+     * The seam shipped with these two hard-coded to 0 / -1 as a placeholder --
+     * which makes every clip at loop_start 0.0 fingerprint identically, so a
+     * lane binds to the wrong clip and plays. A test that only checked
+     * fp[0]/fp[1] was green throughout that. */
+    CHECK(fp[2] == 0.0 && fp[3] == -1.0,
+          "a note-free clip published %f/%f, expected 0/-1 (absent, not note 0)",
+          fp[2], fp[3]);
+    set_region_notes(2, 5, 14, 41);
+    rc = call(2, &ph, &len, &cs, &fpv, fp);
+    CHECK(fp[2] == 14.0 && fp[3] == 41.0,
+          "the clip's note data did not reach the fingerprint: %f/%f, "
+          "expected 14/41 -- still the placeholder?", fp[2], fp[3]);
+    CHECK(rc == 0 && fpv == 1,
+          "publishing note data changed the phase answer (rc=%d fpv=%d)",
+          rc, fpv);
     CHECK(!isfinite(ph) && !isfinite(len),
           "an unanchored track produced a phase anyway (%f/%f)", ph, len);
 

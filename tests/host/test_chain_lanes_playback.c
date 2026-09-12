@@ -38,6 +38,11 @@
 void chain_set_clip_phase(void *instance, int valid, double phase_beats,
                           double loop_len, int track, int clip_slot,
                           int fp_valid, const double *fp);
+/* The other half of the same seam: the worker publishes a deleted mask and a
+ * generation, and the SPI callback's per-slot loop pushes it through here. The
+ * worker never reaches into the instance -- v2_set_param IS the callback, so a
+ * set_param from the worker races every reader the callback owns. */
+void chain_set_clip_deleted(void *instance, int track, int slot);
 
 /* ------------------------------------------------------------------ stubs */
 void chain_log(const char *msg) { (void)msg; }
@@ -369,6 +374,169 @@ int main(void) {
     }
 
     free(rec);
+
+    /* ---------------------------------------------------------------- 14-19
+     * THE FINGERPRINT, AND A DELETED CLIP.
+     *
+     * Everything above runs with clip_fp_valid == 0, i.e. "nothing is known
+     * about the clip's content", which is what the seam pushed before the
+     * parser could count notes. These cases push REAL fingerprints through the
+     * real entry point. */
+    chain_instance_t *fpi = calloc(1, sizeof(*fpi));
+    CHECK(fpi != NULL, "calloc for the fingerprint instance");
+    if (!fpi) { printf("FAILURES: %d\n", fails + 1); free(inst); return 1; }
+    setup_fake_synth(fpi);
+    {
+        lane_fingerprint_t recorded = { 0.0, 8.0, 3, 41 };
+        lane_t *fl = lane_alloc(&fpi->lanes, "synth", "cutoff", 0, 0, &recorded);
+        CHECK(fl != NULL, "fingerprint lane alloc");
+        if (fl) {
+            lane_write(fl, 0.0, 20.0f);
+            lane_write(fl, 4.0, 80.0f);
+
+            double same[4]  = { 0.0, 8.0, 3.0, 41.0 };
+            /* Same loop, same first note, five notes instead of three: a
+             * REPLACEMENT clip in the same grid position. Geometry alone
+             * cannot tell it from the original, which is why the content half
+             * of the fingerprint exists at all. */
+            double other[4] = { 0.0, 8.0, 5.0, 41.0 };
+
+            /* 14. Its own clip: plays, and is not stale. */
+            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
+            lane_tick(fpi);
+            CHECK(fake_value("cutoff") == 50.0f,
+                  "a matching fingerprint did not play: %f", fake_value("cutoff"));
+            CHECK(fl->stale == 0, "a matching fingerprint marked the lane stale");
+
+            /* 15. A different clip in the same position: STALE, silent, and
+             *     KEPT. Playing the wrong clip's automation is worse than none
+             *     at all, and nothing on screen would explain it. */
+            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, other);
+            lane_tick(fpi);
+            CHECK(fl->stale == 1, "a replacement clip did not mark the lane stale");
+            CHECK(fl->driving == 0, "a stale lane is still driving");
+            CHECK(fl->used == 1 && fl->n == 2,
+                  "a stale lane lost its content (used=%d n=%d) -- staleness is "
+                  "retention, not deletion", fl->used, fl->n);
+            fake_poke("cutoff", "77");
+            {
+                int before = fake_writes("cutoff");
+                lane_tick(fpi);
+                lane_tick(fpi);
+                CHECK(fake_value("cutoff") == 77.0f,
+                      "a stale lane drove the parameter to %f", fake_value("cutoff"));
+                CHECK(fake_writes("cutoff") == before,
+                      "a stale lane wrote %d time(s)",
+                      fake_writes("cutoff") - before);
+            }
+
+            /* 16. The original comes back -- an undo. The fingerprint match is
+             *     what re-binds it; stranding it would need a gesture the UI
+             *     does not have. */
+            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
+            lane_tick(fpi);
+            CHECK(fl->stale == 0, "the clip came back and the lane stayed stale");
+            CHECK(fake_value("cutoff") == 50.0f,
+                  "the clip came back and the lane did not resume: %f",
+                  fake_value("cutoff"));
+
+            /* 17. THE CLIP WAS DELETED. Orphaned, silent -- and STILL THERE.
+             *     Move saves Song.abl ~35 s after an edit, so "absent from the
+             *     file" is a statement about the last save, not about intent;
+             *     deleting recorded automation on a file diff is the wrong
+             *     direction to fail in. */
+            chain_set_clip_deleted(fpi, 0, 0);
+            CHECK(fl->orphaned == 1, "a deleted clip did not orphan its lane");
+            /* ...and the clip is now GONE from the table the phase is read
+             * from. That ordering is not incidental: the worker writes the new
+             * regions AND drops the track's identity BEFORE it bumps the
+             * generation the callback pushes on, so by the time the deletion
+             * arrives the position can no longer report a fingerprint. Pushing
+             * the live state here instead of repeating the previous one is
+             * what makes this sequence the real one. */
+            chain_set_clip_phase(fpi, 0, 0.0, 0.0, 0, -1, 0, NULL);
+            lane_tick(fpi);
+            CHECK(fl->driving == 0, "an orphaned lane is still driving");
+            CHECK(fl->used == 1 && fl->n == 2,
+                  "a deleted clip DESTROYED its lane (used=%d n=%d) -- that is "
+                  "deleting the user's automation on a file-diff heuristic",
+                  fl->used, fl->n);
+            CHECK(lane_find(&fpi->lanes, "synth", "cutoff") == fl,
+                  "an orphaned lane is no longer findable in the store");
+            fake_poke("cutoff", "88");
+            {
+                int before = fake_writes("cutoff");
+                lane_tick(fpi);
+                lane_tick(fpi);
+                CHECK(fake_value("cutoff") == 88.0f,
+                      "an orphaned lane drove the parameter to %f",
+                      fake_value("cutoff"));
+                CHECK(fake_writes("cutoff") == before,
+                      "an orphaned lane wrote %d time(s)",
+                      fake_writes("cutoff") - before);
+            }
+
+            /* 18. A DIFFERENT clip arriving in the freed position must not
+             *     un-orphan it: the position was refilled, not restored. It is
+             *     stale as well now, and both flags silence it. */
+            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, other);
+            lane_tick(fpi);
+            CHECK(fl->orphaned == 1,
+                  "a DIFFERENT clip filling the freed position un-orphaned the "
+                  "lane -- only the clip it was recorded against can");
+            CHECK(fl->stale == 1, "and it is stale too");
+            CHECK(fake_value("cutoff") == 88.0f,
+                  "a refilled position played the old lane: %f",
+                  fake_value("cutoff"));
+
+            /* 19. ...and an undo brings it back, through the same fingerprint
+             *     match. The deletion was a file diff; the return is a file
+             *     diff too, and only the fingerprint can confirm it -- there is
+             *     no other gesture that would un-strand the lane. */
+            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
+            lane_tick(fpi);
+            CHECK(fl->orphaned == 0, "an undone deletion left the lane orphaned");
+            CHECK(fake_value("cutoff") == 50.0f,
+                  "an undone deletion left the lane silent: %f",
+                  fake_value("cutoff"));
+
+            /* 20. A deletion at ANOTHER position must not touch this lane. The
+             *     mask carries (track, slot) pairs and a lane is bound to one
+             *     of them; matching on the track alone would orphan every
+             *     lane on the track. */
+            chain_set_clip_deleted(fpi, 0, 3);
+            chain_set_clip_deleted(fpi, 1, 0);
+            CHECK(fl->orphaned == 0,
+                  "another position's deletion orphaned this lane");
+        }
+
+        /* 21. END TO END: a lane carrying the PLACEHOLDER fingerprint is stale
+         *     against a real clip. This is the lane a device already in the
+         *     field has recorded -- the seam pushed {0, -1} for every clip
+         *     until the parser learned to count -- and because loop_len is not
+         *     compared, it would otherwise match every clip whose loop starts
+         *     at 0.0 and play. Asserted through lane_tick rather than only
+         *     against lane_fingerprint_matches, because it is the tick that
+         *     has to act on it. */
+        lane_fingerprint_t placeholder = { 0.0, 8.0, 0, -1 };
+        lane_t *ol = lane_alloc(&fpi->lanes, "synth", "octave", 0, 0, &placeholder);
+        CHECK(ol != NULL, "placeholder lane alloc");
+        if (ol) {
+            lane_write(ol, 0.0, 5.0f);
+            fake_poke("octave", "1");
+            double same[4] = { 0.0, 8.0, 3.0, 41.0 };
+            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
+            lane_tick(fpi);
+            CHECK(ol->stale == 1,
+                  "a placeholder fingerprint was accepted as a match");
+            CHECK(fake_value("octave") == 1.0f,
+                  "a placeholder-fingerprinted lane played anyway: %f",
+                  fake_value("octave"));
+            CHECK(ol->used == 1 && ol->n == 1,
+                  "the placeholder lane was destroyed rather than kept");
+        }
+    }
+    free(fpi);
 
     free(inst);
     if (fails) {

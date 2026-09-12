@@ -81,6 +81,40 @@ int main(void) {
     CHECK(lane_fingerprint_matches(ln, &copy) == 0,
           "different note count accepted");
 
+    /* 10b. THE PLACEHOLDER FINGERPRINT IS ABSENT, NOT MATCHING.
+     *
+     * {note_count 0, first_note -1} is what a lane carries when nothing ever
+     * told it about the clip's content -- every lane recorded before the
+     * parser learned to count notes, and every lane recorded while the clip
+     * was unknown. loop_len is deliberately not compared (a grown clip is the
+     * same clip), so with the content half constant the match degenerates to a
+     * single test: loop_start within 1e-6. EVERY clip whose loop starts at 0.0
+     * then fingerprints identically, so such a lane would bind to the wrong
+     * clip and PLAY -- confidently wrong, which is the one outcome this whole
+     * design exists to refuse. It must go stale until it is re-recorded.
+     *
+     * The cost is a lane recorded against a genuinely empty clip: it also
+     * carries 0/-1 and is also stale. Accepted deliberately -- silent and
+     * re-recordable beats wrong and audible. */
+    {
+        lane_store_t ps;
+        lane_store_reset(&ps);
+        lane_fingerprint_t placeholder = { 0.0, 8.0, 0, -1 };
+        lane_t *pl = lane_alloc(&ps, "synth", "cutoff", 0, 0, &placeholder);
+        CHECK(pl != NULL, "placeholder lane alloc");
+        if (pl) {
+            /* Against the identical placeholder -- the exact byte pattern a
+             * pre-Task-6 push produced for EVERY clip. */
+            CHECK(lane_fingerprint_matches(pl, &placeholder) == 0,
+                  "a placeholder fingerprint matched itself -- it would bind "
+                  "to any clip whose loop starts at 0.0");
+            /* And against a real clip that merely shares loop_start 0.0. */
+            lane_fingerprint_t real = { 0.0, 8.0, 14, 41 };
+            CHECK(lane_fingerprint_matches(pl, &real) == 0,
+                  "a placeholder fingerprint matched a real clip");
+        }
+    }
+
     /* 11. An over-length key must be REFUSED, never silently truncated --
      * truncating would let two different long keys collide onto one lane
      * (a lane bound to the wrong parameter) and would orphan the point

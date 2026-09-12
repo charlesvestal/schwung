@@ -2015,6 +2015,40 @@ static void shadow_inprocess_render_to_buffer(void) {
                                             s, lane_clip, lane_fp_ok, lane_fp);
             }
 
+            /* A DELETED clip orphans its lanes, and the crossing is
+             * worker-publishes / callback-pushes.
+             *
+             * The worker is the only thing that can tell a deletion from a
+             * clip Move has not saved yet (it holds the before/after parse),
+             * and it must not push this itself: chain_set_clip_deleted is a
+             * module entry point, i.e. THIS thread, and the instance is only
+             * safe because RT is its single writer.
+             *
+             * Once per GENERATION, not per block: a counter cannot be
+             * resurrected by a preempted worker the way a flag can, and the
+             * seen-value lives here, in the consumer, so the producer never
+             * has to unwrite anything. Bounded at 32 marks on the frame a
+             * deletion lands and zero on every other frame.
+             *
+             * Every set bit goes to every slot. chain_set_clip_deleted matches
+             * on (track, slot), so a slot holding no lane for that position
+             * does nothing -- and that is what keeps this correct if a lane is
+             * ever bound to a track other than its own slot index. */
+            if (shadow_chain_set_clip_deleted) {
+                static uint32_t lane_deleted_gen_seen[SHADOW_CHAIN_INSTANCES];
+                uint32_t gen = shadow_clip_deleted_generation();
+                if (gen != lane_deleted_gen_seen[s]) {
+                    uint32_t mask = shadow_clip_deleted_mask();
+                    lane_deleted_gen_seen[s] = gen;
+                    for (int b = 0; b < CLIP_TRACKS * CLIP_SLOTS; b++) {
+                        if (!(mask & (1u << b))) continue;
+                        shadow_chain_set_clip_deleted(
+                            shadow_chain_slots[s].instance,
+                            b / CLIP_SLOTS, b % CLIP_SLOTS);
+                    }
+                }
+            }
+
             /* Per-slot timing for the render+fx work below */
             struct timespec slot_t0, slot_t1;
             clock_gettime(CLOCK_MONOTONIC, &slot_t0);
