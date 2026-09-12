@@ -197,6 +197,81 @@ signature (`shadow_ui.js:25252`).
 - `stepEditorResolution` — song-global.
 - `timeSignature` — already parsed.
 
+## BUILT — and what measurement changed
+
+Implemented in `src/host/clip_state.{h,c}`, `clip_regions.{h,c}`,
+`editor_bar_announce.h`; readout at `/clip-state`. Corrections to what this
+document originally assumed, all from hardware:
+
+### Anchors come from four places, in descending order of independence
+
+| Source | When | Covers |
+|---|---|---|
+| `0xFA` MIDI Start | pressing Play, most set loads | **all four tracks at once** |
+| a witnessed launch | `ch14` then `ch9`, Session mode | that track |
+| a pending Start applied late | identity arriving after `0xFA` | that track |
+| solved from the playhead | no Start, no witnessed launch | all four, via the common start |
+
+**Pressing Play is the dominant path and needs nothing else** — no mode, no
+track visit, no page. Verified: four tracks with loops 8/16/16/16 all anchored
+`src=Start` with live phase, in Session mode, with the playhead never involved.
+The derivation machinery below is the RECOVERY path for one narrow case, and
+an early draft of this document let that edge case dominate the design.
+
+### The playhead is NOTE MODE ONLY
+
+Session mode produced **zero** playhead events over a full run. An earlier
+reading of 16 events "in Session mode" was an artefact: `move_ui_mode` is set
+from D-Bus and track presses, so the label lags the actual screen across a
+transition. Generalising from those 16 samples was wrong.
+
+### A set load does NOT always restart the transport
+
+Measured both ways. When it does not, there is no Start and no witnessed
+launch, and every track sits unanchored — the case the playhead solve exists
+for.
+
+### The editor page is PER CLIP, and a global "current bar" is meaningless
+
+Each clip has its own loop length, so its own page count, so its own
+remembered page; switching track shows that track's clip at the page it was
+left on. A single global bar described whichever track was last paged while
+the playhead being scored belonged to the track on screen now. That produced
+~65% bar-level agreement, which was twice misread as a phase error. The bar is
+kept per track, only the selected track is scored, and each track's page is
+seeded from `stepEditorScrollPosition` — which `Song.abl` stores per clip, the
+same fact from the other direction.
+
+### Solve the START, never propagate a loop boundary
+
+A playhead sighting gives the start only MODULO that track's loop. Propagating
+that to a track with a different loop length is off by a multiple of the
+source's loop — which is why an intermediate version needed a divisibility
+rule and the awkward advice to "visit the longest loop".
+
+Every clip in a set begins together, so there is ONE start. The sighting is a
+congruence; the set-change poll is a bracket (~±1.4 s); together they name it
+uniquely whenever the loop exceeds the bracket. Then it is the real start and
+every track takes it whatever its loop length. Refused — not guessed — when
+the loop is shorter than the bracket (two candidates, choosing is a coin flip
+presented as a measurement) or when sighting and bracket disagree.
+
+### Phase is verified ABSOLUTELY
+
+`playhead_idx == floor(pos/res) mod 16` is mod ONE BAR and scores 100% on a
+lane anchored exactly a bar out. Comparing our computed page against Move's
+announced `"Bar N"` is what catches that. Selected track: **within-bar 97%,
+bar-level 97% over 230 samples, offset 0**, with unselected tracks correctly
+contributing nothing and DERIVED anchors excluded (they are computed from the
+same playhead the score compares against, so including them would read 100% by
+construction).
+
+### Move saves `Song.abl` ~35 s after an edit
+
+Not the 24 minutes an idle file suggested. So the geometry stale window is
+seconds — which is why a file-diff is enough to notice a deleted clip and the
+LED/gesture routes were not worth their permanent dependency.
+
 ## The interface (the seam)
 
 This is the whole deliverable, and it is deliberately the boundary between the
