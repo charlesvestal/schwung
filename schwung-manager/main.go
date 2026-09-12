@@ -4041,6 +4041,7 @@ func main() {
 	mux.HandleFunc("GET /clip-state", app.handleClipState)
 	mux.HandleFunc("GET /api/clip-state", app.handleAPIClipState)
 	mux.HandleFunc("POST /clip-state/arm", app.handleClipStateArm)
+	mux.HandleFunc("POST /clip-state/reset", app.handleClipStateReset)
 	mux.HandleFunc("POST /api/modules/{id}/install", app.handleAPIModuleInstall)
 
 	// Files.

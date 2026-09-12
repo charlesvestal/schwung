@@ -206,6 +206,30 @@ int main(void)
         CHECK(st6.tracks[0].anchor_valid, "nor its anchor");
     }
 
+    /* Geometry comparison: a re-save that changes nothing must not read as a
+     * change, or every periodic save wipes a running measurement. */
+    printf("an unchanged re-parse is not a geometry change\n");
+    {
+        clip_regions_t again;
+        CHECK(clip_regions_parse_file("../fixtures/song_abl_sample.json", &again),
+              "re-parse");
+        CHECK(!clip_regions_geometry_differs(&rg, &again),
+              "the same file must not read as changed");
+        clip_regions_t shorter = again;
+        shorter.slots[0][2].loop_len = 8.0;
+        CHECK(clip_regions_geometry_differs(&rg, &shorter),
+              "a changed loop length must read as changed");
+        clip_regions_t gone = again;
+        gone.slots[0][2].exists = 0;
+        CHECK(clip_regions_geometry_differs(&rg, &gone),
+              "a removed clip must read as changed");
+        clip_regions_t played = again;
+        played.slots[0][0].is_playing = !played.slots[0][0].is_playing;
+        CHECK(!clip_regions_geometry_differs(&rg, &played),
+              "isPlaying is the restored SELECTION and has no bearing on how a "
+              "phase sample is scored -- it must not invalidate a tally");
+    }
+
     /* A truncated file is a FAILURE, not a smaller document. */
     printf("a truncated document is refused, not half-believed\n");
     clip_regions_t bad;

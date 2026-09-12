@@ -30,6 +30,7 @@ DEPFLAGS = -MMD -MP -MF $@.d
 BUILD_DIR = ../../build/tests/host
 
 TARGETS = $(BUILD_DIR)/test_clip_state \
+	$(BUILD_DIR)/test_editor_bar_announce \
 	$(BUILD_DIR)/test_clip_regions \
 	$(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
@@ -245,3 +246,7 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
+
+# Header-only; the .c is the whole test.
+$(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_editor_bar_announce.c

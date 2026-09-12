@@ -423,6 +423,7 @@ static void worker_heartbeat(void)
  * whole point: it puts identity in place so the Start can do its job.
  *
  * Worker thread only: this reads and parses a file over 1 MB. */
+static void clip_phase_check_reset(void);   /* defined below; used by the region reload */
 static clip_regions_t g_regions;
 
 /* Phase check tallies, per track. The step editor shows ONE track, so only
@@ -431,6 +432,14 @@ static clip_regions_t g_regions;
  * wrong scores near zero; a track a beat out scores near zero too, which is
  * the point (it would look perfect on any count-and-wrap test). */
 static unsigned g_ph_total, g_ph_hit[CLIP_TRACKS], g_ph_seen[CLIP_TRACKS];
+/* Bar-level tallies. The step comparison above is mod 16 steps = mod ONE BAR,
+ * so it scores 100% on a lane anchored exactly a bar out. Comparing our
+ * computed page against Move's announced "Bar N" is what actually catches
+ * that -- and it needs an announcement, so it only runs once the user has
+ * changed page at least once. */
+static unsigned g_bar_seen[CLIP_TRACKS], g_bar_hit[CLIP_TRACKS];
+static int      g_bar_lastdiff[CLIP_TRACKS];
+extern volatile int shadow_editor_bar;
 static int      g_ph_lastdiff[CLIP_TRACKS];
 static char g_set_name[128];
 static char g_set_uuid[128];
@@ -504,12 +513,16 @@ static void clip_regions_tick(void)
      * that was removed. */
     if (!set_changed) clip_regions_forget_deleted(&before, &g_regions, st);
 
+    /* Only a REAL geometry change invalidates earlier samples. Resetting on
+     * every re-parse wiped the tally on each of Move's periodic saves, so it
+     * never accumulated past a handful of events -- the instrument looked
+     * broken and was in fact measuring nothing. */
+    if (clip_regions_geometry_differs(&before, &g_regions))
+        clip_phase_check_reset();
+
     if (set_changed) {
         clip_state_reset(st);
-        g_ph_total = 0;
-        memset(g_ph_hit, 0, sizeof(g_ph_hit));
-        memset(g_ph_seen, 0, sizeof(g_ph_seen));
-        memset(g_ph_lastdiff, 0, sizeof(g_ph_lastdiff));
+        clip_phase_check_reset();
     }
 
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
@@ -524,8 +537,30 @@ static void clip_regions_tick(void)
                               sampler_transport_playing);
 }
 
+/* Zero the tallies. A score is only meaningful over a run with FIXED
+ * geometry: editing a clip's loop mid-run makes our length wrong until Move
+ * saves, and a wrong length is itself a bar-level error -- so the samples
+ * either side of an edit measure different things and averaging them answers
+ * nothing. */
+static void clip_phase_check_reset(void)
+{
+    g_ph_total = 0;
+    memset(g_ph_hit, 0, sizeof(g_ph_hit));
+    memset(g_ph_seen, 0, sizeof(g_ph_seen));
+    memset(g_ph_lastdiff, 0, sizeof(g_ph_lastdiff));
+    memset(g_bar_seen, 0, sizeof(g_bar_seen));
+    memset(g_bar_hit, 0, sizeof(g_bar_hit));
+    memset(g_bar_lastdiff, 0, sizeof(g_bar_lastdiff));
+}
+
 static void clip_phase_check_tick(void)
 {
+    /* A reset requested from the debug page. */
+    if (access("/data/UserData/schwung/clip_check_reset", F_OK) == 0) {
+        clip_phase_check_reset();
+        remove("/data/UserData/schwung/clip_check_reset");
+    }
+
     const clip_state_t *cs = clip_state_current();
     if (!cs || !g_regions.valid) return;
     double res = g_regions.step_resolution > 0 ? g_regions.step_resolution : 0.25;
@@ -551,6 +586,19 @@ static void clip_phase_check_tick(void)
                 if (diff < -8) diff += 16;
                 g_ph_lastdiff[t] = diff;
                 if (diff == 0) g_ph_hit[t]++;
+
+                /* Bar level. Move's announced bar is 1-based and names the
+                 * ordinal bar within the clip's loop; our page is
+                 * floor(step/16). A whole-bar phase error shows here and
+                 * NOWHERE else. */
+                int bar = shadow_editor_bar;
+                if (bar > 0) {
+                    int page = step / 16;
+                    g_bar_seen[t]++;
+                    int bdiff = page - (bar - 1);
+                    g_bar_lastdiff[t] = bdiff;
+                    if (bdiff == 0) g_bar_hit[t]++;
+                }
             }
         }
         if (n < 32) break;
@@ -645,10 +693,13 @@ static void clip_state_tick(void)
                     r ? r->loop_len : 0.0);
         }
     }
-    fprintf(jf, "],\"phase_check\":{\"events\":%u,\"tracks\":[", g_ph_total);
+    fprintf(jf, "],\"editor_bar\":%d,\"phase_check\":{\"events\":%u,\"tracks\":[",
+            shadow_editor_bar, g_ph_total);
     for (int t = 0; t < CLIP_TRACKS; t++)
-        fprintf(jf, "%s{\"track\":%d,\"seen\":%u,\"hit\":%u,\"last_diff\":%d}",
-                t ? "," : "", t + 1, g_ph_seen[t], g_ph_hit[t], g_ph_lastdiff[t]);
+        fprintf(jf, "%s{\"track\":%d,\"seen\":%u,\"hit\":%u,\"last_diff\":%d,"
+                    "\"bar_seen\":%u,\"bar_hit\":%u,\"bar_diff\":%d}",
+                t ? "," : "", t + 1, g_ph_seen[t], g_ph_hit[t], g_ph_lastdiff[t],
+                g_bar_seen[t], g_bar_hit[t], g_bar_lastdiff[t]);
     fprintf(jf, "]}}\n");
     fclose(jf);
 }

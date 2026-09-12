@@ -58,6 +58,14 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out);
  * what is selected, not when it started. */
 void clip_regions_seed_state(const clip_regions_t *rg, clip_state_t *st);
 
+/* Does the geometry that scoring depends on actually differ? Move saves
+ * periodically, so a re-parse is common and mostly changes nothing -- keying
+ * a tally reset on "the file was written" wipes it every save and the tally
+ * never accumulates. Only a real change to a clip's existence or its loop
+ * invalidates samples taken before it. */
+int clip_regions_geometry_differs(const clip_regions_t *a,
+                                  const clip_regions_t *b);
+
 /* Drop identity for a track whose clip has been DELETED.
  *
  * "Absent from the file" alone cannot mean deleted: a clip copied into an

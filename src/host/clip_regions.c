@@ -247,3 +247,25 @@ void clip_regions_forget_deleted(const clip_regions_t *before,
         }
     }
 }
+
+int clip_regions_geometry_differs(const clip_regions_t *a,
+                                  const clip_regions_t *b)
+{
+    if (!a || !b) return 1;
+    if (a->valid != b->valid) return 1;
+    if (!a->valid) return 0;
+    if (a->step_resolution != b->step_resolution) return 1;
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        for (int s = 0; s < CLIP_SLOTS; s++) {
+            const clip_region_t *x = &a->slots[t][s], *y = &b->slots[t][s];
+            if (x->exists != y->exists) return 1;
+            if (!x->exists) continue;
+            if (x->loop_start != y->loop_start) return 1;
+            if (x->loop_len != y->loop_len) return 1;
+        }
+    }
+    /* is_playing deliberately NOT compared: it is the file's restored
+     * selection, it changes as the user plays, and it has no bearing on how a
+     * phase sample is scored. */
+    return 0;
+}

@@ -59,6 +59,14 @@ func (a *App) handleClipStateArm(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/clip-state", http.StatusSeeOther)
 }
 
+// POST /clip-state/reset — zero the phase-check tallies.
+func (a *App) handleClipStateReset(w http.ResponseWriter, r *http.Request) {
+	if f, err := os.Create("/data/UserData/schwung/clip_check_reset"); err == nil {
+		f.Close()
+	}
+	http.Redirect(w, r, "/clip-state", http.StatusSeeOther)
+}
+
 func (a *App) handleClipState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(clipStateHTML))
@@ -107,8 +115,12 @@ const clipStateHTML = `<!doctype html>
 <div class="bar" id="bar"></div>
 <h2 style="font-size:14px;margin:22px 0 6px">Phase check</h2>
 <p class="sub" style="margin:0 0 10px">Our computed phase vs Move&rsquo;s own step
- playhead &mdash; an independent measure. The step editor shows one track, so
- only that one should score. <b>A one-beat error scores ~0, not 90%</b>.</p>
+ playhead &mdash; an independent measure.
+ <b>Within bar</b> compares the lit step button; it is mod 16 steps, so a lane
+ anchored exactly one bar out scores 100% there.
+ <b>Bar level</b> compares our computed page against Move&rsquo;s announced
+ &ldquo;Bar N&rdquo;, which is the only thing that catches a whole-bar error &mdash;
+ it needs you to change step page at least once.</p>
 <div id="pc" class="ctx"></div>
 
 <h2 style="font-size:14px;margin:22px 0 6px">Grid as decoded</h2>
@@ -173,26 +185,36 @@ async function tick(){
   /* The mode is shown because the clip gate depends on it: outside Session
      the pads are not clips, and the rejection is silent. */
   document.getElementById('ctx').innerHTML =
-    'Set <b>'+esc(d.set||'?')+'</b> \u00b7 Move UI mode <b>'+
+    'Set <b>'+esc(d.set||'?')+'</b> \u00b7 editor bar <b>'+
+    (d.editor_bar?esc(d.editor_bar):'not announced yet')+'</b> \u00b7 Move UI mode <b>'+
     esc(MODES[d.ui_mode]!==undefined?MODES[d.ui_mode]:d.ui_mode)+'</b>'+
     (d.ui_mode===1?'':' <span class="k sel">pads are not clips in this mode</span>')+
     ' \u00b7 Song.abl '+(d.regions_valid?'loaded':'<b>not loaded</b>');
 
   const pc=d.phase_check;
   if(pc){
-    let h='<b>'+pc.events+'</b> playhead events observed';
+    let h='<form method="post" action="/clip-state/reset" style="display:inline">'+
+          '<button>Reset counters</button></form> &nbsp; <b>'+pc.events+'</b> playhead events observed';
     if(pc.events===0) h+=' &mdash; play a clip with the step editor visible';
-    h+='<table style="margin-top:8px"><tr><th>Track</th><th>Compared</th>'+
-       '<th>Agreed</th><th>Last offset</th></tr>';
+    h+='<table style="margin-top:8px"><tr><th>Track</th>'+
+       '<th>Within bar</th><th>Offset</th>'+
+       '<th>Bar level</th><th>Offset</th></tr>';
     for(const t of pc.tracks){
       const pctv = t.seen ? Math.round(100*t.hit/t.seen) : 0;
-      /* Offset is in STEPS: 4 = one beat out at 1/16. That is the error that
-         matters and the one a count-and-wrap test cannot see. */
+      /* Offset is in STEPS: 4 = one beat out at 1/16. */
       const off = t.seen ? (t.last_diff===0?'0':(t.last_diff>0?'+':'')+t.last_diff+' steps') : '\u2014';
       const cls = !t.seen ? 'off' : (pctv>=95?'ok':(pctv>=5?'warn':'off'));
-      h+='<tr><td>'+t.track+'</td><td class="n">'+t.seen+'</td><td>'+
-         (t.seen?'<span class="pill '+cls+'">'+pctv+'%</span>':'\u2014')+
-         '</td><td class="n">'+off+'</td></tr>';
+      /* The bar column is the one that matters: the step comparison is mod
+         16 steps = mod one bar, so a lane anchored exactly a bar out scores
+         100% on the left and fails here. */
+      const bp = t.bar_seen ? Math.round(100*t.bar_hit/t.bar_seen) : 0;
+      const bcls = !t.bar_seen ? 'off' : (bp>=95?'ok':(bp>=5?'warn':'off'));
+      const boff = t.bar_seen ? (t.bar_diff===0?'0':(t.bar_diff>0?'+':'')+t.bar_diff+' bars') : '\u2014';
+      h+='<tr><td>'+t.track+'</td>'+
+         '<td>'+(t.seen?'<span class="pill '+cls+'">'+pctv+'% <small>('+t.seen+')</small></span>':'\u2014')+'</td>'+
+         '<td class="n">'+off+'</td>'+
+         '<td>'+(t.bar_seen?'<span class="pill '+bcls+'">'+bp+'% <small>('+t.bar_seen+')</small></span>':'\u2014')+'</td>'+
+         '<td class="n">'+boff+'</td></tr>';
     }
     document.getElementById('pc').innerHTML=h+'</table>';
   }
