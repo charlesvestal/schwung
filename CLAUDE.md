@@ -639,6 +639,22 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   notes, and a mismatch makes it STALE: retained, silent, never guessed at.
   **Unknown phase refuses** both playback and recording, and is never phase 0.
   The arm is Move's own Record button, read off its LED. See `docs/CHAIN.md`.
+  **Only the CONTENT half of the fingerprint is compared** — neither loop field
+  is, because a clip that grew and a clip whose loop was dragged are both the
+  same clip, and going stale on either is silent.
+- **Move's step editor draws the clip's bar count, and we READ it rather than
+  model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
+  no length, so no phase, so recording refuses — and Move's own screen has the
+  answer: a full-width strip on **row 59** in equal segments, the displayed bar
+  thickened, the playhead a **1 px interruption** (against 2 px bar gaps, which
+  is what keeps it from inflating the count) plus a stub below. Page-independent,
+  unlike the step LEDs. It does **not** say where the loop begins, which costs
+  nothing because lane phases are loop-relative. `src/host/step_strip.c`, decoded
+  where the frame COMPLETES on the callback and paired with the track selected at
+  that instant. The geometry is measured and the rejection gates are not, so it
+  is **a diagnostic first** (`clip_state.json`'s `step_strip`, the manager's
+  `/clip-state`) and nothing depends on it yet. Never build a parallel model of
+  Move's sequencer UI: read its answer.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 

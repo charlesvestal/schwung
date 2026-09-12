@@ -721,6 +721,57 @@ Lanes ride with the **set**: `set_state/<uuid>/lanes_<i>.json`, written by the
 existing autosave (see `docs/SHADOW_UI.md`). A clip position means nothing in
 another set. There is no second serializer.
 
+#### Move's own screen carries the length, and we read it rather than model it
+
+Make a clip in Move's step editor, press Play, try to record automation:
+refused. `T1 -`, `loop_len 0.00`, `has_phase false`. The clip is not in
+`Song.abl` yet — Move saves about **35 s** after an edit — so there is no
+length; with no length there is no phase; with no phase, recording refuses
+rather than guessing. That is the hole, and Move's step-editor screen carries
+both missing facts.
+
+Measured on hardware 2026-09-12, a 5-bar loop (`src/host/step_strip.c`):
+
+```
+row 59       (1-23) (26-49) (52-74) (77-100) (103-126)   5 segments = 5 bars
+rows 58-60   thicker over one segment                    the DISPLAYED bar
+playhead     a 1 px INTERRUPTION in the strip, plus a stub at rows 55-57/61-63
+```
+
+- **Segments are 23–24 px with 2 px gaps**, and the 1 px playhead against a
+  2 px gap is what makes the two separable: a hole splits the strip into bars
+  only when it is **at least 2 wide**, so the playhead cannot inflate the bar
+  count. A playhead sitting *on* a boundary widens that gap to 3 — still one
+  boundary, and its column is then named by the stub alone.
+- **It is page-independent**, which is what makes it better than the step LEDs:
+  measured drawn at bars 3 and 4 while bar **5** was the displayed one. The LED
+  playhead is visible only while the displayed page IS the playing page, so on
+  a long clip it is dark for 15 bars in 16.
+- **It does not say where the loop BEGINS** — confirmed by eye. Which costs
+  nothing, because lane phases are **loop-relative**.
+- **Opportunistic, not a clock.** The bar count does not change while you
+  record, so a reading from ten seconds ago is as good as a live one; that is
+  what keeps this to one cached fact per track rather than a second position
+  pipeline. Phase stays with the existing anchor machinery.
+- **The decode runs where the frame COMPLETES** (the SPI callback, off
+  `pin_accumulate_slice`'s new completion return), because the frame is only
+  whole at that instant and because the selected track must be read *then* —
+  the editor shows one track, and pairing the reading with whatever is selected
+  200 ms later attributes a bar count to the wrong clip.
+- **Do NOT build a model of Move's sequencer UI.** Read Move's answer off the
+  screen; never track its modes, pages or loop points. Every time this work
+  drifted that way it produced a bug.
+- **The gates are the risky half, so this is a DIAGNOSTIC first.** The geometry
+  is measured; the rejection gates (full-width span, uniform segments, the
+  displayed-bar thickening) are reasoned, and a false positive is a *wrong loop
+  length*. So `clip_state.json`'s `step_strip` block and the manager's
+  `/clip-state` panel report it and **nothing depends on it**: the hardware
+  pass must see `valid` with the right bars on the editor and a named `reject`
+  on Move's other screens before the loop-length fallback is wired in. The
+  displayed-bar gate is load-bearing for the one-bar case — a 1-bar loop is a
+  single solid 126 px run with no gaps for the uniformity test to measure, so
+  without it any full-width line would read as a one-bar clip.
+
 #### The budgets are small, and knowingly too small
 
 `LANE_MAX` is **32** per slot — 8 clip slots × 4 parameters, because the key

@@ -58,9 +58,11 @@ void pin_scanner_init(const pin_scanner_host_t *h) {
  * Slice accumulation
  * ============================================================================ */
 
-void pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
+const uint8_t *pin_display_frame(void) { return pin_display_buf; }
+
+int pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
 {
-    if (idx < 0 || idx >= 6) return;
+    if (idx < 0 || idx >= 6) return 0;
     memcpy(pin_display_buf + idx * 172, data, bytes);
     pin_display_slices_seen[idx] = 1;
 
@@ -91,6 +93,7 @@ void pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
             }
         }
     }
+    return all;
 }
 
 /* ============================================================================
