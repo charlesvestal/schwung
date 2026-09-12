@@ -193,6 +193,93 @@ int clip_state_derive_anchor(clip_track_state_t *tr, uint32_t pulses,
     return 1;
 }
 
+int clip_state_solve_common_start(uint32_t pulses, double pos_beats,
+                                  double loop_len, uint32_t coarse_start,
+                                  uint32_t bracket_pulses,
+                                  uint32_t *out_start)
+{
+    if (!out_start) return 0;
+    if (!(loop_len > 0.0) || pos_beats < 0.0) return 0;
+
+    long loop_pulses = (long)(loop_len * 24.0 + 0.5);
+    if (loop_pulses <= 0) return 0;
+
+    /* Ambiguous if the bracket spans a whole loop or more: two candidates sit
+     * inside it and nothing chooses between them. Answering anyway would be a
+     * coin flip presented as a measurement. */
+    if ((long)(2u * bracket_pulses) >= loop_pulses) return 0;
+
+    long at = (long)pulses - (long)(pos_beats * 24.0 + 0.5);   /* == start mod loop */
+    if (at < 0) return 0;
+
+    /* Walk candidates back to the one nearest the coarse estimate. */
+    long best = at;
+    long bestd = best - (long)coarse_start; if (bestd < 0) bestd = -bestd;
+    for (long c = at - loop_pulses; c >= 0; c -= loop_pulses) {
+        long dd = c - (long)coarse_start; if (dd < 0) dd = -dd;
+        if (dd < bestd) { bestd = dd; best = c; }
+        else break;          /* moving away; candidates are monotonic */
+    }
+    /* The winner must actually lie inside the bracket, or our coarse estimate
+     * and the sighting disagree and neither should be trusted. */
+    if (bestd > (long)bracket_pulses) return 0;
+    *out_start = (uint32_t)best;
+    return 1;
+}
+
+int clip_state_share_anchor(clip_state_t *st, int src_track,
+                            const double *loop_len)
+{
+    if (!st || !loop_len) return 0;
+    if (src_track < 0 || src_track >= CLIP_TRACKS) return 0;
+    const clip_track_state_t *src = &st->tracks[src_track];
+    if (!src->anchor_valid) return 0;
+    double ls = loop_len[src_track];
+    if (!(ls > 0.0)) return 0;
+
+    int n = 0;
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        if (t == src_track) continue;
+        clip_track_state_t *tr = &st->tracks[t];
+        if (!tr->identity_valid || tr->clip_slot < 0) continue;
+        if (tr->anchor_valid) continue;          /* never overwrite */
+        double lt = loop_len[t];
+        if (!(lt > 0.0)) continue;
+
+        /* Does this track's loop divide the source's? Compared in
+         * SIXTEENTHS as integers: loop lengths are multiples of a step, and
+         * fmod on doubles would make 16.0 / 4.0 a question about floating
+         * point rather than about music. */
+        long a = (long)(ls * 4.0 + 0.5);
+        long b = (long)(lt * 4.0 + 0.5);
+        if (b <= 0 || (a % b) != 0) continue;    /* unsound: leave unknown */
+
+        tr->anchor_pulse = src->anchor_pulse;
+        tr->anchor_valid = 1;
+        tr->anchor_source = CLIP_ANCHOR_DERIVED;
+        n++;
+    }
+    return n;
+}
+
+/* Apply one known common start to every track that lacks an anchor. No
+ * divisibility question arises: this is the real start, not a loop boundary. */
+int clip_state_apply_common_start(clip_state_t *st, uint32_t start)
+{
+    if (!st) return 0;
+    int n = 0;
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        clip_track_state_t *tr = &st->tracks[t];
+        if (!tr->identity_valid || tr->clip_slot < 0) continue;
+        if (tr->anchor_valid) continue;       /* never overwrite evidence */
+        tr->anchor_pulse = start;
+        tr->anchor_valid = 1;
+        tr->anchor_source = CLIP_ANCHOR_DERIVED;
+        n++;
+    }
+    return n;
+}
+
 int clip_phase_beats(const clip_track_state_t *t, uint32_t pulses,
                      double loop_start, double loop_len, double *out_beats)
 {

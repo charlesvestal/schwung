@@ -452,6 +452,13 @@ extern volatile unsigned shadow_editor_bar_seq;
  * is why a global made bar-level agreement collapse to ~65%, the rate at
  * which two unrelated pages happen to coincide. */
 static int      g_editor_bar[CLIP_TRACKS];
+/* Pulse at which we NOTICED the set change, and how wide that guess is. The
+ * detection is a ~1.4 s poll, so it brackets the real start rather than
+ * naming it -- which is exactly what clip_state_solve_common_start needs
+ * alongside a playhead sighting. */
+static uint32_t g_set_change_pulse;
+static int      g_set_change_valid;
+#define SET_CHANGE_BRACKET_PULSES 84   /* ~1.75 s at 120 BPM, poll + slack */
 static unsigned g_editor_bar_seq_seen;
 static int      g_ph_lastdiff[CLIP_TRACKS];
 static char g_set_name[128];
@@ -535,6 +542,8 @@ static void clip_regions_tick(void)
 
     if (set_changed) {
         clip_state_reset(st);
+        g_set_change_pulse = (uint32_t)shadow_transport_pulses;
+        g_set_change_valid = sampler_transport_playing ? 1 : 0;
         clip_phase_check_reset();
         memset(g_editor_bar, 0, sizeof(g_editor_bar));
     }
@@ -628,10 +637,29 @@ static void clip_phase_check_tick(void)
                         !str->anchor_valid) {
                         const clip_region_t *sr =
                             &g_regions.slots[sel][str->clip_slot];
-                        clip_state_derive_anchor(str, ev[i].pulses,
-                                                 g_editor_bar[sel], ev[i].idx,
-                                                 res, sr->loop_start,
-                                                 sr->loop_len);
+                        /* Every clip in a set begins together, so there is
+                         * ONE start. A sighting gives it modulo this track's
+                         * loop; the set-change poll brackets it. Together
+                         * they name it, and then EVERY track can use it
+                         * whatever its loop length. */
+                        double pos = ((double)(g_editor_bar[sel] - 1) * 16.0
+                                      + (double)ev[i].idx) * res;
+                        uint32_t start;
+                        if (g_set_change_valid &&
+                            clip_state_solve_common_start(
+                                ev[i].pulses, pos, sr->loop_len,
+                                g_set_change_pulse, SET_CHANGE_BRACKET_PULSES,
+                                &start)) {
+                            clip_state_apply_common_start(mst, start);
+                        } else {
+                            /* No usable bracket (short loop, or the set change
+                             * was not observed while running): fall back to
+                             * anchoring just this track from the sighting. */
+                            clip_state_derive_anchor(str, ev[i].pulses,
+                                                     g_editor_bar[sel], ev[i].idx,
+                                                     res, sr->loop_start,
+                                                     sr->loop_len);
+                        }
                     }
                 }
             }

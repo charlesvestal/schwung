@@ -134,6 +134,59 @@ int clip_state_derive_anchor(clip_track_state_t *tr, uint32_t pulses,
                              int bar, int playhead_idx, double step_beats,
                              double loop_start, double loop_len);
 
+/* Solve the set's TRUE common start, given one playhead sighting and a rough
+ * idea of when the set loaded.
+ *
+ * Every clip in a set begins together, so there is ONE start pulse and every
+ * track's phase is (pulses - start)/24 mod its own loop. The difficulty is
+ * that neither input gives it alone:
+ *
+ *   - the set-change detection is a ~1.4 s poll, so it brackets the start to
+ *     about +/-67 pulses (~2.8 beats at 120 BPM) -- far too coarse to anchor;
+ *   - a playhead sighting is exact but gives the start only MODULO that
+ *     track's loop.
+ *
+ * A congruence plus a bracket pins it uniquely, provided the loop is longer
+ * than the bracket is wide. Then the answer is the real start and EVERY track
+ * can use it whatever its loop length -- which is what makes this better than
+ * sharing a loop-boundary anchor, where a track whose loop did not divide the
+ * source's had to be left unknown.
+ *
+ * Refuses when the loop is too short to disambiguate: with a 4-beat loop the
+ * bracket spans more than one loop and two candidates are equally good, so
+ * there is no answer to give.
+ *
+ * Returns 1 and writes *out_start on success. */
+int clip_state_solve_common_start(uint32_t pulses, double pos_beats,
+                                  double loop_len, uint32_t coarse_start,
+                                  uint32_t bracket_pulses,
+                                  uint32_t *out_start);
+
+/* Apply a solved common start to every track that lacks an anchor. */
+int clip_state_apply_common_start(clip_state_t *st, uint32_t start);
+
+/* Share one track's anchor with the others, where that is SOUND.
+ *
+ * On a set load every clip begins together, so they share a start pulse and
+ * one anchor would serve all. But a DERIVED anchor is not the start: winding
+ * back from a single playhead sighting can only reach the current loop, so it
+ * is
+ *
+ *     derived = start + k * src_loop * 24     for an unknown k
+ *
+ * which is equivalent for the source track (its phase is mod src_loop) and
+ * equivalent for another track only when k * src_loop is a whole number of
+ * ITS loops for every k -- i.e. when its loop DIVIDES the source's.
+ *
+ * 8/16/16/4 satisfies that, which is exactly why the bug would hide; a 20- or
+ * 12-beat loop does not, and the error would be a silent fraction of a bar.
+ * So the divisibility is checked and a track that fails it stays unknown.
+ *
+ * Only fills MISSING anchors, and marks them derived so nothing scores them.
+ * Returns how many tracks were given an anchor. */
+int clip_state_share_anchor(clip_state_t *st, int src_track,
+                            const double *loop_len);
+
 /* Anchor any track that has identity but no anchor, and for which a Start is
  * still pending within the grace window.
  *

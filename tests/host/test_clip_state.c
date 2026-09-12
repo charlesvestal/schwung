@@ -415,8 +415,101 @@ static void test_anchor_derived_from_playhead(void)
           tr5.anchor_pulse);
 }
 
+/* A set load starts every clip together, so one anchor could serve all --
+ * but a DERIVED anchor is the most recent loop boundary, not the start, so it
+ * only transfers to a track whose loop DIVIDES the source's. */
+static void test_anchor_sharing_checks_divisibility(void)
+{
+    printf("a derived anchor is shared only where it is sound\n");
+    clip_state_t st; clip_state_reset(&st);
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        st.tracks[t].identity_valid = 1;
+        st.tracks[t].clip_slot = 0;
+    }
+    st.tracks[0].anchor_valid = 1;
+    st.tracks[0].anchor_pulse = 500;
+    st.tracks[0].anchor_source = CLIP_ANCHOR_DERIVED;
+
+    /* T1 source 16 beats. T2 = 8 and T3 = 4 divide it; T4 = 20 does not. */
+    double ll[CLIP_TRACKS] = { 16.0, 8.0, 4.0, 20.0 };
+    int n = clip_state_share_anchor(&st, 0, ll);
+    CHECK(n == 2, "two tracks should take the anchor, got %d", n);
+    CHECK(st.tracks[1].anchor_valid && st.tracks[1].anchor_pulse == 500,
+          "an 8-beat loop divides 16 and should take it");
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 500,
+          "a 4-beat loop divides 16 and should take it");
+    CHECK(!st.tracks[3].anchor_valid,
+          "a 20-beat loop does NOT divide 16 -- taking the anchor would be "
+          "wrong by a silent fraction of a bar, so it must stay unknown");
+    CHECK(st.tracks[1].anchor_source == CLIP_ANCHOR_DERIVED,
+          "a shared anchor is derived and must not be scored");
+
+    /* Real evidence is never overwritten. */
+    clip_state_t st2; clip_state_reset(&st2);
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        st2.tracks[t].identity_valid = 1; st2.tracks[t].clip_slot = 0;
+    }
+    st2.tracks[0].anchor_valid = 1; st2.tracks[0].anchor_pulse = 500;
+    st2.tracks[1].anchor_valid = 1; st2.tracks[1].anchor_pulse = 77;
+    st2.tracks[1].anchor_source = CLIP_ANCHOR_START;
+    clip_state_share_anchor(&st2, 0, ll);
+    CHECK(st2.tracks[1].anchor_pulse == 77,
+          "an anchor from a Start must survive, got %u", st2.tracks[1].anchor_pulse);
+    CHECK(st2.tracks[1].anchor_source == CLIP_ANCHOR_START, "and keep its source");
+}
+
+/* One congruence (from a playhead sighting) plus one bracket (from the
+ * set-change poll) names the set's true common start -- which every track can
+ * then use whatever its loop length. */
+static void test_common_start_from_congruence_and_bracket(void)
+{
+    printf("the true common start is solvable from a sighting plus a bracket\n");
+    uint32_t start;
+
+    /* True start 1000. A 16-beat loop is 384 pulses, so at pulse 1960 the
+     * clip is (1960-1000)/24 = 40 beats in => 40 mod 16 = 8 beats. Coarse
+     * estimate 1040, 40 pulses off. */
+    CHECK(clip_state_solve_common_start(1960, 8.0, 16.0, 1040, 84, &start),
+          "should solve");
+    CHECK(start == 1000, "should recover the true start 1000, got %u", start);
+
+    /* The bracket picks between candidates a whole loop apart: 1000 vs 616.
+     * A coarse estimate nearer the older one must select it. */
+    CHECK(clip_state_solve_common_start(1960, 8.0, 16.0, 640, 84, &start),
+          "should solve against the earlier candidate");
+    CHECK(start == 616, "should pick 616, got %u", start);
+
+    /* Ambiguous: a 4-beat loop is 96 pulses and the bracket spans 168, so two
+     * candidates sit inside it. Answering would be a coin flip dressed as a
+     * measurement. */
+    CHECK(!clip_state_solve_common_start(1960, 2.0, 4.0, 1040, 84, &start),
+          "a loop shorter than the bracket must be refused as ambiguous");
+
+    /* Coarse estimate and sighting disagree by more than the bracket: trust
+     * neither. */
+    CHECK(!clip_state_solve_common_start(1960, 8.0, 16.0, 1500, 84, &start),
+          "an estimate outside the bracket must be refused");
+
+    /* Applying it anchors every track, regardless of loop length -- the whole
+     * point of solving the START rather than sharing a loop boundary. */
+    clip_state_t st; clip_state_reset(&st);
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        st.tracks[t].identity_valid = 1; st.tracks[t].clip_slot = 0;
+    }
+    st.tracks[2].anchor_valid = 1;
+    st.tracks[2].anchor_pulse = 55;
+    st.tracks[2].anchor_source = CLIP_ANCHOR_START;
+    int n = clip_state_apply_common_start(&st, 1000);
+    CHECK(n == 3, "three unanchored tracks should take it, got %d", n);
+    CHECK(st.tracks[0].anchor_pulse == 1000 && st.tracks[3].anchor_pulse == 1000,
+          "and a 20-beat loop takes it too -- no divisibility question arises");
+    CHECK(st.tracks[2].anchor_pulse == 55, "real evidence survives");
+}
+
 int main(void)
 {
+    test_common_start_from_congruence_and_bracket();
+    test_anchor_sharing_checks_divisibility();
     test_anchor_derived_from_playhead();
     test_identity_arriving_after_a_start_still_anchors();
     test_clip_returning_after_a_start_anchors_at_the_start();
