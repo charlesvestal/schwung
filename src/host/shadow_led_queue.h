@@ -51,6 +51,21 @@ void shadow_queue_led(uint8_t cin, uint8_t status, uint8_t data1, uint8_t data2)
 /* In overtake mode, clear Move's cable-0 LED packets from MIDI_OUT buffer. */
 void shadow_clear_move_leds_if_overtake(void);
 
+/* Move's Record button, decoded from its LED by the cable-0 scan in
+ * shadow_clear_move_leds_if_overtake (see rec_arm.h). Settled once per frame.
+ *
+ *   recording  solid at full brightness -- Move is capturing, so lanes record
+ *   flashing   an animation channel -- armed, or counting in; NOT recording
+ *   seen       a CC 86 has ever arrived, so a readout can tell "off" from
+ *              "this button has never reported anything"
+ *
+ * Both callers read callback-written ints: the shim, to push `lanes:armed`,
+ * and the worker, to log it. A torn read is at worst one frame stale against a
+ * window that is beats long. */
+int shadow_rec_arm_recording(void);
+int shadow_rec_arm_flashing(void);
+int shadow_rec_arm_seen(void);
+
 /* Flush pending LED updates to hardware, rate-limited. */
 void shadow_flush_pending_leds(void);
 

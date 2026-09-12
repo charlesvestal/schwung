@@ -951,6 +951,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         lane_apply_state(inst, val ? val : "");
         return;
     }
+    /* Move's Record button, pushed by the shim (chain_lanes.c). */
+    if (key && strcmp(key, "lanes:armed") == 0) {
+        lane_set_armed(inst, val && atoi(val) != 0);
+        return;
+    }
 
     /*
      * ---- "bus<N>:" and "buses:" ------------------------------------------
