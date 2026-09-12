@@ -815,8 +815,20 @@ typedef struct chain_instance {
      * which boot-loops the device. Same reason move_plugin_render_split is
      * dlsym'd rather than a field on plugin_api_v2_t. */
     int    clip_phase_valid;      /* 0 = UNKNOWN. Not zero. Unknown. */
-    double clip_phase_beats;      /* beats from the clip's loop start */
-    double clip_loop_len;         /* beats */
+    /* CLIP TIME, in quarter notes, which is the coordinate Move's own notes
+     * are in: measured 2026-09-12, a clip whose region/loop is 8..20 carries
+     * notes at startTime 0.0, 9.5 and 16.5 -- so notes are absolute from the
+     * clip's start and the loop is a WINDOW over them. Storing a lane in the
+     * same coordinate is what makes "the automation lines up with the notes"
+     * definitional instead of something we maintain.
+     *
+     * And the unit is the QUARTER, not the signature's beat: changing the set
+     * to 11/8 changed not one number in the file. So nothing here needs the
+     * time signature -- only converting BARS does, which is the strip reader's
+     * problem alone (quarters per bar = upper * 4 / lower). */
+    double clip_phase_beats;      /* quarters from the clip's start */
+    double clip_loop_start;       /* the window's start, same coordinate */
+    double clip_loop_len;         /* quarters */
     /* Which clip the phase belongs to, and what it looks like right now. All
      * pushed together in ONE call, deliberately: these are facts about one
      * clip at one instant, and splitting them across calls lets a lane bind a

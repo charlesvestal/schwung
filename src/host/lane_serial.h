@@ -9,7 +9,7 @@
  *
  *   V <version>
  *   L <target> <param> <track> <slot> <loop_start> <loop_len> <note_count> <first_note> <n>
- *   P <phase> <value>
+ *   P <phase> <value>          <- V2: quarters from the CLIP's start
  *   P <phase> <value>
  *
  * TWO RULES THAT ARE NOT OBVIOUS
@@ -43,7 +43,13 @@
 extern "C" {
 #endif
 
-#define LANE_SERIAL_VERSION 1
+/* V2: POINT PHASES ARE CLIP TIME, in quarters from the clip's start, the same
+ * coordinate Move's notes use. V1 stored them relative to the LOOP, which made
+ * a sweep slide when the loop moved -- and a V1 document is migrated EXACTLY
+ * rather than guessed at, because each lane's own header line carries the
+ * `loop_start` it was recorded against: add it to every point of that lane.
+ * That is the whole reason the field was already there. */
+#define LANE_SERIAL_VERSION 2
 
 /* Worst case: one "V n" line, then per lane a header plus LANE_POINTS_MAX
  * points.

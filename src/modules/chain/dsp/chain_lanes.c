@@ -66,7 +66,8 @@ void lane_tick(chain_instance_t *inst) {
      * rather than freezing wherever the clip happened to stop. Reading this
      * as phase 0 instead would drive the first breakpoint with the transport
      * stopped, which is a parameter moving on its own with nothing playing. */
-    if (!inst->clip_phase_valid || !(inst->clip_loop_len > 0.0)) {
+    if (!inst->clip_phase_valid || !(inst->clip_loop_len > 0.0) ||
+        !(inst->clip_loop_start >= 0.0)) {
         lane_release_all(inst);
         /* And the passes end here. With no phase there is no swept span to
          * continue from, so the next write that does have one must be a first
@@ -141,6 +142,7 @@ void lane_tick(chain_instance_t *inst) {
          * rest of the loop keeps playing, which is what makes this
          * punch-in/punch-out instead of a recording mode. */
         const int pass_live = lane_pass_live_at(ln, inst->clip_phase_beats,
+                                                inst->clip_loop_start,
                                                 inst->clip_loop_len);
 
         /* AND THE PASS ENDS HERE, which is punch-OUT. The transport has
@@ -173,7 +175,8 @@ void lane_tick(chain_instance_t *inst) {
                              pinfo->type == KNOB_TYPE_ENUM);
 
         float v = 0.0f;
-        if (!lane_eval(ln, inst->clip_phase_beats, inst->clip_loop_len,
+        if (!lane_eval(ln, inst->clip_phase_beats, inst->clip_loop_start,
+                       inst->clip_loop_len,
                        stepped, &v)) {
             /* "Nothing to say" -- empty, stale or orphaned. That is NOT the
              * value 0.0, so it releases rather than writing anything. */
@@ -249,7 +252,8 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * the span it sweeps rather than interleave with it. lane_write's
          * thinning window is ~5 ms and cannot do that job -- see
          * LANE_MIN_POINT_BEATS. */
-        lane_record_point(ln, inst->clip_phase_beats, v, inst->clip_loop_len);
+        lane_record_point(ln, inst->clip_phase_beats, v,
+                          inst->clip_loop_start, inst->clip_loop_len);
         /* AND HAND THE PARAMETER BACK, for the same reason the unarmed branch
          * below does: an active override makes v2_set_param re-apply base+mod
          * and RETURN, so this write would never reach the plugin at all -- the

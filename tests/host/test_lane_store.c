@@ -20,34 +20,34 @@ int main(void) {
     /* 1. An empty lane says nothing -- it does not say 0.0. */
     lane_t *ln = mk(&st);
     CHECK(ln != NULL, "alloc returned NULL");
-    CHECK(lane_eval(ln, 0.0, 8.0, 0, &v) == 0, "empty lane produced a value");
+    CHECK(lane_eval(ln, 0.0, 0.0, 8.0, 0, &v) == 0, "empty lane produced a value");
 
     /* 2. One point is that value everywhere (hold at both ends). */
     lane_write(ln, 2.0, 0.5f);
-    CHECK(lane_eval(ln, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
+    CHECK(lane_eval(ln, 0.0, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
           "single point before: %f", v);
-    CHECK(lane_eval(ln, 7.9, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
+    CHECK(lane_eval(ln, 7.9, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
           "single point after: %f", v);
 
     /* 3. Linear between two float points. */
     lane_write(ln, 6.0, 1.0f);
-    CHECK(lane_eval(ln, 4.0, 8.0, 0, &v) == 1 && fabsf(v - 0.75f) < 1e-6f,
+    CHECK(lane_eval(ln, 4.0, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.75f) < 1e-6f,
           "midpoint interp: %f", v);
 
     /* 4. Stepped (int/enum) holds the previous value instead. */
-    CHECK(lane_eval(ln, 4.0, 8.0, 1, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
+    CHECK(lane_eval(ln, 4.0, 0.0, 8.0, 1, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
           "stepped should hold 0.5, got %f", v);
 
     /* 5. A point past the CURRENT loop end is ignored -- and retained. */
     ln = mk(&st);
     lane_write(ln, 1.0, 0.2f);
     lane_write(ln, 12.0, 0.9f);       /* beyond an 8-beat loop */
-    CHECK(lane_eval(ln, 7.0, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
+    CHECK(lane_eval(ln, 7.0, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
           "dormant point leaked into the curve: %f", v);
     CHECK(ln->n == 2, "dormant point was dropped (n=%d)", ln->n);
 
     /* 6. Extending the clip reveals it, with no rewrite. */
-    CHECK(lane_eval(ln, 12.0, 16.0, 0, &v) == 1 && fabsf(v - 0.9f) < 1e-6f,
+    CHECK(lane_eval(ln, 12.0, 0.0, 16.0, 0, &v) == 1 && fabsf(v - 0.9f) < 1e-6f,
           "extended loop did not reveal the point: %f", v);
 
     /* 7. Thinning: a second write inside the window replaces, not appends. */
@@ -170,7 +170,7 @@ int main(void) {
     CHECK(ln->n == 3, "NaN phase was stored by lane_write (n=%d)", ln->n);
     lane_write(ln, INFINITY, 0.9f);
     CHECK(ln->n == 3, "infinite phase was stored by lane_write (n=%d)", ln->n);
-    CHECK(lane_eval(ln, 3.5, 8.0, 0, &v) == 1 && fabsf(v - 0.3f) < 1e-6f,
+    CHECK(lane_eval(ln, 3.5, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.3f) < 1e-6f,
           "a rejected NaN write still corrupted eval near the boundary: %f", v);
 
     /* eval's own defence: a NaN poked directly into pts[] (not through
@@ -181,7 +181,7 @@ int main(void) {
     ln->pts[ln->n].phase = NAN;
     ln->pts[ln->n].value = 0.9f;
     ln->n++;
-    CHECK(lane_eval(ln, 2.5, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
+    CHECK(lane_eval(ln, 2.5, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
           "lane_eval trusted a NaN point planted directly in pts[]: %f", v);
 
 
@@ -210,7 +210,7 @@ int main(void) {
         /* Pass 1: a rising sweep, 20 -> 100. */
         const double p1[5] = { 1.00, 1.50, 2.00, 2.50, 3.00 };
         const float  v1[5] = { 20.0f, 40.0f, 60.0f, 80.0f, 100.0f };
-        for (int i = 0; i < 5; i++) lane_record_point(l, p1[i], v1[i], loop);
+        for (int i = 0; i < 5; i++) lane_record_point(l, p1[i], v1[i], 0.0, loop);
         lane_record_end(l);
         CHECK(l->n == 5, "pass 1 did not lay down 5 points (n=%d)", l->n);
 
@@ -219,7 +219,7 @@ int main(void) {
          * shows up as a DIP -- the jumpiness the user heard. */
         const double p2[4] = { 1.04, 1.56, 2.08, 2.60 };
         const float  v2[4] = { 190.0f, 191.0f, 192.0f, 193.0f };
-        for (int i = 0; i < 4; i++) lane_record_point(l, p2[i], v2[i], loop);
+        for (int i = 0; i < 4; i++) lane_record_point(l, p2[i], v2[i], 0.0, loop);
         lane_record_end(l);
 
         /* Nothing from pass 1 may survive strictly inside the swept span. */
@@ -265,10 +265,10 @@ int main(void) {
         lane_write(l, 3.0, 60.0f);
         lane_write(l, 4.0, 70.0f);
 
-        lane_record_point(l, 1.0, 10.0f, loop);     /* first write: no span */
-        lane_record_point(l, 1.2, 11.0f, loop);     /* sweeping */
+        lane_record_point(l, 1.0, 10.0f, 0.0, loop);     /* first write: no span */
+        lane_record_point(l, 1.2, 11.0f, 0.0, loop);     /* sweeping */
         /* ... hand off the knob for three beats, then turn it again. */
-        lane_record_point(l, 5.0, 12.0f, loop);
+        lane_record_point(l, 5.0, 12.0f, 0.0, loop);
         lane_record_end(l);
 
         int kept = 0;
@@ -297,8 +297,8 @@ int main(void) {
                                 75.0f, 78.0f };
         for (int i = 0; i < 7; i++) lane_write(l, lay[i], lv[i]);
 
-        lane_record_point(l, 7.6, 200.0f, loop);   /* first write: no span */
-        lane_record_point(l, 0.3, 201.0f, loop);   /* wrapped: gap 0.7 beats */
+        lane_record_point(l, 7.6, 200.0f, 0.0, loop);   /* first write: no span */
+        lane_record_point(l, 0.3, 201.0f, 0.0, loop);   /* wrapped: gap 0.7 beats */
         lane_record_end(l);
 
         /* Swept: 7.8 (past prev) and 0.1 (before cur). */
@@ -329,7 +329,7 @@ int main(void) {
         lane_write(l, 1.0, 10.0f);
         lane_write(l, 2.0, 20.0f);
         lane_write(l, 3.0, 30.0f);
-        lane_record_point(l, 2.5, 99.0f, 8.0);
+        lane_record_point(l, 2.5, 99.0f, 0.0, 8.0);
         CHECK(l->n == 4, "the first write of a pass erased something (n=%d)",
               l->n);
         lane_record_end(l);
@@ -344,10 +344,10 @@ int main(void) {
         lane_t *l = mk(&ps);
         const double loop = 8.0;
         lane_write(l, 1.4, 44.0f);          /* the user's, between the takes */
-        lane_record_point(l, 1.0, 10.0f, loop);
-        lane_record_point(l, 1.3, 11.0f, loop);
+        lane_record_point(l, 1.0, 10.0f, 0.0, loop);
+        lane_record_point(l, 1.3, 11.0f, 0.0, loop);
         lane_record_end(l);                  /* Record goes out */
-        lane_record_point(l, 1.5, 12.0f, loop);   /* a fresh take */
+        lane_record_point(l, 1.5, 12.0f, 0.0, loop);   /* a fresh take */
         lane_record_end(l);
         int found = 0;
         for (int i = 0; i < l->n; i++)
@@ -425,8 +425,8 @@ int main(void) {
 
         lane_t *c0 = lane_alloc(&ps, "synth", "cutoff", 0, 0, &f0);
         CHECK(c0 != NULL, "clip 0 lane alloc");
-        lane_record_point(c0, 0.0, 10.0f, 4.0);
-        lane_record_point(c0, 1.0, 11.0f, 4.0);
+        lane_record_point(c0, 0.0, 10.0f, 0.0, 4.0);
+        lane_record_point(c0, 1.0, 11.0f, 0.0, 4.0);
         lane_record_end(c0);
 
         lane_t *c1 = lane_alloc(&ps, "synth", "cutoff", 0, 1, &f1);
@@ -435,8 +435,8 @@ int main(void) {
               "recording the same parameter on a SECOND CLIP took over the "
               "first clip's lane -- one lane per param across all 8 clip "
               "slots, which is the hardware defect");
-        lane_record_point(c1, 0.0, 90.0f, 4.0);
-        lane_record_point(c1, 1.0, 91.0f, 4.0);
+        lane_record_point(c1, 0.0, 90.0f, 0.0, 4.0);
+        lane_record_point(c1, 1.0, 91.0f, 0.0, 4.0);
         lane_record_end(c1);
 
         int used = 0;
@@ -501,7 +501,7 @@ int main(void) {
                 lane_write(c1, p0[i], (float)(120 + i * 10));
             const double p2[4] = { 1.04, 1.56, 2.08, 2.60 };
             for (int i = 0; i < 4; i++)
-                lane_record_point(c1, p2[i], 199.0f, 8.0);
+                lane_record_point(c1, p2[i], 199.0f, 0.0, 8.0);
             lane_record_end(c1);
 
             CHECK(c0->n == 5,
@@ -533,11 +533,11 @@ int main(void) {
      * still playing, which is unrecoverable and invisible. */
     {
         /* Forward is the plain difference. */
-        CHECK(fabs(lane_pass_travel(2.0, 2.5, 8.0) - 0.5) < 1e-9,
+        CHECK(fabs(lane_pass_travel(2.0, 2.5, 0.0, 8.0) - 0.5) < 1e-9,
               "forward travel 2.0 -> 2.5 read %.6f",
-              lane_pass_travel(2.0, 2.5, 8.0));
-        CHECK(lane_pass_travel(2.0, 2.0, 8.0) == 0.0,
-              "no travel at all read %.6f", lane_pass_travel(2.0, 2.0, 8.0));
+              lane_pass_travel(2.0, 2.5, 0.0, 8.0));
+        CHECK(lane_pass_travel(2.0, 2.0, 0.0, 8.0) == 0.0,
+              "no travel at all read %.6f", lane_pass_travel(2.0, 2.0, 0.0, 8.0));
 
         /* BACKWARDS IS A WRAP, and the whole point of this function: the
          * travelled distance is (loop_len - prev) + phase. The tempting
@@ -545,22 +545,22 @@ int main(void) {
          * the old curve back in the middle of a sweep across the loop
          * boundary -- and it describes the untouched MIDDLE of the lane
          * rather than the two swept ends. */
-        CHECK(fabs(lane_pass_travel(7.5, 0.2, 8.0) - 0.7) < 1e-9,
+        CHECK(fabs(lane_pass_travel(7.5, 0.2, 0.0, 8.0) - 0.7) < 1e-9,
               "wrapped travel 7.5 -> 0.2 in an 8-beat loop read %.6f, "
-              "expected 0.7", lane_pass_travel(7.5, 0.2, 8.0));
-        CHECK(lane_pass_travel(7.5, 0.2, 8.0) > 0.0,
+              "expected 0.7", lane_pass_travel(7.5, 0.2, 0.0, 8.0));
+        CHECK(lane_pass_travel(7.5, 0.2, 0.0, 8.0) > 0.0,
               "wrapped travel came out negative -- that is phase - prev");
 
         /* Cannot tell, and -1.0 says so once for every caller. A real
          * distance is never negative, so the sentinel cannot be an answer. */
-        CHECK(lane_pass_travel(7.5, 0.2, 0.0) < 0.0,
+        CHECK(lane_pass_travel(7.5, 0.2, 0.0, 0.0) < 0.0,
               "a backwards phase with no loop length answered %.6f",
-              lane_pass_travel(7.5, 0.2, 0.0));
-        CHECK(lane_pass_travel(9.0, 0.2, 8.0) < 0.0,
+              lane_pass_travel(7.5, 0.2, 0.0, 0.0));
+        CHECK(lane_pass_travel(9.0, 0.2, 0.0, 8.0) < 0.0,
               "a prev past the loop end answered %.6f",
-              lane_pass_travel(9.0, 0.2, 8.0));
-        CHECK(lane_pass_travel(NAN, 1.0, 8.0) < 0.0, "a NaN prev answered a distance");
-        CHECK(lane_pass_travel(1.0, NAN, 8.0) < 0.0, "a NaN phase answered a distance");
+              lane_pass_travel(9.0, 0.2, 0.0, 8.0));
+        CHECK(lane_pass_travel(NAN, 1.0, 0.0, 8.0) < 0.0, "a NaN prev answered a distance");
+        CHECK(lane_pass_travel(1.0, NAN, 0.0, 8.0) < 0.0, "a NaN phase answered a distance");
 
         lane_store_t lps;
         lane_store_reset(&lps);
@@ -570,22 +570,22 @@ int main(void) {
         if (lp) {
             /* NO PASS IS NOT A LIVE PASS. `rec_active` is 0 until the first
              * write of a take, and the lane must play normally there. */
-            CHECK(lane_pass_live_at(lp, 2.0, 8.0) == 0,
+            CHECK(lane_pass_live_at(lp, 2.0, 0.0, 8.0) == 0,
                   "a lane with no recording pass reads as live");
 
-            lane_record_point(lp, 2.0, 55.0f, 8.0);
+            lane_record_point(lp, 2.0, 55.0f, 0.0, 8.0);
             CHECK(lp->rec_active == 1, "premise: the pass started");
 
             /* Inside the window, forward: live. */
-            CHECK(lane_pass_live_at(lp, 2.0, 8.0) == 1,
+            CHECK(lane_pass_live_at(lp, 2.0, 0.0, 8.0) == 1,
                   "the pass is not live at its own last write");
-            CHECK(lane_pass_live_at(lp, 2.0 + LANE_PASS_GAP_BEATS * 0.5, 8.0) == 1,
+            CHECK(lane_pass_live_at(lp, 2.0 + LANE_PASS_GAP_BEATS * 0.5, 0.0, 8.0) == 1,
                   "the pass is not live half a threshold ahead of itself");
 
             /* PAST THE THRESHOLD IS NOT LIVE -- that bound is the whole
              * difference between a punch and a recording MODE that silences
              * the rest of the bar. */
-            CHECK(lane_pass_live_at(lp, 2.0 + LANE_PASS_GAP_BEATS * 1.5, 8.0) == 0,
+            CHECK(lane_pass_live_at(lp, 2.0 + LANE_PASS_GAP_BEATS * 1.5, 0.0, 8.0) == 0,
                   "a phase past the threshold still reads as the live pass");
 
             /* AND IT AGREES WITH THE ERASE. A write at a phase the predicate
@@ -594,8 +594,8 @@ int main(void) {
              * separate expected numbers, because what matters is that the two
              * readings cannot drift apart. */
             lane_write(lp, 2.4, 99.0f);
-            const int live_near = lane_pass_live_at(lp, 2.5, 8.0);
-            lane_record_point(lp, 2.5, 56.0f, 8.0);
+            const int live_near = lane_pass_live_at(lp, 2.5, 0.0, 8.0);
+            lane_record_point(lp, 2.5, 56.0f, 0.0, 8.0);
             int survived = 0;
             for (int i = 0; i < lp->n; i++)
                 if (fabs(lp->pts[i].phase - 2.4) < 1e-9) survived = 1;
@@ -605,8 +605,8 @@ int main(void) {
                   live_near, survived);
 
             lane_write(lp, 6.0, 98.0f);
-            const int live_far = lane_pass_live_at(lp, 7.0, 8.0);
-            lane_record_point(lp, 7.0, 57.0f, 8.0);
+            const int live_far = lane_pass_live_at(lp, 7.0, 0.0, 8.0);
+            lane_record_point(lp, 7.0, 57.0f, 0.0, 8.0);
             survived = 0;
             for (int i = 0; i < lp->n; i++)
                 if (fabs(lp->pts[i].phase - 6.0) < 1e-9) survived = 1;
@@ -618,20 +618,118 @@ int main(void) {
             /* WRAPPED, THROUGH BOTH READINGS. The pass sits at 7.0; 0.3 is
              * 1.3 beats of travel away round the loop, which is past the
              * threshold, while 7.5 is 0.5 ahead and inside it. */
-            CHECK(lane_pass_live_at(lp, 7.5, 8.0) == 1,
+            CHECK(lane_pass_live_at(lp, 7.5, 0.0, 8.0) == 1,
                   "the pass is not live 0.5 beats ahead of 7.0");
-            lane_record_point(lp, 7.8, 58.0f, 8.0);
-            CHECK(lane_pass_live_at(lp, 0.1, 8.0) == 1,
+            lane_record_point(lp, 7.8, 58.0f, 0.0, 8.0);
+            CHECK(lane_pass_live_at(lp, 0.1, 0.0, 8.0) == 1,
                   "a pass at 7.8 is not live 0.3 beats later at phase 0.1 -- "
                   "the wrap was measured as phase - prev");
-            CHECK(lane_pass_live_at(lp, 4.0, 8.0) == 0,
+            CHECK(lane_pass_live_at(lp, 4.0, 0.0, 8.0) == 0,
                   "a pass at 7.8 reads as live in the untouched middle of the "
                   "loop at phase 4.0");
 
             /* The end of the pass is the end of the window, everywhere. */
             lane_record_end(lp);
-            CHECK(lane_pass_live_at(lp, 7.8, 8.0) == 0,
+            CHECK(lane_pass_live_at(lp, 7.8, 0.0, 8.0) == 0,
                   "an ended pass still reads as live at its last write");
+        }
+    }
+
+    /* ================= THE LOOP IS A WINDOW IN CLIP TIME =================
+     *
+     * The case the user named, and the reason V1's loop-relative storage was
+     * wrong. Measured against Move's own file (2026-09-12): a clip whose
+     * region/loop is 8..20 quarters carries notes at startTime 0.0, 9.5 and
+     * 16.5 -- so notes are absolute from the clip's start and the loop is a
+     * window over them. A lane stored in that same coordinate cannot slide.
+     *
+     * Play a bars-3-to-5 loop (8..20), record over the notes at 9.5, then open
+     * the loop out to the whole clip (0..32). The point must still be at 9.5,
+     * on the same notes. Stored loop-relative it would have been 1.5, and
+     * would now replay two bars early.
+     */
+    {
+        lane_store_t w;
+        lane_fingerprint_t fp = { 8.0, 12.0, 3, 60 };
+        lane_store_reset(&w);
+        lane_t *wl = lane_alloc(&w, "synth", "cutoff", 0, 2, &fp);
+        CHECK(wl != NULL, "window lane alloc");
+        if (wl) {
+            lane_write(wl, 9.5, 0.75f);      /* over the note at 9.5 */
+            lane_write(wl, 16.5, 0.25f);     /* and the one at 16.5 */
+
+            /* Inside the bars-3-to-5 window, where it was recorded. */
+            CHECK(lane_eval(wl, 9.5, 8.0, 12.0, 0, &v) == 1 &&
+                  fabsf(v - 0.75f) < 1e-6f,
+                  "in its own window: %f", v);
+
+            /* The loop opened out to the whole clip. SAME clip position, same
+             * value -- that is the entire requirement. */
+            CHECK(lane_eval(wl, 9.5, 0.0, 32.0, 0, &v) == 1 &&
+                  fabsf(v - 0.75f) < 1e-6f,
+                  "the loop grew and the point moved: %f at 9.5", v);
+            CHECK(lane_eval(wl, 16.5, 0.0, 32.0, 0, &v) == 1 &&
+                  fabsf(v - 0.25f) < 1e-6f,
+                  "the loop grew and the second point moved: %f", v);
+
+            /* The loop MOVED to bars 1-3 (0..12): the recorded material is
+             * outside it now, so the lane is DORMANT there rather than
+             * playing its nearest point. A prefix test ([0, loop_len)) would
+             * have played 9.5's value at beat 2 -- material from a part of the
+             * clip the loop no longer reaches. */
+            CHECK(lane_eval(wl, 2.0, 0.0, 8.0, 0, &v) == 0,
+                  "a window that excludes every point still produced %f", v);
+
+            /* And a point below the window is dormant even when others are
+             * inside it: window 12..20 leaves 16.5 audible and 9.5 not, so
+             * the value at 13.0 must be 16.5's, never 9.5's. */
+            CHECK(lane_eval(wl, 13.0, 12.0, 8.0, 0, &v) == 1 &&
+                  fabsf(v - 0.25f) < 1e-6f,
+                  "a point BELOW the window leaked in: %f", v);
+
+            /* An unknown window start is not a window. NaN must refuse, the
+             * same way an unknown phase does -- 0.0 is a legal loop start, so
+             * a missed gate must not find a usable number. */
+            CHECK(lane_eval(wl, 9.5, NAN, 12.0, 0, &v) == 0,
+                  "a NaN window start produced %f", v);
+        }
+    }
+
+    /* A recording pass WRAPS AT THE WINDOW, not at zero.
+     *
+     * On a bars-3-to-5 loop the sweep goes ... 19.5, 8.2 ... and the span it
+     * erases is (prev, 20) then [8, 8.2). Erasing from 0 instead would delete
+     * the automation on the clip's first two bars -- material this pass never
+     * touched, that the user cannot see from inside the loop, and that becomes
+     * audible the moment they open the loop out. */
+    {
+        lane_store_t w;
+        lane_fingerprint_t fp = { 8.0, 12.0, 3, 60 };
+        lane_store_reset(&w);
+        lane_t *wl = lane_alloc(&w, "synth", "cutoff", 0, 2, &fp);
+        CHECK(wl != NULL, "wrap lane alloc");
+        if (wl) {
+            lane_write(wl, 1.0, 0.10f);       /* before the loop: untouchable */
+            lane_write(wl, 4.0, 0.20f);       /* also before it */
+            lane_write(wl, 19.0, 0.30f);      /* inside, and in the swept span */
+
+            /* travel across the window's own wrap: 19.5 -> 8.2 is 0.7 beats,
+             * not a jump backwards of 11.3 and not "cannot tell". */
+            double tr = lane_pass_travel(19.5, 8.2, 8.0, 12.0);
+            CHECK(fabs(tr - 0.7) < 1e-9, "wrapped travel = %f, want 0.7", tr);
+
+            /* A prev outside the window cannot have been swept from inside it. */
+            CHECK(lane_pass_travel(2.0, 8.2, 8.0, 12.0) < 0.0,
+                  "a prev below the window was turned into a wrap");
+
+            lane_record_point(wl, 19.5, 0.40f, 8.0, 12.0);
+            lane_record_point(wl, 8.2, 0.50f, 8.0, 12.0);
+            CHECK(lane_eval(wl, 1.0, 0.0, 32.0, 0, &v) == 1 &&
+                  fabsf(v - 0.10f) < 1e-6f,
+                  "the wrap erased the clip's first bar: %f at beat 1", v);
+            CHECK(lane_eval(wl, 4.0, 0.0, 32.0, 0, &v) == 1 &&
+                  fabsf(v - 0.20f) < 1e-6f,
+                  "the wrap erased material before the loop: %f at beat 4", v);
         }
     }
 

@@ -144,6 +144,11 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
     int nseen = 0;
     lane_hdr_t h;
     int have_hdr = 0;
+    /* The document's own version, so a V1 lane can be shifted into clip time.
+     * Defaults to CURRENT, not to 1: a document with no V line at all is one
+     * this writer never produced, and treating it as ancient would silently
+     * shift every point by its loop_start. */
+    int doc_version = LANE_SERIAL_VERSION;
     int lane_idx = 0;
     lane_t *cur = 0;
 
@@ -166,6 +171,7 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
             /* A document from the future cannot be read safely, and guessing
              * is the one answer that can be confidently wrong. */
             if (v < 1 || v > LANE_SERIAL_VERSION) return 0;
+            doc_version = v;
             continue;
         }
 
@@ -207,6 +213,20 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
              * 0.0 on a breakpoint the user never played. */
             if (sscanf(line, "P %lf %lf", &phase, &value) != 2) return 0;
             if (!isfinite(phase) || phase < 0.0 || !isfinite(value)) return 0;
+            /* V1 -> V2: a V1 phase is relative to the LOOP the lane was
+             * recorded against, and that loop's start is on this lane's own
+             * header line -- so the migration is one addition with the real
+             * number, not an assumption. Applied before the ascending check,
+             * so the check still describes what lands in pts[].
+             *
+             * A V1 lane whose recorded loop_start is not a usable number
+             * (the absent fingerprint's 0.0 is fine; a NaN from a corrupt
+             * file is not) is REFUSED with the document rather than loaded at
+             * an origin nobody can name. */
+            if (doc_version < 2) {
+                if (!isfinite(h.fp.loop_start) || h.fp.loop_start < 0.0) return 0;
+                phase += h.fp.loop_start;
+            }
             /* lane_eval walks pts[] assuming ascending phase, so an unsorted
              * document would evaluate to the wrong curve rather than to an
              * error. */

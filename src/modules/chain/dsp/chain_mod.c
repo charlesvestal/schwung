@@ -749,6 +749,21 @@ void chain_set_clip_phase(void *instance, int valid, double phase_beats,
      * comparisons NaN cannot pass. */
     inst->clip_phase_beats = valid ? phase_beats : NAN;
     inst->clip_loop_len = valid ? loop_len : NAN;
+    /* THE WINDOW'S START, AND WHY THE SEAM DID NOT GROW AN ARGUMENT.
+     *
+     * fp[0] is the clip's loop_start, from the same parse, in the same call --
+     * the fingerprint's geometry half. This entry point is DLSYM'd, so adding
+     * a parameter is the one change that cannot be made safely: a chain .so
+     * and a shim that disagree about the signature is precisely the breakbeat
+     * header drift that boot-looped a device, and here the callee would read
+     * an uninitialised register as a loop start. So the number is taken from
+     * an argument that already exists.
+     *
+     * A valid phase implies fp_valid -- shadow_slot_clip_phase sets the
+     * fingerprint BEFORE it checks the anchor -- so the window is never
+     * unknown while the phase is known. NaN if it is, for the same reason the
+     * phase is: a missed gate must not find a usable number. */
+    inst->clip_loop_start = (valid && fp_valid && fp) ? fp[0] : NAN;
     inst->lane_track = track;
     inst->lane_clip_slot = clip_slot;
     inst->clip_fp_valid = (fp_valid && fp) ? 1 : 0;
