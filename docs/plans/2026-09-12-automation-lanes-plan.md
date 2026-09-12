@@ -500,7 +500,10 @@ git commit -m "lanes: the pure breakpoint store — unbounded, wrapped at the cl
 phase and loop length, or told that it is unknown.
 
 **Files:**
-- Modify: `src/modules/chain/dsp/chain_host.c` (exported `chain_set_clip_phase`)
+- Modify: `src/modules/chain/dsp/chain_mod.c` (exported `chain_set_clip_phase`)
+  — **not `chain_host.c`**: `tests/host/test_chain_host_file_split.sh` pins that
+  file under 2900 lines and it sits at 2871, so the function plus its comment
+  does not fit. It belongs beside the modulation bus that consumes it anyway.
 - Modify: `src/modules/chain/dsp/chain_internal.h` (three fields on the instance)
 - Modify: `src/host/shadow_chain_mgmt.c:2443` (dlsym), `src/host/shadow_chain_mgmt.h:207` (extern)
 - Modify: `src/schwung_shim.c:1995` (push it at the top of the per-slot loop)
@@ -1442,6 +1445,21 @@ In `lane_tick`, before evaluating, mark a mismatched lane rather than playing it
 
 `lane_eval` already returns 0 for a stale lane (Task 1), so a stale lane stops
 driving through the same release path as a lost phase.
+
+**THE PLACEHOLDER FINGERPRINT MATCHES EVERYTHING, AND MUST NOT.** Until this
+task lands, Task 2 pushes `note_count = 0` and `first_note = -1` for every
+clip. `lane_fingerprint_matches` deliberately does not compare `loop_len` (a
+grown clip is the same clip), so with the other two fields constant it
+degenerates to a single test: `loop_start` within 1e-6. **Every clip whose loop
+starts at 0.0 then fingerprints identically**, so a lane recorded in that
+window matches the wrong clip and *plays* — the confidently-wrong answer this
+design exists to refuse — instead of going stale.
+
+So treat the placeholder as **absent, not matching**: `note_count == 0 &&
+first_note == -1` is "no fingerprint was ever recorded", and a lane carrying it
+is STALE until re-recorded. Add the assertion for that to
+`tests/host/test_lane_store.c` in this task, and note it in Task 8 — a
+`lanes_<i>.json` written before this task must not come back as a live lane.
 
 - [ ] **Step 5: Orphan the lanes of a DELETED clip — keep them, never delete them**
 
