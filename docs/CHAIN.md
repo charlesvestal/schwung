@@ -554,6 +554,60 @@ unarmed turn **punches through until the loop comes round** — per
 survives a tempo change and needs no timer. An *armed* turn cancels any open
 punch on that lane, or the point just recorded would sit silent for a loop.
 
+#### VERIFIED END TO END ON HARDWARE (2026-09-13)
+
+Driven through the param channel with `schwung-testd`, against
+`bouba-kiki` in slot 0 — which is how recording and p-locks were verified
+without a hand on the device: a lane records from a **param write**, and an
+injected knob CC cannot produce one (the drain writes Move's mailbox, not
+Schwung's param channel).
+
+**A p-lock, with the transport STOPPED:**
+
+```
+SET_PARAM lanes:plock synth pinch 9.0 0.9   ->  lanes:plocked = 1
+GET_PARAM lanes:state                       ->  V 2
+                                                L synth pinch 0 2 8 12 3 50 1
+                                                P 9 0.899999976 1
+```
+
+Keyed to (track 0, slot 2) = T1 s3, the fingerprint matching the file's clip
+(loop 8..20, 3 notes, first note 50), one point, `hold = 1`.
+
+**And it reaches the synth, not just the mod bus.** `:effective` and
+`:modulated` prove only that an override is registered — this project has been
+burned by exactly that (`:effective` is the bus's own table). The independent
+witness is the plugin's own state blob:
+
+```
+synth:pinch            0.47   (the user's knob, untouched)
+synth:pinch:effective  0.9
+synth:pinch:modulated  1      <- the on-screen lane-driven mark reads this
+synth:state            {"pinch":0.9, ...}   <- the synth itself
+```
+
+`lanes:clear` then returned all four to 0.47 / 0 — the release reaches the
+plugin too.
+
+**Recording a pass**, armed by injecting Move's own Record button (`lanes:armed`
+went 0 → 1, LED `SOLID`), five writes ~0.7 s apart:
+
+```
+P 9.5416666666666679 0.100000001
+P 11.583333333333332 0.25
+P 13.625 0.400000006
+P 15.625 0.550000012
+P 17.583333333333336 0.699999988
+```
+
+**Those phases are CLIP time** — 9.54, not 1.54 — which is the clip-time change
+proving itself on the device rather than in a fixture. Playback interpolated
+along the curve (0.13 → 0.37 → 0.61 → 0.70, holding past the last point).
+
+Two things this also settled, both previously listed as unverified: the
+`:modulated` mark exists and reads 1, and the clip gained **no notes** from
+arming Record (`[50, 50, 60]`, loop 8..20 unchanged).
+
 #### Step p-locks: the arithmetic is done, the gesture is not
 
 A p-lock is **hold a step, turn a knob** — set a value *on* that step. Two

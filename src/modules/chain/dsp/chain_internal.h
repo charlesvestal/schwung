@@ -850,6 +850,11 @@ typedef struct chain_instance {
      * success without one is indistinguishable from one that cleared
      * nothing. */
     int    lanes_last_cleared;
+    /* 1 if the last `lanes:plock` wrote a point, 0 if it was refused. A
+     * gesture that silently does nothing is indistinguishable from one that
+     * worked until the loop comes round, which is exactly the ambiguity the
+     * rest of this feature spends its instrumentation on. */
+    int    lanes_last_plocked;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
