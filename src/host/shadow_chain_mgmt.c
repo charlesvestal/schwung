@@ -177,10 +177,22 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
     double ph = 0.0;
     if (!clip_phase_beats(tr, (uint32_t)shadow_transport_pulses,
                           r->loop_start, r->loop_len, &ph)) return 0;
-    /* clip_phase_beats() adds loop_start back on before returning, despite its
-     * header comment. Subtracting it is what yields 0..loop_len, which is the
-     * only thing a lane can index a breakpoint list with. */
-    *phase_beats = ph - r->loop_start;
+    /* CLIP TIME, NOT LOOP TIME. clip_phase_beats() adds loop_start back on, so
+     * what it returns is already the coordinate Move's own notes are in --
+     * measured 2026-09-12: a clip whose loop is 8..20 carries notes at
+     * startTime 0.0, 9.5 and 16.5, absolute from the clip's start, with the
+     * loop a window over them.
+     *
+     * This line used to subtract loop_start to hand the lane 0..loop_len, and
+     * that is the defect: a sweep recorded one beat into a bars-3-to-5 loop
+     * was stored as 1.0 instead of 9.0, so opening the loop out to the whole
+     * clip replayed it at beat 1 -- two bars early, on the wrong notes. A step
+     * p-lock has the same problem in reverse: "bar 3, step 5" cannot be turned
+     * into a loop-relative phase at all without knowing where the loop starts.
+     *
+     * The window travels with it (fp[0] is loop_start, pushed in the same
+     * call), so the lane knows which part of itself is audible. */
+    *phase_beats = ph;
     *loop_len = r->loop_len;
     return 1;
 }

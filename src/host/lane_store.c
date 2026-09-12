@@ -123,11 +123,13 @@ void lane_write(lane_t *ln, double phase, float value) {
     ln->n++;
 }
 
-int lane_eval(const lane_t *ln, double phase, double loop_len, int stepped,
+int lane_eval(const lane_t *ln, double phase, double loop_start,
+              double loop_len, int stepped,
               float *out) {
     if (!ln || !ln->used || !out || ln->n <= 0) return 0;
     if (ln->stale || ln->orphaned) return 0;
-    if (loop_len <= 0.0 || !isfinite(phase)) return 0;
+    if (loop_len <= 0.0 || !isfinite(phase) || !isfinite(loop_start)) return 0;
+    const double win_hi = loop_start + loop_len;
 
     /* Only points that are INSIDE the clip as it is right now. `>=` is false
      * for a NaN phase, which is exactly how a NaN write used to pass this
@@ -140,7 +142,13 @@ int lane_eval(const lane_t *ln, double phase, double loop_len, int stepped,
     int first = -1, last = -1;
     for (int i = 0; i < ln->n; i++) {
         if (!isfinite(ln->pts[i].phase)) continue;
-        if (ln->pts[i].phase >= loop_len) break;
+        /* The loop is a WINDOW in clip time, so a point can be dormant at
+         * EITHER end -- below the loop start as well as past its end. A
+         * prefix test ([0, loop_len)) was correct only while phases were
+         * loop-relative, and with clip-relative storage it would play the
+         * material before a bars-3-to-5 loop as if it were inside it. */
+        if (ln->pts[i].phase < loop_start) continue;
+        if (ln->pts[i].phase >= win_hi) break;
         if (first < 0) first = i;
         last = i;
     }
@@ -229,7 +237,8 @@ static void lane_erase_span(lane_t *ln, double lo, int lo_open, double hi) {
     ln->n = w;
 }
 
-void lane_record_point(lane_t *ln, double phase, float value, double loop_len) {
+void lane_record_point(lane_t *ln, double phase, float value,
+                       double loop_start, double loop_len) {
     if (!ln || !ln->used) return;
     /* The SAME validity lane_write demands, checked before the erase: a write
      * that is going to be refused must not erase anything on its way to being
@@ -246,16 +255,20 @@ void lane_record_point(lane_t *ln, double phase, float value, double loop_len) {
          * far apart are not one gesture, so the lane between them is not this
          * pass's to delete. That is also what bounds the damage -- the erased
          * span can never exceed LANE_PASS_GAP_BEATS, whichever branch ran. */
-        const double travel = lane_pass_travel(prev, phase, loop_len);
+        const double travel = lane_pass_travel(prev, phase, loop_start, loop_len);
         if (travel >= 0.0 && travel <= LANE_PASS_GAP_BEATS) {
             if (phase >= prev) {
                 lane_erase_span(ln, prev, 1, phase);
             } else {
-                /* WRAPPED: the span the knob passed over is (prev, loop_len)
-                 * then [0, phase). Phase 0 is INCLUDED -- it is the wrap
-                 * boundary itself, which the sweep crossed. */
-                lane_erase_span(ln, prev, 1, loop_len);
-                lane_erase_span(ln, 0.0, 0, phase);
+                /* WRAPPED: the span the knob passed over is (prev, win_hi)
+                 * then [loop_start, phase). The WINDOW's start is included --
+                 * it is the wrap boundary itself, which the sweep crossed --
+                 * and it is `loop_start`, not 0.0: with clip-relative phases a
+                 * bars-3-to-5 loop wraps to beat 8, and erasing from 0 would
+                 * delete the material BEFORE the loop, which this pass never
+                 * touched and the user cannot see. */
+                lane_erase_span(ln, prev, 1, loop_start + loop_len);
+                lane_erase_span(ln, loop_start, 0, phase);
             }
         }
     }
@@ -273,7 +286,8 @@ void lane_record_end(lane_t *ln) {
     ln->rec_last_phase = 0.0;
 }
 
-double lane_pass_travel(double prev, double phase, double loop_len) {
+double lane_pass_travel(double prev, double phase,
+                        double loop_start, double loop_len) {
     /* isfinite() is the only test NaN cannot spoof: `prev < 0.0` is false for
      * NaN, so a NaN phase would otherwise arrive as a distance of NaN, which
      * compares false against both ends of the threshold and so reads as
@@ -281,17 +295,30 @@ double lane_pass_travel(double prev, double phase, double loop_len) {
      * the next. -1.0 says it once, for everybody. */
     if (!isfinite(prev) || !isfinite(phase)) return -1.0;
     if (prev < 0.0 || phase < 0.0) return -1.0;
+
+    /* THE WINDOW IS CHECKED BEFORE THE DIRECTION, not after. A `prev` outside
+     * the current loop cannot have been swept from inside it -- the loop moved
+     * under the pass -- and that is just as true walking FORWARD: prev 2.0 to
+     * phase 8.2 on a loop of 8..20 reads as a tidy 6.2 beats of travel, and
+     * only the gap threshold downstream stops it erasing across two bars the
+     * gesture never touched. "Cannot tell" is the honest answer in both
+     * directions, and it is one place rather than two. */
+    if (!isfinite(loop_start) || loop_start < 0.0) return -1.0;
+    if (!isfinite(loop_len) || loop_len <= 0.0) return -1.0;
+    const double win_hi = loop_start + loop_len;
+    if (prev < loop_start || prev >= win_hi) return -1.0;
+    if (phase < loop_start || phase >= win_hi) return -1.0;
+
     if (phase >= prev) return phase - prev;
-    /* Backwards. Only a known loop length can turn that into a wrap, and a
-     * `prev` at or past the end cannot have been swept from inside this loop
-     * -- the clip was re-cut under the pass. Unexplainable, so: cannot tell. */
-    if (!isfinite(loop_len) || loop_len <= 0.0 || prev >= loop_len) return -1.0;
-    return (loop_len - prev) + phase;
+    /* Backwards, from inside the window: the pass crossed the window's wrap. */
+    return (win_hi - prev) + (phase - loop_start);
 }
 
-int lane_pass_live_at(const lane_t *ln, double phase, double loop_len) {
+int lane_pass_live_at(const lane_t *ln, double phase,
+                      double loop_start, double loop_len) {
     if (!ln || !ln->used || !ln->rec_active) return 0;
-    const double travel = lane_pass_travel(ln->rec_last_phase, phase, loop_len);
+    const double travel = lane_pass_travel(ln->rec_last_phase, phase,
+                                           loop_start, loop_len);
     /* "Cannot tell" is NOT live. The lane driving is the ordinary state and
      * silence is the exception, so an unreadable phase must fall back to
      * playing rather than to a parameter that has quietly stopped following
