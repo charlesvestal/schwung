@@ -825,6 +825,14 @@ typedef struct chain_instance {
     int    clip_fp_valid;
     lane_fingerprint_t clip_fp;   /* content fingerprint; note data in Task 6 */
 
+    /* The lanes themselves: ON THE INSTANCE, never inside patch_info_t. That
+     * struct is a STACK LOCAL on the SPI callback (v2_set_param's load_file)
+     * and also sits MAX_PATCHES deep in this instance -- which is why raising
+     * SLOT_BUSES from 4 to 8 took the callback frame from 194 KB to 232 KB.
+     * A lane_store_t is 18 KB and must land in neither multiplier. */
+    lane_store_t lanes;
+    int    lane_armed;            /* pushed from the shim: Move's Record button */
+
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
     float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
@@ -1196,6 +1204,10 @@ CHAIN_INTERNAL int parse_ui_hierarchy_cache(const char *module_path, char *out, 
 CHAIN_INTERNAL void smoother_reset(param_smoother_t *smoother);
 CHAIN_INTERNAL void smoother_set_target(param_smoother_t *smoother, const char *key, float value);
 CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
+
+/* chain_lanes.c */
+CHAIN_INTERNAL void lane_tick(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);
