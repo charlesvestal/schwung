@@ -317,6 +317,21 @@ what was withheld is a pad **note**, so the worst a mid-hold drop hands Move is
 an unmatched note-off. Copy/Delete is the case that needs a latch, and keeps
 one. `tests/host/test_pad_block_lifecycle.sh`.
 
+**And the KEYBOARD does not lower it either — the reconcile does.**
+`closeTextEntry` used to write `host_pad_block(0)` on the way out, which was
+right for exactly as long as the second owner above could only be open over
+views that are **not** `COMPONENT_EDIT`. A module-owned param grid with a
+`Save As` row ends that: a keyboard opened and closed over a component that
+owns the pads wrote 0 straight over its claim, leaving pads going to Move in
+the middle of a mode the module still believes it owns — and healing only if
+that module happens to re-state the flag every tick rather than on entering
+the mode (9W9 memoises in `padBlocked`, so it does not). The close hands the
+decision back instead: the reconcile skips only while a keyboard is up, so the
+frame after it closes is already the invariant being restated. It is the same
+answer as the exits: **one site states the rule, nothing enumerates the ways
+out of it.** The cost is one frame of pads withheld after a keyboard closes
+over a view that did not want them.
+
 ### A component editor WAITS; it does not decide from one read
 
 Opening a component's editor used to be one read of `<prefix>:ui_hierarchy` and
