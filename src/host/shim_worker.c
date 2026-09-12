@@ -481,6 +481,7 @@ static void clip_regions_tick(void)
     snprintf(last_ident, sizeof(last_ident), "%s", ident);
     snprintf(g_set_name, sizeof(g_set_name), "%s", name);
     snprintf(g_set_uuid, sizeof(g_set_uuid), "%s", uuid);
+    clip_regions_t before = g_regions;
     g_regions = rg;
 
     clip_state_t *st = clip_state_mutable();
@@ -496,6 +497,13 @@ static void clip_regions_tick(void)
      * A mere EDIT of the same set must NOT reset: the geometry changed, what
      * is playing did not, and wiping identity there would throw away a live
      * observation in favour of a file that may not have been saved yet. */
+    /* A clip deleted out from under us leaves identity asserting a clip that
+     * no longer exists. Observed: T4 kept reporting clip 6 after it was
+     * deleted. Compared against the PREVIOUS parse so a newly copied clip --
+     * also absent from the file until Move saves -- is not mistaken for one
+     * that was removed. */
+    if (!set_changed) clip_regions_forget_deleted(&before, &g_regions, st);
+
     if (set_changed) {
         clip_state_reset(st);
         g_ph_total = 0;

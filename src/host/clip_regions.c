@@ -227,3 +227,23 @@ void clip_regions_seed_state(const clip_regions_t *rg, clip_state_t *st)
         }
     }
 }
+
+void clip_regions_forget_deleted(const clip_regions_t *before,
+                                 const clip_regions_t *after,
+                                 clip_state_t *st)
+{
+    if (!before || !after || !st) return;
+    if (!before->valid || !after->valid) return;   /* nothing to compare */
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        clip_track_state_t *tr = &st->tracks[t];
+        if (!tr->identity_valid || tr->clip_slot < 0) continue;
+        int s = tr->clip_slot;
+        if (before->slots[t][s].exists && !after->slots[t][s].exists) {
+            /* It was there, now it is not. Whatever we believed about this
+             * track is stale -- including the anchor, which describes a clip
+             * that no longer exists. */
+            tr->clip_slot = -1;
+            tr->anchor_valid = 0;
+        }
+    }
+}

@@ -158,6 +158,54 @@ int main(void)
                   "track %d must stay unknown when the set has no clips", t + 1);
     }
 
+    /* Deleted vs newly-copied: both are absent from the file, and telling
+     * them apart is the whole point. Observed on hardware -- a deleted clip
+     * left the track asserting it was still playing. */
+    printf("a deleted clip drops identity; a new one does not\n");
+    {
+        static const char two[] =
+            "{\"tracks\":[{\"clipSlots\":[{\"clip\":{\"isPlaying\":true,"
+            "\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}},"
+            "{\"clip\":{\"isPlaying\":false,"
+            "\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}}]}]}";
+        static const char one[] =
+            "{\"tracks\":[{\"clipSlots\":[{\"clip\":{\"isPlaying\":true,"
+            "\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}},"
+            "{\"clip\":null}]}]}";
+        clip_regions_t before, after;
+        CHECK(clip_regions_parse(two, sizeof(two) - 1, &before), "parse before");
+        CHECK(clip_regions_parse(one, sizeof(one) - 1, &after), "parse after");
+
+        /* We believe track 1 is playing slot 2, which has just been deleted. */
+        clip_state_t st5; clip_state_reset(&st5);
+        st5.tracks[0].identity_valid = 1;
+        st5.tracks[0].clip_slot = 1;
+        st5.tracks[0].anchor_valid = 1;
+        st5.tracks[0].anchor_pulse = 100;
+        clip_regions_forget_deleted(&before, &after, &st5);
+        CHECK(st5.tracks[0].clip_slot == -1,
+              "a deleted clip must stop being reported as playing, got %d",
+              st5.tracks[0].clip_slot);
+        CHECK(!st5.tracks[0].anchor_valid,
+              "and its anchor describes a clip that no longer exists");
+
+        /* The reverse: a clip that appears (a copy Move has now saved) must
+         * not disturb anything. */
+        clip_state_t st6; clip_state_reset(&st6);
+        st6.tracks[0].identity_valid = 1;
+        st6.tracks[0].clip_slot = 1;
+        st6.tracks[0].anchor_valid = 1;
+        st6.tracks[0].anchor_pulse = 100;
+        clip_regions_forget_deleted(&after, &before, &st6);
+        CHECK(st6.tracks[0].clip_slot == 1,
+              "a clip APPEARING must not drop identity, got %d",
+              st6.tracks[0].clip_slot);
+        CHECK(st6.tracks[0].anchor_valid, "nor its anchor");
+    }
+
     /* A truncated file is a FAILURE, not a smaller document. */
     printf("a truncated document is refused, not half-believed\n");
     clip_regions_t bad;

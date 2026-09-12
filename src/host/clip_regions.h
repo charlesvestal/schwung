@@ -58,6 +58,19 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out);
  * what is selected, not when it started. */
 void clip_regions_seed_state(const clip_regions_t *rg, clip_state_t *st);
 
+/* Drop identity for a track whose clip has been DELETED.
+ *
+ * "Absent from the file" alone cannot mean deleted: a clip copied into an
+ * empty slot is also absent until Move saves, and dropping identity there
+ * would break the case where the user copies a clip and launches it. The
+ * distinction is HISTORY -- a clip that existed in the previous parse and is
+ * gone from this one was deleted; one that never existed may simply be new.
+ *
+ * Call with the regions as they were BEFORE the re-parse. */
+void clip_regions_forget_deleted(const clip_regions_t *before,
+                                 const clip_regions_t *after,
+                                 clip_state_t *st);
+
 #ifdef __cplusplus
 }
 #endif
