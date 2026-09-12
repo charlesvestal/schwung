@@ -41,6 +41,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/shadow_midi_inject_writer.h"
+#include "host/move_ui_mode_label.h"
 #include "host/shadow_test_stream.h"
 #include "host/shadow_metronome.h"
 #include "host/shadow_chain_types.h"
@@ -8373,8 +8374,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Track buttons are CCs 40-43 */
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
+                    /* Set by any block below that swallows this press from
+                     * Move's MIDI_IN. A press Move never sees cannot have
+                     * changed Move's view, so it must not relabel
+                     * move_ui_mode — see src/host/move_ui_mode_label.h for
+                     * the hardware failure this caused. */
+                    int withheld_from_move = 0;
                     shadow_update_held_track(d1, pressed);
-                    if (pressed && shadow_control) shadow_control->move_ui_mode = 2; /* NOTE */
 
                     /* Update selected slot when track is pressed (for Shift+Knob routing)
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
@@ -8416,6 +8422,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
                             midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                            withheld_from_move = 1;
                         }
 
                         /* "Stay in Schwung": a plain Track tap while the shadow
@@ -8454,6 +8461,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");
                         }
+                    }
+
+                    /* MOVE'S VIEW, INFERRED FROM A PRESS MOVE ACTUALLY GOT.
+                     *
+                     * No announcement reports a track selection, so this press
+                     * is the only evidence that Move has put a track's
+                     * instrument under the pads (= NOTE). But it is evidence
+                     * only if Move received it: Shift+Vol+Track opens the
+                     * shadow UI and is swallowed above, so it leaves Move
+                     * exactly where it was. Relabelling on it lied, nothing
+                     * cleared the lie (only the exact "Session Mode"
+                     * announcement does, and that never arrives when the user
+                     * was already in Session), and clip_state_on_led's
+                     * Session-only gate then rejected every pad event — so
+                     * clip identity FROZE on the clip playing when the UI
+                     * opened instead of going invalid. Found on hardware by
+                     * switching clips with Schwung's UI up.
+                     *
+                     * Runs after the gesture blocks because only they know
+                     * whether the press was withheld. */
+                    if (move_ui_mode_track_press_relabels(pressed, withheld_from_move) &&
+                        shadow_control) {
+                        shadow_control->move_ui_mode = MOVE_UI_MODE_NOTE;
                     }
 
                     /* Long-press detection for Track buttons */
