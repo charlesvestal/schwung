@@ -693,6 +693,15 @@ It closes with the two facts arriving from two places at two times:
   establishing that needs a fingerprint.
 - **No strip reading, no answer**, and no anchor, no answer. The fallback is a
   reading, not a guess.
+- **THE PROVISIONAL LENGTH IS ±1 BAR, and that is bounded by WHEN it matters.**
+  The strip's count can exceed the loop by one (Move draws the next bar it
+  offers you), so a blind take's length can be a bar out. A length is only used
+  at the **wrap**: inside a single pass the phase is monotonic and correct
+  whatever the length is, and a clip younger than ~10 s at, say, 120 BPM has
+  usually not completed one pass. So a blind take recorded in the first pass is
+  right; a longer one can wrap early or late, and the honest remedy is to
+  record it again once the clip is in the file. Adoption fixes the ORIGIN, not
+  a length the points were already computed against.
 
 #### A point is CLIP TIME, and the loop is a WINDOW over it
 
