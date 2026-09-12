@@ -275,6 +275,18 @@ int shadow_chain_midi_inject(const uint8_t *msg, int len) {
 void unified_log(const char *source, int level, const char *fmt, ...) {
     (void)source; (void)level; (void)fmt;
 }
+
+/* Clip phase seam: shadow_chain_mgmt.c's shadow_slot_clip_phase() reads the
+ * clip tables and the transport. Stubbed to "nothing known", which is the
+ * answer that makes the resolver return 0 = phase UNKNOWN. */
+int shadow_transport_pulses = 0;
+const void *clip_state_current(void) { return 0; }
+const void *shadow_clip_regions(void) { return 0; }
+int clip_phase_beats(const void *t, unsigned int pulses, double loop_start,
+                     double loop_len, double *out_beats) {
+    (void)t; (void)pulses; (void)loop_start; (void)loop_len; (void)out_beats;
+    return 0;
+}
 EOF
 
 # -lm because shadow_chain_mgmt.c pulls fmod/roundf in through the LFO

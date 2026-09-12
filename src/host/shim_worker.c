@@ -426,6 +426,12 @@ static void worker_heartbeat(void)
 static void clip_phase_check_reset(void);   /* defined below; used by the region reload */
 static clip_regions_t g_regions;
 
+/* Read by the SPI callback (shadow_slot_clip_phase) as well as by this
+ * worker. Returns the table itself rather than a copy: copying 1 MB of parse
+ * output per block is not realtime, and the caller only ever reads a handful
+ * of doubles out of it. */
+const clip_regions_t *shadow_clip_regions(void) { return &g_regions; }
+
 /* Phase check tallies, per track. The step editor shows ONE track, so only
  * one of these should score highly -- which track it is falls out of the
  * result rather than having to be known in advance. A track that is simply

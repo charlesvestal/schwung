@@ -712,3 +712,43 @@ int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *tar
  * where metadata may only expose the suffix key (e.g. cutofffrequency).
  */
 
+/* Pushed by the shim once per block, per slot, BEFORE the idle gate.
+ *
+ * valid == 0 means "we could not tell where in the clip we are" -- which is
+ * not phase 0 and must never be used as one. A lane on an unanchored track
+ * stays silent and refuses to record; see clip_state.h.
+ *
+ * Resolved by dlsym rather than added to host_api_v1_t: the front of that
+ * struct's `reserved` tail is +120, the offset a shipped breakbeat build
+ * calls as get_project_bpm(), and a live pointer there boot-loops the device.
+ *
+ * The fingerprint crosses as four doubles rather than the struct so the shim
+ * never has to agree with lane_store.h's layout. The signature is final: it
+ * carries the fingerprint from this commit even though Task 6 is what fills
+ * its note fields, so no later task has to re-edit the cast, the call and the
+ * pin test for no behaviour.
+ *
+ * Lives beside the modulation bus rather than in chain_host.c because this is
+ * the lane engine's clock and the bus is what consumes it -- and chain_host.c
+ * is pinned under 2900 lines by tests/host/test_chain_host_file_split.sh.
+ *
+ * RT: SPI callback. Stores only. */
+__attribute__((visibility("default")))
+void chain_set_clip_phase(void *instance, int valid, double phase_beats,
+                          double loop_len, int track, int clip_slot,
+                          int fp_valid, const double *fp /* 4 doubles */) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->clip_phase_valid = valid ? 1 : 0;
+    inst->clip_phase_beats = phase_beats;
+    inst->clip_loop_len = loop_len;
+    inst->lane_track = track;
+    inst->lane_clip_slot = clip_slot;
+    inst->clip_fp_valid = (fp_valid && fp) ? 1 : 0;
+    if (fp_valid && fp) {
+        inst->clip_fp.loop_start = fp[0];
+        inst->clip_fp.loop_len   = fp[1];
+        inst->clip_fp.note_count = (int)fp[2];
+        inst->clip_fp.first_note = (int)fp[3];
+    }
+}
