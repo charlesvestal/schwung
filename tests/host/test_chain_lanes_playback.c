@@ -134,6 +134,25 @@ static void setup_fake_synth(chain_instance_t *inst) {
     q->default_val = 0.0f;
 }
 
+/* WHAT v2_set_param ACTUALLY DOES for a synth param, in its order: the lane
+ * first, then -- only while an override is still asserted on that target --
+ * the base update and the effective re-apply, which writes base+mod and
+ * RETURNS instead of letting the user's value through. That early return is
+ * why a recording pass over a driving lane is inaudible, so a test that only
+ * called lane_on_set_param and then poked the plugin by hand would have
+ * assumed away the defect. Replicated rather than called because chain_host.c
+ * dlopens plugins and cannot be compiled natively. */
+static void ui_set_synth_param(chain_instance_t *inst, const char *key,
+                               const char *val) {
+    lane_on_set_param(inst, "synth", key, val);
+    if (chain_mod_is_target_active(inst, "synth", key)) {
+        chain_mod_update_base_from_set_param(inst, "synth", key, val);
+        mod_target_state_t *e = chain_mod_find_target_entry(inst, "synth", key);
+        if (e) { chain_mod_apply_effective_value(inst, e, 0); return; }
+    }
+    fake_set_param(NULL, key, val);
+}
+
 int main(void) {
     chain_instance_t *inst = calloc(1, sizeof(*inst));
     if (!inst) { printf("FAIL: calloc\n"); return 1; }
@@ -650,6 +669,170 @@ int main(void) {
                 CHECK(n < 0, "an unknown lanes: subkey answered %d, not -1", n);
             }
             free(ci);
+        }
+    }
+
+    /* ---------------------------------------------------------------- 23-29
+     * A LIVE RECORDING PASS MUST SILENCE ITS OWN PLAYBACK.
+     *
+     * A lane is an ABSOLUTE source, so while the user records over one the old
+     * curve and the new gesture write the same parameter every block -- and
+     * the old curve wins twice over. v2_set_param's own write is SWALLOWED
+     * (an active override makes it re-apply base+mod and return, so the knob's
+     * value never reaches the plugin at all), and lane_tick then re-asserts
+     * the old curve a block later. Diagnosed on hardware: the knob is
+     * inaudible while recording and the take feels like it did nothing, even
+     * though the points reach the file correctly.
+     *
+     * The lane therefore YIELDS wherever a pass is live and keeps playing the
+     * rest of the loop, which is punch-in/punch-out rather than a mode.
+     * "Live" is lane_pass_live_at -- the same forward-with-wrap distance
+     * lane_record_point measures its erase with, from ONE shared computation,
+     * because a suppression and an erase that disagreed about the pass's
+     * extent would erase a region the lane is still playing.
+     */
+    {
+        chain_instance_t *rp = calloc(1, sizeof(*rp));
+        CHECK(rp != NULL, "calloc for the recording-pass instance");
+        if (rp) {
+            setup_fake_synth(rp);
+            rp->lane_track = 0;
+            rp->lane_clip_slot = 0;
+            rp->clip_fp_valid = 0;
+            rp->clip_loop_len = 8.0;
+            rp->clip_phase_valid = 1;
+
+            lane_fingerprint_t rfp = { 0.0, 8.0, 3, 60 };
+            lane_t *pl = lane_alloc(&rp->lanes, "synth", "cutoff", 0, 0, &rfp);
+            CHECK(pl != NULL, "recording-pass lane alloc");
+            if (pl) {
+                /* The OLD curve: 20 at beat 0, 80 at beat 4, so 50 at beat 2. */
+                lane_write(pl, 0.0, 20.0f);
+                lane_write(pl, 4.0, 80.0f);
+
+                rp->clip_phase_beats = 2.0;
+                lane_tick(rp);
+                CHECK(fake_value("cutoff") == 50.0f,
+                      "premise: the old curve is driving beat 2 (%f)",
+                      fake_value("cutoff"));
+
+                /* 23. THE USER'S SYMPTOM, AT THE WRITE ITSELF. Armed, the knob
+                 *     goes to 120 at the phase the old curve plays 50. The
+                 *     point is recorded (checked) -- what must not happen is
+                 *     the plugin still holding 50 afterwards, which is the
+                 *     knob being inaudible. Asserted BEFORE any tick: the
+                 *     override is asserted at the moment of the write, so the
+                 *     clobber happens on the write path and a tick-first
+                 *     assertion would be satisfied by the lane replaying the
+                 *     point it had just recorded at that exact phase. */
+                rp->lane_armed = 1;
+                ui_set_synth_param(rp, "cutoff", "120");
+                CHECK(pl->n == 3, "the armed write did not record (n=%d)", pl->n);
+                CHECK(fake_value("cutoff") == 120.0f,
+                      "the armed write never reached the plugin -- it holds "
+                      "%f, the OLD curve's value", fake_value("cutoff"));
+                CHECK(chain_mod_is_target_active(rp, "synth", "cutoff") == 0,
+                      "a live pass left the lane's override registered");
+                CHECK(pl->driving == 0, "a live pass left the lane driving");
+
+                /* 24. ...AND THE NEXT BLOCK DOES NOT PUT IT BACK. The phase
+                 *     has advanced by one block (128 frames is ~0.006 beats at
+                 *     120 BPM), so evaluating the lane here does not even
+                 *     reproduce the point just recorded -- it interpolates
+                 *     back toward the old curve, which is the drift the user
+                 *     hears as the knob fighting something. */
+                rp->clip_phase_beats = 2.01;
+                lane_tick(rp);
+                CHECK(fake_value("cutoff") == 120.0f,
+                      "the next block pulled the parameter to %f -- the lane "
+                      "is still driving inside its own recording pass",
+                      fake_value("cutoff"));
+
+                /* 25. AND THE RELEASE HAPPENS ONCE. A release re-emitted every
+                 *     block would rewrite the base over the next knob detent,
+                 *     which is the same defect in a quieter form. */
+                fake_poke("cutoff", "121");
+                {
+                    int before = fake_writes("cutoff");
+                    lane_tick(rp);
+                    lane_tick(rp);
+                    CHECK(fake_writes("cutoff") == before,
+                          "the suppression wrote %d time(s) after the release",
+                          fake_writes("cutoff") - before);
+                    CHECK(fake_value("cutoff") == 121.0f,
+                          "the suppression moved the parameter to %f",
+                          fake_value("cutoff"));
+                }
+
+                /* 26. OUTSIDE THE LIVE REGION, IN THE SAME LOOP, IT STILL
+                 *     PLAYS. Suppressing the whole lane while `rec_active`
+                 *     would silence the rest of the bar, which is a mode
+                 *     rather than a punch. Beat 5 is past the last point, so
+                 *     the curve holds 80 there. */
+                rp->clip_phase_beats = 5.0;
+                lane_tick(rp);
+                CHECK(fake_value("cutoff") == 80.0f,
+                      "a phase outside the live region stopped playing: %f",
+                      fake_value("cutoff"));
+                CHECK(pl->driving == 1,
+                      "a phase outside the live region is not driving");
+
+                /* 27. THE PASS ENDS WITH THE GAP, and the lane then plays the
+                 *     NEW points. That is punch-OUT: stop turning for a beat
+                 *     and playback comes back, carrying what was just
+                 *     recorded. Without ending it, the recorded phase would go
+                 *     silent for a beat on every later loop, because the
+                 *     transport passes through it again. */
+                CHECK(pl->rec_active == 0,
+                      "the transport carried a whole beat past the pass and "
+                      "the pass is still live");
+                rp->clip_phase_beats = 2.0;
+                lane_tick(rp);
+                CHECK(fake_value("cutoff") == 120.0f,
+                      "the ended pass did not resume on the NEW point: %f",
+                      fake_value("cutoff"));
+
+                /* 28-29. A WRAPPED PASS. Playback phase only increases, so a
+                 *        phase below the previous write means the clip looped,
+                 *        and the distance the pass has travelled is
+                 *        (loop_len - prev) + phase -- never (phase - prev),
+                 *        which is negative and would end the pass at the loop
+                 *        boundary, handing the old curve straight back in the
+                 *        middle of a sweep across it. */
+                rp->clip_phase_beats = 7.5;
+                ui_set_synth_param(rp, "cutoff", "60");
+                CHECK(pl->rec_active == 1 && pl->rec_last_phase == 7.5,
+                      "premise: the pass is at phase 7.5");
+
+                /* 28. Just over the wrap, 0.7 beats of travel from the last
+                 *     write: still the same gesture, so still suppressed. */
+                rp->clip_phase_beats = 0.2;
+                {
+                    int before = fake_writes("cutoff");
+                    lane_tick(rp);
+                    CHECK(fake_writes("cutoff") == before,
+                          "a wrapped pass played the lane at phase 0.2: the "
+                          "plugin holds %f", fake_value("cutoff"));
+                    CHECK(pl->driving == 0,
+                          "a wrapped pass is driving inside its own span");
+                    CHECK(fake_value("cutoff") == 60.0f,
+                          "a wrapped pass moved the parameter off the knob's "
+                          "60 to %f", fake_value("cutoff"));
+                }
+
+                /* 29. ...and the UNTOUCHED MIDDLE of the loop keeps playing.
+                 *     4.5 beats of travel from phase 7.5 is not one gesture,
+                 *     so the lane is the lane again there. */
+                rp->clip_phase_beats = 4.0;
+                lane_tick(rp);
+                CHECK(pl->driving == 1,
+                      "a wrapped pass silenced the untouched middle of the "
+                      "loop at phase 4.0");
+                CHECK(fake_value("cutoff") == 80.0f,
+                      "the untouched middle did not play its own point: %f",
+                      fake_value("cutoff"));
+            }
+            free(rp);
         }
     }
 
