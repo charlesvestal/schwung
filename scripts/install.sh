@@ -1160,6 +1160,15 @@ ssh_root_with_retry "if [ ! -L /data/UserData/move-anything ] && [ ! -d /data/Us
 #
 # scripts/build-manager.sh is the shared builder (go, else Docker, else a hard
 # failure). SCHWUNG_ALLOW_STALE_MANAGER=1 opts out deliberately and says so.
+#
+# The `build/` guard is the LAST silent skip in this block, and it is kept
+# deliberately rather than dropped: `install.sh local` needs only
+# schwung.tar.gz (see the local_file check above), so a tarball-only checkout
+# has no build/ tree for package.sh to re-package from. But it says so now --
+# an unexplained skip here is the whole bug in miniature.
+if [ "$use_local" = true ] && [ -d "$REPO_ROOT/schwung-manager" ] && [ ! -d "$REPO_ROOT/build" ]; then
+    echo "No build/ tree — shipping the schwung-manager already in the tarball (run ./scripts/build.sh for a fresh one)"
+fi
 if [ "$use_local" = true ] && [ -d "$REPO_ROOT/schwung-manager" ] && [ -d "$REPO_ROOT/build" ]; then
     if [ "${SCHWUNG_ALLOW_STALE_MANAGER:-0}" = "1" ]; then
         echo "SCHWUNG_ALLOW_STALE_MANAGER=1 — shipping the schwung-manager already in the tarball"

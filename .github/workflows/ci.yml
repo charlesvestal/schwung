@@ -77,6 +77,16 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: recursive, fetch-depth: 0 }
       - uses: docker/setup-buildx-action@v3
+      # "Same path as release.yml" was not quite true: release.yml builds the
+      # manager on the RUNNER first, and package.sh (inside the container)
+      # picks it up from build/. This job skipped that, so the CI tarball never
+      # carried a schwung-manager and nothing downstream could check for one —
+      # the manager was the one shipped component with no CI cover at all,
+      # which is how install.sh came to skip building it in silence for months.
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+      - name: Build schwung-manager (Go), as release.yml does
+        run: scripts/build-manager.sh
       - name: Build (same path as release.yml)
         run: |
           docker build -t schwung-builder .
@@ -97,7 +107,8 @@ jobs:
             build/modules/tools/wav-player/dsp.so \
             build/bin/display_ctl \
             build/bin/jack_midi_connect \
-            build/lib/jack/jack_shadow.so ; do
+            build/lib/jack/jack_shadow.so \
+            build/schwung-manager ; do
             printf '%-48s ' "$f"
             test -f "$f" || { echo "MISSING"; exit 1; }
             file "$f" | grep -q 'aarch64' || { echo "WRONG ARCH"; file "$f"; exit 1; }
@@ -169,3 +180,11 @@ jobs:
           # is where a silent skip actually reaches users.
           tar -tzf schwung.tar.gz | grep -q 'schwung/link-subscriber$' || {
             echo "tarball has no link-subscriber — Move->Schwung audio would be dead"; exit 1; }
+          # Same reasoning, same silent skip: install.sh's manager rebuild was
+          # guarded on `command -v go`, so a Docker-only machine shipped
+          # whatever manager was already in the tarball and said "success". The
+          # old pre-split entrypoint still on never-blessed devices launches
+          # $SCHWUNG_DIR/schwung-manager, so a payload without one leaves the
+          # device with no web UI and no way to update itself back out.
+          tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-manager$' || {
+            echo "tarball has no schwung-manager — no web UI, and no way to update off this build"; exit 1; }
