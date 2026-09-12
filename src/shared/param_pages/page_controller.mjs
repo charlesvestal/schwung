@@ -525,6 +525,15 @@ function pageHasKnobs(p) {
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
     const setParam = io.setParam || (() => {});
+    /* Called AFTER a value is committed, with what was actually written.
+     *
+     * The p-lock gesture needs exactly this moment: "hold a step, turn a knob"
+     * has to record the value the knob produced, and only the commit knows it
+     * (the turn walks from a cached value through the parameter's own step and
+     * range). The host owns everything else -- which step is held, whether the
+     * page belongs to a chain slot -- so this stays one optional call rather
+     * than the controller learning about step buttons. */
+    const onValueWritten = io.onValueWritten || null;
     const announce = io.announce || (() => {});
     /* Optional: is this param currently driven by a modulation source? The
      * library cannot answer that — it is host state — so it is injected, and
@@ -3439,6 +3448,7 @@ export function createController(io = {}) {
         delete s.pendingWrite[key];
         delete s.knobStates[key];
         setParam(fullKey(key), wire);
+        if (onValueWritten) onValueWritten(fullKey(key), wire);
         replanIfCondition(key);
         return wire;
     }

@@ -2772,6 +2772,32 @@ static JSValue js_host_pad_observe(JSContext *ctx, JSValueConst this_val,
     return JS_TRUE;
 }
 
+/* host_step_observe(enable) - ask the shim to ALSO forward Move's STEP notes
+ * (16-31) to the shadow UI, passively: nothing is blocked, so the press still
+ * reaches Move and still edits the clip's notes. That cost is deliberate --
+ * withholding a step needs a latched both-edge swallow in the MIDI filter, and
+ * a stuck filter is worse than a stray note, which Undo fixes.
+ *
+ * The knob grid sets it while a chain component is on screen (so the p-lock
+ * gesture is possible) and clears it when it leaves. Idempotent against the
+ * SHM and logs only on a transition, so the caller reconciles it every tick
+ * from what is on screen rather than mirroring it -- the shim drops the flag
+ * itself when the display closes, and a mirror would latch. */
+static JSValue js_host_step_observe(JSContext *ctx, JSValueConst this_val,
+                                    int argc, JSValueConst *argv) {
+    (void)this_val;
+    if (argc < 1 || !shadow_control) return JS_FALSE;
+    int val = 0;
+    JS_ToInt32(ctx, &val, argv[0]);
+    uint8_t next = val ? 1 : 0;
+    if (shadow_control->step_observe != next) {
+        shadow_control->step_observe = next;
+        shadow_ui_log_line(next ? "shadow_ui: step_observe ON"
+                                : "shadow_ui: step_observe OFF");
+    }
+    return JS_TRUE;
+}
+
 /* host_claim_ccs([cc, ...]) - claim buttons at runtime. Every listed CC is
  * withheld from Move firmware and forwarded to the shadow UI (the runtime
  * complement to the static capabilities.claims_ccs / claims_edit_ccs), so a
@@ -3313,6 +3339,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     /* Register pad block function */
     JS_SetPropertyStr(ctx, global_obj, "host_pad_block", JS_NewCFunction(ctx, js_host_pad_block, "host_pad_block", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_pad_observe", JS_NewCFunction(ctx, js_host_pad_observe, "host_pad_observe", 1));
+    JS_SetPropertyStr(ctx, global_obj, "host_step_observe", JS_NewCFunction(ctx, js_host_step_observe, "host_step_observe", 1));
     JS_SetPropertyStr(ctx, global_obj, "host_claim_ccs", JS_NewCFunction(ctx, js_host_claim_ccs, "host_claim_ccs", 1));
 
     /* Register preview player functions */

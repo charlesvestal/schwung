@@ -7446,6 +7446,47 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                          tx_ns > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)tx_ns);
     }
 
+    /* TEST BUS: deliver injected packets AS IF THE HARDWARE SENT THEM.
+     *
+     * Dormant unless shadow_control->inject_as_hardware is set (see its
+     * comment). The ordinary drain writes only the shadow mailbox, so an
+     * injected press drives Move and is invisible to Schwung's own scans --
+     * which reads the hardware one. Writing both here, at the top of
+     * post_transfer, puts the packet exactly where the library's hw->shadow
+     * copy just left the real ones: every filter, claim and swallow site
+     * downstream then treats it identically to a finger.
+     *
+     * A zeroed MIDI_IN slot is a TERMINATOR, so a packet goes in the FIRST
+     * empty slot and nothing behind it moves. Bounded to four packets a frame
+     * and to SHADOW_MIDI_IN_BYTES; no allocation, no logging. */
+    if (shadow_control && shadow_control->inject_as_hardware &&
+        shadow_midi_inject_shm && hw) {
+        uint8_t *hwm = (uint8_t *)hw + MIDI_IN_OFFSET;
+        uint8_t *shm_ = shadow + MIDI_IN_OFFSET;
+        for (int n = 0; n < 4; n++) {
+            uint8_t pkt[4];
+            if (!shadow_midi_inject_peek(shadow_midi_inject_shm, pkt)) break;
+            /* Both buffers must have room, or the packet stays queued rather
+             * than landing in one and not the other -- half-delivered is a
+             * state no real press can produce. */
+            int off_hw = -1, off_sh = -1;
+            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
+                if (hwm[j] == 0 && hwm[j+1] == 0 && hwm[j+2] == 0 && hwm[j+3] == 0) {
+                    off_hw = j; break;
+                }
+            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
+                if (shm_[j] == 0 && shm_[j+1] == 0 && shm_[j+2] == 0 && shm_[j+3] == 0) {
+                    off_sh = j; break;
+                }
+            if (off_hw < 0 || off_sh < 0) break;
+            shadow_midi_inject_pop(shadow_midi_inject_shm);
+            memcpy(hwm + off_hw, pkt, 4);
+            memset(hwm + off_hw + 4, 0, 4);      /* the timestamp half */
+            memcpy(shm_ + off_sh, pkt, 4);
+            memset(shm_ + off_sh + 4, 0, 4);
+        }
+    }
+
     /*
      * Knob-touch ground truth, UNCONDITIONALLY.
      *
@@ -9363,6 +9404,28 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 if (shadow_control && shadow_control->pad_observe &&
                     d1 >= 68 && d1 <= 99 && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08, status, d1, d2);
+                }
+
+                /* Forward STEP notes (16-31) to the shadow UI while it is
+                 * watching them (shadow_control->step_observe) -- the p-lock
+                 * gesture's half of the input: hold a step, turn a knob.
+                 *
+                 * PASSIVE, like pad_observe directly above: no `continue`, so
+                 * the press still reaches Move and still edits the clip's
+                 * notes. A p-lock therefore also toggles a note today, which
+                 * is a real cost and a deliberate one -- withholding a step
+                 * needs a latched both-edge swallow in this filter, and its
+                 * failure modes are a stuck button or a note Move never sees
+                 * released. Undo fixes a stray note; a stuck filter does not,
+                 * so that change gets its own hardware pass.
+                 *
+                 * The UI needs the RAW step number, which is why this cannot
+                 * be reconstructed downstream: Move turns the press into an
+                 * ordinary note before anything else sees it. */
+                if (shadow_control && shadow_control->step_observe &&
+                    d1 >= 16 && d1 <= 31 && shadow_ui_midi_shm) {
+                    shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08,
+                                           status, d1, d2);
                 }
 
                 /* Check capture rules for focused slot.
