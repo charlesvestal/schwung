@@ -337,6 +337,77 @@ int main(void) {
         }
     }
 
+
+    /* ---- THE SAME PARAMETER ON TWO CLIPS IS NOT A DUPLICATE --------
+     *
+     * The document's duplicate-key check must use the same key lane_find
+     * does, (track, slot, target, param). Keyed on target+param alone it
+     * REFUSED this document -- and a refusal is all-or-nothing, so one
+     * parameter automated on two clips made a whole set's automation
+     * unloadable, silently, on every boot.
+     *
+     * The other direction still has to hold: a genuine duplicate (same
+     * position AND same key) is corruption, because lane_find could only
+     * ever reach the first of them. */
+    {
+        static lane_store_t m;
+        const char *two_clips =
+            "V 1\n"
+            "L synth cutoff 0 0 0 4 7 50 2\n"
+            "P 0 10\n"
+            "P 1 11\n"
+            "L synth cutoff 0 1 0 4 3 62 2\n"
+            "P 0 90\n"
+            "P 1 91\n";
+        lane_store_reset(&m);
+        CHECK(lane_store_deserialize(&m, two_clips) == 1,
+              "a document automating one parameter on TWO CLIPS was refused "
+              "as a duplicate -- the whole set's automation would not load");
+        CHECK(used_count(&m) == 2,
+              "two clips' lanes collapsed to %d on load", used_count(&m));
+        const lane_t *s0 = lane_find(&m, "synth", "cutoff", 0, 0);
+        const lane_t *s1 = lane_find(&m, "synth", "cutoff", 0, 1);
+        CHECK(s0 != NULL && s1 != NULL && s0 != s1,
+              "the loaded lanes are not addressable per clip slot");
+        if (s0 && s1 && s0 != s1) {
+            CHECK(s0->fp.first_note == 50 && s1->fp.first_note == 62,
+                  "the clips' fingerprints were crossed (%d, %d)",
+                  s0->fp.first_note, s1->fp.first_note);
+            CHECK(fabsf(s0->pts[0].value - 10.0f) < 1e-3f &&
+                  fabsf(s1->pts[0].value - 90.0f) < 1e-3f,
+                  "the clips' points were crossed (%.1f, %.1f)",
+                  (double)s0->pts[0].value, (double)s1->pts[0].value);
+        }
+
+        /* And a REAL duplicate is still corruption. */
+        const char *real_dup =
+            "V 1\n"
+            "L synth cutoff 0 0 0 4 7 50 1\n"
+            "P 0 10\n"
+            "L synth cutoff 0 0 0 4 7 50 1\n"
+            "P 0 90\n";
+        lane_store_reset(&m);
+        CHECK(lane_store_deserialize(&m, real_dup) == 0,
+              "two lanes at the SAME position with the same key were accepted "
+              "-- lane_find could only ever reach the first");
+
+        /* A round trip of the two-clip store must come back identical: the
+         * serializer writes track and slot, and the loader keys on them. */
+        lane_store_reset(&m);
+        CHECK(lane_store_deserialize(&m, two_clips) == 1, "reload refused");
+        {
+            static char rt[LANE_SERIAL_MAX_BYTES];
+            int w = lane_store_serialize(&m, rt, (int)sizeof(rt));
+            CHECK(w > 0, "re-serialize failed (%d)", w);
+            static lane_store_t m2;
+            lane_store_reset(&m2);
+            CHECK(lane_store_deserialize(&m2, rt) == 1,
+                  "the re-serialized two-clip document would not load");
+            CHECK(used_count(&m2) == 2,
+                  "the round trip lost a clip's lane (%d)", used_count(&m2));
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane state round-trip\n");
     return 0;

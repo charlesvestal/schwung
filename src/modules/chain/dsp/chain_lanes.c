@@ -227,7 +227,8 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
      * knob until the loop comes round. Without this, an absolute lane rewrites
      * the same target every block and the encoder is inaudible -- which reads
      * as broken hardware, not as automation. */
-    lane_t *ln = lane_find(&inst->lanes, target, param);
+    lane_t *ln = lane_find(&inst->lanes, target, param,
+                           inst->lane_track, inst->lane_clip_slot);
     if (!ln || !ln->used) return;
     /* Only a known phase can say where the punch ends. With no phase the
      * release below is still right (the knob must be heard) but there is no
