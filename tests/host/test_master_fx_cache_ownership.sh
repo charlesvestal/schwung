@@ -107,6 +107,14 @@ int clip_phase_beats(const void *t, unsigned int pulses, double loop_start,
     (void)t; (void)pulses; (void)loop_start; (void)loop_len; (void)out_beats;
     return 0;
 }
+/* And the fallback the resolver reaches for when Move has not saved the clip
+ * yet: the step editor's bar strip. "No reading" keeps the answer UNKNOWN,
+ * which is what these tests want -- they are about Master FX permutation and
+ * must not acquire an opinion about clip phase. */
+int step_strip_segments_for_track(int track) { (void)track; return 0; }
+double clip_regions_quarters_per_bar(const void *rg, int track, int slot) {
+    (void)rg; (void)track; (void)slot; return 4.0;
+}
 EOF
 
 # -lm because shadow_chain_mgmt.c pulls fmod/roundf in through the LFO

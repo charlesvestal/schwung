@@ -189,7 +189,7 @@ int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now) {
      * It also makes a lane recorded against a genuinely note-free clip stale.
      * Deliberate: "empty" and "unknown" are the same bytes here, and of the
      * two readings only this one cannot be confidently wrong. */
-    if (ln->fp.note_count == 0 && ln->fp.first_note == -1) return 0;
+    if (lane_fp_absent(&ln->fp)) return 0;
     /* NEITHER loop_start NOR loop_len is compared, for one reason: a clip
      * whose loop area the user edited is the same clip, and going stale on it
      * is SILENT -- the automation just stops, with no gesture that restores it
@@ -324,4 +324,44 @@ int lane_pass_live_at(const lane_t *ln, double phase,
      * playing rather than to a parameter that has quietly stopped following
      * its automation with nothing on screen to explain it. */
     return (travel >= 0.0 && travel <= LANE_PASS_GAP_BEATS) ? 1 : 0;
+}
+
+int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now) {
+    if (!ln || !ln->used || !now) return 0;
+    /* Only a lane that was never identified, and only one THIS SESSION
+     * recorded blind -- see origin_pending in lane_store.h for why the second
+     * test is not redundant. */
+    if (!lane_fp_absent(&ln->fp)) return 0;
+    if (!ln->origin_pending) return 0;
+    /* And only a REAL fingerprint: adopting an absent one would be a no-op
+     * that still cleared the pending state, stranding the take at origin 0. */
+    if (lane_fp_absent(now)) return 0;
+    /* The origin must be a usable number. A NaN or negative loop_start would
+     * put every point somewhere unnameable, and the lane is still fixable as
+     * it stands -- so refuse and wait for a better answer. */
+    if (!isfinite(now->loop_start) || now->loop_start < 0.0) return 0;
+
+    /* RE-ORIGIN, then adopt. The take was recorded against an assumed origin
+     * of 0 (the blind window has no loop.start), so clip time is the recorded
+     * phase plus the real loop_start. Points stay sorted: one constant added
+     * to every phase preserves order. A non-finite stored phase is left alone
+     * -- lane_eval already skips it, and moving it would invent a position
+     * for a point that has none. */
+    if (now->loop_start > 0.0) {
+        for (int i = 0; i < ln->n; i++) {
+            if (!isfinite(ln->pts[i].phase)) continue;
+            ln->pts[i].phase += now->loop_start;
+        }
+        /* The recording pass's own mark moves with them, or the next write of
+         * a take still in progress erases from the wrong place. */
+        if (ln->rec_active && isfinite(ln->rec_last_phase))
+            ln->rec_last_phase += now->loop_start;
+    }
+    ln->fp = *now;
+    ln->origin_pending = 0;
+    /* A lane that was stale only because it could not be identified is not
+     * stale any more -- it has just been identified. */
+    ln->stale = 0;
+    ln->adopted++;
+    return 1;
 }
