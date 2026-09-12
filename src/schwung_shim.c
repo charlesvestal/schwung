@@ -5822,6 +5822,51 @@ static uint64_t spi_last_frame_total_us = 0;
  * Contains all domain logic that was previously in the ioctl() pre-ioctl section:
  * MIDI monitoring, audio mixing, display compositing, LED injection, etc.
  * ============================================================================ */
+/* One slot dump, THREE VIEWS — and the third one is the point.
+ *
+ * PRE is early in shim_pre_transfer. PREEND is its last statement, immediately
+ * before the library's memcpy(hw, shadow, ...). POSThw reads the hardware
+ * mailbox after the ioctl. Together they bracket every writer:
+ *
+ *   present at PRE, gone at PREEND   -> overwritten by Schwung's own
+ *                                       pre-transfer work (~1100 lines of it)
+ *   present at PREEND, gone at POSThw -> it went during the ioctl: Move's other
+ *                                       threads, or the hardware
+ *
+ * PRE vs POSThw alone — all this logger could do before — cannot tell those
+ * apart, and that ambiguity is why this exists. Captured on hardware
+ * 2026-09-12: 9 of the 13 37-family XMOS control messages Move emitted were
+ * replaced in the mailbox by an RGB LED SysEx (3b 10) before the transfer, so
+ * Move's USB-C audio-out selection silently did nothing on those frames. The
+ * user-visible report is "Main Out stops working until a reboot".
+ *
+ * Writes from the SPI callback, like the rest of this logger, and armed only by
+ * log_xmos_sysex_on. */
+static void xmos_log_slots(const char *tag, const uint8_t *midi_out,
+                           int log_all_nonzero)
+{
+    if (xmos_log_fd < 0 || xmos_log_bytes >= XMOS_LOG_MAX_BYTES) return;
+
+    char line[128];
+    int any = 0;
+    for (int i = 0; i < 80; i += 4) {
+        uint8_t cin = midi_out[i] & 0x0F;
+        int all = log_all_nonzero && midi_out[i] != 0;
+        if (all || (cin >= 0x04 && cin <= 0x07)) {
+            int n = snprintf(line, sizeof(line),
+                "[f%u] %-6s slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
+                xmos_frame, tag, i, (midi_out[i] >> 4) & 0xF, cin,
+                midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
+            if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+            any = 1;
+        }
+    }
+    if (any) {
+        int n = snprintf(line, sizeof(line), "[f%u] %-6s end\n", xmos_frame, tag);
+        if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
+    }
+}
+
 static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 {
     (void)ctx;
@@ -5974,30 +6019,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                 if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
                 xmos_log_first_frame_written = 1;
             }
-            const uint8_t *midi_out = shadow + MIDI_OUT_OFFSET;
-            int any = 0;
-            for (int i = 0; i < 80; i += 4) {
-                uint8_t cin = midi_out[i] & 0x0F;
-                /* First ~17s after arming: log EVERY nonzero slot, not just
-                 * SysEx framing — hunting the XMOS boot-LED-show stop, which
-                 * the cin 4..7 filter proved not to be (all six captured
-                 * boot SysEx messages were replayed on hardware; none
-                 * stopped it). Same write path and size cap; reverts to
-                 * SysEx-only after frame 6000. */
-                int log_all = (xmos_frame < 6000) && midi_out[i] != 0;
-                if (log_all || (cin >= 0x04 && cin <= 0x07)) {
-                    int n = snprintf(line, sizeof(line),
-                        "[f%u] PRE  slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
-                        xmos_frame, i, (midi_out[i] >> 4) & 0xF, cin,
-                        midi_out[i], midi_out[i+1], midi_out[i+2], midi_out[i+3]);
-                    if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-                    any = 1;
-                }
-            }
-            if (any) {
-                int n = snprintf(line, sizeof(line), "[f%u] PRE  end\n", xmos_frame);
-                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-            }
+            /* First ~17s after arming: log EVERY nonzero slot, not just SysEx
+             * framing — hunting the XMOS boot-LED-show stop, which the cin
+             * 4..7 filter proved not to be (all six captured boot SysEx
+             * messages were replayed on hardware; none stopped it). Reverts to
+             * SysEx-only after frame 6000. PREEND mirrors this rule so the two
+             * views that bracket Schwung's own work stay directly comparable. */
+            xmos_log_slots("PRE", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
             /* Scan MIDI_IN for jack-detect CCs (114/115) AND incoming SysEx
              * framing (cin 0x04..0x07) from XMOS. MIDI_IN events are 8 bytes
              * (4 USB-MIDI + 4 timestamp) at offset 2048. */
@@ -7127,6 +7155,16 @@ pre_done:
         memset(shadow + AUDIO_OUT_OFFSET, 0,
                DISPLAY_OFFSET - AUDIO_OUT_OFFSET);
     }
+
+    /* LAST STATEMENT IN THIS FUNCTION, AND IT HAS TO STAY LAST.
+     *
+     * The library copies shadow->hw the instant we return (schwung_spi_lib.c,
+     * "Copy shadow → hardware"), so this is the final state of MIDI_OUT that
+     * Schwung can be held responsible for. Anything that changes between here
+     * and POSThw changed during the ioctl.
+     *
+     * Add a MIDI_OUT writer after this call and the log will exonerate it. */
+    xmos_log_slots("PREEND", shadow + MIDI_OUT_OFFSET, xmos_frame < 6000);
 }
 
 /* === Cable-2 (external USB) MIDI channel remap ===
@@ -7383,25 +7421,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * comparison reveals slot stomping or stale replay. Dormant unless
      * /data/UserData/schwung/log_xmos_sysex_on exists; honors the same
      * size cap as the pre-transfer block. */
-    if (xmos_log_fd >= 0 && xmos_log_bytes < XMOS_LOG_MAX_BYTES) {
-        int any = 0;
-        char line[128];
-        for (int i = 0; i < 80; i += 4) {
-            uint8_t cin = hw[i] & 0x0F;
-            if (cin >= 0x04 && cin <= 0x07) {
-                int n = snprintf(line, sizeof(line),
-                    "[f%u] POSThw slot=%2d cable=%d cin=0x%x : %02x %02x %02x %02x\n",
-                    xmos_frame, i, (hw[i] >> 4) & 0xF, cin,
-                    hw[i], hw[i+1], hw[i+2], hw[i+3]);
-                if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-                any = 1;
-            }
-        }
-        if (any) {
-            int n = snprintf(line, sizeof(line), "[f%u] POSThw end\n", xmos_frame);
-            if (write(xmos_log_fd, line, n) > 0) xmos_log_bytes += (uint64_t)n;
-        }
-    }
+    xmos_log_slots("POSThw", hw + MIDI_OUT_OFFSET, 0);
 
     /* Sync output regions from hardware→shadow.
      * The library only copies the input region (SCHWUNG_OFF_IN_BASE+).
