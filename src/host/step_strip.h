@@ -6,7 +6,7 @@
  * have no length; with no length there is no phase; with no phase, recording
  * correctly refuses rather than guessing. That is the entire hole this reader
  * closes, and it closes it the only way that does not involve modelling Move:
- * Move's own step-editor screen draws the clip's committed bar count, so we
+ * Move's own step-editor screen draws the clip's committed segment count, so we
  * read its answer instead of maintaining a parallel one.
  *
  * NOT A MODEL OF MOVE'S SEQUENCER UI. Read what is on the screen; never track
@@ -33,7 +33,7 @@
  * Segments are 23-24 px separated by 2 px gaps, spanning x=1..126. The 1 px
  * playhead against 2 px gaps is what makes the two separable: a run of unlit
  * columns splits the strip into bars only when it is at least 2 wide, so the
- * playhead does not inflate the bar count.
+ * playhead does not inflate the segment count.
  *
  * The playhead is PAGE-INDEPENDENT, which is what makes it better than the
  * step LEDs: measured drawn at bars 3 and 4 while bar 5 was the displayed one.
@@ -74,9 +74,25 @@
 #define STEP_STRIP_GAP_MIN   2
 
 /* Beyond this the segments are too narrow for the uniformity test to mean
- * anything: 16 bars is already only 6 px each. A longer clip is REFUSED
+ * anything: 16 segments is already only 6 px each. A longer clip is REFUSED
  * rather than guessed at. */
-#define STEP_STRIP_MAX_BARS  16
+#define STEP_STRIP_MAX_SEGMENTS  16
+
+/* A SEGMENT IS A PAGE OF 16 STEPS, NOT A BAR, and that distinction cost a
+ * measurement. Move has 16 step buttons, so the strip draws one segment per
+ * page of the loop at the CURRENT GRID -- and in 4/4 at 1/16 a page IS a bar,
+ * which is why "bars" was the wrong name and agreed anyway for every loop
+ * length measured (1, 3, 4 and 5 segments against the file).
+ *
+ * An 11/8 set separated them (measured 2026-09-12): a 12-quarter loop drew 3
+ * segments, and 12 / 3 = 4.0 quarters per segment = 16 steps at 1/16, while an
+ * 11/8 BAR is 5.5 quarters and would have made it 16.5. So the length is
+ *
+ *     quarters = segments * STEP_STRIP_STEPS_PER_PAGE * step_resolution
+ *
+ * and the TIME SIGNATURE does not enter it at all -- only the grid does, which
+ * is the fact the user supplied: the step editor's grid runs 1/8t to 1/64. */
+#define STEP_STRIP_STEPS_PER_PAGE  16
 
 /* How many CONSECUTIVE agreeing readings the per-track cache requires.
  *
@@ -87,7 +103,7 @@
  * width, non-uniform, no displayed bar), each for a single reading, which is
  * exactly what a half-drawn strip looks like and is the safe direction to
  * fail in. But a torn frame could in principle come out uniform and WRONG,
- * and a wrong bar count is a wrong loop length, so the cache waits for a
+ * and a wrong segment count is a wrong loop length, so the cache waits for a
  * second reading that says the same thing. At ~30 frames/s that costs ~33 ms
  * and removes the whole class.
  */
@@ -105,7 +121,7 @@ enum {
     STEP_STRIP_NO_STRIP,      /* nothing lit on the strip row */
     STEP_STRIP_NOT_FULL_WIDTH,/* lit, but not spanning 1..126 */
     STEP_STRIP_GAP_TOO_WIDE,  /* a hole no bar boundary explains */
-    STEP_STRIP_TOO_MANY_BARS,
+    STEP_STRIP_TOO_MANY_SEGMENTS,
     STEP_STRIP_NONUNIFORM,    /* segments do not divide the span evenly */
     STEP_STRIP_NO_BOLD        /* no displayed-bar thickening: not the editor */
 };
@@ -118,8 +134,8 @@ enum {
 typedef struct {
     int    valid;            /* the bar strip was recognised */
     int    reject;           /* STEP_STRIP_* -- why not, when !valid */
-    int    bars;             /* loop length in bars, 1..STEP_STRIP_MAX_BARS */
-    int    bold_bar;         /* the displayed bar, 1..bars (0 = unknown) */
+    int    segments;         /* 16-step PAGES, 1..STEP_STRIP_MAX_SEGMENTS */
+    int    bold_segment;     /* the displayed page, 1..segments (0 = unknown) */
     int    playhead_col;     /* x of the playhead, or -1 */
     int    playhead_evidence;/* STEP_STRIP_PH_* bits */
     double phase_frac;       /* playhead as 0..1 of the loop; <0 if unknown */
@@ -130,7 +146,7 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out);
 
 /* ---- the published latest reading -----------------------------------------
  *
- * OPPORTUNISTIC, NOT A CLOCK. The bar count does not change while you record,
+ * OPPORTUNISTIC, NOT A CLOCK. The segment count does not change while you record,
  * so a reading from ten seconds ago is as good as a live one -- which is what
  * keeps this to one cached fact rather than a second position pipeline. The
  * phase side stays with the existing anchor machinery.
@@ -147,9 +163,11 @@ void step_strip_observe(const uint8_t *frame, int selected_track);
  * paired with. Both out params may be NULL. */
 unsigned step_strip_latest(step_strip_t *out, int *track);
 
-/* The last reading that was VALID, for the per-track loop-length cache: bars
- * for `track`, or 0 if no valid frame has named that track. */
-int step_strip_bars_for_track(int track);
+/* The last reading that was VALID, for the per-track loop-length cache:
+ * SEGMENTS for `track`, or 0 if no valid frame has named that track. Multiply
+ * by STEP_STRIP_STEPS_PER_PAGE * step_resolution for a length in quarters --
+ * never by 4, and never by the bar. */
+int step_strip_segments_for_track(int track);
 
 /* Forget everything. A set change invalidates every cached length. */
 void step_strip_reset(void);

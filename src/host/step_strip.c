@@ -36,8 +36,8 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out)
      * boundary, and the playhead's column inside it is not recoverable from
      * the strip alone, so the gap evidence is withheld (the stub below can
      * still name it). */
-    int seg_start[STEP_STRIP_MAX_BARS + 1];
-    int seg_end[STEP_STRIP_MAX_BARS + 1];
+    int seg_start[STEP_STRIP_MAX_SEGMENTS + 1];
+    int seg_end[STEP_STRIP_MAX_SEGMENTS + 1];
     int nseg = 0;
     int gap_ph_col = -1;
     int gap_ph_n = 0;
@@ -53,7 +53,7 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out)
             gap_ph_col = x;
             gap_ph_n++;
         } else if (width <= STEP_STRIP_GAP_MIN + 1) {
-            if (nseg > STEP_STRIP_MAX_BARS) { out->reject = STEP_STRIP_TOO_MANY_BARS; return; }
+            if (nseg > STEP_STRIP_MAX_SEGMENTS) { out->reject = STEP_STRIP_TOO_MANY_SEGMENTS; return; }
             seg_start[nseg] = run_start;
             seg_end[nseg] = x - 1;
             nseg++;
@@ -65,11 +65,11 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out)
         }
         x = hole;
     }
-    if (nseg > STEP_STRIP_MAX_BARS) { out->reject = STEP_STRIP_TOO_MANY_BARS; return; }
+    if (nseg > STEP_STRIP_MAX_SEGMENTS) { out->reject = STEP_STRIP_TOO_MANY_SEGMENTS; return; }
     seg_start[nseg] = run_start;
     seg_end[nseg] = last;
     nseg++;
-    if (nseg > STEP_STRIP_MAX_BARS) { out->reject = STEP_STRIP_TOO_MANY_BARS; return; }
+    if (nseg > STEP_STRIP_MAX_SEGMENTS) { out->reject = STEP_STRIP_TOO_MANY_SEGMENTS; return; }
 
     /* 3. The segments must divide the span evenly. This is the gate that
      * separates the editor's strip from any other full-width line: a ruler, a
@@ -118,8 +118,8 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out)
 
     out->valid = 1;
     out->reject = STEP_STRIP_OK;
-    out->bars = nseg;
-    out->bold_bar = bold;
+    out->segments = nseg;
+    out->bold_segment = bold;
     out->playhead_col = col;
     out->playhead_evidence = ev;
     if (col >= 0) {
@@ -141,11 +141,11 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out)
 static step_strip_t  g_last;
 static int           g_last_track = -1;
 static unsigned      g_seq;
-static int           g_bars[4];   /* CLIP_TRACKS, kept local to avoid the dep */
+static int           g_segs[4];   /* CLIP_TRACKS, kept local to avoid the dep */
 
 /* The run of agreeing readings not yet committed. See STEP_STRIP_CONFIRM. */
 static int g_pend_track = -1;
-static int g_pend_bars;
+static int g_pend_segs;
 static int g_pend_n;
 
 void step_strip_observe(const uint8_t *frame, int selected_track)
@@ -166,15 +166,15 @@ void step_strip_observe(const uint8_t *frame, int selected_track)
         g_pend_n = 0;
         return;
     }
-    if (selected_track == g_pend_track && r.bars == g_pend_bars) {
+    if (selected_track == g_pend_track && r.segments == g_pend_segs) {
         if (g_pend_n < STEP_STRIP_CONFIRM) g_pend_n++;
     } else {
         g_pend_track = selected_track;
-        g_pend_bars = r.bars;
+        g_pend_segs = r.segments;
         g_pend_n = 1;
     }
     if (g_pend_n >= STEP_STRIP_CONFIRM)
-        g_bars[selected_track] = r.bars;
+        g_segs[selected_track] = r.segments;
 }
 
 unsigned step_strip_latest(step_strip_t *out, int *track)
@@ -184,10 +184,10 @@ unsigned step_strip_latest(step_strip_t *out, int *track)
     return g_seq;
 }
 
-int step_strip_bars_for_track(int track)
+int step_strip_segments_for_track(int track)
 {
     if (track < 0 || track >= 4) return 0;
-    return g_bars[track];
+    return g_segs[track];
 }
 
 void step_strip_reset(void)
@@ -196,7 +196,7 @@ void step_strip_reset(void)
     g_last.playhead_col = -1;
     g_last.phase_frac = -1.0;
     g_last_track = -1;
-    memset(g_bars, 0, sizeof(g_bars));
+    memset(g_segs, 0, sizeof(g_segs));
     g_pend_track = -1;
     g_pend_n = 0;
     /* g_seq is NOT reset: it is "has anything been observed", and rewinding it

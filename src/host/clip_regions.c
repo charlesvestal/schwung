@@ -121,9 +121,37 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                 while (q < end && *q != ':') q++;
                 while (q < end && *q != '"') q++;
                 if (q < end) {
+                    /* THE GRID CAN BE A TRIPLET. Move's step editor offers
+                     * 1/8t through 1/64, and the old parse was
+                     * sscanf("\"%d/%d\"") -- whose two %d's SUCCEED on
+                     * "1/8t" and whose trailing literal quote then fails
+                     * without changing the return count. So a triplet grid
+                     * parsed as a straight eighth: 0.5 quarters instead of
+                     * 1/3, a 50% error in every step index, silently.
+                     *
+                     * Parsed by hand instead, and an unrecognised form is
+                     * REFUSED -- step_resolution keeps its default and the raw
+                     * text is carried for the diagnostic, because a grid we
+                     * cannot read must be visible rather than guessed. */
+                    const char *r0 = q + 1;
+                    const char *r = r0;
+                    while (r < end && *r != '"') r++;
+                    size_t rn = (size_t)(r - r0);
+                    if (rn < sizeof(out->step_res_raw)) {
+                        memcpy(out->step_res_raw, r0, rn);
+                        out->step_res_raw[rn] = '\0';
+                    }
                     int num = 0, den = 0;
-                    if (sscanf(q, "\"%d/%d\"", &num, &den) == 2 && den > 0)
-                        out->step_resolution = 4.0 * (double)num / (double)den;
+                    char suffix = '\0';
+                    if (sscanf(out->step_res_raw, "%d/%d%c",
+                               &num, &den, &suffix) >= 2 &&
+                        num > 0 && den > 0) {
+                        double quarters = 4.0 * (double)num / (double)den;
+                        if (suffix == 't' || suffix == 'T')
+                            quarters *= 2.0 / 3.0;     /* three in the space of two */
+                        if (suffix == '\0' || suffix == 't' || suffix == 'T')
+                            out->step_resolution = quarters;
+                    }
                 }
             } else if (d_tracks != D_UNSET && depth == d_tracks &&
                        key_is(p, end, "clipSlots")) {

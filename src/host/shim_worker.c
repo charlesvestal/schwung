@@ -776,10 +776,38 @@ static void clip_phase_check_tick(void)
                     continue;
                 g_ph_seen[t]++;
                 int step = (int)((ph - r->loop_start) / res + 0.5);
-                int pred = ((step % 16) + 16) % 16;
+                /* MOVE'S PLAYHEAD INDEX IS PAGE-RELATIVE: 16 steps, because
+                 * there are 16 step BUTTONS. Not a bar -- which is the same
+                 * fact as the bar strip's segments being pages.
+                 *
+                 * MEASURED, because I got this wrong. Deriving the modulus
+                 * from the clip's signature (an 11/8 bar at 1/16 is 22 steps)
+                 * made both columns WORSE on hardware: within-page went from
+                 * 0/16 diff +6 to 0/18 diff -10, and the page column from
+                 * 16/16 diff 0 -- perfect -- to 0/18 diff -2. So 16 stays.
+                 *
+                 * SCORE THE PAGE COLUMN WITH A HAND, NOT WITH AN INJECTION.
+                 * It compares against Move's ANNOUNCED "Bar N", and an
+                 * injected Track press drives Move without reaching Schwung's
+                 * own decoders (the drain writes the shadow mailbox; the
+                 * control scan reads the hardware one -- docs/DIAGNOSTICS.md),
+                 * so the announcement goes stale and the column reads a
+                 * constant offset that is an artifact of the harness. Both
+                 * 16/16 readings came from a real finger.
+                 *
+                 * WHAT IS STILL UNEXPLAINED: under 11/8 the within-page column
+                 * is 0/16 with a CONSTANT offset of 6 steps while the page
+                 * column is 16/16. A constant offset is a grid disagreement,
+                 * not drift, and it is not the modulus. Since the page column
+                 * agrees, our phase is right to within a page; the residue is
+                 * in where Move starts counting steps inside one. It matters
+                 * only for step p-locks, which is the reason not to guess at
+                 * it here. In 4/4 both columns read 99.3%. */
+                const int steps_per_page = STEP_STRIP_STEPS_PER_PAGE;
+                int pred = ((step % steps_per_page) + steps_per_page) % steps_per_page;
                 int diff = pred - (int)ev[i].idx;
-                if (diff > 8) diff -= 16;
-                if (diff < -8) diff += 16;
+                if (diff > steps_per_page / 2) diff -= steps_per_page;
+                if (diff < -steps_per_page / 2) diff += steps_per_page;
                 g_ph_lastdiff[t] = diff;
                 if (diff == 0) g_ph_hit[t]++;
 
@@ -809,7 +837,9 @@ static void clip_phase_check_tick(void)
                  * construction and stop being evidence. */
                 if (tr->anchor_source == CLIP_ANCHOR_DERIVED) bar = 0;
                 if (bar > 0) {
-                    int page = step / 16;
+                    /* The same number as the modulus above, and the column
+                     * that stayed at 16/16 through the 11/8 test. */
+                    int page = step / steps_per_page;
                     g_bar_seen[t]++;
                     int bdiff = page - (bar - 1);
                     g_bar_lastdiff[t] = bdiff;
@@ -886,8 +916,8 @@ static void clip_state_tick(void)
         int sst = -1;
         step_strip_latest(&ss, &sst);
         if (ss.valid)
-            fprintf(fp, " | strip T%d %dbar bold%d x=%d", sst + 1, ss.bars,
-                    ss.bold_bar, ss.playhead_col);
+            fprintf(fp, " | strip T%d %dpg bold%d x=%d", sst + 1, ss.segments,
+                    ss.bold_segment, ss.playhead_col);
         else
             fprintf(fp, " | strip - (rej%d)", ss.reject);
     }
@@ -971,7 +1001,7 @@ static void clip_state_tick(void)
      * wrong loop length -- so the first hardware pass reads this block: it
      * must say `valid` with the right `bars` on the step editor, and refuse
      * (with a `reject` naming which gate) on Move's other screens. Only then
-     * does anything get to depend on `bars_cache`, which is the fallback that
+     * does anything get to depend on `segments_cache`, which is the fallback that
      * closes "record on a clip I just made" (Song.abl is ~35 s late, so we
      * have no length, so there is no phase, so recording refuses).
      *
@@ -1003,24 +1033,36 @@ static void clip_state_tick(void)
         if (ss.valid && sst >= 0) {
             int cslot = (cs && cs->tracks[sst].identity_valid)
                       ? cs->tracks[sst].clip_slot : -1;
+            /* THE CONVERSION IS THE GRID, NOT THE SIGNATURE. A segment is a
+             * 16-step PAGE, so quarters = segments * 16 * resolution.
+             * Measured 2026-09-12: an 11/8 set with a 12-quarter loop drew 3
+             * segments -- through the bar (5.5 quarters) that is 16.5 against
+             * the file's 12.0; through the page it is 12.0 exactly. In 4/4 at
+             * 1/16 a page IS a bar, which is why every earlier reading agreed
+             * and the signature looked like the missing fact. The signature is
+             * still printed because the phase check's bar modulus needs it. */
             qpb = clip_regions_quarters_per_bar(&g_regions, sst, cslot);
-            strip_quarters = (double)ss.bars * qpb;
+            double res_q = g_regions.step_resolution > 0.0
+                         ? g_regions.step_resolution : 0.25;
+            strip_quarters = (double)ss.segments *
+                             (double)STEP_STRIP_STEPS_PER_PAGE * res_q;
             if (g_regions.valid && cslot >= 0 && cslot < CLIP_SLOTS &&
                 g_regions.slots[sst][cslot].exists)
                 file_quarters = g_regions.slots[sst][cslot].loop_len;
         }
         fprintf(jf, ",\"step_strip\":{\"seq\":%u,\"track\":%d,\"valid\":%s,"
-                    "\"reject\":%d,\"bars\":%d,\"bold_bar\":%d,\"playhead_col\":%d,"
+                    "\"reject\":%d,\"segments\":%d,\"bold_segment\":%d,\"playhead_col\":%d,"
                     "\"evidence\":%d,\"phase_frac\":%.4f,"
                     "\"quarters_per_bar\":%.4f,\"strip_quarters\":%.4f,"
                     "\"file_quarters\":%.4f,\"sig\":\"%d/%d\","
-                    "\"bars_cache\":[%d,%d,%d,%d]}",
+                    "\"grid\":\"%s\",\"segments_cache\":[%d,%d,%d,%d]}",
                 sseq, sst + 1, ss.valid ? "true" : "false", ss.reject,
-                ss.bars, ss.bold_bar, ss.playhead_col, ss.playhead_evidence, pf,
+                ss.segments, ss.bold_segment, ss.playhead_col, ss.playhead_evidence, pf,
                 qpb, strip_quarters, file_quarters,
                 g_regions.sig_upper, g_regions.sig_lower,
-                step_strip_bars_for_track(0), step_strip_bars_for_track(1),
-                step_strip_bars_for_track(2), step_strip_bars_for_track(3));
+                g_regions.step_res_raw[0] ? g_regions.step_res_raw : "?",
+                step_strip_segments_for_track(0), step_strip_segments_for_track(1),
+                step_strip_segments_for_track(2), step_strip_segments_for_track(3));
     }
     fprintf(jf, "}\n");
     fclose(jf);
