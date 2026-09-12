@@ -71,7 +71,8 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
 	$(BUILD_DIR)/test_audio_in_restore \
-	$(BUILD_DIR)/test_lane_store
+	$(BUILD_DIR)/test_lane_store \
+	$(BUILD_DIR)/test_slot_clip_phase
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -247,6 +248,16 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
+
+# shadow_slot_clip_phase — slot -> track -> clip phase (Task 2 of automation
+# lanes). Includes shadow_chain_mgmt.c rather than linking it, the way
+# test_master_fx_permute.c does: the file is 5000 lines with file-static state
+# and no test seam. gnu11 for the same reason that file's wrapper uses it, and
+# the real clip_state.c is linked so the loop_start rebasing is proved against
+# clip_phase_beats()'s BODY rather than against a fake that would inherit the
+# test's own belief about it.
+$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/clip_state.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/clip_state.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)

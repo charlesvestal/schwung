@@ -106,6 +106,7 @@
 #define MOVE_PLUGIN_API_V1_H
 
 #include <stdint.h>
+#include <stddef.h>   /* offsetof, for the reserved-tail static assert below */
 
 #define MOVE_PLUGIN_API_VERSION 1
 
@@ -285,12 +286,36 @@ typedef struct host_api_v1 {
      *
      * This does NOT make the ABI extensible. Appending a real field still
      * requires modules to be rebuilt; the reserved run only buys a safe
-     * failure instead of a crash. Shrink it and old binaries start reaching
-     * past it again — so consume from the FRONT when adding a field, and
-     * never reduce the total. */
+     * failure instead of a crash.
+     *
+     * SO DO NOT CONSUME THIS RUN — not from the front, and not from the back.
+     * Its FRONT IS +120: replacing reserved[0] with a real field puts a live
+     * pointer at exactly the offset breakbeat calls, breakbeat's own
+     * `if (host->fn)` guard passes, and the device boot-loops again. Taking
+     * from the back shortens the run instead, and old binaries start reaching
+     * past it. A new host capability goes through a dlsym'd export
+     * (move_plugin_render_split, chain_take_midi_tick_wake,
+     * chain_set_clip_phase), which is what that precedent is for.
+     *
+     * The static assert below is the enforcement. test_host_api_reserved_tail
+     * cannot be: it inspects a memset-zeroed struct, so a real field inserted
+     * here reads NULL there and passes. */
     void *reserved[8];
 
 } host_api_v1_t;
+
+/* The front of `reserved` must stay at +120 — the offset a shipped breakbeat
+ * build over-reads and calls as get_project_bpm(). Inserting any field before
+ * `reserved` moves the run to +128 and leaves that live pointer at +120:
+ * SIGSEGV on the SPI callback at slot restore, which boot-loops the device.
+ *
+ * A _Static_assert emits no storage and cannot change the layout it measures,
+ * so this is free. */
+_Static_assert(offsetof(host_api_v1_t, reserved) == 120,
+               "host_api_v1_t::reserved must start at +120: breakbeat's "
+               "over-read lands there, so a live pointer at that offset "
+               "passes its guard and boot-loops the device. Add host "
+               "capabilities as dlsym'd exports, not as fields here.");
 
 /*
  * Plugin API - implemented by plugin, returned to host
