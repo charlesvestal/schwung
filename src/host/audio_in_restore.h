@@ -22,13 +22,17 @@
  *
  * Pure so tests/host can drive the four-way table.
  */
+/* `bridge_source_allows` USED TO BE A FOURTH ARGUMENT and is gone with the
+ * sampler-source gate it read. That gate was fed by a substring match on
+ * screen-reader text and only consulted in a bridge mode no shipped UI could
+ * select, so the argument was 1 at every reachable call — a parameter that
+ * looked live and was not. */
 static inline int shadow_audio_in_restore_allowed(int overtake_inst_present,
                                                   int hardware_mmap_present,
-                                                  int bridge_mode_on,
-                                                  int bridge_source_allows)
+                                                  int bridge_mode_on)
 {
     if (!overtake_inst_present || !hardware_mmap_present) return 0;
-    if (bridge_mode_on && bridge_source_allows) return 0;
+    if (bridge_mode_on) return 0;
     return 1;
 }
 

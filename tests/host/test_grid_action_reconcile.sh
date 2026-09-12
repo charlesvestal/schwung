@@ -260,6 +260,10 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
         componentGridReturnKey: "synth",
         /* the door-open disposition -- see the restorePage note */
         componentGridReturnEnter: true,
+        /* the grid that raised the hand-off: the host (false) or a module UI */
+        componentGridReturnModuleUi: false,
+        /* which module held the position when it was raised ("" = unknown) */
+        componentGridReturnModule: "",
         selectedSlot: 1,
         needsRedraw: false,
         /* The position still holds a module unless a case says otherwise.
@@ -274,21 +278,29 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
       const componentParamPagesIo = () => ({ marker: "io" });
       const paramPagesChromeFor = () => ({ marker: "chrome" });
       const enterParamPages = (...args) => { log.entered++; log.args = args; };
+      const unloadModuleUi = () => { log.unloaded = (log.unloaded || 0) + 1; };
+      const enterComponentEditFallback = (...args) => { log.module = (log.module || 0) + 1; log.moduleArgs = args; };
+      const restoreModuleUiPage = (name, enter) => { log.restore = [name, enter]; };
+      const openComponentEditor = (...args) => { log.door = (log.door || 0) + 1; log.doorArgs = args; };
       const patched = body
         .replace(/\bcomponentModalFromGrid\b/g, "s.componentModalFromGrid")
         .replace(/\bcomponentGridReturnSlot\b/g, "s.componentGridReturnSlot")
         .replace(/\bcomponentGridReturnKey\b/g, "s.componentGridReturnKey")
         .replace(/\bcomponentGridReturnEnter\b/g, "s.componentGridReturnEnter")
+        .replace(/\bcomponentGridReturnModuleUi\b/g, "s.componentGridReturnModuleUi")
+        .replace(/\bcomponentGridReturnModule\b/g, "s.componentGridReturnModule")
         .replace(/\bselectedSlot\b/g, "s.selectedSlot")
         .replace(/\bchainConfigs\b/g, "s.chainConfigs")
         .replace(/\bneedsRedraw\b/g, "s.needsRedraw");
       const fn = new Function(
         "s", "isTextEntryActive", "getComponentParamPrefix",
         "componentParamPagesIo", "paramPagesChromeFor", "enterParamPages",
-        "getChainComponentModule",
+        "getChainComponentModule", "unloadModuleUi", "enterComponentEditFallback", "restoreModuleUiPage",
+        "openComponentEditor",
         patched + "\nreturn maybeReturnToComponentGrid;"
       )(s, isTextEntryActive, getComponentParamPrefix, componentParamPagesIo, paramPagesChromeFor, enterParamPages,
-        getChainComponentModule);
+        getChainComponentModule, unloadModuleUi, enterComponentEditFallback, restoreModuleUiPage,
+        openComponentEditor);
       return { fired: fn(), log, s };
     };
 
@@ -353,6 +365,58 @@ if (src.includes("Re-derived from slot+key") && /expected\s*\n?\s*\*?\s*to\s*\n?
       } else {
         fail("failed to return to the grid after a swap: " +
              JSON.stringify({ fired, entered: log.entered }));
+      }
+    }
+
+    /* 8g. REPORTED FROM HARDWARE. A completed swap is not a return to the old
+       grid: the module in the position is a different one, with its own
+       editor and a contract that may not be in yet. From the STOCK grid the
+       reconciler called enterParamPages for the new module -- for a module
+       that draws its own pages that is a contract read nobody answers, drawn
+       as a Loading... the user has to back out of. It must go through the one
+       door every editor opens with (openComponentEditor), on page 1. */
+    {
+      const { fired, log, s } = run({
+        selectedSlot: 1,
+        componentGridReturnModule: "obxd",
+        chainConfigs: [null, { synth: { module: "9w9" } }, null, null],
+      });
+      if (fired === true && log.door === 1 && log.entered === 0 && !log.restore &&
+          log.doorArgs[0] === 1 && log.doorArgs[1] === "synth" && log.doorArgs[2] === -1 &&
+          s.componentGridReturnModule === "") {
+        ok("a SWAP from the stock grid opens the NEW module through the editor door, not enterParamPages");
+      } else {
+        fail("swap from the stock grid did not go through openComponentEditor: " +
+             JSON.stringify({ fired, log, flag: s.componentGridReturnModule }));
+      }
+    }
+
+    /* 8h. The same swap raised from a MODULE-OWNED grid: the old module UI
+       is still loaded and must go, and the new module must NOT be forced
+       through the module-UI door -- a stock module with a hierarchy landed on
+       a fallback with nothing to draw. Same door, old UI unloaded first. */
+    {
+      const { fired, log } = run({
+        selectedSlot: 1,
+        componentGridReturnModuleUi: true,
+        componentGridReturnModule: "9w9",
+        chainConfigs: [null, { synth: { module: "303" } }, null, null],
+      });
+      if (fired === true && log.door === 1 && log.unloaded === 1 && !log.module && !log.restore) {
+        ok("a SWAP from a module-owned grid unloads the old UI and opens the new module through the door");
+      } else {
+        fail("swap from a module grid did not unload + go through the door: " + JSON.stringify({ fired, log }));
+      }
+    }
+
+    /* 8i. Same module still there (Load, Delete, backed out of Swap): the
+       swap rule must stay out of the way. */
+    {
+      const { fired, log } = run({ selectedSlot: 1, componentGridReturnModule: "obxd" });
+      if (fired === true && log.entered === 1 && !log.door) {
+        ok("the swap rule is inert when the same module is still in the position");
+      } else {
+        fail("swap rule fired for an unchanged module: " + JSON.stringify({ fired, log }));
       }
     }
 

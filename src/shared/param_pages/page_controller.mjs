@@ -698,6 +698,10 @@ export function createController(io = {}) {
          * Cheaper and more exact than polling: only these keys can change what
          * is visible, and we already read every key on the page. */
         conditionKeys: new Set(),
+        /* A write touched a condition key; tick() owes one plan. Coalesced
+         * because an encoder sweep is a burst of writes and each one used to
+         * buy a full planPages. */
+        replanOwed: false,
         /* Instance copy / clear gesture (hold Copy or Delete, then pick an
          * instance) -- see onEditCc. `editUndo` is the one-level undo. */
         editGesture: null,
@@ -961,6 +965,9 @@ export function createController(io = {}) {
             s.chainParams = null;
             s.metaIndex = null;
             s.conditionKeys = new Set();
+            /* flushDueWritesUnconditionally() above may have marked a plan owed
+             * against the conditionKeys being cleared here. */
+            s.replanOwed = false;
             s.values = Object.create(null);
             s.cursor = 0;
             s.pageIndex = 0;
@@ -1048,6 +1055,10 @@ export function createController(io = {}) {
         s.fingerprint = planned.fingerprint;
         s.metaIndex = buildMetaIndex({ hierarchy, chainParams });
         s.conditionKeys = planned.conditionKeys || new Set();
+        /* A fresh plan with fresh conditionKeys: a debt raised against the
+         * OLD ones is paid, and honouring it on the next tick would re-plan
+         * this component for a gate that belonged to another. */
+        s.replanOwed = false;
         /* A rebuild mid-turn must not silently drop a throttled write that
          * hasn't reached the device yet. */
         flushDueWritesUnconditionally();
@@ -2017,6 +2028,18 @@ export function createController(io = {}) {
     function tick() {
         s.tickCount++;
         flushDueWrites();
+        /* After flushDueWrites, which is itself a writer of condition keys, so
+         * its changes fold into the same single plan. Before everything below,
+         * which reads s.pages.
+         *
+         * Same-frame holds for WRITES only. The read cursor and acceptValue —
+         * the other caller of replanIfCondition, for a gate the module, an LFO
+         * or a recall moved underneath the grid — run later in this same tick,
+         * so a read-driven reveal lands on the NEXT frame (~23 ms), not this
+         * one. Cheap and correct in that order; moving this below the cursor
+         * to buy the frame back would put a plan after the guards that read
+         * s.pages. */
+        flushReplan();
         expireTurnClaim();
         serviceEditGesture();
 
@@ -3440,6 +3463,10 @@ export function createController(io = {}) {
      */
     function replanForMode() {
         if (!s.hierarchy) return;
+        /* This IS a plan, so it settles anything a write owed — leaving the
+         * flag set would spend the next tick re-planning what just ran, and if
+         * the shapes disagree, reanchor and reset the cursor for it. */
+        s.replanOwed = false;
         const planned = planPages({
             hierarchy: s.hierarchy, chainParams: s.chainParams,
             mode: s.lastLoadOpts && s.lastLoadOpts.mode,
@@ -3488,8 +3515,51 @@ export function createController(io = {}) {
         if (s.pageIndex >= s.pages.length) s.pageIndex = Math.max(0, s.pages.length - 1);
     }
 
+    /*
+     * A condition key changed, so the page plan may be stale. Mark it owed and
+     * let tick() do it ONCE, rather than re-planning on every write.
+     *
+     * WHY: this used to call planPages() synchronously on each write to a
+     * condition key, and an encoder sweep is a burst of CCs — a continuous
+     * cell emits hundreds per turn. So turning a knob that gates other params
+     * re-planned the whole module once per detent, before anything was drawn.
+     *
+     * Measured on a Move with DR32, whose send-effect page gates its cells on
+     * the send's mode: 26 condition evaluations per planning pass, and 2912
+     * evaluations inside a single 10.6 ms tick — 112 complete planning passes,
+     * each doing the level walk, the group gather, the row alignment and the
+     * fingerprint. The picker did not read as slow, it read as a hang.
+     *
+     * Marking is not planning: flushReplan() below does the work.
+     */
     function replanIfCondition(key) {
         if (!s.conditionKeys.has(key)) return;
+        s.replanOwed = true;
+    }
+
+    /*
+     * Run the plan the writes above asked for — at most one per tick, whatever
+     * the burst looked like.
+     *
+     * Called from tick(), which every consumer calls before render(), so a gate
+     * that flips is reflected in the same frame the user sees. Deferring past
+     * the draw would show one stale frame per flip.
+     */
+    function flushReplan() {
+        if (!s.replanOwed) return;
+        s.replanOwed = false;
+        replanNow();
+    }
+
+    function replanNow() {
+        /* Mirrors replanForMode's and refreshTrailing's guard, and deferring is
+         * what makes it reachable: load()'s "different component, contract read
+         * failed" branch flushes its pending writes — which can mark a plan
+         * owed against the OLD conditionKeys — and only then clears hierarchy,
+         * so the next tick would plan from nothing. */
+        if (!s.hierarchy) { s.replanOwed = false; return; }
+        /* Any plan pays the debt, wherever it was raised. */
+        s.replanOwed = false;
         const oldPages = s.pages, oldIndex = s.pageIndex;
         const planned = planPages({
             hierarchy: s.hierarchy, chainParams: s.chainParams,
