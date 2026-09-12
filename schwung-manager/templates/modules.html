@@ -24,6 +24,13 @@
     </form>
 </section>
 
+{{if .CatalogStale}}
+<section class="catalog-stale" role="status">
+    <strong>Offline &mdash; showing saved catalog data{{if .CatalogAge}} from {{.CatalogAge}}{{end}}.</strong>
+    Every version on this page is as old as that. Check the Move's network connection and reload.
+</section>
+{{end}}
+
 <section class="host-summary {{if .HostUpdateAvailable}}host-summary-update{{end}}" aria-label="Schwung Host">
     <div class="host-summary-info">
         <h2 class="host-summary-title">Schwung Host</h2>
