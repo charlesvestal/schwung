@@ -73,14 +73,21 @@ void pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
         pin_display_complete = 1;
         memset(pin_display_slices_seen, 0, sizeof(pin_display_slices_seen));
 
-        /* File-triggered display dump: touch /tmp/dump_display to capture */
-        if (access("/tmp/dump_display", F_OK) == 0) {
-            unlink("/tmp/dump_display");
-            FILE *f = fopen("/tmp/pin_display.bin", "w");
+        /* File-triggered display dump.
+         *
+         * NOT /tmp. The device's root FS is ~463 MB and usually 100% full, and
+         * /tmp lives on it -- a dump that lands there fails silently or fills
+         * the last free block. Everything armed or written on the device goes
+         * under /data/UserData (~49 GB free); see CLAUDE.md's Device
+         * Constraints. This wrote to /tmp since it was added for the PIN
+         * scanner, which is why nobody noticed: 1 KB usually squeezes in. */
+        if (access("/data/UserData/schwung/dump_display", F_OK) == 0) {
+            unlink("/data/UserData/schwung/dump_display");
+            FILE *f = fopen("/data/UserData/schwung/oled_dump.bin", "w");
             if (f) {
                 fwrite(pin_display_buf, 1, 1024, f);
                 fclose(f);
-                if (host.log) host.log("PIN: display buffer dumped to /tmp/pin_display.bin");
+                if (host.log) host.log("PIN: display buffer dumped to /data/UserData/schwung/oled_dump.bin");
             }
         }
     }
