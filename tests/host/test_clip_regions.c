@@ -230,6 +230,157 @@ int main(void)
               r8.slots[0][1].note_count, r8.slots[0][1].first_note);
     }
 
+    /* ====================================================================
+     * A START LAUNCHES THE SELECTED CLIP IN *ANY* VIEW.
+     *
+     * The user's bug, reproduced: he built a clip in the step editor (Note
+     * view), pressed Play, and automation recording was refused because
+     * Schwung believed nothing was playing on that track.
+     *
+     * Note view keeps the pad gate CLOSED -- correctly, since there the pads
+     * are a keyboard on the very same notes and channel -- so no ch-9 ON can
+     * reach the decoder. Track 1 therefore sat at identity_valid with
+     * clip_slot == -1 ("I watched it stop and nothing has started since"),
+     * and on_transport_start had nothing to anchor. Measured on hardware:
+     * tracks 2 and 4 anchored at pulse 0 from the Start itself while track 1
+     * read `T1 -` throughout, its selected clip audibly playing.
+     *
+     * The design doc's "clips cannot be launched from Note mode at all" is
+     * true only of a PAD launch. Pressing Play starts each track's selected
+     * clip in every view, and that is positive evidence -- an event that
+     * really does start those clips -- which is what makes this sufficient
+     * without relaxing the mode gate or the file-vs-LED precedence anywhere
+     * else. `pending_start[t]` is that evidence, written by the Start for
+     * exactly the tracks it had nothing to anchor.
+     * ==================================================================== */
+    printf("a Start seeds identity from the file for a track with no clip\n");
+    {
+        /* Track 1: clip 1 and clip 2 exist, clip 3 is the SELECTED one --
+         * the shape of the user's set, where the readout said
+         * `file_sel: true` on s3. */
+        static const char sel3[] =
+            "{\"tracks\":[{\"clipSlots\":["
+            "{\"clip\":{\"isPlaying\":false,\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}},"
+            "{\"clip\":{\"isPlaying\":false,\"region\":{\"start\":0.0,\"end\":16.0,"
+            "\"loop\":{\"start\":0.0,\"end\":16.0,\"isEnabled\":true}},\"notes\":[]}},"
+            "{\"clip\":{\"isPlaying\":true,\"region\":{\"start\":0.0,\"end\":64.0,"
+            "\"loop\":{\"start\":0.0,\"end\":64.0,\"isEnabled\":true}},\"notes\":[]}}"
+            "]}]}";
+        clip_regions_t r9;
+        CHECK(clip_regions_parse(sel3, sizeof(sel3) - 1, &r9), "should parse");
+
+        clip_state_t st9; clip_state_reset(&st9);
+        /* The state the device was actually in: we OBSERVED track 1's clip
+         * stop in Session view, then the user went to Note view. */
+        st9.tracks[0].identity_valid = 1;
+        st9.tracks[0].clip_slot = -1;
+        st9.saw_stop[0] = 1;
+
+        clip_state_on_transport_start(&st9);
+        /* The worker's poll, in the order shim_worker.c runs it. */
+        clip_regions_seed_state(&r9, &st9);
+        clip_state_anchor_pending(&st9, 40, 1);
+
+        CHECK(st9.tracks[0].identity_valid,
+              "a Start must give track 1 identity -- it launched the file's "
+              "selected clip, whatever view Move was in");
+        CHECK(st9.tracks[0].clip_slot == 2,
+              "track 1 should name the file's selected clip 3, got %d",
+              st9.tracks[0].clip_slot);
+        CHECK(st9.tracks[0].anchor_valid,
+              "and it must be anchored -- identity without phase still "
+              "refuses to record");
+        CHECK(st9.tracks[0].anchor_pulse == 0,
+              "anchored at the START, not at the poll that noticed it "
+              "(~1.4 s later is beats of phase error), got %u",
+              st9.tracks[0].anchor_pulse);
+        CHECK(st9.tracks[0].anchor_source == CLIP_ANCHOR_START,
+              "the Start is the evidence, so it must own the anchor, got %d",
+              st9.tracks[0].anchor_source);
+    }
+
+    /* THE PRECEDENCE RULE IS UNCHANGED. Seeding may only fill what we have
+     * NOTHING for. A track with a live observed clip keeps it -- letting the
+     * file win there reinstates the file-beats-LEDs inversion, and the file
+     * is up to ~35 s stale. */
+    printf("a Start does not disturb a track with a live observed clip\n");
+    {
+        static const char sel1[] =
+            "{\"tracks\":[{\"clipSlots\":["
+            "{\"clip\":{\"isPlaying\":true,\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}},"
+            "{\"clip\":{\"isPlaying\":false,\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}}"
+            "]}]}";
+        clip_regions_t r10;
+        CHECK(clip_regions_parse(sel1, sizeof(sel1) - 1, &r10), "should parse");
+
+        clip_state_t st10; clip_state_reset(&st10);
+        /* Observed live: track 1 is playing clip 2, which the file does not
+         * agree with. This is tracks 2 and 4's case -- identity already
+         * present when 0xFA arrived. */
+        st10.tracks[0].identity_valid = 1;
+        st10.tracks[0].clip_slot = 1;
+
+        clip_state_on_transport_start(&st10);
+        clip_regions_seed_state(&r10, &st10);
+        clip_state_anchor_pending(&st10, 40, 1);
+
+        CHECK(st10.tracks[0].clip_slot == 1,
+              "the file must NOT overwrite a live observation, got clip %d",
+              st10.tracks[0].clip_slot);
+        CHECK(st10.tracks[0].anchor_valid && st10.tracks[0].anchor_pulse == 0 &&
+              st10.tracks[0].anchor_source == CLIP_ANCHOR_START,
+              "and the Start anchors it exactly as it always did: "
+              "valid=%d pulse=%u src=%d",
+              st10.tracks[0].anchor_valid, st10.tracks[0].anchor_pulse,
+              st10.tracks[0].anchor_source);
+    }
+
+    /* THE RESIDUAL HOLE, PINNED. Move saves Song.abl ~35 s after an edit, so
+     * a clip the user has just created may not be in the file at all. There
+     * is then nothing to seed, and the answer must stay UNKNOWN -- an
+     * invented identity would let a lane drive, and record, against a phase
+     * nobody measured. */
+    printf("a Start with no file information leaves the track unknown\n");
+    {
+        static const char nosel[] =
+            "{\"tracks\":[{\"clipSlots\":["
+            "{\"clip\":{\"isPlaying\":false,\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},\"notes\":[]}}"
+            "]}]}";
+        clip_regions_t r11;
+        CHECK(clip_regions_parse(nosel, sizeof(nosel) - 1, &r11), "should parse");
+
+        clip_state_t st11; clip_state_reset(&st11);
+        st11.tracks[0].identity_valid = 1;
+        st11.tracks[0].clip_slot = -1;
+
+        clip_state_on_transport_start(&st11);
+        clip_regions_seed_state(&r11, &st11);
+        clip_state_anchor_pending(&st11, 40, 1);
+
+        CHECK(st11.tracks[0].clip_slot < 0,
+              "nothing in the file means nothing to seed, got clip %d",
+              st11.tracks[0].clip_slot);
+        CHECK(!st11.tracks[0].anchor_valid,
+              "and phase stays UNKNOWN -- not zero, unknown");
+
+        /* No regions table at all (before the first parse, or a parse that
+         * failed): the same answer, and no crash. */
+        clip_regions_t r12; memset(&r12, 0, sizeof(r12));
+        clip_state_t st12; clip_state_reset(&st12);
+        clip_state_on_transport_start(&st12);
+        clip_regions_seed_state(&r12, &st12);
+        clip_regions_seed_state(NULL, &st12);
+        clip_state_anchor_pending(&st12, 40, 1);
+        for (int t = 0; t < CLIP_TRACKS; t++)
+            CHECK(!st12.tracks[t].identity_valid && !st12.tracks[t].anchor_valid,
+                  "an invalid regions table must seed nothing on track %d",
+                  t + 1);
+    }
+
     /* A set with NO playing clips must seed nothing -- and must not leave
      * a previous set's answers standing. The caller resets on a set change;
      * this pins that seeding alone cannot invent identity. */

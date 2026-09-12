@@ -17,6 +17,14 @@
  * and can be stale. A live LED observation must always win, and a file read
  * must never overwrite something actually observed.
  *
+ * THE ONE EXCEPTION IS AN EVENT, NOT A WEAKENING: a transport START launches
+ * each track's SELECTED clip in EVERY view, and the file is the only thing
+ * that knows which clip that is. So a track whose identity says "nothing
+ * playing" AND for which a Start is pending is seeded too. See the long note
+ * in clip_regions_seed_state() -- the user hit this by building a clip in the
+ * step editor and pressing Play, where Note view's pad gate means no LED can
+ * ever supply identity.
+ *
  * The loop is NOT always at 0.0 -- a clip whose loop starts at bar 3 is
  * normal -- so phase is relative to loop_start, never to the clip start.
  *
@@ -72,9 +80,14 @@ int clip_regions_parse_file(const char *path, clip_regions_t *out);
 /* Same, over a buffer already in memory (what the tests drive). */
 int clip_regions_parse(const char *json, size_t len, clip_regions_t *out);
 
-/* Seed identity for tracks we have NOT observed. Never touches a track whose
- * identity came from the LED stream, and never sets an anchor: the file says
- * what is selected, not when it started. */
+/* Seed identity for tracks we have nothing for. Never touches a track with a
+ * live observed clip, and never sets an anchor: the file says what is
+ * selected, not when it started.
+ *
+ * "Nothing for" is either no identity at all, or identity saying nothing is
+ * playing WITH a transport Start pending -- a Start launches the selected
+ * clip. The anchor for that case is left to clip_state_anchor_pending(),
+ * which the caller must run straight afterwards (shim_worker.c does). */
 void clip_regions_seed_state(const clip_regions_t *rg, clip_state_t *st);
 
 /* Does the geometry that scoring depends on actually differ? Move saves
