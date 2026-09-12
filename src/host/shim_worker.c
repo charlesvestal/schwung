@@ -439,6 +439,28 @@ static unsigned g_ph_total, g_ph_hit[CLIP_TRACKS], g_ph_seen[CLIP_TRACKS];
  * changed page at least once. */
 static unsigned g_bar_seen[CLIP_TRACKS], g_bar_hit[CLIP_TRACKS];
 static int      g_bar_lastdiff[CLIP_TRACKS];
+
+/* The last few DISAGREEMENTS, kept so a 3% miss rate can be explained rather
+ * than assumed. The standing hypothesis is a boundary race: the step LED and
+ * the pulse counter are not sampled together, so an event landing within a
+ * pulse or two of a step boundary can be read one step either side.
+ *
+ * That predicts three things, all visible here: the step difference is
+ * ALWAYS +/-1, never more; the distance to the nearest step boundary is small
+ * (a step is 6 pulses at 1/16); and the same event fails both columns. Any of
+ * those breaking refutes it. */
+#define PH_MISS_RING 16
+typedef struct {
+    uint32_t pulses;
+    int  idx;          /* the lit step button                 */
+    int  step;         /* the step we computed                */
+    int  diff;         /* computed - lit, in steps            */
+    int  to_boundary;  /* pulses to the nearest step boundary */
+    int  bar_missed;   /* did the bar column miss the same event */
+    int  bar_scored;   /* was the bar column even scoring it     */
+} ph_miss_t;
+static ph_miss_t g_ph_miss[PH_MISS_RING];
+static unsigned  g_ph_miss_n;
 extern volatile int shadow_editor_bar;
 extern volatile unsigned shadow_editor_bar_seq;
 
@@ -588,6 +610,8 @@ static void clip_phase_check_reset(void)
     memset(g_bar_seen, 0, sizeof(g_bar_seen));
     memset(g_bar_hit, 0, sizeof(g_bar_hit));
     memset(g_bar_lastdiff, 0, sizeof(g_bar_lastdiff));
+    g_ph_miss_n = 0;
+    memset(g_ph_miss, 0, sizeof(g_ph_miss));
 }
 
 /* Apply a new "Bar N" to the track it describes: the selected one. Keyed on
@@ -681,6 +705,25 @@ static void clip_phase_check_tick(void)
                 g_ph_lastdiff[t] = diff;
                 if (diff == 0) g_ph_hit[t]++;
 
+                /* Record a disagreement, for the selected track only -- it is
+                 * the one whose playhead this is. */
+                if (diff != 0 && t == clip_selected_track()) {
+                    double step_pulses = res * 24.0;
+                    double into = (ph - r->loop_start) / res;   /* in steps */
+                    double frac = into - (double)(long)into;    /* 0..1      */
+                    int to_b = (int)((frac > 0.5 ? (1.0 - frac) : frac)
+                                     * step_pulses + 0.5);
+                    ph_miss_t *m = &g_ph_miss[g_ph_miss_n % PH_MISS_RING];
+                    m->pulses = ev[i].pulses;
+                    m->idx = ev[i].idx;
+                    m->step = step;
+                    m->diff = diff;
+                    m->to_boundary = to_b;
+                    m->bar_scored = 0;
+                    m->bar_missed = 0;
+                    g_ph_miss_n++;
+                }
+
                 /* Bar level, and ONLY for the track the step editor is
                  * showing -- a bar describes one clip's page, so comparing it
                  * against another track's phase measures nothing. */
@@ -696,6 +739,16 @@ static void clip_phase_check_tick(void)
                     int bdiff = page - (bar - 1);
                     g_bar_lastdiff[t] = bdiff;
                     if (bdiff == 0) g_bar_hit[t]++;
+                    /* Tie the bar outcome to the step miss just recorded for
+                     * this same event, so "did both columns fail together"
+                     * is a fact rather than an inference from two rates. */
+                    if (diff != 0 && t == clip_selected_track() && g_ph_miss_n) {
+                        ph_miss_t *m = &g_ph_miss[(g_ph_miss_n - 1) % PH_MISS_RING];
+                        if (m->pulses == ev[i].pulses) {
+                            m->bar_scored = 1;
+                            m->bar_missed = (bdiff != 0);
+                        }
+                    }
                 }
             }
         }
@@ -800,7 +853,19 @@ static void clip_state_tick(void)
                     "\"bar_seen\":%u,\"bar_hit\":%u,\"bar_diff\":%d}",
                 t ? "," : "", t + 1, g_ph_seen[t], g_ph_hit[t], g_ph_lastdiff[t],
                 g_bar_seen[t], g_bar_hit[t], g_bar_lastdiff[t]);
-    fprintf(jf, "]}}\n");
+    fprintf(jf, "],\"misses\":[");
+    {
+        unsigned n = g_ph_miss_n < PH_MISS_RING ? g_ph_miss_n : PH_MISS_RING;
+        unsigned first = g_ph_miss_n - n;
+        for (unsigned k = 0; k < n; k++) {
+            const ph_miss_t *m = &g_ph_miss[(first + k) % PH_MISS_RING];
+            fprintf(jf, "%s{\"pulses\":%u,\"idx\":%d,\"step\":%d,\"diff\":%d,"
+                        "\"to_boundary\":%d,\"bar_scored\":%d,\"bar_missed\":%d}",
+                    k ? "," : "", m->pulses, m->idx, m->step, m->diff,
+                    m->to_boundary, m->bar_scored, m->bar_missed);
+        }
+    }
+    fprintf(jf, "],\"miss_total\":%u}}\n", g_ph_miss_n);
     fclose(jf);
 }
 void shim_touch_trace_drain(void);
