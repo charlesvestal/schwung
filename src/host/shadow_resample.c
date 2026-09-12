@@ -265,22 +265,12 @@ void native_resample_bridge_load_mode_from_shadow_config(void)
  * Source tracking
  * ============================================================================ */
 
+/* The matcher itself now lives in sampler_source_announce.h so tests/host can
+ * run it. See that file for why a substring rule in this position is the same
+ * defect class as the removed mute auto-correct. */
 static native_sampler_source_t native_sampler_source_from_text(const char *text)
 {
-    if (!text || !text[0]) return NATIVE_SAMPLER_SOURCE_UNKNOWN;
-
-    char lower[256];
-    str_to_lower(lower, sizeof(lower), text);
-
-    if (strstr(lower, "resampl")) return NATIVE_SAMPLER_SOURCE_RESAMPLING;
-    if (strstr(lower, "line in") || strstr(lower, "line-in") || strstr(lower, "linein"))
-        return NATIVE_SAMPLER_SOURCE_LINE_IN;
-    if (strstr(lower, "usb-c") || strstr(lower, "usb c") || strstr(lower, "usbc"))
-        return NATIVE_SAMPLER_SOURCE_USB_C_IN;
-    if (strstr(lower, "mic") || strstr(lower, "microphone"))
-        return NATIVE_SAMPLER_SOURCE_MIC_IN;
-
-    return NATIVE_SAMPLER_SOURCE_UNKNOWN;
+    return sampler_source_announce_classify(text);
 }
 
 void native_sampler_update_from_dbus_text(const char *text)

@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include "shadow_constants.h"
+#include "sampler_source_announce.h"   /* native_sampler_source_t + the classifier */
 
 /* ============================================================================
  * Types
@@ -17,13 +18,9 @@ typedef enum {
     NATIVE_RESAMPLE_BRIDGE_OVERWRITE
 } native_resample_bridge_mode_t;
 
-typedef enum {
-    NATIVE_SAMPLER_SOURCE_UNKNOWN = 0,
-    NATIVE_SAMPLER_SOURCE_RESAMPLING,
-    NATIVE_SAMPLER_SOURCE_LINE_IN,
-    NATIVE_SAMPLER_SOURCE_MIC_IN,
-    NATIVE_SAMPLER_SOURCE_USB_C_IN
-} native_sampler_source_t;
+/* native_sampler_source_t lives in sampler_source_announce.h, beside the
+ * matcher that produces it — it could not be host-tested while the two were
+ * in different translation units. */
 
 typedef struct {
     float rms_l;
