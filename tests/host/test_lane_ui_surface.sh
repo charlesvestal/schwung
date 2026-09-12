@@ -34,7 +34,10 @@ awk '/^const CHAIN_SETTINGS_ITEMS = \[/,/^\];/' "$ui" | grep -q 'Clear Lanes' \
 # ...and all three must reach the SAME implementation. Three copies of the
 # read-and-announce is three chances for one of them to announce a count it
 # did not read.
-[ "$(grep -c 'function clearSlotLanes' "$ui")" = "1" ] \
+# Matched with the OPENING PAREN, so a differently-named helper is not counted
+# as a second copy: `clearSlotLanesQuietly` (the set-change path's counterpart)
+# contains this name as a substring, and a prefix match called it a duplicate.
+[ "$(grep -c 'function clearSlotLanes(' "$ui")" = "1" ] \
   || fail "clearSlotLanes is not defined exactly once in $ui"
 
 # A FAILED READ IS NOT A COUNT OF ZERO. `null` means the read did not

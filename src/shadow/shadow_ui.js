@@ -10086,17 +10086,40 @@ function persistSlotLanes(i) {
     }
 }
 
+/* Empty a slot's lanes with no announcement and no file write -- the restore
+ * path's counterpart to the user-facing clearSlotLanes(). `lanes:clear`
+ * releases every override the store held, which is why this is not just a
+ * matter of forgetting the document: leaving them asserted would strand the
+ * parameters they were driving with no gesture that hands them back. */
+function clearSlotLanesQuietly(i) {
+    setSlotParam(i, "lanes:clear", "1");
+    lastWrittenLaneJson[i] = null;
+}
+
 /* Read lanes_<i>.json back into the slot. Called from both restore paths (boot
  * and set change), after load_file, because load_file reinstantiates the
  * chain and a lane names a target that must exist for lane_tick to find its
- * parameter metadata. An absent or empty file writes NOTHING -- `lanes:state`
- * with an empty document would be a no-op anyway, and the chain refuses a
- * malformed one outright rather than half-loading it. */
+ * parameter metadata.
+ *
+ * AN ABSENT FILE MUST CLEAR THE SLOT, NOT SKIP THE WRITE. It used to return
+ * early -- reasoning that an empty `lanes:state` would be a no-op anyway,
+ * which is true of the PARSER and false of the SLOT: switching from a set
+ * that has automation to one that has none left the outgoing set's lanes
+ * loaded in the chain. Measured on hardware 2026-09-13 by driving the set
+ * change: Set 1's p-lock was still in `lanes:state` while `clip_state` said
+ * Set 2.
+ *
+ * Two consequences, and the second is the worse one. The lane is silent --
+ * its fingerprint will not match the new set's clip, so staleness catches it
+ * -- but it is still THERE, and the autosave pass writes what the slot
+ * serves, so the outgoing set's automation gets written into the incoming
+ * set's `lanes_<i>.json`. `lanes:clear` is the right answer because it also
+ * releases the overrides those lanes held. */
 function restoreSlotLanes(i) {
     const path = lanePathForSlot(i);
-    if (!host_file_exists(path)) { lastWrittenLaneJson[i] = null; return; }
+    if (!host_file_exists(path)) { clearSlotLanesQuietly(i); return; }
     const raw = host_read_file(path);
-    if (!raw || raw.length === 0) { lastWrittenLaneJson[i] = null; return; }
+    if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); return; }
     setSlotParam(i, "lanes:state", raw);
     /* What we just handed the DSP is what the file holds, so the next autosave
      * can skip the write unless something recorded in the meantime. */
