@@ -173,23 +173,27 @@ int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now) {
     /* NO FINGERPRINT RECORDED IS NOT A MATCH. {0, -1} is what a lane carries
      * when nothing ever told it the clip's content: every lane written before
      * the parser counted notes, and every lane written while the clip itself
-     * was unknown. loop_len is not compared (see below), so with the content
-     * half at its absent values the test below degenerates to `loop_start
-     * within eps` -- and every clip whose loop starts at 0.0 then fingerprints
-     * identically, so such a lane binds to the WRONG clip and plays. Stale is
-     * the honest answer: silent, retained, re-recordable.
+     * was unknown. NEITHER loop field is compared (see below), so with the
+     * content half at its absent values the test would degenerate to nothing
+     * at all -- such a lane would bind to the FIRST clip it met and play.
+     * Stale is the honest answer: silent, retained, re-recordable.
      *
      * It also makes a lane recorded against a genuinely note-free clip stale.
      * Deliberate: "empty" and "unknown" are the same bytes here, and of the
      * two readings only this one cannot be confidently wrong. */
     if (ln->fp.note_count == 0 && ln->fp.first_note == -1) return 0;
-    const double eps = 1e-6;
-    double ds = ln->fp.loop_start - now->loop_start;
-    if (ds < 0) ds = -ds;
-    /* loop_len is deliberately NOT compared: a clip that grew is the same
-     * clip, and that is the routine case this whole design tolerates. The
-     * length lives in the fingerprint for diagnostics only. */
-    if (ds > eps) return 0;
+    /* NEITHER loop_start NOR loop_len is compared, for one reason: a clip
+     * whose loop area the user edited is the same clip, and going stale on it
+     * is SILENT -- the automation just stops, with no gesture that restores it
+     * short of recording the pass again. Both live in the fingerprint for
+     * diagnostics only, and the content half is what discriminates.
+     *
+     * This costs nothing in the origin: phases are stored LOOP-RELATIVE
+     * (shadow_slot_clip_phase subtracts loop_start), and clip-relative storage
+     * was considered and rejected -- loop_start is observable by nothing for a
+     * clip just made and then edited (Song.abl is ~35 s stale, and the OLED bar
+     * strip does not show where the loop begins), so re-origining would have to
+     * guess, putting every value a bar out while looking healthy. */
     if (ln->fp.note_count != now->note_count) return 0;
     if (ln->fp.first_note != now->first_note) return 0;
     return 1;

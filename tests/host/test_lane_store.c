@@ -81,6 +81,31 @@ int main(void) {
     CHECK(lane_fingerprint_matches(ln, &copy) == 0,
           "different note count accepted");
 
+    /* 10a. MOVING A CLIP'S LOOP IS NOT A DIFFERENT CLIP.
+     *
+     * Nothing on Move says "the loop area moved" -- so a lane that goes stale
+     * on it goes stale SILENTLY, and the user's automation disappears with no
+     * gesture that brings it back but re-recording. loop_len was already
+     * excluded for the same reason (a clip that grew is the same clip); a clip
+     * whose loop you dragged is too. Both loop fields live in the fingerprint
+     * for diagnostics only, and the content half is what discriminates.
+     *
+     * Phases are stored LOOP-RELATIVE (shadow_slot_clip_phase subtracts
+     * loop_start), so a moved loop replays the same gesture from the new
+     * start rather than needing a re-origin nobody can observe. */
+    ln = mk(&st);
+    {
+        lane_fingerprint_t moved  = { 4.0, 8.0, 14, 41 };
+        lane_fingerprint_t grown  = { 4.0, 16.0, 14, 41 };
+        lane_fingerprint_t recut  = { 4.0, 8.0, 14, 48 };
+        CHECK(lane_fingerprint_matches(ln, &moved) == 1,
+              "a moved loop_start went stale -- silently loses automation");
+        CHECK(lane_fingerprint_matches(ln, &grown) == 1,
+              "a moved AND grown loop went stale");
+        CHECK(lane_fingerprint_matches(ln, &recut) == 0,
+              "a different first note was accepted");
+    }
+
     /* 10b. THE PLACEHOLDER FINGERPRINT IS ABSENT, NOT MATCHING.
      *
      * {note_count 0, first_note -1} is what a lane carries when nothing ever
