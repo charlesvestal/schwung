@@ -241,15 +241,15 @@ async function tick(){
     /* Named for the enum in step_strip.h -- a bare number would make the one
        interesting case ("we saw a strip and did not believe it") unreadable. */
     const REJ={0:'ok',1:'no strip on the row',2:'not full width',
-               3:'a hole no bar boundary explains',4:'too many bars',
+               3:'a hole no segment boundary explains',4:'too many segments',
                5:'segments not uniform',6:'no displayed-bar thickening'};
     const EV=['none','stub only','interruption only','stub + interruption'];
     let h;
     if(!ss.seq) h='<span class="pill off">no frame decoded yet</span> '+
       '&mdash; Move&rsquo;s frames are not reaching the accumulator';
     else if(ss.valid) h='<span class="pill ok">valid</span> '+
-      '<b>'+ss.bars+'</b> bar'+(ss.bars===1?'':'s')+
-      ' &middot; displayed bar <b>'+ss.bold_bar+'</b>'+
+      '<b>'+ss.segments+'</b> page'+(ss.segments===1?'':'s')+
+      ' &middot; displayed page <b>'+ss.bold_segment+'</b>'+
       ' &middot; track <b>'+(ss.track>0?('T'+ss.track):'none selected')+'</b>'+
       ' &middot; playhead '+(ss.playhead_col>=0
           ? 'x='+ss.playhead_col+' ('+(100*ss.phase_frac).toFixed(1)+'% of the loop, '+
@@ -259,22 +259,24 @@ async function tick(){
       ' <small>(gate '+ss.reject+')</small>';
     if(ss.valid && ss.strip_quarters>0){
       /* The bar count AS A LENGTH, beside the file's own number. With the clip
-         present the two must agree; a disagreement is the bars->quarters
-         conversion, which is the only thing here that needs the signature. */
+         present the two must agree, and a disagreement is the segments->quarters
+         conversion -- which is the GRID (a segment is a 16-step page), not the
+         time signature. An 11/8 set is what told the two apart. */
       const agree = ss.file_quarters>0
         ? (Math.abs(ss.strip_quarters-ss.file_quarters)<0.01
             ? '<span class="pill ok">agrees with the file</span>'
             : '<span class="pill off">DISAGREES with the file ('+
               (+ss.file_quarters).toFixed(2)+' quarters)</span>')
         : '<span class="pill warn">clip not in the file yet</span>';
-      h+='<div style="margin-top:6px">'+ss.bars+' bar'+(ss.bars===1?'':'s')+
-         ' &times; '+(+ss.quarters_per_bar).toFixed(2)+' quarters/bar = <b>'+
-         (+ss.strip_quarters).toFixed(2)+'</b> quarters &nbsp; '+agree+
-         ' &nbsp; <small>signature '+esc(ss.sig||'?')+'</small></div>';
+      h+='<div style="margin-top:6px">'+ss.segments+' page'+(ss.segments===1?'':'s')+
+         ' &times; 16 steps &times; '+esc(ss.grid||'?')+' = <b>'+
+         (+ss.strip_quarters).toFixed(2)+'</b>'+
+         ' quarters &nbsp; '+agree+
+         ' &nbsp; <small>signature '+esc(ss.sig||'?')+' (not used for this)</small></div>';
     }
     h+='<div class="sub" style="margin-top:6px">frame '+ss.seq+
-       ' &middot; cached bar counts per track: '+
-       ss.bars_cache.map((b,i)=>'T'+(i+1)+' '+(b?b:'\u2014')).join(' &middot; ')+
+       ' &middot; cached page counts per track: '+
+       ss.segments_cache.map((b,i)=>'T'+(i+1)+' '+(b?b:'\u2014')).join(' &middot; ')+
        '</div>';
     document.getElementById('ss').innerHTML=h;
   }

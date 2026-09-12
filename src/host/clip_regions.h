@@ -81,6 +81,10 @@ typedef struct {
     clip_region_t slots[CLIP_TRACKS][CLIP_SLOTS];
     int    valid;            /* 0 = nothing parsed; do not use the contents */
     double step_resolution;  /* beats per step, e.g. 0.25 for 1/16 */
+    /* The step editor's grid, VERBATIM ("1/16", "1/8t", ...). Carried as text
+     * as well as parsed because an unrecognised form must be visible rather
+     * than silently turned into a number -- see step_resolution. */
+    char   step_res_raw[12];
     /* The SONG's time signature, 0/0 if absent. Load-bearing for a clip Move
      * has not saved yet: the clip is not in the file, but the song is. */
     int    sig_upper;

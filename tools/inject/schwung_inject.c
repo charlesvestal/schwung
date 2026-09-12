@@ -13,7 +13,7 @@
  * overtake mode it is diverted to the module instead (schwung_shim.c), so this
  * tool addresses MOVE, and only while no overtake module is up.
  *
- * usage: schwung_inject <hdr> <status> <d1> <d2> [...]        (hex or decimal)
+ * usage: schwung_inject <hdr> <status> <d1> <d2> [...]        (HEX)
  *        schwung_inject step <1-16> [gap_ms]     press and release a step
  *        schwung_inject track <1-4> [gap_ms]     press and release a track
  *
@@ -39,7 +39,7 @@ static void nap_ms(int ms) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <hdr> <status> <d1> <d2> [...]\n"
+        fprintf(stderr, "usage: %s <hdr> <status> <d1> <d2> [...]  (hex)\n"
                         "       %s step <1-16> [gap_ms]\n"
                         "       %s track <1-4> [gap_ms]\n", argv[0], argv[0], argv[0]);
         return 2;
@@ -88,8 +88,13 @@ int main(int argc, char **argv) {
             return 2;
         }
         for (int i = 1; i < argc && n < 64; i += 4, n++)
+            /* BASE 16, not base 0. A USB-MIDI packet is always written in
+             * hex, and base 0 made "0b" parse as a 0 with a stray 'b' -- so
+             * `schwung_inject 0b b0 55 7f` (Play) became a cable-0/CIN-0
+             * header and was refused by the guard below. The guard worked;
+             * the parse was the bug. An explicit 0x prefix still works. */
             for (int b = 0; b < 4; b++)
-                pkts[n][b] = (uint8_t)strtol(argv[i + b], NULL, 0);
+                pkts[n][b] = (uint8_t)strtol(argv[i + b], NULL, 16);
     }
 
     for (int i = 0; i < n; i++) {

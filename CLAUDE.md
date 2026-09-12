@@ -665,7 +665,13 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   that instant. The geometry is measured and the rejection gates are not, so it
   is **a diagnostic first** (`clip_state.json`'s `step_strip`, the manager's
   `/clip-state`) and nothing depends on it yet. Never build a parallel model of
-  Move's sequencer UI: read its answer.
+  Move's sequencer UI: read its answer. **A segment is a 16-STEP PAGE, not a
+  bar** — `quarters = segments * 16 * step_resolution`, with the time signature
+  not entering it; in 4/4 at 1/16 a page *is* a bar, which hid it until an 11/8
+  set drew 3 segments for a 12-quarter loop (16.5 through the bar, 12.0 exactly
+  through the page). The grid runs **1/8t to 1/64**, so a TRIPLET suffix must
+  parse — `sscanf("\"%d/%d\"")` read `1/8t` as a straight eighth, a silent 50%
+  error.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 

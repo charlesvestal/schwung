@@ -822,6 +822,30 @@ playhead     a 1 px INTERRUPTION in the strip, plus a stub at rows 55-57/61-63
 - **Do NOT build a model of Move's sequencer UI.** Read Move's answer off the
   screen; never track its modes, pages or loop points. Every time this work
   drifted that way it produced a bug.
+- **A SEGMENT IS A 16-STEP PAGE, NOT A BAR** — Move has 16 step buttons, and
+  the strip draws one segment per page of the loop at the current grid. So
+
+  ```
+  quarters = segments * 16 * step_resolution
+  ```
+
+  and the **time signature does not enter it**. In 4/4 at 1/16 a page *is* a
+  bar, which is why "bars" was the wrong name and agreed anyway against the
+  file at 1, 3, 4 and 5 segments. An 11/8 set separated them: a 12-quarter loop
+  drew **3** segments — through the bar (5.5 quarters) that is 16.5 against the
+  file's 12.0; through the page it is **12.0 exactly**. The step grid runs
+  **1/8t to 1/64**, so `stepEditorResolution` must parse a TRIPLET suffix: the
+  old `sscanf("\"%d/%d\"")` accepted `"1/8t"` as a straight eighth — its two
+  `%d`s succeed and the trailing literal quote fails without changing the
+  return count — for a silent 50% error in every step index.
+- **Move's playhead index is page-relative too, and deriving it from the
+  signature made it worse.** Predicted that an 11/8 bar's 22 steps was the
+  modulus, deployed it, and measured: within-page went 0/16 diff +6 → 0/18 diff
+  −10, and the page column from **16/16** to 0/18. Reverted. What remains
+  unexplained is a *constant* 6-step offset under 11/8 while the page column is
+  perfect — so the phase is right to within a page and the residue is in where
+  Move starts counting steps inside one. It matters only for p-locks, which is
+  the reason not to guess.
 - **VALIDATED ON HARDWARE 2026-09-12.** With the editor open the reading
   followed the selection across three tracks — 4, 5 and 3 bars — the decoded
   displayed bar agreed twice with Move's *independently announced* "Bar N",
