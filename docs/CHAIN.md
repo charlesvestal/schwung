@@ -554,6 +554,66 @@ unarmed turn **punches through until the loop comes round** — per
 survives a tempo change and needs no timer. An *armed* turn cancels any open
 punch on that lane, or the point just recorded would sit silent for a loop.
 
+#### A point is CLIP TIME, and the loop is a WINDOW over it
+
+Measured in Move's own file (2026-09-12), a clip whose `region`/`loop` is
+`8.0 .. 20.0`:
+
+```
+"region": { "start": 8.0, "end": 20.0, "loop": { "start": 8.0, "end": 20.0 } }
+notes:    startTime 0.0, 9.5, 16.5      <- absolute from the CLIP's start
+```
+
+The note at 0.0 sits **outside** the loop and does not play. So notes are
+absolute clip time and the loop is a window over them — and a lane stored in
+that same coordinate makes *"the automation lines up with the notes"*
+definitional rather than something the host maintains.
+
+**Loop-relative storage was the first design, and it was wrong in two ways.** A
+sweep recorded one beat into that loop was stored as `1.0` instead of `9.0`, so
+opening the loop out to the whole clip replayed it at beat 1 — two bars early,
+on different notes. And a step p-lock has the same problem in reverse: *"bar 3,
+step 5"* cannot be turned into a loop-relative phase at all without knowing
+where the loop begins. The counter-argument — that `loop_start` is unobservable
+for a clip Move has not saved yet — holds only for the save latency, which is
+**10 s measured, not the ~35 s long assumed**.
+
+- **The unit is the QUARTER NOTE, and that is what makes it signature-proof.**
+  Changing the set to **11/8** changed not one number in `Song.abl`: the same
+  clip stayed `8..20`. An 11/8 bar is 5.5 quarters, so that 12-quarter loop is
+  ~2.18 bars. The signature is therefore needed **only to convert bars**, which
+  is the strip reader's problem alone (`quarters per bar = upper * 4 / lower`).
+  It lives in the file **per clip** *and* song-wide — and for a brand-new clip
+  the song-level one is available even though the clip is not.
+- **Points outside the window are dormant, never deleted** — the same rule as a
+  shrunk clip, generalised from a prefix to a window. A point *below*
+  `loop_start` is dormant too, which a prefix test `[0, loop_len)` got wrong.
+- **A recording pass wraps at the WINDOW.** The swept span is
+  `(prev, loop_start + loop_len)` then `[loop_start, phase)`. Erasing from 0
+  instead would delete automation on the bars *before* the loop — material the
+  gesture never touched, invisible from inside the loop, and audible the moment
+  the loop is opened out.
+- **`lane_pass_travel` checks window membership BEFORE direction.** A `prev`
+  outside the current loop cannot have been swept from inside it, and that is
+  just as true walking forward: prev 2.0 to phase 8.2 on a loop of 8..20 reads
+  as a tidy 6.2 beats, with only the gap threshold downstream stopping it from
+  erasing two bars.
+- **The seam did NOT grow an argument.** `chain_set_clip_phase` is dlsym'd, so
+  adding a parameter is the one change that cannot be made safely — a chain
+  `.so` and a shim disagreeing about a signature is the breakbeat header drift
+  that boot-looped a device, and the callee would read an uninitialised
+  register as a loop start. The window's start is taken from **`fp[0]`**, the
+  fingerprint's geometry half, already pushed in the same call from the same
+  parse. A valid phase implies `fp_valid`, so the window is never unknown while
+  the phase is known.
+- **The document is `V 2`, and a `V 1` migration is EXACT rather than a guess**
+  — each lane's own header line carries the `loop_start` it was recorded
+  against, so a v1 point is shifted by that number on load. That is what the
+  field was always there for. A v1 lane whose recorded `loop_start` is not a
+  usable number is refused with the document rather than loaded at an origin
+  nobody can name; and a document with **no** `V` line is treated as CURRENT,
+  never as ancient, or every point would be shifted twice.
+
 #### Time-addressed, with no length of its own
 
 Clip length is mutable from Move's step editor and extending a clip by adding a

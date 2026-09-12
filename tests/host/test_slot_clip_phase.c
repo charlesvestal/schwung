@@ -216,36 +216,58 @@ int main(void) {
     CHECK(!isfinite(ph) && !isfinite(len),
           "an unanchored track produced a phase anyway (%f/%f)", ph, len);
 
-    /* 3. ANCHOR + A LOOP THAT DOES NOT START AT 0. This is the rebasing
-     *    proof. loop_start = 8, loop_len = 4: clip_phase_beats() returns
-     *    8..12, and the resolver subtracts loop_start to give 0..4, which is
-     *    the only thing a lane can index a breakpoint list with. Checked
-     *    across a whole loop so an off-by-loop_start cannot hide in one
-     *    sample. */
+    /* 3. ANCHOR + A LOOP THAT DOES NOT START AT 0, and the phase is CLIP
+     *    TIME -- quarters from the clip's start, the coordinate Move's own
+     *    notes are in.
+     *
+     *    THIS TEST PINNED THE OPPOSITE UNTIL 2026-09-12, and it was defending
+     *    a defect: the resolver subtracted loop_start to hand the lane
+     *    0..loop_len, so a sweep recorded one beat into a loop at 8..20 was
+     *    stored as 1.0 rather than 9.0. Open that loop out to the whole clip
+     *    and it replays at beat 1 -- two bars early, on the wrong notes. A
+     *    step p-lock has the same problem in reverse: "bar 3, step 5" cannot
+     *    be turned into a loop-relative phase without knowing where the loop
+     *    begins.
+     *
+     *    Measured in Move's own file: a clip whose region/loop is 8..20
+     *    carries notes at startTime 0.0, 9.5, 16.5. The note at 0.0 is
+     *    outside the loop and does not play -- absolute clip time, with the
+     *    loop as a window over it. loop_start travels separately (fp[0]) so
+     *    the lane knows which part of itself is audible.
+     *
+     *    Checked across a whole loop so an off-by-loop_start cannot hide in
+     *    one sample. */
     reset_world();
     set_region(1, 3, 8.0, 4.0);
     for (int p = 0; p < 4 * 24; p += 7) {
         set_track(1, 1, 3, 1, 0);
         shadow_transport_pulses = p;
         rc = call(1, &ph, &len, &cs, &fpv, fp);
-        double want = (double)p / 24.0;
+        double want = 8.0 + (double)p / 24.0;
         CHECK(rc == 1, "anchored track at pulse %d returned %d, expected 1",
               p, rc);
-        CHECK(ph >= 0.0 && ph < 4.0,
-              "phase %f at pulse %d is outside [0,4) -- loop_start (8.0) was "
-              "not subtracted back off", ph, p);
+        CHECK(ph >= 8.0 && ph < 12.0,
+              "phase %f at pulse %d is outside the clip window [8,12) -- "
+              "loop_start was subtracted off, which is loop time, not clip "
+              "time", ph, p);
         CHECK(fabs(ph - want) < 1e-9,
               "phase %f at pulse %d, expected %f", ph, p, want);
         CHECK(len == 4.0, "loop length is %f, expected 4", len);
+        CHECK(fp[0] == 8.0,
+              "the window's start did not travel with the phase: fp[0]=%f, "
+              "expected 8 -- the lane cannot tell which part of itself is "
+              "audible without it", fp[0]);
         CHECK(cs == 3 && fpv == 1,
               "a known phase lost its identity (cs=%d fpv=%d)", cs, fpv);
     }
-    /* And it WRAPS at loop_len rather than running on. */
+    /* And it WRAPS at the window's end rather than running on -- back to the
+     * window's START (8.0), not to zero. */
     set_track(1, 1, 3, 1, 0);
     shadow_transport_pulses = 5 * 24;        /* 5 beats into a 4-beat loop */
     rc = call(1, &ph, &len, &cs, &fpv, fp);
-    CHECK(rc == 1 && fabs(ph - 1.0) < 1e-9,
-          "phase past the loop end is %f, expected 1.0 (wrapped)", ph);
+    CHECK(rc == 1 && fabs(ph - 9.0) < 1e-9,
+          "phase past the loop end is %f, expected 9.0 (wrapped to the "
+          "window's start, not to 0)", ph);
 
     /* 4. AN OUT-OF-RANGE CLIP SLOT MUST NOT INDEX THE REGIONS TABLE.
      *    clip_track_state_t::clip_slot is -1 for "nothing playing", and a

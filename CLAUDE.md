@@ -642,6 +642,17 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   **Only the CONTENT half of the fingerprint is compared** — neither loop field
   is, because a clip that grew and a clip whose loop was dragged are both the
   same clip, and going stale on either is silent.
+- **A breakpoint is CLIP TIME in QUARTERS, and the loop is a WINDOW over it.**
+  Move's notes are absolute from the clip's start (a clip whose loop is 8..20
+  carries a note at 0.0, which does not play), so a lane in the same coordinate
+  keeps automation on its notes when the loop moves or grows — loop-relative
+  storage slid a sweep two bars and made a step p-lock unaddressable. The unit
+  is the quarter: changing a set to **11/8** changed not one number in
+  `Song.abl`, so only converting BARS needs the signature. Points outside the
+  window are dormant at EITHER end, a pass wraps at the window (never at 0),
+  and the dlsym'd seam did not grow an argument — the window's start rides in
+  `fp[0]`. Documents are `V 2`; a `V 1` migration is exact, from the
+  `loop_start` on each lane's own header line.
 - **Move's step editor draws the clip's bar count, and we READ it rather than
   model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
   no length, so no phase, so recording refuses — and Move's own screen has the

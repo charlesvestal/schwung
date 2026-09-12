@@ -77,6 +77,25 @@ extern "C" {
  * with the replace rule is what shipped the interleaving defect. */
 #define LANE_PASS_GAP_BEATS 1.0
 
+/* A POINT'S PHASE IS BEATS FROM THE CLIP'S START, NOT FROM ITS LOOP.
+ *
+ * The loop is a WINDOW over the lane -- [loop_start, loop_start + loop_len) --
+ * and every phase argument below is in the same clip time, so moving or
+ * resizing that window moves which part of the lane plays and never what the
+ * lane means.
+ *
+ * Loop-relative storage was the first design and it was wrong in two ways the
+ * user named: a sweep recorded over the notes in bar 3 of a bars-3-to-5 loop
+ * SLID two bars when the loop was opened out to the whole clip, and a step
+ * p-lock ("bar 3, step 5") cannot be turned into a stored phase at all without
+ * knowing where the loop begins. The counter-argument -- that loop_start is
+ * unobservable for a clip Move has not saved yet -- is true only for the ~10 s
+ * before the save (measured; the figure used to be quoted as 35 s), and it is
+ * arithmetic rather than a guess: `loop_start` is on each lane's own header
+ * line, so a v1 document is shifted into clip time exactly on load.
+ *
+ * Points OUTSIDE the window are dormant, not deleted -- the same rule as a
+ * shrunk clip, generalised from a prefix to a window. */
 typedef struct { double phase; float value; } lane_point_t;
 
 /* What the clip looked like when the lane was recorded. ONLY THE CONTENT HALF
@@ -171,7 +190,8 @@ void lane_write(lane_t *ln, double phase, float value);
  * cannot tell", and a backwards phase then erases nothing.
  *
  * RT: bounded compaction over at most LANE_POINTS_MAX entries. */
-void lane_record_point(lane_t *ln, double phase, float value, double loop_len);
+void lane_record_point(lane_t *ln, double phase, float value,
+                       double loop_start, double loop_len);
 
 /* End the pass. The next lane_record_point is a first write again. */
 void lane_record_end(lane_t *ln);
@@ -193,7 +213,8 @@ void lane_record_end(lane_t *ln);
  * backwards phase with no usable loop_len. A real distance is never negative,
  * so the sentinel cannot collide with an answer, and every caller must treat
  * it as neither inside nor outside the pass. */
-double lane_pass_travel(double prev, double phase, double loop_len);
+double lane_pass_travel(double prev, double phase,
+                        double loop_start, double loop_len);
 
 /* Is a recording pass LIVE at `phase`? 1 only while `rec_active` and the
  * transport is within LANE_PASS_GAP_BEATS forward of the pass's last write.
@@ -203,13 +224,15 @@ double lane_pass_travel(double prev, double phase, double loop_len);
  * the take would be inaudible while it was being made. Bounded to the window
  * rather than to `rec_active` so the REST of the loop keeps playing, which is
  * what makes this punch-in/punch-out rather than a recording mode. */
-int lane_pass_live_at(const lane_t *ln, double phase, double loop_len);
+int lane_pass_live_at(const lane_t *ln, double phase,
+                      double loop_start, double loop_len);
 
 /* Value at `phase`, considering only points below loop_len.
  * `stepped` = 1 for int/enum params (hold), 0 for float (linear).
  * Returns 1 and writes *out, or 0 for "this lane has nothing to say" --
  * which is NOT 0.0, and the caller must not treat it as a value. */
-int lane_eval(const lane_t *ln, double phase, double loop_len, int stepped,
+int lane_eval(const lane_t *ln, double phase, double loop_start,
+              double loop_len, int stepped,
               float *out);
 
 /* Does this lane still describe the clip that is there now? */
