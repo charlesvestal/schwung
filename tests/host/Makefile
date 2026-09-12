@@ -72,6 +72,7 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_heal_tool_id \
 	$(BUILD_DIR)/test_audio_in_restore \
 	$(BUILD_DIR)/test_lane_store \
+	$(BUILD_DIR)/test_lane_state_roundtrip \
 	$(BUILD_DIR)/test_slot_clip_phase
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
@@ -262,6 +263,12 @@ $(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_store.c ../../src/host/lane_store.c -lm
+
+# lane_serial — the `lanes:state` document (Task 8). Links the real
+# lane_store.c rather than a fake: the document's whole job is to round-trip
+# lane_t, so a stand-in would inherit the test's own belief about its layout.
+$(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c ../../src/host/lane_serial.h ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c -lm
 
 # Header-only; the .c is the whole test.
 $(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)

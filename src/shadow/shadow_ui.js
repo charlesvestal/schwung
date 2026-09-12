@@ -809,8 +809,14 @@ let autosaveJob = null;
  * thing the UI thread did). Cleared whenever the file set changes underneath
  * us, so the next pass rewrites unconditionally. */
 let lastWrittenSlotJson = [null, null, null, null];
+/* Same skip-if-unchanged, for lanes_N.json. A lane document only changes when
+ * something records into it, so on an ordinary set this makes the extra write
+ * free -- without it the autosave pass gained a second eMMC write every five
+ * seconds forever, which is the defect the slot cache above was added for. */
+let lastWrittenLaneJson = [null, null, null, null];
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
+    lastWrittenLaneJson = [null, null, null, null];
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
@@ -10029,6 +10035,71 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
  * single frame every five seconds. Body is unchanged apart from the
  * loop's `continue`s becoming `return`s.
  */
+/*
+ * Automation lanes ride with the SET, not with the slot's sound.
+ *
+ * A lane is keyed to a clip POSITION plus a fingerprint of what was in that
+ * clip, and a clip position means nothing in another set -- so the file lives
+ * beside the set's other state and is deleted with it. Same argument that put
+ * the recall snapshot in set_state/ rather than in a global dir.
+ *
+ * There is no second serializer here on purpose: the chain formats the whole
+ * document on the SPI callback and this side only ever moves an opaque string
+ * to a file. It rides in the autosave pass so it inherits the preview guard
+ * and the write cache rather than re-deriving them.
+ */
+function lanePathForSlot(i) {
+    return activeSlotStateDir + "/lanes_" + i + ".json";
+}
+
+function persistSlotLanes(i) {
+    /* THREE ANSWERS, not two. `null` is a read that did not complete and says
+     * nothing about the slot -- writing on it would truncate a good file with
+     * whatever a timeout produced. `""` is served-and-empty: this slot has no
+     * automation, so the file must GO rather than be left behind to reload
+     * lanes the user cleared. Only a non-empty document is written. */
+    const doc = getSlotStateWithRetry(i, "lanes:state");
+    const path = lanePathForSlot(i);
+    if (doc === null) return;
+    if (doc === "") {
+        /* Removing it once, and only if there is something there: an
+         * unconditional remove every five seconds is the churn the write
+         * cache exists to avoid. */
+        if (lastWrittenLaneJson[i] !== "" && host_file_exists(path)) {
+            host_write_file(path, "");
+            debugLog("autosave: slot " + i + " has no lanes — cleared " + path);
+        }
+        lastWrittenLaneJson[i] = "";
+        return;
+    }
+    if (lastWrittenLaneJson[i] === doc) return;
+    if (host_write_file(path, doc)) {
+        lastWrittenLaneJson[i] = doc;
+    } else {
+        lastWrittenLaneJson[i] = null;   /* force a retry next pass */
+        debugLog("autosave: failed to write lanes_" + i + ".json — " +
+                 "will retry next autosave");
+    }
+}
+
+/* Read lanes_<i>.json back into the slot. Called from both restore paths (boot
+ * and set change), after load_file, because load_file reinstantiates the
+ * chain and a lane names a target that must exist for lane_tick to find its
+ * parameter metadata. An absent or empty file writes NOTHING -- `lanes:state`
+ * with an empty document would be a no-op anyway, and the chain refuses a
+ * malformed one outright rather than half-loading it. */
+function restoreSlotLanes(i) {
+    const path = lanePathForSlot(i);
+    if (!host_file_exists(path)) { lastWrittenLaneJson[i] = null; return; }
+    const raw = host_read_file(path);
+    if (!raw || raw.length === 0) { lastWrittenLaneJson[i] = null; return; }
+    setSlotParam(i, "lanes:state", raw);
+    /* What we just handed the DSP is what the file holds, so the next autosave
+     * can skip the write unless something recorded in the meantime. */
+    lastWrittenLaneJson[i] = raw;
+    debugLog("lanes: slot " + i + " restored from " + path);
+}
+
 function autosaveOneSlot(i) {
     /* Never persist an uncommitted preset audition. While the user scrolls
      * User Presets, the live <prefix>:state is the previewed sound, not a
@@ -10037,6 +10108,11 @@ function autosaveOneSlot(i) {
      * mid-audition). previewActive clears on Load (commit) or Back (revert),
      * after which autosave resumes normally. */
     if (isPresetPreviewActive()) return;
+    /* Ahead of the slot-state work below, which has several early returns
+     * (empty slot, shim-reports-empty, no patch JSON) — a lane survives its
+     * module being swapped out, so it must not be persisted only on the paths
+     * where the slot still has one. */
+    persistSlotLanes(i);
     /* Sync chainConfigs from DSP before checking - prevents clobbering
      * valid autosave files for slots we haven't navigated to yet.
      * Read ONCE and reused as `currentSig` below — it used to be read
@@ -24510,6 +24586,11 @@ globalThis.init = function() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
+        /* The shim's boot restore ran load_file for this slot; lanes are not in
+         * that document, so they are read back here — after the chain exists,
+         * because a lane's target has to be there for lane_tick to find its
+         * parameter metadata. */
+        try { restoreSlotLanes(i); } catch (e) { debugLog("lanes restore: " + e); }
         /* Sync slot names + per-component bypass from autosave if present.
          * The shim's load_file restores synth/FX/MIDI-FX modules + params via
          * the chain_host parser, but bypass flags are not in the C parser path;
@@ -25309,6 +25390,14 @@ globalThis.tick = function() {
                     syncUserPresetRecordsFromChain(i, null);
                 }
             }
+            /* Pass 3: the incoming set's automation lanes. After pass 2, so
+             * every lane's target exists; its own loop, because pass 2 has
+             * three branches and a lane survives its module being swapped out
+             * — a slot with no state file can still own lanes. */
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                try { restoreSlotLanes(i); } catch (e) { debugLog("lanes restore: " + e); }
+            }
+
             /* Refresh UI state immediately so display reflects new slot contents */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 lastSlotModuleSignatures[i] = "";  /* force refresh */

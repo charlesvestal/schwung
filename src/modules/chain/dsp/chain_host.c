@@ -946,6 +946,12 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         parse_debug_log(dbg);
     }
 
+    /* The automation lanes, as one opaque document (chain_lanes.c). */
+    if (key && strcmp(key, "lanes:state") == 0) {
+        lane_apply_state(inst, val ? val : "");
+        return;
+    }
+
     /*
      * ---- "bus<N>:" and "buses:" ------------------------------------------
      *
@@ -1600,6 +1606,13 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return chain_bus_get_param(inst, b, rest, buf, buf_len);
         if (strncmp(key, "buses:", 6) == 0)
             return chain_bus_slot_get_param(inst, key + 6, buf, buf_len);
+    }
+
+    /* The automation lanes, as one opaque document (chain_lanes.c). 0 bytes
+     * means this slot has no automation; -1 is a failure the UI must not
+     * mistake for one. */
+    if (strcmp(key, "lanes:state") == 0) {
+        return lane_serve_state(inst, buf, buf_len);
     }
 
     /* Per-component bypass flags. Handled BEFORE the prefix routes below
