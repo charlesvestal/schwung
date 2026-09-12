@@ -2015,6 +2015,29 @@ static void shadow_inprocess_render_to_buffer(void) {
                                             s, lane_clip, lane_fp_ok, lane_fp);
             }
 
+            /* Move's Record button, decoded from its LED (rec_arm.h). ON
+             * CHANGE ONLY: a per-block write would serve a param request on
+             * the SPI callback 344 times a second to say nothing new, and
+             * param-slow already names set_param as the thing that eats a
+             * frame.
+             *
+             * Keyed on the INSTANCE as well as the value, because a slot that
+             * is reloaded gets a fresh instance whose lane_armed is whatever
+             * the memset left -- so "same value as last time" would leave a
+             * newly built slot un-told and nothing would ever correct it. */
+            if (shadow_plugin_v2->set_param) {
+                static void *lane_armed_inst[SHADOW_CHAIN_INSTANCES];
+                static int   lane_armed_seen[SHADOW_CHAIN_INSTANCES];
+                void *linst = shadow_chain_slots[s].instance;
+                int armed = shadow_rec_arm_recording() ? 1 : 0;
+                if (linst != lane_armed_inst[s] || armed != lane_armed_seen[s]) {
+                    shadow_plugin_v2->set_param(linst, "lanes:armed",
+                                                armed ? "1" : "0");
+                    lane_armed_inst[s] = linst;
+                    lane_armed_seen[s] = armed;
+                }
+            }
+
             /* A DELETED clip orphans its lanes, and the crossing is
              * worker-publishes / callback-pushes.
              *

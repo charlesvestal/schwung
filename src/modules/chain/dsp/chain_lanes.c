@@ -226,6 +226,22 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
  * file at all), or -1 when the host's buffer is too small -- which the UI
  * reads as a FAILED read, not as an empty one, so it cannot truncate a good
  * lanes_<i>.json with half a document. */
+/* Arm or disarm recording, pushed from the shim on CHANGE only.
+ *
+ * The shim decodes this from Move's Record LED (src/host/rec_arm.h): solid at
+ * full brightness means Move is capturing, and lanes record in exactly that
+ * window -- an animation channel is armed or counting in and records nothing.
+ *
+ * DISARMING RELEASES NOTHING and clears nothing. A lane that was just recorded
+ * must keep driving its parameter the moment Record goes out, or every take
+ * would end by handing the parameter back to wherever the knob happens to sit.
+ * lane_tick owns playback and reads `lane_armed` only to decide whether a turn
+ * is a write; the transition itself is not an event anything needs. */
+void lane_set_armed(chain_instance_t *inst, int armed) {
+    if (!inst) return;
+    inst->lane_armed = armed ? 1 : 0;
+}
+
 int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len) {
     if (!inst || !buf || buf_len <= 0) return -1;
     return lane_store_serialize(&inst->lanes, buf, buf_len);

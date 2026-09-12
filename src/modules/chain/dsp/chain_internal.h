@@ -1215,6 +1215,7 @@ CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
                                              lane_fingerprint_t *out);
 CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
 CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
+CHAIN_INTERNAL void lane_set_armed(chain_instance_t *inst, int armed);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);
