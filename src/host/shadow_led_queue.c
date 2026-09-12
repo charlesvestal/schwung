@@ -10,6 +10,7 @@
 /* Transport pulse counter (shadow_sampler.c). Read-only here, and only from
  * the SPI callback, which is also the only writer — no barrier needed. */
 extern int shadow_transport_pulses;
+extern int sampler_transport_playing;
 
 /* Move's clip state, decoded from the cable-0 scan below. Written on the SPI
  * callback, read by the worker. See clip_state.h -- in particular, this MUST
@@ -380,7 +381,9 @@ void shadow_clear_move_leds_if_overtake(void) {
                     g_clip_state_ready = 1;
                 }
                 clip_state_on_led(&g_clip_state, midi_out[i+1], d1, d2,
-                                  (uint32_t)shadow_transport_pulses);
+                                  (uint32_t)shadow_transport_pulses,
+                                  sampler_transport_playing,
+                                  ctrl ? ctrl->move_ui_mode : 0);
                 if (type == 0x90 || type == 0x80) {
                     /* Move turns pad LEDs off via note-off (0x80); normalize
                      * to note-on with d2=0 so restore emits a uniform 0x90. */

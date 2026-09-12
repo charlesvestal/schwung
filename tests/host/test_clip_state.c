@@ -30,7 +30,7 @@ static int feed(clip_state_t *st, const char *path, uint32_t stop_after_pulse)
         unsigned pul, st_b, d1, d2;
         if (sscanf(line, "%u %u %u %u", &pul, &st_b, &d1, &d2) != 4) continue;
         if (stop_after_pulse && pul > stop_after_pulse) break;
-        clip_state_on_led(st, (uint8_t)st_b, (uint8_t)d1, (uint8_t)d2, pul);
+        clip_state_on_led(st, (uint8_t)st_b, (uint8_t)d1, (uint8_t)d2, pul, 1, 1);
         n++;
     }
     fclose(f);
@@ -100,8 +100,8 @@ static void test_bare_ch9_is_a_refresh_not_an_anchor(void)
     clip_state_t st; clip_state_reset(&st);
 
     /* Establish a real, queued launch: track 1 clip 2, anchored at pulse 500. */
-    clip_state_on_led(&st, 0x9E, 93, 122, 480);   /* ch14 QUEUED */
-    clip_state_on_led(&st, 0x99, 93, 122, 500);   /* ch9 ON  -> anchor */
+    clip_state_on_led(&st, 0x9E, 93, 122, 480, 1, 1);   /* ch14 QUEUED */
+    clip_state_on_led(&st, 0x99, 93, 122, 500, 1, 1);   /* ch9 ON  -> anchor */
     CHECK(st.tracks[0].anchor_valid && st.tracks[0].anchor_pulse == 500,
           "setup: expected anchor 500, got valid=%d pulse=%u",
           st.tracks[0].anchor_valid, st.tracks[0].anchor_pulse);
@@ -109,7 +109,7 @@ static void test_bare_ch9_is_a_refresh_not_an_anchor(void)
     /* Now a grid refresh 1000 pulses later: same pad, ch-9 ON, no queue.
      * This is what entering Session mode emits for a clip that has been
      * playing all along. It must change NOTHING. */
-    clip_state_on_led(&st, 0x99, 93, 122, 1500);
+    clip_state_on_led(&st, 0x99, 93, 122, 1500, 1, 1);
     CHECK(st.tracks[0].anchor_pulse == 500,
           "a refresh re-anchored the track to %u -- phase destroyed",
           st.tracks[0].anchor_pulse);
@@ -141,8 +141,8 @@ static void test_restart_reanchors_to_zero(void)
 {
     printf("MIDI Start re-anchors known-playing tracks to 0\n");
     clip_state_t st; clip_state_reset(&st);
-    clip_state_on_led(&st, 0x9E, 93, 122, 480);
-    clip_state_on_led(&st, 0x99, 93, 122, 500);
+    clip_state_on_led(&st, 0x9E, 93, 122, 480, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, 500, 1, 1);
     CHECK(st.tracks[0].anchor_pulse == 500, "setup");
 
     /* The REAL 0xFA, not a backwards pulse step. The proxy this replaces only
@@ -171,7 +171,7 @@ static void test_phase_is_never_guessed(void)
     CHECK(!clip_phase_beats(&st.tracks[0], 100, 0.0, 4.0, &beats),
           "unknown identity must not produce a phase");
 
-    clip_state_on_led(&st, 0x99, 93, 122, 100);   /* refresh: identity only */
+    clip_state_on_led(&st, 0x99, 93, 122, 100, 1, 1);   /* refresh: identity only */
     CHECK(st.tracks[0].identity_valid, "setup: identity");
     CHECK(!clip_phase_beats(&st.tracks[0], 200, 0.0, 4.0, &beats),
           "identity without an anchor must NOT produce phase 0 -- unknown is "
@@ -181,8 +181,8 @@ static void test_phase_is_never_guessed(void)
     /* With a real anchor, the arithmetic -- including a non-zero loop start,
      * which Song.abl does carry (a loop beginning at bar 3 is normal). */
     clip_state_reset(&st);
-    clip_state_on_led(&st, 0x9E, 93, 122, 0);
-    clip_state_on_led(&st, 0x99, 93, 122, 0);
+    clip_state_on_led(&st, 0x9E, 93, 122, 0, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, 0, 1, 1);
     CHECK(clip_phase_beats(&st.tracks[0], 24 * 5, 0.0, 4.0, &beats), "should resolve");
     CHECK(beats > 0.99 && beats < 1.01, "5 beats into a 4-beat loop = 1.0, got %f", beats);
 
@@ -191,8 +191,88 @@ static void test_phase_is_never_guessed(void)
           "loop starting at beat 8, 5 beats in = 9.0, got %f", beats);
 }
 
+/* Round 5 on hardware: a set loads with a clip SELECTED on every track and
+ * nothing playing; choosing one both selects it and starts the transport.
+ * The chosen track went c6 -> (stop) -> c3, and because only a ch-14 queue
+ * counted as evidence of a launch, the one track the user actually picked was
+ * left unanchored for good while three untouched tracks anchored fine. */
+static void test_chosen_clip_on_a_stopped_track_anchors(void)
+{
+    printf("choosing a clip on a stopped track anchors THAT track\n");
+    clip_state_t st; clip_state_reset(&st);
+
+    /* Set loads: clip 6 selected on track 1, transport STOPPED. A selection
+     * is not a launch -- it must not anchor. */
+    clip_state_on_led(&st, 0x99, 97, 122, 0, 0, 1);
+    CHECK(st.tracks[0].identity_valid && st.tracks[0].clip_slot == 5,
+          "selection should give identity, got valid=%d slot=%d",
+          st.tracks[0].identity_valid, st.tracks[0].clip_slot);
+    CHECK(!st.tracks[0].anchor_valid,
+          "a selection with the transport stopped must NOT anchor");
+
+    /* User picks clip 3 on that track: the old one goes out, the new one
+     * comes in, and the transport is now running. */
+    clip_state_on_led(&st, 0x89, 97, 0, 0, 0, 1);      /* c6 off */
+    clip_state_on_led(&st, 0x99, 94, 122, 4, 1, 1);    /* c3 on, running */
+    CHECK(st.tracks[0].clip_slot == 2, "should now be clip 3, got %d",
+          st.tracks[0].clip_slot);
+    CHECK(st.tracks[0].anchor_valid,
+          "the clip the user chose must be ANCHORED -- we watched it start");
+    CHECK(st.tracks[0].anchor_pulse == 4,
+          "anchor should be the pulse we saw it start, got %u",
+          st.tracks[0].anchor_pulse);
+}
+
+/* The other half: a slot that merely DIFFERS from memory, with no witnessed
+ * stop and no queue, is not evidence. We may just have been blind. */
+static void test_unwitnessed_slot_change_does_not_anchor(void)
+{
+    printf("an unwitnessed slot change reports unknown phase, not a guess\n");
+    clip_state_t st; clip_state_reset(&st);
+    clip_state_on_led(&st, 0x9E, 93, 122, 100, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, 120, 1, 1);
+    CHECK(st.tracks[0].anchor_valid, "setup");
+
+    /* A different slot appears with no stop and no queue observed. */
+    clip_state_on_led(&st, 0x99, 95, 122, 900, 1, 1);
+    CHECK(st.tracks[0].clip_slot == 3, "identity should follow");
+    CHECK(!st.tracks[0].anchor_valid,
+          "an unwitnessed change must leave phase UNKNOWN, not anchor at 900");
+}
+
+/* Measured: the only two ch-9 events that named a clip nobody was playing
+ * arrived at mode 3 (Set Overview) and mode 0 (boot, mode not yet known).
+ * Ungated they put track 4 on clip 5 AND anchored it -- wrong, and asserted
+ * with confidence, for 14 beats until a Session refresh corrected it. */
+static void test_non_session_modes_are_ignored(void)
+{
+    printf("pad events outside Session mode are not clip state\n");
+    clip_state_t st; clip_state_reset(&st);
+
+    clip_state_on_led(&st, 0x99, 72, 9, 0, 1, 3);   /* Set Overview */
+    CHECK(!st.tracks[3].identity_valid,
+          "a Set Overview pad is a SET, not a clip -- it must not set identity");
+
+    clip_state_on_led(&st, 0x99, 72, 9, 0, 1, 0);   /* mode not yet known */
+    CHECK(!st.tracks[3].identity_valid,
+          "with the mode unknown we cannot say what the pads mean");
+
+    clip_state_on_led(&st, 0x99, 72, 9, 0, 1, 2);   /* Note mode: pads are keys */
+    CHECK(!st.tracks[3].identity_valid,
+          "in Note mode the pads are the instrument, not the clip grid");
+
+    /* The same event in Session mode is real. */
+    clip_state_on_led(&st, 0x99, 72, 122, 0, 1, 1);
+    CHECK(st.tracks[3].identity_valid && st.tracks[3].clip_slot == 4,
+          "Session mode should give T4 c5, got valid=%d slot=%d",
+          st.tracks[3].identity_valid, st.tracks[3].clip_slot);
+}
+
 int main(void)
 {
+    test_non_session_modes_are_ignored();
+    test_chosen_clip_on_a_stopped_track_anchors();
+    test_unwitnessed_slot_change_does_not_anchor();
     test_pad_decode();
     test_grid_refresh_matches_song_abl();
     test_launch_sets_anchor();

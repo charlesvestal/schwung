@@ -1,0 +1,137 @@
+package main
+
+// Clip-state debug page. Move's sequencer emits no CC; the shim decodes which
+// clip is playing on each track from Move's own cable-0 LED stream. This
+// serves that decode live so it can be watched against what the device is
+// visibly doing -- which is the only way to tell a correct decode from one
+// that merely agrees with itself.
+//
+// Arm it on the device with:  touch /data/UserData/schwung/clip_state_on
+
+import (
+	"net/http"
+	"os"
+)
+
+const (
+	clipStatePath = "/data/UserData/schwung/clip_state.json"
+	clipArmPath   = "/data/UserData/schwung/clip_state_on"
+)
+
+// GET /api/clip-state — the shim's snapshot, passed through verbatim.
+// Reports "armed" separately so the page can tell "not armed" from "armed but
+// producing nothing", which look identical from an empty body and mean very
+// different things.
+func (a *App) handleAPIClipState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	armed := false
+	if _, err := os.Stat(clipArmPath); err == nil {
+		armed = true
+	}
+	body, err := os.ReadFile(clipStatePath)
+	if err != nil || len(body) == 0 {
+		if armed {
+			w.Write([]byte(`{"armed":true,"waiting":true}`))
+		} else {
+			w.Write([]byte(`{"armed":false}`))
+		}
+		return
+	}
+	// Splice "armed" into the shim's object without parsing it.
+	out := append([]byte(`{"armed":true,`), body[1:]...)
+	w.Write(out)
+}
+
+// POST /clip-state/arm — create or remove the arming file.
+func (a *App) handleClipStateArm(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("on") == "1" {
+		f, err := os.Create(clipArmPath)
+		if err == nil {
+			f.Close()
+		}
+	} else {
+		os.Remove(clipArmPath)
+		// Remove the snapshot too, so a stale state cannot be mistaken for a
+		// live one next time the page is opened.
+		os.Remove(clipStatePath)
+	}
+	http.Redirect(w, r, "/clip-state", http.StatusSeeOther)
+}
+
+func (a *App) handleClipState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(clipStateHTML))
+}
+
+const clipStateHTML = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clip State</title>
+<style>
+ body{font:14px system-ui,-apple-system,sans-serif;margin:0;padding:16px;
+      background:#111;color:#eee}
+ h1{font-size:18px;margin:0 0 4px}
+ p.sub{color:#888;margin:0 0 16px}
+ table{border-collapse:collapse;width:100%;max-width:640px}
+ th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #282828}
+ th{color:#888;font-weight:500;font-size:12px;text-transform:uppercase;
+    letter-spacing:.04em}
+ td.n{font-variant-numeric:tabular-nums}
+ .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px}
+ .ok{background:#12351e;color:#6ee7a0}
+ .warn{background:#3a3115;color:#f0c96a}
+ .off{background:#2a2a2a;color:#888}
+ .bar{color:#666;margin-top:14px;font-size:12px}
+ button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid #444;
+        background:#1e1e1e;color:#eee;cursor:pointer}
+</style></head><body>
+<h1>Clip State</h1>
+<p class="sub">What the shim has decoded from Move&rsquo;s LED stream. Updates ~1&nbsp;Hz.</p>
+<div id="armbox"></div>
+<table><thead><tr><th>Track</th><th>Clip</th><th>Phase</th><th>Elapsed beats</th></tr></thead>
+<tbody id="rows"></tbody></table>
+<div class="bar" id="bar"></div>
+<script>
+function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+async function tick(){
+  let d;
+  try { d = await (await fetch('/api/clip-state',{cache:'no-store'})).json(); }
+  catch(e){ document.getElementById('bar').textContent='(manager unreachable)'; return; }
+  const arm=document.getElementById('armbox');
+  if(!d.armed){
+    arm.innerHTML='<form method="post" action="/clip-state/arm">'+
+      '<input type="hidden" name="on" value="1">'+
+      '<button>Start tracking</button></form>'+
+      '<p class="sub" style="margin-top:10px">Not armed &mdash; the shim is not decoding.</p>';
+    document.getElementById('rows').innerHTML='';
+    document.getElementById('bar').textContent='';
+    return;
+  }
+  arm.innerHTML='<form method="post" action="/clip-state/arm">'+
+    '<input type="hidden" name="on" value="0">'+
+    '<button>Stop tracking</button></form>';
+  if(d.waiting || !d.tracks){
+    document.getElementById('rows').innerHTML='';
+    document.getElementById('bar').textContent='armed — waiting for the first LED scan';
+    return;
+  }
+  document.getElementById('rows').innerHTML=d.tracks.map(t=>{
+    let clip, phase, el;
+    if(!t.known){ clip='<span class="pill off">unknown</span>'; phase=''; el=''; }
+    else if(t.clip===0){ clip='<span class="pill off">nothing playing</span>'; phase=''; el=''; }
+    else {
+      clip='clip '+esc(t.clip);
+      /* "unknown" is a third answer, not zero -- a lane must refuse to record
+         here rather than record at a guessed phase. */
+      phase = t.anchored ? '<span class="pill ok">anchored</span>'
+                         : '<span class="pill warn">phase unknown</span>';
+      el = t.anchored ? (+t.elapsed_beats).toFixed(2) : '—';
+    }
+    return '<tr><td>'+esc(t.track)+'</td><td>'+clip+'</td><td>'+phase+
+           '</td><td class="n">'+el+'</td></tr>';
+  }).join('');
+  document.getElementById('bar').textContent =
+    'pulse '+d.pulses+'  ·  beat '+(+d.beat).toFixed(2);
+}
+tick(); setInterval(tick,1000);
+</script></body></html>`

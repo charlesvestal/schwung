@@ -445,6 +445,27 @@ static void clip_state_tick(void)
     }
     fprintf(fp, "\n");
     fclose(fp);
+
+    /* JSON snapshot for the web manager's debug page. Truncated each time --
+     * it is a STATE, not a log. Written beside the log rather than into SHM
+     * because the manager is a separate process with no mapping for this and
+     * a 1 Hz file is plenty for a human watching along. */
+    FILE *jf = fopen("/data/UserData/schwung/clip_state.json", "w");
+    if (!jf) return;
+    fprintf(jf, "{\"pulses\":%u,\"beat\":%.2f,\"tracks\":[", pul, pul / 24.0);
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        const clip_track_state_t *tr = &cs->tracks[t];
+        double el = tr->anchor_valid ? (double)(pul - tr->anchor_pulse) / 24.0 : 0.0;
+        fprintf(jf, "%s{\"track\":%d,\"known\":%s,\"clip\":%d,"
+                    "\"anchored\":%s,\"anchor_pulse\":%u,\"elapsed_beats\":%.2f}",
+                t ? "," : "", t + 1,
+                tr->identity_valid ? "true" : "false",
+                tr->identity_valid ? tr->clip_slot + 1 : 0,
+                tr->anchor_valid ? "true" : "false",
+                tr->anchor_pulse, el);
+    }
+    fprintf(jf, "]}\n");
+    fclose(jf);
 }
 void shim_touch_trace_drain(void);
 

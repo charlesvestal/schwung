@@ -48,6 +48,8 @@ extern "C" {
 #define CLIP_PAD_NOTE_MAX 99
 
 /* The two channels that carry meaning. Anything else is base colour. */
+#define CLIP_UI_MODE_SESSION 1
+
 #define CLIP_CH_PLAYING 9
 #define CLIP_CH_QUEUED  14
 
@@ -64,6 +66,12 @@ typedef struct {
      * whole of rule 2: only a ch-9 ON that follows a queue on the same pad
      * may write an anchor. */
     int      queued_slot[CLIP_TRACKS];
+    /* Per track: we WATCHED its playing clip stop, and nothing has started
+     * since. A ch-9 ON after that is a clip we saw begin, so it may anchor --
+     * the same standing as a queued launch, and for the same reason. Without
+     * it, choosing a clip on a stopped track (which is how a set is started)
+     * left that very track unanchored for good. */
+    int      saw_stop[CLIP_TRACKS];
     uint32_t last_pulse;
     int      seen_pulse;
 } clip_state_t;
@@ -91,8 +99,33 @@ void clip_state_on_transport_start(clip_state_t *st);
  *
  * Detects a transport restart itself, from the pulse counter going backwards
  * -- the LED scan never sees 0xFA, and a counter reset is the same fact. */
+/* `running` is the transport state. It is load-bearing, not a nicety:
+ *
+ *   TRANSPORT PLAYING  ch 9 means PLAYING.
+ *   STOPPED / JUST LOADED  ch 9 means SELECTED. A set restores a selected
+ *   clip per track with nothing sounding, and pressing one of them both
+ *   selects it AND starts the transport.
+ *
+ * So a selection is not a launch and must never set an anchor -- phase is
+ * meaningless while stopped anyway, and the Start that follows anchors every
+ * selected track to 0, which is exactly right because they all begin together. */
+/* `ui_mode` is shadow_control->move_ui_mode: 1 = Session, 2 = Note,
+ * 3 = Set Overview, 0 = not yet known.
+ *
+ * PAD EVENTS ARE ONLY CLIP STATE IN SESSION MODE. This is a hard gate, not a
+ * refinement. In Set Overview the pads show SETS, and at boot the mode is
+ * simply unknown -- and Move lights those grids on the same notes and the same
+ * channel 9. Measured: of 11 ch-9 events in a 131,699-row capture, the two
+ * that named a clip nobody was playing arrived at mode 3 and mode 0, and every
+ * correct one at mode 1. Ungated, that put a track on the wrong clip AND
+ * anchored it, which is the confidently-wrong answer this whole design exists
+ * to refuse.
+ *
+ * (The colour differs too -- the spurious ones were dim, d2=9/11, against
+ * d2=122 for real state. That is not used: a velocity is a colour, and keying
+ * on an exact value would break the first time Move retheme s anything.) */
 void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
-                       uint8_t d2, uint32_t pulses);
+                       uint8_t d2, uint32_t pulses, int running, int ui_mode);
 
 /* Phase in beats from the clip's LOOP START, or 0 if unknown (check the
  * return value; the out param is untouched on failure).

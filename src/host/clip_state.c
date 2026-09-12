@@ -25,6 +25,7 @@ void clip_state_reset(clip_state_t *st)
     for (int t = 0; t < CLIP_TRACKS; t++) {
         st->tracks[t].clip_slot = -1;
         st->queued_slot[t] = -1;
+        st->saw_stop[t] = 0;
     }
 }
 
@@ -40,6 +41,7 @@ void clip_state_on_transport_start(clip_state_t *st)
     if (!st) return;
     for (int t = 0; t < CLIP_TRACKS; t++) {
         st->queued_slot[t] = -1;
+        st->saw_stop[t] = 0;
         if (st->tracks[t].identity_valid && st->tracks[t].clip_slot >= 0) {
             st->tracks[t].anchor_valid = 1;
             st->tracks[t].anchor_pulse = 0;
@@ -51,7 +53,7 @@ void clip_state_on_transport_start(clip_state_t *st)
 }
 
 void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
-                       uint8_t d2, uint32_t pulses)
+                       uint8_t d2, uint32_t pulses, int running, int ui_mode)
 {
     if (!st) return;
 
@@ -60,6 +62,9 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
 
     uint8_t type = status & 0xF0;
     if (type != 0x90 && type != 0x80) return;
+
+    /* Only Session mode paints clips on these notes. See the header. */
+    if (ui_mode != CLIP_UI_MODE_SESSION) return;
 
     int track, slot;
     if (!clip_pad_decode(d1, &track, &slot)) return;
@@ -85,22 +90,34 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
         tr->identity_valid = 1;
         tr->clip_slot = slot;
 
-        if (was_queued) {
+        /* Anchor only on a transition we WITNESSED: a queued launch, or a
+         * clip starting on a track we watched fall silent. Both mean "this
+         * began just now", which is what an anchor asserts.
+         *
+         * A slot that merely DIFFERS from what we remember is not evidence of
+         * anything -- we may simply have been blind for a while (the scan is
+         * gated during overtake). Anchoring on that would be the same guess
+         * the refresh rule exists to refuse. */
+        int witnessed = was_queued || st->saw_stop[track];
+
+        if (running && witnessed) {
             tr->anchor_valid = 1;
             tr->anchor_pulse = pulses;
-            st->queued_slot[track] = -1;
         } else if (slot_changed) {
-            /* A different clip than we last knew, with no queue observed --
-             * we missed the launch. Identity is now right and the phase is
-             * not; say so rather than keeping the old clip's anchor. */
+            /* Identity is now right and the phase is not. Say so. */
             tr->anchor_valid = 0;
         }
+        st->queued_slot[track] = -1;
+        st->saw_stop[track] = 0;
     } else {
         /* Playing clip stopped. Identity is known (nothing is playing);
          * the anchor is meaningless. */
         if (tr->identity_valid && tr->clip_slot == slot) {
             tr->clip_slot = -1;
             tr->anchor_valid = 0;
+            /* Witnessed silence. Whatever starts next on this track, we saw
+             * it start. */
+            st->saw_stop[track] = 1;
         }
     }
 }
