@@ -822,22 +822,43 @@ playhead     a 1 px INTERRUPTION in the strip, plus a stub at rows 55-57/61-63
 - **Do NOT build a model of Move's sequencer UI.** Read Move's answer off the
   screen; never track its modes, pages or loop points. Every time this work
   drifted that way it produced a bug.
-- **A SEGMENT IS A 16-STEP PAGE, NOT A BAR** — Move has 16 step buttons, and
-  the strip draws one segment per page of the loop at the current grid. So
+- **A SEGMENT IS A BAR, ROUNDED UP — so the strip answers a RANGE.** Move's
+  manual, on this strip: *"Each line represents a bar… A thick line specifies
+  that the bar is selected and part of the loop… A plus icon signifies that the
+  bar is outside of the loop."* Measured on an 11/8 set (5.5 quarters/bar),
+  against the file:
 
-  ```
-  quarters = segments * 16 * step_resolution
-  ```
+  | clip | file | bars (ceil) | 16-step pages | strip drew |
+  |---|---|---|---|---|
+  | T2 | 16 q | 2.91 → **3** | **4** | **3** |
+  | T1 | 12 q | 2.18 → 3 | 3 | 3 |
+  | T4 | 4 q | 0.73 → 1 | 1 | 1 (thin) |
 
-  and the **time signature does not enter it**. In 4/4 at 1/16 a page *is* a
-  bar, which is why "bars" was the wrong name and agreed anyway against the
-  file at 1, 3, 4 and 5 segments. An 11/8 set separated them: a 12-quarter loop
-  drew **3** segments — through the bar (5.5 quarters) that is 16.5 against the
-  file's 12.0; through the page it is **12.0 exactly**. The step grid runs
-  **1/8t to 1/64**, so `stepEditorResolution` must parse a TRIPLET suffix: the
-  old `sscanf("\"%d/%d\"")` accepted `"1/8t"` as a straight eighth — its two
-  `%d`s succeed and the trailing literal quote fails without changing the
-  return count — for a silent 50% error in every step index.
+  T2 is the only clip that separates the two models, and it says bars. So
+  `quarters ≈ segments × quarters_per_bar`, as a **ceiling**: 3 segments under
+  11/8 means (11.0, 16.5], exact only when the loop is a whole number of bars
+  — which a clip Move created in the current signature is. Anything needing
+  better than bar resolution must wait for the file.
+  **Two wrong answers preceded this**, both from coincidences: `bars × 4` (a
+  4/4 assumption), then "a segment is a 16-step page", which came from T1
+  agreeing *exactly* through pages — 12 quarters is 3 pages **and** 3
+  bars-rounded-up. One coincidence, believed twice; T2 is what broke it.
+- **A ONE-BAR LOOP DRAWS A THIN LINE WITH NO THICKENING**, straight from the
+  manual — *"if a loop contains only one bar, a thin line is displayed
+  instead"* — and the displayed-bar gate therefore refused **every new clip**,
+  which is the case the reader exists for. The 1-bar T4 clip came back as gate
+  6 twice before the manual explained it. It is accepted now and **flagged**
+  (`single_thin`), because it is the one shape indistinguishable from an
+  unrelated full-width line; with two or more segments the thickening is still
+  required. Surveyed by driving Move through Menu, Loop Mode and the screen
+  Back lands on: row 59 empty on all three. Three screens is not proof, which
+  is what the flag is for.
+- **The step grid runs 1/8t to 1/64, so `stepEditorResolution` must parse a
+  TRIPLET suffix.** The old `sscanf("\"%d/%d\"")` accepted `"1/8t"` as a
+  straight eighth — its two `%d`s succeed and the trailing literal quote fails
+  without changing the return count — a silent 50% error in every step index.
+  Per the manual the grid divides a **bar**, and above 1/16 a bar spans several
+  pages of step buttons.
 - **Move's playhead index is page-relative too, and deriving it from the
   signature made it worse.** Predicted that an 11/8 bar's 22 steps was the
   modulus, deployed it, and measured: within-page went 0/16 diff +6 → 0/18 diff

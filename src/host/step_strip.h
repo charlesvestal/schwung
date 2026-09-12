@@ -78,20 +78,37 @@
  * rather than guessed at. */
 #define STEP_STRIP_MAX_SEGMENTS  16
 
-/* A SEGMENT IS A PAGE OF 16 STEPS, NOT A BAR, and that distinction cost a
- * measurement. Move has 16 step buttons, so the strip draws one segment per
- * page of the loop at the CURRENT GRID -- and in 4/4 at 1/16 a page IS a bar,
- * which is why "bars" was the wrong name and agreed anyway for every loop
- * length measured (1, 3, 4 and 5 segments against the file).
+/* A SEGMENT IS A BAR, ROUNDED UP -- and it took two wrong answers to get here.
  *
- * An 11/8 set separated them (measured 2026-09-12): a 12-quarter loop drew 3
- * segments, and 12 / 3 = 4.0 quarters per segment = 16 steps at 1/16, while an
- * 11/8 BAR is 5.5 quarters and would have made it 16.5. So the length is
+ * Move's manual, on this exact strip: "Each line represents a bar... A thick
+ * line specifies that the bar is selected and part of the loop... A thin line
+ * indicates that the bar is part of the loop but not selected. A plus icon
+ * signifies that the bar is outside of the loop."
  *
- *     quarters = segments * STEP_STRIP_STEPS_PER_PAGE * step_resolution
+ * MEASURED against the file on an 11/8 set (quarters per bar = 5.5):
  *
- * and the TIME SIGNATURE does not enter it at all -- only the grid does, which
- * is the fact the user supplied: the step editor's grid runs 1/8t to 1/64. */
+ *     T2  16 quarters   ceil(16/5.5) = 3 bars   4 pages   strip: 3
+ *     T1  12 quarters   ceil(12/5.5) = 3 bars   3 pages   strip: 3
+ *     T4   4 quarters   ceil(4/5.5)  = 1 bar    1 page    strip: refused
+ *
+ * T2 is the only one that separates the two models, and it says BARS. The
+ * first wrong answer was `bars * 4` (a 4/4 assumption); the second was "a
+ * segment is a 16-step page", which came from T1 agreeing exactly through
+ * pages -- 12 quarters is 3 pages AND 3 bars-rounded-up, so it never
+ * disambiguated anything. One coincidence, believed twice.
+ *
+ *     quarters ~= segments * quarters_per_bar        (clip_regions.h)
+ *
+ * and it is a CEILING, so the answer is a RANGE: 3 segments under 11/8 means
+ * (11.0, 16.5]. Exact only when the loop is a whole number of bars, which a
+ * clip Move created in the current signature is -- the fractional cases here
+ * are 4/4 loops left over from before the signature changed. So the strip
+ * gives a length to BAR RESOLUTION and never better; anything needing more
+ * must wait for the file. */
+
+/* Move has 16 step buttons, and its playhead index is page-relative to them.
+ * Not used for the length -- see above -- but it is the modulus the phase
+ * check needs, and deriving that from the bar instead made it worse. */
 #define STEP_STRIP_STEPS_PER_PAGE  16
 
 /* How many CONSECUTIVE agreeing readings the per-track cache requires.
@@ -123,7 +140,8 @@ enum {
     STEP_STRIP_GAP_TOO_WIDE,  /* a hole no bar boundary explains */
     STEP_STRIP_TOO_MANY_SEGMENTS,
     STEP_STRIP_NONUNIFORM,    /* segments do not divide the span evenly */
-    STEP_STRIP_NO_BOLD        /* no displayed-bar thickening: not the editor */
+    STEP_STRIP_NO_BOLD        /* no displayed-bar thickening, and more than
+                               * one segment: not the editor */
 };
 
 /* Playhead evidence, as a bitmask: the two signatures are independent, and
@@ -133,6 +151,19 @@ enum {
 
 typedef struct {
     int    valid;            /* the bar strip was recognised */
+    /* ONE SEGMENT, NO THICKENING -- and it is a real reading, not a refusal.
+     * The manual: "if a loop contains only one bar, a thin line is displayed
+     * instead." So the displayed-bar gate cannot apply to a one-bar loop, and
+     * a one-bar loop is what a NEW clip is, which is the case this reader
+     * exists for. It is flagged rather than merged, because it is the one
+     * shape indistinguishable from an unrelated full-width line: a consumer
+     * that would rather refuse than be wrong can.
+     *
+     * Surveyed for false positives 2026-09-12 by driving Move through Menu,
+     * Loop Mode and the screen Back lands on: row 59 was EMPTY on all three,
+     * and the editor's own strip is unmistakable beside them (three 41 px
+     * segments, a 41 px bold). Not exhaustive -- it is three screens. */
+    int    single_thin;
     int    reject;           /* STEP_STRIP_* -- why not, when !valid */
     int    segments;         /* 16-step PAGES, 1..STEP_STRIP_MAX_SEGMENTS */
     int    bold_segment;     /* the displayed page, 1..segments (0 = unknown) */
