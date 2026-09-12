@@ -172,6 +172,10 @@
         "label": "Sampler & Looper"
       },
       {
+        "id": "kit-building",
+        "label": "Kit Building"
+      },
+      {
         "id": "performance-fx",
         "label": "Performance FX"
       }
