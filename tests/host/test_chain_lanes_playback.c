@@ -170,8 +170,8 @@ int main(void) {
     lane_t *ln = lane_alloc(&inst->lanes, "synth", "cutoff", 0, 0, &fp);
     CHECK(ln != NULL, "lane_alloc gave us a lane");
     if (!ln) { printf("FAILURES: %d\n", fails); return 1; }
-    lane_write(ln, 0.0, 20.0f);
-    lane_write(ln, 4.0, 80.0f);
+    lane_write(ln, 0.0, 20.0f, 0);
+    lane_write(ln, 4.0, 80.0f, 0);
 
     /* 1. PHASE UNKNOWN DRIVES NOTHING -- not 20.0, not the midpoint, nothing,
      *    and it registers no override for an LFO to later sum on top of. */
@@ -226,8 +226,8 @@ int main(void) {
     lane_t *lo = lane_alloc(&inst->lanes, "synth", "octave", 0, 0, &fp);
     CHECK(lo != NULL, "lane_alloc gave us a second lane");
     if (lo) {
-        lane_write(lo, 0.0, 2.0f);
-        lane_write(lo, 4.0, 6.0f);
+        lane_write(lo, 0.0, 2.0f, 0);
+        lane_write(lo, 4.0, 6.0f, 0);
         inst->clip_phase_valid = 1;
         inst->clip_phase_beats = 2.0;
         lane_tick(inst);
@@ -410,8 +410,8 @@ int main(void) {
         lane_t *fl = lane_alloc(&fpi->lanes, "synth", "cutoff", 0, 0, &recorded);
         CHECK(fl != NULL, "fingerprint lane alloc");
         if (fl) {
-            lane_write(fl, 0.0, 20.0f);
-            lane_write(fl, 4.0, 80.0f);
+            lane_write(fl, 0.0, 20.0f, 0);
+            lane_write(fl, 4.0, 80.0f, 0);
 
             double same[4]  = { 0.0, 8.0, 3.0, 41.0 };
             /* Same loop, same first note, five notes instead of three: a
@@ -541,7 +541,7 @@ int main(void) {
         lane_t *ol = lane_alloc(&fpi->lanes, "synth", "octave", 0, 0, &placeholder);
         CHECK(ol != NULL, "placeholder lane alloc");
         if (ol) {
-            lane_write(ol, 0.0, 5.0f);
+            lane_write(ol, 0.0, 5.0f, 0);
             fake_poke("octave", "1");
             double same[4] = { 0.0, 8.0, 3.0, 41.0 };
             chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
@@ -584,9 +584,9 @@ int main(void) {
             lane_t *b = lane_alloc(&ci->lanes, "synth", "octave", 0, 0, &cfp);
             CHECK(a != NULL && b != NULL, "two lanes to clear");
             if (a && b) {
-                lane_write(a, 0.0, 20.0f);
-                lane_write(a, 4.0, 80.0f);
-                lane_write(b, 0.0, 6.0f);
+                lane_write(a, 0.0, 20.0f, 0);
+                lane_write(a, 4.0, 80.0f, 0);
+                lane_write(b, 0.0, 6.0f, 0);
 
                 /* The knob positions the user must get back. Poked as the
                  * BASE before anything drives, which is what chain_mod
@@ -707,8 +707,8 @@ int main(void) {
             CHECK(pl != NULL, "recording-pass lane alloc");
             if (pl) {
                 /* The OLD curve: 20 at beat 0, 80 at beat 4, so 50 at beat 2. */
-                lane_write(pl, 0.0, 20.0f);
-                lane_write(pl, 4.0, 80.0f);
+                lane_write(pl, 0.0, 20.0f, 0);
+                lane_write(pl, 4.0, 80.0f, 0);
 
                 rp->clip_phase_beats = 2.0;
                 lane_tick(rp);

@@ -289,8 +289,10 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * the span it sweeps rather than interleave with it. lane_write's
          * thinning window is ~5 ms and cannot do that job -- see
          * LANE_MIN_POINT_BEATS. */
+        /* hold = 0: a recorded knob sweep IS a slope. A step p-lock is the
+         * gesture that writes a rectangle. */
         lane_record_point(ln, inst->clip_phase_beats, v,
-                          inst->clip_loop_start, inst->clip_loop_len);
+                          inst->clip_loop_start, inst->clip_loop_len, 0);
         /* AND HAND THE PARAMETER BACK, for the same reason the unarmed branch
          * below does: an active override makes v2_set_param re-apply base+mod
          * and RETURN, so this write would never reach the plugin at all -- the
