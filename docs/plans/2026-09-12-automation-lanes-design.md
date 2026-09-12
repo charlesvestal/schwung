@@ -199,6 +199,70 @@ Four rules:
 - **Phase unknown refuses.** No recording at a guessed zero, and the refusal
   is visible on screen rather than silent.
 
+## Measured: Move's Record button (2026-09-12, on hardware)
+
+**Record is CC 86, not CC 118.** `schwung-spi`'s header documents 118 as
+"same physical button as Sample", and 118 never appeared in the arm sequence.
+
+**The animation is carried in the CHANNEL nibble; the value is the colour it
+animates to.** Same shape as Project 1's pad decode, where the channel carried
+playing/queued and the colour byte carried nothing. The rates match
+`schwung-spi`'s `SCHWUNG_ANIM_*` vocabulary (0x06-0x0A pulse, 0x0B-0x0F blink).
+
+A full Session-view arm sequence, captured on the shim's existing cable-0 scan:
+
+```
+pul=921   ch=0  d2=122                    resting
+pul=1043  ch=0  d2=0   + ch=10 d2=127     PULSE_HALF  -> armed, waiting
+pul=1146  ch=0  d2=127 + ch=14 d2=0       BLINK_4TH   -> queued, counting in
+pul=1154  ch=0  d2=127                    static      -> RECORDING (~13 beats)
+pul=1471  0xFC stop, then ch=0 d2=0 + ch=10 d2=127    -> armed again
+pul=1471  ch=0  d2=122, then ch=0 d2=124              -> disarmed, resting
+```
+
+Three rules fall out, and the second is the one that nearly went wrong:
+
+1. **An animation channel (0x06-0x0F) means FLASHING** — armed or counting in,
+   never recording. No rate measurement and no colour comparison needed.
+2. **"Static" alone does NOT mean recording.** The resting state is *also*
+   static and non-zero (122, 124). The discriminator is **full brightness**:
+   recording is `d2 == 127`. That is read as a BRIGHTNESS, not a hue — an exact
+   palette index is what Project 1 warns breaks the first time Move rethemes,
+   whereas "the button is at maximum" is a design intent unlikely to invert.
+3. **Evaluate once per FRAME, from the last CC 86 message in it.** Move writes
+   the base colour statically and *then* applies the animation, so a burst
+   contains `static 127` immediately followed by `blink`. Acting on each message
+   in turn reports one frame of RECORDING every time the count-in starts.
+
+### Consequences for the feature
+
+- **Lanes record only while solid** (the user's call): knob automation is
+  captured in exactly the window Move captures notes. Holding Record+track and
+  the count-in capture nothing.
+- **Record does nothing in set selection**, and Move lights nothing there, so
+  the absence of the event IS the disarmed state — the mode gate Project 1
+  needed for pads is free here.
+- **In Note view, pressing Record starts the transport.** So arming and
+  obtaining a valid phase are one gesture, and the phase-unknown refusal should
+  be rare in practice rather than the common case.
+- Stopping with Play leaves Record armed (back to the slow pulse), which
+  correctly reads as "not recording" without any extra state.
+
+### How it was measured, and one thing that made it slow
+
+The instrument records every non-empty MIDI_OUT slot on **every cable,
+including SysEx**. Its first version took only cable-0 note/CC, which is blind
+to two of the four candidate mechanisms (another cable; SysEx) — so its empty
+captures proved nothing and read as "no animation packets exist". Widen a probe
+to cover the hypotheses before believing a negative result.
+
+Move emits an LED packet **only when that LED changes**, so an idle device
+produces nothing at all (4 s of idle: zero events). That makes the capture
+clean, and it also means the first two attempts caught only screen-change
+refresh bursts. `clip_state.log` served as the positive control: it showed all
+four tracks with identity and phase throughout, proving the shared scan was
+running while the Record log stayed empty.
+
 ## Persistence
 
 The chain serves the whole lane set as one opaque `lanes:state` blob. The
