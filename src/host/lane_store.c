@@ -19,12 +19,20 @@ static int lane_key_fits(const char *target, const char *param) {
            strlen(param)  < sizeof(((lane_t *)0)->param);
 }
 
-lane_t *lane_find(lane_store_t *st, const char *target, const char *param) {
+lane_t *lane_find(lane_store_t *st, const char *target, const char *param,
+                  int track, int slot) {
     if (!st || !target || !param) return 0;
     if (!lane_key_fits(target, param)) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &st->lanes[i];
         if (!ln->used) continue;
+        /* THE POSITION IS TESTED FIRST, and it is half the key. Comparing
+         * only (target, param) gave one lane per parameter across all 8 clip
+         * slots: recording the same knob against a second clip returned the
+         * FIRST clip's lane, so the take landed in it, overflowed it and
+         * interleaved with the other clip's curve. Two cheap integer
+         * comparisons, in front of the two strcmps, is the whole fix. */
+        if (ln->track != track || ln->slot != slot) continue;
         if (strcmp(ln->target, target) == 0 && strcmp(ln->param, param) == 0)
             return ln;
     }
@@ -35,7 +43,7 @@ lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
                    int track, int slot, const lane_fingerprint_t *fp) {
     if (!st || !target || !param) return 0;
     if (!lane_key_fits(target, param)) return 0;
-    lane_t *ln = lane_find(st, target, param);
+    lane_t *ln = lane_find(st, target, param, track, slot);
     if (ln) return ln;
     for (int i = 0; i < LANE_MAX; i++) {
         ln = &st->lanes[i];

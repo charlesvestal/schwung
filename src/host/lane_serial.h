@@ -46,12 +46,25 @@ extern "C" {
 #define LANE_SERIAL_VERSION 1
 
 /* Worst case: one "V n" line, then per lane a header plus LANE_POINTS_MAX
- * points. A header is target(15) + param(31) + seven numbers; %.17g of a
- * double is at most 24 characters. 128 bytes of header and 64 bytes per point
- * is comfortably above both, and the whole thing is well inside the 128 KB
- * param-contract ceiling. The serializer bounds-checks regardless -- this
- * define is for callers sizing a buffer, not a substitute for the check. */
-#define LANE_SERIAL_MAX_BYTES (16 + LANE_MAX * (128 + LANE_POINTS_MAX * 64))
+ * points.
+ *
+ * The two per-lane figures are COUNTED, not eyeballed, because LANE_MAX now
+ * spans clips x parameters and the total is what the param-contract ceiling
+ * constrains:
+ *
+ *   header  "L " + target(15) + param(31) + two %d + two %.17g + three %d
+ *           = 2+15+1+31+1 + 2*(11+1) + 2*(25+1) + 3*(11+1) = 162  -> 192
+ *   point   "P " + %.17g + %.9g + "\n" = 2+25+1+16+1 = 45        ->  48
+ *
+ * The old figures were 128 and 64: the header one was UNDER its own worst
+ * case (a %d of a negative int is 11 characters, not 1) while the point one
+ * was 40% over. Both are now above, with the header no longer optimistic.
+ *
+ * This define is for callers sizing a buffer, not a substitute for a check --
+ * the serializer bounds-checks regardless and refuses rather than truncating.
+ * lane_serial.c asserts the whole thing stays inside SHADOW_PARAM_VALUE_LEN,
+ * which is the real cap on LANE_MAX. */
+#define LANE_SERIAL_MAX_BYTES (16 + LANE_MAX * (192 + LANE_POINTS_MAX * 48))
 
 /* Bytes written (excluding the NUL), 0 for an EMPTY STORE, or negative when
  * the buffer is too small.
