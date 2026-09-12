@@ -43,8 +43,9 @@ int main(void)
     int n = 0;
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
-        int t, s, playing; double ls, ll;
-        if (sscanf(line, "%d %d %d %lf %lf", &t, &s, &playing, &ls, &ll) != 5) continue;
+        int t, s, playing, nc, fn; double ls, ll;
+        if (sscanf(line, "%d %d %d %lf %lf %d %d",
+                   &t, &s, &playing, &ls, &ll, &nc, &fn) != 7) continue;
         n++;
         seen[t][s] = 1;
         const clip_region_t *r = &rg.slots[t][s];
@@ -55,6 +56,18 @@ int main(void)
               t + 1, s + 1, r->loop_start, ls);
         CHECK(close_enough(r->loop_len, ll), "T%d c%d loop_len %f, want %f",
               t + 1, s + 1, r->loop_len, ll);
+        /* The fingerprint's CONTENT half. A clip copied into another slot has
+         * the same geometry and different notes -- geometry alone cannot tell
+         * them apart, which is the whole reason these two fields exist.
+         *
+         * Asserted per clip against python's count, not just on one clip: a
+         * scan that ran past the clip's own span would still get T1c1 right
+         * and every clip after it wrong, and the fixture holds 24 of them
+         * each with exactly 3 notes, so an unbounded count reads as 72-ish. */
+        CHECK(r->note_count == nc, "T%d c%d note_count %d, want %d",
+              t + 1, s + 1, r->note_count, nc);
+        CHECK(r->first_note == fn, "T%d c%d first_note %d, want %d",
+              t + 1, s + 1, r->first_note, fn);
     }
     fclose(f);
     CHECK(n == 24, "expected 24 clips in the fixture, read %d", n);
@@ -65,10 +78,24 @@ int main(void)
     printf("empty slots stay empty\n");
     for (int t = 0; t < CLIP_TRACKS; t++)
         for (int s = 0; s < CLIP_SLOTS; s++)
-            if (!seen[t][s])
+            if (!seen[t][s]) {
                 CHECK(!rg.slots[t][s].exists,
                       "T%d c%d is empty in the file but was parsed as present",
                       t + 1, s + 1);
+                /* And an empty slot's fingerprint is the ABSENT one: -1, never
+                 * 0. Note 0 is a real note number, so a zeroed first_note
+                 * would be a lane matching a clip it was never recorded
+                 * against. This also catches a note scan that overran its
+                 * clip's span -- an empty slot is the one place a stray count
+                 * has nowhere to hide. */
+                CHECK(rg.slots[t][s].note_count == 0,
+                      "T%d c%d is empty but reported note_count %d",
+                      t + 1, s + 1, rg.slots[t][s].note_count);
+                CHECK(rg.slots[t][s].first_note == -1,
+                      "T%d c%d is empty but reported first_note %d (0 is a "
+                      "real note number; absent must be -1)",
+                      t + 1, s + 1, rg.slots[t][s].first_note);
+            }
 
     /* Seeding: fills only what we have NOT observed, and never anchors. */
     printf("seeding fills gaps without overwriting observations or anchoring\n");
@@ -142,6 +169,67 @@ int main(void)
               r3.slots[0][0].loop_len);
     }
 
+    /* The earliest note, not the textually first. Every clip in the sample set
+     * happens to list its notes in time order, so the fixture cannot tell a
+     * min-by-startTime from a take-the-first -- and a take-the-first is the
+     * cheaper thing to write.
+     *
+     * The same document carries a non-empty `envelopes`, whose breakpoint
+     * objects sit at exactly the depth a note object does. If the scan is
+     * armed by anything other than the clip's own "notes" key, these three
+     * breakpoints land in the count. */
+    printf("first_note is the earliest note, and envelopes are not notes\n");
+    {
+        static const char ooo[] =
+            "{\"tracks\":[{\"clipSlots\":[{\"clip\":{\"isPlaying\":true,"
+            "\"region\":{\"start\":0.0,\"end\":8.0,"
+            "\"loop\":{\"start\":0.0,\"end\":8.0,\"isEnabled\":true}},"
+            "\"notes\":["
+            "{\"noteNumber\":72,\"startTime\":4.0,\"duration\":0.25},"
+            "{\"noteNumber\":0,\"startTime\":1.0,\"duration\":0.25},"
+            "{\"noteNumber\":60,\"startTime\":2.0,\"duration\":0.25}],"
+            "\"envelopes\":[{\"parameterId\":7,\"breakpoints\":["
+            "{\"time\":0.0,\"value\":0.0},{\"time\":1.0,\"value\":1.0},"
+            "{\"time\":2.0,\"value\":0.5}]}]}}]}]}";
+        clip_regions_t r7;
+        CHECK(clip_regions_parse(ooo, sizeof(ooo) - 1, &r7), "should parse");
+        CHECK(r7.slots[0][0].note_count == 3,
+              "note_count is %d, want 3 -- envelopes are not notes",
+              r7.slots[0][0].note_count);
+        /* 0, and it must arrive as 0 rather than as "absent": the earliest
+         * note here IS note 0, which is exactly the value the absent case
+         * uses -1 to stay clear of. */
+        CHECK(r7.slots[0][0].first_note == 0,
+              "first_note is %d, want 0 (the earliest note, note number 0)",
+              r7.slots[0][0].first_note);
+    }
+
+    /* A clip with notes must not leak them into the NEXT clip, in either
+     * direction: the count belongs to the span it was read from. */
+    printf("a clip's notes stay inside that clip\n");
+    {
+        static const char pair[] =
+            "{\"tracks\":[{\"clipSlots\":[{\"clip\":{\"isPlaying\":true,"
+            "\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},"
+            "\"notes\":[{\"noteNumber\":36,\"startTime\":0.0,\"duration\":0.25},"
+            "{\"noteNumber\":38,\"startTime\":1.0,\"duration\":0.25}]}},"
+            "{\"clip\":{\"isPlaying\":false,"
+            "\"region\":{\"start\":0.0,\"end\":4.0,"
+            "\"loop\":{\"start\":0.0,\"end\":4.0,\"isEnabled\":true}},"
+            "\"notes\":[]}}]}]}";
+        clip_regions_t r8;
+        CHECK(clip_regions_parse(pair, sizeof(pair) - 1, &r8), "should parse");
+        CHECK(r8.slots[0][0].note_count == 2 && r8.slots[0][0].first_note == 36,
+              "clip 1 reports %d notes / first %d, want 2 / 36",
+              r8.slots[0][0].note_count, r8.slots[0][0].first_note);
+        CHECK(r8.slots[0][1].exists, "clip 2 should exist");
+        CHECK(r8.slots[0][1].note_count == 0 && r8.slots[0][1].first_note == -1,
+              "clip 2 has no notes but reports %d / first %d -- it inherited "
+              "its neighbour's",
+              r8.slots[0][1].note_count, r8.slots[0][1].first_note);
+    }
+
     /* A set with NO playing clips must seed nothing -- and must not leave
      * a previous set's answers standing. The caller resets on a set change;
      * this pins that seeding alone cannot invent identity. */
@@ -185,7 +273,15 @@ int main(void)
         st5.tracks[0].clip_slot = 1;
         st5.tracks[0].anchor_valid = 1;
         st5.tracks[0].anchor_pulse = 100;
-        clip_regions_forget_deleted(&before, &after, &st5);
+        uint32_t del5 = 0;
+        clip_regions_forget_deleted(&before, &after, &st5, &del5);
+        /* THE MASK IS WHAT THE LANE SIDE ACTS ON, and it is not the same
+         * question as identity: identity is about the one clip a track is
+         * playing, while a lane can be bound to any of the eight positions.
+         * So the mask covers every slot, not just the identified one. */
+        CHECK(del5 == (1u << (0 * CLIP_SLOTS + 1)),
+              "deleted mask is 0x%x, want only T1 c2 (bit %d)",
+              del5, 0 * CLIP_SLOTS + 1);
         CHECK(st5.tracks[0].clip_slot == -1,
               "a deleted clip must stop being reported as playing, got %d",
               st5.tracks[0].clip_slot);
@@ -199,11 +295,39 @@ int main(void)
         st6.tracks[0].clip_slot = 1;
         st6.tracks[0].anchor_valid = 1;
         st6.tracks[0].anchor_pulse = 100;
-        clip_regions_forget_deleted(&after, &before, &st6);
+        uint32_t del6 = 0xdeadbeefu;   /* must be OVERWRITTEN, not OR'd into */
+        clip_regions_forget_deleted(&after, &before, &st6, &del6);
+        CHECK(del6 == 0,
+              "a clip APPEARING reported deletions: 0x%x", del6);
         CHECK(st6.tracks[0].clip_slot == 1,
               "a clip APPEARING must not drop identity, got %d",
               st6.tracks[0].clip_slot);
         CHECK(st6.tracks[0].anchor_valid, "nor its anchor");
+
+        /* A clip deleted at a position the track is not playing. Identity has
+         * nothing to say about it -- and a lane bound there still has to be
+         * told, or the lane of any clip but the live one is never orphaned. */
+        clip_state_t st7; clip_state_reset(&st7);
+        st7.tracks[0].identity_valid = 1;
+        st7.tracks[0].clip_slot = 0;      /* playing c1; c2 is the one deleted */
+        st7.tracks[0].anchor_valid = 1;
+        uint32_t del7 = 0;
+        clip_regions_forget_deleted(&before, &after, &st7, &del7);
+        CHECK(del7 == (1u << 1),
+              "a deletion away from the playhead did not reach the mask (0x%x)",
+              del7);
+        CHECK(st7.tracks[0].clip_slot == 0 && st7.tracks[0].anchor_valid,
+              "...and it must not disturb the identity of the clip that IS "
+              "playing (slot %d, anchor %d)",
+              st7.tracks[0].clip_slot, st7.tracks[0].anchor_valid);
+
+        /* A NULL mask is legal: a caller that only wants the identity half
+         * must not have to invent an out-parameter. */
+        clip_state_t st8; clip_state_reset(&st8);
+        st8.tracks[0].identity_valid = 1;
+        st8.tracks[0].clip_slot = 1;
+        clip_regions_forget_deleted(&before, &after, &st8, NULL);
+        CHECK(st8.tracks[0].clip_slot == -1, "a NULL mask broke the identity half");
     }
 
     /* Geometry comparison: a re-save that changes nothing must not read as a

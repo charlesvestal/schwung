@@ -60,7 +60,11 @@ done
 #    shadow_chain_mgmt.c. chain_set_clip_phase is the clip-phase seam for
 #    automation lanes: a dlsym'd entry point rather than a host_api_v1_t field,
 #    because the front of that struct's `reserved` tail is +120 -- the offset a
-#    shipped breakbeat build calls as get_project_bpm().
+#    shipped breakbeat build calls as get_project_bpm(). chain_set_clip_deleted
+#    is the other half of that seam: a clip's deletion is discovered on the
+#    worker thread, and a worker must not call a module entry point (which IS
+#    the SPI callback), so it publishes a mask + generation and the callback
+#    pushes it through here.
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
@@ -69,7 +73,7 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_fx_requires_continuous chain_process_fx \
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
     chain_take_midi_tick_wake \
-    chain_set_clip_phase \
+    chain_set_clip_phase chain_set_clip_deleted \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then

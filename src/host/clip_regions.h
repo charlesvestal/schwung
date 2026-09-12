@@ -25,6 +25,7 @@
 #ifndef CLIP_REGIONS_H
 #define CLIP_REGIONS_H
 
+#include <stdint.h>
 #include "clip_state.h"
 
 #ifdef __cplusplus
@@ -44,6 +45,17 @@ typedef struct {
      * last paged, not to the one on screen now. */
     double scroll_beats;
     int    have_scroll;
+    /* The CONTENT half of a lane's fingerprint. Geometry alone cannot tell a
+     * copied clip from the original -- same loop, different notes -- and
+     * binding a lane to the wrong clip is the confidently-wrong answer this
+     * whole pair of projects exists to refuse.
+     *
+     * first_note is -1 when there are no notes. NOT 0: note 0 is a real note,
+     * so a zeroed field is indistinguishable from a clip whose earliest note
+     * is the lowest one. clip_regions_parse writes -1 into every slot before
+     * it scans, so an UNPARSED slot cannot read as note 0 either. */
+    int note_count;
+    int first_note;   /* noteNumber of the earliest note, or -1 */
 } clip_region_t;
 
 typedef struct {
@@ -81,10 +93,26 @@ int clip_regions_geometry_differs(const clip_regions_t *a,
  * distinction is HISTORY -- a clip that existed in the previous parse and is
  * gone from this one was deleted; one that never existed may simply be new.
  *
- * Call with the regions as they were BEFORE the re-parse. */
+ * Call with the regions as they were BEFORE the re-parse.
+ *
+ * `deleted_mask` (optional; pass NULL to skip) reports every (track, slot)
+ * pair that went away, bit `track * CLIP_SLOTS + slot`, ASSIGNED rather than
+ * OR'd -- it describes this one re-parse and nothing earlier.
+ *
+ * It answers a WIDER question than the identity half above, which only ever
+ * looks at the clip a track is playing: an automation lane is bound to a grid
+ * POSITION, so a lane on any of the eight positions has to be told, not just
+ * the live one. And this function is the only place that can tell a deletion
+ * from a clip Move has not saved yet, which is why the lane side is told from
+ * here rather than inferring it from a single parse. */
 void clip_regions_forget_deleted(const clip_regions_t *before,
                                  const clip_regions_t *after,
-                                 clip_state_t *st);
+                                 clip_state_t *st,
+                                 uint32_t *deleted_mask);
+/* Every clip slot must fit the mask, or a deletion in the last slots is
+ * invisible with nothing to say so. */
+_Static_assert(CLIP_TRACKS * CLIP_SLOTS <= 32,
+               "deleted_mask is a uint32_t and cannot address every clip slot");
 
 #ifdef __cplusplus
 }

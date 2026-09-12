@@ -72,6 +72,29 @@ void lane_tick(chain_instance_t *inst) {
             continue;
         }
 
+        /* THE SAME POSITION CAN HOLD A DIFFERENT CLIP. The check above proves
+         * only that the transport is on this lane's grid position; whether the
+         * clip there is the one the lane was recorded against is what the
+         * fingerprint answers, because Move's clips carry no identity at all.
+         *
+         * Both directions, and both flags. A match un-stales AND un-orphans:
+         * the clip coming back is an undo, and there is no gesture in the UI
+         * that would otherwise un-strand a lane. A mismatch only ever sets
+         * `stale` -- `orphaned` is a statement about the clip's EXISTENCE, and
+         * only the worker's before/after pair can make it (a single parse
+         * cannot tell a deleted clip from one Move has not saved yet).
+         *
+         * Gated on clip_fp_valid: no fingerprint is "could not tell", which is
+         * neither a match nor a mismatch, so nothing is marked either way. */
+        if (inst->clip_fp_valid) {
+            if (lane_fingerprint_matches(ln, &inst->clip_fp)) {
+                ln->stale = 0;
+                ln->orphaned = 0;
+            } else {
+                ln->stale = 1;
+            }
+        }
+
         /* An unarmed knob turn punches through until the loop comes round --
          * otherwise, under an absolute lane, turning a knob does nothing
          * audible and reads as a broken encoder. Set in Task 5. */
@@ -109,14 +132,19 @@ void lane_tick(chain_instance_t *inst) {
     }
 }
 
-/* The clip's fingerprint as it is RIGHT NOW. Task 6 is what fills it with real
- * note data; until then clip_fp_valid is 0 and a lane records with an all-zero
- * fingerprint, which nothing compares against -- an unknown clip is not a
- * mismatched one, and a guessed fingerprint would make every lane stale the
- * moment matching arrives. */
+/* The clip's fingerprint as it is RIGHT NOW.
+ *
+ * With no clip known it is the ABSENT fingerprint -- {0, -1}, not all-zero.
+ * A zeroed first_note is note 0, a real note number, so an all-zero
+ * fingerprint is a claim rather than a gap: it would match any clip at
+ * loop_start 0 whose earliest note happened to be 0. {0, -1} is the pattern
+ * lane_fingerprint_matches refuses outright, so a lane recorded against an
+ * unknown clip is stale until it is re-recorded, which is the only answer that
+ * cannot be confidently wrong. */
 void lane_current_fingerprint(chain_instance_t *inst, lane_fingerprint_t *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
+    out->first_note = -1;
     if (inst && inst->clip_fp_valid) *out = inst->clip_fp;
 }
 

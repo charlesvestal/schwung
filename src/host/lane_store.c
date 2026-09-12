@@ -162,6 +162,19 @@ int lane_eval(const lane_t *ln, double phase, double loop_len, int stepped,
 
 int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now) {
     if (!ln || !now) return 0;
+    /* NO FINGERPRINT RECORDED IS NOT A MATCH. {0, -1} is what a lane carries
+     * when nothing ever told it the clip's content: every lane written before
+     * the parser counted notes, and every lane written while the clip itself
+     * was unknown. loop_len is not compared (see below), so with the content
+     * half at its absent values the test below degenerates to `loop_start
+     * within eps` -- and every clip whose loop starts at 0.0 then fingerprints
+     * identically, so such a lane binds to the WRONG clip and plays. Stale is
+     * the honest answer: silent, retained, re-recordable.
+     *
+     * It also makes a lane recorded against a genuinely note-free clip stale.
+     * Deliberate: "empty" and "unknown" are the same bytes here, and of the
+     * two readings only this one cannot be confidently wrong. */
+    if (ln->fp.note_count == 0 && ln->fp.first_note == -1) return 0;
     const double eps = 1e-6;
     double ds = ln->fp.loop_start - now->loop_start;
     if (ds < 0) ds = -ds;
