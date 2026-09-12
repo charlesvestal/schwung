@@ -400,6 +400,7 @@ extern int shim_touch_trace_on;
 #include "clip_state.h"
 #include <sys/stat.h>
 #include "clip_regions.h"
+#include "shadow_led_queue.h"
 extern int shadow_transport_pulses;
 extern int sampler_transport_playing;
 /* Is this thread alive at all? Three separate worker-driven diagnostics went
@@ -821,7 +822,15 @@ static void clip_state_tick(void)
     const clip_state_t *cs = clip_state_current();
     if (!cs) { fprintf(fp, "(no cable-0 scan yet)\n"); fclose(fp); return; }
     uint32_t pul = (uint32_t)shadow_transport_pulses;
-    fprintf(fp, "pul=%-7u", pul);
+    /* Move's Record button. Without this, "the arm never fired" and "the lane
+     * never recorded" are the same silence, and neither is distinguishable
+     * from the other by ear. SOLID is the only state that records; FLASH is
+     * armed or counting in; `?` means the button has never reported, which is
+     * not the same zero as off. */
+    const char *rec = !shadow_rec_arm_seen()  ? "?"     :
+                      shadow_rec_arm_recording() ? "SOLID" :
+                      shadow_rec_arm_flashing()  ? "FLASH" : "off";
+    fprintf(fp, "pul=%-7u rec=%-5s", pul, rec);
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         if (!tr->identity_valid)      fprintf(fp, " | T%d ?        ", t + 1);
@@ -852,7 +861,8 @@ static void clip_state_tick(void)
      * a 1 Hz file is plenty for a human watching along. */
     FILE *jf = fopen("/data/UserData/schwung/clip_state.json", "w");
     if (!jf) return;
-    fprintf(jf, "{\"pulses\":%u,\"beat\":%.2f,\"tracks\":[", pul, pul / 24.0);
+    fprintf(jf, "{\"pulses\":%u,\"beat\":%.2f,\"record\":\"%s\",\"tracks\":[",
+            pul, pul / 24.0, rec);
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         double el = tr->anchor_valid ? (double)(pul - tr->anchor_pulse) / 24.0 : 0.0;
