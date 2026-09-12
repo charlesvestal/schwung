@@ -128,6 +128,14 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
         !clip_slot || !fp_valid || !fp) return 0;
     *clip_slot = -1;
     *fp_valid = 0;
+    /* Cleared HERE, at the top, with the other outputs -- not left to the
+     * caller. Every failure path below returns 0 without touching these, and
+     * the one caller happens to use fresh locals per loop iteration; hoisting
+     * those buffers out of the loop for cost would silently hand an unknown
+     * block the PREVIOUS block's phase. NaN so that a caller which also misses
+     * the return value gets no usable number rather than a plausible one. */
+    *phase_beats = NAN;
+    *loop_len = NAN;
     const clip_state_t *cs = clip_state_current();
     if (!cs) return 0;
     const clip_track_state_t *tr = &cs->tracks[slot];
@@ -137,7 +145,11 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
     const clip_regions_t *rg = shadow_clip_regions();
     if (!rg || !rg->valid) return 0;
     const clip_region_t *r = &rg->slots[slot][tr->clip_slot];
-    if (!r->exists || r->loop_len <= 0.0) return 0;
+    /* !(x > 0.0), not x <= 0.0: the second is FALSE for a NaN, so a torn read
+     * of the regions table would reach clip_phase_beats() as a live length.
+     * clip_phase_beats() spells it this way; both sites must mean the same
+     * thing or only one of them is guarding. */
+    if (!r->exists || !(r->loop_len > 0.0)) return 0;
 
     /* The fingerprint is valid as soon as the CLIP is known, independently of
      * whether the phase is: a lane still needs to know whether it is bound to

@@ -740,8 +740,15 @@ void chain_set_clip_phase(void *instance, int valid, double phase_beats,
     chain_instance_t *inst = (chain_instance_t *)instance;
     if (!inst) return;
     inst->clip_phase_valid = valid ? 1 : 0;
-    inst->clip_phase_beats = phase_beats;
-    inst->clip_loop_len = loop_len;
+    /* UNKNOWN is stored as NaN, not as the caller's zeroed locals. The gate is
+     * clip_phase_valid, but a reader that forgets it must not find a usable
+     * number: 0.0 is a legal phase (the loop start), so a missed gate would
+     * play every lane's first breakpoint forever, in silence. NaN makes the
+     * unknown self-enforcing -- lane_eval rejects a non-finite phase and
+     * lane_tick's `!(clip_loop_len > 0.0)` rejects a NaN length, both by
+     * comparisons NaN cannot pass. */
+    inst->clip_phase_beats = valid ? phase_beats : NAN;
+    inst->clip_loop_len = valid ? loop_len : NAN;
     inst->lane_track = track;
     inst->lane_clip_slot = clip_slot;
     inst->clip_fp_valid = (fp_valid && fp) ? 1 : 0;

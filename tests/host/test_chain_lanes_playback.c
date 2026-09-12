@@ -26,8 +26,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "chain_internal.h"
+
+/* The dlsym'd seam, declared here exactly as the shim casts it
+ * (shadow_chain_mgmt.c). There is no prototype in a header on purpose -- the
+ * host reaches it through a function pointer, not a link -- so restating the
+ * signature is also what makes this test fail if the signature drifts from the
+ * cast on the other side. */
+void chain_set_clip_phase(void *instance, int valid, double phase_beats,
+                          double loop_len, int track, int clip_slot,
+                          int fp_valid, const double *fp);
 
 /* ------------------------------------------------------------------ stubs */
 void chain_log(const char *msg) { (void)msg; }
@@ -281,7 +291,57 @@ int main(void) {
     lane_tick(rec);
     CHECK(made->driving == 1, "lane did not resume after the wrap");
 
-    /* 12. lane_alloc REFUSING must neither crash nor report a success it
+    /* 12. THROUGH THE REAL ENTRY POINT: chain_set_clip_phase(valid=0) must
+     *     leave NO USABLE NUMBER behind, not {0.0, 0.0}. Every case above
+     *     sets the instance fields by hand, so none of them can see what the
+     *     shim's actual call stores -- and 0.0 is a legal phase (a clip's loop
+     *     start), so a future reader who forgets the clip_phase_valid gate
+     *     would get a lane playing its first breakpoint forever. NaN makes
+     *     the unknown self-enforcing instead of convention-enforced:
+     *     lane_eval rejects a non-finite phase and lane_tick's
+     *     `!(clip_loop_len > 0.0)` rejects a NaN length, both by comparisons
+     *     NaN cannot pass. Driven from a KNOWN phase first, so a stale value
+     *     is what the unknown would have to overwrite. */
+    {
+        double fpv[4] = { 0.0, 8.0, 0.0, -1.0 };
+        chain_set_clip_phase(rec, 1, 2.0, 8.0, 0, 0, 1, fpv);
+        CHECK(rec->clip_phase_valid == 1 && rec->clip_phase_beats == 2.0 &&
+              rec->clip_loop_len == 8.0,
+              "a known phase did not survive chain_set_clip_phase");
+
+        chain_set_clip_phase(rec, 0, 0.0, 0.0, 0, 0, 1, fpv);
+        CHECK(rec->clip_phase_valid == 0, "valid=0 was not recorded");
+        CHECK(!isfinite(rec->clip_phase_beats),
+              "unknown phase was stored as %f -- a usable number",
+              rec->clip_phase_beats);
+        CHECK(!isfinite(rec->clip_loop_len),
+              "unknown loop length was stored as %f -- a usable number",
+              rec->clip_loop_len);
+
+        /* And with those fields in that state, a tick drives nothing. The
+         * lane WAS driving, so the first tick is the one-shot release that
+         * hands the knob back (test 4's contract) -- what must not happen is
+         * a lane VALUE. rec's lane holds a single point at 55, so 55 is
+         * exactly what a NaN read silently clamped to 0 would produce. */
+        lane_tick(rec);
+        CHECK(made->driving == 0,
+              "an unknown phase pushed through the real entry point left the "
+              "lane driving");
+        CHECK(fake_value("cutoff") != 55.0f,
+              "an unknown phase played the lane's value anyway");
+        int before = fake_writes("cutoff");
+        float held = fake_value("cutoff");
+        lane_tick(rec);
+        lane_tick(rec);
+        CHECK(fake_writes("cutoff") == before,
+              "an unknown phase kept writing after the release: %d time(s)",
+              fake_writes("cutoff") - before);
+        CHECK(fake_value("cutoff") == held,
+              "an unknown phase moved the parameter to %f",
+              fake_value("cutoff"));
+    }
+
+    /* 13. lane_alloc REFUSING must neither crash nor report a success it
      *     did not have. The reachable refusal is a FULL store: a module can
      *     declare far more than LANE_MAX parameters. (The other refusal --
      *     a key too long for lane_t::param -- turns out to be unreachable
