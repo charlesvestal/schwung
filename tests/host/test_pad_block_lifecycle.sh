@@ -104,4 +104,25 @@ ticks=$(command grep -E '^[[:space:]]*(\*|//|/\*)' -v "$ui_js" \
 [ "$ticks" = "1" ] \
   || fail "loadedModuleUi.tick() is called from $ticks places, not 1 -- reconcilePadBlock() mirrors a single gate, so re-read it before changing this"
 
+# ---- 6. ...and the KEYBOARD is not a second claimant ------------------------
+# text_entry.mjs raises pad_block because it types with the pads, and its close
+# used to write 0 straight back. That was right while a keyboard could only be
+# raised over views that are not COMPONENT_EDIT -- which is the premise
+# reconcilePadBlock() is written on, and which stopped being true when a
+# module-owned param grid gained a "Save As" row. A component that owns the
+# pads (9W9) had its claim stomped by a keyboard opened and closed over it:
+# pads to Move, mid-mode, healed only if the module happens to re-state the
+# flag every tick rather than on entering the mode.
+#
+# The reconcile already answers this every frame and skips only while a
+# keyboard is up, so the close hands the decision back rather than guessing.
+# Same rule as rule 3 above: ONE answer.
+te="src/shared/text_entry.mjs"
+[ -f "$te" ] || fail "missing $te"
+command grep -q 'host_pad_block(1)' "$te" \
+  || fail "text entry no longer takes the pads -- pad typing is broken, or this pin has moved"
+raises=$(command grep -E '^[[:space:]]*(\*|//|/\*)' -v "$te" | command grep -c 'host_pad_block(0)' || true)
+[ "$raises" = "0" ] \
+  || fail "closeTextEntry lowers pad_block itself ($raises call(s)) -- that overwrites a component UI's own claim; reconcilePadBlock() owns the drop"
+
 echo "PASS: pad_block cannot outlive the component UI that raised it"
