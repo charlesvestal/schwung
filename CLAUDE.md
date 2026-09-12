@@ -1010,7 +1010,12 @@ component load gate, and the input-dispatch order. Read it before editing
   Schwung. `reconcilePadBlock()` restates it every frame beside
   `reconcileCcClaim()`; `js_host_pad_block` is idempotent **against the SHM**,
   which is what makes a per-frame restate free AND is why the caller must never
-  memoise — the shim drops the flag unilaterally, so a mirror latches.
+  memoise — the shim drops the flag unilaterally, so a mirror latches. **The
+  on-screen KEYBOARD is the second claimant and no longer lowers it either**:
+  `closeTextEntry`'s `host_pad_block(0)` was correct only while a keyboard
+  could not be open over `COMPONENT_EDIT`, which a module-owned grid's `Save
+  As` row ends — it wrote 0 over a running module's claim. Same answer as the
+  exits: the close hands the decision back to the reconcile.
 - **A timed-out read empties NOTHING, and latches nothing.** A `null` recorded as
   "this position is empty" made a filled chain position open the module picker —
   and the *correct* read milliseconds later is what made it permanent, by matching.

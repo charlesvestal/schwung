@@ -73,6 +73,7 @@ const bodyOf = (decl) => {
   if (body === null) fail("openComponentEditor is gone");
   else {
     if (!/decideComponentEntry\(/.test(body)) fail("openComponentEditor does not ask the gate");
+    if (!/holdAttemptsFor\(/.test(body)) fail("openComponentEditor does not tell the gate how many probes the hold has made");
     if (!/ENTRY_HOLD/.test(body)) fail("openComponentEditor ignores a HOLD — the wait never happens");
     if (!/ENTRY_ENTER/.test(body)) fail("openComponentEditor never opens anything");
   }

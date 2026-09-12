@@ -485,6 +485,9 @@ const body = [
     "let componentGridReturnSlot = -1;",
     "let componentGridReturnKey = \"\";",
     "let componentGridReturnEnter = true;",
+    "VIEWS.COMPONENT_EDIT = 5;",
+    "let componentGridReturnModuleUi = false;",
+    "let moduleListsReturnModuleUi = false;",
     // Save acts IN PLACE, so it closes the menu behind itself rather than
     // carrying a disposition through a return path. Stubbed as a spy: the
     // dispatch assertions below only care that Save reaches it.
@@ -678,6 +681,10 @@ const run = (setup) => {
         "function isTextEntryActive() { return textEntry; }",
         "let componentHelpReturnSlot = -1;",
         "let componentHelpReturnKey = \"\";",
+        "let componentHelpReturnModuleUi = false;",
+        "function unloadModuleUi() {}",
+        "function enterComponentEditFallback() {}",
+        "function restoreModuleUiPage() {}",
         setup,
         grab("maybeReturnToComponentHelp"),
         "const fired = maybeReturnToComponentHelp();",
@@ -776,6 +783,10 @@ const run = (setup) => {
         "let moduleListsTarget = \"Live\";",
         "let moduleListsConfirmDelete = true;",
         "let moduleListsPendingName = { existing: null, text: \"Live\" };",
+        "let moduleListsReturnModuleUi = false;",
+        "function unloadModuleUi() {}",
+        "function enterComponentEditFallback() {}",
+        "function restoreModuleUiPage() {}",
         setup,
         grab("exitModuleLists"),
         "exitModuleLists();",

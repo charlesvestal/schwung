@@ -93,7 +93,42 @@ export function holdProbeIntervalTicks(attempts) {
  *
  * Returns { action, hierarchy?, reason }.
  */
-export function decideComponentEntry(read, parse) {
+/*
+ * How many failed hierarchy reads a NAMED, NOT-LOADING module gets before the
+ * gate concludes the read is not going to complete because the module does not
+ * serve the key at all.
+ *
+ * A module that draws its own pages (ui_chain.js) may answer `ui_hierarchy`
+ * with an ERROR rather than "" -- from the shadow side that is the same null
+ * as a timed-out read, and holding for it is holding forever: a swap into such
+ * a module sat on "Loading..." until the user backed out (reported from
+ * hardware for 9W9). Once the chain host has named the module and it reports
+ * not loading, a read that STILL keeps failing is refused, not late. Fall
+ * back, exactly as a served "" would.
+ *
+ * IT IS THE END OF THE FAST PHASE, and that is derived rather than chosen.
+ * `isLoading` is the term that would make a short limit safe, and for a SLOT
+ * component there is no such term: the chain host does not serve
+ * `<prefix>:is_loading` at all (only the shim does, for Master FX, sends and
+ * bus inserts), so the read answers "" or null and `!== "1"` is true for every
+ * slot component in the fleet. What is left is "named, and three reads
+ * failed", and a few consecutive timed-out reads are exactly what a large
+ * contract over a busy param channel looks like -- so a short limit re-opens
+ * the bug this whole gate exists to close, IRREVERSIBLY, and leaves the
+ * MiniJV/Osirus blank editor one flaky window away.
+ *
+ * The fast phase is already the written-down answer to "could this still be
+ * arriving?" -- HOLD_FAST_LIMIT probes at HOLD_FAST_INTERVAL_TICKS, sized to
+ * cover a dlopen of a large plugin and a fork-and-boot like Osirus's. Past it
+ * the probe SLOWS because the module is not expected any more, and that is the
+ * honest place to conclude the key is not served. It costs a misbehaving
+ * module ~20 s of "Loading..." before its editor opens -- the by-contract fix
+ * is to answer "" (9W9 does now), and this is only the net under the modules
+ * that do not. Nothing correct can be misjudged by it.
+ */
+export const HOLD_UNSERVED_READ_LIMIT = HOLD_FAST_LIMIT;
+
+export function decideComponentEntry(read, parse, attempts = 0) {
     /*
      * ASKED FIRST, and only where the caller supplies it: a position that has
      * just failed to load answers "" to everything else, so every branch below
@@ -108,6 +143,12 @@ export function decideComponentEntry(read, parse) {
     const rawHierarchy = read.hierarchy();
 
     if (rawHierarchy === null || rawHierarchy === undefined) {
+        if (attempts >= HOLD_UNSERVED_READ_LIMIT) {
+            const named = read.module();
+            if (named && read.isLoading() !== "1") {
+                return { action: ENTRY_FALLBACK, reason: "hierarchy-not-served" };
+            }
+        }
         return { action: ENTRY_HOLD, reason: "hierarchy-read-failed" };
     }
 

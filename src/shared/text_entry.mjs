@@ -295,7 +295,29 @@ export function openTextEntry({ title = '', initialText = '', onConfirm, onCance
 export function closeTextEntry() {
     if (state.padSelect) {
         restorePadLEDs();
-        if (typeof host_pad_block === 'function') host_pad_block(0);
+        /*
+         * THE CLOSE DOES NOT LOWER pad_block, because it is not the only
+         * claimant any more.
+         *
+         * `host_pad_block(0)` here was right while the keyboard could only be
+         * raised over views that are not COMPONENT_EDIT -- which is what
+         * reconcilePadBlock()'s own note says, and it was true until a
+         * module-owned param grid gained a "Save As" row. A component's
+         * ui_chain.js raises pad_block for its own pad gestures (9W9 does),
+         * and a keyboard opened and closed over that module wrote 0 straight
+         * over its claim: pads to Move, in the middle of a mode the module
+         * still believes it owns, healed only if the module happens to
+         * re-state the flag every tick rather than on entering the mode.
+         *
+         * Nothing has to be enumerated to fix that: reconcilePadBlock()
+         * states the invariant once per frame and skips only while a keyboard
+         * is up, so the frame after this returns it decides -- keeping the
+         * flag for a component UI that is running, dropping it for anything
+         * else, which is exactly what this line did and more besides. The
+         * cost is one frame (~16 ms) of pads withheld after a keyboard closes
+         * over a view that does not want them, and nothing is owed on the
+         * drop (shadow_ui.js, reconcilePadBlock).
+         */
     }
     state.active = false;
     state.onConfirm = null;
