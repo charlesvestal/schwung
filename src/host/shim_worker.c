@@ -773,10 +773,35 @@ static void *worker_main(void *arg) {
             usbc_gate_out_t act = {0};
             usbc_gate_tick_monitor(&usbc_gate, shim_usbc_out_level,
                                    shim_usbc_monitor, &act);
-            if (act.replay && usbc_out_persist_enabled) {
-                shim_usbc_out_replay = act.replay_value;
-                unified_log("shim", LOG_LEVEL_DEBUG,
-                            "USB-C out: monitoring cleared by a lone 37 12 — re-asserting Main Out");
+            if (act.replay) {
+                /* REPORT IT EVEN THOUGH WE NO LONGER ACT ON IT (1.3.2).
+                 *
+                 * This is the exact signature of the field complaint "USB-C
+                 * went back to the microphone": 37 14 still reads Main Out, so
+                 * Move's own Settings screen still SAYS Main Out, while bit1 —
+                 * which is how Main Out actually reaches USB-C — is gone. The
+                 * failure is silent at every layer, which is why the reports
+                 * arrive as "it needs a reboot" with nothing to go on.
+                 *
+                 * The gate's verdict is the right trigger rather than a raw
+                 * edge: it is already debounced over USBC_GATE_MONITOR_DEBOUNCE
+                 * ticks, so the leading half of a split Mic selection cannot
+                 * raise a false alarm in the very log a reporter sends us, and
+                 * it is already bounded by monitor_replays_left, so one loss
+                 * event costs at most USBC_GATE_MAX_REPLAYS lines.
+                 *
+                 * Logging is still gated on debug_log_on like everything else —
+                 * this does not make the failure self-reporting, it makes a
+                 * reporter's capture contain the one line that names it. */
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "USB-C out: monitoring (37 12 bit1) cleared while the source still "
+                            "reads Main Out — USB-C is now carrying the mic, and Move's screen "
+                            "does not show it");
+                if (usbc_out_persist_enabled) {
+                    shim_usbc_out_replay = act.replay_value;
+                    unified_log("shim", LOG_LEVEL_DEBUG,
+                                "USB-C out: monitoring cleared by a lone 37 12 — re-asserting Main Out");
+                }
             }
         }
 
