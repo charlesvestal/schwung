@@ -70,6 +70,7 @@ extern align_capture_t g_align_capture;
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
+#include "host/xmos_resend.h"
 #include "host/shadow_midi.h"
 #include "host/shadow_overtake_midi.h"
 #include "host/ext_midi_ring.h"
@@ -229,6 +230,10 @@ static int shadow_line_in_connected_known = 0; /* 1 once any CC 114 jack-detect 
 /* Last-observed XMOS audio-IO state (USB-C out source + route payload).
  * Written only by the SPI callback. */
 static xmos_audio_state_t xmos_audio_observed = XMOS_AUDIO_STATE_INIT;
+
+/* Re-send Move's XMOS control message when it did not reach the wire. See
+ * host/xmos_resend.h for why this is not the persistence retired in 1.3.2. */
+static xmos_resend_t xmos_resend = XMOS_RESEND_INIT;
 
 /* Long-press Track/Menu/Step2 shortcuts — always enabled */
 
@@ -5963,6 +5968,14 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                  * here mislabelled every mid-session re-assert. */
                 shadow_log(replay ? "USB-C out: re-asserting Main Out"
                                   : "USB-C out: re-asserting Mic");
+            } else if (xmos_resend_take(&xmos_resend, pending[0])) {
+                /* A message Move wrote and the mailbox did not carry. These are
+                 * Move's own bytes, verbatim, from seconds ago — no stored
+                 * state is involved, which is what separates this from the
+                 * retired persistence above. Bounded by
+                 * XMOS_RESEND_MAX_ATTEMPTS inside the state machine. */
+                pending_count = 1;
+                pending_next = 0;
             } else if (shim_pending_sysex_inject >= 0) {
                 int val_byte = shim_pending_sysex_inject;
                 shim_pending_sysex_inject = -1;
@@ -6120,6 +6133,12 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
      * "Move said this" from "we said this a moment ago" on the wire. That,
      * plus Move's own unconditional Mic assert at boot, is why this feature
      * was retired rather than trusting every observed change. */
+    /* Watch Move's 37-family messages so post_transfer can tell whether they
+     * actually went out. Here, not at the end of pre_transfer: a message lost to
+     * Schwung's OWN later writers has to be watched too, and by PREEND it would
+     * already be gone. */
+    xmos_resend_observe(&xmos_resend, shadow + MIDI_OUT_OFFSET, 80);
+
     if (xmos_audio_scan(shadow + MIDI_OUT_OFFSET, 80, &xmos_audio_observed))
         shim_usbc_out_persist = xmos_audio_observed.usbc_out;
 
@@ -7422,6 +7441,15 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * /data/UserData/schwung/log_xmos_sysex_on exists; honors the same
      * size cap as the pre-transfer block. */
     xmos_log_slots("POSThw", hw + MIDI_OUT_OFFSET, 0);
+
+    /* Did Move's 37-family message actually go out? Same bytes the logger just
+     * dumped, so a capture and the re-send can never disagree about what was on
+     * the wire. Pure buffer work; the counters are published for the worker,
+     * which is where any logging happens. */
+    xmos_resend_confirm(&xmos_resend, hw + MIDI_OUT_OFFSET, 80);
+    shim_xmos_resend_lost    = xmos_resend.lost;
+    shim_xmos_resend_sent    = xmos_resend.resent;
+    shim_xmos_resend_gave_up = xmos_resend.gave_up;
 
     /* Sync output regions from hardware→shadow.
      * The library only copies the input region (SCHWUNG_OFF_IN_BASE+).
