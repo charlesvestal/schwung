@@ -391,7 +391,17 @@ type CatalogService struct {
 	URL     string
 	MetaURL string // release-metadata.json; overridable so the update
 	//        // logic can be exercised against a fixture
-	CacheDir    string // root directory for persisted cache files
+	CacheDir string // root directory for persisted cache files
+
+	// mu guards every mutable field below. net/http serves each request on
+	// its own goroutine and any handler may reach for the catalog, so the
+	// cache was being written by one request while another read it.
+	//
+	// It is held across the network fetch rather than only around the
+	// assignment. That serialises concurrent misses, which is the point:
+	// the second caller wants the answer the first is already fetching,
+	// not a second request for it.
+	mu          sync.Mutex
 	catalog     *Catalog
 	releaseMeta map[string]ReleaseMeta
 	fetched     time.Time
@@ -449,6 +459,10 @@ func (cs *CatalogService) metaCachePath() string {
 	return filepath.Join(cs.CacheDir, "manager-cache", "release-metadata.json")
 }
 
+// loadFromDisk seeds the cache from the last-known-good files. It takes no
+// lock because NewCatalogService calls it before the service is published
+// to any handler -- and it must stay that way: fetch() holds mu across its
+// whole body, so a reload called from there would deadlock.
 func (cs *CatalogService) loadFromDisk() {
 	if p := cs.catalogCachePath(); p != "" {
 		if data, err := os.ReadFile(p); err == nil {
@@ -492,7 +506,26 @@ func (cs *CatalogService) saveToDisk(path string, v any) {
 // disk) along with the error, so callers can render a usable page when the
 // network is unavailable.
 func (cs *CatalogService) Fetch() (*Catalog, error) {
-	if cs.catalog != nil && time.Since(cs.fetched) < 5*time.Minute {
+	return cs.fetch(false)
+}
+
+// Refresh fetches past the in-memory TTL, for a user who ASKED whether
+// there is an update.
+//
+// "Check for Update" went through Fetch, so within five minutes of any
+// other page's fetch it reported the cached answer as though it had just
+// looked -- including the "up to date" that a user who had been told to
+// fix their network was pressing the button to disprove. The button is the
+// one place in the manager where the TTL is exactly wrong: its whole
+// purpose is to go and ask.
+func (cs *CatalogService) Refresh() (*Catalog, error) {
+	return cs.fetch(true)
+}
+
+func (cs *CatalogService) fetch(force bool) (*Catalog, error) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if !force && cs.catalog != nil && time.Since(cs.fetched) < 5*time.Minute {
 		return cs.catalog, nil
 	}
 	resp, err := cs.client.Get(cs.URL)
@@ -540,11 +573,20 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 // Fetch's TTL early-return does not touch either field, so a status
 // reflects the last real ATTEMPT rather than the last call.
 func (cs *CatalogService) Status() CatalogStatus {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	return CatalogStatus{Live: cs.live, At: cs.servedAt}
 }
 
 // GetReleaseMeta returns cached release metadata.
+//
+// The map is returned by reference, which is safe only because a refresh
+// REPLACES it with a freshly decoded one rather than writing into the map
+// a caller is holding. Keep it that way: mutating in place would race a
+// handler mid-iteration.
 func (cs *CatalogService) GetReleaseMeta() map[string]ReleaseMeta {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
 	if cs.releaseMeta == nil {
 		return map[string]ReleaseMeta{}
 	}
@@ -3168,7 +3210,8 @@ func (app *App) handleSystemRepairRecheck(w http.ResponseWriter, r *http.Request
 }
 
 func (app *App) handleSystemCheckUpdate(w http.ResponseWriter, r *http.Request) {
-	cat, err := app.catalogSvc.Fetch()
+	// Refresh, not Fetch: the user pressed a button that says it checks.
+	cat, err := app.catalogSvc.Refresh()
 	if err != nil {
 		http.Redirect(w, r, "/system?flash=Failed+to+check:+"+err.Error(), http.StatusSeeOther)
 		return
