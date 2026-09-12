@@ -174,6 +174,35 @@ void lane_record_point(lane_t *ln, double phase, float value, double loop_len);
 /* End the pass. The next lane_record_point is a first write again. */
 void lane_record_end(lane_t *ln);
 
+/* HOW FAR A PASS HAS TRAVELLED, from `prev` forward to `phase`, in beats.
+ *
+ * THE ONE PLACE THE PASS'S EXTENT IS COMPUTED. lane_record_point erases the
+ * span a pass sweeps and lane_tick must go SILENT over exactly that span --
+ * two readings of "the pass is here", and a second copy of this arithmetic is
+ * free to disagree with the first, which erases a region the lane is still
+ * playing. Pure and exported so tests/host can drive it directly.
+ *
+ * Playback phase only ever increases, so `phase` below `prev` means the clip
+ * LOOPED: the travelled distance is (loop_len - prev) + phase, never
+ * phase - prev, which is negative and describes the untouched middle of the
+ * lane rather than the swept ends.
+ *
+ * Returns -1.0 for "cannot tell" -- a non-finite or negative input, or a
+ * backwards phase with no usable loop_len. A real distance is never negative,
+ * so the sentinel cannot collide with an answer, and every caller must treat
+ * it as neither inside nor outside the pass. */
+double lane_pass_travel(double prev, double phase, double loop_len);
+
+/* Is a recording pass LIVE at `phase`? 1 only while `rec_active` and the
+ * transport is within LANE_PASS_GAP_BEATS forward of the pass's last write.
+ *
+ * A live pass is exactly where the lane must NOT drive its parameter: the lane
+ * is absolute, so the old curve would be written over the knob every block and
+ * the take would be inaudible while it was being made. Bounded to the window
+ * rather than to `rec_active` so the REST of the loop keeps playing, which is
+ * what makes this punch-in/punch-out rather than a recording mode. */
+int lane_pass_live_at(const lane_t *ln, double phase, double loop_len);
+
 /* Value at `phase`, considering only points below loop_len.
  * `stepped` = 1 for int/enum params (hold), 0 for float (linear).
  * Returns 1 and writes *out, or 0 for "this lane has nothing to say" --

@@ -119,10 +119,44 @@ void lane_tick(chain_instance_t *inst) {
 
         /* An unarmed knob turn punches through until the loop comes round --
          * otherwise, under an absolute lane, turning a knob does nothing
-         * audible and reads as a broken encoder. Set in Task 5. */
-        if (ln->punch_until_wrap) {
-            if (inst->clip_phase_beats < ln->punch_phase) ln->punch_until_wrap = 0;
-            else continue;
+         * audible and reads as a broken encoder. Set in Task 5.
+         *
+         * The EXPIRY is evaluated unconditionally, ahead of the suppression
+         * below, so a punch cannot outlive its wrap just because a recording
+         * pass was suppressing the lane over the same blocks. */
+        if (ln->punch_until_wrap && inst->clip_phase_beats < ln->punch_phase)
+            ln->punch_until_wrap = 0;
+
+        /* A LIVE RECORDING PASS SILENCES ITS OWN LANE.
+         *
+         * A lane is an ABSOLUTE source, so while the user is recording over
+         * one the old curve is written on top of the knob every block and the
+         * take is inaudible while it is being made -- diagnosed on hardware.
+         * Task 5 had the reasoning inverted ("an armed turn IS the lane", so
+         * keep driving); an armed turn is exactly when the lane must yield.
+         *
+         * Bounded to the pass's own travel rather than to `rec_active`, from
+         * lane_pass_live_at -- the SAME computation lane_record_point erases
+         * with, so the silent region and the erased region are one region. The
+         * rest of the loop keeps playing, which is what makes this
+         * punch-in/punch-out instead of a recording mode. */
+        const int pass_live = lane_pass_live_at(ln, inst->clip_phase_beats,
+                                                inst->clip_loop_len);
+
+        /* AND THE PASS ENDS HERE, which is punch-OUT. The transport has
+         * carried a whole LANE_PASS_GAP_BEATS past the last write with no
+         * further one, so the gesture is over; leaving `rec_active` set would
+         * make the lane go silent at that phase on every later loop, because
+         * the transport comes back round through it. lane_record_point already
+         * refuses to erase across a gap that wide, so nothing is lost. */
+        if (!pass_live && ln->rec_active) lane_record_end(ln);
+
+        if (ln->punch_until_wrap || pass_live) {
+            /* Through the ordinary release, which is ONCE-ONLY (`driving`):
+             * re-emitting it every block would rewrite the base over the very
+             * next knob detent, which is this same defect in a quieter form. */
+            if (ln->driving) lane_release_one(inst, ln);
+            continue;
         }
 
         chain_param_info_t *pinfo = find_param_by_key(inst, ln->target, ln->param);
@@ -216,10 +250,23 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * thinning window is ~5 ms and cannot do that job -- see
          * LANE_MIN_POINT_BEATS. */
         lane_record_point(ln, inst->clip_phase_beats, v, inst->clip_loop_len);
-        /* An armed turn IS this lane, so it cancels any punch a previous
-         * unarmed turn left open; otherwise the point just recorded would sit
-         * silent until the loop came round. */
-        ln->punch_until_wrap = 0;
+        /* AND HAND THE PARAMETER BACK, for the same reason the unarmed branch
+         * below does: an active override makes v2_set_param re-apply base+mod
+         * and RETURN, so this write would never reach the plugin at all -- the
+         * knob inaudible on the very detent that starts the take. lane_tick's
+         * pass_live check keeps it released for as long as the pass runs; this
+         * only makes it happen on the write rather than a block later.
+         *
+         * `punch_until_wrap` IS DELIBERATELY LEFT ALONE. Task 5 cleared it
+         * here on the reasoning that "an armed turn IS the lane", i.e. that
+         * the lane should keep driving through a take -- which is the defect
+         * above, stated as a comment. The unarmed punch and the armed pass are
+         * two different mechanisms that happen to want the same thing (the
+         * lane silent), and sharing one flag between them would make either
+         * one's lifetime unreadable: the punch ends at the wrap, the pass ends
+         * when the turning stops. Both suppress independently, so an open
+         * punch costs nothing here. */
+        if (ln->driving) lane_release_one(inst, ln);
         return;
     }
 
