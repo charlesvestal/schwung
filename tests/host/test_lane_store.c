@@ -81,6 +81,50 @@ int main(void) {
     CHECK(lane_fingerprint_matches(ln, &copy) == 0,
           "different note count accepted");
 
+    /* 11. An over-length key must be REFUSED, never silently truncated --
+     * truncating would let two different long keys collide onto one lane
+     * (a lane bound to the wrong parameter) and would orphan the point
+     * already written under the earlier truncation. */
+    lane_store_reset(&st);
+    const char *long_target = "synth_component_AAAA_definitely_over_16_bytes";
+    lane_t *a1 = lane_alloc(&st, long_target, "cutoff", 0, 0, NULL);
+    CHECK(a1 == NULL, "over-length target should be refused by lane_alloc, got %p",
+          (void *)a1);
+    CHECK(lane_find(&st, long_target, "cutoff") == NULL,
+          "over-length target should never be findable");
+    const char *long_param =
+        "some_really_long_param_name_that_is_definitely_over_thirty_two_bytes";
+    lane_t *a2 = lane_alloc(&st, "synth", long_param, 0, 0, NULL);
+    CHECK(a2 == NULL, "over-length param should be refused by lane_alloc, got %p",
+          (void *)a2);
+    CHECK(lane_find(&st, "synth", long_param) == NULL,
+          "over-length param should never be findable");
+
+    /* 12. A non-finite phase must never be stored, and eval must not trust
+     * one even if it somehow ends up in pts[] -- writer and reader are
+     * different tasks' code, so each must defend for itself. */
+    ln = mk(&st);
+    lane_write(ln, 1.0, 0.1f);
+    lane_write(ln, 2.0, 0.2f);
+    lane_write(ln, 3.0, 0.3f);
+    lane_write(ln, NAN, 0.9f);
+    CHECK(ln->n == 3, "NaN phase was stored by lane_write (n=%d)", ln->n);
+    lane_write(ln, INFINITY, 0.9f);
+    CHECK(ln->n == 3, "infinite phase was stored by lane_write (n=%d)", ln->n);
+    CHECK(lane_eval(ln, 3.5, 8.0, 0, &v) == 1 && fabsf(v - 0.3f) < 1e-6f,
+          "a rejected NaN write still corrupted eval near the boundary: %f", v);
+
+    /* eval's own defence: a NaN poked directly into pts[] (not through
+     * lane_write) must not be treated as in-range or averaged into a span. */
+    ln = mk(&st);
+    lane_write(ln, 1.0, 0.1f);
+    lane_write(ln, 2.0, 0.2f);
+    ln->pts[ln->n].phase = NAN;
+    ln->pts[ln->n].value = 0.9f;
+    ln->n++;
+    CHECK(lane_eval(ln, 2.5, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
+          "lane_eval trusted a NaN point planted directly in pts[]: %f", v);
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;
