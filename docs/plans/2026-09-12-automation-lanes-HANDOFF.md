@@ -12,6 +12,52 @@ history now, not instruction.
 
 ---
 
+## Status, 2026-09-13 (overnight session, 13 commits, NOT pushed)
+
+327 host tests green, clean ARM64 build, deployed. The device is left as found:
+transport stopped, every diagnostic disarmed, Set 1 byte-identical to how it
+started (a note was injected and removed). **Re-arm with**
+`touch /data/UserData/schwung/clip_state_on`.
+
+**All four handoff items are done, and two of my own answers were wrong before
+they were right.** What the night actually settled:
+
+- **`loop_start` out of the fingerprint**, then the bigger fix behind it: a
+  breakpoint is **CLIP TIME in quarters** and the loop is a **WINDOW** over it.
+  Loop-relative storage slid a sweep two bars when the loop was opened out, and
+  made a step p-lock unaddressable. Move's file proves the coordinate: a clip
+  whose loop is 8..20 carries a note at `startTime 0.0`, outside the loop.
+- **The phase check scored the wrong tracks**, and then its modulus was wrong
+  too. Move's lit step is `(step_in_clip mod steps_per_bar) mod 16` — bar, then
+  page. Under 11/8 the check went **0/16 → 26/26, 100%**.
+- **The strip reader works, and a segment is a BAR (rounded up)** — so it
+  answers a RANGE, never better than bar resolution. I called it a page first,
+  on the strength of a coincidence; only a clip whose bar and page counts differ
+  could tell them apart.
+- **Recording on a clip Move has not saved yet** now works by construction: the
+  length from the strip now, the identity and true origin from the file ~10 s
+  later, with the lane **adopted** (points re-origined, fingerprint stamped) in
+  one exact step.
+- **Move saves 10 s after an edit, not ~35**, and `saveSongIfDirty` does not
+  shorten it. Both measured, twice.
+- **`tools/inject/schwung_inject.c`** drives Move's own buttons over cable 0, so
+  most of this was measured without hands. It is ONE-SIDED: Move acts, Schwung's
+  own decoders never see it (`docs/DIAGNOSTICS.md`).
+
+**The one thing that needs you, and it is 30 seconds:** make a clip in an empty
+slot and record automation onto it while it is younger than 10 s. Everything
+above is unit-tested and the inputs are hardware-verified, but the end-to-end
+path needs Session Mode to create a clip — and the Note/Session toggle is on no
+CC in our constants, so I could not reach it (and would not blind-scan unknown
+CCs on your live device). With `clip_state_on` armed, `step_strip.segments_cache`
+and the `/clip-state` panel show whether the blind window resolved.
+
+Also unverified: grids coarser than 1/16 (a 4/4 bar is 8 steps at 1/8 — the
+model predicts an index in 0..7 and nothing has checked it), and whether the
+strip's `+` icons for bars *outside* the loop disturb the decoder.
+
+---
+
 ## Status, 2026-09-12 (later the same day)
 
 Items 1 and 2 are **done**; item 3 is **built as a diagnostic and not yet
