@@ -1655,7 +1655,19 @@ inline is how this file got to 151 KB.
 
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
-3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
+3. **Version**: bump **all three** in the release PR — `src/host/version.txt`,
+   `module-catalog.json` (host `latest_version` + download URL, and
+   `channels.stable` if present) and **`release.json`**. `release.yml`
+   deliberately commits none of them: `main` is branch-protected, so a
+   `github-actions[bot]` push is rejected (GH006) and would fail the workflow
+   *after* the release and its asset had published. That note delegated to
+   "the release PR" and this step did not name `release.json`, so it sat at
+   **0.12.1 from v1.0.0 through v1.4.0** — fourteen releases — undetected,
+   because nothing shipped reads it any more (the manager takes both the offer
+   and the download URL from the catalog's host block). The enforcement is
+   `tests/host/test_release_version_agreement.sh`, which also fails on a
+   bumped version beside a stale URL — that downloads the old tarball while
+   reporting the new number.
 4. **Docs**: update the subsystem file (`docs/PARAM_PAGES.md`, `docs/SHADOW_UI.md`,
    `docs/CHAIN.md`, `docs/DIAGNOSTICS.md`) and add a bullet to `CLAUDE.md`'s hook
    for it — **not** the prose itself. Then `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
