@@ -1995,6 +1995,26 @@ static void shadow_inprocess_render_to_buffer(void) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
+            /* Tell the slot where its Move track's clip is. BEFORE the idle
+             * gate on purpose: a silent slot still advances its modulation via
+             * mod:tick, and a lane must keep playing through silence -- the
+             * gate skips render_block for 171 frames in 172.
+             *
+             * Guarded on the pointer because the export is optional: a chain
+             * DSP built before lanes resolves NULL, and every slot is simply
+             * never told, which reads downstream as "phase unknown". */
+            if (shadow_chain_set_clip_phase) {
+                double lane_phase = 0.0, lane_loop = 0.0;
+                double lane_fp[4] = { 0.0, 0.0, 0.0, -1.0 };
+                int lane_clip = -1, lane_fp_ok = 0;
+                int lane_ok = shadow_slot_clip_phase(s, &lane_phase, &lane_loop,
+                                                     &lane_clip, &lane_fp_ok,
+                                                     lane_fp);
+                shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
+                                            lane_ok, lane_phase, lane_loop,
+                                            s, lane_clip, lane_fp_ok, lane_fp);
+            }
+
             /* Per-slot timing for the render+fx work below */
             struct timespec slot_t0, slot_t1;
             clock_gettime(CLOCK_MONOTONIC, &slot_t0);

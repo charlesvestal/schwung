@@ -36,6 +36,7 @@
 #define SHIM_FLAG_MAIN_FX_DUMP   (1u << 10) /* main_fx_dump_trigger */
 
 #include "param_slow.h"   /* param_slow_t, for the extern below */
+#include "clip_regions.h"  /* clip_regions_t, for shadow_clip_regions() */
 
 extern volatile uint32_t shim_debug_flags;
 
@@ -150,5 +151,15 @@ void perf_shm_attach_tick(void);
 
 /* Spawn the worker thread (SCHED_OTHER, cores 0-2). Idempotent. */
 void shim_worker_start(void);
+
+/* The live clip geometry parsed from Song.abl, or NULL before the first parse.
+ * Exposed rather than re-parsed: a second copy of a >1 MB parse on a different
+ * schedule is two answers to one question, and a reader needs the very table
+ * the worker seeded clip_state from. Check ->valid.
+ *
+ * Worker writes, SPI callback reads. The worker overwrites the struct in
+ * place, so a torn read is possible; nothing here gates audio, and a lane that
+ * reads a half-written loop length loses one block of phase. */
+const clip_regions_t *shadow_clip_regions(void);
 
 #endif /* SHIM_WORKER_H */
