@@ -63,12 +63,24 @@ the only warning sat on the build-FAILED branch, inside an `if` that never ran.
 tarball and reported success, so a manager fix could be deployed, confirmed
 deployed, and still not be running.
 
-`scripts/build-manager.sh` is the single builder for both callers (local `go`,
-else a golang container, else a hard failure), and install.sh now FAILS rather
-than warns: shipping a stale manager takes `SCHWUNG_ALLOW_STALE_MANAGER=1`,
+`scripts/build-manager.sh` is the single builder for all THREE callers (local
+`go`, else a golang container, else a hard failure), and install.sh now FAILS
+rather than warns: shipping a stale manager takes `SCHWUNG_ALLOW_STALE_MANAGER=1`,
 which says so on the way past. Same defect class as the link sidecar's silent
 skip -- a build step that can be skipped silently defeats every bisect after it.
 
+**The third caller is `release.yml`, and it is the one that ships.** Fixing the
+two local scripts and leaving the workflow's own `go build` in place would have
+kept the copies free to disagree on exactly the path users take. Its tarball
+check was `grep schwung-manager || echo "WARNING: ..."` — the same non-check
+ci.yml condemns for link-subscriber — and now fails the release.
+
+**CI could not have caught any of this**, which is why it went unnoticed: the
+`cross-compile` job builds through Docker, where build.sh's manager block is
+skipped by `/.dockerenv`, so the CI tarball never carried a manager for
+anything to check. That job now builds one on the runner exactly as release.yml
+does, checks it is aarch64 with the other artifacts, and verifies it reached the
+tarball. `tests/host/test_manager_build_single_source.sh` pins the shape.
 
 ## Testing
 
