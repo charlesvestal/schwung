@@ -6553,19 +6553,41 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                                  corun_owns_native_oled ||
                                  pin_challenge;
 
+    /* READING MOVE'S FRAME IS NOT THE SAME AS SHOWING IT.
+     *
+     * `global_mmap_addr` is the buffer MOVE writes, and Move does not know its
+     * screen has been replaced -- it keeps rendering while the shadow UI is up.
+     * The `native_display_visible` gate exists for the RESTORE/overlay job
+     * below (snapshot Move's screen so the volume overlay can be composited
+     * over it), and putting the accumulator behind it meant we declined to
+     * read a frame that was sitting right there.
+     *
+     * That cost a measurement: with the knob grid up, no complete frame ever
+     * accumulated, which read as "Move stopped rendering" when in fact we
+     * stopped looking. Move's step editor carries the clip's bar count and a
+     * loop-relative playhead -- the two facts Song.abl is ~35 s late with for
+     * a clip the user just made -- so this is the one path that can supply
+     * them during the workflow that needs them. */
+    if (global_mmap_addr) {
+        uint8_t *mem_any = (uint8_t *)global_mmap_addr;
+        uint8_t slice_any = mem_any[80];
+        if (slice_any >= 1 && slice_any <= 6) {
+            int idx = slice_any - 1;
+            pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172);
+        }
+    }
+
     if (global_mmap_addr && native_display_visible) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
         uint8_t slice_num = mem[80];
 
-        /* Always capture incoming slices */
+        /* Snapshot for the restore/overlay path, which DOES need Move's screen
+         * to be the visible one. The accumulator above is deliberately outside
+         * this gate. */
         if (slice_num >= 1 && slice_num <= 6) {
             int idx = slice_num - 1;
-            int bytes = (idx == 5) ? 164 : 172;
             memcpy(captured_slices[idx], mem + 84, 172);
             slice_fresh[idx] = 1;
-
-            /* Always accumulate into PIN display buffer for dump trigger */
-            pin_accumulate_slice(idx, mem + 84, bytes);
         }
 
         /* When volume knob touched (and no track, pad or step held), start
