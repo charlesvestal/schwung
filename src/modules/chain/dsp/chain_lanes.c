@@ -31,6 +31,20 @@ static void lane_release_one(chain_instance_t *inst, lane_t *ln) {
     ln->driving = 0;
 }
 
+/* END EVERY RECORDING PASS.
+ *
+ * A pass without an end is worse than no pass: the first write of the NEXT
+ * take would erase the swept span back to wherever the last take happened to
+ * stop. Called when Record goes out and whenever the lane stops being the one
+ * playing -- separate from lane_release_all, which skips lanes that are not
+ * driving and is also called by paths (a state load, a clear) that empty the
+ * store anyway. */
+void lane_record_end_all(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int i = 0; i < LANE_MAX; i++)
+        lane_record_end(&inst->lanes.lanes[i]);
+}
+
 void lane_release_all(chain_instance_t *inst) {
     if (!inst) return;
     for (int i = 0; i < LANE_MAX; i++) {
@@ -54,6 +68,10 @@ void lane_tick(chain_instance_t *inst) {
      * stopped, which is a parameter moving on its own with nothing playing. */
     if (!inst->clip_phase_valid || !(inst->clip_loop_len > 0.0)) {
         lane_release_all(inst);
+        /* And the passes end here. With no phase there is no swept span to
+         * continue from, so the next write that does have one must be a first
+         * write rather than a sweep from a phase measured before the gap. */
+        lane_record_end_all(inst);
         return;
     }
 
@@ -69,6 +87,10 @@ void lane_tick(chain_instance_t *inst) {
          * lane_eval already refuses.) */
         if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot) {
             if (ln->driving) lane_release_one(inst, ln);
+            /* This lane's clip stopped being the one playing, so its pass is
+             * over whatever Record is doing. Otherwise coming back to the clip
+             * later resumes a sweep from a phase in a different take. */
+            lane_record_end(ln);
             continue;
         }
 
@@ -189,7 +211,11 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * name a lane the user can neither see nor clear. Nothing is recorded
          * and nothing pretends to have been. */
         if (!ln) return;
-        lane_write(ln, inst->clip_phase_beats, v);
+        /* RECORD, not write: a second pass over an existing lane must erase
+         * the span it sweeps rather than interleave with it. lane_write's
+         * thinning window is ~5 ms and cannot do that job -- see
+         * LANE_MIN_POINT_BEATS. */
+        lane_record_point(ln, inst->clip_phase_beats, v, inst->clip_loop_len);
         /* An armed turn IS this lane, so it cancels any punch a previous
          * unarmed turn left open; otherwise the point just recorded would sit
          * silent until the loop came round. */
@@ -239,6 +265,11 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
  * is a write; the transition itself is not an event anything needs. */
 void lane_set_armed(chain_instance_t *inst, int armed) {
     if (!inst) return;
+    /* It releases nothing and clears nothing (above) -- but it does END THE
+     * RECORDING PASS. That is not a release: it only means the next armed
+     * turn is the first write of a new take, so it cannot erase the span
+     * between where the last take stopped and where this one starts. */
+    if (!armed) lane_record_end_all(inst);
     inst->lane_armed = armed ? 1 : 0;
 }
 
