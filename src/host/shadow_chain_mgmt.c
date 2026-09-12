@@ -3225,7 +3225,11 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
     }
 
     if (strcmp(key, "lanes:plock_step") == 0) {
-        char fwd[SHADOW_PARAM_VALUE_LEN];
+        /* STATIC, not a stack local: a SHADOW_PARAM_VALUE_LEN buffer on the
+         * SPI callback's stack is what the param-contract raise had to undo
+         * once already (a 1.2 MB frame), and tests/host pins it. Single
+         * writer, and the forward completes before the next request. */
+        static char fwd[SHADOW_PARAM_VALUE_LEN];
         if (shadow_lanes_plock_step_translate(slot, value, fwd, sizeof(fwd)) &&
             shadow_plugin_v2 && shadow_plugin_v2->set_param &&
             slot < SHADOW_CHAIN_INSTANCES &&
