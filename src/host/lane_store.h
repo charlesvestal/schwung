@@ -79,10 +79,12 @@ extern "C" {
 
 typedef struct { double phase; float value; } lane_point_t;
 
-/* What the clip looked like when the lane was recorded. Cheap, and each field
- * discriminates something the others do not: geometry catches a re-cut clip,
- * the note count catches a copy of a same-length clip, the first note catches
- * a same-length same-density different clip. */
+/* What the clip looked like when the lane was recorded. ONLY THE CONTENT HALF
+ * IS COMPARED (lane_fingerprint_matches): the note count catches a copy of a
+ * same-length clip, the first note catches a same-length same-density
+ * different clip. The two loop fields are recorded for diagnostics only --
+ * a clip that grew is the same clip, and so is one whose loop area was
+ * dragged, and going stale on either is silent. */
 typedef struct {
     double loop_start;
     double loop_len;

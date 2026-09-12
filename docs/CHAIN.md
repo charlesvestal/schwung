@@ -586,11 +586,21 @@ evidence about what was there when it was recorded:
 ```
 key         = (set, track, clip slot, target, param)
 fingerprint = (loop_start, loop_len, note count, first note)   at record time
+compared    = (note count, first note)                         only
 ```
 
-Each field of the fingerprint discriminates something the others do not:
-geometry catches a re-cut clip, the note count catches a copy of a same-length
-clip, the first note catches a same-length same-density different clip.
+**Only the content half is compared.** The note count catches a copy of a
+same-length clip; the first note catches a same-length same-density different
+clip. **Neither loop field is**, and that is the same decision twice: a clip
+that grew is the same clip, and so is a clip whose loop area the user dragged.
+Going stale on either is **silent** — the automation simply stops, with no
+gesture short of re-recording the pass that brings it back — and a moved loop
+costs the lane nothing, because phases are stored **loop-relative**
+(`shadow_slot_clip_phase` subtracts `loop_start`). Clip-relative storage was
+considered and rejected: `loop_start` is observable by nothing for a clip just
+made and then edited, so re-origining would have to guess and would put every
+value a bar out while looking healthy. Both loop fields are recorded for
+**diagnostics only**.
 
 On a mismatch the lane is **stale: retained, silent, and never guessed at.** A
 clip copied into a slot that once held automation does not inherit it. A match
@@ -600,8 +610,8 @@ ever sets `stale`, because `orphaned` is a statement about the clip's
 **existence** and only the worker's before/after parse can make it. No
 fingerprint at all is a third answer and marks nothing either way; the absent
 fingerprint is `{note_count: 0, first_note: -1}`, never all-zero, because note 0
-is a real note number and a zeroed `first_note` would match any clip whose
-loop starts where this one's did.
+is a real note number and, with no loop field compared, a zeroed `first_note`
+plus a zeroed count would match the first clip the lane ever met.
 
 A **deleted clip orphans its lanes; it does not delete them.** Move saves
 `Song.abl` about 35 s after an edit, so "absent from the file" is a statement
