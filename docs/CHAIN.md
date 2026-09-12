@@ -859,14 +859,29 @@ playhead     a 1 px INTERRUPTION in the strip, plus a stub at rows 55-57/61-63
   without changing the return count — a silent 50% error in every step index.
   Per the manual the grid divides a **bar**, and above 1/16 a bar spans several
   pages of step buttons.
-- **Move's playhead index is page-relative too, and deriving it from the
-  signature made it worse.** Predicted that an 11/8 bar's 22 steps was the
-  modulus, deployed it, and measured: within-page went 0/16 diff +6 → 0/18 diff
-  −10, and the page column from **16/16** to 0/18. Reverted. What remains
-  unexplained is a *constant* 6-step offset under 11/8 while the page column is
-  perfect — so the phase is right to within a page and the residue is in where
-  Move starts counting steps inside one. It matters only for p-locks, which is
-  the reason not to guess.
+- **Move's lit step is BAR-relative, then PAGE-wrapped** — and this is the
+  mapping a step p-lock needs:
+
+  ```
+  idx = (step_in_CLIP mod steps_per_bar) mod 16      steps_per_bar = qpb / res
+  ```
+
+  The manual says the grid divides a **bar**, and that above 1/16 a bar spans
+  several pages of step buttons — an 11/8 bar at 1/16 is 22 steps, so it pages
+  **16 + 6** even at the default grid. Measured: 16 sightings on the 11/8 set
+  where Move's index was always our loop-relative step **+10**, arriving in
+  bursts of six with a ~43-step gap. The loop starts at quarter 8.0 = 32 steps,
+  `32 mod 22 = 10` — it begins ten steps into bar 2, so only steps 10–15 of
+  that bar's *first* page are ever displayed while it plays. The model
+  reproduced all 16 offline, and on hardware the check went from 0/16 to
+  **26/26, 100%, zero misses**.
+  **Three attempts, each missing one term:** a bare `% 16` (no bar), then
+  `% steps_per_bar` with no page wrap *and* a loop-relative step — which was
+  worse than either, taking the page column from 16/16 to 0/18. In 4/4 at 1/16
+  all three coincide, which is why a 4/4 device reads 99.3% whatever this line
+  says. Grids coarser than 1/16 (a 4/4 bar is 8 steps at 1/8) are **not
+  measured**: the model predicts an index in 0–7 there, and nothing has
+  checked it.
 - **VALIDATED ON HARDWARE 2026-09-12.** With the editor open the reading
   followed the selection across three tracks — 4, 5 and 3 bars — the decoded
   displayed bar agreed twice with Move's *independently announced* "Bar N",
