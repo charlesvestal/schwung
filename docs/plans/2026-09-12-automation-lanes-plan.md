@@ -1954,6 +1954,54 @@ time.
 8. Launch a different clip, then the original.
 9. `Clear Lanes`. Confirm silence from the lane and that the knob works normally.
 
+- [ ] **Step 3b: MEASURE THE COST — the estimate is not an answer**
+
+The estimate for `lane_tick` is **~50 us of a 2370 us frame (~2%) at four
+lanes per slot, and ~8% at the 16-lane ceiling** — arithmetic, not a
+measurement, and this project's rule is to measure. Two known inefficiencies
+are deliberately NOT fixed yet, so that the measurement decides which (if
+either) is worth fixing:
+
+- `find_param_by_key` is a linear scan with a `strcmp` per element, called
+  **twice per lane per block** (once in `lane_tick`, again inside
+  `chain_mod_emit_override`). Fix: cache the `chain_param_info_t *` on the
+  lane, invalidated on module swap.
+- `lane_eval` rescans its points from index 0 every block, although phase
+  advances monotonically. Fix: remember the last segment index.
+
+Take three readings — **no lanes, one lane driving, and as many lanes as the
+session produced** — and do not add them together: the CPU page's two numbers
+(frame budget vs process CPU) measure different things and a module's cost
+already sits inside `MoveOriginal`'s `/proc` percentage.
+
+```bash
+# frame budget + per-serve cost. The tally is a 1 Hz aggregate and CANNOT see a
+# single blown frame; spi_timing's param=avg/max is what does.
+ssh ableton@move.local "touch /data/UserData/schwung/spi_tally_on"
+ssh ableton@move.local "tail -f /data/UserData/schwung/debug.log | grep -E 'spi-tally|spi_timing|param='"
+```
+
+Also open the **CPU usage page** (`/system/cpu` in schwung-manager, always on —
+only its 1 Hz polling is armed, by a button) and read the frame-budget figure
+per reading.
+
+**`param-slow` needs no flag and is the one to watch**: any parameter serve
+past 1000 us is logged **with its key**, so a lane driving a parameter whose
+`set_param` does blocking work names itself. That is not hypothetical — dr32
+re-reading its kit inside `set_param` blew a frame and cost a session. A lane
+writes its target ~344 times a second, so it is a good way to *find* such a
+parameter.
+
+```bash
+ssh ableton@move.local "grep param-slow /data/UserData/schwung/debug.log | tail -20"
+```
+
+Disarm `spi_tally_on` afterwards — an armed diagnostic has itself caused the
+dropouts it was measuring.
+
+Record the three readings in the design doc beside the estimate, and say
+plainly whether either optimisation is now warranted.
+
 - [ ] **Step 4: Disarm the diagnostic**
 
 ```bash
