@@ -321,6 +321,13 @@ export const SLOT_GRID_ACTIONS = [
      * their place, and the grid is the default Param View — a row only on the
      * lists would be a feature most users could not reach. */
     { label: "Buses", action: "buses", when: "splits" },
+    /* The only gesture that undoes a recorded knob move. Here as well as on
+     * the two settings LISTS because this menu is what the grid shows in their
+     * place, and the grid is the default Param View -- a row only on the lists
+     * would be a feature most users could not reach. Unconditional: the count
+     * it announces is what says whether there was anything to clear, and a row
+     * hidden until a lane exists would need a per-draw read to decide. */
+    { label: "Clear Lanes", action: "clear_lanes", when: null },
     { label: "Save", action: "save", when: null },
     /* Save As stays even with nothing saved: it goes straight to the keyboard
      * where Save offers a generated name. Only DELETE is meaningless. Same

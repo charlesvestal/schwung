@@ -54,6 +54,11 @@ export const SLOT_SETTINGS = [
     { key: "slot:transpose", label: "Transpose", type: "int", min: -12, max: 12, step: 1 },
     { key: "midi_fx_pre_mode", label: "MIDI FX", type: "int", min: 0, max: 1, step: 1 },
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
+    /* Automation lanes. The third form of this screen (CHAIN_SETTINGS_ITEMS)
+     * and the knob grid's Actions menu carry the same row and reach the same
+     * implementation -- a row on two of the three is the asymmetry the `buses`
+     * comment above calls worse than either. */
+    { key: "clear_lanes", label: "Clear Lanes", type: "action" },
 ];
 
 /*
@@ -100,6 +105,9 @@ export function getSlotSettingValue(slot, setting) {
     if (setting.key === "buses") {
         return ctx.slotBusCountLabel ? ctx.slotBusCountLabel(slot) : "";
     }
+    /* Nothing to show, and answered HERE so the fallback below does not spend
+     * a ~2.8 ms IPC round trip per draw reading a key no slot serves. */
+    if (setting.key === "clear_lanes") return "";
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";
 
@@ -339,6 +347,10 @@ export function handleSlotSettingsSelect() {
             enterPatchBrowser(selectedSlot);
         } else if (setting.key === "chain") {
             enterChainEdit(selectedSlot);
+        } else if (setting.key === "clear_lanes") {
+            /* Acts and announces; it opens nothing, so this screen stays up
+             * and the announcement is the whole feedback. */
+            if (ctx.clearSlotLanes) ctx.clearSlotLanes(selectedSlot);
         } else if (setting.key === "buses") {
             /* Back comes back to THIS screen, not to the other slot settings
              * list — the thunk is what carries that, and it announces itself,

@@ -269,3 +269,92 @@ void lane_apply_state(chain_instance_t *inst, const char *doc) {
     lane_release_all(inst);
     lane_store_deserialize(&inst->lanes, doc);
 }
+
+/* ---- the one "lanes:" dispatch ----------------------------------------
+ *
+ * Every lane key arrives here, from a SINGLE branch in v2_set_param /
+ * v2_get_param. One branch rather than one per key because chain_host.c is
+ * pinned at 2900 lines and was sitting two under it: a per-key ladder there
+ * would have made the next lane key a choice between the pin and the feature.
+ * This also puts the lane keys beside the code that implements them.
+ *
+ * `sub` is the key PAST "lanes:", so nothing here restates the prefix.
+ *
+ * RT: both run on the SPI callback like every other module entry point. No
+ * allocation, no I/O, no locks, no logging, and every loop is LANE_MAX-bounded.
+ */
+void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
+    if (!inst || !sub) return;
+
+    /* The whole store as one opaque document. */
+    if (strcmp(sub, "state") == 0) {
+        lane_apply_state(inst, val ? val : "");
+        return;
+    }
+
+    /* Move's Record button, pushed by the shim on CHANGE only. */
+    if (strcmp(sub, "armed") == 0) {
+        lane_set_armed(inst, val && atoi(val) != 0);
+        return;
+    }
+
+    /* Throw the slot's automation away.
+     *
+     * RELEASES FIRST, for the reason lane_apply_state already had to solve:
+     * the mod bus holds one override source per DRIVING lane, so emptying the
+     * store on its own leaves those sources asserted for lanes that no longer
+     * exist. Every parameter they were driving then sticks wherever the lanes
+     * left it and NO GESTURE HANDS IT BACK -- a dead knob with nothing on
+     * screen to explain it. Reusing lane_release_all rather than re-deriving
+     * the restore keeps one release path.
+     *
+     * The COUNT is kept for `lanes:cleared`, because a clear that reports
+     * success without one is indistinguishable from a clear that cleared
+     * nothing -- the same reason the recall snapshot counts its skipped
+     * positions. Written unconditionally, so a second press answers 0 rather
+     * than repeating the first take's number.
+     *
+     * Guarded on a non-zero value: a stray `lanes:clear=0` must not throw
+     * away a set's automation. */
+    if (strcmp(sub, "clear") == 0) {
+        if (!val || atoi(val) == 0) return;
+        lane_release_all(inst);
+        int n = 0;
+        for (int i = 0; i < LANE_MAX; i++)
+            if (inst->lanes.lanes[i].used) n++;
+        lane_store_reset(&inst->lanes);
+        inst->lanes_last_cleared = n;
+        return;
+    }
+}
+
+/* Bytes written, or -1 for "not a lane key we serve" -- which the UI reads as
+ * a FAILED read rather than as an empty answer. The dispatch swallows the
+ * whole "lanes:" prefix, so an unknown subkey has nothing left to fall through
+ * to and must say so instead of answering "" and being believed. */
+int lane_param_get(chain_instance_t *inst, const char *sub,
+                   char *buf, int buf_len) {
+    if (!inst || !sub || !buf || buf_len <= 0) return -1;
+
+    /* 0 bytes means this slot has no automation; -1 means the host's buffer
+     * was too small, which the UI must not mistake for empty or it truncates
+     * a good lanes_<i>.json with half a document. */
+    if (strcmp(sub, "state") == 0) return lane_serve_state(inst, buf, buf_len);
+
+    if (strcmp(sub, "cleared") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_cleared);
+
+    /* WHY a recording was refused. 0 is UNKNOWN -- the shim could not say
+     * where in the clip we are -- and not phase zero, which is what lets the
+     * UI say "clip phase unknown" instead of leaving the user to guess why a
+     * knob turn recorded nothing. */
+    if (strcmp(sub, "phase_valid") == 0)
+        return snprintf(buf, buf_len, "%d", inst->clip_phase_valid ? 1 : 0);
+
+    /* Readable as well as writable: the arm comes from Move's Record LED
+     * through the shim, so the UI has no other way to know it. */
+    if (strcmp(sub, "armed") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lane_armed ? 1 : 0);
+
+    return -1;
+}

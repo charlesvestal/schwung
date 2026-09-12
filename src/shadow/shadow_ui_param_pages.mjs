@@ -300,7 +300,16 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
          */
         controller = createController(Object.assign({
             getParam: (key) => ctx.getSlotParam(currentSlot, key),
-            setParam: (key, value) => ctx.setSlotParam(currentSlot, key, value),
+            /* A write while Record is lit and the clip phase is UNKNOWN records
+             * no lane, and the user has to be told -- Record lit plus a moving
+             * knob plus no lane is indistinguishable from a broken feature.
+             * The host gates itself to once per gesture, reads included, so
+             * this costs a detent nothing (see noteLaneWriteRefusal). */
+            setParam: (key, value) => {
+                if (typeof ctx.noteLaneWriteRefusal === 'function')
+                    ctx.noteLaneWriteRefusal(currentSlot, key);
+                return ctx.setSlotParam(currentSlot, key, value);
+            },
             announce,
             /* The list editor marks these with "~"; the grid ticks the cell.
              * A synthesised contract may answer for itself — slot settings
