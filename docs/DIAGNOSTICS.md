@@ -311,3 +311,36 @@ One dormant instance of the same hazard, found on the way:
 `led_queue_flush_jack_sysex_restore()` opens by zeroing **every** cable-0 SysEx
 packet in MIDI_OUT, reasoning only about RNBO's SysEx — Move's `37`-family and
 its own LED commands ride that cable too.
+
+### The re-send, and why it is not the 1.3.2 persistence
+
+`src/host/xmos_resend.h` closes the failure above without knowing who caused it:
+watch the `37`-family envelopes Move writes into MIDI_OUT, check the hardware
+mailbox after the transfer, and if the bytes are not there, put them back —
+bounded at `XMOS_RESEND_MAX_ATTEMPTS`, then abandoned with a log line.
+
+**It replays Move's own bytes from this session, verbatim, milliseconds later.**
+The persistence retired in 1.3.2 replayed a value read from a file written on a
+*previous boot*, which is how it could assert Main Out — and mute the built-in
+speaker — against what the user currently wanted. This has no source of intent
+other than the message Move itself just emitted, so it cannot express one the
+user did not. It is kept entirely separate from `shim_usbc_out_replay` and
+`usbc_out_persist_enabled`, which stay hard-off.
+
+Three things that are easy to get wrong:
+
+- **Observe EARLY in `pre_transfer`, not at `PREEND`.** At `PREEND` you only see
+  the survivors — the half of the problem that needs no defence.
+- **Our own re-send is not a special case.** Confirmation asks whether the bytes
+  are on the wire, not who put them there, so the re-send landing is what closes
+  the watch.
+- **An abandoned message must stay in its slot.** Clearing it let the next frame
+  re-watch the same bytes with a fresh budget, which is an unbounded re-send
+  loop — 150 emissions across 200 frames where 3 were intended. It is retired
+  only when a *different* message arrives, because that is new intent. Found by
+  `test_budget_is_bounded`, not by review.
+
+The worker logs `XMOS ctl msg: N dropped from MIDI_OUT, M re-sent, K gave up`
+when those counters move; detection is on the SPI callback, which may not log.
+A `lost` with no `gave_up` is the defence working. A `gave_up` is the silent
+USB-C failure, now with a line that names it.
