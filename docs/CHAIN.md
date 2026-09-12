@@ -512,3 +512,223 @@ is 2026-03-04, `main` is 1696 commits ahead and the branch carries 864 of its
 own — so this is a re-implementation of its design on current `main`, not an
 independent invention of it. `send_fx_key.h` carries the same credit at the
 point the keys are parsed.
+
+### Automation lanes — a clip's knob moves, recorded and played back
+
+A **lane** records a parameter against the clip playing on a Move track and
+plays it back every loop. One lane is `(track, clip slot, target, param)` — the
+same `(target, param)` address the knob grid, the mod bus and the E16 surface
+already use — plus a *fingerprint* of the clip it was recorded against. Its
+content is an ordered list of breakpoints, each `(phase in beats from the
+clip's loop start, value in the parameter's own units)`.
+
+The pure model is `src/host/lane_store.{h,c}` (runnable from `tests/host/`); the
+`lanes:state` document is `src/host/lane_serial.{h,c}`; the glue that knows
+about `chain_instance_t`, parameter types and the mod bus is
+`src/modules/chain/dsp/chain_lanes.c`. `lane_tick` runs once per block from
+`render_block` **and** from the `mod:tick` branch on a silent slot — the shim
+skips `render_block` on a silent slot for 171 frames in 172, and a lane must
+keep playing through silence.
+
+#### It is ABSOLUTE, and that is why `chain_mod` grew an override class
+
+The lane *is* the value; the knob is the base underneath it. So
+`chain_mod_recompute_effective` computes
+
+```
+effective = clamp((override ? override : base) + Σ offset contributions)
+```
+
+One source per target may be flagged `is_override`. **LFOs still sum on top** of
+whatever the lane plays, exactly as they sum on top of the knob, and clearing a
+lane goes through the ordinary clear path (`chain_mod_emit_override` with
+`enabled = 0`), so the parameter **returns to the knob** with a forced write
+rather than sticking wherever the lane stopped. Nothing about write throttling,
+the change epsilon or base tracking on `set_param` is re-implemented: a lane is
+just another source.
+
+**An unarmed knob turn must not be inaudible.** Under an absolute lane a turn
+moves the base, which the override masks, and the encoder reads as broken. So an
+unarmed turn **punches through until the loop comes round** — per
+`(target, param)`, expiring when the phase wraps past where it started, so it
+survives a tempo change and needs no timer. An *armed* turn cancels any open
+punch on that lane, or the point just recorded would sit silent for a loop.
+
+#### Time-addressed, with no length of its own
+
+Clip length is mutable from Move's step editor and extending a clip by adding a
+note past the end is routine, so:
+
+- breakpoints are stored **unbounded**; the lane has no length, only the clip's;
+- playback wraps at the clip's **current** `loop_len`;
+- **nothing is ever rescaled.** Stretching a lane to a new length turns a filter
+  sweep into a different filter sweep — the musically wrong answer even though
+  it is the tidy-looking one;
+- evaluation considers **only points below `loop_len`**, and holds at both ends
+  rather than interpolating across the wrap. A dormant point past the end is
+  **retained** but cannot bend the audible curve — and in particular cannot do
+  so through wrap-around interpolation, which is how a hidden point would
+  otherwise become audible while appearing nowhere on screen.
+
+Growing a clip reveals what was recorded there; shrinking it hides the tail;
+neither loses data. Interpolation is linear for floats and **stepped for int and
+enum**, from the module's own `chain_param_info_t` rather than from anything the
+lane stored — a parameter that changed from float to enum must not keep ramping
+across its options.
+
+#### Move's clips carry no identity, so a lane can only be keyed to a POSITION
+
+A clip in `Song.abl` has `name` (usually `""`), `color`, `region`, `grooveId`,
+`stepEditorScrollPosition`, `notes` and `envelopes` — **no id, no uuid**. A lane
+therefore cannot be bound to "this clip". It is bound to a grid position plus
+evidence about what was there when it was recorded:
+
+```
+key         = (set, track, clip slot, target, param)
+fingerprint = (loop_start, loop_len, note count, first note)   at record time
+```
+
+Each field of the fingerprint discriminates something the others do not:
+geometry catches a re-cut clip, the note count catches a copy of a same-length
+clip, the first note catches a same-length same-density different clip.
+
+On a mismatch the lane is **stale: retained, silent, and never guessed at.** A
+clip copied into a slot that once held automation does not inherit it. A match
+clears both `stale` and `orphaned` — the clip coming back is an undo, and there
+is no gesture in the UI that would otherwise un-strand a lane. A *mismatch* only
+ever sets `stale`, because `orphaned` is a statement about the clip's
+**existence** and only the worker's before/after parse can make it. No
+fingerprint at all is a third answer and marks nothing either way; the absent
+fingerprint is `{note_count: 0, first_note: -1}`, never all-zero, because note 0
+is a real note number and a zeroed `first_note` would match any clip whose
+loop starts where this one's did.
+
+A **deleted clip orphans its lanes; it does not delete them.** Move saves
+`Song.abl` about 35 s after an edit, so "absent from the file" is a statement
+about the last save and not about the user's intent. Pruning is only ever an
+explicit `Clear Lanes`.
+
+(`envelopes[]` in `Song.abl` is **Move's own** clip automation. We never read or
+write it. Do not reuse the word "envelope" for a lane.)
+
+#### Phase is DLSYM'd into the chain, never a `host_api_v1_t` field
+
+`chain_set_clip_phase(instance, valid, phase_beats, loop_len, track, clip_slot,
+fp_valid, fp[4])` and `chain_set_clip_deleted(instance, track, slot)` are
+default-visibility exports of `dsp.so`, resolved in `shadow_chain_mgmt.c` and
+called from the shim's per-slot loop. **Not** fields on the host struct: the
+front of its `reserved` tail is **+120**, the offset a shipped breakbeat build
+over-reads and calls as `get_project_bpm()`, so a live pointer there boot-loops
+the device (`CLAUDE.md`, `src/host/plugin_api_v1.h`). The fingerprint crosses as
+four doubles so the shim never has to agree with `lane_store.h`'s layout.
+
+**Unknown phase refuses, and is never phase 0.** Phase has three answers — a
+number, "nothing is playing", and "I could not tell" — and the third reaches the
+chain as a refusal. It is stored as **NaN**, not as the caller's zeroed local:
+`0.0` is a legal phase (the loop start), so a reader that forgot the
+`clip_phase_valid` gate would otherwise play every lane's first breakpoint
+forever, in silence. With no phase, `lane_tick` releases everything it drives —
+once, which is what `driving` is for — and ends every recording pass.
+
+#### Recording: a pass ERASES the span it sweeps
+
+The arm is **Move's own Record button**, decoded from its LED on cable 0
+(`src/host/rec_arm.h`) and pushed to each slot as `lanes:armed` **on change
+only**. Three rules, measured on hardware 2026-09-12:
+
+- Record is **CC 86**. Not 118 — `schwung-spi` documents 118 as the same
+  physical button as Sample, and 118 never appeared in the arm sequence.
+- The **animation is carried in the channel nibble** (0x06–0x0F) and the value
+  byte is the colour it animates to. Any animation channel means *flashing* —
+  armed, or counting in — and records nothing, so no rate measurement and no
+  colour comparison is needed.
+- **Static alone does not mean recording.** The resting state is static and
+  non-zero too (122 and 124 were both observed). The discriminator is **full
+  brightness**, `d2 == 127`, read as a brightness rather than as a palette
+  index. And it is evaluated **once per frame, from the last CC 86 in it**:
+  Move writes the base colour statically and *then* applies the animation, so a
+  burst contains `static 127` immediately followed by `blink`, and acting on
+  each message in turn reports one frame of RECORDING every time a count-in
+  starts. One frame is enough to record a breakpoint.
+
+While armed *and* the phase is known, a write to a parameter that resolves
+through `find_param_by_key` creates a lane implicitly and records a breakpoint
+at the phase sampled **on the callback at the moment of the write** — a UI frame
+is ~23 ms and a knob sweep is faster than that, so frame-time phase would
+quantize a sweep into steps. A key too long for `lane_t`'s fields is **refused,
+not truncated** (two over-length keys would collide onto one stored string), and
+a full store records nothing rather than pretending to.
+
+**Playback cannot record itself**, structurally rather than by a flag:
+`chain_mod_set_param_string` writes the sub-plugin's `set_param` directly and
+never re-enters `v2_set_param`, which is the only caller of the recorder. If
+that ever stops being true a lane compounds its own curve every loop, silently
+and worse every bar; the unit test asserts it.
+
+**A second pass over an existing lane erases the span it swept.** That is
+`lane_record_point`, and it is *not* `LANE_MIN_POINT_BEATS`. The thinning window
+is ~5 ms at 120 BPM — below a knob detent's spacing — and for a while it was
+claimed to do punch's job as well. It cannot: a second pass's writes land tens
+of milliseconds from the first pass's, so they miss the window entirely and the
+two curves **interleaved** (20 → 90 → 40 → 91 → 60). The user heard it as
+"super jumpiness". Replacing a pass is a *swept region*, not a point window:
+everything strictly between the previous write of **this** pass and this one is
+deleted. The first write of a pass erases nothing, and neither does a gap wider
+than `LANE_PASS_GAP_BEATS` (one beat — a knob detent stream is an order of
+magnitude inside that, so a whole beat with no write is a hand that stopped). A
+wrapped sweep is one gesture: the swept span is `(prev, loop_len)` plus
+`[0, phase)`. Every pass therefore needs an **end** — `lane_record_end_all` on
+disarm, and `lane_record_end` when a lane stops being the one playing — or the
+first write of the next take erases back to wherever the last one happened to
+stop.
+
+#### The `lanes:` param surface, behind ONE dispatch
+
+| Key | Direction | Meaning |
+|---|---|---|
+| `lanes:state` | get / set | The whole store as one opaque document. `0` bytes means *this slot has no automation*; `-1` means the host's buffer was too small, which the UI must read as a **failed** read and not as an empty one. A set is **all or nothing** — a malformed document leaves the store exactly as it was. |
+| `lanes:armed` | get / set | Move's Record button, pushed by the shim on change. Readable because the UI has no other source for it. Disarming releases nothing and clears nothing — a take must keep driving its parameter the moment Record goes out. |
+| `lanes:clear` | set | Throw this slot's automation away. Releases first, then resets. Guarded on a non-zero value so a stray `=0` cannot destroy a set's automation. |
+| `lanes:cleared` | get | How many lanes the last clear threw away. Written unconditionally, so a second press answers `0` rather than repeating the first take's number. |
+| `lanes:phase_valid` | get | **Why** a recording was refused. `0` is *unknown*, not phase zero. |
+
+All of them arrive through **one** branch in `v2_set_param` / `v2_get_param`
+that forwards the key past `lanes:` to `lane_param_set` / `lane_param_get`.
+That is not tidiness: `chain_host.c` is pinned under 2900 lines by
+`tests/host/test_chain_host_file_split.sh` and was sitting two under it, so a
+per-key ladder there would have made the next lane key a choice between the pin
+and the feature. An unknown subkey returns `-1` — the dispatch swallows the
+whole prefix, so there is nothing left to fall through to and it must say so
+rather than answer `""` and be believed.
+
+`stale`, `orphaned`, `driving` and the punch and pass fields are **runtime, not
+content**, and are not in the document. `lane_tick` recomputes the first two
+from the live clip every block, and only a *match* clears `stale` — a persisted
+`stale` would strand a lane whose clip is present with no gesture anywhere that
+un-strands it.
+
+Lanes ride with the **set**: `set_state/<uuid>/lanes_<i>.json`, written by the
+existing autosave (see `docs/SHADOW_UI.md`). A clip position means nothing in
+another set. There is no second serializer.
+
+#### The budgets are small, and knowingly too small
+
+`LANE_MAX` is **32** per slot — 8 clip slots × 4 parameters, because the key
+spans clips *and* parameters — and `LANE_POINTS_MAX` is **64** per lane
+regardless of loop length. The memory is irrelevant (a `lane_t` is ~1.1 KB and
+`lane_store_t` sits on `chain_instance_t`, **not** inside `patch_info_t`, which
+is a stack local on the SPI callback). **What caps it is the param contract:**
+`lanes:state` is served as one param value, so `LANE_SERIAL_MAX_BYTES` must stay
+under `SHADOW_PARAM_VALUE_LEN`, which a `_Static_assert` in `lane_serial.c`
+enforces. At 32 lanes the worst-case document is ~104 KB against a 128 KB
+ceiling, and ~40 lanes is the hard wall — so do not raise `LANE_MAX` without
+reading that assert.
+
+64 points is coarse for a long clip and 32 lanes is few for a kit. Scaling it —
+a **shared point pool** so a dense lane can borrow from an empty one, a point
+**density per beat** rather than per lane, and a **per-clip transfer key** so the
+document is fetched a clip at a time instead of whole — is designed and
+**deliberately deferred to a follow-up**. None of it exists today. A full lane
+degrades resolution rather than dropping the gesture (the write replaces its
+nearest point and counts a `full_hits`), because a lost write mid-sweep is a
+hole the user can neither see nor fix.

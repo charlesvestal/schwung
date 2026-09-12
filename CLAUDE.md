@@ -261,10 +261,25 @@ instance is zeroed by construction (`mm_init` memsets, `shadow_host_api` is BSS,
 `overtake_host_api` is a static, `chain_host` memcpy's `sizeof()`).
 
 **It does not make the ABI extensible** — appending a real field still requires
-rebuilds. It buys a safe failure instead of a crash. So **consume `reserved`
-from the front** when adding a field and never reduce the total;
+rebuilds. It buys a safe failure instead of a crash.
+
+**So do NOT consume the run — not from the front, and not from the back.** This
+file said "from the front" for a while and that advice is the crash: `reserved`
+begins at **exactly +120** (measured; `sizeof(host_api_v1_t)` is 184 and
+`get_beat_position` sits at +112), which is the offset breakbeat reads. A real
+field there is a **live pointer at the crash site** — breakbeat's own
+`if (host->fn)` guard passes and the device boot-loops again. Taking from the
+back shortens the run instead, and old binaries start reaching past it.
+**A new host capability goes in as a dlsym'd export** — `chain_set_clip_phase`,
+`chain_take_midi_tick_wake`, `move_plugin_render_split` — which is what that
+precedent is for.
+
 `tests/host/test_host_api_reserved_tail.c` fails on a shrunken tail, on a field
-appended *after* `reserved`, and on +120 specifically.
+appended *after* `reserved`, and (now) on a field inserted *before* it, which
+moves the run to +128. It could not see that on its own: it inspects a
+`memset`-zeroed struct, so a real field at +120 reads NULL there and passes. The
+enforcement is the geometry check plus a `_Static_assert(offsetof(host_api_v1_t,
+reserved) == 120)` beside the field.
 
 **The diagnosis needed the load base.** The shim's SIGSEGV handler prints `pc`,
 `lr` and `sp` plus a `/proc/self/maps` dump to
@@ -612,6 +627,18 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   tick, then ONE `chain_take_midi_tick_wake`, then the render — because `take`
   is one-shot and a "no" is what clears the double-tick guard. Transitions in
   `chain_idle_tick.h` so `tests/host` can drive them.
+- **An automation lane is ABSOLUTE and TIME-ADDRESSED, and it has no length of
+  its own.** Breakpoints are beats from the clip's `loop_start`; playback wraps
+  at whatever `loop_len` the clip has *now*, considering only points below it,
+  so extending a clip reveals what was recorded there and shrinking it makes
+  the tail dormant — nothing is rescaled and nothing is deleted. It drains
+  through an **override** source class in `chain_mod` (`effective = (override ?
+  override : base) + Σ offsets`), so LFOs still sum on top and clearing returns
+  the parameter to the knob. **Move's clips carry no identity** — no id, no
+  uuid — so a lane is keyed to a grid POSITION plus a fingerprint of the clip's
+  notes, and a mismatch makes it STALE: retained, silent, never guessed at.
+  **Unknown phase refuses** both playback and recording, and is never phase 0.
+  The arm is Move's own Record button, read off its LED. See `docs/CHAIN.md`.
 
 ### The knob grid / param pages — `docs/PARAM_PAGES.md`
 
