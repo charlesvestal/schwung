@@ -1654,3 +1654,34 @@ inline is how this file got to 151 KB.
 ## Dependencies
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
+
+### Schwung is MIT, and THREE shipped artifacts are GPL
+
+Not a contradiction and not an accident — they are **separate programs**, and
+nothing copyleft is linked into `schwung` or `schwung-shim.so`:
+`link-subscriber` (Ableton Link, GPL-2.0+), `lib/jack/jack_shadow.so` (jack2 +
+Cycling '74's JackMoveDriver, GPL-2.0+) and `lib/libespeak-ng.so` (GPL-3.0+).
+They talk to us over `/dev/shm`, sockets and `exec`.
+
+The trap is that **one file's header can silently claim otherwise.**
+`JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on
+JackMoveDriver by Cycling '74 (GPL-2.0)", while its `.h` carried the correct
+GPL block the whole time — which is exactly what made the `.cpp` read as a typo
+rather than as a claim about somebody else's code. It is built with
+`-DSERVER_SIDE` against jack2's GPL-only server headers (39 of the 138 vendored
+headers are GPL-2.0+, the other 96 LGPL-2.1+), so MIT was never available to it.
+
+`THIRD_PARTY_LICENSES.md` is the single third-party document — an extensionless
+second copy diverged for months — and it **must ship**: it was absent from
+`package.sh`'s `ITEMS` entirely, so the tarball carried GPL-2.0 and GPL-3.0
+binaries with no licence text and no attribution. `build.sh` stages it,
+`LICENSE`, and `licenses/GPL-{2,3}.0.txt` **unconditionally** (a `|| true` here
+is the link-subscriber silent-skip shape: a non-compliant release that looks
+identical to a good one), and `package.sh` HARD-FAILS on a missing one.
+`tests/host/test_license_consistency.sh` pins all of it, including that no
+CC BY-NC-SA claim returns — `LICENSE` went MIT in 2026-03 and the third-party
+doc went on asserting CC BY-NC-SA 4.0, a licence that is not a software licence
+and whose NC clause is incompatible with every GPL component above.
+
+**`lib/libpcaudio.so.0` is ours** (`src/host/pcaudio_stub.c`), not pcaudiolib —
+a stub so eSpeak NG resolves without dragging in libpulse/libX11.

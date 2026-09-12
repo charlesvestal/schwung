@@ -14,7 +14,7 @@ cd ./build
 # Build list of items to package
 # start.sh/stop.sh (standalone-host launchers) no longer ship — the
 # standalone runtime never runs on device (shadow mode only).
-ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./schwung-entry.sh ./restart-move.sh ./launch-standalone.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts"
+ITEMS="./schwung ./schwung-shim.so ./move-anything ./move-anything-shim.so ./shim-entrypoint.sh ./schwung-entry.sh ./restart-move.sh ./launch-standalone.sh ./host ./shared ./modules ./shadow ./patches ./presets ./unified-log ./scripts ./LICENSE ./THIRD_PARTY_LICENSES.md"
 
 # Dev/test artifacts must not ride along in wholesale-packaged dirs.
 # Note: schwung-testd (the E2E test-bus daemon) is deliberately KEPT — it
@@ -38,10 +38,21 @@ if [ -d "./espeak-ng-data" ]; then
     ITEMS="$ITEMS ./espeak-ng-data"
 fi
 
-# Add licenses directory if it exists (third-party license files)
-if [ -d "./licenses" ]; then
-    ITEMS="$ITEMS ./licenses"
-fi
+# Licence files are a HARD requirement, not an "if it exists".
+#
+# The tarball carries GPL-2.0 artifacts (link-subscriber from Ableton Link,
+# lib/jack/jack_shadow.so from jack2 + Cycling '74) and a GPL-3.0 one
+# (lib/libespeak-ng.so). Both licences require the licence text to travel with
+# the binaries, so a release missing them is non-compliant -- and a release
+# that quietly dropped them would look identical to a good one. Fail loudly.
+for lic in ./LICENSE ./THIRD_PARTY_LICENSES.md ./licenses/GPL-2.0.txt ./licenses/GPL-3.0.txt; do
+    if [ ! -f "$lic" ]; then
+        echo "ERROR: missing licence file $lic in build/ — refusing to package." >&2
+        echo "       scripts/build.sh copies these; re-run it before packaging." >&2
+        exit 1
+    fi
+done
+ITEMS="$ITEMS ./licenses"
 
 # Add link-subscriber if it was built
 if [ -f "./link-subscriber" ]; then

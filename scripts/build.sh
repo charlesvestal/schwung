@@ -849,6 +849,15 @@ cp ./src/host/boot_target_lib.sh ./build/host/
 cp ./src/restart-move.sh ./build/ 2>/dev/null || true
 cp ./src/launch-standalone.sh ./build/ 2>/dev/null || true
 
+# Licence texts. These are NOT optional and must not be `|| true`: the tarball
+# ships GPL-2.0 (Ableton Link -> link-subscriber, jack2 -> jack_shadow.so) and
+# GPL-3.0 (eSpeak NG) artifacts, and both licences require a copy to travel
+# with the binaries. A silent skip here would ship a non-compliant release and
+# say nothing -- the same failure shape as the link-subscriber build skip above.
+cp ./LICENSE ./build/
+cp ./THIRD_PARTY_LICENSES.md ./build/
+cp ./licenses/GPL-2.0.txt ./licenses/GPL-3.0.txt ./build/licenses/
+
 # Copy post-update script (run by Module Store after host updates)
 mkdir -p ./build/scripts
 cp ./scripts/post-update.sh ./build/scripts/
