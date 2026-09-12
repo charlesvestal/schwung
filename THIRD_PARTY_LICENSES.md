@@ -10,22 +10,42 @@ shipped artifact each one ends up in.
 
 ## How this release is licensed
 
-The release tarball (`schwung.tar.gz`) is an aggregate of **separate programs**.
-Schwung's own MIT-licensed code is not linked into any of the copyleft
-components below, and none of them are linked into it; they communicate over
-shared memory, sockets, and `exec`. Each artifact carries its own license:
+**Schwung's source code is MIT.** That does not change anywhere below, and it
+is the licence under which this project's own work is offered.
 
-| Shipped artifact | License | Source |
+Some of the *binaries* built from it combine that MIT source with copyleft
+libraries, and a binary is licensed by everything that went into it. Two
+different situations, which must not be conflated:
+
+**Linked — the binary is a combined work.** `schwung-shim.so` is dynamically
+linked against `libespeak-ng` (GPL-3.0-or-later) for the screen reader, which
+is the default and shipping configuration (`SCREEN_READER_ENABLED=1`;
+`libespeak-ng.so.1` is a `NEEDED` entry of the shipped binary). MIT is
+GPL-compatible, so this combination is permitted — but the resulting binary is
+conveyed under GPL-3.0-or-later, and recipients get GPL rights over it. The MIT
+source remains MIT and can be reused as MIT by anyone who does not link eSpeak.
+
+**Aggregated — separate programs sharing a tarball.** `link-subscriber` and
+`lib/jack/jack_shadow.so` are standalone programs that Schwung never links.
+They communicate over shared memory, sockets, and `exec`. Each keeps its own
+licence and neither imposes anything on the rest.
+
+| Shipped artifact | Licence as conveyed | Why |
 |---|---|---|
-| `schwung`, `schwung-shim.so` | MIT (+ permissive deps) | Schwung, QuickJS, stb, Flite |
-| `link-subscriber` | **GPL-2.0-or-later** | Ableton Link |
-| `lib/jack/jack_shadow.so` | **GPL-2.0-or-later** | jack2, Cycling '74 |
-| `lib/libespeak-ng.so.*` | **GPL-3.0-or-later** | eSpeak NG |
-| `lib/libflite*.so.*` | BSD-style | Flite |
-| `lib/libsonic.so.*` | Apache-2.0 | sonic |
-| `bin/curl` | curl license | curl |
-| `bin/filebrowser` | Apache-2.0 | File Browser |
-| `schwung-manager` | MIT | Schwung |
+| `schwung` (host) | MIT | Links only QuickJS (MIT), stb, curl — no copyleft |
+| `schwung-shim.so` | **GPL-3.0-or-later** | MIT source **linked** against eSpeak NG; also Flite (BSD) |
+| `schwung-manager` | MIT | Go, no copyleft deps |
+| `link-subscriber` | **GPL-2.0-or-later** | Ableton Link compiled in (header-only) |
+| `lib/jack/jack_shadow.so` | **GPL-2.0-or-later** | jack2 + Cycling '74 JackMoveDriver |
+| `lib/libespeak-ng.so.*` | **GPL-3.0-or-later** | Redistributed unmodified |
+| `lib/libflite*.so.*` | BSD-style | Redistributed unmodified |
+| `lib/libsonic.so.*` | Apache-2.0 | Redistributed unmodified |
+| `bin/curl` | curl licence | Redistributed unmodified |
+| `bin/filebrowser` | Apache-2.0 | Redistributed unmodified |
+
+A build with `SCREEN_READER_ENABLED=0` links no copyleft at all: the shim then
+uses `tts_engine_stub.c` and `SHIM_LIBS` drops to `-ldl -lrt -lpthread -lm`.
+That configuration's `schwung-shim.so` is MIT.
 
 Corresponding source for the GPL components is available from each project's
 upstream repository, linked in its section below. `libs/link` is a git
@@ -414,13 +434,18 @@ rather than left implicit.
 
 ## License Compatibility
 
-**Schwung's own code is MIT.** It is not a derivative of any copyleft component
-listed above, and no copyleft component is linked into `schwung` or
-`schwung-shim.so`.
+**Schwung's own source code is MIT** and is not a derivative of any copyleft
+component listed above. Anyone may take that source under MIT terms.
 
-The GPL components are redistributed as **separate programs** in the same
-tarball — mere aggregation on a distribution medium — and each keeps its own
-license:
+One shipped binary is a combined work. `schwung-shim.so` links
+`libespeak-ng` (GPL-3.0-or-later) in the default screen-reader build, so **that
+binary is conveyed under GPL-3.0-or-later**. MIT is GPL-compatible, so the
+combination is permitted; what it means in practice is that recipients of the
+binary get GPL rights over it, and the corresponding source must be available —
+which it is, publicly, at the project repository.
+
+The remaining GPL components are **separate programs** in the same tarball —
+mere aggregation on a distribution medium — and impose nothing on anything else:
 
 - `link-subscriber` (GPL-2.0-or-later) is a standalone executable. It exchanges
   audio with the shim through `/dev/shm` only.

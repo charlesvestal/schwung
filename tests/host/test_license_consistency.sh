@@ -192,7 +192,41 @@ else
   bad "package.sh must HARD-FAIL on a missing licence file, not package without it"
 fi
 
-# ---------------------------------------- 6. the vendored texts are present
+# ------------------------- 6. the eSpeak LINKAGE is documented, not denied
+#
+# The first draft of THIRD_PARTY_LICENSES.md claimed "nothing copyleft is
+# linked into schwung or schwung-shim.so". That was false: SHIM_LIBS carries
+# -lespeak-ng under SCREEN_READER_ENABLED=1 (the default and shipping config),
+# and libespeak-ng.so.1 is a NEEDED entry of the built shim. eSpeak NG is
+# GPL-3.0-or-later, so that binary is conveyed under GPL-3.0-or-later.
+#
+# This pin is two-sided on purpose. If the linkage goes away, the docs must
+# stop saying it exists; while it is there, they must not deny it.
+if has scripts/build.sh '\-lespeak-ng'; then
+  if grep -qF 'GPL-3.0-or-later' THIRD_PARTY_LICENSES.md && \
+     grep -qiE 'schwung-shim\.so.*(linked|combined|GPL-3)' THIRD_PARTY_LICENSES.md; then
+    ok "the shim's eSpeak linkage is documented as making a GPL-3.0 binary"
+  else
+    bad "build.sh links -lespeak-ng but THIRD_PARTY_LICENSES.md does not say schwung-shim.so is conveyed under GPL-3.0-or-later"
+  fi
+else
+  ok "no -lespeak-ng in build.sh (shim links no copyleft)"
+fi
+
+# The exact false claim, in any of the places that state the licence.
+denial=""
+for f in THIRD_PARTY_LICENSES.md README.md; do
+  if grep -qiE 'no copyleft component is linked into|nothing copyleft is linked into' "$f" 2>/dev/null; then
+    denial="$denial $f"
+  fi
+done
+if [ -z "$denial" ]; then
+  ok "no blanket 'nothing copyleft is linked' denial"
+else
+  bad "a blanket 'nothing copyleft is linked' claim is back in:$denial -- schwung-shim.so links eSpeak NG (GPL-3.0+) in the default build"
+fi
+
+# ---------------------------------------- 7. the vendored texts are present
 for t in licenses/GPL-2.0.txt licenses/GPL-3.0.txt; do
   if [ -s "$t" ]; then
     ok "$t is present and non-empty"
