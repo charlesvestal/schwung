@@ -108,3 +108,79 @@ void lane_tick(chain_instance_t *inst) {
         ln->driving = 1;
     }
 }
+
+/* The clip's fingerprint as it is RIGHT NOW. Task 6 is what fills it with real
+ * note data; until then clip_fp_valid is 0 and a lane records with an all-zero
+ * fingerprint, which nothing compares against -- an unknown clip is not a
+ * mismatched one, and a guessed fingerprint would make every lane stale the
+ * moment matching arrives. */
+void lane_current_fingerprint(chain_instance_t *inst, lane_fingerprint_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (inst && inst->clip_fp_valid) *out = inst->clip_fp;
+}
+
+/* A parameter write arrived from the UI.
+ *
+ * THIS IS NOT CALLED BY PLAYBACK. chain_mod_set_param_string writes the
+ * sub-plugin's set_param directly and never re-enters v2_set_param, which is
+ * the only caller of this function, so a lane cannot record its own output.
+ * That is structural rather than a flag, and the playback-does-not-record
+ * assertion in the unit test is what keeps it true -- if it ever stops being
+ * true the lane compounds its own curve every loop, silently and worse each
+ * bar, which nothing on screen would explain.
+ *
+ * Phase is sampled HERE -- on the callback, at the moment of the write --
+ * rather than at UI frame time, because a frame is ~23 ms and a knob sweep is
+ * faster than that, so frame-time phase would quantize a sweep into steps.
+ *
+ * RT: no allocation (lane_alloc hands back a slot of a fixed array), no I/O,
+ * no locks, and every loop inside is bounded by LANE_MAX / LANE_POINTS_MAX. */
+void lane_on_set_param(chain_instance_t *inst, const char *target,
+                       const char *param, const char *val) {
+    if (!inst || !target || !param || !val) return;
+
+    /* Only a parameter the module actually declares can be automated: the
+     * type is what decides stepped-vs-linear on playback, and a lane with no
+     * metadata behind it would interpolate across an enum's options. */
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) return;
+    const float v = dsp_value_to_float(val, pinfo, pinfo->default_val);
+
+    /* ARMED AND THE PHASE IS KNOWN is the only state that records. An armed
+     * write with no phase records NOTHING -- "we could not tell where in the
+     * clip we are" is a third answer, and writing it at 0.0 would plant a
+     * breakpoint on a downbeat the user never played. */
+    if (inst->lane_armed && inst->clip_phase_valid && inst->clip_loop_len > 0.0) {
+        lane_fingerprint_t fp;
+        lane_current_fingerprint(inst, &fp);
+        lane_t *ln = lane_alloc(&inst->lanes, target, param,
+                                inst->lane_track, inst->lane_clip_slot, &fp);
+        /* Store full, or a target/param too long for lane_t's fields, which
+         * lane_alloc REFUSES rather than truncating -- a truncated key would
+         * name a lane the user can neither see nor clear. Nothing is recorded
+         * and nothing pretends to have been. */
+        if (!ln) return;
+        lane_write(ln, inst->clip_phase_beats, v);
+        /* An armed turn IS this lane, so it cancels any punch a previous
+         * unarmed turn left open; otherwise the point just recorded would sit
+         * silent until the loop came round. */
+        ln->punch_until_wrap = 0;
+        return;
+    }
+
+    /* Unarmed (or phaseless) under an existing lane: hand the parameter to the
+     * knob until the loop comes round. Without this, an absolute lane rewrites
+     * the same target every block and the encoder is inaudible -- which reads
+     * as broken hardware, not as automation. */
+    lane_t *ln = lane_find(&inst->lanes, target, param);
+    if (!ln || !ln->used) return;
+    /* Only a known phase can say where the punch ends. With no phase the
+     * release below is still right (the knob must be heard) but there is no
+     * wrap to arm against, and lane_tick releases on a lost phase anyway. */
+    if (inst->clip_phase_valid) {
+        ln->punch_until_wrap = 1;
+        ln->punch_phase = inst->clip_phase_beats;
+    }
+    if (ln->driving) lane_release_one(inst, ln);
+}
