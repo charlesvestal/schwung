@@ -400,6 +400,7 @@ extern int shim_touch_trace_on;
 #include "clip_state.h"
 #include <sys/stat.h>
 #include "clip_regions.h"
+#include "step_strip.h"
 #include "shadow_led_queue.h"
 extern int shadow_transport_pulses;
 extern int sampler_transport_playing;
@@ -618,6 +619,11 @@ static void clip_regions_tick(void)
         g_set_change_valid = sampler_transport_playing ? 1 : 0;
         clip_phase_check_reset();
         memset(g_editor_bar, 0, sizeof(g_editor_bar));
+        /* Every cached bar count described the OLD set's clips. Keeping them
+         * would hand the next clip a length measured from a different song --
+         * and a wrong length is a wrong phase, which is the one failure this
+         * whole path exists to avoid. */
+        step_strip_reset();
     }
 
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
@@ -871,6 +877,20 @@ static void clip_state_tick(void)
             }
         }
     }
+    /* Move's own step-editor reading, on the same line as the phases it is
+     * there to supply. `strip=-` is "no frame decoded as the editor", with the
+     * refusing gate in brackets, so a wrong bar count and a refusal are told
+     * apart at a glance rather than both reading as silence. */
+    {
+        step_strip_t ss;
+        int sst = -1;
+        step_strip_latest(&ss, &sst);
+        if (ss.valid)
+            fprintf(fp, " | strip T%d %dbar bold%d x=%d", sst + 1, ss.bars,
+                    ss.bold_bar, ss.playhead_col);
+        else
+            fprintf(fp, " | strip - (rej%d)", ss.reject);
+    }
     fprintf(fp, "\n");
     fclose(fp);
 
@@ -943,7 +963,38 @@ static void clip_state_tick(void)
                     m->to_boundary, m->bar_scored, m->bar_missed);
         }
     }
-    fprintf(jf, "],\"miss_total\":%u}}\n", g_ph_miss_n);
+    fprintf(jf, "],\"miss_total\":%u}", g_ph_miss_n);
+    /* MOVE'S OWN ANSWER, read off its step-editor screen (step_strip.h).
+     *
+     * Reported and NOT yet acted on, deliberately. The geometry is measured
+     * but the rejection gates are reasoned, and a false positive here is a
+     * wrong loop length -- so the first hardware pass reads this block: it
+     * must say `valid` with the right `bars` on the step editor, and refuse
+     * (with a `reject` naming which gate) on Move's other screens. Only then
+     * does anything get to depend on `bars_cache`, which is the fallback that
+     * closes "record on a clip I just made" (Song.abl is ~35 s late, so we
+     * have no length, so there is no phase, so recording refuses).
+     *
+     * `seq` moving is what says frames are arriving at all -- a stuck seq is
+     * the accumulator not being fed, not the decoder refusing. */
+    {
+        step_strip_t ss;
+        int sst = -1;
+        unsigned sseq = step_strip_latest(&ss, &sst);
+        /* A non-finite number prints as `nan` and makes the WHOLE document
+         * unparseable, so the one malformed field would take the live page
+         * down with it -- a broken instrument reads as a broken feature. */
+        double pf = (ss.phase_frac >= 0.0 && ss.phase_frac <= 1.0)
+                  ? ss.phase_frac : -1.0;
+        fprintf(jf, ",\"step_strip\":{\"seq\":%u,\"track\":%d,\"valid\":%s,"
+                    "\"reject\":%d,\"bars\":%d,\"bold_bar\":%d,\"playhead_col\":%d,"
+                    "\"evidence\":%d,\"phase_frac\":%.4f,\"bars_cache\":[%d,%d,%d,%d]}",
+                sseq, sst + 1, ss.valid ? "true" : "false", ss.reject,
+                ss.bars, ss.bold_bar, ss.playhead_col, ss.playhead_evidence, pf,
+                step_strip_bars_for_track(0), step_strip_bars_for_track(1),
+                step_strip_bars_for_track(2), step_strip_bars_for_track(3));
+    }
+    fprintf(jf, "}\n");
     fclose(jf);
 }
 void shim_touch_trace_drain(void);

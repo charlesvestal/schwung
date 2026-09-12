@@ -68,6 +68,7 @@ extern align_capture_t g_align_capture;
 #include "host/audio_in_restore.h"
 #include "host/shadow_overlay.h"
 #include "host/shadow_pin_scanner.h"
+#include "host/step_strip.h"
 #include "host/shadow_led_queue.h"
 #include "host/shadow_state.h"
 #include "host/shadow_xmos_audio.h"
@@ -6573,7 +6574,18 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
         uint8_t slice_any = mem_any[80];
         if (slice_any >= 1 && slice_any <= 6) {
             int idx = slice_any - 1;
-            pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172);
+            if (pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172)) {
+                /* A WHOLE frame: decode Move's step-editor bar strip from it.
+                 *
+                 * Here rather than in the worker because the frame is only
+                 * whole at this instant -- the next slice overwrites it -- and
+                 * because the selected track must be read NOW: the editor
+                 * shows one track, and pairing the reading with whatever is
+                 * selected 200 ms later attributes a bar count to the wrong
+                 * clip. The decode is a scan of 128 columns in two pages, no
+                 * allocation and no I/O. See step_strip.h. */
+                step_strip_observe(pin_display_frame(), clip_selected_track());
+            }
         }
     }
 
