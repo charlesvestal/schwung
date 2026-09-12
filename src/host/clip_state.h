@@ -53,6 +53,11 @@ extern "C" {
  * beyond a bar, a clip appearing is someone pressing a pad. */
 #define CLIP_START_GRACE_PULSES 96   /* one bar at 4/4 */
 
+#define CLIP_ANCHOR_NONE    0
+#define CLIP_ANCHOR_START   1   /* MIDI Start: everything begins together   */
+#define CLIP_ANCHOR_LAUNCH  2   /* a launch we witnessed                    */
+#define CLIP_ANCHOR_DERIVED 3   /* solved from Move's playhead + page       */
+
 #define CLIP_UI_MODE_SESSION 1
 
 #define CLIP_CH_PLAYING 9
@@ -63,6 +68,11 @@ typedef struct {
     int      clip_slot;       /* 0..7, or -1 for "nothing playing" */
     int      anchor_valid;    /* 0 = phase UNKNOWN. Not zero. Unknown. */
     uint32_t anchor_pulse;    /* shadow_transport_pulses at the clip's step 0 */
+    /* Where the anchor came from. Kept because a DERIVED anchor is computed
+     * from Move's own playhead, which is also what the phase check scores
+     * against -- so scoring a derived anchor is partly circular and must be
+     * told apart from an anchor a Start or a launch produced independently. */
+    int      anchor_source;   /* CLIP_ANCHOR_* */
 } clip_track_state_t;
 
 typedef struct {
@@ -98,6 +108,31 @@ typedef struct {
 int clip_pad_decode(int note, int *out_track, int *out_slot);
 
 void clip_state_reset(clip_state_t *st);
+
+/* Solve a track's anchor from a single playhead sighting.
+ *
+ * The playhead says WHERE the clip is right now; the page says which bar the
+ * lit button belongs to. Together they give an absolute position, and the
+ * anchor is that subtracted from the current pulse:
+ *
+ *     step   = (bar - 1) * 16 + idx
+ *     anchor = pulses - step * step_beats * 24
+ *
+ * This needs no Start and no witnessed launch, which is the point: loading a
+ * set while the transport keeps running produces neither, and before this
+ * every track sat at "phase unknown" indefinitely -- identity known, phase
+ * unknowable. Detecting the set switch does not help, because our detection
+ * is a ~1.4 s poll and anchoring to "when we noticed" is wrong by up to most
+ * of a bar.
+ *
+ * Only fills a MISSING anchor. An anchor from a Start or a launch is
+ * independent evidence and is never overwritten by one derived from the
+ * instrument we check against.
+ *
+ * Returns 1 if an anchor was set. */
+int clip_state_derive_anchor(clip_track_state_t *tr, uint32_t pulses,
+                             int bar, int playhead_idx, double step_beats,
+                             double loop_start, double loop_len);
 
 /* Anchor any track that has identity but no anchor, and for which a Start is
  * still pending within the grace window.

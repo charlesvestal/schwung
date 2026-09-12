@@ -46,6 +46,7 @@ void clip_state_on_transport_start(clip_state_t *st)
         if (st->tracks[t].identity_valid && st->tracks[t].clip_slot >= 0) {
             st->tracks[t].anchor_valid = 1;
             st->tracks[t].anchor_pulse = 0;
+            st->tracks[t].anchor_source = CLIP_ANCHOR_START;
             st->saw_stop[t] = 0;
         } else {
             /* Nothing playing here yet. Anchors from before the reset are in
@@ -118,9 +119,11 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
              * anchoring where we noticed puts the lane that far out. */
             tr->anchor_valid = 1;
             tr->anchor_pulse = 0;
+            tr->anchor_source = CLIP_ANCHOR_START;
         } else if (running && witnessed) {
             tr->anchor_valid = 1;
             tr->anchor_pulse = pulses;
+            tr->anchor_source = CLIP_ANCHOR_LAUNCH;
         } else if (slot_changed) {
             /* Identity is now right and the phase is not. Say so. */
             tr->anchor_valid = 0;
@@ -154,8 +157,40 @@ void clip_state_anchor_pending(clip_state_t *st, uint32_t pulses, int running)
          * merely arrived afterwards. */
         tr->anchor_valid = 1;
         tr->anchor_pulse = 0;
+        tr->anchor_source = CLIP_ANCHOR_START;
         st->pending_start[t] = 0;
     }
+}
+
+int clip_state_derive_anchor(clip_track_state_t *tr, uint32_t pulses,
+                             int bar, int playhead_idx, double step_beats,
+                             double loop_start, double loop_len)
+{
+    (void)loop_start;
+    if (!tr) return 0;
+    if (!tr->identity_valid || tr->clip_slot < 0) return 0;
+    if (tr->anchor_valid) return 0;          /* never overwrite real evidence */
+    if (bar < 1 || playhead_idx < 0 || playhead_idx > 15) return 0;
+    if (!(step_beats > 0.0) || !(loop_len > 0.0)) return 0;
+
+    double pos = ((double)(bar - 1) * 16.0 + (double)playhead_idx) * step_beats;
+    /* A page past the end of the loop means the bar and the clip disagree --
+     * a stale page, or the wrong track. Refuse rather than fold it. */
+    if (pos >= loop_len) return 0;
+
+    double back = pos * 24.0;
+    if (back > (double)pulses) {
+        /* The clip has looped since the transport started. Wind the anchor
+         * forward by whole loops rather than producing a negative one. */
+        double loop_pulses = loop_len * 24.0;
+        if (!(loop_pulses > 0.0)) return 0;
+        while (back > (double)pulses) back -= loop_pulses;
+        if (back < 0.0) return 0;
+    }
+    tr->anchor_pulse = (uint32_t)(pulses - (uint32_t)(back + 0.5));
+    tr->anchor_valid = 1;
+    tr->anchor_source = CLIP_ANCHOR_DERIVED;
+    return 1;
 }
 
 int clip_phase_beats(const clip_track_state_t *t, uint32_t pulses,

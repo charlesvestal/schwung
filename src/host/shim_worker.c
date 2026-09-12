@@ -613,6 +613,29 @@ static void clip_phase_check_tick(void)
     while ((n = clip_playhead_take(ev, 32)) > 0) {
         for (int i = 0; i < n; i++) {
             g_ph_total++;
+            /* Before scoring: if the SELECTED track has identity but no
+             * anchor, solve it from this very sighting. Loading a set while
+             * the transport keeps running produces no Start and no witnessed
+             * launch, so without this the track is stuck at "phase unknown"
+             * indefinitely. Only the selected track, because only its page is
+             * the one the playhead belongs to. */
+            {
+                int sel = clip_selected_track();
+                clip_state_t *mst = clip_state_mutable();
+                if (sel >= 0 && mst && g_editor_bar[sel] > 0) {
+                    clip_track_state_t *str = &mst->tracks[sel];
+                    if (str->identity_valid && str->clip_slot >= 0 &&
+                        !str->anchor_valid) {
+                        const clip_region_t *sr =
+                            &g_regions.slots[sel][str->clip_slot];
+                        clip_state_derive_anchor(str, ev[i].pulses,
+                                                 g_editor_bar[sel], ev[i].idx,
+                                                 res, sr->loop_start,
+                                                 sr->loop_len);
+                    }
+                }
+            }
+
             for (int t = 0; t < CLIP_TRACKS; t++) {
                 const clip_track_state_t *tr = &cs->tracks[t];
                 if (!tr->identity_valid || tr->clip_slot < 0) continue;
@@ -634,6 +657,11 @@ static void clip_phase_check_tick(void)
                  * showing -- a bar describes one clip's page, so comparing it
                  * against another track's phase measures nothing. */
                 int bar = (t == clip_selected_track()) ? g_editor_bar[t] : 0;
+                /* A DERIVED anchor was computed from this same playhead, so
+                 * scoring it here measures the solver's arithmetic, not the
+                 * phase. Excluded, or the bar column would read 100% by
+                 * construction and stop being evidence. */
+                if (tr->anchor_source == CLIP_ANCHOR_DERIVED) bar = 0;
                 if (bar > 0) {
                     int page = step / 16;
                     g_bar_seen[t]++;
@@ -704,14 +732,14 @@ static void clip_state_tick(void)
         double ph = 0.0;
         int have_ph = r && clip_phase_beats(tr, pul, r->loop_start, r->loop_len, &ph);
         fprintf(jf, "%s{\"track\":%d,\"known\":%s,\"clip\":%d,"
-                    "\"anchored\":%s,\"anchor_pulse\":%u,\"elapsed_beats\":%.2f,"
+                    "\"anchored\":%s,\"anchor_pulse\":%u,\"anchor_src\":%d,\"elapsed_beats\":%.2f,"
                     "\"loop_len\":%.2f,\"loop_start\":%.2f,"
                     "\"has_phase\":%s,\"phase\":%.2f,\"pos\":%.2f}",
                 t ? "," : "", t + 1,
                 tr->identity_valid ? "true" : "false",
                 tr->identity_valid ? tr->clip_slot + 1 : 0,
                 tr->anchor_valid ? "true" : "false",
-                tr->anchor_pulse, el,
+                tr->anchor_pulse, tr->anchor_source, el,
                 r ? r->loop_len : 0.0, r ? r->loop_start : 0.0,
                 have_ph ? "true" : "false", ph,
                 have_ph ? ph - (r ? r->loop_start : 0.0) : 0.0);

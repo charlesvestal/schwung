@@ -357,8 +357,67 @@ static void test_identity_arriving_after_a_start_still_anchors(void)
     CHECK(!st2.tracks[0].anchor_valid, "stopped transport must not anchor");
 }
 
+/* Loading a set while the transport keeps running produces NO Start and no
+ * witnessed launch -- observed on hardware, pulses ran straight through the
+ * switch -- so a track had identity and an unknowable phase forever. The
+ * playhead plus the page solves it from a single sighting. */
+static void test_anchor_derived_from_playhead(void)
+{
+    printf("an anchor can be solved from one playhead sighting\n");
+    clip_track_state_t tr = {0};
+    tr.identity_valid = 1; tr.clip_slot = 0;
+
+    /* 1/16 steps, 16-beat loop. Bar 3, step index 2 => step 34 => 8.5 beats
+     * in. At pulse 1000 the anchor is 1000 - 8.5*24 = 796. */
+    CHECK(clip_state_derive_anchor(&tr, 1000, 3, 2, 0.25, 0.0, 16.0),
+          "should solve");
+    CHECK(tr.anchor_pulse == 796, "anchor should be 796, got %u", tr.anchor_pulse);
+    CHECK(tr.anchor_source == CLIP_ANCHOR_DERIVED, "and be marked derived");
+
+    /* Round-trips: the solved anchor reproduces the position it came from. */
+    double ph;
+    CHECK(clip_phase_beats(&tr, 1000, 0.0, 16.0, &ph), "phase resolves");
+    CHECK(ph > 8.49 && ph < 8.51, "should read back 8.5 beats, got %f", ph);
+
+    /* Real evidence is never overwritten by a derived answer. */
+    clip_track_state_t tr2 = {0};
+    tr2.identity_valid = 1; tr2.clip_slot = 0;
+    tr2.anchor_valid = 1; tr2.anchor_pulse = 42;
+    tr2.anchor_source = CLIP_ANCHOR_START;
+    CHECK(!clip_state_derive_anchor(&tr2, 1000, 3, 2, 0.25, 0.0, 16.0),
+          "must not overwrite an existing anchor");
+    CHECK(tr2.anchor_pulse == 42, "and must leave it alone");
+
+    /* A page past the end of the loop means the bar and the clip disagree --
+     * a stale page, or the wrong track. Refuse rather than fold it. */
+    clip_track_state_t tr3 = {0};
+    tr3.identity_valid = 1; tr3.clip_slot = 0;
+    CHECK(!clip_state_derive_anchor(&tr3, 1000, 9, 0, 0.25, 0.0, 16.0),
+          "bar 9 of a 4-bar loop is not a position; it must refuse");
+
+    /* Never a negative anchor. At pulse 100 -- 4.17 beats since the Start --
+     * a clip cannot be 8.5 beats into its loop unless its anchor predates
+     * pulse 0, which is unrepresentable (the counter zeroes on Start). The
+     * honest answer is to refuse, not to wrap into a plausible-looking
+     * anchor that is a whole loop out. */
+    clip_track_state_t tr4 = {0};
+    tr4.identity_valid = 1; tr4.clip_slot = 0;
+    CHECK(!clip_state_derive_anchor(&tr4, 100, 3, 2, 0.25, 0.0, 16.0),
+          "a position earlier than the transport allows must be refused");
+    CHECK(!tr4.anchor_valid, "and must leave the track unanchored");
+
+    /* One loop later the same sighting is representable and solves. */
+    clip_track_state_t tr5 = {0};
+    tr5.identity_valid = 1; tr5.clip_slot = 0;
+    CHECK(clip_state_derive_anchor(&tr5, 600, 3, 2, 0.25, 0.0, 16.0),
+          "should solve once enough time has elapsed");
+    CHECK(tr5.anchor_pulse == 396, "anchor should be 600-204=396, got %u",
+          tr5.anchor_pulse);
+}
+
 int main(void)
 {
+    test_anchor_derived_from_playhead();
     test_identity_arriving_after_a_start_still_anchors();
     test_clip_returning_after_a_start_anchors_at_the_start();
     test_start_grace_expires();

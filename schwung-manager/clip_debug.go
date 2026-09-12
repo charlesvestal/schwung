@@ -161,8 +161,15 @@ async function tick(){
       clip='clip '+esc(t.clip);
       /* "unknown" is a third answer, not zero -- a lane must refuse to record
          here rather than record at a guessed phase. */
-      phase = t.anchored ? '<span class="pill ok">anchored</span>'
-                         : '<span class="pill warn">phase unknown</span>';
+      /* A DERIVED anchor was solved from Move's playhead rather than observed
+         from a Start or a launch, so it is shown differently -- it is also
+         excluded from the bar-level score, which would otherwise be 100% by
+         construction. */
+      const SRC={1:'from Start',2:'from launch',3:'derived'};
+      phase = t.anchored
+        ? '<span class="pill '+(t.anchor_src===3?'warn':'ok')+'">'+
+          (SRC[t.anchor_src]||'anchored')+'</span>'
+        : '<span class="pill warn">phase unknown</span>';
       /* Position WITHIN the loop, never the absolute phase against the loop
          LENGTH -- a clip whose loop starts at beat 8 runs 8..16, and printing
          "12.00 / 8.00" reads as nonsense. The absolute figure is kept in the
