@@ -4036,6 +4036,12 @@ func main() {
 
 	// API (JSON).
 	mux.HandleFunc("GET /api/modules", app.handleAPIModules)
+
+	// Clip-state debug (see clip_debug.go).
+	mux.HandleFunc("GET /clip-state", app.handleClipState)
+	mux.HandleFunc("GET /api/clip-state", app.handleAPIClipState)
+	mux.HandleFunc("POST /clip-state/arm", app.handleClipStateArm)
+	mux.HandleFunc("POST /clip-state/reset", app.handleClipStateReset)
 	mux.HandleFunc("POST /api/modules/{id}/install", app.handleAPIModuleInstall)
 
 	// Files.

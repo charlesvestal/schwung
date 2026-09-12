@@ -9,6 +9,7 @@
 
 #define _GNU_SOURCE
 #include "shadow_sampler.h"
+#include "clip_state.h"
 #include "shadow_transport.h"
 #include "shim_worker.h"
 #include "shadow_constants.h"
@@ -1492,6 +1493,7 @@ void sampler_on_clock(uint8_t status) {
          * it. Continue (0xFB) deliberately does NOT reset — it resumes, and a
          * reset there would put the grid a beat out for the rest of the take. */
         shadow_transport_pulses = 0;
+        clip_state_on_transport_start(clip_state_mutable());
         s_host.overlay_sync();
         s_host.log("Sampler: transport_playing=1 (MIDI Start)");
         if (sampler_state == SAMPLER_ARMED) {

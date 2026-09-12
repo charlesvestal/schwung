@@ -222,7 +222,7 @@ if needs_rebuild build/schwung-shim.so \
     src/host/shadow_metronome.c \
     src/host/shadow_chain_mgmt.c src/host/shadow_link_audio.c src/host/shadow_process.c \
     src/host/shadow_resample.c src/host/shadow_overlay.c src/host/shadow_pin_scanner.c \
-    src/host/shadow_led_queue.c src/host/shadow_state.c \
+    src/host/shadow_led_queue.c src/host/shadow_state.c src/host/clip_state.c src/host/clip_regions.c \
     src/host/shadow_xmos_audio.c src/host/shadow_xmos_audio.h \
     src/host/usbc_out_gate.c src/host/usbc_out_gate.h \
     src/host/shadow_midi.c src/host/shadow_midi_filter.c src/host/shadow_midi_filter.h \
@@ -263,6 +263,8 @@ if needs_rebuild build/schwung-shim.so \
         src/host/shadow_overlay.c \
         src/host/shadow_pin_scanner.c \
         src/host/shadow_led_queue.c \
+        src/host/clip_state.c \
+        src/host/clip_regions.c \
         src/host/shadow_state.c \
         src/host/shadow_xmos_audio.c \
         src/host/usbc_out_gate.c \

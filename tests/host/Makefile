@@ -29,7 +29,10 @@ DEPFLAGS = -MMD -MP -MF $@.d
 
 BUILD_DIR = ../../build/tests/host
 
-TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
+TARGETS = $(BUILD_DIR)/test_clip_state \
+	$(BUILD_DIR)/test_editor_bar_announce \
+	$(BUILD_DIR)/test_clip_regions \
+	$(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_shadow_midi_out_capacity \
 	$(BUILD_DIR)/test_overtake_midi_route \
 	$(BUILD_DIR)/test_ext_midi_ring \
@@ -122,7 +125,9 @@ $(BUILD_DIR):
 $(BUILD_DIR)/%: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/test_overtake_native_led_repaint: test_overtake_native_led_repaint.c ../../src/host/shadow_led_queue.c | $(BUILD_DIR)
+# shadow_led_queue.c decodes clip state from the scan, so it now needs
+# clip_state.c and the two transport globals (see stub_transport_globals.c).
+$(BUILD_DIR)/test_overtake_native_led_repaint: test_overtake_native_led_repaint.c ../../src/host/shadow_led_queue.c ../../src/host/clip_state.c stub_transport_globals.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -D_POSIX_C_SOURCE=200809L $(INCLUDES) $(filter %.c,$^) -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_overtake_midi_route: test_overtake_midi_route.c ../../src/host/shadow_overtake_midi.c ../../src/host/shadow_midi_filter.c | $(BUILD_DIR)
@@ -232,3 +237,16 @@ clean:
 # become the default goal, which is why .DEFAULT_GOAL is set above — without it
 # `make -C tests/host` built one target and said "up to date" for the rest.
 -include $(TARGETS:=.d)
+
+# Clip awareness. Both run from tests/fixtures/ because they read REAL Move
+# captures and a real Song.abl from there -- see the file headers for why the
+# fixtures are not synthetic.
+$(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_state.c ../../src/host/clip_state.c
+
+$(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
+
+# Header-only; the .c is the whole test.
+$(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_editor_bar_announce.c

@@ -5,6 +5,49 @@
 #include <time.h>
 #include "shadow_led_queue.h"
 #include "unified_log.h"
+#include "clip_state.h"
+
+/* Transport pulse counter (shadow_sampler.c). Read-only here, and only from
+ * the SPI callback, which is also the only writer — no barrier needed. */
+extern int shadow_transport_pulses;
+extern int sampler_transport_playing;
+
+/* Declared up here because clip_selected_track() and led_capture_record()
+ * both read host.shadow_control, and they are the first users in the file. */
+static led_queue_host_t host;
+
+/* Move's clip state, decoded from the cable-0 scan below. Written on the SPI
+ * callback, read by the worker. See clip_state.h -- in particular, this MUST
+ * be fed at the scan rather than from move_note_led_state[], which is indexed
+ * by note and so collapses the channel that carries the whole signal. */
+static clip_state_t g_clip_state;
+static int g_clip_state_ready;
+
+/* Initialised on first ACCESS, not on the first LED event. Gating this on the
+ * scan made seeding from Song.abl impossible in exactly the case it exists
+ * for: a freshly booted device with nothing lit emits no cable-0 traffic, so
+ * the table stayed NULL, the seed was skipped, and every track read "unknown"
+ * until the user visited Session mode -- which is the problem, not the fix. */
+static void clip_state_ensure(void) {
+    if (!g_clip_state_ready) {
+        clip_state_reset(&g_clip_state);
+        g_clip_state_ready = 1;
+    }
+}
+const clip_state_t *clip_state_current(void) {
+    clip_state_ensure();
+    return &g_clip_state;
+}
+int clip_selected_track(void) {
+    shadow_control_t *c = host.shadow_control ? *host.shadow_control : 0;
+    if (!c) return -1;
+    int t = (int)c->selected_slot;
+    return (t >= 0 && t < CLIP_TRACKS) ? t : -1;
+}
+clip_state_t *clip_state_mutable(void) {
+    clip_state_ensure();
+    return &g_clip_state;
+}
 
 /* ============================================================================
  * MIDI_OUT cable-0 capture ring (diagnostic)
@@ -31,6 +74,11 @@ static inline void led_capture_record(uint8_t cable, uint8_t status,
     led_capture_ring[idx].status = status;
     led_capture_ring[idx].d1 = d1;
     led_capture_ring[idx].d2 = d2;
+    led_capture_ring[idx].pulses = (uint32_t)shadow_transport_pulses;
+    {
+        shadow_control_t *c = host.shadow_control ? *host.shadow_control : 0;
+        led_capture_ring[idx].ui_mode = c ? c->move_ui_mode : 0;
+    }
 }
 
 void led_queue_set_capture_enabled(int on) { led_capture_enabled = on ? 1 : 0; }
@@ -61,7 +109,6 @@ int led_queue_drain_capture(uint32_t *last_seq, led_capture_entry_t *out,
  * Static host callbacks
  * ============================================================================ */
 
-static led_queue_host_t host;
 static int led_queue_module_initialized = 0;
 
 /* ============================================================================
@@ -349,6 +396,17 @@ void shadow_clear_move_leds_if_overtake(void) {
             if (cable == 0 && (type == 0x90 || type == 0x80 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
+                clip_state_ensure();
+                /* Move's step playhead: the lit step button, d2=126. An
+                 * INDEPENDENT measure of musical position, used to check our
+                 * phase rather than to produce it. */
+                if (d1 >= 16 && d1 <= 31 && type == 0x90 && d2 == 126)
+                    clip_playhead_record((uint8_t)(d1 - 16),
+                                         (uint32_t)shadow_transport_pulses);
+                clip_state_on_led(&g_clip_state, midi_out[i+1], d1, d2,
+                                  (uint32_t)shadow_transport_pulses,
+                                  sampler_transport_playing,
+                                  ctrl ? ctrl->move_ui_mode : 0);
                 if (type == 0x90 || type == 0x80) {
                     /* Move turns pad LEDs off via note-off (0x80); normalize
                      * to note-on with d2=0 so restore emits a uniform 0x90. */
