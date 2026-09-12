@@ -86,11 +86,25 @@ fi
 # ------------------------------------- 5. a missing binary FAILS, never warns
 # ci.yml says it in its own words, about link-subscriber: "A soft check on the
 # one file that can rot invisibly is no check."
+#
+# Asserted POSITIVELY -- the check must reach an `exit 1` -- not as the absence
+# of `|| echo`. The historical bug was a one-liner (`grep schwung-manager ||
+# echo "WARNING: ..."`), and the first draft of this pin, written against that
+# shape, passed happily when the same softening came back across two lines.
+# What matters is that the workflow STOPS, not which way it was written.
+hard_fails_on_missing_manager() {
+  awk '
+    /^[[:space:]]*#/            { next }
+    /schwung-manager/ && /grep/ { pending = 3 }
+    pending > 0                 { if ($0 ~ /exit 1/) { ok = 1; pending = 0 } else { pending-- } }
+    END                         { exit !ok }
+  ' "$1"
+}
 for f in .github/workflows/release.yml .github/workflows/ci.yml; do
-  if has "$f" 'schwung-manager.*\\|\\|[[:space:]]*echo'; then
-    bad "$f warns instead of failing when schwung-manager is missing from the tarball"
+  if hard_fails_on_missing_manager "$f"; then
+    ok "$f FAILS when schwung-manager is missing from the tarball"
   else
-    ok "$f does not soft-warn about a missing schwung-manager"
+    bad "$f does not fail when schwung-manager is missing from the tarball -- a warning is not a check"
   fi
 done
 
