@@ -156,9 +156,22 @@ static void chain_mod_remove_source_contribution(mod_target_state_t *entry, cons
 static void chain_mod_recompute_effective(mod_target_state_t *entry) {
     if (!entry) return;
 
-    float effective = chain_mod_clampf(entry->base_value + chain_mod_sum_contributions(entry),
-                                       entry->min_val,
-                                       entry->max_val);
+    /* An override REPLACES the base rather than adding to it -- a lane is
+     * absolute, not an offset. Every other active source still SUMS, on top
+     * of whichever base this loop lands on, so an LFO composes with a lane
+     * exactly as it composes with the knob. At most one override is expected
+     * per target; a second one simply overwrites `base` again in slot order,
+     * same as two `set_param`s would. */
+    float base = entry->base_value;
+    float sum = 0.0f;
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        const mod_source_contribution_t *s = &entry->sources[i];
+        if (!s->active) continue;
+        if (s->is_override) base = s->contribution;
+        else sum += s->contribution;
+    }
+
+    float effective = chain_mod_clampf(base + sum, entry->min_val, entry->max_val);
     if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
         effective = (float)((int)effective);
     }
@@ -524,6 +537,63 @@ int chain_mod_emit_value(void *ctx,
     }
     float range_scale = bipolar ? (0.5f * range_span) : range_span;
     source_entry->contribution = ((mod_signal * depth) + offset) * range_scale;
+    entry->enabled = chain_mod_has_active_sources(entry);
+    chain_mod_apply_effective_value(inst, entry, 0);
+    return 0;
+}
+
+/* Absolute modulation: the source dictates the value outright.
+ *
+ * Shares every guard, the param-info lookup, the throttle and the base capture
+ * with chain_mod_emit_value -- the only difference is that the contribution is
+ * the value itself and is flagged as replacing the base. Disabling it goes
+ * through the ordinary clear path, so the parameter returns to the knob with a
+ * forced write rather than sticking wherever the lane stopped. */
+int chain_mod_emit_override(void *ctx,
+                            const char *source_id,
+                            const char *target,
+                            const char *param,
+                            float value,
+                            int enabled) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst || !source_id || !target || !param) return -1;
+
+    if (!enabled) {
+        chain_mod_clear_source(inst, source_id);
+        return 0;
+    }
+
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 0);
+            }
+        }
+        return -1;
+    }
+    mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
+    if (!entry) return -1;
+    mod_source_contribution_t *source_entry =
+        chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    if (!source_entry) return -1;
+
+    if (!entry->enabled) {
+        float base = pinfo->default_val;
+        char val_buf[64];
+        if (chain_mod_get_param_string(inst, target, param, val_buf, sizeof(val_buf)) > 0) {
+            base = dsp_value_to_float(val_buf, pinfo, base);
+        }
+        entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
+    }
+    entry->type = pinfo->type;
+    entry->min_val = pinfo->min_val;
+    entry->max_val = pinfo->max_val;
+
+    source_entry->is_override = 1;
+    source_entry->contribution = chain_mod_clampf(value, pinfo->min_val, pinfo->max_val);
     entry->enabled = chain_mod_has_active_sources(entry);
     chain_mod_apply_effective_value(inst, entry, 0);
     return 0;
