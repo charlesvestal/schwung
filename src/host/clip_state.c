@@ -141,6 +141,23 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
     }
 }
 
+void clip_state_anchor_pending(clip_state_t *st, uint32_t pulses, int running)
+{
+    if (!st || !running) return;
+    if (pulses > CLIP_START_GRACE_PULSES) return;
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        clip_track_state_t *tr = &st->tracks[t];
+        if (!st->pending_start[t]) continue;
+        if (!tr->identity_valid || tr->clip_slot < 0) continue;
+        if (tr->anchor_valid) { st->pending_start[t] = 0; continue; }
+        /* The Start said everything begins together; this track's identity
+         * merely arrived afterwards. */
+        tr->anchor_valid = 1;
+        tr->anchor_pulse = 0;
+        st->pending_start[t] = 0;
+    }
+}
+
 int clip_phase_beats(const clip_track_state_t *t, uint32_t pulses,
                      double loop_start, double loop_len, double *out_beats)
 {
@@ -155,4 +172,31 @@ int clip_phase_beats(const clip_track_state_t *t, uint32_t pulses,
     if (phase < 0.0) phase = 0.0;
     *out_beats = loop_start + phase;
     return 1;
+}
+
+/* ---- playhead ring (see clip_state.h) ---------------------------------- */
+static clip_playhead_ev_t ph_ring[CLIP_PH_RING];
+static volatile unsigned  ph_head;   /* SPI callback */
+static unsigned           ph_tail;   /* worker        */
+
+void clip_playhead_record(uint8_t idx, uint32_t pulses)
+{
+    unsigned h = ph_head;
+    ph_ring[h % CLIP_PH_RING].idx = idx;
+    ph_ring[h % CLIP_PH_RING].pulses = pulses;
+    __atomic_store_n(&ph_head, h + 1, __ATOMIC_RELEASE);
+}
+
+int clip_playhead_take(clip_playhead_ev_t *out, int max)
+{
+    unsigned h = __atomic_load_n(&ph_head, __ATOMIC_ACQUIRE);
+    int n = 0;
+    /* Lapped: drop to the newest window rather than report stale events as
+     * if they were current. */
+    if (h - ph_tail > CLIP_PH_RING) ph_tail = h - CLIP_PH_RING;
+    while (ph_tail != h && n < max) {
+        out[n++] = ph_ring[ph_tail % CLIP_PH_RING];
+        ph_tail++;
+    }
+    return n;
 }

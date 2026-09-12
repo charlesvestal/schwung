@@ -105,6 +105,12 @@ const clipStateHTML = `<!doctype html>
 <table><thead><tr><th>Track</th><th>Clip</th><th>Loop</th><th>Phase</th><th>Position</th></tr></thead>
 <tbody id="rows"></tbody></table>
 <div class="bar" id="bar"></div>
+<h2 style="font-size:14px;margin:22px 0 6px">Phase check</h2>
+<p class="sub" style="margin:0 0 10px">Our computed phase vs Move&rsquo;s own step
+ playhead &mdash; an independent measure. The step editor shows one track, so
+ only that one should score. <b>A one-beat error scores ~0, not 90%</b>.</p>
+<div id="pc" class="ctx"></div>
+
 <h2 style="font-size:14px;margin:22px 0 6px">Grid as decoded</h2>
 <p class="sub" style="margin:0 0 10px">Rows are tracks, columns clips 1&ndash;8.
  <span class="k live">live</span> what we think is playing &middot;
@@ -172,6 +178,24 @@ async function tick(){
     (d.ui_mode===1?'':' <span class="k sel">pads are not clips in this mode</span>')+
     ' \u00b7 Song.abl '+(d.regions_valid?'loaded':'<b>not loaded</b>');
 
+  const pc=d.phase_check;
+  if(pc){
+    let h='<b>'+pc.events+'</b> playhead events observed';
+    if(pc.events===0) h+=' &mdash; play a clip with the step editor visible';
+    h+='<table style="margin-top:8px"><tr><th>Track</th><th>Compared</th>'+
+       '<th>Agreed</th><th>Last offset</th></tr>';
+    for(const t of pc.tracks){
+      const pctv = t.seen ? Math.round(100*t.hit/t.seen) : 0;
+      /* Offset is in STEPS: 4 = one beat out at 1/16. That is the error that
+         matters and the one a count-and-wrap test cannot see. */
+      const off = t.seen ? (t.last_diff===0?'0':(t.last_diff>0?'+':'')+t.last_diff+' steps') : '\u2014';
+      const cls = !t.seen ? 'off' : (pctv>=95?'ok':(pctv>=5?'warn':'off'));
+      h+='<tr><td>'+t.track+'</td><td class="n">'+t.seen+'</td><td>'+
+         (t.seen?'<span class="pill '+cls+'">'+pctv+'%</span>':'\u2014')+
+         '</td><td class="n">'+off+'</td></tr>';
+    }
+    document.getElementById('pc').innerHTML=h+'</table>';
+  }
   if(d.grid){
     let h='<table class="g"><tr><th></th>';
     for(let s=1;s<=8;s++) h+='<th>'+s+'</th>';

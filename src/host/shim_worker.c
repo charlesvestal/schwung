@@ -401,6 +401,7 @@ extern int shim_touch_trace_on;
 #include <sys/stat.h>
 #include "clip_regions.h"
 extern int shadow_transport_pulses;
+extern int sampler_transport_playing;
 /* Is this thread alive at all? Three separate worker-driven diagnostics went
  * quiet at once and I argued about the cause instead of measuring it. This
  * answers it in one deploy: it needs no arming file and touches nothing. */
@@ -423,6 +424,14 @@ static void worker_heartbeat(void)
  *
  * Worker thread only: this reads and parses a file over 1 MB. */
 static clip_regions_t g_regions;
+
+/* Phase check tallies, per track. The step editor shows ONE track, so only
+ * one of these should score highly -- which track it is falls out of the
+ * result rather than having to be known in advance. A track that is simply
+ * wrong scores near zero; a track a beat out scores near zero too, which is
+ * the point (it would look perfect on any count-and-wrap test). */
+static unsigned g_ph_total, g_ph_hit[CLIP_TRACKS], g_ph_seen[CLIP_TRACKS];
+static int      g_ph_lastdiff[CLIP_TRACKS];
 static char g_set_name[128];
 static char g_set_uuid[128];
 static void clip_regions_tick(void)
@@ -487,11 +496,57 @@ static void clip_regions_tick(void)
      * A mere EDIT of the same set must NOT reset: the geometry changed, what
      * is playing did not, and wiping identity there would throw away a live
      * observation in favour of a file that may not have been saved yet. */
-    if (set_changed) clip_state_reset(st);
+    if (set_changed) {
+        clip_state_reset(st);
+        g_ph_total = 0;
+        memset(g_ph_hit, 0, sizeof(g_ph_hit));
+        memset(g_ph_seen, 0, sizeof(g_ph_seen));
+        memset(g_ph_lastdiff, 0, sizeof(g_ph_lastdiff));
+    }
 
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
      * already observed and never sets an anchor. */
     clip_regions_seed_state(&g_regions, st);
+
+    /* ...and if a Start is still pending for a track we have only just
+     * identified, honour it now. A set load restarts the transport at once
+     * while this poll runs ~1.4 s later, so without this every track sits at
+     * "phase unknown" until the user presses Play again. */
+    clip_state_anchor_pending(st, (uint32_t)shadow_transport_pulses,
+                              sampler_transport_playing);
+}
+
+static void clip_phase_check_tick(void)
+{
+    const clip_state_t *cs = clip_state_current();
+    if (!cs || !g_regions.valid) return;
+    double res = g_regions.step_resolution > 0 ? g_regions.step_resolution : 0.25;
+
+    clip_playhead_ev_t ev[32];
+    int n;
+    while ((n = clip_playhead_take(ev, 32)) > 0) {
+        for (int i = 0; i < n; i++) {
+            g_ph_total++;
+            for (int t = 0; t < CLIP_TRACKS; t++) {
+                const clip_track_state_t *tr = &cs->tracks[t];
+                if (!tr->identity_valid || tr->clip_slot < 0) continue;
+                const clip_region_t *r = &g_regions.slots[t][tr->clip_slot];
+                double ph;
+                if (!clip_phase_beats(tr, ev[i].pulses, r->loop_start,
+                                      r->loop_len, &ph))
+                    continue;
+                g_ph_seen[t]++;
+                int step = (int)((ph - r->loop_start) / res + 0.5);
+                int pred = ((step % 16) + 16) % 16;
+                int diff = pred - (int)ev[i].idx;
+                if (diff > 8) diff -= 16;
+                if (diff < -8) diff += 16;
+                g_ph_lastdiff[t] = diff;
+                if (diff == 0) g_ph_hit[t]++;
+            }
+        }
+        if (n < 32) break;
+    }
 }
 
 static void clip_state_tick(void)
@@ -582,7 +637,11 @@ static void clip_state_tick(void)
                     r ? r->loop_len : 0.0);
         }
     }
-    fprintf(jf, "]}\n");
+    fprintf(jf, "],\"phase_check\":{\"events\":%u,\"tracks\":[", g_ph_total);
+    for (int t = 0; t < CLIP_TRACKS; t++)
+        fprintf(jf, "%s{\"track\":%d,\"seen\":%u,\"hit\":%u,\"last_diff\":%d}",
+                t ? "," : "", t + 1, g_ph_seen[t], g_ph_hit[t], g_ph_lastdiff[t]);
+    fprintf(jf, "]}}\n");
     fclose(jf);
 }
 void shim_touch_trace_drain(void);
@@ -1040,6 +1099,7 @@ static void *worker_main(void *arg) {
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
         clip_regions_tick();
+        clip_phase_check_tick();
         clip_state_tick();
         worker_heartbeat();
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */

@@ -99,6 +99,17 @@ int clip_pad_decode(int note, int *out_track, int *out_slot);
 
 void clip_state_reset(clip_state_t *st);
 
+/* Anchor any track that has identity but no anchor, and for which a Start is
+ * still pending within the grace window.
+ *
+ * Exists because identity can arrive LATE and from a different source. A set
+ * load restarts the transport immediately, but seeding from Song.abl runs on
+ * a ~1.4 s poll -- so 0xFA finds nothing to anchor, the seed lands afterwards
+ * with no anchor, and every track sits at "phase unknown" until the next
+ * Start. Observed on hardware. clip_state_on_led consumes pending_start the
+ * same way; this is the path for identity that did not come from an LED. */
+void clip_state_anchor_pending(clip_state_t *st, uint32_t pulses, int running);
+
 /* MIDI Start (0xFA). Every playing clip returns to its top in lockstep with
  * the pulse counter, so this anchors them all at 0.
  *
@@ -151,6 +162,32 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
  * loop_start/loop_len come from Song.abl. The loop is NOT always at 0.0. */
 int clip_phase_beats(const clip_track_state_t *t, uint32_t pulses,
                      double loop_start, double loop_len, double *out_beats);
+
+/* ============================================================================
+ * Phase check — does our computed phase agree with Move's own playhead?
+ *
+ * Everything else verifies that phase COUNTS and WRAPS at the right length.
+ * That is not the same as being correct: a lane anchored a beat out counts
+ * and wraps perfectly and records everything in the wrong place.
+ *
+ * Move's step playhead is an independent measurement of the same quantity.
+ * The comparison is page-independent, which is what makes it usable without
+ * the page oracle:
+ *
+ *     playhead_idx == floor(pos_in_loop / step_resolution) mod 16
+ *
+ * because the index IS the step within whatever page is displayed. A one-beat
+ * error shows up as a mismatch of 4, not as a rounding wobble.
+ * ========================================================================= */
+#define CLIP_PH_RING 64
+typedef struct {
+    uint8_t  idx;       /* 0..15, the lit step button */
+    uint32_t pulses;
+} clip_playhead_ev_t;
+
+/* Producer: the SPI callback. Consumer: the worker. A store and an index. */
+void clip_playhead_record(uint8_t idx, uint32_t pulses);
+int  clip_playhead_take(clip_playhead_ev_t *out, int max);
 
 /* The live table, or NULL before the first cable-0 scan. Worker-thread read
  * of callback-written data: fields are independent ints, a torn read is

@@ -391,6 +391,12 @@ void shadow_clear_move_leds_if_overtake(void) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
                 clip_state_ensure();
+                /* Move's step playhead: the lit step button, d2=126. An
+                 * INDEPENDENT measure of musical position, used to check our
+                 * phase rather than to produce it. */
+                if (d1 >= 16 && d1 <= 31 && type == 0x90 && d2 == 126)
+                    clip_playhead_record((uint8_t)(d1 - 16),
+                                         (uint32_t)shadow_transport_pulses);
                 clip_state_on_led(&g_clip_state, midi_out[i+1], d1, d2,
                                   (uint32_t)shadow_transport_pulses,
                                   sampler_transport_playing,

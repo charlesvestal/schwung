@@ -324,8 +324,42 @@ static void test_start_grace_expires(void)
           st.tracks[0].anchor_pulse);
 }
 
+/* Hardware: loading a set restarts the transport immediately, but identity
+ * arrives from the Song.abl poll ~1.4 s later -- so the Start had nothing to
+ * anchor and every track sat at "phase unknown" until the next Play. */
+static void test_identity_arriving_after_a_start_still_anchors(void)
+{
+    printf("identity arriving after a Start still gets anchored\n");
+    clip_state_t st; clip_state_reset(&st);
+
+    /* Start with nothing known at all (a fresh set load). */
+    clip_state_on_transport_start(&st);
+    for (int t = 0; t < CLIP_TRACKS; t++)
+        CHECK(!st.tracks[t].anchor_valid, "nothing to anchor yet");
+
+    /* Seeding supplies identity a moment later, with no anchor of its own. */
+    st.tracks[2].identity_valid = 1;
+    st.tracks[2].clip_slot = 4;
+    CHECK(!st.tracks[2].anchor_valid, "seeding must not anchor by itself");
+
+    clip_state_anchor_pending(&st, 30, 1);
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 0,
+          "should anchor at the Start (0), got valid=%d pulse=%u",
+          st.tracks[2].anchor_valid, st.tracks[2].anchor_pulse);
+
+    /* Bounded, and never while stopped. */
+    clip_state_t st2; clip_state_reset(&st2);
+    clip_state_on_transport_start(&st2);
+    st2.tracks[0].identity_valid = 1; st2.tracks[0].clip_slot = 1;
+    clip_state_anchor_pending(&st2, 5000, 1);
+    CHECK(!st2.tracks[0].anchor_valid, "past the grace window it must not anchor");
+    clip_state_anchor_pending(&st2, 10, 0);
+    CHECK(!st2.tracks[0].anchor_valid, "stopped transport must not anchor");
+}
+
 int main(void)
 {
+    test_identity_arriving_after_a_start_still_anchors();
     test_clip_returning_after_a_start_anchors_at_the_start();
     test_start_grace_expires();
     test_ui_mode_is_recorded_even_when_rejected();
