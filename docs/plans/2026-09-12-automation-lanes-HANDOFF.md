@@ -12,6 +12,58 @@ history now, not instruction.
 
 ---
 
+## Confidence audit #2, 2026-09-13 (after driving it end to end)
+
+**What unblocked the rest: a lane records from a PARAM WRITE**, and
+`schwung-testd` can make one over the param channel. Neither recording nor
+p-locks needed a hand on a knob — that was my own wrong assumption, and it
+cost a whole round of "this needs you".
+
+Proven on hardware tonight, against `bouba-kiki` in slot 0:
+
+| | evidence |
+|---|---|
+| **P-lock write** | `lanes:plocked = 1` with the transport STOPPED; document carries `P 9 0.9 1` |
+| **P-lock reaches the SYNTH** | the plugin's own state blob read `{"pinch":0.9}` while the base stayed 0.47 |
+| **Release** | `lanes:clear` returned base, effective, modulated **and the plugin** to 0.47 / 0 |
+| **Recording** | armed from Move's Record button (`lanes:armed` 0→1, LED SOLID); five points recorded |
+| **Recorded phases are CLIP time** | 9.54 … 17.58, not 1.54 — today's coordinate change, on the device |
+| **Playback** | interpolated 0.13 → 0.37 → 0.61 → 0.70, holding past the last point |
+| **`:modulated` mark** | reads 1 for a lane-driven parameter (was an open item) |
+| **Clip length change** | strip 3 → 4 segments immediately; file caught up ~12 s later |
+| **Copy / Delete / Undo** | all three, verified in the file; Undo walks back precisely |
+| **Arming is harmless** | the clip gained no notes: `[50, 50, 60]`, loop unchanged |
+
+**Still not proven, and now down to two:**
+
+- **New sets** — needs the Set Overview, which needs the Note/Session toggle.
+  Not a cable-0 CC (~75 scanned against a screen witness; a full LED refresh
+  shows no unaccounted button), so it is unlit and possibly a note. I did not
+  scan note ranges: that plays the instrument, at night.
+- **The p-lock GESTURE** (hold a step, turn a knob). The write path,
+  the document, the drive-to-plugin and the release are all verified; what is
+  missing is input plumbing — a held step must be swallowed from Move or the
+  same press edits notes, and the knob turn must arrive as a param write. The
+  second half is what `schwung-testd` stands in for tonight; the first half is
+  a shim change I will not ship unverified, because getting it wrong means
+  "my step buttons stopped editing notes".
+
+**One measured correction to my own earlier claim:** "a segment is a bar,
+rounded up" was a *third* coincidence. Lengthening a loop settled the file at
+exactly 16.5 quarters — three bars of 11/8 — while the strip drew **four**
+identical segments, persistently. The count can exceed the loop by one, so the
+implied length is a range inclusive at both ends and the file wins whenever it
+has the clip.
+
+**Device:** set verified byte-identical to baseline (clips, loops, notes,
+selections), diagnostics disarmed, transport stopped, `lanes_0.json` empty,
+`synth:pinch` back to 0.47. Two repairs were needed along the way and both are
+recorded below: T1 lost its selected-clip flag to an Undo, and its loop was
+lengthened by the length test — both restored through `Song.abl` with a backup
+at `/data/UserData/schwung/Song.abl.presel.bak`.
+
+---
+
 ## Confidence audit, 2026-09-13 (what is proven, what is not)
 
 Asked for 100% confidence in clip playback/editing and then in p-locks. Here is
