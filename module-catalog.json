@@ -187,6 +187,10 @@
           "label": "Sampler & Looper"
         },
         {
+          "id": "kit-building",
+          "label": "Kit Building"
+        },
+        {
           "id": "performance-fx",
           "label": "Performance FX"
         }
@@ -2168,7 +2172,7 @@
       "description": "Randomly builds, auditions and exports 16-pad drum kits from your Move sample library, with loudness matching and an audition step sequencer",
       "author": "sd88me",
       "component_type": "overtake",
-      "subcategory": "sampler-looper",
+      "subcategory": "kit-building",
       "tags": [
         "drums",
         "generative",
