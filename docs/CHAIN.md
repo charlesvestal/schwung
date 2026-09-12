@@ -661,12 +661,28 @@ pieces of it exist and are tested; the input plumbing is not written.
 - **The bar must come from a CURRENT reading of the SAME track.** The strip
   reports whichever track's editor it last decoded, and a stale or foreign
   `bold_segment` would place the p-lock on a bar the user is not looking at.
-- **What is still missing is only the MIDI half**: a held step must be
-  forwarded to the UI and **swallowed from Move** (both edges, latched —
-  `midi_in_swallow`), or the same press edits the clip's notes. That cannot be
-  driven by injection, because the drain writes Move's mailbox while the
-  control scan reads the hardware one, so it is the one piece that waits for a
-  finger on a step button.
+- **THE GESTURE IS BUILT AND VERIFIED END TO END.** `step_observe` has the shim
+  forward Move's step notes to the UI; the UI remembers which is held and, on a
+  knob **commit**, writes `lanes:plock_step`. Driven entirely by the harness —
+  long-press Track 1, jog click into the component, hold note 20, turn CC 71 —
+  it produced `P 1 0.0350000001 1`: bar 1 step 5, the value the knob made, a
+  rectangle, keyed to the live clip. Under 11/8 the same gesture is refused and
+  the log names the reason.
+- **The forward is PASSIVE, so a p-lock also toggles a note.** Nothing is
+  withheld from Move (measured: a step press took the clip 3 notes → 4 → 3).
+  Withholding needs a latched both-edge swallow in the MIDI filter, whose
+  failure mode is a stuck button or a note Move never sees released. Undo fixes
+  a stray note; a stuck filter does not, so that is its own change — and it now
+  has a harness that can test it (`inject_as_hardware`).
+- **The write hook WRAPS `setParam`, it does not sit on one call site.** A knob
+  turn's write is DEBOUNCED through `flushDueWrites`, so hooking the immediate
+  commit missed the very gesture it exists for: the parameter moved on the
+  device and the hook never fired. Six write sites today, and six will not stay
+  six.
+- **The shadow UI had no observable for its own view**, which is why driving it
+  from a harness was guesswork — and why a `ReferenceError` in a reconcile
+  (`currentView`; the variable is `view`) went unnoticed while it aborted every
+  tick. There is a throttled `ui_view:` line now, behind the debug flag.
 
 #### Recording on a clip Move has not saved yet
 
