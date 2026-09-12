@@ -653,6 +653,15 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   and the dlsym'd seam did not grow an argument — the window's start rides in
   `fp[0]`. Documents are `V 2` and a `V 1` one is REFUSED, loudly: the format
   never shipped, and the two coordinates are indistinguishable per point.
+- **A p-lock is a RECTANGLE, and a held step's phase is settled arithmetic.**
+  `lane_point_t.hold` (free — the struct was padded) holds a value to the next
+  point instead of ramping, the LEFT point of a segment deciding, and a rewrite
+  replaces the shape with the value. `step_plock.h` inverts the verified
+  mapping: `phase = ((bar-1)*steps_per_bar + index) * step_resolution`, with the
+  displayed bar from the STRIP's `bold_segment` — not Move's "Bar N", which
+  needs the screen reader and reads 0 without it. A **multi-page bar is
+  REFUSED** (11/8 at 1/16 pages 16+6, so this is not exotic), as is bar 0. The
+  GESTURE is unbuilt: a held step must be swallowed from Move or it edits notes.
 - **A clip Move has not saved yet can be recorded onto, and the two missing
   facts arrive separately.** The length comes from the step editor's strip NOW
   (bar resolution, origin assumed 0); the identity and true origin come from

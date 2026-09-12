@@ -71,7 +71,7 @@ static int lane_nearest(const lane_t *ln, double phase) {
     return best;
 }
 
-void lane_write(lane_t *ln, double phase, float value) {
+void lane_write(lane_t *ln, double phase, float value, int hold) {
     /* `phase < 0.0` is false for NaN, so a NaN phase would otherwise sail
      * through every comparison below (insertion, thinning, overflow-nearest)
      * and land in pts[] -- isfinite() is the only comparison NaN cannot
@@ -86,7 +86,17 @@ void lane_write(lane_t *ln, double phase, float value) {
     for (int i = 0; i < ln->n; i++) {
         double d = ln->pts[i].phase - phase;
         if (d < 0) d = -d;
-        if (d < LANE_MIN_POINT_BEATS) { ln->pts[i].value = value; return; }
+        /* The SHAPE is replaced with the value, not left behind: recording a
+         * sweep over an old p-lock must produce a slope, and p-locking over a
+         * recorded point must produce a rectangle. Keeping the old flag here
+         * made "write a ramp point where a held one was" a no-op in one
+         * respect and a change in the other -- caught by the first test that
+         * did it. */
+        if (d < LANE_MIN_POINT_BEATS) {
+            ln->pts[i].value = value;
+            ln->pts[i].hold = hold ? 1 : 0;
+            return;
+        }
     }
 
     if (ln->n >= LANE_POINTS_MAX) {
@@ -100,6 +110,7 @@ void lane_write(lane_t *ln, double phase, float value) {
         int i = lane_nearest(ln, phase);
         ln->pts[i].phase = phase;
         ln->pts[i].value = value;
+        ln->pts[i].hold = hold ? 1 : 0;
         ln->full_hits++;
         /* Re-sort the single moved element. */
         while (i > 0 && ln->pts[i - 1].phase > ln->pts[i].phase) {
@@ -120,6 +131,7 @@ void lane_write(lane_t *ln, double phase, float value) {
     for (int i = ln->n; i > at; i--) ln->pts[i] = ln->pts[i - 1];
     ln->pts[at].phase = phase;
     ln->pts[at].value = value;
+    ln->pts[at].hold = hold ? 1 : 0;
     ln->n++;
 }
 
@@ -165,7 +177,11 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
          * t=NaN, and an affirmative-looking NaN result. */
         if (!isfinite(a->phase) || !isfinite(b->phase)) continue;
         if (phase < a->phase || phase > b->phase) continue;
-        if (stepped) { *out = a->value; return 1; }
+        /* `stepped` is the PARAMETER's type (an enum cannot ramp); `a->hold`
+         * is this POINT's own shape. Either one holds, and the point's flag is
+         * what makes a p-lock sound like a step rather than a glide into the
+         * next one. */
+        if (stepped || a->hold) { *out = a->value; return 1; }
         double span = b->phase - a->phase;
         if (span <= 0.0) { *out = b->value; return 1; }
         double t = (phase - a->phase) / span;
@@ -238,7 +254,7 @@ static void lane_erase_span(lane_t *ln, double lo, int lo_open, double hi) {
 }
 
 void lane_record_point(lane_t *ln, double phase, float value,
-                       double loop_start, double loop_len) {
+                       double loop_start, double loop_len, int hold) {
     if (!ln || !ln->used) return;
     /* The SAME validity lane_write demands, checked before the erase: a write
      * that is going to be refused must not erase anything on its way to being
@@ -273,7 +289,7 @@ void lane_record_point(lane_t *ln, double phase, float value,
         }
     }
 
-    lane_write(ln, phase, value);
+    lane_write(ln, phase, value, hold);
     /* Only AFTER a write that was accepted, so the next write's swept span
      * starts where this one actually landed. */
     ln->rec_active = 1;

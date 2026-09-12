@@ -23,14 +23,14 @@ int main(void) {
     CHECK(lane_eval(ln, 0.0, 0.0, 8.0, 0, &v) == 0, "empty lane produced a value");
 
     /* 2. One point is that value everywhere (hold at both ends). */
-    lane_write(ln, 2.0, 0.5f);
+    lane_write(ln, 2.0, 0.5f, 0);
     CHECK(lane_eval(ln, 0.0, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
           "single point before: %f", v);
     CHECK(lane_eval(ln, 7.9, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
           "single point after: %f", v);
 
     /* 3. Linear between two float points. */
-    lane_write(ln, 6.0, 1.0f);
+    lane_write(ln, 6.0, 1.0f, 0);
     CHECK(lane_eval(ln, 4.0, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.75f) < 1e-6f,
           "midpoint interp: %f", v);
 
@@ -40,8 +40,8 @@ int main(void) {
 
     /* 5. A point past the CURRENT loop end is ignored -- and retained. */
     ln = mk(&st);
-    lane_write(ln, 1.0, 0.2f);
-    lane_write(ln, 12.0, 0.9f);       /* beyond an 8-beat loop */
+    lane_write(ln, 1.0, 0.2f, 0);
+    lane_write(ln, 12.0, 0.9f, 0);       /* beyond an 8-beat loop */
     CHECK(lane_eval(ln, 7.0, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
           "dormant point leaked into the curve: %f", v);
     CHECK(ln->n == 2, "dormant point was dropped (n=%d)", ln->n);
@@ -52,24 +52,24 @@ int main(void) {
 
     /* 7. Thinning: a second write inside the window replaces, not appends. */
     ln = mk(&st);
-    lane_write(ln, 1.000f, 0.1f);
-    lane_write(ln, 1.005f, 0.4f);     /* < LANE_MIN_POINT_BEATS away */
+    lane_write(ln, 1.000f, 0.1f, 0);
+    lane_write(ln, 1.005f, 0.4f, 0);     /* < LANE_MIN_POINT_BEATS away */
     CHECK(ln->n == 1, "thinning failed (n=%d)", ln->n);
     CHECK(fabsf(ln->pts[0].value - 0.4f) < 1e-6f,
           "thinning kept the OLD value: %f", ln->pts[0].value);
 
     /* 8. Out-of-order writes leave the list sorted. */
     ln = mk(&st);
-    lane_write(ln, 4.0, 0.4f);
-    lane_write(ln, 1.0, 0.1f);
-    lane_write(ln, 2.0, 0.2f);
+    lane_write(ln, 4.0, 0.4f, 0);
+    lane_write(ln, 1.0, 0.1f, 0);
+    lane_write(ln, 2.0, 0.2f, 0);
     CHECK(ln->n == 3 && ln->pts[0].phase < ln->pts[1].phase &&
           ln->pts[1].phase < ln->pts[2].phase, "points are not sorted");
 
     /* 9. A full lane degrades resolution; it never drops the gesture. */
     ln = mk(&st);
     for (int i = 0; i < LANE_POINTS_MAX + 8; i++)
-        lane_write(ln, 0.1 + i * 0.5, (float)i / 100.0f);
+        lane_write(ln, 0.1 + i * 0.5, (float)i / 100.0f, 0);
     CHECK(ln->n == LANE_POINTS_MAX, "overflowed (n=%d)", ln->n);
     CHECK(ln->full_hits == 8, "full_hits=%d, want 8", ln->full_hits);
 
@@ -163,12 +163,12 @@ int main(void) {
      * one even if it somehow ends up in pts[] -- writer and reader are
      * different tasks' code, so each must defend for itself. */
     ln = mk(&st);
-    lane_write(ln, 1.0, 0.1f);
-    lane_write(ln, 2.0, 0.2f);
-    lane_write(ln, 3.0, 0.3f);
-    lane_write(ln, NAN, 0.9f);
+    lane_write(ln, 1.0, 0.1f, 0);
+    lane_write(ln, 2.0, 0.2f, 0);
+    lane_write(ln, 3.0, 0.3f, 0);
+    lane_write(ln, NAN, 0.9f, 0);
     CHECK(ln->n == 3, "NaN phase was stored by lane_write (n=%d)", ln->n);
-    lane_write(ln, INFINITY, 0.9f);
+    lane_write(ln, INFINITY, 0.9f, 0);
     CHECK(ln->n == 3, "infinite phase was stored by lane_write (n=%d)", ln->n);
     CHECK(lane_eval(ln, 3.5, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.3f) < 1e-6f,
           "a rejected NaN write still corrupted eval near the boundary: %f", v);
@@ -176,8 +176,8 @@ int main(void) {
     /* eval's own defence: a NaN poked directly into pts[] (not through
      * lane_write) must not be treated as in-range or averaged into a span. */
     ln = mk(&st);
-    lane_write(ln, 1.0, 0.1f);
-    lane_write(ln, 2.0, 0.2f);
+    lane_write(ln, 1.0, 0.1f, 0);
+    lane_write(ln, 2.0, 0.2f, 0);
     ln->pts[ln->n].phase = NAN;
     ln->pts[ln->n].value = 0.9f;
     ln->n++;
@@ -210,7 +210,7 @@ int main(void) {
         /* Pass 1: a rising sweep, 20 -> 100. */
         const double p1[5] = { 1.00, 1.50, 2.00, 2.50, 3.00 };
         const float  v1[5] = { 20.0f, 40.0f, 60.0f, 80.0f, 100.0f };
-        for (int i = 0; i < 5; i++) lane_record_point(l, p1[i], v1[i], 0.0, loop);
+        for (int i = 0; i < 5; i++) lane_record_point(l, p1[i], v1[i], 0.0, loop, 0);
         lane_record_end(l);
         CHECK(l->n == 5, "pass 1 did not lay down 5 points (n=%d)", l->n);
 
@@ -219,7 +219,7 @@ int main(void) {
          * shows up as a DIP -- the jumpiness the user heard. */
         const double p2[4] = { 1.04, 1.56, 2.08, 2.60 };
         const float  v2[4] = { 190.0f, 191.0f, 192.0f, 193.0f };
-        for (int i = 0; i < 4; i++) lane_record_point(l, p2[i], v2[i], 0.0, loop);
+        for (int i = 0; i < 4; i++) lane_record_point(l, p2[i], v2[i], 0.0, loop, 0);
         lane_record_end(l);
 
         /* Nothing from pass 1 may survive strictly inside the swept span. */
@@ -261,14 +261,14 @@ int main(void) {
         lane_store_t ps;
         lane_t *l = mk(&ps);
         const double loop = 8.0;
-        lane_write(l, 2.0, 50.0f);
-        lane_write(l, 3.0, 60.0f);
-        lane_write(l, 4.0, 70.0f);
+        lane_write(l, 2.0, 50.0f, 0);
+        lane_write(l, 3.0, 60.0f, 0);
+        lane_write(l, 4.0, 70.0f, 0);
 
-        lane_record_point(l, 1.0, 10.0f, 0.0, loop);     /* first write: no span */
-        lane_record_point(l, 1.2, 11.0f, 0.0, loop);     /* sweeping */
+        lane_record_point(l, 1.0, 10.0f, 0.0, loop, 0);     /* first write: no span */
+        lane_record_point(l, 1.2, 11.0f, 0.0, loop, 0);     /* sweeping */
         /* ... hand off the knob for three beats, then turn it again. */
-        lane_record_point(l, 5.0, 12.0f, 0.0, loop);
+        lane_record_point(l, 5.0, 12.0f, 0.0, loop, 0);
         lane_record_end(l);
 
         int kept = 0;
@@ -295,10 +295,10 @@ int main(void) {
         const double lay[7] = { 0.1, 0.5, 2.0, 4.0, 7.0, 7.5, 7.8 };
         const float  lv[7]  = { 11.0f, 15.0f, 20.0f, 40.0f, 70.0f,
                                 75.0f, 78.0f };
-        for (int i = 0; i < 7; i++) lane_write(l, lay[i], lv[i]);
+        for (int i = 0; i < 7; i++) lane_write(l, lay[i], lv[i], 0);
 
-        lane_record_point(l, 7.6, 200.0f, 0.0, loop);   /* first write: no span */
-        lane_record_point(l, 0.3, 201.0f, 0.0, loop);   /* wrapped: gap 0.7 beats */
+        lane_record_point(l, 7.6, 200.0f, 0.0, loop, 0);   /* first write: no span */
+        lane_record_point(l, 0.3, 201.0f, 0.0, loop, 0);   /* wrapped: gap 0.7 beats */
         lane_record_end(l);
 
         /* Swept: 7.8 (past prev) and 0.1 (before cur). */
@@ -326,10 +326,10 @@ int main(void) {
     {
         lane_store_t ps;
         lane_t *l = mk(&ps);
-        lane_write(l, 1.0, 10.0f);
-        lane_write(l, 2.0, 20.0f);
-        lane_write(l, 3.0, 30.0f);
-        lane_record_point(l, 2.5, 99.0f, 0.0, 8.0);
+        lane_write(l, 1.0, 10.0f, 0);
+        lane_write(l, 2.0, 20.0f, 0);
+        lane_write(l, 3.0, 30.0f, 0);
+        lane_record_point(l, 2.5, 99.0f, 0.0, 8.0, 0);
         CHECK(l->n == 4, "the first write of a pass erased something (n=%d)",
               l->n);
         lane_record_end(l);
@@ -343,11 +343,11 @@ int main(void) {
         lane_store_t ps;
         lane_t *l = mk(&ps);
         const double loop = 8.0;
-        lane_write(l, 1.4, 44.0f);          /* the user's, between the takes */
-        lane_record_point(l, 1.0, 10.0f, 0.0, loop);
-        lane_record_point(l, 1.3, 11.0f, 0.0, loop);
+        lane_write(l, 1.4, 44.0f, 0);          /* the user's, between the takes */
+        lane_record_point(l, 1.0, 10.0f, 0.0, loop, 0);
+        lane_record_point(l, 1.3, 11.0f, 0.0, loop, 0);
         lane_record_end(l);                  /* Record goes out */
-        lane_record_point(l, 1.5, 12.0f, 0.0, loop);   /* a fresh take */
+        lane_record_point(l, 1.5, 12.0f, 0.0, loop, 0);   /* a fresh take */
         lane_record_end(l);
         int found = 0;
         for (int i = 0; i < l->n; i++)
@@ -380,7 +380,7 @@ int main(void) {
         lane_t *l = mk(&ps);
         const double wp[6] = { 1.00, 1.04, 1.50, 1.56, 2.00, 2.08 };
         const float  wv[6] = { 20.0f, 190.0f, 40.0f, 191.0f, 60.0f, 192.0f };
-        for (int i = 0; i < 6; i++) lane_write(l, wp[i], wv[i]);
+        for (int i = 0; i < 6; i++) lane_write(l, wp[i], wv[i], 0);
         CHECK(l->n == 6,
               "lane_write erased as it went (n=%d, want 6) -- the swept-span "
               "erase has leaked out of lane_record_point", l->n);
@@ -425,8 +425,8 @@ int main(void) {
 
         lane_t *c0 = lane_alloc(&ps, "synth", "cutoff", 0, 0, &f0);
         CHECK(c0 != NULL, "clip 0 lane alloc");
-        lane_record_point(c0, 0.0, 10.0f, 0.0, 4.0);
-        lane_record_point(c0, 1.0, 11.0f, 0.0, 4.0);
+        lane_record_point(c0, 0.0, 10.0f, 0.0, 4.0, 0);
+        lane_record_point(c0, 1.0, 11.0f, 0.0, 4.0, 0);
         lane_record_end(c0);
 
         lane_t *c1 = lane_alloc(&ps, "synth", "cutoff", 0, 1, &f1);
@@ -435,8 +435,8 @@ int main(void) {
               "recording the same parameter on a SECOND CLIP took over the "
               "first clip's lane -- one lane per param across all 8 clip "
               "slots, which is the hardware defect");
-        lane_record_point(c1, 0.0, 90.0f, 0.0, 4.0);
-        lane_record_point(c1, 1.0, 91.0f, 0.0, 4.0);
+        lane_record_point(c1, 0.0, 90.0f, 0.0, 4.0, 0);
+        lane_record_point(c1, 1.0, 91.0f, 0.0, 4.0, 0);
         lane_record_end(c1);
 
         int used = 0;
@@ -495,13 +495,13 @@ int main(void) {
             /* Clip 0 carries a take the user wants to keep. */
             const double p0[5] = { 1.0, 1.5, 2.0, 2.5, 3.0 };
             for (int i = 0; i < 5; i++)
-                lane_write(c0, p0[i], (float)(20 + i * 10));
+                lane_write(c0, p0[i], (float)(20 + i * 10), 0);
             /* Clip 1 gets a second pass right across the same phases. */
             for (int i = 0; i < 5; i++)
-                lane_write(c1, p0[i], (float)(120 + i * 10));
+                lane_write(c1, p0[i], (float)(120 + i * 10), 0);
             const double p2[4] = { 1.04, 1.56, 2.08, 2.60 };
             for (int i = 0; i < 4; i++)
-                lane_record_point(c1, p2[i], 199.0f, 0.0, 8.0);
+                lane_record_point(c1, p2[i], 199.0f, 0.0, 8.0, 0);
             lane_record_end(c1);
 
             CHECK(c0->n == 5,
@@ -573,7 +573,7 @@ int main(void) {
             CHECK(lane_pass_live_at(lp, 2.0, 0.0, 8.0) == 0,
                   "a lane with no recording pass reads as live");
 
-            lane_record_point(lp, 2.0, 55.0f, 0.0, 8.0);
+            lane_record_point(lp, 2.0, 55.0f, 0.0, 8.0, 0);
             CHECK(lp->rec_active == 1, "premise: the pass started");
 
             /* Inside the window, forward: live. */
@@ -593,9 +593,9 @@ int main(void) {
              * erases nothing. Asserted as the AGREEMENT rather than as two
              * separate expected numbers, because what matters is that the two
              * readings cannot drift apart. */
-            lane_write(lp, 2.4, 99.0f);
+            lane_write(lp, 2.4, 99.0f, 0);
             const int live_near = lane_pass_live_at(lp, 2.5, 0.0, 8.0);
-            lane_record_point(lp, 2.5, 56.0f, 0.0, 8.0);
+            lane_record_point(lp, 2.5, 56.0f, 0.0, 8.0, 0);
             int survived = 0;
             for (int i = 0; i < lp->n; i++)
                 if (fabs(lp->pts[i].phase - 2.4) < 1e-9) survived = 1;
@@ -604,9 +604,9 @@ int main(void) {
                   "suppression and the erase disagree about the pass",
                   live_near, survived);
 
-            lane_write(lp, 6.0, 98.0f);
+            lane_write(lp, 6.0, 98.0f, 0);
             const int live_far = lane_pass_live_at(lp, 7.0, 0.0, 8.0);
-            lane_record_point(lp, 7.0, 57.0f, 0.0, 8.0);
+            lane_record_point(lp, 7.0, 57.0f, 0.0, 8.0, 0);
             survived = 0;
             for (int i = 0; i < lp->n; i++)
                 if (fabs(lp->pts[i].phase - 6.0) < 1e-9) survived = 1;
@@ -620,7 +620,7 @@ int main(void) {
              * threshold, while 7.5 is 0.5 ahead and inside it. */
             CHECK(lane_pass_live_at(lp, 7.5, 0.0, 8.0) == 1,
                   "the pass is not live 0.5 beats ahead of 7.0");
-            lane_record_point(lp, 7.8, 58.0f, 0.0, 8.0);
+            lane_record_point(lp, 7.8, 58.0f, 0.0, 8.0, 0);
             CHECK(lane_pass_live_at(lp, 0.1, 0.0, 8.0) == 1,
                   "a pass at 7.8 is not live 0.3 beats later at phase 0.1 -- "
                   "the wrap was measured as phase - prev");
@@ -655,8 +655,8 @@ int main(void) {
         lane_t *wl = lane_alloc(&w, "synth", "cutoff", 0, 2, &fp);
         CHECK(wl != NULL, "window lane alloc");
         if (wl) {
-            lane_write(wl, 9.5, 0.75f);      /* over the note at 9.5 */
-            lane_write(wl, 16.5, 0.25f);     /* and the one at 16.5 */
+            lane_write(wl, 9.5, 0.75f, 0);      /* over the note at 9.5 */
+            lane_write(wl, 16.5, 0.25f, 0);     /* and the one at 16.5 */
 
             /* Inside the bars-3-to-5 window, where it was recorded. */
             CHECK(lane_eval(wl, 9.5, 8.0, 12.0, 0, &v) == 1 &&
@@ -709,9 +709,9 @@ int main(void) {
         lane_t *wl = lane_alloc(&w, "synth", "cutoff", 0, 2, &fp);
         CHECK(wl != NULL, "wrap lane alloc");
         if (wl) {
-            lane_write(wl, 1.0, 0.10f);       /* before the loop: untouchable */
-            lane_write(wl, 4.0, 0.20f);       /* also before it */
-            lane_write(wl, 19.0, 0.30f);      /* inside, and in the swept span */
+            lane_write(wl, 1.0, 0.10f, 0);       /* before the loop: untouchable */
+            lane_write(wl, 4.0, 0.20f, 0);       /* also before it */
+            lane_write(wl, 19.0, 0.30f, 0);      /* inside, and in the swept span */
 
             /* travel across the window's own wrap: 19.5 -> 8.2 is 0.7 beats,
              * not a jump backwards of 11.3 and not "cannot tell". */
@@ -722,8 +722,8 @@ int main(void) {
             CHECK(lane_pass_travel(2.0, 8.2, 8.0, 12.0) < 0.0,
                   "a prev below the window was turned into a wrap");
 
-            lane_record_point(wl, 19.5, 0.40f, 8.0, 12.0);
-            lane_record_point(wl, 8.2, 0.50f, 8.0, 12.0);
+            lane_record_point(wl, 19.5, 0.40f, 8.0, 12.0, 0);
+            lane_record_point(wl, 8.2, 0.50f, 8.0, 12.0, 0);
             CHECK(lane_eval(wl, 1.0, 0.0, 32.0, 0, &v) == 1 &&
                   fabsf(v - 0.10f) < 1e-6f,
                   "the wrap erased the clip's first bar: %f at beat 1", v);
@@ -757,8 +757,8 @@ int main(void) {
                   "a lane recorded blind must carry the absent fingerprint");
             /* A take over the first two beats of what the user sees as the
              * clip's start. */
-            lane_write(bl, 0.5, 0.20f);
-            lane_write(bl, 1.5, 0.80f);
+            lane_write(bl, 0.5, 0.20f, 0);
+            lane_write(bl, 1.5, 0.80f, 0);
             /* AND IT PLAYS, against the assumed origin, for as long as the
              * clip cannot be identified. That is not a gap in the staleness
              * rule -- the lane is at the position that is playing and nothing
@@ -811,7 +811,7 @@ int main(void) {
         CHECK(bl != NULL, "refusal lane alloc");
         if (bl) {
             bl->origin_pending = 1;
-            lane_write(bl, 1.0, 0.5f);
+            lane_write(bl, 1.0, 0.5f, 0);
             /* An absent fingerprint: a no-op that would still have cleared
              * the pending state, stranding the take at origin 0. */
             CHECK(lane_adopt_fingerprint(bl, &absent) == 0,
@@ -849,7 +849,7 @@ int main(void) {
         CHECK(bl != NULL, "in-progress lane alloc");
         if (bl) {
             bl->origin_pending = 1;
-            lane_record_point(bl, 1.0, 0.3f, 0.0, 8.0);
+            lane_record_point(bl, 1.0, 0.3f, 0.0, 8.0, 0);
             CHECK(bl->rec_active && fabs(bl->rec_last_phase - 1.0) < 1e-9,
                   "premise: a pass is live at phase 1.0");
             lane_fingerprint_t real = { 8.0, 12.0, 3, 60 };
@@ -872,13 +872,53 @@ int main(void) {
         lane_t *bl = lane_alloc(&b, "synth", "cutoff", 1, 4, &absent);
         CHECK(bl != NULL, "loaded lane alloc");
         if (bl) {
-            lane_write(bl, 1.0, 0.5f);
+            lane_write(bl, 1.0, 0.5f, 0);
             lane_fingerprint_t real = { 8.0, 12.0, 3, 60 };
             CHECK(lane_adopt_fingerprint(bl, &real) == 0,
                   "a lane with no origin_pending was adopted -- a placeholder "
                   "from disk must never take a stranger's identity");
             CHECK(lane_fp_absent(&bl->fp) && fabs(bl->pts[0].phase - 1.0) < 1e-9,
                   "the refused adoption changed the lane");
+        }
+    }
+
+    /* ================= A P-LOCK IS A RECTANGLE ========================
+     *
+     * Setting a value ON a step is not a slope towards the next one. Under
+     * plain interpolation two neighbouring p-locks glide into each other,
+     * which sounds like automation rather than a sequencer -- so a point
+     * carries its own `hold`, independent of whether the PARAMETER is stepped.
+     */
+    {
+        lane_store_t h;
+        lane_store_reset(&h);
+        lane_fingerprint_t fp2 = { 0.0, 4.0, 3, 60 };
+        lane_t *hl = lane_alloc(&h, "synth", "cutoff", 0, 0, &fp2);
+        CHECK(hl != NULL, "hold lane alloc");
+        if (hl) {
+            lane_write(hl, 0.0, 0.0f, 1);      /* p-lock on step 1 */
+            lane_write(hl, 2.0, 1.0f, 1);      /* p-lock on step 9  */
+            /* Between two held points the FIRST one stands: a step, not a
+             * ramp. A float parameter, so `stepped` is 0 -- the point's own
+             * flag is doing the work. */
+            CHECK(lane_eval(hl, 1.0, 0.0, 4.0, 0, &v) == 1 && v == 0.0f,
+                  "a held point ramped: %f at the midpoint, want 0.0", v);
+            CHECK(lane_eval(hl, 1.999, 0.0, 4.0, 0, &v) == 1 && v == 0.0f,
+                  "a held point ramped near its end: %f", v);
+            CHECK(lane_eval(hl, 2.0, 0.0, 4.0, 0, &v) == 1 && v == 1.0f,
+                  "the second p-lock did not take effect at its own phase: %f", v);
+
+            /* And an UNHELD point between two p-locks still ramps -- the flag
+             * is per point, so a recorded sweep and a p-lock coexist in one
+             * lane. */
+            lane_write(hl, 2.0, 1.0f, 0);      /* replace it with a ramp point */
+            CHECK(lane_eval(hl, 1.0, 0.0, 4.0, 0, &v) == 1 && v == 0.0f,
+                  "the LEFT point's flag decides the segment, not the right's "
+                  "(%f)", v);
+            lane_write(hl, 0.0, 0.0f, 0);
+            CHECK(lane_eval(hl, 1.0, 0.0, 4.0, 0, &v) == 1 &&
+                  fabsf(v - 0.5f) < 1e-6f,
+                  "two unheld points did not interpolate: %f, want 0.5", v);
         }
     }
 

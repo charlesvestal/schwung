@@ -61,9 +61,19 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
                ln->target, ln->param, ln->track, ln->slot,
                ln->fp.loop_start, ln->fp.loop_len,
                ln->fp.note_count, ln->fp.first_note, ln->n);
-        for (int k = 0; k < ln->n && k < LANE_POINTS_MAX; k++)
-            APPEND("P " FMT_D " " FMT_F "\n",
-                   ln->pts[k].phase, (double)ln->pts[k].value);
+        for (int k = 0; k < ln->n && k < LANE_POINTS_MAX; k++) {
+            /* The hold flag is written ONLY when set, so an ordinary sweep's
+             * document is byte-identical to what it was before the flag
+             * existed and no version bump is needed -- the reader defaults an
+             * absent third field to 0, the same rule the L line's trailing
+             * fields already use. */
+            if (ln->pts[k].hold)
+                APPEND("P " FMT_D " " FMT_F " 1\n",
+                       ln->pts[k].phase, (double)ln->pts[k].value);
+            else
+                APPEND("P " FMT_D " " FMT_F "\n",
+                       ln->pts[k].phase, (double)ln->pts[k].value);
+        }
     }
 #undef APPEND
     return off;
@@ -207,9 +217,15 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
             if (!have_hdr) return 0;   /* a point with no lane to belong to */
             double phase = 0.0;
             double value = 0.0;
-            /* Both fields or neither. A phase with a defaulted value plants
-             * 0.0 on a breakpoint the user never played. */
-            if (sscanf(line, "P %lf %lf", &phase, &value) != 2) return 0;
+            int hold = 0;
+            /* Both of the first two fields or neither -- a phase with a
+             * defaulted value plants 0.0 on a breakpoint the user never
+             * played. The THIRD is optional and absent means 0, so a document
+             * written before the flag existed reads identically. */
+            int got = sscanf(line, "P %lf %lf %d", &phase, &value, &hold);
+            if (got < 2) return 0;
+            if (got < 3) hold = 0;
+            if (hold != 0 && hold != 1) return 0;   /* not a flag */
             if (!isfinite(phase) || phase < 0.0 || !isfinite(value)) return 0;
             /* lane_eval walks pts[] assuming ascending phase, so an unsorted
              * document would evaluate to the wrong curve rather than to an
@@ -221,6 +237,7 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
             if (apply && cur) {
                 cur->pts[cur->n].phase = phase;
                 cur->pts[cur->n].value = (float)value;
+                cur->pts[cur->n].hold = (uint8_t)hold;
                 cur->n++;
             }
             continue;

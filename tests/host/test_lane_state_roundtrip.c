@@ -48,9 +48,9 @@ int main(void) {
     lane_store_reset(&a);
     lane_t *ln = lane_alloc(&a, "fx3", "feedback", 2, 5, &fp);
     CHECK(ln != NULL, "lane_alloc refused");
-    lane_write(ln, 0.0, 0.10f);
-    lane_write(ln, 3.5, 0.75f);
-    lane_write(ln, 7.25, 0.33f);
+    lane_write(ln, 0.0, 0.10f, 0);
+    lane_write(ln, 3.5, 0.75f, 0);
+    lane_write(ln, 7.25, 0.33f, 0);
 
     /* A second lane, so the parser has to find where one lane's points end
      * and the next lane's header begins -- a single-lane document cannot
@@ -59,8 +59,8 @@ int main(void) {
     lane_fingerprint_t fp2 = { 0.0, 4.0, 3, 60 };
     lane_t *ln2 = lane_alloc(&a, "synth", "cutoff", 0, 1, &fp2);
     CHECK(ln2 != NULL, "second lane_alloc refused");
-    lane_write(ln2, 1.0, 0.5f);
-    lane_write(ln2, 2.0, 0.25f);
+    lane_write(ln2, 1.0, 0.5f, 0);
+    lane_write(ln2, 2.0, 0.25f, 0);
 
     int n = lane_store_serialize(&a, buf, sizeof(buf));
     CHECK(n > 0, "serialize returned %d", n);
@@ -103,7 +103,7 @@ int main(void) {
     lane_store_reset(&a);
     lane_t *full = lane_alloc(&a, "midi_fx1", "rate", 3, 7, &fp);
     for (int i = 0; i < LANE_POINTS_MAX; i++)
-        lane_write(full, (double)i * LANE_MIN_POINT_BEATS / 2.0, (float)i / 100.0f);
+        lane_write(full, (double)i * LANE_MIN_POINT_BEATS / 2.0, (float)i / 100.0f, 0);
     CHECK(full->n == LANE_POINTS_MAX || full->n > 1,
           "fixture did not fill the lane (n=%d)", full->n);
     int saved_n = full->n;
@@ -121,7 +121,7 @@ int main(void) {
      * present, because nothing else in the system un-stales one. */
     lane_store_reset(&a);
     lane_t *sl = lane_alloc(&a, "fx1", "mix", 1, 1, &fp);
-    lane_write(sl, 0.0, 0.5f);
+    lane_write(sl, 0.0, 0.5f, 0);
     sl->stale = 1;
     sl->orphaned = 1;
     sl->driving = 1;
@@ -287,7 +287,7 @@ int main(void) {
         char tiny[8];
         lane_store_reset(&a);
         lane_t *t = lane_alloc(&a, "fx3", "feedback", 2, 5, &fp);
-        lane_write(t, 0.0, 0.1f);
+        lane_write(t, 0.0, 0.1f, 0);
         CHECK(lane_store_serialize(&a, tiny, (int)sizeof(tiny)) < 0,
               "a too-small buffer did not report failure");
     }

@@ -27,6 +27,8 @@
 #ifndef LANE_STORE_H
 #define LANE_STORE_H
 
+#include <stdint.h>   /* lane_point_t's hold flag */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -96,7 +98,16 @@ extern "C" {
  *
  * Points OUTSIDE the window are dormant, not deleted -- the same rule as a
  * shrunk clip, generalised from a prefix to a window. */
-typedef struct { double phase; float value; } lane_point_t;
+/* A POINT CAN BE A RECTANGLE. `hold` says "this value stands until the next
+ * point" rather than ramping into it -- which is what a step p-lock IS: you
+ * set a value ON a step, not a slope towards the next one. Under linear
+ * interpolation two neighbouring p-locks glide into each other, which sounds
+ * like automation and not like a sequencer.
+ *
+ * FREE, and that is why it goes in now: {double, float} is 12 bytes padded to
+ * 16, so the flag costs nothing and the alternative is migrating documents
+ * later. A `uint8_t` rather than a bitfield so the serializer can print it. */
+typedef struct { double phase; float value; uint8_t hold; } lane_point_t;
 
 /* What the clip looked like when the lane was recorded. ONLY THE CONTENT HALF
  * IS COMPARED (lane_fingerprint_matches): the note count catches a copy of a
@@ -209,7 +220,10 @@ lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
  * write through here, and neither has a recording pass to sweep with: a load
  * must reproduce its document verbatim. Recording goes through
  * lane_record_point instead. */
-void lane_write(lane_t *ln, double phase, float value);
+/* `hold` = 1 writes a rectangle (see lane_point_t); 0 is an ordinary
+ * breakpoint. A recorded knob sweep is 0 -- it IS a slope -- and a step p-lock
+ * is 1. */
+void lane_write(lane_t *ln, double phase, float value, int hold);
 
 /* ONE WRITE OF A RECORDING PASS.
  *
@@ -228,7 +242,7 @@ void lane_write(lane_t *ln, double phase, float value);
  *
  * RT: bounded compaction over at most LANE_POINTS_MAX entries. */
 void lane_record_point(lane_t *ln, double phase, float value,
-                       double loop_start, double loop_len);
+                       double loop_start, double loop_len, int hold);
 
 /* End the pass. The next lane_record_point is a first write again. */
 void lane_record_end(lane_t *ln);
