@@ -396,6 +396,24 @@ type CatalogService struct {
 	releaseMeta map[string]ReleaseMeta
 	fetched     time.Time
 	client      *http.Client
+
+	// Provenance of the catalog currently held, reported by Status().
+	// servedAt is when the held copy was OBTAINED -- the fetch time for a
+	// network copy, the cache file's mtime for a disk one -- and live says
+	// whether the last fetch ATTEMPT reached the network. A caller cannot
+	// derive either from the (catalog, error) pair: a served disk cache
+	// comes back with a non-nil catalog, and every page that renders it
+	// without saying so presents month-old data as today's.
+	servedAt time.Time
+	live     bool
+}
+
+// CatalogStatus describes where the catalog a caller was just handed came
+// from. Live=false with a non-zero At is the offline case: we are serving
+// the last-known-good copy from disk and it is At old.
+type CatalogStatus struct {
+	Live bool
+	At   time.Time
 }
 
 // defaultReleaseMetaURL is where the catalog site publishes the release
@@ -437,6 +455,11 @@ func (cs *CatalogService) loadFromDisk() {
 			var cat Catalog
 			if json.Unmarshal(data, &cat) == nil {
 				cs.catalog = &cat
+				// The file's mtime is the only record of when this copy
+				// was current; the catalog itself carries no timestamp.
+				if fi, err := os.Stat(p); err == nil {
+					cs.servedAt = fi.ModTime()
+				}
 			}
 		}
 	}
@@ -474,18 +497,23 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	}
 	resp, err := cs.client.Get(cs.URL)
 	if err != nil {
+		cs.live = false
 		return cs.catalog, fmt.Errorf("fetching catalog: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		cs.live = false
 		return cs.catalog, fmt.Errorf("catalog returned %d", resp.StatusCode)
 	}
 	var cat Catalog
 	if err := json.NewDecoder(resp.Body).Decode(&cat); err != nil {
+		cs.live = false
 		return cs.catalog, fmt.Errorf("decoding catalog: %w", err)
 	}
 	cs.catalog = &cat
 	cs.fetched = time.Now()
+	cs.servedAt = cs.fetched
+	cs.live = true
 	cs.saveToDisk(cs.catalogCachePath(), &cat)
 
 	// Fetch release metadata (best-effort, don't fail if unavailable).
@@ -505,6 +533,14 @@ func (cs *CatalogService) Fetch() (*Catalog, error) {
 	}
 
 	return cs.catalog, nil
+}
+
+// Status reports the provenance of the catalog Fetch last returned.
+//
+// Fetch's TTL early-return does not touch either field, so a status
+// reflects the last real ATTEMPT rather than the last call.
+func (cs *CatalogService) Status() CatalogStatus {
+	return CatalogStatus{Live: cs.live, At: cs.servedAt}
 }
 
 // GetReleaseMeta returns cached release metadata.
@@ -899,6 +935,56 @@ func isNewerSemver(latest, current string) bool {
 	return len(lp) > len(cp)
 }
 
+// hostOfferIsUpdate answers whether the catalog's offered host version is
+// worth showing as an update over what is installed.
+//
+// This was a bare `offered != installed` at both call sites, which is not a
+// version comparison: the catalog is served from an untimed on-disk cache
+// whenever the network fetch fails, so a device that had cached the catalog
+// before 2026-08-31 -- when host latest_version was still 1.0.0 -- rendered
+// "1.0.0 available" against an installed 1.4.0, with an Upgrade button
+// pointing at the v1.0.0 tarball. An offered DOWNGRADE presented as an
+// update, on stale data, with one click between the user and it.
+//
+// Modules never had this: they resolve through updateAvailable(), which
+// dates the releases and falls back to versionNewer. This is the host
+// arriving at the same rule.
+//
+// An installed version we cannot parse ("unknown", from a missing or
+// unreadable version.txt) still offers the update -- versionNewer reads its
+// components as 0, so anything beats it. That preserves the old behaviour
+// for the one case where refusing to offer would strand a device with no
+// way to name what it is running.
+// humanizeAge renders a catalog cache age for the offline notice. Coarse
+// on purpose: the reader's question is "is this data from today or from
+// weeks ago", and a stale cache is only ever wrong about a release.
+func humanizeAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return pluralAge(int(d.Minutes()), "minute")
+	case d < 24*time.Hour:
+		return pluralAge(int(d.Hours()), "hour")
+	default:
+		return pluralAge(int(d.Hours())/24, "day")
+	}
+}
+
+func pluralAge(n int, unit string) string {
+	if n == 1 {
+		return "1 " + unit + " ago"
+	}
+	return fmt.Sprintf("%d %ss ago", n, unit)
+}
+
+func hostOfferIsUpdate(offered, installed string) bool {
+	if offered == "" || installed == "" {
+		return false
+	}
+	return versionNewer(offered, installed)
+}
+
 type templateMap map[string]*template.Template
 
 func loadTemplates() (templateMap, error) {
@@ -1137,7 +1223,7 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 	if cat != nil {
 		hostRepo = cat.Host.GithubRepo
 		hostLatestVersion, _, hostServedChannel = hostResolveForChannel(cat.Host, currentChannel)
-		hostUpdateAvailable = hostLatestVersion != "" && hostLatestVersion != hostVersion
+		hostUpdateAvailable = hostOfferIsUpdate(hostLatestVersion, hostVersion)
 		hostOfferedIsBeta = hostServedChannel == ChannelBeta
 		// Stable users get the same "beta X.Y.Z available" nudge that
 		// modules do, when the host publishes a beta ahead of stable.
@@ -1151,6 +1237,19 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 				hostBetaTeaser = beta
 			}
 		}
+	}
+
+	// Say so when the catalog on screen came off disk because the fetch
+	// failed. Every version on this page -- the host's and all 130-odd
+	// modules' -- is then as old as the cache, and nothing else about the
+	// render distinguishes it from a live one. That silence is what made a
+	// month-old "1.0.0 available" read as a real release rather than as a
+	// device that cannot reach GitHub.
+	catStatus := app.catalogSvc.Status()
+	catalogStale := cat != nil && !catStatus.Live
+	catalogAge := ""
+	if catalogStale && !catStatus.At.IsZero() {
+		catalogAge = humanizeAge(time.Since(catStatus.At))
 	}
 
 	// A nil catalog (offline, or first boot before the first fetch) yields the
@@ -1177,6 +1276,8 @@ func (app *App) handleModules(w http.ResponseWriter, r *http.Request) {
 		"HostUpdateAvailable": hostUpdateAvailable,
 		"HostOfferedIsBeta":   hostOfferedIsBeta,
 		"HostBetaTeaser":      hostBetaTeaser,
+		"CatalogStale":        catalogStale,
+		"CatalogAge":          catalogAge,
 		"Flash":               r.URL.Query().Get("flash"),
 	}
 	app.render(w, r, "modules.html", data)
@@ -2944,7 +3045,7 @@ func (app *App) handleSystem(w http.ResponseWriter, r *http.Request) {
 		hostRepo = cat.Host.GithubRepo
 		var served string
 		latestVersion, _, served = hostResolveForChannel(cat.Host, currentChannel)
-		updateAvailable = latestVersion != "" && latestVersion != version
+		updateAvailable = hostOfferIsUpdate(latestVersion, version)
 		offeredIsBeta = served == ChannelBeta
 		if currentChannel == ChannelStable && cat.Host.Channels != nil && cat.Host.Channels.Beta != nil {
 			beta := cat.Host.Channels.Beta.Version
