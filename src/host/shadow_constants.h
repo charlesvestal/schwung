@@ -504,6 +504,50 @@ typedef struct shadow_control_t {
      * The C setter writes features.json and JS pushes it back down at startup.
      */
     volatile uint8_t speaker_eq_mode;
+    /*
+     * TEST BUS ONLY: deliver injected packets as if the HARDWARE had sent
+     * them. Default 0, and with it 0 nothing below runs -- the byte exists so
+     * a harness can arm it by poking /dev/shm, and can clear it from outside
+     * the process if Move becomes unhappy.
+     *
+     * WHY IT IS NEEDED. `/schwung-midi-inject` drains into the SHADOW mailbox
+     * -- Move's copy -- while Schwung's own control decoding scans
+     * `hardware_mmap_addr`, the real one. So an injected press drives MOVE and
+     * is invisible to SCHWUNG: measured 2026-09-13, injected Track presses
+     * moved Move's step editor while `selected_slot` never budged. That makes
+     * every Schwung-side input feature untestable by harness, which is how the
+     * p-lock gesture ended up as "waits for a finger".
+     *
+     * With this set, the drain writes BOTH buffers at the top of
+     * shim_post_transfer -- the point at which the library has just copied
+     * hw->shadow, so the packet arrives exactly where and when a real one
+     * would, and any filtering or swallow site downstream treats it the same.
+     *
+     * APPENDED after speaker_eq_mode, for the reason stated on pad_observe:
+     * sizeof is a contract between two binaries. Appending is free.
+     */
+    volatile uint8_t inject_as_hardware;
+    /*
+     * The UI is watching the STEP BUTTONS (notes 16-31), for the p-lock
+     * gesture: hold a step, turn a knob, set a value ON that step.
+     *
+     * PASSIVE, exactly like pad_observe and for the same reason: no
+     * `continue`, nothing withheld, so a step press still reaches Move and
+     * still edits the clip's notes. That is a real cost -- a p-lock also
+     * toggles a note -- and it is deliberate for now: withholding a step
+     * needs a latched both-edge swallow in the MIDI filter, whose failure mode
+     * is a stuck button or a note Move never sees released, and that change
+     * deserves its own hardware pass rather than riding along with this one.
+     * Undo fixes a stray note; a stuck filter does not.
+     *
+     * Restated by the UI every frame, never memoised: the shim drops this
+     * itself when the shadow display closes, so a JS mirror would latch and
+     * the feature would die silently after the first dismiss (the mistake
+     * pad_observe already paid for).
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t step_observe;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */
