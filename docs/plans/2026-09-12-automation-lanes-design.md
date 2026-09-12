@@ -266,7 +266,8 @@ running while the Record log stayed empty.
 ## Persistence
 
 The chain serves the whole lane set as one opaque `lanes:state` blob. The
-shadow UI writes it to **`set_state/<uuid>/lanes.json`** through the existing
+shadow UI writes it to **`set_state/<uuid>/lanes_<i>.json`** (as built: one
+file per slot, since the store is per chain instance) through the existing
 autosave, exactly as slot state is written. There is no second serializer, for
 the reason the snapshot feature records: the existing writer already carries
 every guard (bail-if-empty, skip-if-unchanged, shim-reports-empty).
