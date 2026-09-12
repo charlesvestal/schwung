@@ -651,8 +651,8 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   `Song.abl`, so only converting BARS needs the signature. Points outside the
   window are dormant at EITHER end, a pass wraps at the window (never at 0),
   and the dlsym'd seam did not grow an argument — the window's start rides in
-  `fp[0]`. Documents are `V 2`; a `V 1` migration is exact, from the
-  `loop_start` on each lane's own header line.
+  `fp[0]`. Documents are `V 2` and a `V 1` one is REFUSED, loudly: the format
+  never shipped, and the two coordinates are indistinguishable per point.
 - **Move's step editor draws the clip's bar count, and we READ it rather than
   model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
   no length, so no phase, so recording refuses — and Move's own screen has the

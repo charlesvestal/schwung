@@ -45,10 +45,16 @@ extern "C" {
 
 /* V2: POINT PHASES ARE CLIP TIME, in quarters from the clip's start, the same
  * coordinate Move's notes use. V1 stored them relative to the LOOP, which made
- * a sweep slide when the loop moved -- and a V1 document is migrated EXACTLY
- * rather than guessed at, because each lane's own header line carries the
- * `loop_start` it was recorded against: add it to every point of that lane.
- * That is the whole reason the field was already there. */
+ * a sweep slide when the loop moved.
+ *
+ * A V1 DOCUMENT IS REFUSED, NOT MIGRATED, and that is a fact about this
+ * feature's history rather than a policy: the format never left this branch --
+ * the only documents in existence are the author's own tests -- so there is
+ * nothing in the field to carry forward. The version is compared for EQUALITY
+ * so the refusal is loud; the two coordinates are indistinguishable per-point,
+ * so a tolerated V1 would place every breakpoint wrong while looking healthy.
+ * (A migration is available if one is ever needed: each lane's header line
+ * carries the loop_start it was recorded against, so the shift is exact.) */
 #define LANE_SERIAL_VERSION 2
 
 /* Worst case: one "V n" line, then per lane a header plus LANE_POINTS_MAX
