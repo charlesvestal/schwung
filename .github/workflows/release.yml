@@ -22,10 +22,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # go.mod declares `go 1.26`. 1.24 built only because the toolchain
+      # auto-downloads on demand; ci.yml's `go` job pins 1.26 and says to keep
+      # it there. Two pins for one go.mod is how they drift.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
       - name: Set version from tag
         run: |
@@ -41,10 +44,14 @@ jobs:
         run: |
           # Built BEFORE Docker: package.sh runs inside the container and
           # picks the binary up from build/ — no tarball injection.
-          mkdir -p build
-          cd schwung-manager
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o ../build/schwung-manager -ldflags="-s -w" .
-          echo "Built: schwung-manager ($(wc -c < ../build/schwung-manager | tr -d ' ') bytes)"
+          #
+          # Through the SHARED builder. This step used to carry its own
+          # `go build`, which made three copies of one build (here, build.sh,
+          # install.sh) that were free to disagree — and they did: install.sh's
+          # was guarded on `command -v go` and skipped itself in silence.
+          # This is the copy that ships to every user, so it is the last place
+          # that should have had its own.
+          scripts/build-manager.sh
 
       - name: Build with Docker
         run: |
@@ -55,7 +62,13 @@ jobs:
         run: |
           ls -la schwung.tar.gz
           echo "=== Checking for schwung-manager ==="
-          tar -tzf schwung.tar.gz | grep schwung-manager || echo "WARNING: schwung-manager not in tarball!"
+          # NOT a warning. This was `|| echo "WARNING: ..."`, which is the same
+          # non-check ci.yml already condemns for link-subscriber: "A soft
+          # check on the one file that can rot invisibly is no check." A
+          # release whose tarball has no manager leaves every device that takes
+          # it with no web UI and no way to update itself back out.
+          tar -tzf schwung.tar.gz | grep -q 'schwung/schwung-manager$' || {
+            echo "schwung-manager is not in the tarball — refusing to publish this release"; exit 1; }
           tar -tzvf schwung.tar.gz | head -20
 
       - name: Create Release
