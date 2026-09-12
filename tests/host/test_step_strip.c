@@ -201,6 +201,45 @@ int main(void)
           "two interruptions named a playhead: col=%d ev=0x%x",
           r.playhead_col, r.playhead_evidence);
 
+    /* 11b. TWO REAL FRAMES, captured off the device 2026-09-12 (the dump
+     * trigger in shadow_pin_scanner.c writes the accumulated buffer). These
+     * are the positive control the synthetic cases cannot be: Move's own
+     * pixels, including two things I had not drawn -- the playhead's hole
+     * punches the BOLD rows as well as the strip, and the 4-bar screen has
+     * the playhead in bar 2 while bar 3 is the displayed one, which is the
+     * page-independence claim in actual pixels rather than in a fixture I
+     * built to agree with me.
+     *
+     * A missing fixture FAILS rather than skips: a test that quietly stops
+     * measuring is worse than one that is absent. */
+    {
+        struct { const char *path; int bars, bold, ph; } real[] = {
+            { "tests/fixtures/oled_step_editor_5bar.bin",        5, 4, 86 },
+            { "tests/fixtures/oled_step_editor_4bar_offpage.bin", 4, 3, 36 },
+        };
+        for (unsigned i = 0; i < sizeof(real) / sizeof(real[0]); i++) {
+            uint8_t buf[1024];
+            FILE *f = fopen(real[i].path, "rb");
+            size_t got = f ? fread(buf, 1, sizeof(buf), f) : 0;
+            if (f) fclose(f);
+            CHECK(got == sizeof(buf), "%s: read %zu of 1024 bytes",
+                  real[i].path, got);
+            if (got != sizeof(buf)) continue;
+            step_strip_decode(buf, &r);
+            CHECK(r.valid, "%s refused (reject=%d)", real[i].path, r.reject);
+            CHECK(r.bars == real[i].bars, "%s: bars=%d, want %d",
+                  real[i].path, r.bars, real[i].bars);
+            CHECK(r.bold_bar == real[i].bold, "%s: bold_bar=%d, want %d",
+                  real[i].path, r.bold_bar, real[i].bold);
+            CHECK(r.playhead_col == real[i].ph, "%s: playhead_col=%d, want %d",
+                  real[i].path, r.playhead_col, real[i].ph);
+            CHECK(r.playhead_evidence ==
+                      (STEP_STRIP_PH_STUB | STEP_STRIP_PH_GAP),
+                  "%s: evidence=0x%x, want both signatures",
+                  real[i].path, r.playhead_evidence);
+        }
+    }
+
     /* 12. The published reading: paired with the track selected AT DECODE
      * TIME, and an INVALID frame must not clear a cached length -- Move shows
      * something other than the editor most of the time, and a length that
@@ -211,8 +250,15 @@ int main(void)
     step_strip_observe(fb, 1);
     unsigned seq1 = step_strip_latest(&r, NULL);
     CHECK(seq1 != 0 && r.valid && r.bars == 3, "observe published nothing usable");
-    CHECK(step_strip_bars_for_track(1) == 3, "cache=%d, want 3",
+    /* ONE reading is not enough: a frame is six slices and can straddle two
+     * of Move's screen updates, so a single torn picture must not become a
+     * loop length. */
+    CHECK(step_strip_bars_for_track(1) == 0,
+          "one reading cached a length (%d) -- a torn frame would too",
           step_strip_bars_for_track(1));
+    step_strip_observe(fb, 1);
+    CHECK(step_strip_bars_for_track(1) == 3, "cache=%d, want 3 after %d agreeing",
+          step_strip_bars_for_track(1), STEP_STRIP_CONFIRM);
     memset(fb, 0, sizeof(fb));            /* Move left the editor */
     step_strip_observe(fb, 1);
     int trk = -9;
@@ -225,9 +271,34 @@ int main(void)
     /* A valid frame for another track does not touch this one's. */
     draw_strip(7, 1, -1);
     step_strip_observe(fb, 2);
+    step_strip_observe(fb, 2);
     CHECK(step_strip_bars_for_track(2) == 7 && step_strip_bars_for_track(1) == 3,
           "cross-track leak: t1=%d t2=%d",
           step_strip_bars_for_track(1), step_strip_bars_for_track(2));
+
+    /* 12b. DISAGREEING readings commit nothing, and an invalid frame BREAKS
+     * the run -- the rule is that consecutive frames agreed, so a torn
+     * picture in the middle of two good ones starts the count over instead of
+     * completing it. The already-cached length survives all of it. */
+    step_strip_reset();
+    draw_strip(3, 1, -1); step_strip_observe(fb, 0);
+    draw_strip(6, 1, -1); step_strip_observe(fb, 0);
+    CHECK(step_strip_bars_for_track(0) == 0,
+          "two DIFFERENT readings cached %d", step_strip_bars_for_track(0));
+    draw_strip(6, 1, -1); step_strip_observe(fb, 0);
+    CHECK(step_strip_bars_for_track(0) == 6,
+          "the agreeing pair did not commit (cache=%d)",
+          step_strip_bars_for_track(0));
+    draw_strip(2, 1, -1); step_strip_observe(fb, 0);
+    memset(fb, 0, sizeof(fb)); step_strip_observe(fb, 0);   /* a torn frame */
+    draw_strip(2, 1, -1); step_strip_observe(fb, 0);
+    CHECK(step_strip_bars_for_track(0) == 6,
+          "an interrupted run committed anyway (cache=%d, want the old 6)",
+          step_strip_bars_for_track(0));
+    draw_strip(2, 1, -1); step_strip_observe(fb, 0);
+    CHECK(step_strip_bars_for_track(0) == 2,
+          "the restarted run did not commit (cache=%d)",
+          step_strip_bars_for_track(0));
     /* No selected track: published, but cached against nothing. */
     draw_strip(2, 1, -1);
     step_strip_observe(fb, -1);
