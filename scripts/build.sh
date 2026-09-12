@@ -514,17 +514,20 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h \
     src/host/split_voices_parse.h src/host/bus_mix.h src/host/bus_route.h \
-    src/host/bus_voice_apply.h src/host/lane_store.c src/host/lane_store.h; then
+    src/host/bus_voice_apply.h src/host/lane_store.c src/host/lane_store.h \
+    src/host/lane_serial.c src/host/lane_serial.h; then
     echo "Building chain DSP..."
-    # lane_store.c is a plain host source shared with tests/host, so it cannot
-    # wear chain_internal.h's CHAIN_INTERNAL. Compiled with the rest it put six
-    # lane_* symbols into dsp.so's dynamic table -- exactly the collision
-    # surface a dlopen'd sub-plugin must not be able to bind to, and what
-    # test_chain_host_file_split.sh's exported-symbol allowlist exists to catch.
-    # A separate hidden-visibility object keeps them callable inside dsp.so and
-    # invisible outside it.
+    # lane_store.c and lane_serial.c are plain host sources shared with
+    # tests/host, so neither can wear chain_internal.h's CHAIN_INTERNAL.
+    # Compiled with the rest they put their lane_* symbols into dsp.so's
+    # dynamic table -- exactly the collision surface a dlopen'd sub-plugin must
+    # not be able to bind to, and what test_chain_host_file_split.sh's
+    # exported-symbol allowlist exists to catch. Separate hidden-visibility
+    # objects keep them callable inside dsp.so and invisible outside it.
     "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
         -c src/host/lane_store.c -o build/modules/chain/lane_store.o -Isrc
+    "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
+        -c src/host/lane_serial.c -o build/modules/chain/lane_serial.o -Isrc
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/chain/dsp/chain_host.c \
         src/modules/chain/dsp/chain_json.c \
@@ -537,6 +540,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_lanes.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
+        build/modules/chain/lane_serial.o \
         -o build/modules/chain/dsp.so \
         -Isrc \
         -lm -ldl -lpthread

@@ -35,6 +35,7 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   src/modules/chain/dsp/chain_params.c \
   src/modules/chain/dsp/chain_json.c \
   src/host/lane_store.c \
+  src/host/lane_serial.c \
   -o "$bin"
 
 "$bin"
