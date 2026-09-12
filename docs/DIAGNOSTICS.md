@@ -256,3 +256,58 @@ A param read still happens, but only on a **contradiction**: disk reports a
 position empty while the perf snapshot shows measured time for it — the
 hot-swap window where the on-disk mirror is momentarily stale relative to
 what is actually running. Every other refresh is disk-only.
+
+## MIDI_OUT loss attribution — the THREE views, not two
+
+Arm with `touch /data/UserData/schwung/log_xmos_sysex_on`; output is
+`/data/UserData/schwung/xmos_sysex.txt`, 8 MB capped, disarm by removing the
+flag. It records every cable-0 SysEx packet in MIDI_OUT at **three** points, and
+the third one is the reason it can answer anything:
+
+```
+PRE     early in shim_pre_transfer
+PREEND  its LAST statement, immediately before the library's shadow->hw copy
+POSThw  the hardware mailbox, after the ioctl
+```
+
+```
+PRE == PREEND != POSThw    lost during the IOCTL — Move's other threads, or the hardware
+PRE != PREEND              lost in SCHWUNG's own pre-transfer work (~1100 lines of it)
+PRE == PREEND == POSThw    survived
+```
+
+**`PREEND` has to stay the last statement of `shim_pre_transfer`.** A MIDI_OUT
+writer added after it is not merely invisible — it is *exonerated*, because
+anything it overwrites still reads intact at `PREEND` and the log then blames
+the ioctl. `tests/host/test_xmos_log_slots_call_sites.sh` fails on a call that
+is no longer last, on the two ends reading the same buffer, and on a missing or
+duplicated view.
+
+Score a capture with `tools/xmos/attribute_midi_out.py <file>` (`--key 37` for
+the XMOS control messages, `--frame N` to dump one). It says *"PREEND view
+ABSENT — cannot attribute"* on a capture taken by an older shim rather than
+guessing.
+
+**Why it exists.** Captured 2026-09-12 on hardware: **9 of the 13 `37`-family
+XMOS control messages Move emitted were replaced in the mailbox by an RGB LED
+SysEx (`3b 10`) before reaching the wire.** Move's USB-C audio-out selection
+therefore silently did nothing on those frames — the field report is *"Main Out
+stops working until a reboot"*, and re-selecting appears not to help because
+the next attempt can be eaten too. The two-view capture could see the loss and
+could not attribute it, and that ambiguity is what a whole session went into.
+
+Two things the same capture already establishes, worth not re-deriving:
+
+- **In ~25,000 frames `POSThw` carried cable-0 SysEx that was not present at
+  `PRE`.** Move writes MIDI_OUT heavily *after* that early log point, so its own
+  threads are live in the window — which is why "Schwung did not write those
+  bytes" is not the same as "Schwung did not cause the loss".
+- **A message surviving is not evidence about the XMOS.** Five lone `37 12`
+  messages were once read as proof that Move firmware 2.1.0 preserves the
+  monitoring bit; all five had been discarded before the wire, so they testified
+  about nothing.
+
+One dormant instance of the same hazard, found on the way:
+`led_queue_flush_jack_sysex_restore()` opens by zeroing **every** cable-0 SysEx
+packet in MIDI_OUT, reasoning only about RNBO's SysEx — Move's `37`-family and
+its own LED commands ride that cable too.
