@@ -125,6 +125,65 @@ to run the screen reader is a setting-dependent feature, which is worse than no
 feature, and the design would have had to demote `"Bar N"` to an optimisation
 and give up stopped-state page resolution for everyone else.
 
+## Cold start, and the anchor that is NOT an anchor
+
+Measured 2026-09-12, round 3 (24,833 events; two transport resets and several
+set loads).
+
+### A transport reset re-anchors everything to zero
+
+After `shadow_transport_pulses` resets, playing clips restart from their tops
+in lockstep with the counter. Tested as `idx == (pulses / 6) mod 16` against
+the step playhead: **24 of 24 exact**, across both reset regions, still locked
+250 beats later.
+
+So in the two common cold-start cases — **transport Start, and loading a set** —
+`anchor = 0` for every playing track, *derived, with nothing to observe*. A user
+who presses stop/play has re-anchored the whole device. The observed anchor
+(below) is the exception path for clips launched mid-playback, not the main one.
+
+Consequence worth stating plainly: `phase = (pulses / 24) mod L` — the naive
+formula this design opens by rejecting — **is correct after a Start**. It was
+only ever wrong for a clip launched mid-playback, which is precisely the case
+the ch-9 anchor exists to cover.
+
+### A bare ch-9 ON is a REFRESH, and anchoring on it corrupts every track
+
+Entering Session mode makes Move re-emit the whole grid, including a ch-9 ON
+for every clip **already playing** — observed as four ONs across four tracks at
+pulses 487-488. A decoder that anchors on every ch-9 ON would re-anchor all
+four tracks to that moment and destroy the phase of everything playing
+correctly. Silently, and only when the user happens to visit Session view,
+which makes it just about undiagnosable from the device.
+
+The discriminator, supported in both directions by the captures:
+
+| Shape | Meaning |
+|---|---|
+| `ch14 QUEUED` on the pad, then `ch9 ON` | **real launch → set the anchor** |
+| bare `ch9 ON`, no preceding ch14, often several tracks at one pulse | **refresh → identity only, leave the anchor alone** |
+
+Round 1's two hand-launched clips both carry the ch-14 first. Round 3 contains
+**zero** ch-14 events in 24,833 rows, because no clip was launched by hand —
+every ch-9 ON in it is a refresh or a set load.
+
+`clip_led_decode` therefore tracks queued state per pad, and only a ch-9 ON
+that *follows* a ch-14 on the same pad writes `anchor_pulse`.
+
+### What is still unknown at cold start
+
+If Schwung attaches mid-session and the user neither starts the transport nor
+launches anything, phase is **unknown** for every track — `anchor_valid = 0`.
+Identity still recovers on its own at the next grid refresh. The correct
+behaviour for a consumer is to **refuse to record** on a track whose phase is
+unknown, never to record at a guessed zero.
+
+There is one recovery path, with a limit: the playhead resolves phase with no
+anchor at all, since `S = page × 16 + idx`. But the step editor shows **one
+track**, so it recovers only the focused one, where the ch-9 anchor covers all
+four. They are not interchangeable — the anchor is primary, the playhead is
+recovery and cross-check.
+
 ## What `Song.abl` still supplies
 
 `/data/UserData/UserLibrary/Sets/<uuid>/<name>/Song.abl`, already read for
@@ -232,5 +291,8 @@ The lane itself — store, recorder, step view, drain into
   page with no clip time behind it yet.
 - `shadow_transport_pulses` is not reset on `0xFB` Continue and there is no SPP,
   so bar alignment after a mid-song Continue is wrong until the next `0xFA`.
-  Anchors captured before a Continue must be invalidated, not carried.
+  Anchors captured before a Continue must be invalidated, not carried. On
+  `0xFA` the counter DOES reset, so anchors from before it are in a dead
+  timeline and must be dropped — but that costs nothing, because a Start
+  re-anchors everything to 0 anyway (see Cold start).
 - The anchor's 2-pulse lag is measured at one tempo only.
