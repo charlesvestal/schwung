@@ -12,6 +12,56 @@ history now, not instruction.
 
 ---
 
+## Confidence audit, 2026-09-13 (what is proven, what is not)
+
+Asked for 100% confidence in clip playback/editing and then in p-locks. Here is
+the honest split. **Proven on hardware:**
+
+| | evidence |
+|---|---|
+| Playhead | **26/26, 100%** under 11/8, model fitted offline first |
+| Step→phase mapping | `(step_in_clip mod steps_per_bar) mod 16`, and its inverse round-trips |
+| Displayed bar / page | the strip's `bold_segment` agreed twice with Move's own "Bar N" |
+| Clip length (read) | 3 clips, all inside the strip's range; the 1-bar case too |
+| Copy | creates a clip; verified in `Song.abl`; does **not** become the playing clip |
+| Delete | a bare press removes the selected clip |
+| Undo | walks my edits back precisely; the set matches baseline byte for byte |
+| Save latency | 10 s, twice; `saveSongIfDirty` does not shorten it |
+| Time signature | per-clip and song-wide; changing to 11/8 moved **no** number in the file |
+
+**NOT proven, and each blocked on something specific:**
+
+- **Recording into a clip younger than 10 s** — needs a clip that is new *and
+  playing*, which means sequencing into an empty selected slot. Copy does not
+  do it (the copy is selected, never launched), and selecting an empty slot
+  needs **Session Mode**. The toggle is on no cable-0 CC: I scanned ~75
+  candidates with a screen witness and none moved the display, and the LED
+  inventory (taken from a full refresh on restart) contains no unaccounted
+  button, so it is probably unlit and possibly a note. I did not scan note
+  ranges — that plays the instrument, at night.
+- **Changing a clip's length on the device** — Loop Mode acts on the *selected*
+  clip, and the only selected clips are yours with legacy 4/4 loops that Loop
+  Mode would snap to 11/8 bars. Undo can walk it back, but I judged an
+  unattended edit to your music not worth it. The reader's *response* to a
+  length change is unit-tested.
+- **New sets** — Set Overview, same toggle problem.
+- **The p-lock gesture** — the format (`hold`) and the arithmetic
+  (`step_plock.h`) are done and tested. The gesture needs a held step
+  *swallowed from Move* (or the same press edits notes) and a knob turn
+  arriving as a Schwung param write, which injection cannot produce. Shipping
+  unverified swallow plumbing risks "my step buttons stopped editing notes", so
+  it waits for a session where it can be tested.
+
+**Device state:** set verified identical to baseline; all diagnostics
+disarmed; transport stopped. Move's *view* is somewhere my CC scan left it
+(the bar strip reads invalid, so not the step editor) — cosmetic, and any
+front-panel press will orient it.
+
+**The 30 seconds that unblocks most of the above:** make a clip in an empty
+slot, and tell me which button switches Note/Session.
+
+---
+
 ## Status, 2026-09-13 (overnight session, 13 commits, NOT pushed)
 
 327 host tests green, clean ARM64 build, deployed. The device is left as found:
