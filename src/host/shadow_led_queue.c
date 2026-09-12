@@ -6,6 +6,14 @@
 #include "shadow_led_queue.h"
 #include "unified_log.h"
 
+/* Transport pulse counter (shadow_sampler.c). Read-only here, and only from
+ * the SPI callback, which is also the only writer — no barrier needed. */
+extern int shadow_transport_pulses;
+
+/* Declared here rather than further down: led_capture_record() below reads
+ * host.shadow_control, and it is the first user in the file. */
+static led_queue_host_t host;
+
 /* ============================================================================
  * MIDI_OUT cable-0 capture ring (diagnostic)
  * ============================================================================ */
@@ -31,6 +39,11 @@ static inline void led_capture_record(uint8_t cable, uint8_t status,
     led_capture_ring[idx].status = status;
     led_capture_ring[idx].d1 = d1;
     led_capture_ring[idx].d2 = d2;
+    led_capture_ring[idx].pulses = (uint32_t)shadow_transport_pulses;
+    {
+        shadow_control_t *c = host.shadow_control ? *host.shadow_control : 0;
+        led_capture_ring[idx].ui_mode = c ? c->move_ui_mode : 0;
+    }
 }
 
 void led_queue_set_capture_enabled(int on) { led_capture_enabled = on ? 1 : 0; }
@@ -61,7 +74,6 @@ int led_queue_drain_capture(uint32_t *last_seq, led_capture_entry_t *out,
  * Static host callbacks
  * ============================================================================ */
 
-static led_queue_host_t host;
 static int led_queue_module_initialized = 0;
 
 /* ============================================================================
