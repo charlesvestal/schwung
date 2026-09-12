@@ -427,7 +427,8 @@ static char g_set_name[128];
 static char g_set_uuid[128];
 static void clip_regions_tick(void)
 {
-    static char last_set[320];
+    static char last_set[320];    /* set + mtime + size: geometry changed  */
+    static char last_ident[256];  /* set alone: WHICH set we are looking at */
     static unsigned n = 0;
     if (n++ % 7) return;                   /* ~1.4 s, matching the set poll */
 
@@ -463,15 +464,34 @@ static void clip_regions_tick(void)
     clip_regions_t rg;
     if (!clip_regions_parse_file(path, &rg)) return;   /* leave the old one */
 
+    char ident[256];
+    snprintf(ident, sizeof(ident), "%s/%s", uuid, name);
+    int set_changed = (strcmp(ident, last_ident) != 0);
+
     snprintf(last_set, sizeof(last_set), "%s", key);
+    snprintf(last_ident, sizeof(last_ident), "%s", ident);
     snprintf(g_set_name, sizeof(g_set_name), "%s", name);
     snprintf(g_set_uuid, sizeof(g_set_uuid), "%s", uuid);
     g_regions = rg;
 
+    clip_state_t *st = clip_state_mutable();
+    if (!st) return;
+
+    /* A DIFFERENT SET INVALIDATES EVERYTHING. Without this the previous
+     * set's identities and anchors survive into the new one -- and because
+     * seed_state deliberately skips tracks that already have identity, the
+     * file could not correct them. Observed on hardware twice: a set with no
+     * clips still showing the old set's anchors, and a freshly loaded set
+     * disagreeing with its own file until Session mode was visited.
+     *
+     * A mere EDIT of the same set must NOT reset: the geometry changed, what
+     * is playing did not, and wiping identity there would throw away a live
+     * observation in favour of a file that may not have been saved yet. */
+    if (set_changed) clip_state_reset(st);
+
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
      * already observed and never sets an anchor. */
-    clip_state_t *st = clip_state_mutable();
-    if (st) clip_regions_seed_state(&g_regions, st);
+    clip_regions_seed_state(&g_regions, st);
 }
 
 static void clip_state_tick(void)

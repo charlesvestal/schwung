@@ -142,6 +142,22 @@ int main(void)
               r3.slots[0][0].loop_len);
     }
 
+    /* A set with NO playing clips must seed nothing -- and must not leave
+     * a previous set's answers standing. The caller resets on a set change;
+     * this pins that seeding alone cannot invent identity. */
+    printf("a set with nothing selected seeds nothing\n");
+    {
+        static const char empty[] =
+            "{\"tracks\":[{\"clipSlots\":[{\"clip\":null},{\"clip\":null}]}]}";
+        clip_regions_t r4;
+        CHECK(clip_regions_parse(empty, sizeof(empty) - 1, &r4), "should parse");
+        clip_state_t st4; clip_state_reset(&st4);
+        clip_regions_seed_state(&r4, &st4);
+        for (int t = 0; t < CLIP_TRACKS; t++)
+            CHECK(!st4.tracks[t].identity_valid,
+                  "track %d must stay unknown when the set has no clips", t + 1);
+    }
+
     /* A truncated file is a FAILURE, not a smaller document. */
     printf("a truncated document is refused, not half-believed\n");
     clip_regions_t bad;
