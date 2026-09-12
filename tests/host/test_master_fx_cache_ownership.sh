@@ -112,6 +112,14 @@ int clip_phase_beats(const void *t, unsigned int pulses, double loop_start,
  * which is what these tests want -- they are about Master FX permutation and
  * must not acquire an opinion about clip phase. */
 int step_strip_segments_for_track(int track) { (void)track; return 0; }
+/* And the last reading itself, which the p-lock step translation consults for
+ * the displayed bar. "Nothing observed" keeps these tests out of the business
+ * of having an opinion about Move's screen. */
+unsigned step_strip_latest(void *out, int *track) {
+    if (out) { unsigned char *p = (unsigned char *)out; for (int i = 0; i < 64; i++) p[i] = 0; }
+    if (track) *track = -1;
+    return 0;
+}
 double clip_regions_quarters_per_bar(const void *rg, int track, int slot) {
     (void)rg; (void)track; (void)slot; return 4.0;
 }
