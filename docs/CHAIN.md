@@ -642,11 +642,31 @@ pieces of it exist and are tested; the input plumbing is not written.
   page out is a value on the wrong sixteenth, silently. Bar 0 is refused too:
   a one-bar loop draws no thickening, so `bold_segment` can be 0, and that must
   not quietly mean bar 1.
-- **What is missing is the gesture.** A held step must be **swallowed from
-  Move** while the shadow UI is up (both edges, latched — `midi_in_swallow`),
-  or the same press edits the clip's notes; and the knob turn has to arrive
-  through Schwung's own param write, which an injected CC cannot do. So it is
-  unverifiable by the harness and waits for a hand.
+- **`lanes:plock_step` IS THE GESTURE'S KEY**, and the step→phase translation
+  happens **once**, shim-side, because every fact it needs lives there: the
+  displayed bar (the strip's `bold_segment`), the grid and signature
+  (`clip_regions`), and the clip's length. The UI passes only
+  `"<target> <param> <step> <value>"`, so neither it nor the chain carries a
+  copy of the arithmetic — this feature has already paid twice for computing
+  one fact in two places.
+  **Verified on hardware:** under 4/4, `lanes:plock_step synth pinch 4 0.81`
+  produced `P 1 0.810000002 1` — phase 1.0, keyed to the live clip with its
+  fingerprint — and under 11/8 the same call was refused, because 22 steps to
+  the bar is not placeable on 16 buttons.
+  **It must be translated in BOTH param paths.** The first version lived only
+  in `shadow_direct_set_param` (the web UI's ring buffer), so the key the
+  gesture will actually use went through the SHM handler, fell through to the
+  chain — which serves `lanes:plock`, not `plock_step` — and was dropped with
+  *no log line at all*, because the branch was never reached.
+- **The bar must come from a CURRENT reading of the SAME track.** The strip
+  reports whichever track's editor it last decoded, and a stale or foreign
+  `bold_segment` would place the p-lock on a bar the user is not looking at.
+- **What is still missing is only the MIDI half**: a held step must be
+  forwarded to the UI and **swallowed from Move** (both edges, latched —
+  `midi_in_swallow`), or the same press edits the clip's notes. That cannot be
+  driven by injection, because the drain writes Move's mailbox while the
+  control scan reads the hardware one, so it is the one piece that waits for a
+  finger on a step button.
 
 #### Recording on a clip Move has not saved yet
 
