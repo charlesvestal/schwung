@@ -449,6 +449,16 @@ void shadow_clear_move_leds_if_overtake(void) {
          * without skip_led_clear) nothing was offered, and a frame that offered
          * nothing must leave the state alone rather than clear it. */
         rec_arm_frame_end(&g_rec_arm);
+
+        /* A deferred ch-9 OFF is resolved by TIME when nothing contradicts it,
+         * and no LED event announces that -- Move said all it was going to say
+         * at the OFF. Inside the same gate as the scan on purpose: while we are
+         * blind (overtake without skip_led_clear) nothing COULD have come along
+         * to call it a replacement, so expiring it there would be a verdict
+         * reached without evidence. See clip_state.h, pending_off_slot. */
+        clip_state_ensure();
+        clip_state_expire_pending_off(&g_clip_state,
+                                      (uint32_t)shadow_transport_pulses);
     }
 
     /* AFTER the scan, so the cache is this frame's, and only outside overtake,
