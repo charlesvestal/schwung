@@ -606,13 +606,14 @@ for a clip Move has not saved yet — holds only for the save latency, which is
   fingerprint's geometry half, already pushed in the same call from the same
   parse. A valid phase implies `fp_valid`, so the window is never unknown while
   the phase is known.
-- **The document is `V 2`, and a `V 1` migration is EXACT rather than a guess**
-  — each lane's own header line carries the `loop_start` it was recorded
-  against, so a v1 point is shifted by that number on load. That is what the
-  field was always there for. A v1 lane whose recorded `loop_start` is not a
-  usable number is refused with the document rather than loaded at an origin
-  nobody can name; and a document with **no** `V` line is treated as CURRENT,
-  never as ancient, or every point would be shifted twice.
+- **The document is `V 2`, and a `V 1` one is REFUSED rather than migrated.**
+  That is a fact about this feature's history, not a policy: the format never
+  left this branch, so the only v1 documents in existence are the author's own
+  tests. The version is compared for **equality** so the refusal is loud — the
+  two coordinates are indistinguishable per point, so a tolerated v1 would
+  place every breakpoint wrong while looking healthy. If a migration is ever
+  needed it is exact: each lane's header line carries the `loop_start` it was
+  recorded against.
 
 #### Time-addressed, with no length of its own
 

@@ -151,7 +151,7 @@ int main(void) {
      * field can see this. */
     {
         const char *doc_no_first_note =
-            "V 1\n"
+            "V 2\n"
             "L fx2 drive 1 2 0 4 0\n"
             "P 0 0.5\n";
         lane_store_reset(&b);
@@ -174,7 +174,7 @@ int main(void) {
      * shape a pre-fingerprint writer would leave if it learned to count
      * notes before it learned to record the first one. */
     {
-        const char *doc = "V 1\nL fx2 drive 1 2 0 4 5\nP 0 0.5\n";
+        const char *doc = "V 2\nL fx2 drive 1 2 0 4 5\nP 0 0.5\n";
         lane_store_reset(&b);
         CHECK(lane_store_deserialize(&b, doc) == 1, "note_count-only refused");
         const lane_t *nf = find_used(&b, "fx2", "drive");
@@ -189,7 +189,7 @@ int main(void) {
      * report it. Every case below must leave `b` exactly as the good load
      * left it. */
     lane_store_reset(&b);
-    CHECK(lane_store_deserialize(&b, "V 1\nL fx3 feedback 2 5 4 8 14 41 3\n"
+    CHECK(lane_store_deserialize(&b, "V 2\nL fx3 feedback 2 5 4 8 14 41 3\n"
                                      "P 0 0.1\nP 3.5 0.75\nP 7.25 0.33\n") == 1,
           "reference load failed");
     lane_store_t ref = b;
@@ -199,38 +199,47 @@ int main(void) {
          * the phase and defaulted the value would plant 0.0 on a breakpoint
          * the user never played. */
         { "truncated mid-P (no value)",
-          "V 1\nL synth cutoff 0 1 0 4 3 60 2\nP 1.0 0.5\nP 2.0\n" },
+          "V 2\nL synth cutoff 0 1 0 4 3 60 2\nP 1.0 0.5\nP 2.0\n" },
         { "truncated mid-P (no fields)",
-          "V 1\nL synth cutoff 0 1 0 4 3 60 2\nP 1.0 0.5\nP\n" },
+          "V 2\nL synth cutoff 0 1 0 4 3 60 2\nP 1.0 0.5\nP\n" },
         /* A P line with no L ahead of it has no lane to belong to. */
-        { "orphan P line", "V 1\nP 1.0 0.5\n" },
+        { "orphan P line", "V 2\nP 1.0 0.5\n" },
+        /* A V1 DOCUMENT IS REFUSED. Its phases are loop-relative, which is
+         * indistinguishable per-point from clip time, so a tolerated V1 would
+         * place every breakpoint wrong while looking healthy. Nothing is
+         * migrated because the format never left the branch -- the only
+         * documents that ever existed are the author's own tests. */
+        { "V1: the loop-relative coordinate",
+          "V 1\nL synth cutoff 0 1 0 4 3 60 1\nP 1.0 0.5\n" },
+        { "a version from the future",
+          "V 3\nL synth cutoff 0 1 0 4 3 60 1\nP 1.0 0.5\n" },
         /* An L line missing the position it is keyed to. */
-        { "truncated L header", "V 1\nL synth cutoff 0\n" },
+        { "truncated L header", "V 2\nL synth cutoff 0\n" },
         /* A key too long for lane_t's storage is REFUSED, never truncated --
          * two over-length keys would otherwise collide onto one stored
          * string and bind a lane to the wrong parameter. */
         { "over-long target",
-          "V 1\nL this_target_is_far_too_long_for_the_field cutoff 0 1 0 4 3 60 1\nP 0 0.5\n" },
+          "V 2\nL this_target_is_far_too_long_for_the_field cutoff 0 1 0 4 3 60 1\nP 0 0.5\n" },
         { "over-long param",
-          "V 1\nL synth this_param_name_is_much_too_long_for_the_field 0 1 0 4 3 60 1\nP 0 0.5\n" },
+          "V 2\nL synth this_param_name_is_much_too_long_for_the_field 0 1 0 4 3 60 1\nP 0 0.5\n" },
         /* A count in the header that disagrees with the P lines that follow.
          * Believing the count over the data is a buffer overrun waiting to
          * happen; ignoring it silently accepts a corrupt file. Refusing says
          * so. */
         { "header count too high",
-          "V 1\nL synth cutoff 0 1 0 4 3 60 5\nP 1.0 0.5\nP 2.0 0.25\n" },
+          "V 2\nL synth cutoff 0 1 0 4 3 60 5\nP 1.0 0.5\nP 2.0 0.25\n" },
         { "header count too low",
-          "V 1\nL synth cutoff 0 1 0 4 3 60 1\nP 1.0 0.5\nP 2.0 0.25\n" },
+          "V 2\nL synth cutoff 0 1 0 4 3 60 1\nP 1.0 0.5\nP 2.0 0.25\n" },
         /* Non-finite content: lane_write refuses these at record time for the
          * same reason (they would be handed straight to a synth parameter). */
-        { "nan phase", "V 1\nL synth cutoff 0 1 0 4 3 60 1\nP nan 0.5\n" },
-        { "inf value", "V 1\nL synth cutoff 0 1 0 4 3 60 1\nP 1.0 inf\n" },
-        { "negative phase", "V 1\nL synth cutoff 0 1 0 4 3 60 1\nP -1.0 0.5\n" },
+        { "nan phase", "V 2\nL synth cutoff 0 1 0 4 3 60 1\nP nan 0.5\n" },
+        { "inf value", "V 2\nL synth cutoff 0 1 0 4 3 60 1\nP 1.0 inf\n" },
+        { "negative phase", "V 2\nL synth cutoff 0 1 0 4 3 60 1\nP -1.0 0.5\n" },
         /* Out of order: lane_eval walks pts[] assuming ascending phase, so an
          * unsorted document would evaluate to the wrong curve rather than to
          * an error. */
         { "unsorted points",
-          "V 1\nL synth cutoff 0 1 0 4 3 60 2\nP 2.0 0.5\nP 1.0 0.25\n" },
+          "V 2\nL synth cutoff 0 1 0 4 3 60 2\nP 2.0 0.5\nP 1.0 0.25\n" },
         /* More points than a lane can hold, and more lanes than a store can:
          * silently dropping either loses automation the user recorded. */
         { "too many lanes",
@@ -238,13 +247,13 @@ int main(void) {
         /* A version from the future cannot be read safely -- refusing is the
          * only answer that cannot be confidently wrong. */
         { "future version", "V 99\nL synth cutoff 0 1 0 4 3 60 1\nP 0 0.5\n" },
-        { "junk line", "V 1\nL synth cutoff 0 1 0 4 3 60 1\nP 0 0.5\nX oops\n" },
+        { "junk line", "V 2\nL synth cutoff 0 1 0 4 3 60 1\nP 0 0.5\nX oops\n" },
     };
 
     /* Build the too-many-lanes document. */
     static char too_many[LANE_SERIAL_MAX_BYTES];
     {
-        int off = snprintf(too_many, sizeof(too_many), "V 1\n");
+        int off = snprintf(too_many, sizeof(too_many), "V 2\n");
         for (int i = 0; i <= LANE_MAX; i++)
             off += snprintf(too_many + off, sizeof(too_many) - off,
                             "L fx1 p%d 0 1 0 4 3 60 1\nP 0 0.5\n", i);
@@ -302,7 +311,7 @@ int main(void) {
     {
         static lane_store_t d;
         const char *doc =
-            "V 1\n"
+            "V 2\n"
             "L synth cutoff 1 2 0 8 14 41 6\n"
             "P 1 20\n"
             "P 1.04 190\n"
@@ -352,7 +361,7 @@ int main(void) {
     {
         static lane_store_t m;
         const char *two_clips =
-            "V 1\n"
+            "V 2\n"
             "L synth cutoff 0 0 0 4 7 50 2\n"
             "P 0 10\n"
             "P 1 11\n"
@@ -381,7 +390,7 @@ int main(void) {
 
         /* And a REAL duplicate is still corruption. */
         const char *real_dup =
-            "V 1\n"
+            "V 2\n"
             "L synth cutoff 0 0 0 4 7 50 1\n"
             "P 0 10\n"
             "L synth cutoff 0 0 0 4 7 50 1\n"
