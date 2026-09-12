@@ -505,6 +505,53 @@ int main(void)
               "phase sample is scored -- it must not invalidate a tally");
     }
 
+    /* ---- THE STEP GRID, INCLUDING TRIPLETS -----------------------------
+     *
+     * Move's step editor offers 1/8t through 1/64. The old parse was
+     * sscanf("\"%d/%d\"") -- and its two %d's SUCCEED on "1/8t", with the
+     * trailing literal quote failing without changing the return count, so a
+     * triplet grid read as a straight eighth: 0.5 quarters instead of 1/3, a
+     * 50% error in every step index, and silent. An unrecognised form must
+     * keep the default rather than become a number.
+     */
+    printf("\nstep grid: straight, triplet, and unreadable\n");
+    {
+        struct { const char *res; double want; const char *why; } grids[] = {
+            { "1/16",  0.25,           "a sixteenth is a quarter of a quarter" },
+            { "1/8",   0.5,            "an eighth" },
+            { "1/32",  0.125,          "a thirty-second" },
+            { "1/64",  0.0625,         "the finest grid Move offers" },
+            { "1/8t",  0.5 * 2.0 / 3.0, "an eighth TRIPLET: three in the space of two" },
+            { "1/16t", 0.25 * 2.0 / 3.0, "a sixteenth triplet" },
+        };
+        for (unsigned i = 0; i < sizeof(grids) / sizeof(grids[0]); i++) {
+            char doc[256];
+            snprintf(doc, sizeof(doc),
+                     "{\"stepEditorResolution\":\"%s\",\"tracks\":[]}", grids[i].res);
+            clip_regions_t g;
+            clip_regions_parse(doc, strlen(doc), &g);
+            CHECK(close_enough(g.step_resolution, grids[i].want),
+                  "%s (%s) parsed as %f quarters, want %f",
+                  grids[i].res, grids[i].why, g.step_resolution, grids[i].want);
+            CHECK(strcmp(g.step_res_raw, grids[i].res) == 0,
+                  "%s was carried as \"%s\"", grids[i].res, g.step_res_raw);
+        }
+        /* A form we cannot read keeps the DEFAULT and stays visible in the raw
+         * text -- a grid guessed at is a step index wrong by whatever the
+         * guess was, everywhere, with nothing to point at. */
+        {
+            const char *doc = "{\"stepEditorResolution\":\"1/12x\",\"tracks\":[]}";
+            clip_regions_t g;
+            clip_regions_parse(doc, strlen(doc), &g);
+            CHECK(close_enough(g.step_resolution, 0.25),
+                  "an unreadable grid became %f instead of keeping the default",
+                  g.step_resolution);
+            CHECK(strcmp(g.step_res_raw, "1/12x") == 0,
+                  "the unreadable grid was not carried for the diagnostic: \"%s\"",
+                  g.step_res_raw);
+        }
+    }
+
     /* ---- TIME SIGNATURES: two scopes, one key name ---------------------
      *
      * Move writes one song-wide and one inside every clip (measured
