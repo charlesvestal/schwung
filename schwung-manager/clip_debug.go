@@ -257,6 +257,21 @@ async function tick(){
           : '<span class="pill warn">not located</span>');
     else h='<span class="pill warn">refused</span> '+esc(REJ[ss.reject]||ss.reject)+
       ' <small>(gate '+ss.reject+')</small>';
+    if(ss.valid && ss.strip_quarters>0){
+      /* The bar count AS A LENGTH, beside the file's own number. With the clip
+         present the two must agree; a disagreement is the bars->quarters
+         conversion, which is the only thing here that needs the signature. */
+      const agree = ss.file_quarters>0
+        ? (Math.abs(ss.strip_quarters-ss.file_quarters)<0.01
+            ? '<span class="pill ok">agrees with the file</span>'
+            : '<span class="pill off">DISAGREES with the file ('+
+              (+ss.file_quarters).toFixed(2)+' quarters)</span>')
+        : '<span class="pill warn">clip not in the file yet</span>';
+      h+='<div style="margin-top:6px">'+ss.bars+' bar'+(ss.bars===1?'':'s')+
+         ' &times; '+(+ss.quarters_per_bar).toFixed(2)+' quarters/bar = <b>'+
+         (+ss.strip_quarters).toFixed(2)+'</b> quarters &nbsp; '+agree+
+         ' &nbsp; <small>signature '+esc(ss.sig||'?')+'</small></div>';
+    }
     h+='<div class="sub" style="margin-top:6px">frame '+ss.seq+
        ' &middot; cached bar counts per track: '+
        ss.bars_cache.map((b,i)=>'T'+(i+1)+' '+(b?b:'\u2014')).join(' &middot; ')+
