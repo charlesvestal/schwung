@@ -653,6 +653,17 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   and the dlsym'd seam did not grow an argument — the window's start rides in
   `fp[0]`. Documents are `V 2` and a `V 1` one is REFUSED, loudly: the format
   never shipped, and the two coordinates are indistinguishable per point.
+- **A clip Move has not saved yet can be recorded onto, and the two missing
+  facts arrive separately.** The length comes from the step editor's strip NOW
+  (bar resolution, origin assumed 0); the identity and true origin come from
+  the file ~10 s later, and the lane is then **adopted** — points shifted by
+  the real `loop_start`, fingerprint stamped, one step, exact arithmetic.
+  `fp_valid == 0 with a valid phase` is the provisional signal, so the dlsym'd
+  seam needed no new argument. Adoption is scoped to THIS session's blind takes
+  (`origin_pending`, never serialized): the same bytes on disk mean "never
+  identified", and adopting those would bind a lane to a stranger's clip. A
+  blind take PLAYS while unidentified — its position is the one playing, and
+  staleness needs a fingerprint to establish.
 - **Move's step editor draws the clip's bar count, and we READ it rather than
   model it.** A clip you just made is not in `Song.abl` for ~35 s, so there is
   no length, so no phase, so recording refuses — and Move's own screen has the

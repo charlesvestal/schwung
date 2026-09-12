@@ -554,6 +554,52 @@ unarmed turn **punches through until the loop comes round** — per
 survives a tempo change and needs no timer. An *armed* turn cancels any open
 punch on that lane, or the point just recorded would sit silent for a loop.
 
+#### Recording on a clip Move has not saved yet
+
+The hole: make a clip, press Play, try to record automation — refused. `T1 -`,
+`loop_len 0.00`, `has_phase false`. The clip reaches `Song.abl` about **10 s**
+later (measured), and until then there is no length, so no phase, so nothing
+records.
+
+It closes with the two facts arriving from two places at two times:
+
+1. **The length, now, from Move's own screen.** `shadow_slot_clip_phase` falls
+   back to `step_strip_segments_for_track()` when the file has no entry for the
+   live clip: `loop_len = segments × quarters_per_bar`, `loop_start` **assumed
+   0**. Both limitations are real — bar resolution, and an origin the strip
+   cannot show — and honest for a clip just made, whose loop is a whole number
+   of bars starting at bar 1.
+2. **The identity and the true origin, later, from the file.** When the clip
+   appears, its notes identify it and its `loop.start` places it. A lane
+   recorded blind is **adopted**: every point is shifted by the real
+   `loop_start` and the fingerprint is stamped, in one step, with the number
+   that just arrived rather than a guess (`lane_adopt_fingerprint`).
+
+- **`fp_valid == 0 with a valid phase` IS the provisional signal**, and it
+  needs no new argument on a seam that cannot safely take one (`dlsym`, the
+  breakbeat drift). It is a state that could not otherwise occur: the
+  fingerprint is filled in *before* the anchor is even checked.
+- **Adoption is scoped to THIS SESSION's blind takes** (`origin_pending`, never
+  serialized). An absent fingerprint on disk and a blind take are the same
+  bytes and must not be the same decision — adopting the loaded one would bind
+  a lane to whatever clip later occupied its position and play it. The cost is
+  a reboot inside the 10 s window: that take stays at its assumed origin, goes
+  stale, and is silent until re-recorded.
+- **It refuses** an already-identified lane (structurally — the fingerprint is
+  no longer absent, so it is idempotent and cannot be hijacked), an absent
+  incoming fingerprint (a no-op that would still clear the pending state), and
+  a non-finite or negative `loop_start`. Every refusal leaves the lane exactly
+  as it was, still adoptable: a bad answer now must not cost the chance of a
+  good one later.
+- **A live pass's `rec_last_phase` moves with its points**, or the next write
+  erases a span the gesture never swept.
+- **A blind take PLAYS while it is unidentified.** That is not a hole in the
+  staleness rule: the lane is at the position that is playing and nothing else
+  can be there. Staleness is for a position holding a *different* clip, and
+  establishing that needs a fingerprint.
+- **No strip reading, no answer**, and no anchor, no answer. The fallback is a
+  reading, not a guess.
+
 #### A point is CLIP TIME, and the loop is a WINDOW over it
 
 Measured in Move's own file (2026-09-12), a clip whose `region`/`loop` is

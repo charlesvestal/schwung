@@ -14,6 +14,7 @@
 
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
+#include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
 #include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module, shim_param_slow */
 #include "param_slow.h"    /* attribute a serve that ate the frame — header-only */
@@ -154,7 +155,37 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * of the regions table would reach clip_phase_beats() as a live length.
      * clip_phase_beats() spells it this way; both sites must mean the same
      * thing or only one of them is guarding. */
-    if (!r->exists || !(r->loop_len > 0.0)) return 0;
+    if (!r->exists || !(r->loop_len > 0.0)) {
+        /* THE CLIP MOVE HAS NOT SAVED YET -- the ~10 s hole that made
+         * "record automation on a clip I just made" refuse outright. There is
+         * no file entry, so no length, so no phase, so nothing records.
+         *
+         * Move's own step editor draws the length: its bar strip, read off the
+         * screen (step_strip.h). The answer is BAR RESOLUTION and the origin
+         * is ASSUMED ZERO -- the strip does not show where a loop begins --
+         * and both are honest for a clip just made, whose loop is a whole
+         * number of bars starting at bar 1. When the clip lands in the file,
+         * the lane is re-origined and identified from the same parse
+         * (lane_adopt_fingerprint), so the assumption is corrected with the
+         * real number rather than lived with.
+         *
+         * `fp_valid` stays 0, and that IS the provisional signal across the
+         * dlsym'd seam: a valid phase with no fingerprint is a state that
+         * cannot otherwise occur, because the fingerprint is filled in before
+         * the anchor is even checked. No new argument, which that seam cannot
+         * safely take. */
+        int segs = step_strip_segments_for_track(slot);
+        if (segs <= 0 || !tr->anchor_valid) return 0;
+        double qpb = clip_regions_quarters_per_bar(rg, slot, tr->clip_slot);
+        double len = (double)segs * qpb;
+        if (!(len > 0.0)) return 0;
+        double ph = 0.0;
+        if (!clip_phase_beats(tr, (uint32_t)shadow_transport_pulses,
+                              0.0, len, &ph)) return 0;
+        *phase_beats = ph;
+        *loop_len = len;
+        return 1;
+    }
 
     /* The fingerprint is valid as soon as the CLIP is known, independently of
      * whether the phase is: a lane still needs to know whether it is bound to

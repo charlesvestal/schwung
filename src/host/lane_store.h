@@ -111,6 +111,20 @@ typedef struct {
     int    first_note;   /* noteNumber of the earliest note, or -1 */
 } lane_fingerprint_t;
 
+/* "NO FINGERPRINT WAS RECORDED", and it is the SAME FACT as "this lane's origin
+ * is not yet known" -- which is why neither needs a field of its own, and why
+ * nothing has to be persisted for a take recorded blind to be fixable later.
+ *
+ * {note_count 0, first_note -1} is what a lane carries when the clip could not
+ * be fingerprinted: Move writes a new clip to Song.abl about 10 s after it is
+ * made, and inside that window there are no notes to hash and no `loop.start`
+ * to anchor to. A take recorded there is stored against an ASSUMED origin of
+ * 0, so the absent fingerprint marks exactly the lanes that may still need
+ * re-origining. Note 0 is a real note number, so the -1 is load-bearing. */
+static inline int lane_fp_absent(const lane_fingerprint_t *fp) {
+    return fp && fp->note_count == 0 && fp->first_note == -1;
+}
+
 typedef struct {
     int  used;
     char target[16];     /* "synth", "fx3", "midi_fx1" -- chain component addr */
@@ -122,12 +136,35 @@ typedef struct {
     int  orphaned;       /* the clip was deleted; retained, silent */
     int  n;
     int  full_hits;      /* writes that had to replace a neighbour */
+    /* How many times this lane has had a real fingerprint stamped on it (0 or
+     * 1 in practice). Counted rather than flagged because "a take recorded
+     * blind was re-origined" is the kind of thing that must be reportable: by
+     * ear an adopted lane and a lane that silently stayed at origin 0 are the
+     * same until the loop is moved, and by then nobody remembers. */
+    int  adopted;
     /* Runtime, not content. `driving` is "we currently hold an override on
      * this target", so losing the phase can RELEASE it exactly once instead of
      * leaving the parameter stuck where the clip stopped. The punch pair is an
      * unarmed knob turn taking over until the loop comes round -- without it,
      * under an absolute lane, turning a knob does nothing audible. */
     int    driving;
+    /* THIS SESSION'S BLIND TAKE, and deliberately NOT serialized.
+     *
+     * Set when a lane is created while the clip's geometry is provisional --
+     * Move has not written the clip to Song.abl yet, so there are no notes to
+     * fingerprint and no loop.start to anchor to. It is what lets
+     * lane_adopt_fingerprint tell "the clip I recorded against, thirty
+     * seconds ago, still playing" from "a lane I loaded from disk whose clip
+     * was never identified". Those are the same bytes on disk and must not be
+     * the same decision: adopting the second would bind a lane to whatever
+     * clip later occupied its position and PLAY it -- confidently wrong, the
+     * one outcome this design refuses.
+     *
+     * The cost is a reboot inside the ~10 s window: the take stays at its
+     * assumed origin with no identity, goes stale, and is silent until
+     * re-recorded. Silent and retained is the failure this design chooses
+     * every other time it has to choose. */
+    int    origin_pending;
     int    punch_until_wrap;
     double punch_phase;
     /* The RECORDING PASS, which is also runtime and also never serialized.
@@ -237,6 +274,29 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
 
 /* Does this lane still describe the clip that is there now? */
 int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now);
+
+/* ADOPT a real fingerprint onto a lane recorded blind, and re-origin its
+ * points in the same step.
+ *
+ * The clip has just appeared in Song.abl, so two unknowns are answered at
+ * once: which clip this is (its notes) and where its loop starts. A take
+ * recorded in the blind window assumed an origin of 0, so every point is
+ * shifted by the real `loop_start` -- exact arithmetic with the number that
+ * just arrived, not a guess.
+ *
+ * REFUSES unless the lane's fingerprint is absent AND `origin_pending` is set
+ * -- i.e. this session recorded it blind. A lane that was already identified
+ * must never be re-labelled, and a lane LOADED from disk with an absent
+ * fingerprint must never be labelled at all: on disk those two are the same
+ * bytes, and adopting the loaded one would bind a lane to whatever clip later
+ * occupied its position. The caller owns the other half of the guard -- that
+ * this is the clip playing at the lane's own position.
+ *
+ * Returns 1 if it adopted, 0 if it refused. Idempotent by construction: after
+ * adopting, the fingerprint is no longer absent.
+ *
+ * RT: SPI callback. One pass over at most LANE_POINTS_MAX points. */
+int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now);
 
 #ifdef __cplusplus
 }
