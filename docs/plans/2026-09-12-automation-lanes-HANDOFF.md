@@ -12,6 +12,52 @@ history now, not instruction.
 
 ---
 
+## Confidence audit #3, 2026-09-13 — where it actually stands
+
+Everything on the list is now verified on hardware **except one thing**, and
+that one thing is a finger on a step button.
+
+| | evidence |
+|---|---|
+| Playhead | 26/26, 100%, under 11/8 |
+| Page / displayed bar | the strip's `bold_segment`, agreeing with Move's own "Bar N" |
+| Clip length change | strip 3 → 4 segments instantly; file caught up ~12 s later |
+| Copy / Delete / Undo | all three, in the file; Undo walks back precisely |
+| **New sets** | a set change now CLEARS lanes the incoming set lacks — **a bug found and fixed tonight**, verified by raising the real `SET_CHANGED` flag |
+| Per-set lane state | written, autosaved, survived a reinstall, reloaded |
+| P-lock write | `lanes:plocked = 1` with the transport stopped; `P 9 0.9 1` |
+| P-lock reaches the synth | the plugin's own state read `{"pinch":0.9}`; `lanes:clear` put it back |
+| **P-lock by STEP** | `lanes:plock_step synth pinch 4 0.81` → `P 1 0.81 1` under 4/4; refused under 11/8 (22 steps/bar on 16 buttons) |
+| Recording | armed from Move's Record LED; five points in CLIP time; interpolated on playback |
+| `:modulated` mark | reads 1 for a lane-driven parameter |
+
+**The one thing left:** the MIDI half of the gesture — forwarding a held step
+to the UI and **swallowing it from Move**, or the same press edits the clip's
+notes. Injection cannot drive it: the drain writes Move's mailbox while the
+control scan reads the hardware one, so a press either reaches Move (injected)
+or Schwung (real), never both. Everything behind it is proven, including the
+step→phase translation in the same param path the UI will use.
+
+**Also unreachable, and not on the critical path:** creating a *new* set on the
+device, which needs the Set Overview and therefore the Note/Session toggle
+(~75 CCs scanned against a screen witness; a full LED refresh shows no
+unaccounted button, so it is unlit and possibly a note — I did not scan note
+ranges, which would play the instrument at night). The lane-relevant half of
+"new sets" — what happens to lane state when the set changes — is verified
+above.
+
+**Two corrections to things I claimed earlier in the night**, both caught by
+measuring: "a segment is a bar, rounded up" was a third coincidence (the count
+can exceed the loop by one), and the bar strip "vanishing" was not my CC scan
+but track 1 having lost its selected clip, which a Note view draws no strip
+for.
+
+**Device:** set byte-identical to baseline, all diagnostics disarmed, no lane
+files with content, `active_set.txt` correct, test daemon and helper scripts
+removed. `schwung_inject` and a `Song.abl.presel.bak` are left deliberately.
+
+---
+
 ## Confidence audit #2, 2026-09-13 (after driving it end to end)
 
 **What unblocked the rest: a lane records from a PARAM WRITE**, and
