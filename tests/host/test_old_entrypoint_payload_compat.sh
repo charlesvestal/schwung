@@ -48,7 +48,13 @@ done
 contains() {
     # $1 = file, $2 = literal substring (matched with index(), not a regex,
     # so a "." or "/" in a path is never accidentally a wildcard)
-    awk -v pat="$2" 'index($0, pat) { found = 1 } END { exit !found }' "$1" 2>/dev/null
+    #
+    # COMMENT LINES ARE SKIPPED. These scripts carry long comments naming the
+    # very paths this pin looks for, so without the skip a row is satisfiable
+    # by prose ABOUT the build step instead of the build step: deleting
+    # build.sh's call to scripts/build-manager.sh, leaving the comment above
+    # it, passed.
+    awk -v pat="$2" '/^[[:space:]]*#/ { next } index($0, pat) { found = 1 } END { exit !found }' "$1" 2>/dev/null
 }
 
 # ---- 1. the old entrypoint, vendored verbatim (git show e1bdf967:src/shim-entrypoint.sh) ----
@@ -300,13 +306,21 @@ esac
 #
 # path | build.sh substring | package.sh substring | build/ artifact (for the
 # local-only extra check; "-d" prefix means directory, else a plain file)
+#
+# schwung-manager is the one row whose build.sh substring is a CALL rather
+# than an output path: build.sh delegates to scripts/build-manager.sh, the
+# single builder (there were three, and the install.sh one was skipped in
+# silence on a Docker-only machine). The other half of that row -- that the
+# shared builder still writes build/schwung-manager, where package.sh looks
+# -- is asserted separately below, or this row would pass on a builder that
+# had quietly started emitting somewhere else.
 check_spec='
 schwung-shim.so|build/schwung-shim.so|./schwung-shim.so|build/schwung-shim.so
 shim-entrypoint.sh|shim-entrypoint.sh ./build/|./shim-entrypoint.sh|build/shim-entrypoint.sh
 bin/schwung-heal|build/bin/schwung-heal|./bin|build/bin/schwung-heal
 lib|./build/lib/|./lib|-dbuild/lib
 display-server|build/display-server|./display-server|build/display-server
-schwung-manager|build/schwung-manager|./schwung-manager|build/schwung-manager
+schwung-manager|build-manager.sh|./schwung-manager|build/schwung-manager
 bin/filebrowser|./build/bin/|./bin|build/bin/filebrowser
 '
 
@@ -346,6 +360,21 @@ while IFS='|' read -r dep build_pat pkg_pat artifact; do
 done <<EOF
 $check_spec
 EOF
+
+# ---- 6. the indirection's far end: the shared builder's default output ----
+# The schwung-manager row above proves build.sh still CALLS the builder. This
+# proves the builder still puts the binary where package.sh picks it up. Split
+# in two because a call that builds to the wrong path and a path built by
+# nobody are different regressions with the same symptom: a device whose web
+# update silently ships it no manager.
+BUILD_MANAGER_SH="${BUILD_MANAGER_SH:-scripts/build-manager.sh}"
+if [ ! -f "$BUILD_MANAGER_SH" ]; then
+    say_fail "schwung-manager -- $BUILD_MANAGER_SH is missing; nothing builds the manager"
+elif contains "$BUILD_MANAGER_SH" "build/schwung-manager"; then
+    say_pass "schwung-manager -- $BUILD_MANAGER_SH still writes build/schwung-manager"
+else
+    say_fail "schwung-manager -- $BUILD_MANAGER_SH no longer writes build/schwung-manager, which is where package.sh looks"
+fi
 
 if [ "$fails" -eq 0 ]; then
     say_pass "old pre-split entrypoint's payload dependencies (${hard_deps# } | guarded:${guarded_deps# }) are all still built and packaged -- a never-blessed device's next web update will not brick it"
