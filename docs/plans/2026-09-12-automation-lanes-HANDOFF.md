@@ -12,6 +12,42 @@ history now, not instruction.
 
 ---
 
+## Status, 2026-09-12 (later the same day)
+
+Items 1 and 2 are **done**; item 3 is **built as a diagnostic and not yet
+validated on hardware**. 327 host tests green, clean ARM64 cross-build.
+
+- **1. `loop_start` out of the fingerprint** — done (`f420b8e8`). Only the
+  content half (note count, first note) is compared now; both loop fields
+  remain for diagnostics. The phase origin was left alone, for the reason
+  recorded below. The placeholder guard carries more weight than it did: with
+  no loop field compared, `{0, -1}` would match the *first* clip it met.
+- **2. The phase check** — done (`35408e25`). Both columns read one track, the
+  selected one, so there is no per-track loop left for the two halves to
+  disagree in, and the three redundant `t == clip_selected_track()` guards are
+  gone. **The next reading from this instrument is the first trustworthy one.**
+- **3. The OLED reader** — `src/host/step_strip.{c,h}` + 21 assertions
+  (`43341559`). Reports into `clip_state.json`'s `step_strip` block and a
+  `/clip-state` panel; **nothing depends on it.** What the hardware pass must
+  answer, in this order:
+  1. Does `seq` move at all? (If not, frames are not reaching the accumulator
+     — a different fault from a refusal.)
+  2. On the step editor: `valid`, with the `bars` you can count on the screen,
+     the right `bold_bar`, and a `playhead_col` that moves with the music.
+  3. On Move's **other** screens: a refusal, with the `reject` gate named. This
+     is the half that is reasoned rather than measured, and a false positive
+     is a wrong loop length.
+  Only after that does the loop-length fallback get wired in (cache the bars
+  per track, use it when `Song.abl` has no length for the live clip).
+- **4. The budgets** — untouched. Still as designed below.
+
+Two things worth knowing before reading further: the 28% quoted in item 2 was
+noise from the mis-attribution it describes, and the fixture renderer for the
+step-strip test was wrong before the decoder was — it drew a 1 px gap that the
+decoder correctly read as a playhead.
+
+---
+
 ## The four things to do next, in this order
 
 ### 1. `loop_start` out of the fingerprint — small, and it bites today
