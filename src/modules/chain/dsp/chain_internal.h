@@ -1208,6 +1208,10 @@ CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
 /* chain_lanes.c */
 CHAIN_INTERNAL void lane_tick(chain_instance_t *inst);
 CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target,
+                                     const char *param, const char *val);
+CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
+                                             lane_fingerprint_t *out);
 
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);

@@ -227,6 +227,89 @@ int main(void) {
           fake_value("cutoff"));
     CHECK(ln->driving == 0, "a lane off its own clip is still driving");
 
+    /* 8. Armed + phase valid records at the phase, and CREATES the lane --
+     *    there is no "add lane" gesture; an armed knob turn is the gesture. */
+    chain_instance_t *rec = calloc(1, sizeof(*rec));
+    CHECK(rec != NULL, "calloc for the recording instance");
+    if (!rec) { printf("FAILURES: %d\n", fails + 1); free(inst); return 1; }
+    setup_fake_synth(rec);
+    rec->lane_armed = 1;
+    rec->clip_phase_valid = 1;
+    rec->clip_loop_len = 8.0;
+    rec->clip_phase_beats = 2.0;
+    lane_on_set_param(rec, "synth", "cutoff", "55");
+    lane_t *made = lane_find(&rec->lanes, "synth", "cutoff");
+    CHECK(made && made->n == 1, "armed write did not create a point");
+    if (!made) { printf("FAILURES: %d\n", fails); free(inst); free(rec); return 1; }
+    CHECK(made->pts[0].phase == 2.0, "recorded at the wrong phase: %f",
+          made->pts[0].phase);
+    CHECK(made->pts[0].value == 55.0f, "recorded the wrong value: %f",
+          (double)made->pts[0].value);
+
+    /* 9. PLAYBACK MUST NOT RECORD ITSELF. chain_mod writes straight to the
+     *    plugin and never re-enters v2_set_param, so this is structural --
+     *    and it is pinned here because if that ever changes, the lane
+     *    compounds its own curve every loop, silently and worse each bar.
+     *    A point count is the right witness: a self-recording loop adds a
+     *    breakpoint per block, so it fails within the first few ticks. */
+    for (int i = 0; i < 200; i++) {
+        rec->clip_phase_beats = (double)(i % 8);
+        lane_tick(rec);
+    }
+    CHECK(made->n == 1, "playback recorded itself (n=%d)", made->n);
+
+    /* 10. Armed with NO phase records nothing. Not a point at 0.0 -- "we
+     *     could not tell where in the clip we are" is a third answer, and
+     *     guessing 0 would plant a breakpoint on the downbeat of a clip the
+     *     user was not even playing. */
+    rec->clip_phase_valid = 0;
+    lane_on_set_param(rec, "synth", "cutoff", "70");
+    CHECK(made->n == 1, "recorded with no phase (n=%d)", made->n);
+
+    /* 11. Unarmed, the knob punches through until the loop wraps. Without it,
+     *     under an absolute lane rewriting the same target every block, the
+     *     encoder is inaudible and reads as broken hardware. */
+    rec->lane_armed = 0;
+    rec->clip_phase_valid = 1;
+    rec->clip_phase_beats = 6.0;
+    lane_on_set_param(rec, "synth", "cutoff", "33");
+    CHECK(made->n == 1, "an unarmed turn was recorded");
+    CHECK(made->punch_until_wrap == 1, "unarmed turn did not punch through");
+    lane_tick(rec);                       /* still in the punch */
+    CHECK(made->driving == 0, "lane kept driving during the punch");
+    rec->clip_phase_beats = 1.0;          /* wrapped */
+    lane_tick(rec);
+    CHECK(made->driving == 1, "lane did not resume after the wrap");
+
+    /* 12. lane_alloc REFUSING must neither crash nor report a success it
+     *     did not have. The reachable refusal is a FULL store: a module can
+     *     declare far more than LANE_MAX parameters. (The other refusal --
+     *     a key too long for lane_t::param -- turns out to be unreachable
+     *     from here, because chain_param_info_t::key is 32 bytes too, so
+     *     anything find_param_by_key can resolve already fits. The guard
+     *     stays because that equality is two headers agreeing by accident.) */
+    rec->lane_armed = 1;
+    rec->clip_phase_valid = 1;
+    rec->clip_phase_beats = 3.0;
+    {
+        lane_fingerprint_t dfp = { 0.0, 8.0, 0, -1 };
+        int filled = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            char dk[16];
+            snprintf(dk, sizeof(dk), "d%d", i);
+            if (lane_alloc(&rec->lanes, "synth", dk, 0, 0, &dfp)) filled++;
+        }
+        CHECK(filled == LANE_MAX - 1,
+              "expected the store to fill with %d dummies, took %d",
+              LANE_MAX - 1, filled);
+        lane_on_set_param(rec, "synth", "octave", "4");
+        CHECK(lane_find(&rec->lanes, "synth", "octave") == NULL,
+              "a full store handed out a lane anyway");
+        CHECK(fake_writes("octave") >= 0, "the full-store write crashed nothing");
+    }
+
+    free(rec);
+
     free(inst);
     if (fails) {
         printf("FAILURES: %d\n", fails);

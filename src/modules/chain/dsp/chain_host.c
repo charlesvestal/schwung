@@ -1233,6 +1233,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             }
             inst->dirty = 1;
         } else {
+            lane_on_set_param(inst, "synth", subkey, val);
             if (chain_mod_is_target_active(inst, "synth", subkey)) {
                 chain_mod_update_base_from_set_param(inst, "synth", subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, "synth", subkey);
@@ -1280,6 +1281,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
              * exists is an ordinary event, not a bug to be recovered from. */
             char fx_id[16];
             chain_fx_component_id(fx_id, sizeof(fx_id), "fx", fxi);
+            lane_on_set_param(inst, fx_id, subkey, val);
             if (chain_mod_is_target_active(inst, fx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, fx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, fx_id, subkey);
@@ -1324,6 +1326,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             /* Dropped if the slot holds nothing — see the audio FX branch. */
             char mfx_id[16];
             chain_fx_component_id(mfx_id, sizeof(mfx_id), "midi_fx", mfi);
+            lane_on_set_param(inst, mfx_id, subkey, val);
             if (chain_mod_is_target_active(inst, mfx_id, subkey)) {
                 chain_mod_update_base_from_set_param(inst, mfx_id, subkey, val);
                 mod_target_state_t *entry = chain_mod_find_target_entry(inst, mfx_id, subkey);
