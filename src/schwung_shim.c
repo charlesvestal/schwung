@@ -2260,8 +2260,7 @@ static void shadow_inprocess_render_to_buffer(void) {
     if (shadow_audio_in_restore_allowed(
             (overtake_dsp_gen_inst || overtake_dsp_fx_inst) ? 1 : 0,
             hardware_mmap_addr ? 1 : 0,
-            native_resample_bridge_mode != NATIVE_RESAMPLE_BRIDGE_OFF,
-            native_resample_bridge_source_allows_apply(native_resample_bridge_mode))) {
+            native_resample_bridge_mode != NATIVE_RESAMPLE_BRIDGE_OFF)) {
         int16_t *hw_ain = (int16_t *)(hardware_mmap_addr + AUDIO_IN_OFFSET);
         int16_t *sh_ain = (int16_t *)(global_mmap_addr + AUDIO_IN_OFFSET);
         /* Log once to verify hardware audio levels */
@@ -5519,7 +5518,6 @@ static void shim_init_subsystems(void)
             .save_state = shadow_save_state,
             .apply_mute = shadow_apply_mute,
             .ui_state_update_slot = shadow_ui_state_update_slot,
-            .native_sampler_update = native_sampler_update_from_dbus_text,
             .chain_slots = shadow_chain_slots,
             .shadow_control_ptr = &shadow_control,
             .display_mode = &shadow_display_mode,
