@@ -189,6 +189,11 @@ typedef struct mod_source_contribution {
     int active;
     char source_id[32];
     float contribution;
+    /* An OVERRIDE carries an absolute value in `contribution` and replaces the
+     * base rather than adding to it. That is what an automation lane is: the
+     * lane IS the value, the knob is the base underneath it. Offsets from
+     * LFOs still sum on top, so the two compose. */
+    int is_override;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -1177,6 +1182,7 @@ CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_
 CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
+CHAIN_INTERNAL int chain_mod_emit_override(void *ctx, const char *source_id, const char *target, const char *param, float value, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
