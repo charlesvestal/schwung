@@ -9790,12 +9790,26 @@ static void *led_capture_logger_thread(void *arg)
                 uint8_t ch = batch[i].status & 0x0F;
                 const char *type_str = (type == 0x90) ? "NoteOn"
                                      : (type == 0xB0) ? "CC" : "?";
+                /* Range tag: the same note number means different things on
+                 * different surfaces, and the pads mean CLIPS only in Session
+                 * mode -- which is exactly the question this log exists to
+                 * answer, so the mode is printed on every line rather than
+                 * inferred from when the run was started. */
+                const char *range = "-";
+                if (type == 0x90 || type == 0x80) {
+                    if (batch[i].d1 >= 16 && batch[i].d1 <= 31)      range = "STEP";
+                    else if (batch[i].d1 >= 68 && batch[i].d1 <= 99) range = "PAD";
+                    else                                             range = "NOTE";
+                }
+                unsigned p = batch[i].pulses;
                 fprintf(log_fp,
-                        "t=%llu.%03llu seq=%u cbl=%u st=0x%02X ch=%u %s d1=%u d2=%u\n",
+                        "t=%llu.%03llu seq=%u pul=%u (b%u.%u) mode=%u cbl=%u "
+                        "st=0x%02X ch=%u %s %s d1=%u d2=%u\n",
                         (unsigned long long)(batch[i].ts_us / 1000),
                         (unsigned long long)(batch[i].ts_us % 1000),
-                        batch[i].seq, batch[i].cable, batch[i].status,
-                        ch, type_str, batch[i].d1, batch[i].d2);
+                        batch[i].seq, p, p / 24u, p % 24u, batch[i].ui_mode,
+                        batch[i].cable, batch[i].status,
+                        ch, type_str, range, batch[i].d1, batch[i].d2);
             }
             if (n < 128) break;
         }

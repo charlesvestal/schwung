@@ -103,6 +103,12 @@ typedef struct {
     uint8_t status;     /* full status byte incl. channel */
     uint8_t d1;
     uint8_t d2;
+    /* Musical + modal context, sampled at record time on the SPI callback.
+     * Without these the log says WHAT Move lit and not WHERE IN THE BAR, and
+     * a pad LED cannot be told from a clip LED because the pads mean clips
+     * only in Session mode. Both are plain volatile int reads. */
+    uint8_t  ui_mode;    /* shadow_control->move_ui_mode: 1=session 2=note 3=sets */
+    uint32_t pulses;     /* shadow_transport_pulses: 24 PPQN since 0xFA */
 } led_capture_entry_t;
 
 void led_queue_set_capture_enabled(int on);
