@@ -267,8 +267,11 @@ async function tick(){
       /* A RANGE, not a number: the segment count is bars ROUNDED UP, so the
          file's length only has to fall inside it. Comparing against the upper
          end alone would call every fractional loop a disagreement. */
+      /* INCLUSIVE at the lower end: Move can draw one bar more than the loop
+         holds (the next bar it offers you), measured by lengthening a loop --
+         16.5 quarters, exactly 3 bars of 11/8, drew four segments. */
       const agree = ss.file_quarters>0
-        ? ((ss.file_quarters>ss.strip_quarters_min+0.001 &&
+        ? ((ss.file_quarters>=ss.strip_quarters_min-0.001 &&
             ss.file_quarters<=ss.strip_quarters+0.001)
             ? '<span class="pill ok">the file falls in that range</span>'
             : '<span class="pill off">the file says '+

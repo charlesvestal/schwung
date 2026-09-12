@@ -263,6 +263,25 @@ int main(void)
         }
     }
 
+    /* 11c. THE COUNT CAN EXCEED THE LOOP BY ONE BAR, which is why the length
+     * it implies is a range inclusive at BOTH ends rather than a number.
+     *
+     * Measured on the device by lengthening a loop with Loop + jog: the file
+     * settled at exactly 16.5 quarters (3 bars of 11/8) while the strip drew
+     * FOUR plain identical segments, persistently. That fourth is the bar Move
+     * offers you to extend into, and it is pixel-identical to a bar inside the
+     * loop -- so a decoder cannot subtract it, and a consumer must not treat
+     * `segments * quarters_per_bar` as an equality.
+     *
+     * Pinned here as the SHAPE of the answer: four uniform segments decode as
+     * four, and it is the caller's range that absorbs the ambiguity. */
+    draw_strip(4, 1, -1);
+    step_strip_decode(fb, &r);
+    CHECK(r.valid && r.segments == 4,
+          "four uniform segments must decode as four (valid=%d segments=%d) -- "
+          "whether the fourth is inside the loop is not a pixel question",
+          r.valid, r.segments);
+
     /* 12. The published reading: paired with the track selected AT DECODE
      * TIME, and an INVALID frame must not clear a cached length -- Move shows
      * something other than the editor most of the time, and a length that

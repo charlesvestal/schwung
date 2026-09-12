@@ -13,6 +13,7 @@
 #include "chain_internal.h"
 
 #include <stdio.h>
+#include <math.h>   /* isfinite, for the p-lock phase */
 
 /* One source id per lane, so the mod bus can tell two lanes apart and clear
  * one without disturbing the other -- and so a lane's own release names only
@@ -438,6 +439,61 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      *
      * Guarded on a non-zero value: a stray `lanes:clear=0` must not throw
      * away a set's automation. */
+    /* A STEP P-LOCK: "<target> <param> <phase> <value>".
+     *
+     * The value carries a PHASE, not a bar and a step, because the chain knows
+     * nothing about bars, grids or time signatures -- those live host-side
+     * (clip_regions.h, step_plock.h) and teaching this side about them would
+     * be a second model of Move's editor. The chain's job is what it already
+     * does for every other lane write: place a point in clip time.
+     *
+     * IT IS A RECTANGLE (hold = 1). Setting a value ON a step is not a slope
+     * towards the next one.
+     *
+     * AND ITS PHASE IS NEVER PROVISIONAL, which is why `origin_pending` is not
+     * set here even when the clip is unidentified: a p-lock's phase comes from
+     * the BAR NUMBER on Move's own strip, so it is true clip time already,
+     * while a recorded sweep's phase comes from the transport against a loop
+     * origin we may only have assumed. Re-origining a p-lock later would move
+     * it off the step the user pressed.
+     *
+     * It does NOT require a phase, a running transport or a known clip
+     * length: the gesture works while stopped (which is its whole advantage
+     * over a live pass), and a p-lock on a bar outside the current loop
+     * window is legitimate -- Move's strip shows those bars, and a point
+     * outside the window is dormant rather than wrong. What it does require is
+     * a clip POSITION to key the lane to, and a parameter the module
+     * declares. */
+    if (strcmp(sub, "plock") == 0) {
+        inst->lanes_last_plocked = 0;
+        if (!val) return;
+        char target[16] = {0}, param[32] = {0};
+        double phase = 0.0;
+        int consumed = 0;
+        /* %n after the three fixed fields, so whatever remains is the VALUE
+         * verbatim -- an enum option can contain spaces, and re-parsing it
+         * with %s would silently keep only the first word. */
+        if (sscanf(val, "%15s %31s %lf %n", target, param, &phase, &consumed) < 3)
+            return;
+        if (consumed <= 0 || !val[consumed]) return;
+        const char *value_str = val + consumed;
+        if (!isfinite(phase) || phase < 0.0) return;
+        if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+
+        chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+        if (!pinfo) return;
+        const float v = dsp_value_to_float(value_str, pinfo, pinfo->default_val);
+
+        lane_fingerprint_t fp;
+        lane_current_fingerprint(inst, &fp);
+        lane_t *ln = lane_alloc(&inst->lanes, target, param,
+                                inst->lane_track, inst->lane_clip_slot, &fp);
+        if (!ln) return;
+        lane_write(ln, phase, v, 1);
+        inst->lanes_last_plocked = 1;
+        return;
+    }
+
     if (strcmp(sub, "clear") == 0) {
         if (!val || atoi(val) == 0) return;
         lane_release_all(inst);
@@ -465,6 +521,8 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
 
     if (strcmp(sub, "cleared") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_cleared);
+    if (strcmp(sub, "plocked") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_plocked);
 
     /* WHY a recording was refused. 0 is UNKNOWN -- the shim could not say
      * where in the clip we are -- and not phase zero, which is what lets the
