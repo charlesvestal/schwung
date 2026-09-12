@@ -1654,3 +1654,49 @@ inline is how this file got to 151 KB.
 ## Dependencies
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
+
+### Schwung's SOURCE is MIT; `schwung-shim.so` is conveyed as GPL-3.0
+
+Two different relationships, and collapsing them is the trap — the first draft
+of `THIRD_PARTY_LICENSES.md` asserted "nothing copyleft is linked into
+`schwung` or `schwung-shim.so`" and was **wrong about the shim**.
+
+**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+)
+and `lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+)
+are separate programs reached over `/dev/shm`, sockets and `exec`.
+
+**Linked** (makes a combined work): `SHIM_LIBS` carries **`-lespeak-ng`** under
+`SCREEN_READER_ENABLED=1`, which is the DEFAULT and what ships —
+`libespeak-ng.so.1` is a `NEEDED` entry of the built `schwung-shim.so`. eSpeak
+NG is GPL-3.0-or-later, so that BINARY is conveyed under GPL-3.0-or-later. MIT
+is GPL-compatible so this is permitted, and the source stays MIT; what changes
+is the licence recipients get over the binary. `SCREEN_READER_ENABLED=0` swaps
+in `tts_engine_stub.c` and drops `SHIM_LIBS` to `-ldl -lrt -lpthread -lm`,
+giving an MIT shim. The HOST binary (`schwung`) links no TTS either way.
+
+Flite is BSD and is linked alongside eSpeak; it is not the copyleft one. Check
+the real binary (`NEEDED` entries), not the intent — the build flag is what
+decides this, and it is easy to reason about the wrong configuration.
+
+The trap is that **one file's header can silently claim otherwise.**
+`JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on
+JackMoveDriver by Cycling '74 (GPL-2.0)", while its `.h` carried the correct
+GPL block the whole time — which is exactly what made the `.cpp` read as a typo
+rather than as a claim about somebody else's code. It is built with
+`-DSERVER_SIDE` against jack2's GPL-only server headers (39 of the 138 vendored
+headers are GPL-2.0+, the other 96 LGPL-2.1+), so MIT was never available to it.
+
+`THIRD_PARTY_LICENSES.md` is the single third-party document — an extensionless
+second copy diverged for months — and it **must ship**: it was absent from
+`package.sh`'s `ITEMS` entirely, so the tarball carried GPL-2.0 and GPL-3.0
+binaries with no licence text and no attribution. `build.sh` stages it,
+`LICENSE`, and `licenses/GPL-{2,3}.0.txt` **unconditionally** (a `|| true` here
+is the link-subscriber silent-skip shape: a non-compliant release that looks
+identical to a good one), and `package.sh` HARD-FAILS on a missing one.
+`tests/host/test_license_consistency.sh` pins all of it, including that no
+CC BY-NC-SA claim returns — `LICENSE` went MIT in 2026-03 and the third-party
+doc went on asserting CC BY-NC-SA 4.0, a licence that is not a software licence
+and whose NC clause is incompatible with every GPL component above.
+
+**`lib/libpcaudio.so.0` is ours** (`src/host/pcaudio_stub.c`), not pcaudiolib —
+a stub so eSpeak NG resolves without dragging in libpulse/libX11.
