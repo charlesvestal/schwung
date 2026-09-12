@@ -1029,23 +1029,27 @@ static void clip_state_tick(void)
          * is absent from the file while the song is not. */
         double qpb = 4.0;
         double strip_quarters = -1.0;
+        double strip_quarters_min = -1.0;
         double file_quarters = -1.0;
         if (ss.valid && sst >= 0) {
             int cslot = (cs && cs->tracks[sst].identity_valid)
                       ? cs->tracks[sst].clip_slot : -1;
-            /* THE CONVERSION IS THE GRID, NOT THE SIGNATURE. A segment is a
-             * 16-step PAGE, so quarters = segments * 16 * resolution.
-             * Measured 2026-09-12: an 11/8 set with a 12-quarter loop drew 3
-             * segments -- through the bar (5.5 quarters) that is 16.5 against
-             * the file's 12.0; through the page it is 12.0 exactly. In 4/4 at
-             * 1/16 a page IS a bar, which is why every earlier reading agreed
-             * and the signature looked like the missing fact. The signature is
-             * still printed because the phase check's bar modulus needs it. */
+            /* THE CONVERSION IS THE BAR, AND IT IS A CEILING.
+             *
+             * Move's manual: each line on this strip is a BAR. Measured on an
+             * 11/8 set, the only clip that separates bars from 16-step pages
+             * (16 quarters = 2.91 bars but exactly 4 pages) drew THREE
+             * segments -- bars, rounded up. So the strip answers a RANGE:
+             * 3 segments under 11/8 means (11.0, 16.5] quarters, exact only
+             * when the loop is a whole number of bars, which a clip Move
+             * created in the current signature is.
+             *
+             * `strip_quarters` is therefore the UPPER end, and the lower end
+             * is printed beside it so a comparison against the file cannot
+             * mistake a legal range for a disagreement. */
             qpb = clip_regions_quarters_per_bar(&g_regions, sst, cslot);
-            double res_q = g_regions.step_resolution > 0.0
-                         ? g_regions.step_resolution : 0.25;
-            strip_quarters = (double)ss.segments *
-                             (double)STEP_STRIP_STEPS_PER_PAGE * res_q;
+            strip_quarters = (double)ss.segments * qpb;
+            strip_quarters_min = (double)(ss.segments - 1) * qpb;
             if (g_regions.valid && cslot >= 0 && cslot < CLIP_SLOTS &&
                 g_regions.slots[sst][cslot].exists)
                 file_quarters = g_regions.slots[sst][cslot].loop_len;
@@ -1054,11 +1058,13 @@ static void clip_state_tick(void)
                     "\"reject\":%d,\"segments\":%d,\"bold_segment\":%d,\"playhead_col\":%d,"
                     "\"evidence\":%d,\"phase_frac\":%.4f,"
                     "\"quarters_per_bar\":%.4f,\"strip_quarters\":%.4f,"
+                    "\"strip_quarters_min\":%.4f,\"single_thin\":%d,"
                     "\"file_quarters\":%.4f,\"sig\":\"%d/%d\","
                     "\"grid\":\"%s\",\"segments_cache\":[%d,%d,%d,%d]}",
                 sseq, sst + 1, ss.valid ? "true" : "false", ss.reject,
                 ss.segments, ss.bold_segment, ss.playhead_col, ss.playhead_evidence, pf,
-                qpb, strip_quarters, file_quarters,
+                qpb, strip_quarters, strip_quarters_min, ss.single_thin,
+                file_quarters,
                 g_regions.sig_upper, g_regions.sig_lower,
                 g_regions.step_res_raw[0] ? g_regions.step_res_raw : "?",
                 step_strip_segments_for_track(0), step_strip_segments_for_track(1),

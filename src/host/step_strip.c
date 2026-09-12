@@ -96,7 +96,14 @@ void step_strip_decode(const uint8_t *frame, step_strip_t *out)
         /* Most of the segment, not a stray pixel or a glyph's descender. */
         if ((double)lit >= expect - (double)STEP_STRIP_SEG_TOL) bold = i + 1;
     }
-    if (!bold) { out->reject = STEP_STRIP_NO_BOLD; return; }
+    /* A ONE-BAR LOOP HAS NO THICKENING, and Move's manual says so outright:
+     * "if a loop contains only one bar, a thin line is displayed instead."
+     * Refusing it refused every new clip -- measured on the 1-bar T4 clip,
+     * which came back as gate 6 twice before the manual explained it. With
+     * two or more segments the thickening is still REQUIRED, because that is
+     * what separates the editor from any other full-width line. */
+    if (!bold && nseg > 1) { out->reject = STEP_STRIP_NO_BOLD; return; }
+    out->single_thin = (!bold && nseg == 1) ? 1 : 0;
 
     /* 5. The playhead. Two independent signatures; the stub is the definite
      * one (nothing else is drawn below the strip), the interruption
