@@ -143,6 +143,11 @@ static int           g_last_track = -1;
 static unsigned      g_seq;
 static int           g_bars[4];   /* CLIP_TRACKS, kept local to avoid the dep */
 
+/* The run of agreeing readings not yet committed. See STEP_STRIP_CONFIRM. */
+static int g_pend_track = -1;
+static int g_pend_bars;
+static int g_pend_n;
+
 void step_strip_observe(const uint8_t *frame, int selected_track)
 {
     step_strip_t r;
@@ -150,11 +155,25 @@ void step_strip_observe(const uint8_t *frame, int selected_track)
     g_last = r;
     g_last_track = selected_track;
     g_seq++;
-    /* Only a VALID reading updates the cache, and only for a named track. An
+
+    /* Only a VALID reading feeds the cache, and only for a named track. An
      * invalid frame is Move showing something else, which says nothing about
-     * the clip -- clearing on it would make the length flicker away every
-     * time the user left the editor, which is most of the time. */
-    if (r.valid && selected_track >= 0 && selected_track < 4)
+     * the clip -- clearing the cache on it would make the length flicker away
+     * every time the user left the editor, which is most of the time. It DOES
+     * break the run, because the run means "consecutive frames agreed". */
+    if (!r.valid || selected_track < 0 || selected_track >= 4) {
+        g_pend_track = -1;
+        g_pend_n = 0;
+        return;
+    }
+    if (selected_track == g_pend_track && r.bars == g_pend_bars) {
+        if (g_pend_n < STEP_STRIP_CONFIRM) g_pend_n++;
+    } else {
+        g_pend_track = selected_track;
+        g_pend_bars = r.bars;
+        g_pend_n = 1;
+    }
+    if (g_pend_n >= STEP_STRIP_CONFIRM)
         g_bars[selected_track] = r.bars;
 }
 
@@ -178,6 +197,8 @@ void step_strip_reset(void)
     g_last.phase_frac = -1.0;
     g_last_track = -1;
     memset(g_bars, 0, sizeof(g_bars));
+    g_pend_track = -1;
+    g_pend_n = 0;
     /* g_seq is NOT reset: it is "has anything been observed", and rewinding it
      * would let a reader mistake a fresh reading for the one it already saw. */
 }

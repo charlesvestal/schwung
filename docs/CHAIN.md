@@ -761,6 +761,26 @@ playhead     a 1 px INTERRUPTION in the strip, plus a stub at rows 55-57/61-63
 - **Do NOT build a model of Move's sequencer UI.** Read Move's answer off the
   screen; never track its modes, pages or loop points. Every time this work
   drifted that way it produced a bug.
+- **VALIDATED ON HARDWARE 2026-09-12.** With the editor open the reading
+  followed the selection across three tracks — 4, 5 and 3 bars — the decoded
+  displayed bar agreed twice with Move's *independently announced* "Bar N",
+  and the playhead swept 1→126 and wrapped while the displayed bar stayed put
+  (the page-independence claim, and one of the two committed fixtures is that
+  case in Move's own pixels: playhead in bar 2, bar 3 bold). Session and Set
+  Overview refused with "nothing on the row".
+- **A frame can be TORN, and the cache waits for a second reading because of
+  it.** The accumulator stitches six slices, so a frame can straddle two of
+  Move's screen updates. Paging and switching tracks each produced a *one-off*
+  refusal on a different gate (not-full-width, non-uniform, no-displayed-bar)
+  — which is what a half-drawn strip looks like, and refusing is the safe
+  direction. But a torn frame could in principle read uniform and WRONG, and a
+  wrong bar count is a wrong loop length, so `g_bars[]` commits only after
+  `STEP_STRIP_CONFIRM` consecutive readings agree (~33 ms at 30 fps). An
+  invalid frame breaks the run without clearing the cache.
+  **The refusing frame itself was NOT captured**: the dump trigger writes the
+  *next* complete frame, so by the time it landed the screen had moved on —
+  the file is a healthy editor screen, not the refusal. Capturing the frame a
+  decode rejected needs the copy taken inside the decode.
 - **The gates are the risky half, so this is a DIAGNOSTIC first.** The geometry
   is measured; the rejection gates (full-width span, uniform segments, the
   displayed-bar thickening) are reasoned, and a false positive is a *wrong loop
