@@ -284,8 +284,49 @@ void clip_regions_seed_state(const clip_regions_t *rg, clip_state_t *st)
     if (!rg || !st || !rg->valid) return;
     for (int t = 0; t < CLIP_TRACKS; t++) {
         /* Never overwrite what the LED stream told us. The file is save-time
-         * state; an observation is now. */
-        if (st->tracks[t].identity_valid) continue;
+         * state; an observation is now.
+         *
+         * ...with ONE exception, and it is an event rather than a relaxation:
+         * a track whose identity says "nothing is playing" (clip_slot < 0)
+         * for which a transport START is pending. A Start launches each
+         * track's SELECTED clip, and the file is the only thing that knows
+         * which clip that is.
+         *
+         * This is the user's bug. He built a clip in the step editor, pressed
+         * Play, and automation recording was refused. Note view keeps the pad
+         * gate closed -- rightly, the pads are a keyboard there on the same
+         * notes and the same channel 9 -- so no ch-9 ON could reach the
+         * decoder, and the track sat at identity_valid with clip_slot == -1.
+         * on_transport_start had nothing to anchor; anchor_pending skips a
+         * track whose clip_slot < 0. Measured: tracks 2 and 4 anchored at
+         * pulse 0 from the Start itself because they had identity when 0xFA
+         * arrived, while track 1 read `T1 -` throughout with its clip
+         * audibly playing.
+         *
+         * Project 1's design doc said "clips cannot be launched from Note
+         * mode at all, so there is no launch to miss". That is true only of a
+         * PAD launch. Play starts the selected clip in EVERY view.
+         *
+         * WHY THE START AND NOT JUST THE CLOSED GATE. Letting the file
+         * override clip_slot < 0 whenever we are blind would claim a clip is
+         * running when it is not: stop a clip in Session view, switch to Note
+         * view, and the file -- up to ~35 s stale -- still says it is
+         * playing. A lane would then drive, and could RECORD, against a bogus
+         * anchor. The Start is the discriminator because it is a real event
+         * that really does start those clips, so this is positive evidence
+         * rather than an inference from our own blindness.
+         *
+         * pending_start[t] IS that evidence and nothing else has to be
+         * invented to carry it: clip_state_on_transport_start sets it for
+         * exactly the tracks it found nothing to anchor, and every LED ON
+         * consumes it. The anchor is left to clip_state_anchor_pending, which
+         * the worker calls immediately after this and which writes pulse 0
+         * with CLIP_ANCHOR_START -- the same anchor tracks 2 and 4 get, from
+         * the same evidence, through the one path that owns it. Anchoring
+         * here as well would be a second writer free to disagree. */
+        if (st->tracks[t].identity_valid &&
+            !(st->tracks[t].clip_slot < 0 && st->pending_start[t]))
+            continue;
         for (int s = 0; s < CLIP_SLOTS; s++) {
             if (!rg->slots[t][s].exists || !rg->slots[t][s].is_playing) continue;
             st->tracks[t].identity_valid = 1;
