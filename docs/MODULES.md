@@ -631,6 +631,28 @@ That means:
   Task 5). Bump `min_host_version` in your catalog entry if your
   module depends on it.
 
+#### A module's own panel, and the values that drive it
+
+Any component may ship a `web_ui.html` and the manager serves it. Three rules
+decide whether it actually works:
+
+- **A panel that never appears was FOLDED, not missing.** Section fold state is
+  DERIVED from what the component is, never seeded from a literal — the right
+  default depends on the `custom_ui` message, which arrives after the state is
+  built. Both render paths share one component order (signal flow: `midi_fx1,
+  synth, fx1, fx2`).
+- **`viz.extra_keys` reach the browser.** A widget names a value that owns no
+  cell of its own, and a panel driven by one is blind without them. Every path
+  that completes an initial value send fetches them — there are three, and the
+  `state` fast path returns early, so fixing only the streaming one is
+  invisible.
+- **An extra key is DERIVED, so no write ever names it.** A change to any of a
+  component's params refreshes them (throttled, cached key list, no read at all
+  when nothing is subscribed), and a slow heartbeat carries what no write
+  announces at all — the TRANSPORT. One push per component at a time: two
+  overlapping reads answer in channel order, and the browser then gets an older
+  value after a newer one, which presents as a playhead jumping backwards.
+
 ### Remote UI for overtake tools (the Tool tab)
 
 Overtake tools (dsp.so loaded by the shim as `overtake_dsp`, not a chain slot)
