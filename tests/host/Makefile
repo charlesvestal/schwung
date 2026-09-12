@@ -70,7 +70,11 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
-	$(BUILD_DIR)/test_audio_in_restore
+	$(BUILD_DIR)/test_audio_in_restore \
+	$(BUILD_DIR)/test_lane_store \
+	$(BUILD_DIR)/test_lane_state_roundtrip \
+	$(BUILD_DIR)/test_slot_clip_phase \
+	$(BUILD_DIR)/test_rec_arm
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -246,6 +250,33 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
+
+# shadow_slot_clip_phase — slot -> track -> clip phase (Task 2 of automation
+# lanes). Includes shadow_chain_mgmt.c rather than linking it, the way
+# test_master_fx_permute.c does: the file is 5000 lines with file-static state
+# and no test seam. gnu11 for the same reason that file's wrapper uses it, and
+# the real clip_state.c is linked so the loop_start rebasing is proved against
+# clip_phase_beats()'s BODY rather than against a fake that would inherit the
+# test's own belief about it.
+$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/clip_state.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/clip_state.c -lm
+
+# lane_store — the pure breakpoint store (Task 1 of automation lanes).
+$(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_store.c ../../src/host/lane_store.c -lm
+
+# lane_serial — the `lanes:state` document (Task 8). Links the real
+# lane_store.c rather than a fake: the document's whole job is to round-trip
+# lane_t, so a stand-in would inherit the test's own belief about its layout.
+$(BUILD_DIR)/test_lane_state_roundtrip: test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c ../../src/host/lane_serial.h ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_state_roundtrip.c ../../src/host/lane_serial.c ../../src/host/lane_store.c -lm
+
+# rec_arm — Move's Record button, decoded from its LED (Task 7 of automation
+# lanes). Header-only, so the .c is the whole test; the header is named as a
+# prerequisite because without it an edit to the decode leaves a stale binary
+# and `make test` reports PASS against the code you just changed.
+$(BUILD_DIR)/test_rec_arm: test_rec_arm.c ../../src/host/rec_arm.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_rec_arm.c
 
 # Header-only; the .c is the whole test.
 $(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)

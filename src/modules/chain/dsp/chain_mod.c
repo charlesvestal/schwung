@@ -156,9 +156,22 @@ static void chain_mod_remove_source_contribution(mod_target_state_t *entry, cons
 static void chain_mod_recompute_effective(mod_target_state_t *entry) {
     if (!entry) return;
 
-    float effective = chain_mod_clampf(entry->base_value + chain_mod_sum_contributions(entry),
-                                       entry->min_val,
-                                       entry->max_val);
+    /* An override REPLACES the base rather than adding to it -- a lane is
+     * absolute, not an offset. Every other active source still SUMS, on top
+     * of whichever base this loop lands on, so an LFO composes with a lane
+     * exactly as it composes with the knob. At most one override is expected
+     * per target; a second one simply overwrites `base` again in slot order,
+     * same as two `set_param`s would. */
+    float base = entry->base_value;
+    float sum = 0.0f;
+    for (int i = 0; i < MAX_MOD_SOURCES_PER_TARGET; i++) {
+        const mod_source_contribution_t *s = &entry->sources[i];
+        if (!s->active) continue;
+        if (s->is_override) base = s->contribution;
+        else sum += s->contribution;
+    }
+
+    float effective = chain_mod_clampf(base + sum, entry->min_val, entry->max_val);
     if (entry->type == KNOB_TYPE_INT || entry->type == KNOB_TYPE_ENUM) {
         effective = (float)((int)effective);
     }
@@ -529,6 +542,63 @@ int chain_mod_emit_value(void *ctx,
     return 0;
 }
 
+/* Absolute modulation: the source dictates the value outright.
+ *
+ * Shares every guard, the param-info lookup, the throttle and the base capture
+ * with chain_mod_emit_value -- the only difference is that the contribution is
+ * the value itself and is flagged as replacing the base. Disabling it goes
+ * through the ordinary clear path, so the parameter returns to the knob with a
+ * forced write rather than sticking wherever the lane stopped. */
+int chain_mod_emit_override(void *ctx,
+                            const char *source_id,
+                            const char *target,
+                            const char *param,
+                            float value,
+                            int enabled) {
+    chain_instance_t *inst = (chain_instance_t *)ctx;
+    if (!inst || !source_id || !target || !param) return -1;
+
+    if (!enabled) {
+        chain_mod_clear_source(inst, source_id);
+        return 0;
+    }
+
+    chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+    if (!pinfo) {
+        mod_target_state_t *stale = chain_mod_find_target_entry(inst, target, param);
+        if (stale && stale->active) {
+            chain_mod_remove_source_contribution(stale, source_id);
+            if (!chain_mod_has_active_sources(stale)) {
+                chain_mod_clear_target_entry(inst, stale, 0);
+            }
+        }
+        return -1;
+    }
+    mod_target_state_t *entry = chain_mod_alloc_target_entry(inst, target, param);
+    if (!entry) return -1;
+    mod_source_contribution_t *source_entry =
+        chain_mod_find_or_alloc_source_contribution(entry, source_id);
+    if (!source_entry) return -1;
+
+    if (!entry->enabled) {
+        float base = pinfo->default_val;
+        char val_buf[64];
+        if (chain_mod_get_param_string(inst, target, param, val_buf, sizeof(val_buf)) > 0) {
+            base = dsp_value_to_float(val_buf, pinfo, base);
+        }
+        entry->base_value = chain_mod_clampf(base, pinfo->min_val, pinfo->max_val);
+    }
+    entry->type = pinfo->type;
+    entry->min_val = pinfo->min_val;
+    entry->max_val = pinfo->max_val;
+
+    source_entry->is_override = 1;
+    source_entry->contribution = chain_mod_clampf(value, pinfo->min_val, pinfo->max_val);
+    entry->enabled = chain_mod_has_active_sources(entry);
+    chain_mod_apply_effective_value(inst, entry, 0);
+    return 0;
+}
+
 void chain_mod_clear_source(void *ctx, const char *source_id) {
     chain_instance_t *inst = (chain_instance_t *)ctx;
     if (!inst) return;
@@ -642,3 +712,83 @@ int chain_mod_refresh_target_param_cache(chain_instance_t *inst, const char *tar
  * where metadata may only expose the suffix key (e.g. cutofffrequency).
  */
 
+/* Pushed by the shim once per block, per slot, BEFORE the idle gate.
+ *
+ * valid == 0 means "we could not tell where in the clip we are" -- which is
+ * not phase 0 and must never be used as one. A lane on an unanchored track
+ * stays silent and refuses to record; see clip_state.h.
+ *
+ * Resolved by dlsym rather than added to host_api_v1_t: the front of that
+ * struct's `reserved` tail is +120, the offset a shipped breakbeat build
+ * calls as get_project_bpm(), and a live pointer there boot-loops the device.
+ *
+ * The fingerprint crosses as four doubles rather than the struct so the shim
+ * never has to agree with lane_store.h's layout. The signature is final: it
+ * carries the fingerprint from this commit even though Task 6 is what fills
+ * its note fields, so no later task has to re-edit the cast, the call and the
+ * pin test for no behaviour.
+ *
+ * Lives beside the modulation bus rather than in chain_host.c because this is
+ * the lane engine's clock and the bus is what consumes it -- and chain_host.c
+ * is pinned under 2900 lines by tests/host/test_chain_host_file_split.sh.
+ *
+ * RT: SPI callback. Stores only. */
+__attribute__((visibility("default")))
+void chain_set_clip_phase(void *instance, int valid, double phase_beats,
+                          double loop_len, int track, int clip_slot,
+                          int fp_valid, const double *fp /* 4 doubles */) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    inst->clip_phase_valid = valid ? 1 : 0;
+    /* UNKNOWN is stored as NaN, not as the caller's zeroed locals. The gate is
+     * clip_phase_valid, but a reader that forgets it must not find a usable
+     * number: 0.0 is a legal phase (the loop start), so a missed gate would
+     * play every lane's first breakpoint forever, in silence. NaN makes the
+     * unknown self-enforcing -- lane_eval rejects a non-finite phase and
+     * lane_tick's `!(clip_loop_len > 0.0)` rejects a NaN length, both by
+     * comparisons NaN cannot pass. */
+    inst->clip_phase_beats = valid ? phase_beats : NAN;
+    inst->clip_loop_len = valid ? loop_len : NAN;
+    inst->lane_track = track;
+    inst->lane_clip_slot = clip_slot;
+    inst->clip_fp_valid = (fp_valid && fp) ? 1 : 0;
+    if (fp_valid && fp) {
+        inst->clip_fp.loop_start = fp[0];
+        inst->clip_fp.loop_len   = fp[1];
+        inst->clip_fp.note_count = (int)fp[2];
+        inst->clip_fp.first_note = (int)fp[3];
+    }
+}
+
+/* A deleted clip ORPHANS its lanes. It does not delete them.
+ *
+ * Move saves Song.abl about 35 s after an edit, so "absent from the file" is a
+ * statement about the last save, not about the user's intent. Deleting recorded
+ * automation on the strength of a file diff inside that window is the wrong
+ * direction to fail in, and a lane is small. Pruning is only ever an explicit
+ * user action (Clear Lanes).
+ *
+ * No release here: lane_eval already refuses an orphaned lane, so the next
+ * lane_tick hands the parameter back through the one-shot release path every
+ * other silencing uses. Emitting one from here would be a second release site
+ * with its own once-only rule to get wrong.
+ *
+ * Marks by (track, slot), never by track alone -- a track carries a lane per
+ * clip position, and orphaning the lot is indistinguishable to the user from
+ * losing them.
+ *
+ * RT: called from the shim's per-slot loop, like chain_set_clip_phase. The
+ * worker only ever publishes the mask; it never reaches into the instance,
+ * because v2_set_param IS the SPI callback and the instance is only safe while
+ * RT is its single writer. */
+__attribute__((visibility("default")))
+void chain_set_clip_deleted(void *instance, int track, int slot) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *ln = &inst->lanes.lanes[i];
+        if (!ln->used) continue;
+        if (ln->track != track || ln->slot != slot) continue;
+        ln->orphaned = 1;
+    }
+}

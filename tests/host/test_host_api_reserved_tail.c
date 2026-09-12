@@ -59,6 +59,19 @@ int main(void) {
     const size_t reserved_off = offsetof(host_api_v1_t, reserved);
     const size_t total = sizeof(host_api_v1_t);
 
+    /* The tail must START at or before the offset breakbeat reads. This is the
+     * one check that sees a field INSERTED BEFORE reserved -- which moves the
+     * run to +128 and leaves a live pointer at +120. The zeroed-struct probe
+     * below cannot: at that point +120 holds a real (NULL) field and reads
+     * NULL, so it passes. Neither can the geometry checks, which only say the
+     * tail is big enough and last. */
+    CHECK(reserved_off <= BREAKBEAT_OVERREAD_OFFSET,
+          "reserved starts at +%zu, past the +%d breakbeat over-reads — a real "
+          "field now sits at that offset, and a live pointer there passes "
+          "breakbeat's own `if (host->fn)` guard and boot-loops the device. "
+          "Add host capabilities as dlsym'd exports, not as fields here",
+          reserved_off, BREAKBEAT_OVERREAD_OFFSET);
+
     CHECK(total - reserved_off >= MIN_RESERVED_BYTES,
           "reserved tail is %zu bytes, want >= %d — shrinking it puts "
           "over-reads back off the end of the struct",
@@ -68,7 +81,8 @@ int main(void) {
      * and inherits the original bug, silently. */
     CHECK(reserved_off + sizeof(api.reserved) == total,
           "reserved is not the final member (ends at %zu, struct is %zu) — "
-          "append new fields by consuming reserved from the front instead",
+          "and consuming the run to make room is not the fix either: its "
+          "front is +120. Use a dlsym'd export",
           reserved_off + sizeof(api.reserved), total);
 
     /* The specific offset that crashed must be inside the struct AND NULL. */

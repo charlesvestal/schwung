@@ -47,11 +47,45 @@ extern "C" {
 #define CLIP_PAD_NOTE_MIN 68
 #define CLIP_PAD_NOTE_MAX 99
 
-/* The two channels that carry meaning. Anything else is base colour. */
+/* The two channels that carry meaning. Anything else is base colour.
+ *
+ * THESE ARE NOT TWO MAGIC NUMBERS -- THEY ARE ANIMATIONS. Move puts the LED
+ * ANIMATION in the channel nibble: 9 = 0x09 = SCHWUNG_ANIM_PULSE_4TH and
+ * 14 = 0x0E = SCHWUNG_ANIM_BLINK_4TH (schwung-spi's vocabulary; the same
+ * 0x06-0x0A pulse / 0x0B-0x0F blink split rec_arm.h decodes for the Record
+ * button, where an animation channel IS "flashing"). So "ch 9 = playing,
+ * ch 14 = queued" is really PULSING = PLAYING, BLINKING = QUEUED -- the
+ * animation is the state, and the user reads the very same signal off the
+ * hardware: a queued clip flashes.
+ *
+ * Worth holding on to because it says WHY the decoder can trust the channel
+ * and must ignore the colour, and because it predicts the next surface: any
+ * Move control whose state is an animation is decodable the same way. */
 /* How long after a Start a first-sighting may still be attributed to that
  * Start rather than to a launch. Move repaints the grid within a beat or two;
  * beyond a bar, a clip appearing is someone pressing a pad. */
 #define CLIP_START_GRACE_PULSES 96   /* one bar at 4/4 */
+/* How long a ch-9 OFF may sit undecided before it is taken as a real stop.
+ *
+ * Move drops the outgoing clip's PULSING when a replacement is QUEUED, not
+ * when the clip stops, so an OFF is ambiguous at the moment it arrives -- and
+ * the queue that would disambiguate it arrives AFTER it (capture: seq 369 OFF
+ * then seq 371 ch-14). See the pending_off fields below.
+ *
+ * One bar at 4/4, matching CLIP_START_GRACE_PULSES, because the queue follows
+ * the OFF within a frame or two on the measured capture and a whole bar is
+ * generous by two orders of magnitude -- but only ONE observation puts the two
+ * in the same frame, so the window is sized for the ordering to survive
+ * whatever frame the queue lands in rather than fitted to that measurement.
+ *
+ * THE TWO ERRORS ARE NOT EQUAL, WHICH IS WHY IT ERRS LONG. Too short
+ * reinstates the user's bug: identity clears while the clip is still audible
+ * and its automation stops mid-bar. Too long leaves identity naming a clip
+ * that genuinely stopped, so a lane keeps driving a synth nobody can hear --
+ * inaudible, self-correcting on the next event, and bounded by this constant.
+ * A lane that stops early is the defect; a lane that runs on into silence is
+ * not. */
+#define CLIP_OFF_GRACE_PULSES 96   /* one bar at 4/4 */
 
 #define CLIP_ANCHOR_NONE    0
 #define CLIP_ANCHOR_START   1   /* MIDI Start: everything begins together   */
@@ -94,6 +128,36 @@ typedef struct {
      * was on_transport_start clearing saw_stop, i.e. destroying the very
      * evidence that would have rescued it. */
     int      pending_start[CLIP_TRACKS];
+    /* Per track: a ch-9 OFF we have seen but NOT acted on, and the pulse it
+     * arrived at. -1 for none.
+     *
+     * HARDWARE: "I'm playing clip A, I press clip B and the automation for
+     * clip A stops. then clip B starts playing with automation." Clip A keeps
+     * SOUNDING to the launch-quantize boundary; Move turns its pulsing off at
+     * QUEUE time. Measured 86 pulses -- ~3.6 beats at 4/4 -- between the OFF
+     * and the new clip's ch-9 ON. Clearing identity at the OFF released the
+     * lane's position gate there, so automation stopped beats before the audio
+     * did.
+     *
+     * IT CANNOT BE GATED ON "IS A LAUNCH QUEUED", because the OFF arrives
+     * FIRST (seq 369 then 371) -- nothing is queued yet when it is decoded.
+     * So the verdict is deferred and resolved by what happens next:
+     *
+     *   ch-14 on this track      -> REPLACED. Discard; identity and anchor
+     *                               stay with the clip that is still
+     *                               sounding until the new one's ch-9 ON.
+     *   ch-9 ON on another slot  -> REPLACED, and witnessed (see saw_stop).
+     *   ch-9 ON on the SAME slot -> the clip never stopped; keep its anchor.
+     *   a transport Start        -> a hard resync; commit it.
+     *   CLIP_OFF_GRACE_PULSES    -> STOPPED. Commit: identity clears and
+     *                               saw_stop records the witnessed silence.
+     *
+     * Only the STOPPED paths set saw_stop. A replacement is not a witnessed
+     * silence, and the ch-14/ch-9 pair is the stronger evidence rule 2 wants;
+     * setting saw_stop there would let a later BARE ch-9 ON anchor without a
+     * queue, which is exactly what rule 2 refuses. */
+    int      pending_off_slot[CLIP_TRACKS];
+    uint32_t pending_off_pulse[CLIP_TRACKS];
     uint32_t last_pulse;
     int      seen_pulse;
     /* Last UI mode the scan reported. Recorded even when the event is
@@ -197,6 +261,19 @@ int clip_state_share_anchor(clip_state_t *st, int src_track,
  * Start. Observed on hardware. clip_state_on_led consumes pending_start the
  * same way; this is the path for identity that did not come from an LED. */
 void clip_state_anchor_pending(clip_state_t *st, uint32_t pulses, int running);
+
+/* Commit any deferred ch-9 OFF whose grace has run out (see pending_off_slot).
+ *
+ * Time is the only thing that can resolve "the clip really stopped", and no
+ * LED event announces it -- Move said all it was going to say at the OFF. So
+ * this is driven per frame from the cable-0 scan, beside rec_arm_frame_end(),
+ * and clip_state_on_led() also runs it on the way in so an event arriving past
+ * the grace settles the verdict before it is interpreted. A pulse count that
+ * has gone BACKWARDS (a restart) commits too: the deferral cannot span two
+ * timelines.
+ *
+ * RT: called from the SPI callback. Table writes only. */
+void clip_state_expire_pending_off(clip_state_t *st, uint32_t pulses);
 
 /* MIDI Start (0xFA). Every playing clip returns to its top in lockstep with
  * the pulse counter, so this anchors them all at 0.

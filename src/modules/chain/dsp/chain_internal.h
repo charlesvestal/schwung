@@ -47,6 +47,8 @@
 #include "host/bus_mix.h"
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
+#include "host/lane_store.h"
+#include "host/lane_serial.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -189,6 +191,11 @@ typedef struct mod_source_contribution {
     int active;
     char source_id[32];
     float contribution;
+    /* An OVERRIDE carries an absolute value in `contribution` and replaces the
+     * base rather than adding to it. That is what an automation lane is: the
+     * lane IS the value, the knob is the base underneath it. Offsets from
+     * LFOs still sum on top, so the two compose. */
+    int is_override;
 } mod_source_contribution_t;
 
 /* Runtime modulation target state (non-destructive overlay). */
@@ -800,6 +807,38 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
 
+    /* Clip phase, pushed by the shim once per block through the dlsym'd
+     * chain_set_clip_phase(). NOT read from host_api_v1_t: its `reserved` tail
+     * begins at +120, the exact offset a shipped breakbeat build calls as
+     * get_project_bpm(), so a live pointer there passes breakbeat's own
+     * if (host->fn) guard and SIGSEGVs on the SPI callback at slot restore --
+     * which boot-loops the device. Same reason move_plugin_render_split is
+     * dlsym'd rather than a field on plugin_api_v2_t. */
+    int    clip_phase_valid;      /* 0 = UNKNOWN. Not zero. Unknown. */
+    double clip_phase_beats;      /* beats from the clip's loop start */
+    double clip_loop_len;         /* beats */
+    /* Which clip the phase belongs to, and what it looks like right now. All
+     * pushed together in ONE call, deliberately: these are facts about one
+     * clip at one instant, and splitting them across calls lets a lane bind a
+     * fingerprint to a position it did not come from. */
+    int    lane_track;            /* Move track 0..3 (== the slot index) */
+    int    lane_clip_slot;        /* 0..7, or -1 for "nothing playing" */
+    int    clip_fp_valid;
+    lane_fingerprint_t clip_fp;   /* content fingerprint; note data in Task 6 */
+
+    /* The lanes themselves: ON THE INSTANCE, never inside patch_info_t. That
+     * struct is a STACK LOCAL on the SPI callback (v2_set_param's load_file)
+     * and also sits MAX_PATCHES deep in this instance -- which is why raising
+     * SLOT_BUSES from 4 to 8 took the callback frame from 194 KB to 232 KB.
+     * A lane_store_t is 18 KB and must land in neither multiplier. */
+    lane_store_t lanes;
+    int    lane_armed;            /* pushed from the shim: Move's Record button */
+    /* How many lanes the last `lanes:clear` threw away, read back as
+     * `lanes:cleared`. The UI announces a NUMBER: a clear that reports
+     * success without one is indistinguishable from one that cleared
+     * nothing. */
+    int    lanes_last_cleared;
+
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
     float lfo_base_values[LFO_COUNT];  /* Base value snapshot for LFO-to-LFO modulation */
@@ -1172,11 +1211,30 @@ CHAIN_INTERNAL void smoother_reset(param_smoother_t *smoother);
 CHAIN_INTERNAL void smoother_set_target(param_smoother_t *smoother, const char *key, float value);
 CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
 
+/* chain_lanes.c */
+CHAIN_INTERNAL void lane_tick(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target,
+                                     const char *param, const char *val);
+CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
+                                             lane_fingerprint_t *out);
+CHAIN_INTERNAL int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len);
+CHAIN_INTERNAL void lane_apply_state(chain_instance_t *inst, const char *doc);
+CHAIN_INTERNAL void lane_set_armed(chain_instance_t *inst, int armed);
+/* ONE dispatch for every "lanes:" key -- `sub` is the key past the prefix.
+ * chain_host.c carries a single branch each way; every lane key lives here. */
+CHAIN_INTERNAL void lane_param_set(chain_instance_t *inst, const char *sub,
+                                   const char *val);
+CHAIN_INTERNAL int lane_param_get(chain_instance_t *inst, const char *sub,
+                                  char *buf, int buf_len);
+
 /* chain_mod.c */
 CHAIN_INTERNAL void chain_mod_apply_effective_value(chain_instance_t *inst, mod_target_state_t *entry, int force_write);
 CHAIN_INTERNAL void chain_mod_clear_source(void *ctx, const char *source_id);
 CHAIN_INTERNAL void chain_mod_clear_target_entries(chain_instance_t *inst, const char *target, int restore_base);
 CHAIN_INTERNAL int chain_mod_emit_value(void *ctx, const char *source_id, const char *target, const char *param, float signal, float depth, float offset, int bipolar, int enabled);
+CHAIN_INTERNAL int chain_mod_emit_override(void *ctx, const char *source_id, const char *target, const char *param, float value, int enabled);
 CHAIN_INTERNAL mod_target_state_t *chain_mod_find_target_entry(chain_instance_t *inst, const char *target, const char *param);
 CHAIN_INTERNAL int chain_mod_get_base_for_plain_key(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);
 CHAIN_INTERNAL int chain_mod_get_base_for_subkey(chain_instance_t *inst, const char *target, const char *subkey, char *buf, int buf_len);

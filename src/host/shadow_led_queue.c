@@ -6,6 +6,7 @@
 #include "shadow_led_queue.h"
 #include "unified_log.h"
 #include "clip_state.h"
+#include "rec_arm.h"
 
 /* Transport pulse counter (shadow_sampler.c). Read-only here, and only from
  * the SPI callback, which is also the only writer — no barrier needed. */
@@ -374,6 +375,16 @@ static void service_knob_led_restore(shadow_control_t *ctrl) {
     led_queue_restore_move_sysex_leds();
 }
 
+/* Move's Record button, decoded from its LED (rec_arm.h). Written on the SPI
+ * callback by the cable-0 scan below; read by the shim to arm the lanes and by
+ * the worker to log it. Independent ints, so a torn read is at worst one frame
+ * stale, and the recording window is beats long. */
+static rec_arm_t g_rec_arm;
+
+int shadow_rec_arm_recording(void) { return g_rec_arm.recording; }
+int shadow_rec_arm_flashing(void)  { return g_rec_arm.flashing; }
+int shadow_rec_arm_seen(void)      { return g_rec_arm.seen; }
+
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
@@ -407,6 +418,10 @@ void shadow_clear_move_leds_if_overtake(void) {
                                   (uint32_t)shadow_transport_pulses,
                                   sampler_transport_playing,
                                   ctrl ? ctrl->move_ui_mode : 0);
+                /* Move's Record button, read over its shoulder. Accumulates
+                 * only -- the decision is rec_arm_frame_end() after the loop,
+                 * because a burst holds `static 127` followed by `blink`. */
+                rec_arm_on_led(&g_rec_arm, midi_out[i+1], d1, d2);
                 if (type == 0x90 || type == 0x80) {
                     /* Move turns pad LEDs off via note-off (0x80); normalize
                      * to note-on with d2=0 so restore emits a uniform 0x90. */
@@ -428,6 +443,22 @@ void shadow_clear_move_leds_if_overtake(void) {
                 led_capture_record(cable, midi_out[i+1], midi_out[i+2], midi_out[i+3]);
             }
         }
+
+        /* ONE decision per frame, from the LAST CC 86 in it. Inside the same
+         * gate as the scan that feeds it: when the scan does not run (overtake
+         * without skip_led_clear) nothing was offered, and a frame that offered
+         * nothing must leave the state alone rather than clear it. */
+        rec_arm_frame_end(&g_rec_arm);
+
+        /* A deferred ch-9 OFF is resolved by TIME when nothing contradicts it,
+         * and no LED event announces that -- Move said all it was going to say
+         * at the OFF. Inside the same gate as the scan on purpose: while we are
+         * blind (overtake without skip_led_clear) nothing COULD have come along
+         * to call it a replacement, so expiring it there would be a verdict
+         * reached without evidence. See clip_state.h, pending_off_slot. */
+        clip_state_ensure();
+        clip_state_expire_pending_off(&g_clip_state,
+                                      (uint32_t)shadow_transport_pulses);
     }
 
     /* AFTER the scan, so the cache is this frame's, and only outside overtake,

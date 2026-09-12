@@ -340,8 +340,50 @@ else
     echo "Skipping Shadow UI (up to date)"
 fi
 
+# Is the Link SDK usable, or only PARTLY checked out?
+#
+# THE GUARD BELOW USED TO ASK ONLY `[ -d libs/link/include/ableton ]`, and a
+# partially initialised submodule walks straight past that. `libs/link` is its
+# own repo with a nested submodule of its own (modules/asio-standalone), so
+# `git submodule update --init libs/link` WITHOUT --recursive leaves Ableton's
+# headers present and asio absent. The guard then says nothing, the g++ line
+# runs, and link_subscriber.cpp dies on a missing asio.hpp -- under `set -e`,
+# BEFORE the rules below it. So the artifact somebody was actually testing was
+# never built, and the failure names a file they had not touched. Twice in one
+# session. SCHWUNG_ALLOW_NO_LINK_SDK=1 could not help, because the branch that
+# reads it was never reached.
+#
+# Every path here is one the compile itself consumes: both include roots named
+# on the g++ line, the header link_subscriber.cpp includes, and the asio entry
+# point Ableton's headers pull in behind it. Naming the FILES and not just the
+# directories is what turns an SDK pinned before the public audio API into a
+# hard failure with a path on it, rather than a template error five hundred
+# lines deep.
+#
+# Prints "ok", or "absent"/"partial" followed by the first missing path, so the
+# caller can tell an uninitialised submodule from a half-initialised one --
+# they have different fixes and the recursive one is the whole point.
+# Extracted and RUN by tests/host/test_link_sdk_guard.sh; keep it self-
+# contained (no globals, no `set -u` assumptions beyond its own argument).
+link_sdk_state() {
+    local root="${1:-./libs/link}"
+    [ -d "$root" ] && [ -n "$(ls -A "$root" 2>/dev/null)" ] || {
+        echo "absent $root"; return 1; }
+    local p
+    for p in "include/ableton" \
+             "include/ableton/LinkAudio.hpp" \
+             "modules/asio-standalone/asio/include" \
+             "modules/asio-standalone/asio/include/asio.hpp"; do
+        [ -e "$root/$p" ] || { echo "partial $root/$p"; return 1; }
+    done
+    echo ok
+}
+
 # Build Link Audio subscriber (C++17, requires Link SDK)
-if [ -d "./libs/link/include/ableton" ]; then
+# `|| true`, because the assignment inherits the function's exit status and
+# `set -e` would abort here on the very case this guard exists to report.
+link_sdk="$(link_sdk_state ./libs/link)" || true
+if [ "$link_sdk" = "ok" ]; then
     if needs_rebuild build/link-subscriber \
         src/host/link_subscriber.cpp src/host/arc4random_compat.c src/host/unified_log.c \
         src/host/link_audio.h src/host/unified_log.h src/host/shadow_constants.h; then
@@ -386,14 +428,24 @@ else
     #
     # Fail instead. SCHWUNG_ALLOW_NO_LINK_SDK=1 is the deliberate opt-out for
     # anyone who really does want a build without it.
+    #
+    # A PARTIAL SDK LANDS HERE TOO, which it did not before: it fell through
+    # into the compile and killed the build before the rules after this one,
+    # with the opt-out unreachable. See link_sdk_state above.
+    link_sdk_why="${link_sdk%% *}"
+    link_sdk_path="${link_sdk#* }"
     if [ "${SCHWUNG_ALLOW_NO_LINK_SDK:-0}" = "1" ]; then
-        echo "Warning: Link SDK not found at libs/link/, skipping link-subscriber"
+        echo "Warning: Link SDK $link_sdk_why at libs/link/ ($link_sdk_path),"
+        echo "         skipping link-subscriber"
         echo "         (SCHWUNG_ALLOW_NO_LINK_SDK=1 — Move->Schwung audio will not work)"
     else
-        echo "ERROR: Link SDK not found at libs/link/ — cannot build link-subscriber." >&2
+        echo "ERROR: Link SDK $link_sdk_why — cannot build link-subscriber." >&2
+        echo "       Missing: $link_sdk_path" >&2
         echo "       Move->Schwung (Link Audio) has no reception path without it, and" >&2
         echo "       the tarball would silently ship without one." >&2
         echo "" >&2
+        # --recursive is not decoration: libs/link carries its own submodule,
+        # and without it asio is absent while Ableton's headers are present.
         echo "       Fix:  git submodule update --init --recursive libs/link" >&2
         echo "       Or:   SCHWUNG_ALLOW_NO_LINK_SDK=1 ./scripts/build.sh" >&2
         exit 1
@@ -507,14 +559,27 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
+    src/modules/chain/dsp/chain_lanes.c \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
     src/host/unified_log.h src/host/plugin_api_v1.h src/host/audio_fx_api_v1.h \
     src/host/audio_fx_api_v2.h src/host/midi_fx_api_v1.h src/host/lfo_common.h \
     src/host/split_voices_parse.h src/host/bus_mix.h src/host/bus_route.h \
-    src/host/bus_voice_apply.h; then
+    src/host/bus_voice_apply.h src/host/lane_store.c src/host/lane_store.h \
+    src/host/lane_serial.c src/host/lane_serial.h; then
     echo "Building chain DSP..."
+    # lane_store.c and lane_serial.c are plain host sources shared with
+    # tests/host, so neither can wear chain_internal.h's CHAIN_INTERNAL.
+    # Compiled with the rest they put their lane_* symbols into dsp.so's
+    # dynamic table -- exactly the collision surface a dlopen'd sub-plugin must
+    # not be able to bind to, and what test_chain_host_file_split.sh's
+    # exported-symbol allowlist exists to catch. Separate hidden-visibility
+    # objects keep them callable inside dsp.so and invisible outside it.
+    "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
+        -c src/host/lane_store.c -o build/modules/chain/lane_store.o -Isrc
+    "${CROSS_PREFIX}gcc" -g -O3 -fPIC -fvisibility=hidden \
+        -c src/host/lane_serial.c -o build/modules/chain/lane_serial.o -Isrc
     "${CROSS_PREFIX}gcc" -g -O3 -shared -fPIC \
         src/modules/chain/dsp/chain_host.c \
         src/modules/chain/dsp/chain_json.c \
@@ -524,7 +589,10 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_patch.c \
         src/modules/chain/dsp/chain_reorder.c \
         src/modules/chain/dsp/chain_bus.c \
+        src/modules/chain/dsp/chain_lanes.c \
         src/host/unified_log.c \
+        build/modules/chain/lane_store.o \
+        build/modules/chain/lane_serial.o \
         -o build/modules/chain/dsp.so \
         -Isrc \
         -lm -ldl -lpthread

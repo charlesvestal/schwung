@@ -17,6 +17,14 @@
  * and can be stale. A live LED observation must always win, and a file read
  * must never overwrite something actually observed.
  *
+ * THE ONE EXCEPTION IS AN EVENT, NOT A WEAKENING: a transport START launches
+ * each track's SELECTED clip in EVERY view, and the file is the only thing
+ * that knows which clip that is. So a track whose identity says "nothing
+ * playing" AND for which a Start is pending is seeded too. See the long note
+ * in clip_regions_seed_state() -- the user hit this by building a clip in the
+ * step editor and pressing Play, where Note view's pad gate means no LED can
+ * ever supply identity.
+ *
  * The loop is NOT always at 0.0 -- a clip whose loop starts at bar 3 is
  * normal -- so phase is relative to loop_start, never to the clip start.
  *
@@ -25,6 +33,7 @@
 #ifndef CLIP_REGIONS_H
 #define CLIP_REGIONS_H
 
+#include <stdint.h>
 #include "clip_state.h"
 
 #ifdef __cplusplus
@@ -44,6 +53,17 @@ typedef struct {
      * last paged, not to the one on screen now. */
     double scroll_beats;
     int    have_scroll;
+    /* The CONTENT half of a lane's fingerprint. Geometry alone cannot tell a
+     * copied clip from the original -- same loop, different notes -- and
+     * binding a lane to the wrong clip is the confidently-wrong answer this
+     * whole pair of projects exists to refuse.
+     *
+     * first_note is -1 when there are no notes. NOT 0: note 0 is a real note,
+     * so a zeroed field is indistinguishable from a clip whose earliest note
+     * is the lowest one. clip_regions_parse writes -1 into every slot before
+     * it scans, so an UNPARSED slot cannot read as note 0 either. */
+    int note_count;
+    int first_note;   /* noteNumber of the earliest note, or -1 */
 } clip_region_t;
 
 typedef struct {
@@ -60,9 +80,14 @@ int clip_regions_parse_file(const char *path, clip_regions_t *out);
 /* Same, over a buffer already in memory (what the tests drive). */
 int clip_regions_parse(const char *json, size_t len, clip_regions_t *out);
 
-/* Seed identity for tracks we have NOT observed. Never touches a track whose
- * identity came from the LED stream, and never sets an anchor: the file says
- * what is selected, not when it started. */
+/* Seed identity for tracks we have nothing for. Never touches a track with a
+ * live observed clip, and never sets an anchor: the file says what is
+ * selected, not when it started.
+ *
+ * "Nothing for" is either no identity at all, or identity saying nothing is
+ * playing WITH a transport Start pending -- a Start launches the selected
+ * clip. The anchor for that case is left to clip_state_anchor_pending(),
+ * which the caller must run straight afterwards (shim_worker.c does). */
 void clip_regions_seed_state(const clip_regions_t *rg, clip_state_t *st);
 
 /* Does the geometry that scoring depends on actually differ? Move saves
@@ -81,10 +106,26 @@ int clip_regions_geometry_differs(const clip_regions_t *a,
  * distinction is HISTORY -- a clip that existed in the previous parse and is
  * gone from this one was deleted; one that never existed may simply be new.
  *
- * Call with the regions as they were BEFORE the re-parse. */
+ * Call with the regions as they were BEFORE the re-parse.
+ *
+ * `deleted_mask` (optional; pass NULL to skip) reports every (track, slot)
+ * pair that went away, bit `track * CLIP_SLOTS + slot`, ASSIGNED rather than
+ * OR'd -- it describes this one re-parse and nothing earlier.
+ *
+ * It answers a WIDER question than the identity half above, which only ever
+ * looks at the clip a track is playing: an automation lane is bound to a grid
+ * POSITION, so a lane on any of the eight positions has to be told, not just
+ * the live one. And this function is the only place that can tell a deletion
+ * from a clip Move has not saved yet, which is why the lane side is told from
+ * here rather than inferring it from a single parse. */
 void clip_regions_forget_deleted(const clip_regions_t *before,
                                  const clip_regions_t *after,
-                                 clip_state_t *st);
+                                 clip_state_t *st,
+                                 uint32_t *deleted_mask);
+/* Every clip slot must fit the mask, or a deletion in the last slots is
+ * invisible with nothing to say so. */
+_Static_assert(CLIP_TRACKS * CLIP_SLOTS <= 32,
+               "deleted_mask is a uint32_t and cannot address every clip slot");
 
 #ifdef __cplusplus
 }

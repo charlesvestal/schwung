@@ -41,6 +41,7 @@
 #include "host/audio_fx_api_v2.h"
 #include "host/shadow_constants.h"
 #include "host/shadow_midi_inject_writer.h"
+#include "host/move_ui_mode_label.h"
 #include "host/shadow_test_stream.h"
 #include "host/shadow_metronome.h"
 #include "host/shadow_chain_types.h"
@@ -1994,6 +1995,83 @@ static void shadow_inprocess_render_to_buffer(void) {
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
+
+            /* Tell the slot where its Move track's clip is. BEFORE the idle
+             * gate on purpose: a silent slot still advances its modulation via
+             * mod:tick, and a lane must keep playing through silence -- the
+             * gate skips render_block for 171 frames in 172.
+             *
+             * Guarded on the pointer because the export is optional: a chain
+             * DSP built before lanes resolves NULL, and every slot is simply
+             * never told, which reads downstream as "phase unknown". */
+            if (shadow_chain_set_clip_phase) {
+                double lane_phase = 0.0, lane_loop = 0.0;
+                double lane_fp[4] = { 0.0, 0.0, 0.0, -1.0 };
+                int lane_clip = -1, lane_fp_ok = 0;
+                int lane_ok = shadow_slot_clip_phase(s, &lane_phase, &lane_loop,
+                                                     &lane_clip, &lane_fp_ok,
+                                                     lane_fp);
+                shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
+                                            lane_ok, lane_phase, lane_loop,
+                                            s, lane_clip, lane_fp_ok, lane_fp);
+            }
+
+            /* Move's Record button, decoded from its LED (rec_arm.h). ON
+             * CHANGE ONLY: a per-block write would serve a param request on
+             * the SPI callback 344 times a second to say nothing new, and
+             * param-slow already names set_param as the thing that eats a
+             * frame.
+             *
+             * Keyed on the INSTANCE as well as the value, because a slot that
+             * is reloaded gets a fresh instance whose lane_armed is whatever
+             * the memset left -- so "same value as last time" would leave a
+             * newly built slot un-told and nothing would ever correct it. */
+            if (shadow_plugin_v2->set_param) {
+                static void *lane_armed_inst[SHADOW_CHAIN_INSTANCES];
+                static int   lane_armed_seen[SHADOW_CHAIN_INSTANCES];
+                void *linst = shadow_chain_slots[s].instance;
+                int armed = shadow_rec_arm_recording() ? 1 : 0;
+                if (linst != lane_armed_inst[s] || armed != lane_armed_seen[s]) {
+                    shadow_plugin_v2->set_param(linst, "lanes:armed",
+                                                armed ? "1" : "0");
+                    lane_armed_inst[s] = linst;
+                    lane_armed_seen[s] = armed;
+                }
+            }
+
+            /* A DELETED clip orphans its lanes, and the crossing is
+             * worker-publishes / callback-pushes.
+             *
+             * The worker is the only thing that can tell a deletion from a
+             * clip Move has not saved yet (it holds the before/after parse),
+             * and it must not push this itself: chain_set_clip_deleted is a
+             * module entry point, i.e. THIS thread, and the instance is only
+             * safe because RT is its single writer.
+             *
+             * Once per GENERATION, not per block: a counter cannot be
+             * resurrected by a preempted worker the way a flag can, and the
+             * seen-value lives here, in the consumer, so the producer never
+             * has to unwrite anything. Bounded at 32 marks on the frame a
+             * deletion lands and zero on every other frame.
+             *
+             * Every set bit goes to every slot. chain_set_clip_deleted matches
+             * on (track, slot), so a slot holding no lane for that position
+             * does nothing -- and that is what keeps this correct if a lane is
+             * ever bound to a track other than its own slot index. */
+            if (shadow_chain_set_clip_deleted) {
+                static uint32_t lane_deleted_gen_seen[SHADOW_CHAIN_INSTANCES];
+                uint32_t gen = shadow_clip_deleted_generation();
+                if (gen != lane_deleted_gen_seen[s]) {
+                    uint32_t mask = shadow_clip_deleted_mask();
+                    lane_deleted_gen_seen[s] = gen;
+                    for (int b = 0; b < CLIP_TRACKS * CLIP_SLOTS; b++) {
+                        if (!(mask & (1u << b))) continue;
+                        shadow_chain_set_clip_deleted(
+                            shadow_chain_slots[s].instance,
+                            b / CLIP_SLOTS, b % CLIP_SLOTS);
+                    }
+                }
+            }
 
             /* Per-slot timing for the render+fx work below */
             struct timespec slot_t0, slot_t1;
@@ -6475,19 +6553,41 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
                                  corun_owns_native_oled ||
                                  pin_challenge;
 
+    /* READING MOVE'S FRAME IS NOT THE SAME AS SHOWING IT.
+     *
+     * `global_mmap_addr` is the buffer MOVE writes, and Move does not know its
+     * screen has been replaced -- it keeps rendering while the shadow UI is up.
+     * The `native_display_visible` gate exists for the RESTORE/overlay job
+     * below (snapshot Move's screen so the volume overlay can be composited
+     * over it), and putting the accumulator behind it meant we declined to
+     * read a frame that was sitting right there.
+     *
+     * That cost a measurement: with the knob grid up, no complete frame ever
+     * accumulated, which read as "Move stopped rendering" when in fact we
+     * stopped looking. Move's step editor carries the clip's bar count and a
+     * loop-relative playhead -- the two facts Song.abl is ~35 s late with for
+     * a clip the user just made -- so this is the one path that can supply
+     * them during the workflow that needs them. */
+    if (global_mmap_addr) {
+        uint8_t *mem_any = (uint8_t *)global_mmap_addr;
+        uint8_t slice_any = mem_any[80];
+        if (slice_any >= 1 && slice_any <= 6) {
+            int idx = slice_any - 1;
+            pin_accumulate_slice(idx, mem_any + 84, (idx == 5) ? 164 : 172);
+        }
+    }
+
     if (global_mmap_addr && native_display_visible) {
         uint8_t *mem = (uint8_t *)global_mmap_addr;
         uint8_t slice_num = mem[80];
 
-        /* Always capture incoming slices */
+        /* Snapshot for the restore/overlay path, which DOES need Move's screen
+         * to be the visible one. The accumulator above is deliberately outside
+         * this gate. */
         if (slice_num >= 1 && slice_num <= 6) {
             int idx = slice_num - 1;
-            int bytes = (idx == 5) ? 164 : 172;
             memcpy(captured_slices[idx], mem + 84, 172);
             slice_fresh[idx] = 1;
-
-            /* Always accumulate into PIN display buffer for dump trigger */
-            pin_accumulate_slice(idx, mem + 84, bytes);
         }
 
         /* When volume knob touched (and no track, pad or step held), start
@@ -8296,8 +8396,13 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                 /* Track buttons are CCs 40-43 */
                 if (d1 >= 40 && d1 <= 43) {
                     int pressed = (d2 > 0);
+                    /* Set by any block below that swallows this press from
+                     * Move's MIDI_IN. A press Move never sees cannot have
+                     * changed Move's view, so it must not relabel
+                     * move_ui_mode — see src/host/move_ui_mode_label.h for
+                     * the hardware failure this caused. */
+                    int withheld_from_move = 0;
                     shadow_update_held_track(d1, pressed);
-                    if (pressed && shadow_control) shadow_control->move_ui_mode = 2; /* NOTE */
 
                     /* Update selected slot when track is pressed (for Shift+Knob routing)
                      * Track buttons are reversed: CC43=Track1, CC42=Track2, CC41=Track3, CC40=Track4 */
@@ -8339,6 +8444,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             /* If already in shadow mode, flag will be picked up by tick() */
                             /* Block Track CC from reaching Move */
                             midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                            withheld_from_move = 1;
                         }
 
                         /* "Stay in Schwung": a plain Track tap while the shadow
@@ -8377,6 +8483,29 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                             shadow_control->display_mode = 0;
                             shadow_log("Shift+Track: dismissing shadow UI");
                         }
+                    }
+
+                    /* MOVE'S VIEW, INFERRED FROM A PRESS MOVE ACTUALLY GOT.
+                     *
+                     * No announcement reports a track selection, so this press
+                     * is the only evidence that Move has put a track's
+                     * instrument under the pads (= NOTE). But it is evidence
+                     * only if Move received it: Shift+Vol+Track opens the
+                     * shadow UI and is swallowed above, so it leaves Move
+                     * exactly where it was. Relabelling on it lied, nothing
+                     * cleared the lie (only the exact "Session Mode"
+                     * announcement does, and that never arrives when the user
+                     * was already in Session), and clip_state_on_led's
+                     * Session-only gate then rejected every pad event — so
+                     * clip identity FROZE on the clip playing when the UI
+                     * opened instead of going invalid. Found on hardware by
+                     * switching clips with Schwung's UI up.
+                     *
+                     * Runs after the gesture blocks because only they know
+                     * whether the press was withheld. */
+                    if (move_ui_mode_track_press_relabels(pressed, withheld_from_move) &&
+                        shadow_control) {
+                        shadow_control->move_ui_mode = MOVE_UI_MODE_NOTE;
                     }
 
                     /* Long-press detection for Track buttons */

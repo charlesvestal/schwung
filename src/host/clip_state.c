@@ -27,6 +27,47 @@ void clip_state_reset(clip_state_t *st)
         st->queued_slot[t] = -1;
         st->saw_stop[t] = 0;
         st->pending_start[t] = 0;
+        st->pending_off_slot[t] = -1;
+    }
+}
+
+/* Take a deferred ch-9 OFF at face value: the clip really stopped.
+ *
+ * This is the body of the old OFF branch, unchanged apart from running later.
+ * saw_stop is set HERE and only here (plus its sibling in on_led's ON branch,
+ * which is the replacement case and does not set it): a committed off is a
+ * silence we watched, which is what lets the track's next clip anchor. Losing
+ * that is a Project 1 bug -- a track that fell silent and could never anchor
+ * again. */
+static void clip_commit_pending_off(clip_state_t *st, int track)
+{
+    int slot = st->pending_off_slot[track];
+    st->pending_off_slot[track] = -1;
+    if (slot < 0) return;
+    clip_track_state_t *tr = &st->tracks[track];
+    /* Re-check identity: the deferral window is long enough for something
+     * else (a seed, a set change) to have moved the track on, and clearing a
+     * clip we are no longer claiming would erase a newer observation. */
+    if (tr->identity_valid && tr->clip_slot == slot) {
+        tr->clip_slot = -1;
+        tr->anchor_valid = 0;
+        st->saw_stop[track] = 1;
+    }
+}
+
+void clip_state_expire_pending_off(clip_state_t *st, uint32_t pulses)
+{
+    if (!st) return;
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        if (st->pending_off_slot[t] < 0) continue;
+        /* Still inside the window: the queue may yet arrive. A pulse count
+         * that moved backwards is a restart, i.e. a different timeline, and
+         * falls through to the commit rather than waiting out a grace it can
+         * no longer measure. */
+        if (pulses >= st->pending_off_pulse[t] &&
+            pulses - st->pending_off_pulse[t] <= CLIP_OFF_GRACE_PULSES)
+            continue;
+        clip_commit_pending_off(st, t);
     }
 }
 
@@ -40,6 +81,14 @@ void clip_state_reset(clip_state_t *st)
 void clip_state_on_transport_start(clip_state_t *st)
 {
     if (!st) return;
+    /* A Start is a hard resync and it clears queued_slot below, so a deferred
+     * off cannot survive it -- there is nothing left that could come along and
+     * call it a replacement. Commit FIRST, so the loop below sees the track as
+     * it really is: without this, a track whose clip had stopped would be
+     * anchored at 0 as though it were still playing, and its pending_start --
+     * the evidence that rescues a clip returning just after a Start -- would
+     * never be set. */
+    for (int t = 0; t < CLIP_TRACKS; t++) clip_commit_pending_off(st, t);
     for (int t = 0; t < CLIP_TRACKS; t++) {
         st->queued_slot[t] = -1;
         st->pending_start[t] = 0;
@@ -69,6 +118,12 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
     st->last_pulse = pulses;
     st->seen_pulse = 1;
 
+    /* Settle any overdue deferred stop BEFORE interpreting this event, so it
+     * is read against the truth rather than against a verdict we owe. Cheap
+     * and unconditional: four ints, and the loop returns at once when nothing
+     * is pending. */
+    clip_state_expire_pending_off(st, pulses);
+
     st->last_ui_mode = ui_mode;
 
     uint8_t type = status & 0xF0;
@@ -84,7 +139,19 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
     int on = (type == 0x90) && d2 > 0;
 
     if (ch == CLIP_CH_QUEUED) {
-        if (on) st->queued_slot[track] = slot;
+        if (on) {
+            st->queued_slot[track] = slot;
+            /* A launch is queued here, so the ch-9 OFF that arrived just
+             * BEFORE it was Move dropping the outgoing clip's pulsing, not the
+             * clip stopping -- it keeps sounding until this launch lands.
+             * Discard the deferral entirely rather than extending it: launch
+             * quantize can be bars out, and a queue is positive evidence that
+             * needs no deadline. Identity and anchor stay where they are until
+             * the new clip's own ch-9 ON moves them.
+             *
+             * Deliberately does NOT set saw_stop -- see pending_off_slot. */
+            st->pending_off_slot[track] = -1;
+        }
         return;
     }
     if (ch != CLIP_CH_PLAYING) return;   /* base colour: carries no state */
@@ -98,6 +165,22 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
         int was_queued = (st->queued_slot[track] == slot);
         int slot_changed = (!tr->identity_valid || tr->clip_slot != slot);
 
+        /* A deferred off on this track is resolved by this ON, and WHICH slot
+         * it names decides how:
+         *
+         *   a DIFFERENT slot -- we watched the old clip's pulsing go out and
+         *   this one come in, so this clip began just now. Same standing as
+         *   saw_stop, and it is what keeps "choose a clip on a stopped track"
+         *   anchoring now that the off no longer sets saw_stop itself.
+         *
+         *   the SAME slot -- the clip never stopped (a repaint, or a queue
+         *   that was cancelled). No witness, so the existing anchor stands;
+         *   treating it as a launch would re-anchor a correct phase, which is
+         *   precisely rule 2. */
+        int off_slot = st->pending_off_slot[track];
+        int replaced = (off_slot >= 0 && off_slot != slot);
+        st->pending_off_slot[track] = -1;
+
         tr->identity_valid = 1;
         tr->clip_slot = slot;
 
@@ -109,7 +192,7 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
          * anything -- we may simply have been blind for a while (the scan is
          * gated during overtake). Anchoring on that would be the same guess
          * the refresh rule exists to refuse. */
-        int witnessed = was_queued || st->saw_stop[track];
+        int witnessed = was_queued || st->saw_stop[track] || replaced;
 
         if (running && st->pending_start[track] && !was_queued &&
             pulses <= CLIP_START_GRACE_PULSES) {
@@ -132,14 +215,20 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
         st->saw_stop[track] = 0;
         st->pending_start[track] = 0;
     } else {
-        /* Playing clip stopped. Identity is known (nothing is playing);
-         * the anchor is meaningless. */
-        if (tr->identity_valid && tr->clip_slot == slot) {
-            tr->clip_slot = -1;
-            tr->anchor_valid = 0;
-            /* Witnessed silence. Whatever starts next on this track, we saw
-             * it start. */
-            st->saw_stop[track] = 1;
+        /* The playing clip's PULSING went out -- which is NOT the same as the
+         * clip stopping, and the old comment here said it was ("nothing is
+         * playing"). Move drops the animation when a replacement is QUEUED,
+         * ~3.6 beats before the new clip starts, and the clip keeps sounding
+         * for that whole window. Acting now stopped the user's automation
+         * mid-bar while they could still hear the clip.
+         *
+         * So record the off and decide later; clip_commit_pending_off() does
+         * what this branch used to do, once nothing has contradicted it. The
+         * first off wins: a repeat cannot extend its own grace. */
+        if (tr->identity_valid && tr->clip_slot == slot &&
+            st->pending_off_slot[track] < 0) {
+            st->pending_off_slot[track] = slot;
+            st->pending_off_pulse[track] = pulses;
         }
     }
 }
