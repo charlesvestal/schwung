@@ -3066,6 +3066,7 @@ function moduleListsTickPendingName() {
 function exitModuleLists() {
     const slotIndex = moduleListsSlot;
     const componentKey = moduleListsKey;
+    const fromModuleUi = moduleListsReturnModuleUi;
     moduleListsSlot = -1;
     moduleListsKey = "";
     moduleListsModuleId = "";
@@ -3073,7 +3074,15 @@ function exitModuleLists() {
      * that matters is moduleListsConfirmDelete: it is a LATCH, so a session
      * left on an armed "yes, delete" would arm the next one, and the next
      * click after entering would delete a list nobody asked about. The three
-     * cursors are cheap correctness beside it. */
+     * cursors are cheap correctness beside it.
+     *
+     * moduleListsReturnModuleUi is read ABOVE and cleared HERE for the same
+     * reason, and it has to be inside this block rather than below the
+     * `slotIndex < 0` early return: a stale `true` does not merely leak, it
+     * sends the NEXT session's return -- a stock grid's -- through
+     * enterComponentEditFallback, which opens a hierarchy module on the bare
+     * preset browser instead of its knob grid. Same class as the latch. */
+    moduleListsReturnModuleUi = false;
     moduleListsEditIndex = 0;
     moduleListsActionIndex = 0;
     moduleListsTarget = "";
@@ -3081,8 +3090,6 @@ function exitModuleLists() {
     moduleListsPendingName = null;
     if (slotIndex < 0) { setView(VIEWS.CHAIN_EDIT); needsRedraw = true; return; }
     const stillLoaded = getChainComponentModule(chainConfigs[slotIndex], componentKey);
-    const fromModuleUi = moduleListsReturnModuleUi;
-    moduleListsReturnModuleUi = false;
     if (!stillLoaded || !stillLoaded.module) {
         if (fromModuleUi) unloadModuleUi();
         /* Same guard maybeReturnToComponentGrid needs: a component editor
@@ -3369,12 +3376,6 @@ function moduleListsActionsBack() {
 let componentGridReturnEnter = true;
 
 /*
- * A module-owned chain UI has its own controller, so paramPagesRefreshTrailing
- * (the host's) is a no-op for it and its "My Presets" row would go on reading
- * "(none)" after a Save. Tell the module instead; it refreshes its own
- * trailing pages. Optional — a chain UI that does not declare it is left alone.
- */
-/*
  * Land a reloaded module UI on the page the hand-off left from. The host's
  * own grid restores by NAME on the way back (enterParamPages's
  * restorePageName); a module-owned grid is reloaded from scratch and knows
@@ -3390,6 +3391,12 @@ function restoreModuleUiPage(name, enter) {
     }
 }
 
+/*
+ * A module-owned chain UI has its own controller, so paramPagesRefreshTrailing
+ * (the host's) is a no-op for it and its "My Presets" row would go on reading
+ * "(none)" after a Save. Tell the module instead; it refreshes its own
+ * trailing pages. Optional — a chain UI that does not declare it is left alone.
+ */
 function notifyModuleUiPresetsChanged() {
     if (view === VIEWS.COMPONENT_EDIT && loadedModuleUi &&
         typeof loadedModuleUi.onPresetsChanged === "function") {

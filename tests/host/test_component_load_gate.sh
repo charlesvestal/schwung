@@ -83,8 +83,20 @@ import("./src/shared/component_load_gate.mjs").then((M) => {
         decideComponentEntry(reader(null, "", "0").io, parse, HOLD_UNSERVED_READ_LIMIT + 5).action, ENTRY_HOLD);
   check("unserved read: a failed module read keeps holding past the limit",
         decideComponentEntry(reader(null, null, "0").io, parse, HOLD_UNSERVED_READ_LIMIT + 5).action, ENTRY_HOLD);
-  check("the limit is a few fast probes, not the whole fast phase",
-        HOLD_UNSERVED_READ_LIMIT < HOLD_FAST_LIMIT, true);
+  // THE INVARIANT, not the number: the backstop may never fire while the fast
+  // probe cadence is still running. `isLoading` is what would make a shorter
+  // limit safe, and a SLOT component has no such term -- the chain host does
+  // not serve `<prefix>:is_loading`, so `!== "1"` is true for the whole fleet
+  // and "named + N failed reads" is the entire test. A few timed-out reads are
+  // what a large contract on a busy param channel looks like, and the fallback
+  // is irreversible, so anything inside the fast phase re-opens the MiniJV /
+  // Osirus blank editor this gate exists to close. Past the fast phase the
+  // probe has already slowed because the module is no longer expected, which
+  // is the honest place to conclude the key is not served.
+  check("the backstop cannot fire while the fast phase is still running",
+        HOLD_UNSERVED_READ_LIMIT >= HOLD_FAST_LIMIT, true);
+  check("a slow boot is still holding at the last fast probe",
+        decideComponentEntry(reader(null, "osirus", "").io, parse, HOLD_FAST_LIMIT - 1).action, ENTRY_HOLD);
 
   // "" from ui_hierarchy with a module that has not been published yet is the
   // other shape of the same window — the chain host only names the module

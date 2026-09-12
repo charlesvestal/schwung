@@ -374,8 +374,18 @@ function handleBack() {
 }
 ```
 
-Guard on the functions existing: they are absent on an older host, and absent
-for a Master FX position, which has no component preset record.
+Guard on the functions existing: they are absent on an older host, and a
+Master FX position never reaches them at all — `loadModuleUi` has one call
+site, `enterComponentEditFallback`, which is the slot chain's door; the master
+chain opens its own editor and never loads a module UI.
+
+**`shadow_component_trailing_menus()` is not free.** It reads
+`<prefix>:state` off the param channel to decide whether the loaded preset is
+modified. An IPC read is ~2.8 ms against ~1.68 ms for a whole page render, so
+call it when your pages are PLANNED (which is what `trailingMenus` is for) and
+never once per frame — a per-frame call costs more than redrawing the screen
+and will halve your frame rate with nothing logged. Use `onPresetsChanged`
+below to refresh it on the events that change the answer.
 
 A row's action may leave your grid — Load, Delete, Swap and Remove hand off to
 host screens — and the host brings you back by reloading your `ui_chain.js`

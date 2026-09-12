@@ -284,6 +284,15 @@ if (!r.calls.includes("restore:My Presets:false")) throw new Error("must land th
 r = scenario("maybeReturnToComponentGrid", "");
 if (!r.calls.includes("host:My Presets")) throw new Error("host origin must still land on My Presets: " + r.calls);
 if (r.calls.some(c => c.startsWith("module:"))) throw new Error("host origin must not touch the module path");
+/* ...and the SAME case as production actually produces it. The line above
+   leaves componentGridReturnModule "", which the arming site never writes: it
+   always records the module that was there. So the swap branch's guard has to
+   be exercised against a hand-off that named one and came back to the same
+   one -- an ordinary Load or Delete -- or "no swap" is only ever tested in a
+   shape the device cannot reach. */
+r = scenario("maybeReturnToComponentGrid", 'componentGridReturnModule = "9w9";');
+if (!r.calls.includes("host:My Presets") || r.calls.some(c => c.startsWith("door:")))
+    throw new Error("an unchanged module must NOT be treated as a swap: " + r.calls);
 r = scenario("maybeReturnToComponentGrid", "componentGridReturnModuleUi = true; chainConfigs = { 1: {} };");
 if (r.fired) throw new Error("a removed module must not be re-entered");
 if (!r.calls.includes("unload")) throw new Error("...but its stale UI must be unloaded");
@@ -322,6 +331,16 @@ if (!r.calls.includes("module:synth") || r.calls.some(c => c.startsWith("host:")
 if (!r.calls.includes("restore:Module:true")) throw new Error("lists: must land on the Module page, entered: " + r.calls);
 r = scenario("exitModuleLists", "");
 if (!r.calls.includes("host:Module")) throw new Error("lists: host origin unchanged: " + r.calls);
+
+/* ...and the origin flag is part of the SESSION, so it is cleared with the
+   rest of it and not below the `slotIndex < 0` early return. A stale `true`
+   does not merely leak: it sends the NEXT return -- a stock grid's -- through
+   enterComponentEditFallback, which opens a hierarchy module on the bare
+   preset browser instead of its knob grid. Same class as the confirm latch
+   the reset block above it exists for. */
+r = scenario("exitModuleLists", "moduleListsReturnModuleUi = true; moduleListsSlot = -1;");
+if (r.listsFlag !== false)
+    throw new Error("lists: an un-armed exit must still clear the module-origin flag");
 NODE
 pass "every hand-off returns through the module when it came from one, lands on the page it left from, and through enterParamPages when it did not"
 
