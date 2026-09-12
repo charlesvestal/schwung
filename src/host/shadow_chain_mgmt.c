@@ -84,6 +84,11 @@ void (*shadow_chain_set_clip_phase)(void *instance, int valid,
                                     double phase_beats, double loop_len,
                                     int track, int clip_slot, int fp_valid,
                                     const double *fp) = NULL;
+/* The deletion half of the same seam, and optional for the same reason. A NULL
+ * means a deleted clip's lanes are never orphaned -- they go stale instead, by
+ * fingerprint, which is silent and retained either way. */
+void (*shadow_chain_set_clip_deleted)(void *instance, int track,
+                                      int slot) = NULL;
 host_api_v1_t shadow_host_api;
 
 /* Global send buses. Zero-initialised BSS: every position empty, both returns
@@ -156,12 +161,16 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * the right clip while it waits for an anchor. */
     fp[0] = r->loop_start;
     fp[1] = r->loop_len;
-    /* Note count and first note are Task 6's; clip_region_t has no note data
-     * yet. 0/-1 are the "nothing known" values lane_fingerprint_t documents,
-     * and nothing compares against them because an unknown clip is not a
-     * mismatched one. */
-    fp[2] = 0.0;
-    fp[3] = -1.0;
+    /* The content half, straight out of the parse. It crosses as doubles so the
+     * shim never has to agree with lane_store.h's layout; the chain casts them
+     * back to int.
+     *
+     * A clip with no notes lands here as {0, -1} -- the same bytes as "nothing
+     * is known", which lane_fingerprint_matches refuses outright. Deliberate:
+     * of the two readings of those bytes only the refusal cannot be
+     * confidently wrong, and a note-free clip is not what anyone automates. */
+    fp[2] = (double)r->note_count;
+    fp[3] = (double)r->first_note;
     *fp_valid = 1;
 
     if (!tr->anchor_valid) return 0;   /* clip known, phase UNKNOWN */
@@ -2523,6 +2532,8 @@ int shadow_inprocess_load_chain(void) {
     shadow_chain_set_clip_phase =
         (void (*)(void *, int, double, double, int, int, int, const double *))
         dlsym(shadow_dsp_handle, "chain_set_clip_phase");
+    shadow_chain_set_clip_deleted = (void (*)(void *, int, int))
+        dlsym(shadow_dsp_handle, "chain_set_clip_deleted");
 
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d keep_alive=%p midi_wake=%p",
             (void*)shadow_chain_set_inject_audio,
@@ -2531,8 +2542,10 @@ int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous,
             (void*)shadow_chain_take_midi_tick_wake);
-    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: clip_phase=%p",
-            (void*)shadow_chain_set_clip_phase);
+    unified_log("shim", LOG_LEVEL_INFO,
+            "chain dlsym: clip_phase=%p clip_deleted=%p",
+            (void*)shadow_chain_set_clip_phase,
+            (void*)shadow_chain_set_clip_deleted);
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
             (void*)shadow_chain_drain_sends,
             (void*)shadow_chain_drain_main_send);

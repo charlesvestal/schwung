@@ -432,6 +432,35 @@ static clip_regions_t g_regions;
  * of doubles out of it. */
 const clip_regions_t *shadow_clip_regions(void) { return &g_regions; }
 
+/* WHICH CLIPS WERE DELETED BY THE LAST RE-PARSE, and a counter saying it is
+ * news. The worker publishes; the SPI callback's per-slot loop reads and pushes
+ * it into each chain instance through chain_set_clip_deleted().
+ *
+ * The worker must NOT push it itself. v2_set_param is a module entry point --
+ * i.e. the SPI callback -- and the chain instance is only safe because RT is
+ * its single writer; reaching in from here races every reader the callback
+ * owns. This is the same crossing g_regions already uses, in the same
+ * direction.
+ *
+ * A GENERATION COUNTER, NOT A FLAG. chain_bus.c records why: a flag can be
+ * resurrected by a worker preempted between writing it and the consumer
+ * clearing it, and there is no clearing at all on this side. A counter is
+ * monotonic, so "have I seen this?" is a comparison the consumer answers out
+ * of its own state and the producer never has to unwrite.
+ *
+ * The mask is ASSIGNED, not accumulated, and the generation is bumped LAST:
+ * a generation the callback can see always has its own mask already in place.
+ * That ordering is also what makes the un-orphan rule sound -- g_regions no
+ * longer holds the deleted clip by the time the deletion is visible, so the
+ * position cannot report a fingerprint that would immediately un-orphan the
+ * lane. Deploying only means a batch is lost if two re-parses land inside one
+ * audio block; the re-parse poll is ~1.4 s and a block is ~2.9 ms. */
+static volatile uint32_t g_clip_deleted_mask;
+static volatile uint32_t g_clip_deleted_gen;
+
+uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
+uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
+
 /* Phase check tallies, per track. The step editor shows ONE track, so only
  * one of these should score highly -- which track it is falls out of the
  * result rather than having to be known in advance. A track that is simply
@@ -559,7 +588,21 @@ static void clip_regions_tick(void)
      * deleted. Compared against the PREVIOUS parse so a newly copied clip --
      * also absent from the file until Move saves -- is not mistaken for one
      * that was removed. */
-    if (!set_changed) clip_regions_forget_deleted(&before, &g_regions, st);
+    if (!set_changed) {
+        uint32_t deleted = 0;
+        clip_regions_forget_deleted(&before, &g_regions, st, &deleted);
+        /* Only publish when something actually went away. A generation bumped
+         * on every re-parse would have the callback walk 32 bits on each of
+         * Move's periodic saves to discover nothing, and -- worse -- would make
+         * "a new generation" stop meaning "a clip was deleted", which is the
+         * only thing the consumer can act on.
+         *
+         * Mask first, generation last: see the declaration. */
+        if (deleted) {
+            g_clip_deleted_mask = deleted;
+            g_clip_deleted_gen++;
+        }
+    }
 
     /* Only a REAL geometry change invalidates earlier samples. Resetting on
      * every re-parse wiped the tally on each of Move's periodic saves, so it

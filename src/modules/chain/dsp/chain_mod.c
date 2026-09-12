@@ -759,3 +759,36 @@ void chain_set_clip_phase(void *instance, int valid, double phase_beats,
         inst->clip_fp.first_note = (int)fp[3];
     }
 }
+
+/* A deleted clip ORPHANS its lanes. It does not delete them.
+ *
+ * Move saves Song.abl about 35 s after an edit, so "absent from the file" is a
+ * statement about the last save, not about the user's intent. Deleting recorded
+ * automation on the strength of a file diff inside that window is the wrong
+ * direction to fail in, and a lane is small. Pruning is only ever an explicit
+ * user action (Clear Lanes).
+ *
+ * No release here: lane_eval already refuses an orphaned lane, so the next
+ * lane_tick hands the parameter back through the one-shot release path every
+ * other silencing uses. Emitting one from here would be a second release site
+ * with its own once-only rule to get wrong.
+ *
+ * Marks by (track, slot), never by track alone -- a track carries a lane per
+ * clip position, and orphaning the lot is indistinguishable to the user from
+ * losing them.
+ *
+ * RT: called from the shim's per-slot loop, like chain_set_clip_phase. The
+ * worker only ever publishes the mask; it never reaches into the instance,
+ * because v2_set_param IS the SPI callback and the instance is only safe while
+ * RT is its single writer. */
+__attribute__((visibility("default")))
+void chain_set_clip_deleted(void *instance, int track, int slot) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    if (!inst) return;
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *ln = &inst->lanes.lanes[i];
+        if (!ln->used) continue;
+        if (ln->track != track || ln->slot != slot) continue;
+        ln->orphaned = 1;
+    }
+}
