@@ -33,6 +33,9 @@ volatile int shim_jack_persist = -1;
 volatile int shim_usbc_out_persist = -1;
 volatile int shim_usbc_out_replay = -1;
 volatile int shim_usbc_out_level = -1;
+volatile uint32_t shim_xmos_resend_lost = 0;
+volatile uint32_t shim_xmos_resend_sent = 0;
+volatile uint32_t shim_xmos_resend_gave_up = 0;
 volatile int shim_usbc_monitor = -1;
 
 /* Persisted jack state (last CC 115 value). Survives reboot so the worker can
@@ -1280,6 +1283,29 @@ static void *worker_main(void *arg) {
                     unified_log("shim", LOG_LEVEL_DEBUG,
                                 "USB-C out: monitoring cleared by a lone 37 12 — re-asserting Main Out");
                 }
+            }
+        }
+
+        /* Report MIDI_OUT losses of Move's XMOS control messages. This is the
+         * only place they can be reported: detection happens on the SPI
+         * callback, which may not log.
+         *
+         * A `lost` with no `gave_up` is the defence working — the message was
+         * dropped and put back. A `gave_up` means it stayed dropped, which is
+         * the silent USB-C failure this exists to close, and the one line that
+         * says so. */
+        {
+            static uint32_t last_lost = 0, last_gave_up = 0;
+            uint32_t lost = shim_xmos_resend_lost;
+            uint32_t gave = shim_xmos_resend_gave_up;
+            if (lost != last_lost || gave != last_gave_up) {
+                unified_log("shim", LOG_LEVEL_INFO,
+                            "XMOS ctl msg: %u dropped from MIDI_OUT, %u re-sent, "
+                            "%u gave up (a 37-family message that never reached "
+                            "the wire is a silent setting change)",
+                            lost, (unsigned)shim_xmos_resend_sent, gave);
+                last_lost = lost;
+                last_gave_up = gave;
             }
         }
 
