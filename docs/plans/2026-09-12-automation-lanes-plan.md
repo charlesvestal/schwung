@@ -138,12 +138,22 @@ Create `src/host/lane_store.h`:
 extern "C" {
 #endif
 
-#define LANE_MAX          16   /* lanes per chain slot */
+/* AS BUILT: 32, not 16. The key spans CLIPS x PARAMETERS, so 8 clip slots with
+ * two automated parameters each exhausted 16 outright. What caps it is the
+ * param contract, not memory -- see the _Static_assert in lane_serial.c. */
+#define LANE_MAX          32   /* lanes per chain slot */
 #define LANE_POINTS_MAX   64   /* breakpoints per lane */
 
-/* Two writes closer together than this collapse into one. ~5 ms at 120 BPM:
- * below a knob detent's spacing, above the jitter of sampling phase on the
- * callback. It is also what makes a second pass REPLACE rather than layer. */
+/* THINNING ONLY. Two writes closer together than this collapse into one. ~5 ms
+ * at 120 BPM: below a knob detent's spacing, above the jitter of sampling phase
+ * on the callback.
+ *
+ * AS BUILT, THE SENTENCE THAT FOLLOWED THIS WAS WRONG and cost a hardware
+ * session: it claimed the same window also made a second pass REPLACE rather
+ * than layer. It cannot -- a second pass's writes land tens of milliseconds
+ * from the first pass's, so they miss the window and the two curves INTERLEAVE
+ * (heard as "super jumpiness"). Replacing a pass is a SWEPT REGION:
+ * lane_record_point + LANE_PASS_GAP_BEATS. */
 #define LANE_MIN_POINT_BEATS 0.01
 
 typedef struct { double phase; float value; } lane_point_t;
@@ -185,8 +195,14 @@ typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
 
 void   lane_store_reset(lane_store_t *st);
 
-/* Find the lane for (target, param), or NULL. */
-lane_t *lane_find(lane_store_t *st, const char *target, const char *param);
+/* Find the lane for (track, slot, target, param), or NULL.
+ *
+ * AS BUILT the CLIP POSITION is part of the key, which this signature left
+ * out. Without it there was one lane per parameter across all 8 clip slots, so
+ * recording the same knob against a second clip silently took over the first
+ * clip's lane. Found on hardware. */
+lane_t *lane_find(lane_store_t *st, const char *target, const char *param,
+                  int track, int slot);
 
 /* Find, else take a free slot and bind it. NULL when the store is full. */
 lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
@@ -194,7 +210,8 @@ lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
 
 /* Insert or replace a breakpoint. Keeps pts[] sorted by phase. A write within
  * LANE_MIN_POINT_BEATS of an existing point overwrites that point's value --
- * which is both the thinning rule and the second-pass replace rule. */
+ * the thinning rule, and AS BUILT nothing more than that. lane_write ERASES
+ * NOTHING; a recording pass goes through lane_record_point instead. */
 void lane_write(lane_t *ln, double phase, float value);
 
 /* Value at `phase`, considering only points below loop_len.
@@ -335,6 +352,7 @@ void lane_store_reset(lane_store_t *st) {
     if (st) memset(st, 0, sizeof(*st));
 }
 
+/* AS BUILT: (track, slot) are part of the key -- see the header above. */
 lane_t *lane_find(lane_store_t *st, const char *target, const char *param) {
     if (!st || !target || !param) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
