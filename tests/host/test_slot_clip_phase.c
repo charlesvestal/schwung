@@ -35,6 +35,7 @@
 #include <math.h>
 
 #include "shadow_chain_mgmt.c"
+#include "step_strip.h"
 
 static int failures = 0;
 static int checks = 0;
@@ -353,6 +354,106 @@ int main(void) {
     CHECK(rc == 0 && cs == 4 && fpv == 0,
           "a clip absent from the regions table (rc=%d cs=%d fpv=%d)",
           rc, cs, fpv);
+
+    /* ============ THE CLIP MOVE HAS NOT SAVED YET =====================
+     *
+     * Measured: Move writes a new clip to Song.abl about 10 s after it is
+     * made. Before that there is no file entry, so no length, so no phase --
+     * and recording automation on a clip you just made refused outright.
+     *
+     * Move's step editor draws the length on its bar strip, so the resolver
+     * falls back to reading it (step_strip.h). Two things are then true and
+     * both are reported honestly: the length is BAR RESOLUTION, and the origin
+     * is ASSUMED ZERO because the strip does not show where a loop begins.
+     * `fp_valid == 0 with a valid phase` is the signal for that -- a state
+     * that cannot otherwise occur, since the fingerprint is filled in before
+     * the anchor is even checked, and it needs no new argument on a dlsym'd
+     * seam that cannot safely take one.
+     *
+     * The frame is DRAWN rather than poked through a test-only setter: it goes
+     * through the real decoder and the real two-frame confirmation, so this
+     * case fails if either stops working.
+     */
+    printf("\nthe clip Move has not saved yet: the strip supplies the length\n");
+    {
+        static uint8_t fb[1024];
+        memset(fb, 0, sizeof(fb));
+        const int X0 = 1, X1 = 126, bars = 4;
+        int usable = (X1 - X0 + 1) - 2 * (bars - 1);
+        int base = usable / bars, rem = usable % bars, x = X0;
+        for (int i = 0; i < bars; i++) {
+            int w = base + (i < rem ? 1 : 0);
+            for (int c = x; c < x + w; c++) {
+                fb[(59 / 8) * 128 + c] |= (uint8_t)(1u << (59 % 8));
+                if (i == 0) {
+                    fb[(58 / 8) * 128 + c] |= (uint8_t)(1u << (58 % 8));
+                    fb[(60 / 8) * 128 + c] |= (uint8_t)(1u << (60 % 8));
+                }
+            }
+            x += w + 2;
+        }
+        reset_world();
+        step_strip_reset();
+        /* Twice: the cache requires two consecutive agreeing frames, because a
+         * frame assembled from six slices can straddle two screen updates. */
+        step_strip_observe(fb, 2);
+        step_strip_observe(fb, 2);
+        CHECK(step_strip_segments_for_track(2) == 4,
+              "premise: the strip should report 4 bars, got %d",
+              step_strip_segments_for_track(2));
+
+        set_track(2, 1, 5, 1, 0);                 /* playing a clip the file lacks */
+        shadow_transport_pulses = 24;             /* one quarter in */
+        rc = call(2, &ph, &len, &cs, &fpv, fp);
+        CHECK(rc == 1, "a clip absent from the file produced no phase (rc=%d) "
+              "-- the hole that refused to record on a new clip", rc);
+        CHECK(cs == 5, "identity lost: cs=%d", cs);
+        CHECK(fpv == 0,
+              "fp_valid=%d -- a provisional answer must publish NO fingerprint, "
+              "which is the chain's only signal that the origin is assumed", fpv);
+        CHECK(fabs(len - 16.0) < 1e-9,
+              "length from the strip is %f, expected 16 (4 bars x 4)", len);
+        CHECK(fabs(ph - 1.0) < 1e-9,
+              "phase %f one quarter in, expected 1.0 against an assumed "
+              "origin of 0", ph);
+
+        /* NO STRIP READING, NO ANSWER: a reading, not a guess. */
+        step_strip_reset();
+        set_track(2, 1, 5, 1, 0);
+        rc = call(2, &ph, &len, &cs, &fpv, fp);
+        CHECK(rc == 0 && !isfinite(ph) && !isfinite(len),
+              "with no strip reading the resolver invented a phase (rc=%d "
+              "ph=%f len=%f)", rc, ph, len);
+        CHECK(cs == 5 && fpv == 0,
+              "identity must survive the refusal (cs=%d fpv=%d)", cs, fpv);
+
+        /* AND NO ANCHOR, NO ANSWER: a length is not a position, and phase 0
+         * is a real one. */
+        step_strip_observe(fb, 2);
+        step_strip_observe(fb, 2);
+        set_track(2, 1, 5, 0, 0);
+        rc = call(2, &ph, &len, &cs, &fpv, fp);
+        CHECK(rc == 0 && !isfinite(ph),
+              "an unanchored track got a phase from the strip (rc=%d ph=%f)",
+              rc, ph);
+
+        /* THE FILE WINS THE MOMENT IT HAS THE CLIP: exact, with an identity,
+         * against the strip's bar resolution and assumed origin. */
+        set_region(2, 5, 8.0, 12.0);
+        set_region_notes(2, 5, 3, 60);
+        set_track(2, 1, 5, 1, 0);
+        shadow_transport_pulses = 24;
+        rc = call(2, &ph, &len, &cs, &fpv, fp);
+        CHECK(rc == 1 && fpv == 1,
+              "the file did not take over (rc=%d fpv=%d)", rc, fpv);
+        CHECK(fabs(len - 12.0) < 1e-9 && fabs(ph - 9.0) < 1e-9,
+              "the file's geometry was not used: len=%f ph=%f (want 12, 9)",
+              len, ph);
+        CHECK(fp[0] == 8.0 && fp[2] == 3.0 && fp[3] == 60.0,
+              "the fingerprint is wrong: loop_start=%f notes=%f first=%f",
+              fp[0], fp[2], fp[3]);
+        step_strip_reset();
+    }
 
     if (failures == 0) {
         printf("PASS: shadow_slot_clip_phase (%d checks)\n", checks);

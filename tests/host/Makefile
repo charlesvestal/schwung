@@ -258,8 +258,8 @@ $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.
 # the real clip_state.c is linked so the loop_start rebasing is proved against
 # clip_phase_beats()'s BODY rather than against a fake that would inherit the
 # test's own belief about it.
-$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/clip_state.c | $(BUILD_DIR)
-	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/clip_state.c -lm
+$(BUILD_DIR)/test_slot_clip_phase: test_slot_clip_phase.c ../../src/host/shadow_chain_mgmt.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c | $(BUILD_DIR)
+	$(CC) -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-function $(DEPFLAGS) $(INCLUDES) -o $@ test_slot_clip_phase.c ../../src/host/clip_state.c ../../src/host/step_strip.c ../../src/host/clip_regions.c -lm
 
 # lane_store — the pure breakpoint store (Task 1 of automation lanes).
 $(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)

@@ -733,6 +733,155 @@ int main(void) {
         }
     }
 
+    /* ============ A TAKE RECORDED BLIND, THEN IDENTIFIED ==============
+     *
+     * Move writes a new clip to Song.abl about 10 s after it is made
+     * (measured; the figure long quoted was 35 s). Inside that window there
+     * are no notes to fingerprint and no `loop.start` to anchor to, so a take
+     * is recorded against an ASSUMED origin of 0 -- and the absent
+     * fingerprint is what marks it as still needing the real one.
+     *
+     * When the clip appears, both unknowns are answered in the same parse, so
+     * adoption re-origins and identifies in one step, with the number that
+     * just arrived rather than a guess.
+     */
+    {
+        lane_store_t b;
+        lane_store_reset(&b);
+        lane_fingerprint_t absent = { 0.0, 8.0, 0, -1 };
+        lane_t *bl = lane_alloc(&b, "synth", "cutoff", 1, 4, &absent);
+        CHECK(bl != NULL, "blind lane alloc");
+        if (bl) {
+            bl->origin_pending = 1;   /* what the recording path sets */
+            CHECK(lane_fp_absent(&bl->fp),
+                  "a lane recorded blind must carry the absent fingerprint");
+            /* A take over the first two beats of what the user sees as the
+             * clip's start. */
+            lane_write(bl, 0.5, 0.20f);
+            lane_write(bl, 1.5, 0.80f);
+            /* AND IT PLAYS, against the assumed origin, for as long as the
+             * clip cannot be identified. That is not a gap in the staleness
+             * rule -- the lane is at the position that is playing and nothing
+             * else can be there, so refusing would make a take go silent the
+             * instant it was recorded. Staleness is for a position holding a
+             * DIFFERENT clip, which needs a fingerprint to establish. */
+            CHECK(lane_eval(bl, 0.5, 0.0, 8.0, 0, &v) == 1 &&
+                  fabsf(v - 0.20f) < 1e-6f,
+                  "a blind take did not play at its assumed origin: %f", v);
+
+            /* THE CLIP ARRIVES: 3 notes, first note 60, loop starting at beat
+             * 8 (bar 3). Adoption shifts the take there. */
+            lane_fingerprint_t real = { 8.0, 12.0, 3, 60 };
+            CHECK(lane_adopt_fingerprint(bl, &real) == 1, "adoption refused");
+            CHECK(bl->adopted == 1, "adoption was not counted (%d)", bl->adopted);
+            CHECK(!lane_fp_absent(&bl->fp) && bl->fp.first_note == 60,
+                  "the lane was not identified: first_note=%d", bl->fp.first_note);
+            CHECK(fabs(bl->pts[0].phase - 8.5) < 1e-9 &&
+                  fabs(bl->pts[1].phase - 9.5) < 1e-9,
+                  "the take was not re-origined: %f, %f (want 8.5, 9.5)",
+                  bl->pts[0].phase, bl->pts[1].phase);
+            /* And now it plays, in the window it belongs to. */
+            CHECK(lane_eval(bl, 8.5, 8.0, 12.0, 0, &v) == 1 &&
+                  fabsf(v - 0.20f) < 1e-6f,
+                  "an adopted lane did not play at 8.5: %f", v);
+            CHECK(lane_fingerprint_matches(bl, &real) == 1,
+                  "an adopted lane does not match the clip it adopted");
+
+            /* IDEMPOTENT, and it cannot be hijacked. A second, DIFFERENT clip
+             * must not overwrite an identity -- that is the whole hazard of
+             * adopting anything, and the guard is structural: the fingerprint
+             * is no longer absent. */
+            lane_fingerprint_t other = { 0.0, 4.0, 9, 41 };
+            CHECK(lane_adopt_fingerprint(bl, &other) == 0,
+                  "an identified lane accepted ANOTHER clip's fingerprint");
+            CHECK(bl->fp.first_note == 60 &&
+                  fabs(bl->pts[0].phase - 8.5) < 1e-9,
+                  "the refused adoption still changed the lane (%d, %f)",
+                  bl->fp.first_note, bl->pts[0].phase);
+        }
+    }
+    {
+        /* WHAT ADOPTION REFUSES. Each of these leaves the lane exactly as it
+         * was, still adoptable: a bad answer now must not cost the chance of
+         * a good one later. */
+        lane_store_t b;
+        lane_store_reset(&b);
+        lane_fingerprint_t absent = { 0.0, 8.0, 0, -1 };
+        lane_t *bl = lane_alloc(&b, "synth", "cutoff", 1, 4, &absent);
+        CHECK(bl != NULL, "refusal lane alloc");
+        if (bl) {
+            bl->origin_pending = 1;
+            lane_write(bl, 1.0, 0.5f);
+            /* An absent fingerprint: a no-op that would still have cleared
+             * the pending state, stranding the take at origin 0. */
+            CHECK(lane_adopt_fingerprint(bl, &absent) == 0,
+                  "an ABSENT fingerprint was adopted");
+            /* A non-finite or negative origin puts every point somewhere
+             * unnameable. */
+            lane_fingerprint_t nan_start = { NAN, 12.0, 3, 60 };
+            lane_fingerprint_t neg_start = { -4.0, 12.0, 3, 60 };
+            CHECK(lane_adopt_fingerprint(bl, &nan_start) == 0,
+                  "a NaN loop_start was adopted");
+            CHECK(lane_adopt_fingerprint(bl, &neg_start) == 0,
+                  "a negative loop_start was adopted");
+            CHECK(lane_fp_absent(&bl->fp) && bl->adopted == 0 &&
+                  fabs(bl->pts[0].phase - 1.0) < 1e-9,
+                  "a refused adoption modified the lane (fp absent=%d "
+                  "adopted=%d phase=%f)", lane_fp_absent(&bl->fp),
+                  bl->adopted, bl->pts[0].phase);
+            /* A loop that really does start at 0 adopts and shifts NOTHING --
+             * the common case for a clip made at bar 1. */
+            lane_fingerprint_t at_zero = { 0.0, 16.0, 5, 48 };
+            CHECK(lane_adopt_fingerprint(bl, &at_zero) == 1,
+                  "a loop_start of 0 was refused");
+            CHECK(fabs(bl->pts[0].phase - 1.0) < 1e-9,
+                  "adopting at origin 0 moved the take to %f", bl->pts[0].phase);
+        }
+    }
+    {
+        /* A TAKE STILL IN PROGRESS moves with its points. `rec_last_phase` is
+         * where the next write erases from, so leaving it behind would erase a
+         * span the gesture never swept -- 8 beats away, in this case. */
+        lane_store_t b;
+        lane_store_reset(&b);
+        lane_fingerprint_t absent = { 0.0, 8.0, 0, -1 };
+        lane_t *bl = lane_alloc(&b, "synth", "cutoff", 1, 4, &absent);
+        CHECK(bl != NULL, "in-progress lane alloc");
+        if (bl) {
+            bl->origin_pending = 1;
+            lane_record_point(bl, 1.0, 0.3f, 0.0, 8.0);
+            CHECK(bl->rec_active && fabs(bl->rec_last_phase - 1.0) < 1e-9,
+                  "premise: a pass is live at phase 1.0");
+            lane_fingerprint_t real = { 8.0, 12.0, 3, 60 };
+            CHECK(lane_adopt_fingerprint(bl, &real) == 1, "adoption refused");
+            CHECK(fabs(bl->rec_last_phase - 9.0) < 1e-9,
+                  "the live pass's mark stayed at %f while its points moved "
+                  "to clip time", bl->rec_last_phase);
+        }
+    }
+
+    {
+        /* A PLACEHOLDER LANE LOADED FROM DISK IS NOT ADOPTABLE. Same bytes as
+         * a blind take, different meaning: nothing says the clip now at that
+         * position is the one it was recorded against, so labelling it would
+         * bind the lane to a stranger and play it. `origin_pending` is what
+         * separates them, and it is never serialized. */
+        lane_store_t b;
+        lane_store_reset(&b);
+        lane_fingerprint_t absent = { 0.0, 8.0, 0, -1 };
+        lane_t *bl = lane_alloc(&b, "synth", "cutoff", 1, 4, &absent);
+        CHECK(bl != NULL, "loaded lane alloc");
+        if (bl) {
+            lane_write(bl, 1.0, 0.5f);
+            lane_fingerprint_t real = { 8.0, 12.0, 3, 60 };
+            CHECK(lane_adopt_fingerprint(bl, &real) == 0,
+                  "a lane with no origin_pending was adopted -- a placeholder "
+                  "from disk must never take a stranger's identity");
+            CHECK(lane_fp_absent(&bl->fp) && fabs(bl->pts[0].phase - 1.0) < 1e-9,
+                  "the refused adoption changed the lane");
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

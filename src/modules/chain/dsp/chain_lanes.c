@@ -110,6 +110,31 @@ void lane_tick(chain_instance_t *inst) {
          * Gated on clip_fp_valid: no fingerprint is "could not tell", which is
          * neither a match nor a mismatch, so nothing is marked either way. */
         if (inst->clip_fp_valid) {
+            /* A LANE RECORDED BLIND IS ADOPTED HERE, not marked stale.
+             *
+             * Move writes a new clip to Song.abl ~10 s after it is made, and
+             * inside that window there are no notes to fingerprint and no
+             * loop.start to anchor to -- so a take goes down against an
+             * assumed origin of 0 with the ABSENT fingerprint, which is the
+             * same fact as "this lane still needs the real origin".
+             *
+             * This is the moment both unknowns are answered: the clip has
+             * appeared, so its notes identify it and its loop.start places
+             * the take. Without this the next block would mark the lane stale
+             * -- correctly, by the letter of the rule, and the user's
+             * automation would go silent about ten seconds after they
+             * recorded it, with nothing on screen to explain why.
+             *
+             * The hazard is adopting the WRONG clip, and the guards are: the
+             * lane's own fingerprint must be absent (lane_adopt_fingerprint
+             * refuses otherwise, so an identified lane can never be
+             * re-labelled), and we are already past the position check above,
+             * so this IS the clip playing at the lane's own (track, slot).
+             * Nothing here infers a clip from anything but the position it
+             * was recorded at. */
+            if (lane_fp_absent(&ln->fp))
+                lane_adopt_fingerprint(ln, &inst->clip_fp);
+
             if (lane_fingerprint_matches(ln, &inst->clip_fp)) {
                 ln->stale = 0;
                 ln->orphaned = 0;
@@ -243,6 +268,18 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
         lane_current_fingerprint(inst, &fp);
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
                                 inst->lane_track, inst->lane_clip_slot, &fp);
+        /* A TAKE RECORDED IN THE BLIND WINDOW IS MARKED AS SUCH. No
+         * fingerprint while the phase is valid means Move has not written
+         * this clip to Song.abl yet (~10 s), so the geometry we are recording
+         * against is provisional: an assumed origin of 0 and a length read
+         * off the step editor's own bar strip. `origin_pending` is what lets
+         * lane_tick re-origin and identify it in one step when the clip
+         * appears -- and it is scoped to a lane THIS session created, so a
+         * placeholder loaded from disk can never take a stranger's identity.
+         * Set on the existing lane too: a second armed write in the same
+         * window must not leave the first one's flag behind. */
+        if (ln && !inst->clip_fp_valid && lane_fp_absent(&ln->fp))
+            ln->origin_pending = 1;
         /* Store full, or a target/param too long for lane_t's fields, which
          * lane_alloc REFUSES rather than truncating -- a truncated key would
          * name a lane the user can neither see nor clear. Nothing is recorded
