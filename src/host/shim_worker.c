@@ -390,6 +390,62 @@ static void rt_audit_tick(void)
  * reads it on every note event and a plain load is the cheapest thing it can
  * do; correctness does not depend on when the change is observed. */
 extern int shim_touch_trace_on;
+
+/* Clip-state readout. Diagnostic: prints the decoded table once a second so
+ * the decode can be checked against what the device is visibly doing -- which
+ * is the only way to find out whether the LED protocol was read correctly.
+ *   arm:  touch /data/UserData/schwung/clip_state_on
+ *   read: /data/UserData/schwung/clip_state.log
+ */
+#include "clip_state.h"
+extern int shadow_transport_pulses;
+/* Is this thread alive at all? Three separate worker-driven diagnostics went
+ * quiet at once and I argued about the cause instead of measuring it. This
+ * answers it in one deploy: it needs no arming file and touches nothing. */
+static void worker_heartbeat(void)
+{
+    static unsigned n = 0;
+    if (n++ % 25) return;              /* ~5 s */
+    FILE *f = fopen("/data/UserData/schwung/worker_alive.txt", "w");
+    if (!f) return;
+    fprintf(f, "worker tick %u\n", n);
+    fclose(f);
+}
+
+static void clip_state_tick(void)
+{
+    if (access("/data/UserData/schwung/clip_state_on", F_OK) != 0) return;
+    /* The worker ticks at 200 ms; one line a second is enough to read. */
+    static unsigned n = 0;
+    if (n++ % 5) return;
+    /* Opened and closed per line, deliberately. A static FILE* held across a
+     * `rm` of the log sends every later write to an unlinked inode, and the
+     * reopen was gated on an arming transition that never came -- so the
+     * readout goes silent and looks exactly like a dead worker or a broken
+     * decode. At 1 Hz the open costs nothing and cannot lie. */
+    FILE *fp = fopen("/data/UserData/schwung/clip_state.log", "a");
+    if (!fp) return;
+    const clip_state_t *cs = clip_state_current();
+    if (!cs) { fprintf(fp, "(no cable-0 scan yet)\n"); fclose(fp); return; }
+    uint32_t pul = (uint32_t)shadow_transport_pulses;
+    fprintf(fp, "pul=%-7u", pul);
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        const clip_track_state_t *tr = &cs->tracks[t];
+        if (!tr->identity_valid)      fprintf(fp, " | T%d ?        ", t + 1);
+        else if (tr->clip_slot < 0)   fprintf(fp, " | T%d -        ", t + 1);
+        else if (!tr->anchor_valid)   fprintf(fp, " | T%d c%d ph?   ", t + 1, tr->clip_slot + 1);
+        else {
+            /* Loop length is Song.abl's job and is not wired yet, so show the
+             * raw elapsed beats since the anchor rather than a phase -- an
+             * invented loop length would make this readout agree with itself
+             * and with nothing on the device. */
+            double el = (double)(pul - tr->anchor_pulse) / 24.0;
+            fprintf(fp, " | T%d c%d +%-6.2f", t + 1, tr->clip_slot + 1, el);
+        }
+    }
+    fprintf(fp, "\n");
+    fclose(fp);
+}
 void shim_touch_trace_drain(void);
 
 /* ---- align capture ---------------------------------------------------- */
@@ -844,6 +900,8 @@ static void *worker_main(void *arg) {
         if (tick % 5 == 0) perf_shm_attach_tick();/* ~1 Hz until attached */
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
+        clip_state_tick();
+        worker_heartbeat();
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
         if (tick % 5 == 0) {
             ext_midi_drop_tick();

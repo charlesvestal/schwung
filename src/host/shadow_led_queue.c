@@ -5,10 +5,24 @@
 #include <time.h>
 #include "shadow_led_queue.h"
 #include "unified_log.h"
+#include "clip_state.h"
 
 /* Transport pulse counter (shadow_sampler.c). Read-only here, and only from
  * the SPI callback, which is also the only writer — no barrier needed. */
 extern int shadow_transport_pulses;
+
+/* Move's clip state, decoded from the cable-0 scan below. Written on the SPI
+ * callback, read by the worker. See clip_state.h -- in particular, this MUST
+ * be fed at the scan rather than from move_note_led_state[], which is indexed
+ * by note and so collapses the channel that carries the whole signal. */
+static clip_state_t g_clip_state;
+static int g_clip_state_ready;
+const clip_state_t *clip_state_current(void) {
+    return g_clip_state_ready ? &g_clip_state : 0;
+}
+clip_state_t *clip_state_mutable(void) {
+    return g_clip_state_ready ? &g_clip_state : 0;
+}
 
 /* Declared here rather than further down: led_capture_record() below reads
  * host.shadow_control, and it is the first user in the file. */
@@ -361,6 +375,12 @@ void shadow_clear_move_leds_if_overtake(void) {
             if (cable == 0 && (type == 0x90 || type == 0x80 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
+                if (!g_clip_state_ready) {
+                    clip_state_reset(&g_clip_state);
+                    g_clip_state_ready = 1;
+                }
+                clip_state_on_led(&g_clip_state, midi_out[i+1], d1, d2,
+                                  (uint32_t)shadow_transport_pulses);
                 if (type == 0x90 || type == 0x80) {
                     /* Move turns pad LEDs off via note-off (0x80); normalize
                      * to note-on with d2=0 so restore emits a uniform 0x90. */
