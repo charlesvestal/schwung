@@ -48,6 +48,11 @@ extern "C" {
 #define CLIP_PAD_NOTE_MAX 99
 
 /* The two channels that carry meaning. Anything else is base colour. */
+/* How long after a Start a first-sighting may still be attributed to that
+ * Start rather than to a launch. Move repaints the grid within a beat or two;
+ * beyond a bar, a clip appearing is someone pressing a pad. */
+#define CLIP_START_GRACE_PULSES 96   /* one bar at 4/4 */
+
 #define CLIP_UI_MODE_SESSION 1
 
 #define CLIP_CH_PLAYING 9
@@ -72,6 +77,13 @@ typedef struct {
      * it, choosing a clip on a stopped track (which is how a set is started)
      * left that very track unanchored for good. */
     int      saw_stop[CLIP_TRACKS];
+    /* Per track: a Start happened while this track had NO clip, so whatever
+     * comes up next began AT that Start, not when we noticed it. Consumed by
+     * the first ch-9 ON. Without it a track that fell silent just before the
+     * Start could never anchor again -- observed on hardware, and the cause
+     * was on_transport_start clearing saw_stop, i.e. destroying the very
+     * evidence that would have rescued it. */
+    int      pending_start[CLIP_TRACKS];
     uint32_t last_pulse;
     int      seen_pulse;
     /* Last UI mode the scan reported. Recorded even when the event is

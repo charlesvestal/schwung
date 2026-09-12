@@ -26,6 +26,7 @@ void clip_state_reset(clip_state_t *st)
         st->tracks[t].clip_slot = -1;
         st->queued_slot[t] = -1;
         st->saw_stop[t] = 0;
+        st->pending_start[t] = 0;
     }
 }
 
@@ -41,13 +42,20 @@ void clip_state_on_transport_start(clip_state_t *st)
     if (!st) return;
     for (int t = 0; t < CLIP_TRACKS; t++) {
         st->queued_slot[t] = -1;
-        st->saw_stop[t] = 0;
+        st->pending_start[t] = 0;
         if (st->tracks[t].identity_valid && st->tracks[t].clip_slot >= 0) {
             st->tracks[t].anchor_valid = 1;
             st->tracks[t].anchor_pulse = 0;
+            st->saw_stop[t] = 0;
         } else {
-            /* Anchors from before the reset are in a dead timeline. */
+            /* Nothing playing here yet. Anchors from before the reset are in
+             * a dead timeline, but whatever comes up next began at THIS
+             * start -- so leave saw_stop alone and remember the start.
+             * Clearing saw_stop here is what stranded a track that fell
+             * silent moments before the Start: the clip returned and had no
+             * witnessed transition left to justify an anchor. */
             st->tracks[t].anchor_valid = 0;
+            st->pending_start[t] = 1;
         }
     }
 }
@@ -102,7 +110,15 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
          * the refresh rule exists to refuse. */
         int witnessed = was_queued || st->saw_stop[track];
 
-        if (running && witnessed) {
+        if (running && st->pending_start[track] && !was_queued &&
+            pulses <= CLIP_START_GRACE_PULSES) {
+            /* A Start said everything begins together; this track simply had
+             * no identity at the time. Anchor at the START, not at the pulse
+             * we happened to notice -- the repaint can lag a beat or two, and
+             * anchoring where we noticed puts the lane that far out. */
+            tr->anchor_valid = 1;
+            tr->anchor_pulse = 0;
+        } else if (running && witnessed) {
             tr->anchor_valid = 1;
             tr->anchor_pulse = pulses;
         } else if (slot_changed) {
@@ -111,6 +127,7 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
         }
         st->queued_slot[track] = -1;
         st->saw_stop[track] = 0;
+        st->pending_start[track] = 0;
     } else {
         /* Playing clip stopped. Identity is known (nothing is playing);
          * the anchor is meaningless. */

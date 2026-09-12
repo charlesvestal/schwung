@@ -145,7 +145,12 @@ async function tick(){
          here rather than record at a guessed phase. */
       phase = t.anchored ? '<span class="pill ok">anchored</span>'
                          : '<span class="pill warn">phase unknown</span>';
-      if(t.has_phase) el = (+t.phase).toFixed(2)+' / '+(+t.loop_len).toFixed(2);
+      /* Position WITHIN the loop, never the absolute phase against the loop
+         LENGTH -- a clip whose loop starts at beat 8 runs 8..16, and printing
+         "12.00 / 8.00" reads as nonsense. The absolute figure is kept in the
+         title for when it is the one you want. */
+      if(t.has_phase) el = '<span title="absolute '+(+t.phase).toFixed(2)+'">'+
+        (+t.pos).toFixed(2)+' / '+(+t.loop_len).toFixed(2)+'</span>';
       else if(t.anchored) el = '+'+(+t.elapsed_beats).toFixed(2)+' (no loop len)';
       else el = '\u2014';
     }

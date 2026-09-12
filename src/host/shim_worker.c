@@ -398,6 +398,7 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
+#include <sys/stat.h>
 #include "clip_regions.h"
 extern int shadow_transport_pulses;
 /* Is this thread alive at all? Three separate worker-driven diagnostics went
@@ -426,7 +427,7 @@ static char g_set_name[128];
 static char g_set_uuid[128];
 static void clip_regions_tick(void)
 {
-    static char last_set[256];
+    static char last_set[320];
     static unsigned n = 0;
     if (n++ % 7) return;                   /* ~1.4 s, matching the set poll */
 
@@ -440,13 +441,25 @@ static void clip_regions_tick(void)
     name[strcspn(name, "\r\n")] = 0;
     if (!uuid[0] || !name[0]) return;
 
-    char key[256];
-    snprintf(key, sizeof(key), "%s/%s", uuid, name);
-    if (strcmp(key, last_set) == 0) return;  /* unchanged */
-
     char path[512];
     snprintf(path, sizeof(path),
              "/data/UserData/UserLibrary/Sets/%s/%s/Song.abl", uuid, name);
+
+    /* Key on the FILE, not just the set name. Editing a set -- changing a
+     * track's instrument, adding a clip -- leaves the name identical while
+     * the geometry changes underneath, and a name-only check served stale
+     * loop lengths until the next set change. Observed on hardware as a
+     * track silently losing its phase after being edited.
+     *
+     * A brand-new clip may still be absent: Move holds it in memory until it
+     * saves. That is a missing loop length, which reads as "no phase" -- the
+     * honest answer -- not as a wrong one. */
+    struct stat sb;
+    if (stat(path, &sb) != 0) return;
+    char key[320];
+    snprintf(key, sizeof(key), "%s/%s|%lld|%lld", uuid, name,
+             (long long)sb.st_mtime, (long long)sb.st_size);
+    if (strcmp(key, last_set) == 0) return;  /* unchanged */
     clip_regions_t rg;
     if (!clip_regions_parse_file(path, &rg)) return;   /* leave the old one */
 
@@ -488,7 +501,8 @@ static void clip_state_tick(void)
             const clip_region_t *r = g_regions.valid
                 ? &g_regions.slots[t][tr->clip_slot] : 0;
             if (r && clip_phase_beats(tr, pul, r->loop_start, r->loop_len, &ph))
-                fprintf(fp, " | T%d c%d @%-6.2f", t + 1, tr->clip_slot + 1, ph);
+                fprintf(fp, " | T%d c%d @%-6.2f", t + 1, tr->clip_slot + 1,
+                        ph - r->loop_start);
             else {
                 /* Anchored but no loop length: elapsed, never a phase. An
                  * invented length would agree with itself and with nothing
@@ -519,14 +533,15 @@ static void clip_state_tick(void)
         fprintf(jf, "%s{\"track\":%d,\"known\":%s,\"clip\":%d,"
                     "\"anchored\":%s,\"anchor_pulse\":%u,\"elapsed_beats\":%.2f,"
                     "\"loop_len\":%.2f,\"loop_start\":%.2f,"
-                    "\"has_phase\":%s,\"phase\":%.2f}",
+                    "\"has_phase\":%s,\"phase\":%.2f,\"pos\":%.2f}",
                 t ? "," : "", t + 1,
                 tr->identity_valid ? "true" : "false",
                 tr->identity_valid ? tr->clip_slot + 1 : 0,
                 tr->anchor_valid ? "true" : "false",
                 tr->anchor_pulse, el,
                 r ? r->loop_len : 0.0, r ? r->loop_start : 0.0,
-                have_ph ? "true" : "false", ph);
+                have_ph ? "true" : "false", ph,
+                have_ph ? ph - (r ? r->loop_start : 0.0) : 0.0);
     }
     fprintf(jf, "],\"set\":\"%s\",\"ui_mode\":%d,\"regions_valid\":%s,\"grid\":[",
             g_set_name, cs->last_ui_mode, g_regions.valid ? "true" : "false");

@@ -280,8 +280,54 @@ static void test_ui_mode_is_recorded_even_when_rejected(void)
     CHECK(!st.tracks[3].identity_valid, "and still rejected");
 }
 
+/* Hardware: a track fell silent, the transport restarted, its clip came back
+ * -- and it stayed unanchored for good, because on_transport_start cleared
+ * saw_stop and destroyed the evidence that would have anchored it. */
+static void test_clip_returning_after_a_start_anchors_at_the_start(void)
+{
+    printf("a clip appearing just after a Start anchors AT the start\n");
+    clip_state_t st; clip_state_reset(&st);
+
+    /* Playing, then its clip stops (a clip change in progress). */
+    clip_state_on_led(&st, 0x99, 97, 122, 4000, 1, 1);   /* T1 c6 */
+    clip_state_on_led(&st, 0x89, 97, 0, 4600, 1, 1);
+    CHECK(st.tracks[0].clip_slot == -1, "setup: nothing playing");
+
+    /* Transport restarts while this track has no clip. */
+    clip_state_on_transport_start(&st);
+
+    /* The clip comes up 40 pulses later. It began at the START, not here. */
+    clip_state_on_led(&st, 0x99, 94, 122, 40, 1, 1);     /* T1 c3 */
+    CHECK(st.tracks[0].clip_slot == 2, "identity should follow, got %d",
+          st.tracks[0].clip_slot);
+    CHECK(st.tracks[0].anchor_valid, "it must anchor, not sit unknown forever");
+    CHECK(st.tracks[0].anchor_pulse == 0,
+          "anchor should be the START (0), not where we noticed (40) -- "
+          "anchoring at the sighting puts the lane 1.67 beats out; got %u",
+          st.tracks[0].anchor_pulse);
+}
+
+/* The grace is bounded: a clip appearing well after a Start is somebody
+ * pressing a pad, and that anchors where it actually started. */
+static void test_start_grace_expires(void)
+{
+    printf("the post-Start grace expires, so a later launch is not back-dated\n");
+    clip_state_t st; clip_state_reset(&st);
+    clip_state_on_led(&st, 0x99, 97, 122, 4000, 1, 1);
+    clip_state_on_led(&st, 0x89, 97, 0, 4600, 1, 1);
+    clip_state_on_transport_start(&st);
+
+    clip_state_on_led(&st, 0x99, 94, 122, 500, 1, 1);   /* ~20 beats later */
+    CHECK(st.tracks[0].anchor_valid, "still anchors (we witnessed the stop)");
+    CHECK(st.tracks[0].anchor_pulse == 500,
+          "but at the sighting, NOT back-dated to 0; got %u",
+          st.tracks[0].anchor_pulse);
+}
+
 int main(void)
 {
+    test_clip_returning_after_a_start_anchors_at_the_start();
+    test_start_grace_expires();
     test_ui_mode_is_recorded_even_when_rejected();
     test_non_session_modes_are_ignored();
     test_chosen_clip_on_a_stopped_track_anchors();
