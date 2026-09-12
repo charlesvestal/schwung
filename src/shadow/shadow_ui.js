@@ -26447,8 +26447,29 @@ globalThis.onMidiMessageInternal = function(data) {
      * (wrapped so coRunView returns to the hierarchy editor), mirroring the
      * non-co-run steal below. */
     var canvasInCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    /*
+     * A CANVAS PARAM MAY CLAIM THE JOG CLICK, and then Back is the only exit.
+     *
+     * MoveMainButton is CC 3, and the branch below steals it to close the
+     * fullscreen canvas BEFORE dispatchCanvasMidi runs -- so an overlay can
+     * never see it. That is right for a viewer you look at and leave, and
+     * wrong for an EDITOR meant to be worked in: the click is its primary
+     * gesture, and an overlay that wants it currently cannot have it.
+     *
+     * The opt-in is why this is safe, and it is the same shape as
+     * capabilities.claims_ccs. #154 took Undo/Copy/Delete unconditionally
+     * whenever the shadow display was up and had to be reverted (#175) because
+     * it stole them from everyone. A param declaring nothing behaves exactly
+     * as it does today.
+     *
+     * Not honoured in CO-RUN: there the click belongs to the tool sharing the
+     * surface, and a claim would take it from a peer that never agreed to it.
+     */
+    var canvasClaimsClick = !canvasInCorun && !!(canvasParamMeta &&
+        (canvasParamMeta.claims_jog_click === true ||
+         canvasParamMeta.claimsJogClick === true));
     if ((view === VIEWS.CANVAS || canvasInCorun) && (status & 0xF0) === 0xB0) {
-        if (d1 === MoveMainButton && d2 > 0) {
+        if (d1 === MoveMainButton && d2 > 0 && !canvasClaimsClick) {
             if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(false); });
             else closeCanvasPreview(false);
             announce("Hierarchy Editor");

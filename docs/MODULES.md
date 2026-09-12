@@ -2435,6 +2435,13 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `display_value_type` (optional): `string`, `int`, `float`, or `percent` formatting for value display.
 - `canvas_script` (optional): Script path relative to module root (default `canvas.js`), supports `file.js#overlay_name`.
 - `canvas_overlay` (optional): Named overlay object selector (aliases: `canvas_target`, `overlay`).
+- `claims_jog_click` (optional, on the canvas PARAM): the fullscreen canvas
+  steals CC 3 to close itself before the overlay sees it, which is right for a
+  viewer and wrong for an EDITOR whose primary gesture is the click. Declaring
+  it leaves the click to the overlay and makes Back the only way out. Opt-in
+  by design — a param that declares nothing behaves exactly as before — and
+  not honoured in co-run, where the click belongs to the tool sharing the
+  surface.
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
 - `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
 
