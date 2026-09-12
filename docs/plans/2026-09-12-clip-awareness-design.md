@@ -111,12 +111,19 @@ one number is also what we want for something that must not be silently wrong �
 song-global and the time signature varies, so the conversion takes both. A
 hardcoded 16 is a bug waiting for the first 1/32 clip.
 
-**Stated assumption, not measured:** Move emits this signal regardless of its
-own screen-reader setting. Asserted by the user for the platform; the test
-device has the reader on, so the reader-off case was never exercised. If it
-turns out to be setting-dependent, `"Bar N"` must be demoted to an optimisation
-and the playhead becomes the only page source — which costs stopped-state page
-resolution and nothing else.
+**This channel is NOT gated on a user setting, and the reason is structural.**
+Move emits `ScreenReader.text` signals unconditionally; the screen-reader
+toggle controls only whether a text-to-speech engine *speaks* them. So the
+signal is there on every device whether or not anyone has ever enabled
+accessibility — the same property that lets metronome detection
+(`src/host/metronome_announce.h`) read Move's `"Metronome On"` / `"Metronome
+Off"` on an untouched device.
+
+Worth stating explicitly because the opposite assumption is the natural one and
+would have been expensive: a page source that works only for users who happen
+to run the screen reader is a setting-dependent feature, which is worse than no
+feature, and the design would have had to demote `"Bar N"` to an optimisation
+and give up stopped-state page resolution for everyone else.
 
 ## What `Song.abl` still supplies
 
