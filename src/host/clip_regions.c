@@ -94,6 +94,11 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
      * so nothing can be decided until the object closes. */
     int    note_open = 0, note_have_num = 0, note_num = 0;
     double note_start = 0.0;
+    /* Time signatures. TWO scopes with the SAME key name, which is why each
+     * is pinned to its own depth like everything else here: Move writes one
+     * song-wide at depth 1 and one inside every clip. */
+    int    d_song_sig = D_UNSET, d_clip_sig = D_UNSET;
+    int    clip_sig_upper = 0, clip_sig_lower = 0;
 
     while (p < end) {
         char c = *p;
@@ -104,6 +109,13 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                 /* +2, not +1: the value is an ARRAY, so a track object sits
                  * one level below the array, two below the key. */
                 d_tracks = depth + 2;
+            } else if (depth == 1 && key_is(p, end, "timeSignature")) {
+                d_song_sig = depth + 1;
+            } else if (d_song_sig != D_UNSET && depth == d_song_sig) {
+                if (key_is(p, end, "upper"))
+                    out->sig_upper = (int)read_number_after_colon(p, end);
+                else if (key_is(p, end, "lower"))
+                    out->sig_lower = (int)read_number_after_colon(p, end);
             } else if (depth == 1 && key_is(p, end, "stepEditorResolution")) {
                 const char *q = p;
                 while (q < end && *q != ':') q++;
@@ -131,6 +143,8 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                     loop_start = loop_end = 0; loop_enabled = 0;
                     note_count = 0; first_note = -1; first_note_start = 0.0;
                     d_notes = D_UNSET; note_open = 0;
+                    clip_sig_upper = clip_sig_lower = 0;
+                    d_clip_sig = D_UNSET;
                 }
             } else if (d_clip != D_UNSET && depth == d_clip &&
                        key_is(p, end, "isPlaying")) {
@@ -146,6 +160,14 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                         read_number_after_colon(p, end);
                     out->slots[track][slot].have_scroll = 1;
                 }
+            } else if (d_clip != D_UNSET && depth == d_clip &&
+                       key_is(p, end, "timeSignature")) {
+                d_clip_sig = depth + 1;
+            } else if (d_clip_sig != D_UNSET && depth == d_clip_sig) {
+                if (key_is(p, end, "upper"))
+                    clip_sig_upper = (int)read_number_after_colon(p, end);
+                else if (key_is(p, end, "lower"))
+                    clip_sig_lower = (int)read_number_after_colon(p, end);
             } else if (d_clip != D_UNSET && depth == d_clip &&
                        key_is(p, end, "notes")) {
                 d_notes = depth + 2;   /* array-wrapped, as above */
@@ -208,6 +230,8 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                 }
                 note_open = 0;
             }
+            else if (d_song_sig != D_UNSET && depth == d_song_sig) d_song_sig = D_UNSET;
+            else if (d_clip_sig != D_UNSET && depth == d_clip_sig) d_clip_sig = D_UNSET;
             else if (d_loop != D_UNSET && depth == d_loop)   d_loop = D_UNSET;
             else if (d_region != D_UNSET && depth == d_region) d_region = D_UNSET;
             else if (d_clip != D_UNSET && depth == d_clip) {
@@ -226,6 +250,12 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                     }
                     r->note_count = note_count;
                     r->first_note = first_note;
+                    /* Both or neither: half a signature is not one, and
+                     * `upper * 4 / lower` with a zero lower divides by zero. */
+                    if (clip_sig_upper > 0 && clip_sig_lower > 0) {
+                        r->sig_upper = clip_sig_upper;
+                        r->sig_lower = clip_sig_lower;
+                    }
                 }
                 have_clip = 0;
                 d_clip = D_UNSET;
@@ -397,4 +427,29 @@ int clip_regions_geometry_differs(const clip_regions_t *a,
      * selection, it changes as the user plays, and it has no bearing on how a
      * phase sample is scored. */
     return 0;
+}
+
+/* See clip_regions.h. Falls back clip -> song -> 4/4, and the 4/4 default is
+ * for an older firmware that wrote no signature at all, not a guess about
+ * this clip. */
+double clip_regions_quarters_per_bar(const clip_regions_t *rg,
+                                     int track, int slot)
+{
+    int upper = 0, lower = 0;
+    if (rg) {
+        if (track >= 0 && track < CLIP_TRACKS &&
+            slot >= 0 && slot < CLIP_SLOTS) {
+            const clip_region_t *r = &rg->slots[track][slot];
+            if (r->sig_upper > 0 && r->sig_lower > 0) {
+                upper = r->sig_upper;
+                lower = r->sig_lower;
+            }
+        }
+        if (!upper && rg->sig_upper > 0 && rg->sig_lower > 0) {
+            upper = rg->sig_upper;
+            lower = rg->sig_lower;
+        }
+    }
+    if (upper <= 0 || lower <= 0) return 4.0;
+    return (double)upper * 4.0 / (double)lower;
 }
