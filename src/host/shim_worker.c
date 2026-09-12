@@ -422,6 +422,8 @@ static void worker_heartbeat(void)
  *
  * Worker thread only: this reads and parses a file over 1 MB. */
 static clip_regions_t g_regions;
+static char g_set_name[128];
+static char g_set_uuid[128];
 static void clip_regions_tick(void)
 {
     static char last_set[256];
@@ -449,6 +451,8 @@ static void clip_regions_tick(void)
     if (!clip_regions_parse_file(path, &rg)) return;   /* leave the old one */
 
     snprintf(last_set, sizeof(last_set), "%s", key);
+    snprintf(g_set_name, sizeof(g_set_name), "%s", name);
+    snprintf(g_set_uuid, sizeof(g_set_uuid), "%s", uuid);
     g_regions = rg;
 
     /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
@@ -523,6 +527,25 @@ static void clip_state_tick(void)
                 tr->anchor_pulse, el,
                 r ? r->loop_len : 0.0, r ? r->loop_start : 0.0,
                 have_ph ? "true" : "false", ph);
+    }
+    fprintf(jf, "],\"set\":\"%s\",\"ui_mode\":%d,\"regions_valid\":%s,\"grid\":[",
+            g_set_name, cs->last_ui_mode, g_regions.valid ? "true" : "false");
+    /* The grid AS WE BELIEVE IT: what the file says exists, what the file
+     * restored as selected, and which slot we currently think is live. Shown
+     * side by side on purpose -- when the readout disagrees with the device,
+     * the useful question is which of the two sources is wrong. */
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        for (int s2 = 0; s2 < CLIP_SLOTS; s2++) {
+            const clip_region_t *r = g_regions.valid ? &g_regions.slots[t][s2] : 0;
+            int live = (cs->tracks[t].identity_valid &&
+                        cs->tracks[t].clip_slot == s2);
+            fprintf(jf, "%s{\"t\":%d,\"s\":%d,\"exists\":%s,\"file_sel\":%s,\"live\":%s,\"len\":%.2f}",
+                    (t || s2) ? "," : "", t + 1, s2 + 1,
+                    (r && r->exists) ? "true" : "false",
+                    (r && r->is_playing) ? "true" : "false",
+                    live ? "true" : "false",
+                    r ? r->loop_len : 0.0);
+        }
     }
     fprintf(jf, "]}\n");
     fclose(jf);

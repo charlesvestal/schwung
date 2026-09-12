@@ -74,6 +74,12 @@ typedef struct {
     int      saw_stop[CLIP_TRACKS];
     uint32_t last_pulse;
     int      seen_pulse;
+    /* Last UI mode the scan reported. Recorded even when the event is
+     * rejected, because "what mode does Schwung think Move is in" is the
+     * first thing to check when the grid reads wrong -- the gate is silent
+     * by design, so without this a rejected event is indistinguishable from
+     * no event at all. */
+    int      last_ui_mode;
 } clip_state_t;
 
 /* Map a pad note to (track, slot). Returns 0 if the note is not a grid pad. */

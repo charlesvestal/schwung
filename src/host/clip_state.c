@@ -60,6 +60,8 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
     st->last_pulse = pulses;
     st->seen_pulse = 1;
 
+    st->last_ui_mode = ui_mode;
+
     uint8_t type = status & 0xF0;
     if (type != 0x90 && type != 0x80) return;
 

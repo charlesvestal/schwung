@@ -84,13 +84,33 @@ const clipStateHTML = `<!doctype html>
  .bar{color:#666;margin-top:14px;font-size:12px}
  button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid #444;
         background:#1e1e1e;color:#eee;cursor:pointer}
+ .ctx{margin:10px 0 18px;color:#aaa;font-size:13px}
+ .ctx b{color:#eee;font-weight:600}
+ .g{border-collapse:separate;border-spacing:4px}
+ .g td{width:34px;height:30px;text-align:center;border-radius:5px;
+       background:#1a1a1a;color:#555;font-size:11px;border:1px solid #222;padding:0}
+ .g td.ex{color:#999;border-color:#333}
+ .g td.sel{background:#20304a;color:#9bc0f0;border-color:#37527e}
+ .g td.live{background:#12351e;color:#6ee7a0;border-color:#276b42;font-weight:600}
+ .g th{color:#666;font-weight:500;font-size:11px;padding:0 4px}
+ .k{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px}
+ .k.live{background:#12351e;color:#6ee7a0}
+ .k.sel{background:#20304a;color:#9bc0f0}
+ .k.ex{background:#1a1a1a;color:#999;border:1px solid #333}
 </style></head><body>
 <h1>Clip State</h1>
-<p class="sub">What the shim has decoded from Move&rsquo;s LED stream. Updates ~1&nbsp;Hz.</p>
+<p class="sub">What the shim has decoded from Move&rsquo;s LED stream and Song.abl. Updates ~1&nbsp;Hz.</p>
 <div id="armbox"></div>
+<div id="ctx" class="ctx"></div>
 <table><thead><tr><th>Track</th><th>Clip</th><th>Loop</th><th>Phase</th><th>Position</th></tr></thead>
 <tbody id="rows"></tbody></table>
 <div class="bar" id="bar"></div>
+<h2 style="font-size:14px;margin:22px 0 6px">Grid as decoded</h2>
+<p class="sub" style="margin:0 0 10px">Rows are tracks, columns clips 1&ndash;8.
+ <span class="k live">live</span> what we think is playing &middot;
+ <span class="k sel">file</span> the selection Song.abl restored &middot;
+ <span class="k ex">&middot;</span> a clip exists &middot; blank = empty</p>
+<div id="grid"></div>
 <script>
 function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 async function tick(){
@@ -136,7 +156,35 @@ async function tick(){
            '</td><td>'+phase+'</td><td class="n">'+el+'</td></tr>';
   }).join('');
   document.getElementById('bar').textContent =
-    'pulse '+d.pulses+'  ·  beat '+(+d.beat).toFixed(2);
+    'pulse '+d.pulses+'  \u00b7  beat '+(+d.beat).toFixed(2);
+
+  const MODES={0:'unknown',1:'Session',2:'Note',3:'Set Overview'};
+  /* The mode is shown because the clip gate depends on it: outside Session
+     the pads are not clips, and the rejection is silent. */
+  document.getElementById('ctx').innerHTML =
+    'Set <b>'+esc(d.set||'?')+'</b> \u00b7 Move UI mode <b>'+
+    esc(MODES[d.ui_mode]!==undefined?MODES[d.ui_mode]:d.ui_mode)+'</b>'+
+    (d.ui_mode===1?'':' <span class="k sel">pads are not clips in this mode</span>')+
+    ' \u00b7 Song.abl '+(d.regions_valid?'loaded':'<b>not loaded</b>');
+
+  if(d.grid){
+    let h='<table class="g"><tr><th></th>';
+    for(let s=1;s<=8;s++) h+='<th>'+s+'</th>';
+    h+='</tr>';
+    for(let t=1;t<=4;t++){
+      h+='<tr><th>T'+t+'</th>';
+      for(let s=1;s<=8;s++){
+        const c=d.grid.find(g=>g.t===t&&g.s===s)||{};
+        let cls='', txt='';
+        if(c.live){ cls='live'; txt='\u25cf'; }
+        else if(c.file_sel){ cls='sel'; txt='\u25cb'; }
+        else if(c.exists){ cls='ex'; txt='\u00b7'; }
+        h+='<td class="'+cls+'" title="'+(c.len?('loop '+c.len+' beats'):'')+'">'+txt+'</td>';
+      }
+      h+='</tr>';
+    }
+    document.getElementById('grid').innerHTML=h+'</table>';
+  }
 }
 tick(); setInterval(tick,1000);
 </script></body></html>`

@@ -268,8 +268,21 @@ static void test_non_session_modes_are_ignored(void)
           st.tracks[3].identity_valid, st.tracks[3].clip_slot);
 }
 
+/* The mode gate is SILENT by design, so a rejected event looks exactly like
+ * no event. Recording the mode regardless is what makes a wrong grid
+ * diagnosable instead of a mystery. */
+static void test_ui_mode_is_recorded_even_when_rejected(void)
+{
+    printf("the rejected mode is still recorded, so the gate is visible\n");
+    clip_state_t st; clip_state_reset(&st);
+    clip_state_on_led(&st, 0x99, 72, 9, 0, 1, 3);
+    CHECK(st.last_ui_mode == 3, "mode 3 should be recorded, got %d", st.last_ui_mode);
+    CHECK(!st.tracks[3].identity_valid, "and still rejected");
+}
+
 int main(void)
 {
+    test_ui_mode_is_recorded_even_when_rejected();
     test_non_session_modes_are_ignored();
     test_chosen_clip_on_a_stopped_track_anchors();
     test_unwitnessed_slot_change_does_not_anchor();
