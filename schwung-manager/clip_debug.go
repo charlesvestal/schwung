@@ -88,7 +88,7 @@ const clipStateHTML = `<!doctype html>
 <h1>Clip State</h1>
 <p class="sub">What the shim has decoded from Move&rsquo;s LED stream. Updates ~1&nbsp;Hz.</p>
 <div id="armbox"></div>
-<table><thead><tr><th>Track</th><th>Clip</th><th>Phase</th><th>Elapsed beats</th></tr></thead>
+<table><thead><tr><th>Track</th><th>Clip</th><th>Loop</th><th>Phase</th><th>Position</th></tr></thead>
 <tbody id="rows"></tbody></table>
 <div class="bar" id="bar"></div>
 <script>
@@ -125,10 +125,15 @@ async function tick(){
          here rather than record at a guessed phase. */
       phase = t.anchored ? '<span class="pill ok">anchored</span>'
                          : '<span class="pill warn">phase unknown</span>';
-      el = t.anchored ? (+t.elapsed_beats).toFixed(2) : '—';
+      if(t.has_phase) el = (+t.phase).toFixed(2)+' / '+(+t.loop_len).toFixed(2);
+      else if(t.anchored) el = '+'+(+t.elapsed_beats).toFixed(2)+' (no loop len)';
+      else el = '\u2014';
     }
-    return '<tr><td>'+esc(t.track)+'</td><td>'+clip+'</td><td>'+phase+
-           '</td><td class="n">'+el+'</td></tr>';
+    const loop = (t.known && t.clip && t.loop_len)
+      ? (+t.loop_len).toFixed(2)+' beats'+((+t.loop_start)?' from '+(+t.loop_start).toFixed(2):'')
+      : '\u2014';
+    return '<tr><td>'+esc(t.track)+'</td><td>'+clip+'</td><td class="n">'+loop+
+           '</td><td>'+phase+'</td><td class="n">'+el+'</td></tr>';
   }).join('');
   document.getElementById('bar').textContent =
     'pulse '+d.pulses+'  ·  beat '+(+d.beat).toFixed(2);

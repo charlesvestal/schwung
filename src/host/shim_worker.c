@@ -398,6 +398,7 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
+#include "clip_regions.h"
 extern int shadow_transport_pulses;
 /* Is this thread alive at all? Three separate worker-driven diagnostics went
  * quiet at once and I argued about the cause instead of measuring it. This
@@ -410,6 +411,50 @@ static void worker_heartbeat(void)
     if (!f) return;
     fprintf(f, "worker tick %u\n", n);
     fclose(f);
+}
+
+/* Seed clip identity and loop geometry from Song.abl when the set changes.
+ *
+ * Without this, nothing is known until the user visits Session mode -- and if
+ * MIDI Start arrives first, every track stays unanchored PERMANENTLY, because
+ * there was no identity for the Start to anchor. Seeding before 0xFA is the
+ * whole point: it puts identity in place so the Start can do its job.
+ *
+ * Worker thread only: this reads and parses a file over 1 MB. */
+static clip_regions_t g_regions;
+static void clip_regions_tick(void)
+{
+    static char last_set[256];
+    static unsigned n = 0;
+    if (n++ % 7) return;                   /* ~1.4 s, matching the set poll */
+
+    char uuid[128] = {0}, name[128] = {0};
+    FILE *f = fopen("/data/UserData/schwung/active_set.txt", "r");
+    if (!f) return;
+    if (!fgets(uuid, sizeof(uuid), f)) { fclose(f); return; }
+    if (!fgets(name, sizeof(name), f))  { fclose(f); return; }
+    fclose(f);
+    uuid[strcspn(uuid, "\r\n")] = 0;
+    name[strcspn(name, "\r\n")] = 0;
+    if (!uuid[0] || !name[0]) return;
+
+    char key[256];
+    snprintf(key, sizeof(key), "%s/%s", uuid, name);
+    if (strcmp(key, last_set) == 0) return;  /* unchanged */
+
+    char path[512];
+    snprintf(path, sizeof(path),
+             "/data/UserData/UserLibrary/Sets/%s/%s/Song.abl", uuid, name);
+    clip_regions_t rg;
+    if (!clip_regions_parse_file(path, &rg)) return;   /* leave the old one */
+
+    snprintf(last_set, sizeof(last_set), "%s", key);
+    g_regions = rg;
+
+    /* The file SEEDS; the LEDs OVERRIDE. seed_state skips any track we have
+     * already observed and never sets an anchor. */
+    clip_state_t *st = clip_state_mutable();
+    if (st) clip_regions_seed_state(&g_regions, st);
 }
 
 static void clip_state_tick(void)
@@ -435,12 +480,18 @@ static void clip_state_tick(void)
         else if (tr->clip_slot < 0)   fprintf(fp, " | T%d -        ", t + 1);
         else if (!tr->anchor_valid)   fprintf(fp, " | T%d c%d ph?   ", t + 1, tr->clip_slot + 1);
         else {
-            /* Loop length is Song.abl's job and is not wired yet, so show the
-             * raw elapsed beats since the anchor rather than a phase -- an
-             * invented loop length would make this readout agree with itself
-             * and with nothing on the device. */
-            double el = (double)(pul - tr->anchor_pulse) / 24.0;
-            fprintf(fp, " | T%d c%d +%-6.2f", t + 1, tr->clip_slot + 1, el);
+            double ph = 0.0;
+            const clip_region_t *r = g_regions.valid
+                ? &g_regions.slots[t][tr->clip_slot] : 0;
+            if (r && clip_phase_beats(tr, pul, r->loop_start, r->loop_len, &ph))
+                fprintf(fp, " | T%d c%d @%-6.2f", t + 1, tr->clip_slot + 1, ph);
+            else {
+                /* Anchored but no loop length: elapsed, never a phase. An
+                 * invented length would agree with itself and with nothing
+                 * on the device. */
+                double el = (double)(pul - tr->anchor_pulse) / 24.0;
+                fprintf(fp, " | T%d c%d +%-6.2f", t + 1, tr->clip_slot + 1, el);
+            }
         }
     }
     fprintf(fp, "\n");
@@ -456,13 +507,22 @@ static void clip_state_tick(void)
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         double el = tr->anchor_valid ? (double)(pul - tr->anchor_pulse) / 24.0 : 0.0;
+        const clip_region_t *r = (g_regions.valid && tr->identity_valid &&
+                                  tr->clip_slot >= 0)
+                               ? &g_regions.slots[t][tr->clip_slot] : 0;
+        double ph = 0.0;
+        int have_ph = r && clip_phase_beats(tr, pul, r->loop_start, r->loop_len, &ph);
         fprintf(jf, "%s{\"track\":%d,\"known\":%s,\"clip\":%d,"
-                    "\"anchored\":%s,\"anchor_pulse\":%u,\"elapsed_beats\":%.2f}",
+                    "\"anchored\":%s,\"anchor_pulse\":%u,\"elapsed_beats\":%.2f,"
+                    "\"loop_len\":%.2f,\"loop_start\":%.2f,"
+                    "\"has_phase\":%s,\"phase\":%.2f}",
                 t ? "," : "", t + 1,
                 tr->identity_valid ? "true" : "false",
                 tr->identity_valid ? tr->clip_slot + 1 : 0,
                 tr->anchor_valid ? "true" : "false",
-                tr->anchor_pulse, el);
+                tr->anchor_pulse, el,
+                r ? r->loop_len : 0.0, r ? r->loop_start : 0.0,
+                have_ph ? "true" : "false", ph);
     }
     fprintf(jf, "]}\n");
     fclose(jf);
@@ -921,6 +981,7 @@ static void *worker_main(void *arg) {
         if (tick % 5 == 0) perf_shm_attach_tick();/* ~1 Hz until attached */
         if (tick % 5 == 0) rt_audit_tick();       /* ~1 Hz, no-op unless armed */
         if (tick % 5 == 0) spi_tally_tick();      /* ~1 Hz, no-op unless armed */
+        clip_regions_tick();
         clip_state_tick();
         worker_heartbeat();
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */

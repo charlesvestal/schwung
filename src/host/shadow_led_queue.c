@@ -18,11 +18,25 @@ extern int sampler_transport_playing;
  * by note and so collapses the channel that carries the whole signal. */
 static clip_state_t g_clip_state;
 static int g_clip_state_ready;
+
+/* Initialised on first ACCESS, not on the first LED event. Gating this on the
+ * scan made seeding from Song.abl impossible in exactly the case it exists
+ * for: a freshly booted device with nothing lit emits no cable-0 traffic, so
+ * the table stayed NULL, the seed was skipped, and every track read "unknown"
+ * until the user visited Session mode -- which is the problem, not the fix. */
+static void clip_state_ensure(void) {
+    if (!g_clip_state_ready) {
+        clip_state_reset(&g_clip_state);
+        g_clip_state_ready = 1;
+    }
+}
 const clip_state_t *clip_state_current(void) {
-    return g_clip_state_ready ? &g_clip_state : 0;
+    clip_state_ensure();
+    return &g_clip_state;
 }
 clip_state_t *clip_state_mutable(void) {
-    return g_clip_state_ready ? &g_clip_state : 0;
+    clip_state_ensure();
+    return &g_clip_state;
 }
 
 /* Declared here rather than further down: led_capture_record() below reads
@@ -376,10 +390,7 @@ void shadow_clear_move_leds_if_overtake(void) {
             if (cable == 0 && (type == 0x90 || type == 0x80 || type == 0xB0)) {
                 uint8_t d1 = midi_out[i+2];
                 uint8_t d2 = midi_out[i+3];
-                if (!g_clip_state_ready) {
-                    clip_state_reset(&g_clip_state);
-                    g_clip_state_ready = 1;
-                }
+                clip_state_ensure();
                 clip_state_on_led(&g_clip_state, midi_out[i+1], d1, d2,
                                   (uint32_t)shadow_transport_pulses,
                                   sampler_transport_playing,
