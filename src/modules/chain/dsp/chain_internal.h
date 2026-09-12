@@ -47,6 +47,7 @@
 #include "host/bus_mix.h"
 #include "host/voice_send_source.h"
 #include "host/bus_route.h"
+#include "host/lane_store.h"
 #include "../../../host/unified_log.h"
 #include "../../../host/shadow_constants.h"
 
@@ -804,6 +805,25 @@ typedef struct chain_instance {
     uint64_t mod_param_refresh_ms_synth;
     uint64_t mod_param_refresh_ms_fx[MAX_AUDIO_FX];
     uint64_t mod_param_refresh_ms_midi_fx[MAX_MIDI_FX];
+
+    /* Clip phase, pushed by the shim once per block through the dlsym'd
+     * chain_set_clip_phase(). NOT read from host_api_v1_t: its `reserved` tail
+     * begins at +120, the exact offset a shipped breakbeat build calls as
+     * get_project_bpm(), so a live pointer there passes breakbeat's own
+     * if (host->fn) guard and SIGSEGVs on the SPI callback at slot restore --
+     * which boot-loops the device. Same reason move_plugin_render_split is
+     * dlsym'd rather than a field on plugin_api_v2_t. */
+    int    clip_phase_valid;      /* 0 = UNKNOWN. Not zero. Unknown. */
+    double clip_phase_beats;      /* beats from the clip's loop start */
+    double clip_loop_len;         /* beats */
+    /* Which clip the phase belongs to, and what it looks like right now. All
+     * pushed together in ONE call, deliberately: these are facts about one
+     * clip at one instant, and splitting them across calls lets a lane bind a
+     * fingerprint to a position it did not come from. */
+    int    lane_track;            /* Move track 0..3 (== the slot index) */
+    int    lane_clip_slot;        /* 0..7, or -1 for "nothing playing" */
+    int    clip_fp_valid;
+    lane_fingerprint_t clip_fp;   /* content fingerprint; note data in Task 6 */
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];

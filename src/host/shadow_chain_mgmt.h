@@ -205,6 +205,22 @@ extern int (*shadow_chain_fx_requires_continuous)(void *instance);
  * tick answers about the previous frame. NULL when the loaded chain DSP is
  * older than v1.2.1 — caller must null-check. */
 extern int (*shadow_chain_take_midi_tick_wake)(void *instance);
+/* Optional: pushed once per block per slot, BEFORE the idle gate, so a silent
+ * slot's lane keeps playing. NULL on any chain DSP built before automation
+ * lanes -- the caller must null-check, and a NULL degrades to "phase unknown"
+ * for every slot. dlsym'd rather than a host_api_v1_t field: the front of that
+ * struct's `reserved` tail is +120, which a shipped breakbeat build calls as
+ * get_project_bpm(). */
+extern void (*shadow_chain_set_clip_phase)(void *instance, int valid,
+                                           double phase_beats, double loop_len,
+                                           int track, int clip_slot,
+                                           int fp_valid, const double *fp);
+
+/* Where slot `slot`'s Move track is in its playing clip. Returns 1 for a known
+ * phase, 0 for UNKNOWN -- never phase 0. *clip_slot and *fp_valid answer
+ * identity and are filled either way; see the definition. */
+int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
+                           int *clip_slot, int *fp_valid, double *fp);
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 

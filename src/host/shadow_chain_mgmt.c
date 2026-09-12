@@ -76,6 +76,14 @@ void (*shadow_chain_drain_main_send)(void *instance, int16_t *const *accum,
                                      int n_sends, const int16_t *post_fx,
                                      int frames, int slot_volume_0_127) = NULL;
 int (*shadow_chain_take_midi_tick_wake)(void *instance) = NULL;
+/* Optional, and NULL on any chain built before automation lanes. A NULL here
+ * is "phase unknown" for every slot: the call site is guarded, which is the
+ * only degradation that is safe -- see the plan's ABI note for why this is a
+ * dlsym and not a host_api_v1_t field. */
+void (*shadow_chain_set_clip_phase)(void *instance, int valid,
+                                    double phase_beats, double loop_len,
+                                    int track, int clip_slot, int fp_valid,
+                                    const double *fp) = NULL;
 host_api_v1_t shadow_host_api;
 
 /* Global send buses. Zero-initialised BSS: every position empty, both returns
@@ -98,6 +106,64 @@ static int shadow_chain_slot_recv_channel(void *instance) {
     }
     return -2;
 }
+
+/* Slot N rides Move track N. That binding is not new: the shim already builds
+ * a slot as move_track[s] + synth[s], so the four slot stems ARE the four
+ * tracks.
+ *
+ * Returns 1 with *phase_beats and *loop_len filled, else 0 for "phase
+ * UNKNOWN" -- which is NOT phase 0 and must never be substituted for one.
+ *
+ * *clip_slot and *fp_valid answer IDENTITY and are filled even when the
+ * function returns 0. Identity and anchor are separately valid (clip_state.h):
+ * entering Session view refreshes the grid and gives identity with no anchor,
+ * and collapsing the two is how a lane binds to the right clip at the wrong
+ * phase.
+ *
+ * RT: SPI callback. Table reads only -- clip_state and clip_regions are both
+ * plain structs, and a torn read costs one block of phase. */
+int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
+                           int *clip_slot, int *fp_valid, double *fp /* [4] */) {
+    if (slot < 0 || slot >= CLIP_TRACKS || !phase_beats || !loop_len ||
+        !clip_slot || !fp_valid || !fp) return 0;
+    *clip_slot = -1;
+    *fp_valid = 0;
+    const clip_state_t *cs = clip_state_current();
+    if (!cs) return 0;
+    const clip_track_state_t *tr = &cs->tracks[slot];
+    if (!tr->identity_valid || tr->clip_slot < 0 ||
+        tr->clip_slot >= CLIP_SLOTS) return 0;
+    *clip_slot = tr->clip_slot;
+    const clip_regions_t *rg = shadow_clip_regions();
+    if (!rg || !rg->valid) return 0;
+    const clip_region_t *r = &rg->slots[slot][tr->clip_slot];
+    if (!r->exists || r->loop_len <= 0.0) return 0;
+
+    /* The fingerprint is valid as soon as the CLIP is known, independently of
+     * whether the phase is: a lane still needs to know whether it is bound to
+     * the right clip while it waits for an anchor. */
+    fp[0] = r->loop_start;
+    fp[1] = r->loop_len;
+    /* Note count and first note are Task 6's; clip_region_t has no note data
+     * yet. 0/-1 are the "nothing known" values lane_fingerprint_t documents,
+     * and nothing compares against them because an unknown clip is not a
+     * mismatched one. */
+    fp[2] = 0.0;
+    fp[3] = -1.0;
+    *fp_valid = 1;
+
+    if (!tr->anchor_valid) return 0;   /* clip known, phase UNKNOWN */
+    double ph = 0.0;
+    if (!clip_phase_beats(tr, (uint32_t)shadow_transport_pulses,
+                          r->loop_start, r->loop_len, &ph)) return 0;
+    /* clip_phase_beats() adds loop_start back on before returning, despite its
+     * header comment. Subtracting it is what yields 0..loop_len, which is the
+     * only thing a lane can index a breakpoint list with. */
+    *phase_beats = ph - r->loop_start;
+    *loop_len = r->loop_len;
+    return 1;
+}
+
 int shadow_inprocess_ready = 0;
 
 /* Master FX slots */
@@ -2442,6 +2508,9 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_drain_main_send");
     shadow_chain_take_midi_tick_wake = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_take_midi_tick_wake");
+    shadow_chain_set_clip_phase =
+        (void (*)(void *, int, double, double, int, int, int, const double *))
+        dlsym(shadow_dsp_handle, "chain_set_clip_phase");
 
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: inject=%p ext_fx_mode=%p process_fx=%p same_frame=%d keep_alive=%p midi_wake=%p",
             (void*)shadow_chain_set_inject_audio,
@@ -2450,6 +2519,8 @@ int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous,
             (void*)shadow_chain_take_midi_tick_wake);
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: clip_phase=%p",
+            (void*)shadow_chain_set_clip_phase);
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
             (void*)shadow_chain_drain_sends,
             (void*)shadow_chain_drain_main_send);

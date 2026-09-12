@@ -57,7 +57,10 @@ done
 #    this list with the change that adds it — chain_drain_sends is the global
 #    send buses' per-bus and per-voice drain, and chain_drain_main_send the
 #    SLOT's, taken one pass later from audio the shim owns; both are dlsym'd by
-#    shadow_chain_mgmt.c.
+#    shadow_chain_mgmt.c. chain_set_clip_phase is the clip-phase seam for
+#    automation lanes: a dlsym'd entry point rather than a host_api_v1_t field,
+#    because the front of that struct's `reserved` tail is +120 -- the offset a
+#    shipped breakbeat build calls as get_project_bpm().
 so="build/modules/chain/dsp.so"
 if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
   got=$(nm -D --defined-only "$so" 2>/dev/null | awk '{print $NF}' | sort)
@@ -66,6 +69,7 @@ if [ -f "$so" ] && command -v nm >/dev/null 2>&1; then
     chain_fx_requires_continuous chain_process_fx \
     chain_set_external_fx_mode chain_set_inject_audio move_plugin_init_v2 \
     chain_take_midi_tick_wake \
+    chain_set_clip_phase \
     unified_log unified_log_crash unified_log_enabled unified_log_init \
     unified_log_shutdown unified_log_v | sort)
   if [ "$got" != "$want" ]; then
