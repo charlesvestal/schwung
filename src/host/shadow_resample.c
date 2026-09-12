@@ -21,8 +21,6 @@ static int resample_initialized = 0;
  * ============================================================================ */
 
 volatile native_resample_bridge_mode_t native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
-volatile native_sampler_source_t native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
-volatile native_sampler_source_t native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
 volatile int link_audio_routing_enabled = 0;
 volatile int link_audio_publish_enabled = 0;
 /* Disabled in 1.3.2: the XMOS out-source and monitoring fields can disagree,
@@ -49,18 +47,6 @@ volatile int native_bridge_makeup_limited = 0;
  * Local utility
  * ============================================================================ */
 
-static void str_to_lower(char *dst, size_t dst_size, const char *src)
-{
-    size_t i = 0;
-    while (src[i] && i + 1 < dst_size) {
-        char c = src[i];
-        if (c >= 'A' && c <= 'Z') c = c + ('a' - 'A');
-        dst[i] = c;
-        i++;
-    }
-    dst[i] = '\0';
-}
-
 /* ============================================================================
  * Init
  * ============================================================================ */
@@ -68,8 +54,6 @@ static void str_to_lower(char *dst, size_t dst_size, const char *src)
 void resample_init(const resample_host_t *h) {
     host = *h;
     native_resample_bridge_mode = NATIVE_RESAMPLE_BRIDGE_OFF;
-    native_sampler_source = NATIVE_SAMPLER_SOURCE_UNKNOWN;
-    native_sampler_source_last_known = NATIVE_SAMPLER_SOURCE_UNKNOWN;
     link_audio_routing_enabled = 0;
     link_audio_publish_enabled = 0;
     latency_comp_user_enabled = 0;
@@ -87,25 +71,12 @@ void resample_init(const resample_host_t *h) {
  * Name helpers
  * ============================================================================ */
 
-const char *native_sampler_source_name(native_sampler_source_t src)
-{
-    switch (src) {
-        case NATIVE_SAMPLER_SOURCE_RESAMPLING: return "resampling";
-        case NATIVE_SAMPLER_SOURCE_LINE_IN: return "line-in";
-        case NATIVE_SAMPLER_SOURCE_MIC_IN: return "mic-in";
-        case NATIVE_SAMPLER_SOURCE_USB_C_IN: return "usb-c-in";
-        case NATIVE_SAMPLER_SOURCE_UNKNOWN:
-        default: return "unknown";
-    }
-}
-
 const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode)
 {
     switch (mode) {
-        case NATIVE_RESAMPLE_BRIDGE_OFF: return "off";
         case NATIVE_RESAMPLE_BRIDGE_OVERWRITE: return "overwrite";
-        case NATIVE_RESAMPLE_BRIDGE_MIX:
-        default: return "mix";
+        case NATIVE_RESAMPLE_BRIDGE_OFF:
+        default: return "off";
     }
 }
 
@@ -113,26 +84,13 @@ const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode)
  * Mode parsing and config loading
  * ============================================================================ */
 
+/* Thin wrapper: the parser is pure and lives in resample_bridge_mode.h so
+ * tests/host can run it against shadow_ui.js's parseResampleBridgeMode and
+ * require the two to agree. They did not, and that is what let the retired
+ * mode 1 come up live at shim init on a legacy config. */
 native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text)
 {
-    if (!text || !text[0]) return NATIVE_RESAMPLE_BRIDGE_OFF;
-
-    char lower[64];
-    str_to_lower(lower, sizeof(lower), text);
-
-    if (strcmp(lower, "0") == 0 || strcmp(lower, "off") == 0) {
-        return NATIVE_RESAMPLE_BRIDGE_OFF;
-    }
-    if (strcmp(lower, "2") == 0 ||
-        strcmp(lower, "overwrite") == 0 ||
-        strcmp(lower, "replace") == 0) {
-        return NATIVE_RESAMPLE_BRIDGE_OVERWRITE;
-    }
-    if (strcmp(lower, "1") == 0 || strcmp(lower, "mix") == 0) {
-        return NATIVE_RESAMPLE_BRIDGE_MIX;
-    }
-
-    return NATIVE_RESAMPLE_BRIDGE_OFF;
+    return resample_bridge_mode_from_text_pure(text);
 }
 
 void native_resample_bridge_load_mode_from_shadow_config(void)
@@ -261,39 +219,6 @@ void native_resample_bridge_load_mode_from_shadow_config(void)
     free(json);
 }
 
-/* ============================================================================
- * Source tracking
- * ============================================================================ */
-
-/* The matcher itself now lives in sampler_source_announce.h so tests/host can
- * run it. See that file for why a substring rule in this position is the same
- * defect class as the removed mute auto-correct. */
-static native_sampler_source_t native_sampler_source_from_text(const char *text)
-{
-    return sampler_source_announce_classify(text);
-}
-
-void native_sampler_update_from_dbus_text(const char *text)
-{
-    native_sampler_source_t parsed = native_sampler_source_from_text(text);
-    if (parsed == NATIVE_SAMPLER_SOURCE_UNKNOWN) return;
-
-    if (parsed != native_sampler_source) {
-        if (host.log) {
-            char msg[256];
-            snprintf(msg, sizeof(msg), "Native sampler source: %s (from \"%s\")",
-                     native_sampler_source_name(parsed), text);
-            host.log(msg);
-        }
-        native_sampler_source = parsed;
-        native_sampler_source_last_known = parsed;
-    }
-}
-
-/* ============================================================================
- * Snapshot capture
- * ============================================================================ */
-
 void native_capture_total_mix_snapshot_from_buffer(const int16_t *src)
 {
     if (!src) return;
@@ -379,11 +304,9 @@ static void native_resample_diag_log_skip(native_resample_bridge_mode_t mode, co
     if (host.log) {
         char msg[256];
         snprintf(msg, sizeof(msg),
-                 "Native bridge diag: skip reason=%s mode=%s src=%s last=%s",
+                 "Native bridge diag: skip reason=%s mode=%s",
                  reason ? reason : "unknown",
-                 native_resample_bridge_mode_name(mode),
-                 native_sampler_source_name(native_sampler_source),
-                 native_sampler_source_name(native_sampler_source_last_known));
+                 native_resample_bridge_mode_name(mode));
         host.log(msg);
     }
 }
@@ -415,10 +338,8 @@ static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
     if (host.log) {
         char msg[512];
         snprintf(msg, sizeof(msg),
-                 "Native bridge diag: apply mode=%s src=%s last=%s mv=%.3f split=%d postfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
+                 "Native bridge diag: apply mode=%s mv=%.3f split=%d postfx=%d makeup=(%.2fx->%.2fx lim=%d) tap=post-fx-premaster src_rms=(%.4f,%.4f) dst_rms=(%.4f,%.4f) src_low=(%.4f,%.4f) dst_low=(%.4f,%.4f) side_ratio=(%.4f->%.4f) overwrite_diff=%d",
                  native_resample_bridge_mode_name(mode),
-                 native_sampler_source_name(native_sampler_source),
-                 native_sampler_source_name(native_sampler_source_last_known),
                  (double)(host.shadow_master_volume ? *host.shadow_master_volume : 0.0f),
                  (int)native_bridge_split_valid,
                  shadow_me_post_snapshot_fx_active(),
@@ -436,19 +357,8 @@ static void native_resample_diag_log_apply(native_resample_bridge_mode_t mode,
 }
 
 /* ============================================================================
- * Source gating and apply
+ * Apply
  * ============================================================================ */
-
-int native_resample_bridge_source_allows_apply(native_resample_bridge_mode_t mode)
-{
-    if (mode == NATIVE_RESAMPLE_BRIDGE_OVERWRITE) return 1;
-
-    native_sampler_source_t src = native_sampler_source;
-
-    if (src == NATIVE_SAMPLER_SOURCE_MIC_IN) return 0;
-    if (src == NATIVE_SAMPLER_SOURCE_USB_C_IN) return 0;
-    return 1;
-}
 
 static int16_t clamp_i16(int32_t v)
 {
@@ -524,11 +434,6 @@ void native_resample_bridge_apply(void)
     native_resample_bridge_mode_t mode = native_resample_bridge_mode;
     if (mode == NATIVE_RESAMPLE_BRIDGE_OFF) {
         native_resample_diag_log_skip(mode, "mode_off");
-        return;
-    }
-
-    if (!native_resample_bridge_source_allows_apply(mode)) {
-        native_resample_diag_log_skip(mode, "source_blocked");
         return;
     }
 

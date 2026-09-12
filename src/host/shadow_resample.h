@@ -6,21 +6,12 @@
 
 #include <stdint.h>
 #include "shadow_constants.h"
-#include "sampler_source_announce.h"   /* native_sampler_source_t + the classifier */
+#include "resample_bridge_mode.h"   /* native_resample_bridge_mode_t + the parser */
 
 /* ============================================================================
  * Types
  * ============================================================================ */
 
-typedef enum {
-    NATIVE_RESAMPLE_BRIDGE_OFF = 0,
-    NATIVE_RESAMPLE_BRIDGE_MIX,
-    NATIVE_RESAMPLE_BRIDGE_OVERWRITE
-} native_resample_bridge_mode_t;
-
-/* native_sampler_source_t lives in sampler_source_announce.h, beside the
- * matcher that produces it — it could not be host-tested while the two were
- * in different translation units. */
 
 typedef struct {
     float rms_l;
@@ -53,8 +44,6 @@ typedef struct {
  * ============================================================================ */
 
 extern volatile native_resample_bridge_mode_t native_resample_bridge_mode;
-extern volatile native_sampler_source_t native_sampler_source;
-extern volatile native_sampler_source_t native_sampler_source_last_known;
 extern volatile int link_audio_routing_enabled;
 extern volatile int link_audio_publish_enabled;
 
@@ -95,20 +84,13 @@ void resample_init(const resample_host_t *host);
 
 /* Name helpers */
 const char *native_resample_bridge_mode_name(native_resample_bridge_mode_t mode);
-const char *native_sampler_source_name(native_sampler_source_t src);
 
 /* Mode parsing */
 native_resample_bridge_mode_t native_resample_bridge_mode_from_text(const char *text);
 void native_resample_bridge_load_mode_from_shadow_config(void);
 
-/* Source tracking (called from D-Bus text handler) */
-void native_sampler_update_from_dbus_text(const char *text);
-
 /* Snapshot capture (called from shim rendering) */
 void native_capture_total_mix_snapshot_from_buffer(const int16_t *src);
-
-/* Source gating policy */
-int native_resample_bridge_source_allows_apply(native_resample_bridge_mode_t mode);
 
 /* Apply bridge to AUDIO_IN (called from ioctl handler) */
 void native_resample_bridge_apply(void);

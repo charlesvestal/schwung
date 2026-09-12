@@ -254,8 +254,14 @@ static void shadow_dbus_handle_text(const char *text)
         }
     }
 
-    /* Track native Move sampler source from stock announcements. */
-    host.native_sampler_update(text);
+    /* No sampler-source classifier here any more. It matched bare substrings
+     * ("mic", "line in", "usb-c") against EVERY announcement reaching this
+     * function — including Schwung's own TTS, which returns through it — and
+     * latched the verdict for the session. Captured on hardware: Move's USB-C
+     * *output* menu row and Schwung's own Global Settings rows were the only
+     * things that ever moved it, and it fed a gate no shipped UI could reach.
+     * See metronome_announce.h, two calls below, for the rule this file has
+     * already learned once. */
 
     /*
      * Move's metronome, from Move's own notification.

@@ -51,7 +51,7 @@ TARGETS = $(BUILD_DIR)/test_midi_inject_writer \
 	$(BUILD_DIR)/test_metronome_click \
 	$(BUILD_DIR)/test_metronome_announce \
 	$(BUILD_DIR)/test_shadow_metronome \
-	$(BUILD_DIR)/test_sampler_source_announce \
+	$(BUILD_DIR)/test_resample_bridge_mode \
 	$(BUILD_DIR)/test_sampler_stem_path \
 	$(BUILD_DIR)/test_sampler_wav_trim \
 	$(BUILD_DIR)/test_perf_snapshot_size \
@@ -170,7 +170,7 @@ $(BUILD_DIR)/test_metronome_click: test_metronome_click.c ../../src/host/metrono
 $(BUILD_DIR)/test_metronome_announce: test_metronome_announce.c ../../src/host/metronome_announce.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
-$(BUILD_DIR)/test_sampler_source_announce: test_sampler_source_announce.c ../../src/host/sampler_source_announce.h | $(BUILD_DIR)
+$(BUILD_DIR)/test_resample_bridge_mode: test_resample_bridge_mode.c ../../src/host/resample_bridge_mode.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) $< -o $@ $(LDFLAGS)
 
 $(BUILD_DIR)/test_sampler_stem_path: test_sampler_stem_path.c ../../src/host/sampler_stem_path.h | $(BUILD_DIR)
