@@ -1467,6 +1467,25 @@ IP and a QR of `http://<ip>:7700`. The old on-device store module is retired
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
+**The catalog is served from an UNTIMED disk cache when the fetch fails, and
+the host check was not a version comparison.** `manager-cache/catalog.json` is
+last-known-good with no TTL — deliberately, so a device with no network can
+still repair and remove modules — but `/modules` rendered it with nothing
+saying so. Meanwhile both host checks were `offered != installed`, so a device
+that had cached the catalog before 2026-08-31, when host `latest_version` was
+still **1.0.0**, showed *"1.0.0 available"* against an installed 1.4.0 with an
+Upgrade button pointing at the v1.0.0 tarball: an offered DOWNGRADE, on
+month-old data, one click away. Modules never had it — they resolve through
+`updateAvailable()`, which dates the releases and falls back to
+`versionNewer`; `hostOfferIsUpdate` is the host arriving at the same rule. A
+stale render now says **Offline** and how old the copy is, because the silence
+is what made it read as a real release rather than as a device that cannot
+reach GitHub. `"unknown"` installed still gets offered (nothing to compare,
+and refusing strands a device that cannot name what it runs).
+`schwung-manager/host_update_test.go` renders the page against a backdated
+cache — the comparison alone passes either way, since the defect was in what
+the handler COMPOSED.
+
 **Shim mirror + stuck-shim repair (web update).** The manager runs as `ableton`
 and can't write `/usr/lib`, so a web update mirrors the new shim via the
 setuid-root `schwung-heal` helper (synchronously in `post-update.sh` + the
