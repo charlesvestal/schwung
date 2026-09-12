@@ -554,6 +554,46 @@ unarmed turn **punches through until the loop comes round** — per
 survives a tempo change and needs no timer. An *armed* turn cancels any open
 punch on that lane, or the point just recorded would sit silent for a loop.
 
+#### Step p-locks: the arithmetic is done, the gesture is not
+
+A p-lock is **hold a step, turn a knob** — set a value *on* that step. Two
+pieces of it exist and are tested; the input plumbing is not written.
+
+- **A point can be a RECTANGLE.** `lane_point_t.hold` says "this value stands
+  until the next point" instead of ramping into it, because that is what a
+  p-lock is: under plain interpolation two neighbouring p-locks glide into each
+  other and sound like automation rather than a sequencer. It is **free** —
+  `{double, float}` is 12 bytes padded to 16 — and it is in the format now
+  precisely so nothing has to be migrated later. `stepped` (the parameter's
+  type) and `hold` (the point's own shape) are independent, and **the LEFT
+  point of a segment decides it**. A write within `LANE_MIN_POINT_BEATS`
+  replaces the shape along with the value, so recording a sweep over an old
+  p-lock produces a slope and p-locking over a recorded point produces a
+  rectangle. Serialized as an optional third field on the `P` line, absent
+  meaning 0, so an ordinary sweep's document is byte-identical to before.
+- **A held step's phase is `step_plock.h`**, the inverse of the mapping the
+  device scored 26/26:
+  `phase = ((bar - 1) * steps_per_bar + index) * step_resolution`.
+- **The displayed bar comes from the STRIP, not from Move's announcement.**
+  `bold_segment` is the thickened bar, read off the screen; `shadow_editor_bar`
+  needs the screen reader running — measured with it off, it stayed 0 through
+  repeated arrow presses, so an oracle built on it is absent exactly when
+  nobody has turned that on. This is what settles what the design doc called
+  "the least certain part of Project 1".
+- **A MULTI-PAGE BAR IS REFUSED, not guessed.** A bar fits the 16 step buttons
+  only while `steps_per_bar <= 16`: true for 4/4 at 1/16 (Move: "the entire bar
+  can be accessed at once"), false for 1/32, and false for **11/8 at 1/16**,
+  which pages 16 + 6 at the default grid. Move shows the page number on the
+  display and we do not read it, so the answer is `MULTI_PAGE` — a p-lock one
+  page out is a value on the wrong sixteenth, silently. Bar 0 is refused too:
+  a one-bar loop draws no thickening, so `bold_segment` can be 0, and that must
+  not quietly mean bar 1.
+- **What is missing is the gesture.** A held step must be **swallowed from
+  Move** while the shadow UI is up (both edges, latched — `midi_in_swallow`),
+  or the same press edits the clip's notes; and the knob turn has to arrive
+  through Schwung's own param write, which an injected CC cannot do. So it is
+  unverifiable by the harness and waits for a hand.
+
 #### Recording on a clip Move has not saved yet
 
 The hole: make a clip, press Play, try to record automation — refused. `T1 -`,
