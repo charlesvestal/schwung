@@ -70,7 +70,8 @@ TARGETS = $(BUILD_DIR)/test_clip_state \
 	$(BUILD_DIR)/test_boot_select_core \
 	$(BUILD_DIR)/test_chain_idle_tick \
 	$(BUILD_DIR)/test_heal_tool_id \
-	$(BUILD_DIR)/test_audio_in_restore
+	$(BUILD_DIR)/test_audio_in_restore \
+	$(BUILD_DIR)/test_lane_store
 
 # Read the Master FX cap out of the shipped header instead of restating it, so
 # the routing test covers whatever range Master FX actually runs with. Raising
@@ -246,6 +247,10 @@ $(BUILD_DIR)/test_clip_state: test_clip_state.c ../../src/host/clip_state.c | $(
 
 $(BUILD_DIR)/test_clip_regions: test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_clip_regions.c ../../src/host/clip_regions.c ../../src/host/clip_state.c
+
+# lane_store — the pure breakpoint store (Task 1 of automation lanes).
+$(BUILD_DIR)/test_lane_store: test_lane_store.c ../../src/host/lane_store.c ../../src/host/lane_store.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DEPFLAGS) $(INCLUDES) -o $@ test_lane_store.c ../../src/host/lane_store.c -lm
 
 # Header-only; the .c is the whole test.
 $(BUILD_DIR)/test_editor_bar_announce: test_editor_bar_announce.c ../../src/host/editor_bar_announce.h | $(BUILD_DIR)

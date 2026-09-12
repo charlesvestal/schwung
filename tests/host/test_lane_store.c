@@ -1,0 +1,87 @@
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "lane_store.h"
+
+static int fails = 0;
+#define CHECK(c, ...) do { if (!(c)) { printf("FAIL: "); printf(__VA_ARGS__); \
+    printf("\n"); fails++; } } while (0)
+
+static lane_t *mk(lane_store_t *st) {
+    lane_fingerprint_t fp = { 0.0, 8.0, 14, 41 };
+    lane_store_reset(st);
+    return lane_alloc(st, "synth", "cutoff", 2, 3, &fp);
+}
+
+int main(void) {
+    lane_store_t st;
+    float v;
+
+    /* 1. An empty lane says nothing -- it does not say 0.0. */
+    lane_t *ln = mk(&st);
+    CHECK(ln != NULL, "alloc returned NULL");
+    CHECK(lane_eval(ln, 0.0, 8.0, 0, &v) == 0, "empty lane produced a value");
+
+    /* 2. One point is that value everywhere (hold at both ends). */
+    lane_write(ln, 2.0, 0.5f);
+    CHECK(lane_eval(ln, 0.0, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
+          "single point before: %f", v);
+    CHECK(lane_eval(ln, 7.9, 8.0, 0, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
+          "single point after: %f", v);
+
+    /* 3. Linear between two float points. */
+    lane_write(ln, 6.0, 1.0f);
+    CHECK(lane_eval(ln, 4.0, 8.0, 0, &v) == 1 && fabsf(v - 0.75f) < 1e-6f,
+          "midpoint interp: %f", v);
+
+    /* 4. Stepped (int/enum) holds the previous value instead. */
+    CHECK(lane_eval(ln, 4.0, 8.0, 1, &v) == 1 && fabsf(v - 0.5f) < 1e-6f,
+          "stepped should hold 0.5, got %f", v);
+
+    /* 5. A point past the CURRENT loop end is ignored -- and retained. */
+    ln = mk(&st);
+    lane_write(ln, 1.0, 0.2f);
+    lane_write(ln, 12.0, 0.9f);       /* beyond an 8-beat loop */
+    CHECK(lane_eval(ln, 7.0, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
+          "dormant point leaked into the curve: %f", v);
+    CHECK(ln->n == 2, "dormant point was dropped (n=%d)", ln->n);
+
+    /* 6. Extending the clip reveals it, with no rewrite. */
+    CHECK(lane_eval(ln, 12.0, 16.0, 0, &v) == 1 && fabsf(v - 0.9f) < 1e-6f,
+          "extended loop did not reveal the point: %f", v);
+
+    /* 7. Thinning: a second write inside the window replaces, not appends. */
+    ln = mk(&st);
+    lane_write(ln, 1.000f, 0.1f);
+    lane_write(ln, 1.005f, 0.4f);     /* < LANE_MIN_POINT_BEATS away */
+    CHECK(ln->n == 1, "thinning failed (n=%d)", ln->n);
+    CHECK(fabsf(ln->pts[0].value - 0.4f) < 1e-6f,
+          "thinning kept the OLD value: %f", ln->pts[0].value);
+
+    /* 8. Out-of-order writes leave the list sorted. */
+    ln = mk(&st);
+    lane_write(ln, 4.0, 0.4f);
+    lane_write(ln, 1.0, 0.1f);
+    lane_write(ln, 2.0, 0.2f);
+    CHECK(ln->n == 3 && ln->pts[0].phase < ln->pts[1].phase &&
+          ln->pts[1].phase < ln->pts[2].phase, "points are not sorted");
+
+    /* 9. A full lane degrades resolution; it never drops the gesture. */
+    ln = mk(&st);
+    for (int i = 0; i < LANE_POINTS_MAX + 8; i++)
+        lane_write(ln, 0.1 + i * 0.5, (float)i / 100.0f);
+    CHECK(ln->n == LANE_POINTS_MAX, "overflowed (n=%d)", ln->n);
+    CHECK(ln->full_hits == 8, "full_hits=%d, want 8", ln->full_hits);
+
+    /* 10. The fingerprint refuses a same-geometry clip with other notes. */
+    ln = mk(&st);
+    lane_fingerprint_t same = { 0.0, 8.0, 14, 41 };
+    lane_fingerprint_t copy = { 0.0, 8.0, 9,  41 };
+    CHECK(lane_fingerprint_matches(ln, &same) == 1, "identical fp rejected");
+    CHECK(lane_fingerprint_matches(ln, &copy) == 0,
+          "different note count accepted");
+
+    if (fails) { printf("%d failure(s)\n", fails); return 1; }
+    printf("PASS: lane_store\n");
+    return 0;
+}
