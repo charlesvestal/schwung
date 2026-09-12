@@ -1,4 +1,5 @@
 #include "lane_serial.h"
+#include "shadow_constants.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -8,6 +9,19 @@
  * legitimate line is an L header (a 15-byte target, a 31-byte param and seven
  * numbers), so anything near this is corruption. */
 #define LANE_SERIAL_LINE_MAX 256
+
+/* THE PARAM CONTRACT IS WHAT CAPS LANE_MAX. `lanes:state` is served as a
+ * single param value, so a store whose worst-case document exceeds
+ * SHADOW_PARAM_VALUE_LEN cannot be read at all -- and the serializer's own
+ * bounds check turns that into a -1, which the UI reads as a FAILED read.
+ * The failure mode is therefore "this slot's automation will not save", with
+ * nothing on screen to explain it, which is exactly the kind of thing that
+ * must fail the BUILD instead. Raising LANE_MAX past ~40 needs the document
+ * chunked across several reads. */
+_Static_assert(LANE_SERIAL_MAX_BYTES <= SHADOW_PARAM_VALUE_LEN,
+               "LANE_MAX is too large: the worst-case lanes:state document no "
+               "longer fits one param value -- chunk the document or lower "
+               "LANE_MAX");
 
 /* %.17g round-trips a double exactly and %.9g a float, while %g still prints
  * "3.5" for 3.5 -- so the document stays readable and the phases come back
@@ -119,8 +133,14 @@ static int parse_hdr(const char *line, lane_hdr_t *h) {
  * `st`. Called twice, which is what makes a refusal leave the store untouched
  * without a 19 KB temporary on the SPI callback's stack. */
 static int parse_doc(lane_store_t *st, const char *doc, int apply) {
+    /* THE KEY IS (track, slot, target, param), so this must be too.
+     * Keyed on target+param alone it refused a perfectly good document the
+     * moment the same parameter was automated on two different clips -- and
+     * a refused document is ALL-OR-NOTHING, so one such lane would have made
+     * a whole set's automation unloadable. Two %d's is at most 11 bytes
+     * each plus separators. */
     char seen[LANE_MAX][sizeof(((lane_t *)0)->target) +
-                        sizeof(((lane_t *)0)->param) + 2];
+                        sizeof(((lane_t *)0)->param) + 2 + 24];
     int nseen = 0;
     lane_hdr_t h;
     int have_hdr = 0;
@@ -157,7 +177,8 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
                                                    * loses recorded automation */
             if (!apply) {
                 char key[sizeof(seen[0])];
-                snprintf(key, sizeof(key), "%s\t%s", h.target, h.param);
+                snprintf(key, sizeof(key), "%d\t%d\t%s\t%s",
+                         h.track, h.slot, h.target, h.param);
                 for (int i = 0; i < nseen; i++)
                     if (strcmp(seen[i], key) == 0) return 0;  /* two lanes, one
                                                                * key: lane_find

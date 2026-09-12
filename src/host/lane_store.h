@@ -31,7 +31,23 @@
 extern "C" {
 #endif
 
-#define LANE_MAX          16   /* lanes per chain slot */
+/* Lanes per chain slot. IT SPANS CLIPS x PARAMETERS, which is what 16 did
+ * not: the key is (track, slot, target, param), so 8 clip slots with two
+ * automated parameters each exhausted the store outright.
+ *
+ * 32 is 8 clip slots x 4 parameters. The memory is irrelevant -- a lane_t is
+ * ~1.1 KB and lane_store_t sits on chain_instance_t (~8.8 MB), NOT inside
+ * patch_info_t, which is a stack local on the SPI callback, so 16 -> 32 costs
+ * 18 KB of heap per slot and not a byte of that frame.
+ *
+ * WHAT CAPS IT IS THE PARAM CONTRACT, NOT MEMORY. `lanes:state` is served as
+ * one param value, and SHADOW_PARAM_VALUE_LEN is 131072; the worst-case
+ * document is LANE_SERIAL_MAX_BYTES, which a _Static_assert in lane_serial.c
+ * holds below that ceiling. At 32 it is ~104 KB with ~20% to spare, and ~40
+ * lanes is the hard wall. Going past that needs the document chunked across
+ * several reads, which is a separate piece of work -- so do not raise this
+ * without reading that assert. */
+#define LANE_MAX          32
 #define LANE_POINTS_MAX   64   /* breakpoints per lane */
 
 /* THINNING ONLY. Two writes closer together than this collapse into one:
@@ -107,8 +123,21 @@ typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
 
 void   lane_store_reset(lane_store_t *st);
 
-/* Find the lane for (target, param), or NULL. */
-lane_t *lane_find(lane_store_t *st, const char *target, const char *param);
+/* Find the lane for (track, slot, target, param), or NULL.
+ *
+ * THE CLIP POSITION IS PART OF THE KEY. It was not, and `track`/`slot` were
+ * written once by lane_alloc and never consulted again -- so there was one
+ * lane per parameter across all 8 clip slots, and recording the same
+ * parameter against a second clip silently TOOK OVER the first clip's lane.
+ * Found on hardware: the second pass hijacked clip 1's lane, overflowed it to
+ * LANE_POINTS_MAX and interleaved its values into the first take's curve,
+ * while lane_tick's position gate correctly refused to play a lane bound to
+ * slot 0 during clip 2 -- so the symptom was "it didn't record".
+ *
+ * The argument order matches lane_alloc's first five deliberately, so the
+ * forwarding between them cannot silently transpose a pair. */
+lane_t *lane_find(lane_store_t *st, const char *target, const char *param,
+                  int track, int slot);
 
 /* Find, else take a free slot and bind it. NULL when the store is full. */
 lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,

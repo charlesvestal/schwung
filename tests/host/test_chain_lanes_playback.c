@@ -253,7 +253,7 @@ int main(void) {
     rec->clip_loop_len = 8.0;
     rec->clip_phase_beats = 2.0;
     lane_on_set_param(rec, "synth", "cutoff", "55");
-    lane_t *made = lane_find(&rec->lanes, "synth", "cutoff");
+    lane_t *made = lane_find(&rec->lanes, "synth", "cutoff", 0, 0);
     CHECK(made && made->n == 1, "armed write did not create a point");
     if (!made) { printf("FAILURES: %d\n", fails); free(inst); free(rec); return 1; }
     CHECK(made->pts[0].phase == 2.0, "recorded at the wrong phase: %f",
@@ -368,7 +368,7 @@ int main(void) {
               "expected the store to fill with %d dummies, took %d",
               LANE_MAX - 1, filled);
         lane_on_set_param(rec, "synth", "octave", "4");
-        CHECK(lane_find(&rec->lanes, "synth", "octave") == NULL,
+        CHECK(lane_find(&rec->lanes, "synth", "octave", 0, 0) == NULL,
               "a full store handed out a lane anyway");
         CHECK(fake_writes("octave") >= 0, "the full-store write crashed nothing");
     }
@@ -461,7 +461,7 @@ int main(void) {
                   "a deleted clip DESTROYED its lane (used=%d n=%d) -- that is "
                   "deleting the user's automation on a file-diff heuristic",
                   fl->used, fl->n);
-            CHECK(lane_find(&fpi->lanes, "synth", "cutoff") == fl,
+            CHECK(lane_find(&fpi->lanes, "synth", "cutoff", 0, 0) == fl,
                   "an orphaned lane is no longer findable in the store");
             fake_poke("cutoff", "88");
             {

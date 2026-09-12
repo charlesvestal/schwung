@@ -124,14 +124,14 @@ int main(void) {
     lane_t *a1 = lane_alloc(&st, long_target, "cutoff", 0, 0, NULL);
     CHECK(a1 == NULL, "over-length target should be refused by lane_alloc, got %p",
           (void *)a1);
-    CHECK(lane_find(&st, long_target, "cutoff") == NULL,
+    CHECK(lane_find(&st, long_target, "cutoff", 0, 0) == NULL,
           "over-length target should never be findable");
     const char *long_param =
         "some_really_long_param_name_that_is_definitely_over_thirty_two_bytes";
     lane_t *a2 = lane_alloc(&st, "synth", long_param, 0, 0, NULL);
     CHECK(a2 == NULL, "over-length param should be refused by lane_alloc, got %p",
           (void *)a2);
-    CHECK(lane_find(&st, "synth", long_param) == NULL,
+    CHECK(lane_find(&st, "synth", long_param, 0, 0) == NULL,
           "over-length param should never be findable");
 
     /* 12. A non-finite phase must never be stored, and eval must not trust
@@ -370,6 +370,133 @@ int main(void) {
         /* And it opens no pass, or the next lane_record_point would sweep
          * from a phase an editor or a load put there. */
         CHECK(l->rec_active == 0, "lane_write opened a recording pass");
+    }
+
+
+    /* ---- 19. A LANE BELONGS TO ITS CLIP POSITION --------------------
+     *
+     * Exactly the sequence the user ran on hardware: record `synth/cutoff`
+     * on clip slot 0, switch to clip slot 1, record the same parameter
+     * again. lane_find compared only (target, param), so lane_alloc handed
+     * back clip 0's lane and the second take landed in it -- overflowing it
+     * to LANE_POINTS_MAX and interleaving its values into the first take's
+     * curve. The device's own lanes file showed both lanes stamped
+     * `track 0 slot 0`, one at n=64 with spikes through a smooth sweep.
+     *
+     * Playback then refused, correctly: lane_tick's position gate saw a lane
+     * bound to slot 0 while clip 1 played. So the user's symptom was "it
+     * didn't record", which points at the recorder rather than at the key.
+     *
+     * This is also why it had to land with the swept-span erase: on a
+     * mis-keyed lane that erase deletes the OTHER clip's points rather than
+     * merely interleaving with them. */
+    {
+        lane_store_t ps;
+        lane_store_reset(&ps);
+        /* Two clips at the same geometry with different content -- which is
+         * what the fingerprint is for, and what must not be shared. */
+        lane_fingerprint_t f0 = { 0.0, 4.0, 7, 50 };
+        lane_fingerprint_t f1 = { 0.0, 4.0, 3, 62 };
+
+        lane_t *c0 = lane_alloc(&ps, "synth", "cutoff", 0, 0, &f0);
+        CHECK(c0 != NULL, "clip 0 lane alloc");
+        lane_record_point(c0, 0.0, 10.0f, 4.0);
+        lane_record_point(c0, 1.0, 11.0f, 4.0);
+        lane_record_end(c0);
+
+        lane_t *c1 = lane_alloc(&ps, "synth", "cutoff", 0, 1, &f1);
+        CHECK(c1 != NULL, "clip 1 lane alloc");
+        CHECK(c1 != c0,
+              "recording the same parameter on a SECOND CLIP took over the "
+              "first clip's lane -- one lane per param across all 8 clip "
+              "slots, which is the hardware defect");
+        lane_record_point(c1, 0.0, 90.0f, 4.0);
+        lane_record_point(c1, 1.0, 91.0f, 4.0);
+        lane_record_end(c1);
+
+        int used = 0;
+        for (int i = 0; i < LANE_MAX; i++) if (ps.lanes[i].used) used++;
+        CHECK(used == 2, "two clips' automation collapsed into %d lane(s)",
+              used);
+
+        /* Each lane keeps its OWN points -- no value from one may appear in
+         * the other, which is what a shared lane looks like from the audio. */
+        if (c1 != c0) {
+            CHECK(c0->n == 2, "clip 0's lane holds %d points, want 2", c0->n);
+            CHECK(c1->n == 2, "clip 1's lane holds %d points, want 2", c1->n);
+            for (int i = 0; i < c0->n; i++)
+                CHECK(c0->pts[i].value < 50.0f,
+                      "clip 1's value %.1f is in CLIP 0's lane",
+                      (double)c0->pts[i].value);
+            for (int i = 0; i < c1->n; i++)
+                CHECK(c1->pts[i].value > 50.0f,
+                      "clip 0's value %.1f is in CLIP 1's lane",
+                      (double)c1->pts[i].value);
+            /* And its own fingerprint, or one clip's lane goes stale on the
+             * other clip's content. */
+            CHECK(c0->slot == 0 && c1->slot == 1,
+                  "the lanes are not bound to their own slots (%d, %d)",
+                  c0->slot, c1->slot);
+            CHECK(c0->fp.first_note == 50 && c1->fp.first_note == 62,
+                  "the second alloc overwrote the first clip's fingerprint "
+                  "(%d, %d)", c0->fp.first_note, c1->fp.first_note);
+        }
+
+        /* And lane_find must answer each position separately -- lane_alloc
+         * routes through it, so this IS the defect's mechanism. */
+        CHECK(lane_find(&ps, "synth", "cutoff", 0, 0) == c0,
+              "lane_find did not answer clip 0's lane for slot 0");
+        CHECK(lane_find(&ps, "synth", "cutoff", 0, 1) == c1,
+              "lane_find did not answer clip 1's lane for slot 1");
+        CHECK(lane_find(&ps, "synth", "cutoff", 0, 4) == NULL,
+              "lane_find answered a lane for a clip slot that has none");
+        CHECK(lane_find(&ps, "synth", "cutoff", 1, 0) == NULL,
+              "lane_find ignored the TRACK half of the key");
+    }
+
+    /* ---- 20. AN ERASE IS CONFINED TO ITS OWN LANE -------------------
+     * The two defects had to land together: a swept-span erase on a
+     * mis-keyed lane deletes another clip's automation outright, which is
+     * strictly worse than interleaving with it. */
+    {
+        lane_store_t ps;
+        lane_store_reset(&ps);
+        lane_fingerprint_t f0 = { 0.0, 8.0, 7, 50 };
+        lane_fingerprint_t f1 = { 0.0, 8.0, 3, 62 };
+        lane_t *c0 = lane_alloc(&ps, "synth", "cutoff", 0, 0, &f0);
+        lane_t *c1 = lane_alloc(&ps, "synth", "cutoff", 0, 1, &f1);
+        CHECK(c0 && c1 && c0 != c1, "two lanes for the erase-isolation case");
+        if (c0 && c1 && c0 != c1) {
+            /* Clip 0 carries a take the user wants to keep. */
+            const double p0[5] = { 1.0, 1.5, 2.0, 2.5, 3.0 };
+            for (int i = 0; i < 5; i++)
+                lane_write(c0, p0[i], (float)(20 + i * 10));
+            /* Clip 1 gets a second pass right across the same phases. */
+            for (int i = 0; i < 5; i++)
+                lane_write(c1, p0[i], (float)(120 + i * 10));
+            const double p2[4] = { 1.04, 1.56, 2.08, 2.60 };
+            for (int i = 0; i < 4; i++)
+                lane_record_point(c1, p2[i], 199.0f, 8.0);
+            lane_record_end(c1);
+
+            CHECK(c0->n == 5,
+                  "an erase on clip 1's lane deleted clip 0's automation "
+                  "(clip 0 now holds %d of 5 points)", c0->n);
+            for (int i = 0; i < c0->n && i < 5; i++) {
+                CHECK(fabs(c0->pts[i].phase - p0[i]) < 1e-9 &&
+                      fabsf(c0->pts[i].value - (float)(20 + i * 10)) < 1e-3f,
+                      "clip 0's point %d was disturbed: %.4f -> %.1f",
+                      i, c0->pts[i].phase, (double)c0->pts[i].value);
+            }
+            /* ...and the erase did do its job on its own lane. */
+            for (int i = 0; i < c1->n; i++) {
+                if (c1->pts[i].phase <= p2[0] || c1->pts[i].phase >= p2[3])
+                    continue;
+                CHECK(c1->pts[i].value >= 199.0f - 1e-3f,
+                      "clip 1's own pass did not erase: %.1f survived at %.4f",
+                      (double)c1->pts[i].value, c1->pts[i].phase);
+            }
+        }
     }
 
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
