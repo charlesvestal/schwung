@@ -15,6 +15,7 @@
 #include "shadow_chain_mgmt.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
+#include "step_plock.h"       /* a held step button -> a phase, in one place */
 #include "fx_load_gate.h"     /* the load gate's three-state answer — header-only, likewise */
 #include "shim_worker.h"   /* shim_rt_audit_note_module, shim_param_slow */
 #include "param_slow.h"    /* attribute a serve that ate the frame — header-only */
@@ -3115,6 +3116,73 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
                                                const char *key,
                                                const char *value);
 
+/* A STEP P-LOCK BECOMES A PHASE HERE, AND ONLY HERE.
+ *
+ * "<target> <param> <step> <value>" in; "<target> <param> <phase> <value>"
+ * out, for the chain's `lanes:plock`. The gesture knows a STEP BUTTON and the
+ * chain understands only a PHASE, and all four facts that bridge them live on
+ * this side: the displayed bar (the strip's bold segment, read off Move's own
+ * screen), the step grid and the time signature (clip_regions), and the clip's
+ * length. So the arithmetic happens once -- neither the UI nor the chain
+ * carries a copy. This feature has already paid twice for computing one fact
+ * in two places.
+ *
+ * CALLED FROM BOTH PARAM PATHS. `shadow_direct_set_param` serves the web UI's
+ * ring buffer; the SHM handler serves the shadow UI and the test daemon. The
+ * first version of this lived in the direct path only, so the key the actual
+ * gesture would use fell through to the chain -- which does not serve
+ * `plock_step` -- and was silently dropped. Measured: no log line at all,
+ * because the branch was never reached.
+ *
+ * Refusals are LOGGED with the reason, because a gesture that does nothing is
+ * indistinguishable from one that worked until the loop comes round.
+ *
+ * Returns 1 with `out` filled, else 0. */
+static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
+                                             char *out, int out_len) {
+    char target[16] = {0}, param[32] = {0};
+    int step = -1, consumed = 0;
+    if (!value || !out || out_len <= 0 ||
+        sscanf(value, "%15s %31s %d %n", target, param, &step, &consumed) < 3 ||
+        consumed <= 0 || !value[consumed]) {
+        shadow_log("lanes: plock_step needs \"<target> <param> <step> <value>\"");
+        return 0;
+    }
+    step_strip_t ss;
+    int strip_track = -1;
+    step_strip_latest(&ss, &strip_track);
+    const clip_state_t *cs = clip_state_current();
+    int cslot = (cs && slot < CLIP_TRACKS && cs->tracks[slot].identity_valid)
+              ? cs->tracks[slot].clip_slot : -1;
+    const clip_regions_t *rg = shadow_clip_regions();
+    double res = (rg && rg->step_resolution > 0.0) ? rg->step_resolution : 0.25;
+    double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
+    double clip_len = 0.0;
+    if (rg && rg->valid && cslot >= 0 && cslot < CLIP_SLOTS &&
+        rg->slots[slot][cslot].exists)
+        clip_len = rg->slots[slot][cslot].loop_start +
+                   rg->slots[slot][cslot].loop_len;
+    /* The bar must come from a CURRENT reading of THIS track's editor. A stale
+     * bold segment, or one belonging to another track -- which is what the
+     * strip reports when the selection has moved -- would place the p-lock on
+     * a bar the user is not looking at. */
+    int bar = (ss.valid && strip_track == (int)slot) ? ss.bold_segment : 0;
+    double phase = 0.0;
+    int rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
+    if (rc != STEP_PLOCK_OK) {
+        char msg[144];
+        snprintf(msg, sizeof(msg),
+                 "lanes: plock_step refused (reason %d, bar %d step %d "
+                 "qpb %.2f res %.3f strip_track %d slot %d)",
+                 rc, bar, step, qpb, res, strip_track, (int)slot);
+        shadow_log(msg);
+        return 0;
+    }
+    snprintf(out, (size_t)out_len, "%s %s %.17g %s", target, param, phase,
+             value + consumed);
+    return 1;
+}
+
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
     /* Master FX params (web set-ring path). Web-originated sets arrive here via
@@ -3153,6 +3221,18 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
     /* Try slot-level params first */
     if (shadow_handle_slot_param_set(slot, key, value)) {
         if (host.on_param_changed) host.on_param_changed(slot, key, value);
+        return;
+    }
+
+    if (strcmp(key, "lanes:plock_step") == 0) {
+        char fwd[SHADOW_PARAM_VALUE_LEN];
+        if (shadow_lanes_plock_step_translate(slot, value, fwd, sizeof(fwd)) &&
+            shadow_plugin_v2 && shadow_plugin_v2->set_param &&
+            slot < SHADOW_CHAIN_INSTANCES &&
+            shadow_chain_slots[slot].active &&
+            shadow_chain_slots[slot].instance)
+            shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                        "lanes:plock", fwd);
         return;
     }
 
@@ -4946,6 +5026,29 @@ void shadow_inprocess_handle_param_request(void) {
             if (strcmp(key_copy, "synth:module") == 0 ||
                 shadow_key_is_fx_module(key_copy)) {
                 shim_rt_audit_note_module(value_copy[0] ? value_copy : "(unload)");
+            }
+
+            /* The gesture's key, translated before the forward: the chain
+             * serves `lanes:plock` (a phase) and not `plock_step` (a step
+             * button), so without this it falls through and is dropped. */
+            if (strcmp(key_copy, "lanes:plock_step") == 0) {
+                static char plock_fwd[SHADOW_PARAM_VALUE_LEN];
+                if (shadow_lanes_plock_step_translate(slot, value_copy,
+                                                      plock_fwd,
+                                                      sizeof(plock_fwd))) {
+                    strncpy(key_copy, "lanes:plock", sizeof(key_copy) - 1);
+                    key_copy[sizeof(key_copy) - 1] = '\0';
+                    strncpy(value_copy, plock_fwd, SHADOW_PARAM_VALUE_LEN - 1);
+                    value_copy[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                } else {
+                    /* Refused, with the reason logged. Answer the request
+                     * rather than forwarding a key the chain will not serve:
+                     * `lanes:plocked` stays 0 and the caller can see it. */
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
             }
 
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
