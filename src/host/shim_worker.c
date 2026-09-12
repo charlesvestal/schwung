@@ -775,36 +775,40 @@ static void clip_phase_check_tick(void)
                                       r->loop_len, &ph))
                     continue;
                 g_ph_seen[t]++;
-                int step = (int)((ph - r->loop_start) / res + 0.5);
-                /* MOVE'S PLAYHEAD INDEX IS PAGE-RELATIVE: 16 steps, because
-                 * there are 16 step BUTTONS. Not a bar -- which is the same
-                 * fact as the bar strip's segments being pages.
+                /* MOVE'S LIT STEP IS BAR-RELATIVE, THEN PAGE-WRAPPED, and it
+                 * took a measurement to see it:
                  *
-                 * MEASURED, because I got this wrong. Deriving the modulus
-                 * from the clip's signature (an 11/8 bar at 1/16 is 22 steps)
-                 * made both columns WORSE on hardware: within-page went from
-                 * 0/16 diff +6 to 0/18 diff -10, and the page column from
-                 * 16/16 diff 0 -- perfect -- to 0/18 diff -2. So 16 stays.
+                 *     idx = (step_in_CLIP mod steps_per_bar) mod 16
                  *
-                 * SCORE THE PAGE COLUMN WITH A HAND, NOT WITH AN INJECTION.
-                 * It compares against Move's ANNOUNCED "Bar N", and an
-                 * injected Track press drives Move without reaching Schwung's
-                 * own decoders (the drain writes the shadow mailbox; the
-                 * control scan reads the hardware one -- docs/DIAGNOSTICS.md),
-                 * so the announcement goes stale and the column reads a
-                 * constant offset that is an artifact of the harness. Both
-                 * 16/16 readings came from a real finger.
+                 * The manual says the grid divides a BAR and that above 1/16 a
+                 * bar spans several pages of step buttons -- and an 11/8 bar
+                 * at 1/16 is 22 steps, so it pages 16 + 6 even at the default
+                 * grid. Collected 16 sightings on the 11/8 set: Move's index
+                 * was always our loop-relative step PLUS 10, and they arrived
+                 * in bursts of six with a ~43-step gap. The loop starts at
+                 * quarter 8.0 = 32 steps, 32 mod 22 = 10 -- it begins 10 steps
+                 * into bar 2, so only steps 10..15 of that bar's FIRST page
+                 * are ever displayed while the loop plays. Six sightings per
+                 * pass, offset by 10. The model reproduces all 16.
                  *
-                 * WHAT IS STILL UNEXPLAINED: under 11/8 the within-page column
-                 * is 0/16 with a CONSTANT offset of 6 steps while the page
-                 * column is 16/16. A constant offset is a grid disagreement,
-                 * not drift, and it is not the modulus. Since the page column
-                 * agrees, our phase is right to within a page; the residue is
-                 * in where Move starts counting steps inside one. It matters
-                 * only for step p-locks, which is the reason not to guess at
-                 * it here. In 4/4 both columns read 99.3%. */
+                 * Two earlier attempts failed for want of one term each: a
+                 * bare `% 16` (no bar), and `% steps_per_bar` with no page
+                 * wrap and a loop-relative step (which made it worse than
+                 * either). In 4/4 at 1/16 all three coincide, which is why a
+                 * 4/4 device reads 99.3% whatever this line says.
+                 *
+                 * `ph` is CLIP time now, so the clip step is ph/res directly
+                 * -- no loop_start term, which is the third thing that was
+                 * wrong before. */
                 const int steps_per_page = STEP_STRIP_STEPS_PER_PAGE;
-                int pred = ((step % steps_per_page) + steps_per_page) % steps_per_page;
+                double qpb_t = clip_regions_quarters_per_bar(&g_regions, t,
+                                                             tr->clip_slot);
+                int steps_per_bar = (int)(qpb_t / res + 0.5);
+                if (steps_per_bar < 1) steps_per_bar = steps_per_page;
+                int step = (int)(ph / res + 0.5);
+                int step_in_bar = ((step % steps_per_bar) + steps_per_bar)
+                                  % steps_per_bar;
+                int pred = step_in_bar % steps_per_page;
                 int diff = pred - (int)ev[i].idx;
                 if (diff > steps_per_page / 2) diff -= steps_per_page;
                 if (diff < -steps_per_page / 2) diff += steps_per_page;
@@ -814,7 +818,7 @@ static void clip_phase_check_tick(void)
                 /* Record a disagreement. */
                 if (diff != 0) {
                     double step_pulses = res * 24.0;
-                    double into = (ph - r->loop_start) / res;   /* in steps */
+                    double into = ph / res;                     /* clip steps */
                     double frac = into - (double)(long)into;    /* 0..1      */
                     int to_b = (int)((frac > 0.5 ? (1.0 - frac) : frac)
                                      * step_pulses + 0.5);
@@ -837,9 +841,10 @@ static void clip_phase_check_tick(void)
                  * construction and stop being evidence. */
                 if (tr->anchor_source == CLIP_ANCHOR_DERIVED) bar = 0;
                 if (bar > 0) {
-                    /* The same number as the modulus above, and the column
-                     * that stayed at 16/16 through the 11/8 test. */
-                    int page = step / steps_per_page;
+                    /* The PAGE WITHIN THE BAR, which is what Move announces
+                     * as "Bar N" plus a page number -- and the bar is what
+                     * `g_editor_bar` carries, so compare bars. */
+                    int page = step / steps_per_bar;
                     g_bar_seen[t]++;
                     int bdiff = page - (bar - 1);
                     g_bar_lastdiff[t] = bdiff;
