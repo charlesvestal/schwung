@@ -78,6 +78,21 @@
  * rather than guessed at. */
 #define STEP_STRIP_MAX_BARS  16
 
+/* How many CONSECUTIVE agreeing readings the per-track cache requires.
+ *
+ * A frame is assembled from six slices, so it can straddle two of Move's
+ * screen updates: the accumulator hands us a TORN picture, part old strip and
+ * part new. Measured on hardware 2026-09-12 -- paging and switching tracks in
+ * the editor produced one-off refusals on three different gates (not full
+ * width, non-uniform, no displayed bar), each for a single reading, which is
+ * exactly what a half-drawn strip looks like and is the safe direction to
+ * fail in. But a torn frame could in principle come out uniform and WRONG,
+ * and a wrong bar count is a wrong loop length, so the cache waits for a
+ * second reading that says the same thing. At ~30 frames/s that costs ~33 ms
+ * and removes the whole class.
+ */
+#define STEP_STRIP_CONFIRM   2
+
 /* Slack on a segment's width against the uniform expectation, in pixels.
  * Measured widths were 23 and 24 for an expected 23.6. */
 #define STEP_STRIP_SEG_TOL   3
