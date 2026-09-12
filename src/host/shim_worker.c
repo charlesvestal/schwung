@@ -986,11 +986,39 @@ static void clip_state_tick(void)
          * down with it -- a broken instrument reads as a broken feature. */
         double pf = (ss.phase_frac >= 0.0 && ss.phase_frac <= 1.0)
                   ? ss.phase_frac : -1.0;
+        /* The bar count AS A LENGTH, which is the only thing anything would
+         * ever use it for -- and the one conversion that needs the time
+         * signature. An 11/8 bar is 5.5 quarters, so `bars * 4` is wrong
+         * twice over (the beats per bar AND the beat's unit), and it is
+         * reported beside the file's own `loop_len` on purpose: with the clip
+         * present the two must AGREE, which is what makes the conversion
+         * checkable before anything depends on it.
+         *
+         * The clip's own signature if the file has the clip, else the song's
+         * -- which is the case that matters, since a clip Move has not saved
+         * is absent from the file while the song is not. */
+        double qpb = 4.0;
+        double strip_quarters = -1.0;
+        double file_quarters = -1.0;
+        if (ss.valid && sst >= 0) {
+            int cslot = (cs && cs->tracks[sst].identity_valid)
+                      ? cs->tracks[sst].clip_slot : -1;
+            qpb = clip_regions_quarters_per_bar(&g_regions, sst, cslot);
+            strip_quarters = (double)ss.bars * qpb;
+            if (g_regions.valid && cslot >= 0 && cslot < CLIP_SLOTS &&
+                g_regions.slots[sst][cslot].exists)
+                file_quarters = g_regions.slots[sst][cslot].loop_len;
+        }
         fprintf(jf, ",\"step_strip\":{\"seq\":%u,\"track\":%d,\"valid\":%s,"
                     "\"reject\":%d,\"bars\":%d,\"bold_bar\":%d,\"playhead_col\":%d,"
-                    "\"evidence\":%d,\"phase_frac\":%.4f,\"bars_cache\":[%d,%d,%d,%d]}",
+                    "\"evidence\":%d,\"phase_frac\":%.4f,"
+                    "\"quarters_per_bar\":%.4f,\"strip_quarters\":%.4f,"
+                    "\"file_quarters\":%.4f,\"sig\":\"%d/%d\","
+                    "\"bars_cache\":[%d,%d,%d,%d]}",
                 sseq, sst + 1, ss.valid ? "true" : "false", ss.reject,
                 ss.bars, ss.bold_bar, ss.playhead_col, ss.playhead_evidence, pf,
+                qpb, strip_quarters, file_quarters,
+                g_regions.sig_upper, g_regions.sig_lower,
                 step_strip_bars_for_track(0), step_strip_bars_for_track(1),
                 step_strip_bars_for_track(2), step_strip_bars_for_track(3));
     }

@@ -505,6 +505,103 @@ int main(void)
               "phase sample is scored -- it must not invalidate a tally");
     }
 
+    /* ---- TIME SIGNATURES: two scopes, one key name ---------------------
+     *
+     * Move writes one song-wide and one inside every clip (measured
+     * 2026-09-12 on an 11/8 set). Nothing about a LANE needs either -- every
+     * number in Song.abl is in quarter notes, and switching that set to 11/8
+     * changed not one of them -- but turning the step editor's BAR COUNT into
+     * a length does, and an 11/8 bar is 5.5 quarters rather than 4.
+     *
+     * The song-level one is load-bearing for a clip Move has not saved yet:
+     * the clip is absent from the file, the song is not.
+     */
+    printf("\ntime signatures: clip, else song, else 4/4\n");
+    {
+        /* Song 11/8, one clip inheriting it and one overriding with 7/4. */
+        static const char doc[] =
+            "{\"stepEditorResolution\":\"1/16\","
+            "\"timeSignature\":{\"upper\":11,\"lower\":8},"
+            "\"tracks\":[{\"clipSlots\":["
+            "{\"clip\":{\"region\":{\"start\":0.0,\"end\":16.0,"
+            "\"loop\":{\"start\":0.0,\"end\":16.0,\"isEnabled\":true}},"
+            "\"notes\":[]}},"
+            "{\"clip\":{\"timeSignature\":{\"upper\":7,\"lower\":4},"
+            "\"region\":{\"start\":0.0,\"end\":14.0,"
+            "\"loop\":{\"start\":0.0,\"end\":14.0,\"isEnabled\":true}},"
+            "\"notes\":[]}}"
+            "]}]}";
+        clip_regions_t g;
+        CHECK(clip_regions_parse(doc, sizeof(doc) - 1, &g) && g.valid,
+              "the signature document did not parse");
+        CHECK(g.sig_upper == 11 && g.sig_lower == 8,
+              "song signature read as %d/%d, want 11/8", g.sig_upper, g.sig_lower);
+        /* A clip that declares none keeps 0/0 -- ABSENT, not backfilled with
+         * the song's. The fallback lives in one place (the helper), so there
+         * is no second copy of the song's signature to go stale, and "this
+         * clip said nothing" stays answerable. */
+        CHECK(g.slots[0][0].sig_upper == 0 && g.slots[0][0].sig_lower == 0,
+              "a clip with no signature was backfilled to %d/%d",
+              g.slots[0][0].sig_upper, g.slots[0][0].sig_lower);
+        CHECK(close_enough(clip_regions_quarters_per_bar(&g, 0, 0), 5.5),
+              "11/8 is 5.5 quarters per bar, got %f",
+              clip_regions_quarters_per_bar(&g, 0, 0));
+        /* The clip's OWN signature wins over the song's. */
+        CHECK(g.slots[0][1].sig_upper == 7 && g.slots[0][1].sig_lower == 4,
+              "the clip's own signature was lost: %d/%d",
+              g.slots[0][1].sig_upper, g.slots[0][1].sig_lower);
+        CHECK(close_enough(clip_regions_quarters_per_bar(&g, 0, 1), 7.0),
+              "7/4 is 7 quarters per bar, got %f",
+              clip_regions_quarters_per_bar(&g, 0, 1));
+        /* THE LOOP NUMBERS ARE UNTOUCHED BY THE SIGNATURE. This is the whole
+         * reason lanes need none of it: a 16-quarter loop is 16 quarters
+         * whether the bar is 4 or 5.5 of them -- under 11/8 that is ~2.9
+         * bars, and a bar count times 4 would have called it 4. */
+        CHECK(close_enough(g.slots[0][0].loop_len, 16.0),
+              "the signature changed a loop length: %f", g.slots[0][0].loop_len);
+
+        /* An out-of-range position must not read past the table -- and it
+         * answers the SONG's signature, not 4/4. Inventing 4/4 while the song
+         * says 11/8 would be a worse answer than the one we have, and this is
+         * the path a not-yet-saved clip takes. Only a NULL table has nothing
+         * to say and falls all the way back. */
+        CHECK(close_enough(clip_regions_quarters_per_bar(&g, -1, 0), 5.5),
+              "an out-of-range track lost the song's signature: %f",
+              clip_regions_quarters_per_bar(&g, -1, 0));
+        CHECK(close_enough(clip_regions_quarters_per_bar(&g, 0, CLIP_SLOTS), 5.5),
+              "an out-of-range slot lost the song's signature: %f",
+              clip_regions_quarters_per_bar(&g, 0, CLIP_SLOTS));
+        CHECK(close_enough(clip_regions_quarters_per_bar(NULL, 0, 0), 4.0),
+              "a NULL table did not answer 4/4");
+    }
+    {
+        /* HALF a signature is not one: `upper * 4 / lower` with lower 0 is a
+         * division by zero, so it must fall through rather than be believed. */
+        static const char doc[] =
+            "{\"timeSignature\":{\"upper\":5},"
+            "\"tracks\":[{\"clipSlots\":[{\"clip\":{"
+            "\"timeSignature\":{\"lower\":0},"
+            "\"region\":{\"start\":0.0,\"end\":8.0,"
+            "\"loop\":{\"start\":0.0,\"end\":8.0,\"isEnabled\":true}},"
+            "\"notes\":[]}}]}]}";
+        clip_regions_t g;
+        CHECK(clip_regions_parse(doc, sizeof(doc) - 1, &g) && g.valid,
+              "the half-signature document did not parse");
+        CHECK(close_enough(clip_regions_quarters_per_bar(&g, 0, 0), 4.0),
+              "half a signature was believed: %f quarters per bar",
+              clip_regions_quarters_per_bar(&g, 0, 0));
+    }
+    {
+        /* The fixture predates the feature: no signature anywhere, so 4/4 --
+         * a default for an older firmware, not a claim about the clip. */
+        CHECK(rg.sig_upper == 0 && rg.sig_lower == 0,
+              "the signature-less fixture reported %d/%d", rg.sig_upper,
+              rg.sig_lower);
+        CHECK(close_enough(clip_regions_quarters_per_bar(&rg, 0, 0), 4.0),
+              "a document with no signature must answer 4/4, got %f",
+              clip_regions_quarters_per_bar(&rg, 0, 0));
+    }
+
     /* A truncated file is a FAILURE, not a smaller document. */
     printf("a truncated document is refused, not half-believed\n");
     clip_regions_t bad;

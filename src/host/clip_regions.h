@@ -44,8 +44,19 @@ typedef struct {
     int    exists;       /* a clip occupies this slot at all */
     int    is_playing;   /* the file's isPlaying -- after a load this is the
                           * RESTORED SELECTION, not something sounding */
-    double loop_start;   /* beats */
-    double loop_len;     /* beats; 0 if unknown */
+    double loop_start;   /* quarter notes */
+    double loop_len;     /* quarter notes; 0 if unknown */
+    /* The clip's OWN time signature, 0/0 when the file did not carry one
+     * (older firmware, or a clip written before the feature). Move stores one
+     * per clip AND one song-wide; ask through
+     * clip_regions_quarters_per_bar(), which falls back in that order.
+     *
+     * Nothing about a LANE needs this: every number in Song.abl is in quarter
+     * notes, and changing a set to 11/8 changed not one of them (measured
+     * 2026-09-12). It is here for the one conversion that does need it --
+     * turning the step editor's BAR COUNT into a length. */
+    int    sig_upper;
+    int    sig_lower;
     /* Where this clip's step editor was left, in beats from the clip start.
      * PER CLIP -- switching track shows that track's clip at its own
      * remembered page, which is why a single global "current bar" cannot
@@ -70,6 +81,11 @@ typedef struct {
     clip_region_t slots[CLIP_TRACKS][CLIP_SLOTS];
     int    valid;            /* 0 = nothing parsed; do not use the contents */
     double step_resolution;  /* beats per step, e.g. 0.25 for 1/16 */
+    /* The SONG's time signature, 0/0 if absent. Load-bearing for a clip Move
+     * has not saved yet: the clip is not in the file, but the song is. */
+    int    sig_upper;
+    int    sig_lower;
+
 } clip_regions_t;
 
 /* Parse a Song.abl. Returns 1 on success. On failure `out->valid` is 0 and
@@ -118,6 +134,18 @@ int clip_regions_geometry_differs(const clip_regions_t *a,
  * the live one. And this function is the only place that can tell a deletion
  * from a clip Move has not saved yet, which is why the lane side is told from
  * here rather than inferring it from a single parse. */
+/* Quarter notes per bar for one clip: its own signature, else the song's,
+ * else 4/4. `upper * 4 / lower` -- an 11/8 bar is 11 eighths = 5.5 quarters,
+ * so a 12-quarter loop is ~2.18 bars and NOT 3. Anything that multiplies a
+ * bar count by 4 is wrong twice over: the beats per bar AND the beat's unit.
+ *
+ * Pure, and safe with a NULL or an out-of-range position: 4.0.
+ *
+ * The ONLY thing that needs this is turning the step editor's bar count into
+ * a length -- every number in Song.abl is already in quarters. */
+double clip_regions_quarters_per_bar(const clip_regions_t *rg,
+                                     int track, int slot);
+
 void clip_regions_forget_deleted(const clip_regions_t *before,
                                  const clip_regions_t *after,
                                  clip_state_t *st,
