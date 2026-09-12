@@ -90,6 +90,14 @@ static plugin_api_v2_t fake_api = {
     .get_param = fake_get_param,
 };
 
+/* Read a `lanes:` key the way the host would, for the assertions below. */
+static const char *lane_get(chain_instance_t *inst, const char *sub) {
+    static char buf[64];
+    int n = lane_param_get(inst, sub, buf, sizeof(buf));
+    if (n <= 0) { snprintf(buf, sizeof(buf), "%s", n == 0 ? "" : "<refused>"); }
+    return buf;
+}
+
 static float fake_value(const char *key) {
     int i = fake_index(key);
     return i < 0 ? -1.0f : (float)atof(fake[i].val);
@@ -833,6 +841,110 @@ int main(void) {
                       fake_value("cutoff"));
             }
             free(rp);
+        }
+    }
+
+    /* ============ THE P-LOCK VERB, `lanes:plock` =======================
+     *
+     * "<target> <param> <phase> <value>". It carries a PHASE because the chain
+     * knows nothing about bars, grids or signatures -- those are host-side
+     * (step_plock.h) and a second model of Move's editor over here is exactly
+     * what this project keeps paying for.
+     *
+     * Driven through the real dispatch (lane_param_set) rather than by calling
+     * lane_write, because the whole point is that a gesture -- and, tonight, a
+     * test harness over the param channel -- can reach it.
+     */
+    {
+        chain_instance_t *pk = calloc(1, sizeof(*pk));
+        CHECK(pk != NULL, "calloc for the p-lock instance");
+        if (pk) {
+            setup_fake_synth(pk);
+            pk->lane_track = 1;
+            pk->lane_clip_slot = 2;
+            /* NO phase, NO length, transport STOPPED: a p-lock must work in
+             * exactly that state, which is its advantage over a live pass. */
+            pk->clip_phase_valid = 0;
+            pk->clip_loop_len = 0.0;
+            pk->clip_fp_valid = 0;
+
+            lane_param_set(pk, "plock", "synth cutoff 8.0 77");
+            CHECK(strcmp(lane_get(pk, "plocked"), "1") == 0,
+                  "a p-lock with the transport stopped was refused (plocked=%s)",
+                  lane_get(pk, "plocked"));
+            lane_t *pl = lane_find(&pk->lanes, "synth", "cutoff", 1, 2);
+            CHECK(pl != NULL, "the p-lock did not create a lane at (1,2)");
+            if (pl) {
+                CHECK(pl->n == 1 && fabs(pl->pts[0].phase - 8.0) < 1e-9,
+                      "point count/phase wrong: n=%d phase=%f", pl->n,
+                      pl->n ? pl->pts[0].phase : -1.0);
+                CHECK(pl->pts[0].hold == 1,
+                      "a p-lock must be a RECTANGLE (hold=%d)", pl->pts[0].hold);
+                CHECK(fabsf(pl->pts[0].value - 77.0f) < 1e-6f,
+                      "value %f, want 77", pl->pts[0].value);
+                /* AND ITS PHASE IS NOT PROVISIONAL. The clip is unidentified
+                 * here, so a RECORDED point would be marked origin_pending and
+                 * later shifted by the real loop_start -- which would move a
+                 * p-lock off the step the user pressed. A p-lock's phase comes
+                 * from the bar number on Move's own strip: it is already true
+                 * clip time. */
+                CHECK(pl->origin_pending == 0,
+                      "a p-lock was marked origin_pending -- adoption would "
+                      "later shift it off its step");
+            }
+
+            /* A SECOND P-LOCK ON THE SAME STEP REPLACES IT rather than
+             * layering a second point five milliseconds away. */
+            lane_param_set(pk, "plock", "synth cutoff 8.0 33");
+            if (pl) CHECK(pl->n == 1 && fabsf(pl->pts[0].value - 33.0f) < 1e-6f,
+                          "re-p-locking a step did not replace it: n=%d v=%f",
+                          pl->n, pl->pts[0].value);
+
+            /* REFUSALS, each reported rather than silent. */
+            struct { const char *arg; const char *why; } bad[] = {
+                { "synth cutoff 8.0",        "no value" },
+                { "synth cutoff",            "no phase" },
+                { "synth",                   "no param" },
+                { "",                        "empty" },
+                { "synth cutoff -1 55",      "a negative phase" },
+                { "synth cutoff nan 55",     "a NaN phase" },
+                { "synth no_such_param 8 55","a parameter the module does not declare" },
+            };
+            for (unsigned i = 0; i < sizeof(bad)/sizeof(bad[0]); i++) {
+                lane_param_set(pk, "plock", bad[i].arg);
+                CHECK(strcmp(lane_get(pk, "plocked"), "0") == 0,
+                      "%s was accepted as a p-lock", bad[i].why);
+            }
+            /* ...and none of them disturbed the good point. */
+            if (pl) CHECK(pl->n == 1 && fabsf(pl->pts[0].value - 33.0f) < 1e-6f,
+                          "a refused p-lock changed the lane (n=%d v=%f)",
+                          pl->n, pl->pts[0].value);
+
+            /* WITH NO CLIP POSITION there is nothing to key a lane to. */
+            pk->lane_clip_slot = -1;
+            lane_param_set(pk, "plock", "synth cutoff 4.0 55");
+            CHECK(strcmp(lane_get(pk, "plocked"), "0") == 0,
+                  "a p-lock with no clip position was accepted");
+
+            /* AND IT PLAYS as a rectangle: hold the p-locked value from its
+             * own phase until the next point, through the real tick. */
+            pk->lane_clip_slot = 2;
+            lane_param_set(pk, "plock", "synth cutoff 12.0 99");
+            pk->clip_phase_valid = 1;
+            pk->clip_loop_start = 0.0;
+            pk->clip_loop_len = 16.0;
+            pk->clip_phase_beats = 10.0;        /* between 8.0 and 12.0 */
+            fake_poke("cutoff", "1");
+            lane_tick(pk);
+            CHECK(fake_value("cutoff") == 33.0f,
+                  "between two p-locks the first must STAND, got %f",
+                  fake_value("cutoff"));
+            pk->clip_phase_beats = 12.0;
+            lane_tick(pk);
+            CHECK(fake_value("cutoff") == 99.0f,
+                  "at the second p-lock's own phase, got %f",
+                  fake_value("cutoff"));
+            free(pk);
         }
     }
 

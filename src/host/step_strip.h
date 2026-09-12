@@ -99,12 +99,24 @@
  *
  *     quarters ~= segments * quarters_per_bar        (clip_regions.h)
  *
- * and it is a CEILING, so the answer is a RANGE: 3 segments under 11/8 means
- * (11.0, 16.5]. Exact only when the loop is a whole number of bars, which a
- * clip Move created in the current signature is -- the fractional cases here
- * are 4/4 loops left over from before the signature changed. So the strip
- * gives a length to BAR RESOLUTION and never better; anything needing more
- * must wait for the file. */
+ * and it is a CEILING, so the answer is a RANGE, INCLUSIVE AT BOTH ENDS:
+ * n segments under 11/8 means [(n-1) * 5.5, n * 5.5].
+ *
+ * THE LOWER END IS INCLUSIVE BECAUSE MOVE CAN SHOW ONE BAR MORE THAN THE LOOP
+ * HOLDS -- measured 2026-09-13 by lengthening a loop on the device with
+ * Loop + jog. The file settled at `region == loop == 8.00..24.50`, which is
+ * 16.5 quarters and EXACTLY 3 bars of 11/8, while the strip drew FOUR plain
+ * identical segments, persistently (switching to another track and back gave
+ * 3 for its clip and 4 again for this one). That fourth is the next bar Move
+ * offers you to extend into -- the manual's "plus icon signifies that the bar
+ * is outside of the loop" -- and at the pixel level it is NOT distinguishable
+ * from a bar that is in the loop, so the count cannot be trusted to a bar.
+ *
+ * So: exact only for a settled clip whose loop is not bar-aligned, an upper
+ * bound otherwise, and the FILE WINS whenever it has the clip. The strip's job
+ * is the ~10 s before that. An earlier version of this comment claimed
+ * "segments = bars, rounded up" full stop; that was a third coincidence, and
+ * the loop-lengthening measurement is what broke it. */
 
 /* Move has 16 step buttons, and its playhead index is page-relative to them.
  * Not used for the length -- see above -- but it is the modulus the phase
