@@ -121,23 +121,46 @@ int main(void)
     CHECK(!r.valid && r.reject == STEP_STRIP_NO_STRIP,
           "blank frame: valid=%d reject=%d", r.valid, r.reject);
 
-    /* 4. FALSE-POSITIVE CONTROL: a full-width line with no displayed-bar
-     * thickening is not the editor. Without this gate a 1-bar clip -- one
-     * solid 126 px run with no gaps for the uniformity test to measure --
-     * is indistinguishable from any rule or progress bar drawn on row 59. */
+    /* 4. A ONE-BAR LOOP IS A BARE THIN LINE, and Move's manual says so:
+     * "if a loop contains only one bar, a thin line is displayed instead."
+     *
+     * THIS TEST ASSERTED THE OPPOSITE and was wrong on hardware: the 1-bar
+     * clip on T4 came back refused (gate 6) twice before the manual explained
+     * it, and a one-bar loop is exactly what a NEW clip is -- the case this
+     * whole reader exists for. It is the one shape indistinguishable from an
+     * unrelated full-width line, so it is FLAGGED rather than merged:
+     * `single_thin` lets a consumer refuse it.
+     *
+     * Surveyed for false positives by driving Move through Menu, Loop Mode and
+     * the screen Back lands on -- row 59 empty on all three. Three screens is
+     * not proof, which is what the flag is for. */
     memset(fb, 0, sizeof(fb));
     hline(59, 1, 126);
     step_strip_decode(fb, &r);
-    CHECK(!r.valid && r.reject == STEP_STRIP_NO_BOLD,
-          "a bare full-width line was accepted: valid=%d reject=%d segments=%d",
-          r.valid, r.reject, r.segments);
+    CHECK(r.valid && r.segments == 1 && r.single_thin == 1,
+          "a bare full-width line: valid=%d segments=%d single_thin=%d "
+          "(Move draws a one-bar loop exactly like this)",
+          r.valid, r.segments, r.single_thin);
 
-    /* 4b. ...and the same line WITH the thickening is a one-bar loop. */
+    /* 4b. ...and the same line WITH thickening is a one-bar loop that is NOT
+     * ambiguous -- so the flag is off. (Move draws the thin line for a 1-bar
+     * loop, but a clip whose single bar is selected can carry it.) */
     memset(fb, 0, sizeof(fb));
     hline(59, 1, 126); hline(58, 1, 126); hline(60, 1, 126);
     step_strip_decode(fb, &r);
-    CHECK(r.valid && r.segments == 1 && r.bold_segment == 1,
-          "a 1-bar loop: valid=%d segments=%d bold=%d", r.valid, r.segments, r.bold_segment);
+    CHECK(r.valid && r.segments == 1 && r.bold_segment == 1 && !r.single_thin,
+          "a thickened single bar: valid=%d segments=%d bold=%d thin=%d",
+          r.valid, r.segments, r.bold_segment, r.single_thin);
+
+    /* 4c. THE GATE THAT REMAINS: two or more segments with no thickening is
+     * refused. That is what still separates the editor from a ruler, a
+     * progress bar or any other divided line -- the concession above is
+     * scoped to the one shape the manual documents. */
+    draw_strip(4, 0, -1);          /* four segments, nothing bold */
+    step_strip_decode(fb, &r);
+    CHECK(!r.valid && r.reject == STEP_STRIP_NO_BOLD,
+          "four segments with no bold were accepted: valid=%d reject=%d",
+          r.valid, r.reject);
 
     /* 5. A line that does not span the display belongs to another screen. */
     memset(fb, 0, sizeof(fb));

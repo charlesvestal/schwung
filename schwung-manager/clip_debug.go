@@ -241,15 +241,15 @@ async function tick(){
     /* Named for the enum in step_strip.h -- a bare number would make the one
        interesting case ("we saw a strip and did not believe it") unreadable. */
     const REJ={0:'ok',1:'no strip on the row',2:'not full width',
-               3:'a hole no segment boundary explains',4:'too many segments',
-               5:'segments not uniform',6:'no displayed-bar thickening'};
+               3:'a hole no bar boundary explains',4:'too many bars',
+               5:'segments not uniform',6:'no displayed-bar thickening (with 2+ bars)'};
     const EV=['none','stub only','interruption only','stub + interruption'];
     let h;
     if(!ss.seq) h='<span class="pill off">no frame decoded yet</span> '+
       '&mdash; Move&rsquo;s frames are not reaching the accumulator';
     else if(ss.valid) h='<span class="pill ok">valid</span> '+
-      '<b>'+ss.segments+'</b> page'+(ss.segments===1?'':'s')+
-      ' &middot; displayed page <b>'+ss.bold_segment+'</b>'+
+      '<b>'+ss.segments+'</b> bar'+(ss.segments===1?'':'s')+
+      ' &middot; displayed bar <b>'+(ss.bold_segment||'\u2014')+'</b>'+
       ' &middot; track <b>'+(ss.track>0?('T'+ss.track):'none selected')+'</b>'+
       ' &middot; playhead '+(ss.playhead_col>=0
           ? 'x='+ss.playhead_col+' ('+(100*ss.phase_frac).toFixed(1)+'% of the loop, '+
@@ -259,23 +259,31 @@ async function tick(){
       ' <small>(gate '+ss.reject+')</small>';
     if(ss.valid && ss.strip_quarters>0){
       /* The bar count AS A LENGTH, beside the file's own number. With the clip
-         present the two must agree, and a disagreement is the segments->quarters
-         conversion -- which is the GRID (a segment is a 16-step page), not the
-         time signature. An 11/8 set is what told the two apart. */
+         present the file's length must fall INSIDE the range. A segment is a
+         BAR (Move's manual), and the count is rounded up, so the strip answers
+         to bar resolution and never better. An 11/8 set is what told bars
+         apart from 16-step pages: 16 quarters is 2.91 bars but exactly 4
+         pages, and the strip drew 3. */
+      /* A RANGE, not a number: the segment count is bars ROUNDED UP, so the
+         file's length only has to fall inside it. Comparing against the upper
+         end alone would call every fractional loop a disagreement. */
       const agree = ss.file_quarters>0
-        ? (Math.abs(ss.strip_quarters-ss.file_quarters)<0.01
-            ? '<span class="pill ok">agrees with the file</span>'
-            : '<span class="pill off">DISAGREES with the file ('+
-              (+ss.file_quarters).toFixed(2)+' quarters)</span>')
+        ? ((ss.file_quarters>ss.strip_quarters_min+0.001 &&
+            ss.file_quarters<=ss.strip_quarters+0.001)
+            ? '<span class="pill ok">the file falls in that range</span>'
+            : '<span class="pill off">the file says '+
+              (+ss.file_quarters).toFixed(2)+', OUTSIDE it</span>')
         : '<span class="pill warn">clip not in the file yet</span>';
-      h+='<div style="margin-top:6px">'+ss.segments+' page'+(ss.segments===1?'':'s')+
-         ' &times; 16 steps &times; '+esc(ss.grid||'?')+' = <b>'+
-         (+ss.strip_quarters).toFixed(2)+'</b>'+
-         ' quarters &nbsp; '+agree+
-         ' &nbsp; <small>signature '+esc(ss.sig||'?')+' (not used for this)</small></div>';
+      h+='<div style="margin-top:6px">'+ss.segments+' bar'+(ss.segments===1?'':'s')+
+         ' &times; '+(+ss.quarters_per_bar).toFixed(2)+' quarters/bar = <b>'+
+         (+ss.strip_quarters_min).toFixed(2)+'&ndash;'+
+         (+ss.strip_quarters).toFixed(2)+'</b> quarters &nbsp; '+agree+
+         ' &nbsp; <small>signature '+esc(ss.sig||'?')+', grid '+
+         esc(ss.grid||'?')+(ss.single_thin?', one bar (thin line, ambiguous)':'')+
+         '</small></div>';
     }
     h+='<div class="sub" style="margin-top:6px">frame '+ss.seq+
-       ' &middot; cached page counts per track: '+
+       ' &middot; cached bar counts per track: '+
        ss.segments_cache.map((b,i)=>'T'+(i+1)+' '+(b?b:'\u2014')).join(' &middot; ')+
        '</div>';
     document.getElementById('ss').innerHTML=h;
