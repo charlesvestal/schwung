@@ -1655,13 +1655,28 @@ inline is how this file got to 151 KB.
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
 
-### Schwung is MIT, and THREE shipped artifacts are GPL
+### Schwung's SOURCE is MIT; `schwung-shim.so` is conveyed as GPL-3.0
 
-Not a contradiction and not an accident — they are **separate programs**, and
-nothing copyleft is linked into `schwung` or `schwung-shim.so`:
-`link-subscriber` (Ableton Link, GPL-2.0+), `lib/jack/jack_shadow.so` (jack2 +
-Cycling '74's JackMoveDriver, GPL-2.0+) and `lib/libespeak-ng.so` (GPL-3.0+).
-They talk to us over `/dev/shm`, sockets and `exec`.
+Two different relationships, and collapsing them is the trap — the first draft
+of `THIRD_PARTY_LICENSES.md` asserted "nothing copyleft is linked into
+`schwung` or `schwung-shim.so`" and was **wrong about the shim**.
+
+**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+)
+and `lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+)
+are separate programs reached over `/dev/shm`, sockets and `exec`.
+
+**Linked** (makes a combined work): `SHIM_LIBS` carries **`-lespeak-ng`** under
+`SCREEN_READER_ENABLED=1`, which is the DEFAULT and what ships —
+`libespeak-ng.so.1` is a `NEEDED` entry of the built `schwung-shim.so`. eSpeak
+NG is GPL-3.0-or-later, so that BINARY is conveyed under GPL-3.0-or-later. MIT
+is GPL-compatible so this is permitted, and the source stays MIT; what changes
+is the licence recipients get over the binary. `SCREEN_READER_ENABLED=0` swaps
+in `tts_engine_stub.c` and drops `SHIM_LIBS` to `-ldl -lrt -lpthread -lm`,
+giving an MIT shim. The HOST binary (`schwung`) links no TTS either way.
+
+Flite is BSD and is linked alongside eSpeak; it is not the copyleft one. Check
+the real binary (`NEEDED` entries), not the intent — the build flag is what
+decides this, and it is easy to reason about the wrong configuration.
 
 The trap is that **one file's header can silently claim otherwise.**
 `JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on
