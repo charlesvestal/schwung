@@ -159,6 +159,219 @@ int main(void) {
     CHECK(lane_eval(ln, 2.5, 8.0, 0, &v) == 1 && fabsf(v - 0.2f) < 1e-6f,
           "lane_eval trusted a NaN point planted directly in pts[]: %f", v);
 
+
+    /* ---- 13. A SECOND PASS ERASES THE SPAN IT SWEEPS -----------------
+     *
+     * Found on hardware: recording a second automation pass over an existing
+     * lane produced "super jumpiness". LANE_MIN_POINT_BEATS is ~5 ms at 120
+     * BPM, and a second pass's writes land TENS of milliseconds from the
+     * first pass's -- so they never fell inside the replace window and the
+     * two curves INTERLEAVED:
+     *
+     *   pass 1:  (1.00, 20)        (1.50, 40)        (2.00, 60) ...
+     *   pass 2:        (1.04, 90)        (1.56, 91)        ...
+     *   result:  20 -> 90 -> 40 -> 91 -> 60            <-- audible jumping
+     *
+     * The spacings below are a real knob sweep's: half a beat between
+     * detents, and a second pass offset by 0.04-0.10 beats -- far outside
+     * the thinning window and far inside the detent spacing. Asserting a
+     * point COUNT would pass while the lane still jumps, so this asserts on
+     * the VALUES. */
+    {
+        lane_store_t ps;
+        lane_t *l = mk(&ps);
+        const double loop = 8.0;
+
+        /* Pass 1: a rising sweep, 20 -> 100. */
+        const double p1[5] = { 1.00, 1.50, 2.00, 2.50, 3.00 };
+        const float  v1[5] = { 20.0f, 40.0f, 60.0f, 80.0f, 100.0f };
+        for (int i = 0; i < 5; i++) lane_record_point(l, p1[i], v1[i], loop);
+        lane_record_end(l);
+        CHECK(l->n == 5, "pass 1 did not lay down 5 points (n=%d)", l->n);
+
+        /* Pass 2 over the middle of it, deliberately offset. Every value is
+         * above every pass-1 value in the region, so a surviving old point
+         * shows up as a DIP -- the jumpiness the user heard. */
+        const double p2[4] = { 1.04, 1.56, 2.08, 2.60 };
+        const float  v2[4] = { 190.0f, 191.0f, 192.0f, 193.0f };
+        for (int i = 0; i < 4; i++) lane_record_point(l, p2[i], v2[i], loop);
+        lane_record_end(l);
+
+        /* Nothing from pass 1 may survive strictly inside the swept span. */
+        for (int i = 0; i < l->n; i++) {
+            if (l->pts[i].phase <= p2[0] || l->pts[i].phase >= p2[3]) continue;
+            CHECK(l->pts[i].value >= 189.0f,
+                  "an old value survived between two new ones at phase %.4f: "
+                  "%.1f -- the second pass INTERLEAVED instead of erasing, "
+                  "which is the jumpiness",
+                  l->pts[i].phase, (double)l->pts[i].value);
+        }
+
+        /* And the curve across the overwritten region must not jump about:
+         * pass 2 is monotonically rising, so any dip is a leftover. */
+        for (int i = 0; i + 1 < l->n; i++) {
+            if (l->pts[i].phase < p2[0] || l->pts[i + 1].phase > p2[3]) continue;
+            CHECK(l->pts[i + 1].value >= l->pts[i].value,
+                  "the overwritten region is not monotonic: %.1f at %.4f then "
+                  "%.1f at %.4f -- the lane JUMPS backwards",
+                  (double)l->pts[i].value, l->pts[i].phase,
+                  (double)l->pts[i + 1].value, l->pts[i + 1].phase);
+        }
+
+        /* The region either side of the pass is the user's and was not swept. */
+        CHECK(fabsf(l->pts[0].value - 20.0f) < 1e-3f,
+              "the pass erased backwards past its own first write: %.1f",
+              (double)l->pts[0].value);
+        CHECK(fabsf(l->pts[l->n - 1].value - 100.0f) < 1e-3f,
+              "the pass erased forwards past its own last write: %.1f",
+              (double)l->pts[l->n - 1].value);
+    }
+
+    /* ---- 14. A PAUSE IS NOT A SWEEP ---------------------------------
+     *
+     * The gap threshold is the whole reason the erase cannot eat the lane:
+     * stopping mid-take and picking the knob up somewhere else must leave
+     * the part the user did not touch exactly as it was. */
+    {
+        lane_store_t ps;
+        lane_t *l = mk(&ps);
+        const double loop = 8.0;
+        lane_write(l, 2.0, 50.0f);
+        lane_write(l, 3.0, 60.0f);
+        lane_write(l, 4.0, 70.0f);
+
+        lane_record_point(l, 1.0, 10.0f, loop);     /* first write: no span */
+        lane_record_point(l, 1.2, 11.0f, loop);     /* sweeping */
+        /* ... hand off the knob for three beats, then turn it again. */
+        lane_record_point(l, 5.0, 12.0f, loop);
+        lane_record_end(l);
+
+        int kept = 0;
+        for (int i = 0; i < l->n; i++) {
+            float x = l->pts[i].value;
+            if (fabsf(x - 50.0f) < 1e-3f || fabsf(x - 60.0f) < 1e-3f ||
+                fabsf(x - 70.0f) < 1e-3f) kept++;
+        }
+        CHECK(kept == 3,
+              "a pause erased the part of the lane the user left alone: "
+              "%d of 3 points survived", kept);
+    }
+
+    /* ---- 15. A WRAPPED SWEEP ERASES ONLY WHAT IT SWEPT --------------
+     *
+     * Phase wraps at loop_len, so a pass crossing the loop boundary has
+     * cur < prev. Erasing "between prev and cur" as one naive interval
+     * erases the whole MIDDLE of the lane -- the exact opposite of what the
+     * pass touched. The swept span is (prev, loop_len) plus [0, cur). */
+    {
+        lane_store_t ps;
+        lane_t *l = mk(&ps);
+        const double loop = 8.0;
+        const double lay[7] = { 0.1, 0.5, 2.0, 4.0, 7.0, 7.5, 7.8 };
+        const float  lv[7]  = { 11.0f, 15.0f, 20.0f, 40.0f, 70.0f,
+                                75.0f, 78.0f };
+        for (int i = 0; i < 7; i++) lane_write(l, lay[i], lv[i]);
+
+        lane_record_point(l, 7.6, 200.0f, loop);   /* first write: no span */
+        lane_record_point(l, 0.3, 201.0f, loop);   /* wrapped: gap 0.7 beats */
+        lane_record_end(l);
+
+        /* Swept: 7.8 (past prev) and 0.1 (before cur). */
+        for (int i = 0; i < l->n; i++) {
+            CHECK(fabsf(l->pts[i].value - 78.0f) > 1e-3f,
+                  "a wrapped sweep left the point it passed over at 7.8");
+            CHECK(fabsf(l->pts[i].value - 11.0f) > 1e-3f,
+                  "a wrapped sweep left the point it passed over at 0.1");
+        }
+        /* Untouched: everything in the middle, which a naive (min,max)
+         * interval would have eaten instead. */
+        const float want[5] = { 15.0f, 20.0f, 40.0f, 70.0f, 75.0f };
+        for (int k = 0; k < 5; k++) {
+            int found = 0;
+            for (int i = 0; i < l->n; i++)
+                if (fabsf(l->pts[i].value - want[k]) < 1e-3f) found = 1;
+            CHECK(found, "a wrapped sweep erased the untouched middle of the "
+                         "lane: %.1f is gone", (double)want[k]);
+        }
+    }
+
+    /* ---- 16. THE FIRST WRITE OF A PASS ERASES NOTHING ---------------
+     * There is no swept span yet. Without this, the first write of a take
+     * erases back to wherever the previous one happened to stop. */
+    {
+        lane_store_t ps;
+        lane_t *l = mk(&ps);
+        lane_write(l, 1.0, 10.0f);
+        lane_write(l, 2.0, 20.0f);
+        lane_write(l, 3.0, 30.0f);
+        lane_record_point(l, 2.5, 99.0f, 8.0);
+        CHECK(l->n == 4, "the first write of a pass erased something (n=%d)",
+              l->n);
+        lane_record_end(l);
+    }
+
+    /* ---- 17. A NEW TAKE DOES NOT ERASE BACK INTO THE OLD ONE --------
+     * The pass ENDS when recording stops. The next armed write is the first
+     * write of a fresh pass, so it erases nothing -- even though it lands
+     * well within the gap threshold of where the last take stopped. */
+    {
+        lane_store_t ps;
+        lane_t *l = mk(&ps);
+        const double loop = 8.0;
+        lane_write(l, 1.4, 44.0f);          /* the user's, between the takes */
+        lane_record_point(l, 1.0, 10.0f, loop);
+        lane_record_point(l, 1.3, 11.0f, loop);
+        lane_record_end(l);                  /* Record goes out */
+        lane_record_point(l, 1.5, 12.0f, loop);   /* a fresh take */
+        lane_record_end(l);
+        int found = 0;
+        for (int i = 0; i < l->n; i++)
+            if (fabsf(l->pts[i].value - 44.0f) < 1e-3f) found = 1;
+        CHECK(found, "the first write of a new take erased back into the "
+                     "previous one");
+    }
+
+
+    /* ---- 18. lane_write ERASES NOTHING, EVER -------------------------
+     *
+     * This is the rule that keeps the second-pass erase out of the shared
+     * writer: lane_serial's deserializer and any future lane editor write
+     * through lane_write, and neither has swept anything.
+     *
+     * THE LOAD-BEARING ASSERTION HERE IS THE LAST ONE, and that was measured
+     * rather than assumed. Moving the erase into lane_write was tried: the
+     * verbatim checks below stayed GREEN, because an ascending run of writes
+     * erases only the empty spans between consecutive new points. What went
+     * red was the pass state -- lane_write advancing rec_last_phase means a
+     * later lane_record_point sweeps from a phase an editor or a load put
+     * there, and erases across everything in between. The round-trip test's
+     * document case stays green under the same mutation for a second reason:
+     * today's parser fills pts[] directly and never calls lane_write at all.
+     *
+     * The verbatim checks are kept because they are the contract a reader
+     * needs stated, not because they are what catches the regression. */
+    {
+        lane_store_t ps;
+        lane_t *l = mk(&ps);
+        const double wp[6] = { 1.00, 1.04, 1.50, 1.56, 2.00, 2.08 };
+        const float  wv[6] = { 20.0f, 190.0f, 40.0f, 191.0f, 60.0f, 192.0f };
+        for (int i = 0; i < 6; i++) lane_write(l, wp[i], wv[i]);
+        CHECK(l->n == 6,
+              "lane_write erased as it went (n=%d, want 6) -- the swept-span "
+              "erase has leaked out of lane_record_point", l->n);
+        for (int i = 0; i < l->n && i < 6; i++) {
+            CHECK(fabs(l->pts[i].phase - wp[i]) < 1e-9,
+                  "point %d is at phase %.6f, want %.6f",
+                  i, l->pts[i].phase, wp[i]);
+            CHECK(fabsf(l->pts[i].value - wv[i]) < 1e-3f,
+                  "point %d is %.1f, want %.1f",
+                  i, (double)l->pts[i].value, (double)wv[i]);
+        }
+        /* And it opens no pass, or the next lane_record_point would sweep
+         * from a phase an editor or a load put there. */
+        CHECK(l->rec_active == 0, "lane_write opened a recording pass");
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

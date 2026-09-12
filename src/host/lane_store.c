@@ -186,3 +186,83 @@ int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now) {
     if (ln->fp.first_note != now->first_note) return 0;
     return 1;
 }
+
+/* ---- the recording pass ----------------------------------------------
+ * NOT part of lane_write: the deserializer and any future editor write
+ * through that, and neither swept anything. See lane_store.h.
+ */
+
+/* Delete every point in the phase span, in place. `lo` is EXCLUSIVE when
+ * lo_open -- the previous write of this pass sits exactly there and must
+ * survive -- and `hi` is always exclusive, because a point inside
+ * LANE_MIN_POINT_BEATS of the incoming write is lane_write's to replace, not
+ * this function's to drop.
+ *
+ * A non-finite stored phase compares false against both bounds and is KEPT.
+ * lane_eval already skips it and lane_write already refuses to create one, so
+ * compacting corruption away here would only hide it from the code that
+ * reports it.
+ *
+ * RT: one pass over at most LANE_POINTS_MAX entries, no allocation. */
+static void lane_erase_span(lane_t *ln, double lo, int lo_open, double hi) {
+    if (!(hi > lo)) return;
+    int w = 0;
+    for (int r = 0; r < ln->n; r++) {
+        const double ph = ln->pts[r].phase;
+        const int above = lo_open ? (ph > lo) : (ph >= lo);
+        if (isfinite(ph) && above && ph < hi) continue;   /* swept: drop it */
+        if (w != r) ln->pts[w] = ln->pts[r];
+        w++;
+    }
+    ln->n = w;
+}
+
+void lane_record_point(lane_t *ln, double phase, float value, double loop_len) {
+    if (!ln || !ln->used) return;
+    /* The SAME validity lane_write demands, checked before the erase: a write
+     * that is going to be refused must not erase anything on its way to being
+     * refused, and must not move the pass's phase either. */
+    if (!isfinite(phase) || phase < 0.0 || !isfinite(value)) return;
+
+    if (ln->rec_active && isfinite(ln->rec_last_phase)) {
+        const double prev = ln->rec_last_phase;
+        if (phase >= prev) {
+            /* Forward: the ordinary sweep. */
+            if (phase - prev <= LANE_PASS_GAP_BEATS)
+                lane_erase_span(ln, prev, 1, phase);
+        } else if (isfinite(loop_len) && loop_len > 0.0 && prev < loop_len) {
+            /* WRAPPED. Playback phase only ever increases, so phase < prev
+             * means the clip looped -- and the span the knob actually passed
+             * over is (prev, loop_len) then [0, phase), NOT (phase, prev),
+             * which is the whole untouched middle of the lane.
+             *
+             * The gap is measured the same way round, so a wrap that is not
+             * one continuous gesture (the transport was moved, the loop was
+             * re-cut) fails the threshold and erases nothing. That is also
+             * what bounds the damage: the erased span can never exceed
+             * LANE_PASS_GAP_BEATS, whichever branch ran.
+             *
+             * Phase 0 is INCLUDED -- it is the wrap boundary itself, which
+             * the sweep crossed. */
+            const double gap = (loop_len - prev) + phase;
+            if (gap >= 0.0 && gap <= LANE_PASS_GAP_BEATS) {
+                lane_erase_span(ln, prev, 1, loop_len);
+                lane_erase_span(ln, 0.0, 0, phase);
+            }
+        }
+        /* else: a backwards phase with no usable loop_len. Unexplainable, so
+         * nothing is erased -- the pass just continues from the new phase. */
+    }
+
+    lane_write(ln, phase, value);
+    /* Only AFTER a write that was accepted, so the next write's swept span
+     * starts where this one actually landed. */
+    ln->rec_active = 1;
+    ln->rec_last_phase = phase;
+}
+
+void lane_record_end(lane_t *ln) {
+    if (!ln) return;
+    ln->rec_active = 0;
+    ln->rec_last_phase = 0.0;
+}

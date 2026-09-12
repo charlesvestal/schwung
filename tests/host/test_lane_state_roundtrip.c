@@ -283,6 +283,60 @@ int main(void) {
               "a too-small buffer did not report failure");
     }
 
+
+    /* ---- A LOAD IS NOT A RECORDING PASS ----------------------------
+     *
+     * The second-pass erase belongs to lane_record_point, and a LOAD must
+     * reproduce its document verbatim however the loader is written. The
+     * document below is deliberately the interleaved pattern a recording pass
+     * DOES wipe: pairs of points a few hundredths of a beat apart, well inside
+     * LANE_PASS_GAP_BEATS of each other. Every one must come back, and the
+     * lane must load with no pass open.
+     *
+     * WHAT THIS CANNOT SEE, measured rather than assumed: today's parser fills
+     * pts[] directly and never calls lane_write, so an erase moved INTO
+     * lane_write leaves this case green. The assertion that goes red for that
+     * is case 18 of test_lane_store.c ("lane_write erases nothing, ever").
+     * This case earns its place by covering a loader that later routes through
+     * lane_write, and by pinning the pass state a load must not resurrect. */
+    {
+        static lane_store_t d;
+        const char *doc =
+            "V 1\n"
+            "L synth cutoff 1 2 0 8 14 41 6\n"
+            "P 1 20\n"
+            "P 1.04 190\n"
+            "P 1.5 40\n"
+            "P 1.56 191\n"
+            "P 2 60\n"
+            "P 2.08 192\n";
+        lane_store_reset(&d);
+        CHECK(lane_store_deserialize(&d, doc) == 1, "the document was refused");
+        const lane_t *dl = find_used(&d, "synth", "cutoff");
+        CHECK(dl != NULL, "the loaded lane is missing");
+        if (dl) {
+            CHECK(dl->n == 6,
+                  "the load ERASED its own points as it went (n=%d, want 6) "
+                  "-- the swept-span erase has leaked into lane_write",
+                  dl->n);
+            const double wp[6] = { 1.0, 1.04, 1.5, 1.56, 2.0, 2.08 };
+            const float  wv[6] = { 20.0f, 190.0f, 40.0f, 191.0f, 60.0f, 192.0f };
+            for (int i = 0; i < dl->n && i < 6; i++) {
+                CHECK(fabs(dl->pts[i].phase - wp[i]) < 1e-9,
+                      "point %d loaded at phase %.6f, want %.6f",
+                      i, dl->pts[i].phase, wp[i]);
+                CHECK(fabsf(dl->pts[i].value - wv[i]) < 1e-3f,
+                      "point %d loaded as %.1f, want %.1f",
+                      i, (double)dl->pts[i].value, (double)wv[i]);
+            }
+            /* Pass state is runtime, so a load must not bring one back --
+             * otherwise the first armed turn after a set load erases back to
+             * whatever phase the document's last point happened to carry. */
+            CHECK(dl->rec_active == 0,
+                  "a loaded lane came back with a recording pass open");
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane state round-trip\n");
     return 0;
