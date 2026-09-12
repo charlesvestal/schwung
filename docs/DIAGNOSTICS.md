@@ -256,3 +256,55 @@ A param read still happens, but only on a **contradiction**: disk reports a
 position empty while the perf snapshot shows measured time for it — the
 hot-swap window where the on-disk mirror is momentarily stale relative to
 what is actually running. Every other refresh is disk-only.
+
+## Driving Move's own controls: `tools/inject/schwung_inject.c`
+
+Cross-compile it (`aarch64-linux-gnu-gcc -Isrc/host tools/inject/schwung_inject.c
+-lrt`), drop it on the device, and press Move's buttons with no hands:
+
+```
+schwung_inject step 1          # a step button: toggles a note in the editor
+schwung_inject track 3         # a track button (CCs 40-43, REVERSED)
+schwung_inject 09 90 10 7f     # any raw USB-MIDI packet
+```
+
+It pushes into `/schwung-midi-inject`, the same MPSC ring pytest-schwung uses,
+through `shadow_midi_inject_writer.h` rather than a hand-rolled copy of the
+protocol — a cable-0/CIN-0 packet reaching MIDI_IN reads as "misc function" and
+**aborts Move's firmware**, so the tool also refuses a `0x00` header outright.
+Outside overtake the shim drains the ring into Move's mailbox, so an injected
+packet is indistinguishable from a press *to Move*.
+
+**It is ONE-SIDED, and that will mislead you.** The drain writes the SHADOW
+mailbox — what Move reads — while Schwung's own control decoding scans
+`hardware_mmap_addr`, the real one. So Move acts on an injected press and
+Schwung never sees it: `shadow_control->selected_slot` (which is what
+`clip_selected_track()` returns) does not move, so anything attributed to "the
+selected track" is attributed to the previous one. Measured 2026-09-12 —
+injected Track 2 / Track 4 / Track 1 presses each changed the step editor, which
+the decoded bar strip followed exactly (4, invalid, 3 bars), while
+`selected_track` sat at 1 for all three. A real finger lands in both buffers, so
+this is an artifact of driving, not a bug in use.
+
+**Rule: read the results of an injected press off MOVE** — its screen, its file
+— never off Schwung's own state.
+
+### Move's save latency is 10 s, and D-Bus will not shorten it
+
+Measured 2026-09-12 with injected step presses, twice, identically:
+
+| | edit -> `Song.abl` rewritten |
+|---|---|
+| control (nothing called) | **10 s** |
+| `saveSongIfDirty` called at +2 s | **10 s** |
+
+`com.ableton.move.Browser.saveSongIfDirty` is real — introspect
+`/com/ableton/move/browser` — takes one string, and returns `method return` for
+every argument shape tried (set directory, uuid, `Song.abl` path, empty). It
+does not flush the LOADED song early. The interface is not the same thing as
+the effect, and with a clean song it returns identically, so the reply proves
+nothing on its own: the only thing that separated the two readings was measuring
+the natural latency FIRST.
+
+The inherited figure for that latency was "~35 s" and it is wrong by 3.5x,
+which matters because every design around the blind window was sized against it.
