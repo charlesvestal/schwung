@@ -507,6 +507,7 @@ if needs_rebuild build/modules/chain/dsp.so \
     src/modules/chain/dsp/chain_params.c src/modules/chain/dsp/chain_mod.c \
     src/modules/chain/dsp/chain_midi.c src/modules/chain/dsp/chain_patch.c \
     src/modules/chain/dsp/chain_reorder.c src/modules/chain/dsp/chain_bus.c \
+    src/modules/chain/dsp/chain_lanes.c \
     src/host/chain_permute.h \
     src/host/chain_key_index.h src/host/json_compact.h \
     src/modules/chain/dsp/chain_internal.h src/host/unified_log.c \
@@ -533,6 +534,7 @@ if needs_rebuild build/modules/chain/dsp.so \
         src/modules/chain/dsp/chain_patch.c \
         src/modules/chain/dsp/chain_reorder.c \
         src/modules/chain/dsp/chain_bus.c \
+        src/modules/chain/dsp/chain_lanes.c \
         src/host/unified_log.c \
         build/modules/chain/lane_store.o \
         -o build/modules/chain/dsp.so \

@@ -935,6 +935,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (key && key[0] == 'm' && strcmp(key, "mod:tick") == 0) {
         int frames = val ? atoi(val) : 128;
         lfo_tick(inst, frames);
+        lane_tick(inst);
         chain_idle_tick_mark(&inst->idle_tick, v2_tick_midi_fx(inst, frames));
         return;
     }
@@ -2385,6 +2386,7 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
      * this exact block with a generated note. Never advance it twice. */
     if (chain_idle_tick_consume(&inst->idle_tick)) {
         lfo_tick(inst, frames);
+        lane_tick(inst);
         v2_tick_midi_fx(inst, frames);
     }
 
