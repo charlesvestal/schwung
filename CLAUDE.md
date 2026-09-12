@@ -1486,6 +1486,19 @@ and refusing strands a device that cannot name what it runs).
 cache — the comparison alone passes either way, since the defect was in what
 the handler COMPOSED.
 
+Two things found while reading that, fixed after: **`Check for Update` shared
+the 5-minute TTL**, so within five minutes of any page's fetch it reported the
+cached answer as though it had looked — including the "up to date" a user who
+had just fixed their network was pressing it to disprove (`Refresh()` forces
+past the TTL; `Fetch()` still honours it, since a page render must not hit the
+network every time). And **`CatalogService` had no lock** while every handler
+runs on its own goroutine — `mu` is held across the fetch, not just the
+assignment, so concurrent misses collapse into one request. `loadFromDisk`
+deliberately takes no lock (it runs before publication, and `fetch` holds `mu`
+across its whole body, so a reload from there would deadlock), and
+`GetReleaseMeta` hands out the map by reference, which is safe only while a
+refresh REPLACES it rather than writing into the copy a caller holds.
+
 **Shim mirror + stuck-shim repair (web update).** The manager runs as `ableton`
 and can't write `/usr/lib`, so a web update mirrors the new shim via the
 setuid-root `schwung-heal` helper (synchronously in `post-update.sh` + the
