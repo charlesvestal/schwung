@@ -2581,14 +2581,21 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * step you are looking at what the step will play, not at what the
          * knob is set to now), and `locked` marks the cell.
          *
-         * The MARK is where the two layouts diverge, and it has to. The dial
-         * layout inverts the label strip; this grid already spends that
-         * inversion on "a finger is on this knob", so reusing it would make a
-         * locked cell indistinguishable from a held one — and on the step-held
-         * view, where locks are read, several cells are locked and none is
-         * touched. The top-right 2x2 tick is likewise taken, by modulation.
-         * So a lock is the top-LEFT corner: the one unspent corner, mirroring
-         * the modulation tick across the cell.
+         * THE MARK IS BOTH: inverted like Elektron's, plus the corner.
+         *
+         * This comment used to argue for the corner ALONE, on the grounds that
+         * the inversion is already spent on "a finger is on this knob". The
+         * argument is right in general and wrong on this screen. Every
+         * Elektron manual describes the same thing — "the graphics become
+         * inverted for the locked parameter, and the locked parameter value is
+         * displayed" — and that inversion is how the gesture reads at a
+         * glance; a 2x2 corner pixel is something you have to be told about.
+         *
+         * The collision survives, but it is small and the corner settles it:
+         * inversion means "you are being shown a value" (touched or locked)
+         * and the top-left corner means "there is a lock here". The top-right
+         * 2x2 tick stays modulation's, so the two marks mirror each other
+         * across the cell.
          */
         const dec = decorations ? decorations[slot] : null;
         const locked = !!(dec && dec.locked);
@@ -2734,7 +2741,28 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
         const display = fitDev(ctx,
             (cellText === null || cellText === undefined) ? displayValue(raw, meta) : String(cellText),
             g.cellW - 2);
-        drawLabelCell(ctx, g, col, lblY, label, display, isTouched, isTouched,
+        /*
+         * A LOCKED CELL READS AS ELEKTRON'S DOES: inverted, with the VALUE in
+         * the band rather than the parameter's name.
+         *
+         * Every Elektron manual that documents this says the same sentence --
+         * "the graphics become inverted for the locked parameter, and the
+         * locked parameter value is displayed" -- and it is the headline of
+         * the whole gesture: hold a trig and the screen tells you, at a
+         * glance, which parameters that step owns. The corner mark alone said
+         * it in a way you had to already know to read.
+         *
+         * The inversion is shared with "a finger is on this knob", which is
+         * why it was avoided here originally. On THIS screen that collision is
+         * benign and the corner mark resolves what is left of it: inversion
+         * means "you are being shown a value", touched or locked, and the
+         * top-left corner means "there is a lock here". Elektron has no
+         * capacitive knobs, so it never has to separate the two -- and on
+         * Elektron, touching a knob under a held trig creates a lock anyway,
+         * which is exactly what ours does too.
+         */
+        const showAsLock = isTouched || locked;
+        drawLabelCell(ctx, g, col, lblY, label, display, showAsLock, showAsLock,
                       modulated ? !!modulated(key) : false);
     }
 }
