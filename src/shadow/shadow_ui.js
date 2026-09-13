@@ -19770,12 +19770,40 @@ function heldStepIndex() {
  * this reason. Held state is dropped with the flag, or a step released while
  * the UI was not watching stays "held" forever. */
 let uiViewLogTick = 0;
+/*
+ * WHO IS WATCHING THE STEP BUTTONS -- the host's knob grid, OR a module
+ * drawing its own.
+ *
+ * This asked `view === VIEWS.PARAM_PAGES` alone, and that is the fourth time
+ * one facility has been gated on the host's own view and been invisible to a
+ * module that binds the controller from its own `ui_chain.js`. The enum peek,
+ * the p-lock write, the modulation marks -- and this, which is worse than the
+ * others because it fails SILENTLY IN BOTH DIRECTIONS: on 9W9 no step was
+ * forwarded to the UI (so no p-lock gesture) and no step was withheld from
+ * Move (so every press toggled a note). Measured on hardware through the test
+ * bus: holding a step for 1.5 s added a note to the clip and tapping it
+ * removed one, which is Move receiving every press exactly as if the grid were
+ * not there.
+ *
+ * A component editor drawing a module's own UI is armed too. The p-lock is a
+ * CHAIN gesture -- any component parameter can be locked -- so which UI is
+ * drawing the knobs does not change whether a held step means "lock this".
+ * The cost for a module that never uses steps is that a tap toggles its note
+ * STEP_TAP_MS late instead of instantly, because the press is deferred rather
+ * than swallowed.
+ */
 function reconcileStepObserve() {
     if (typeof host_step_observe !== "function") return;
-    const want = (view === VIEWS.PARAM_PAGES) &&
-                 paramPagesComponent() !== null &&
-                 paramPagesComponent() !== undefined &&
-                 paramPagesSlot() >= 0;
+    const hostGrid = (view === VIEWS.PARAM_PAGES) &&
+                     paramPagesComponent() !== null &&
+                     paramPagesComponent() !== undefined &&
+                     paramPagesSlot() >= 0;
+    /* The same test reconcilePadBlock uses for "a module owns this screen",
+     * so the two cannot disagree about whose UI is up. */
+    const moduleGrid = view === VIEWS.COMPONENT_EDIT &&
+                       loadedModuleUi && loadedModuleUi.tick &&
+                       !coRunUiActive();
+    const want = hostGrid || !!moduleGrid;
     host_step_observe(want ? 1 : 0);
     if (!want) {
         for (let i = 0; i < 16; i++) stepHeld[i] = 0;

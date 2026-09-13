@@ -7646,7 +7646,68 @@ static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in,
  * owed?" -- `step_observe` drops the moment the grid is left, which is
  * routinely BETWEEN a press and its release. */
 static uint8_t step_swallow_latch[16];
+
+/* WHEN THE PRESS LANDED, and what it owes Move on the way out.
+ *
+ * TAP vs HOLD. The grid withholds every bare step press so that locking a
+ * value on a step does not also toggle a note in the clip -- but that took
+ * Move's own step editing away for as long as the grid was on screen: while
+ * Schwung was up you could not put a note on a step at all.
+ *
+ * Elektron settles this the same way, and it is the behaviour this copies: a
+ * TAP toggles the trig, a HOLD enters parameter-lock without toggling it. So
+ * the press is not so much swallowed as DEFERRED -- held back until the
+ * release says which gesture it was. Under STEP_TAP_MS, Move is handed the
+ * press and release it never saw, and the note toggles as it always did.
+ * Over it, the press stays swallowed and the step is a lock trig: automation
+ * on a step with no note, which is what "trigless" means here.
+ *
+ * The replay is EMITTED, not un-swallowed: by the time the release arrives the
+ * press's slot is long gone, so it is synthesised into the free tail after
+ * compaction, the way the knob-release injection already does.
+ *
+ * `step_press_vel` carries the original velocity because a replayed note must
+ * be the note that was played -- Move's steps carry velocity, and inventing
+ * 127 for a soft press would write a different note than the finger did. */
+#define STEP_TAP_MS 250
+static uint64_t step_press_ms[16];
+static uint8_t  step_press_vel[16];
+/* 0 = nothing owed, 1 = owe Move the note-on, 2 = owe it the note-off. Two
+ * stages and two FRAMES: a press and release in the same 2.9 ms frame is not
+ * a tap any finger can produce, and Move is entitled to see a shape it could
+ * have received from hardware. */
+static uint8_t step_tap_replay[16];
 static uint8_t claim_press_blocked[128];
+
+/* A withheld step press or release, and what it decides.
+ *
+ * Press: latch it and remember when (and how hard). Release: the latch is
+ * dropped, and a release inside STEP_TAP_MS queues the replay that gives Move
+ * the tap it never saw. Anything longer was a hold -- a lock trig -- and Move
+ * is told nothing at all, which is the whole point.
+ *
+ * Called from BOTH swallow sites (the gated one and the unconditional drain),
+ * so the answer cannot differ depending on whether the grid was still up when
+ * the finger came off. */
+static void step_note_withhold(uint8_t note, uint8_t vel)
+{
+    if (note < 16 || note > 31) return;
+    const int i = note - 16;
+    if (vel > 0) {
+        step_swallow_latch[i] = 1;
+        step_press_ms[i] = now_mono_ms();
+        step_press_vel[i] = vel;
+        return;
+    }
+    step_swallow_latch[i] = 0;
+    /* A press we never saw cannot have been a tap: `step_press_ms` of 0 means
+     * the latch was set by an older build or a lost press, and replaying then
+     * would put a note on a step nobody touched. */
+    if (step_press_ms[i] == 0) return;
+    const uint64_t held_ms = now_mono_ms() - step_press_ms[i];
+    step_press_ms[i] = 0;
+    if (held_ms < STEP_TAP_MS) step_tap_replay[i] = 1;
+}
 
 /* Controls the host owns and a module may NEVER claim: how you leave the
  * screen (Menu, Back, Shift), what the host routes itself (jog, the eight
@@ -9559,7 +9620,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * release is owed. */
                 if (d1 >= 16 && d1 <= 31 && step_swallow_latch[d1 - 16]) {
                     midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
-                    if (d2 == 0) step_swallow_latch[d1 - 16] = 0;
+                    /* The SAME decision as the gated site, because a tap can
+                     * end after the grid is left -- press on the grid, dismiss,
+                     * release -- and that is still a tap the user expects to
+                     * have toggled the note. One function, so the two sites
+                     * cannot disagree about what a tap is. */
+                    step_note_withhold(d1, d2);
                 }
 
                 /* Mute (CC 88) is passed through to Move firmware unconditionally,
@@ -9631,14 +9697,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * watching them (shadow_control->step_observe) -- the p-lock
                  * gesture's half of the input: hold a step, turn a knob.
                  *
-                 * PASSIVE, like pad_observe directly above: no `continue`, so
-                 * the press still reaches Move and still edits the clip's
-                 * notes. A p-lock therefore also toggles a note today, which
-                 * is a real cost and a deliberate one -- withholding a step
-                 * needs a latched both-edge swallow in this filter, and its
-                 * failure modes are a stuck button or a note Move never sees
-                 * released. Undo fixes a stray note; a stuck filter does not,
-                 * so that change gets its own hardware pass.
+                 * NOT passive, unlike pad_observe directly above -- and this
+                 * comment said it was for as long as it was true. The press is
+                 * WITHHELD and the release decides what Move is told: a TAP
+                 * (under STEP_TAP_MS) is replayed to Move after compaction, so
+                 * the note toggles exactly as it always did; a HOLD is never
+                 * replayed, so locking a value on a step does not also write a
+                 * note there. See step_note_withhold().
+                 *
+                 * Swallowing it outright -- which is what the first version of
+                 * this did -- fixed the stray note and took Move's own step
+                 * editing away for as long as the grid was on screen. Elektron
+                 * splits the same button the same way, and this follows it.
                  *
                  * The UI needs the RAW step number, which is why this cannot
                  * be reconstructed downstream: Move turns the press into an
@@ -9673,7 +9743,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                      * capture rules, DSP routing -- may act on a press that
                      * Move itself will never see. */
                     midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
-                    step_swallow_latch[d1 - 16] = (d2 > 0) ? 1 : 0;
+                    step_note_withhold(d1, d2);
                     continue;
                 }
 
@@ -9834,6 +9904,42 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
      * so Move doesn't think knobs are still being held.
      * This MUST happen AFTER filtering to avoid being zeroed out — and after
      * the compaction above, so the free slots are a contiguous tail. */
+    /* === POST-IOCTL: HAND MOVE THE TAP IT NEVER SAW ===
+     *
+     * A step press held for less than STEP_TAP_MS was a TAP, and a tap is
+     * Move's gesture: it toggles a note on that step. The press itself was
+     * withheld (so that a HOLD can lock a parameter without also writing a
+     * note), so the tap is synthesised here instead -- note-on in one frame,
+     * note-off in the next, because a press and release inside the same 2.9 ms
+     * frame is not a shape any finger produces and not one Move should be
+     * asked to interpret.
+     *
+     * AFTER the compaction, like the knob-release injection below it and for
+     * the same two reasons: the free slots are a contiguous tail there, and
+     * nothing above may move a slot while the index-paired swallows run.
+     *
+     * Deliberately NOT gated on the display or the grid. The gesture is
+     * decided by the finger, and a tap that ends after the grid is dismissed
+     * is still a tap the user expects to have toggled the note. */
+    if (global_mmap_addr) {
+        uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
+        int j = 0;
+        for (int i = 0; i < 16; i++) {
+            if (!step_tap_replay[i]) continue;
+            const int on = (step_tap_replay[i] == 1);
+            for (; j < SHADOW_MIDI_IN_BYTES; j += SHADOW_MIDI_IN_STRIDE)
+                if (shadow_midi_in_slot_empty(&src[j])) break;
+            if (j >= SHADOW_MIDI_IN_BYTES) break;   /* no room: next frame */
+            src[j]     = on ? 0x09 : 0x08;          /* CIN, cable 0 */
+            src[j + 1] = on ? 0x90 : 0x80;
+            src[j + 2] = (uint8_t)(16 + i);
+            src[j + 3] = on ? step_press_vel[i] : 0;
+            memset(&src[j + 4], 0, 4);              /* synthetic: no timestamp */
+            j += SHADOW_MIDI_IN_STRIDE;
+            step_tap_replay[i] = on ? 2 : 0;
+        }
+    }
+
     if (shadow_inject_knob_release && global_mmap_addr) {
         shadow_inject_knob_release = 0;
         uint8_t *src = global_mmap_addr + MIDI_IN_OFFSET;
