@@ -33,6 +33,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <functional>
 
 extern "C" {
 #include "schwung_desktop.h"
@@ -150,6 +151,50 @@ private:
     std::array<int16_t, SCHWUNG_BLOCK * 2> blockBuf {};
 };
 
+/*
+ * MIDI REALTIME CLOCK, SYNTHESISED FROM THE HOST PLAYHEAD.
+ *
+ * The chain does NOT pass the host's transport down to modules. It overrides
+ * get_clock_status with its own (chain_midi.c), which answers from actual
+ * MIDI realtime bytes it has received -- 0xFA start, 0xF8 tick, 0xFC stop --
+ * and reports STOPPED when none have arrived. On the device the shim
+ * broadcasts Move's cable-0 clock into every slot; in a plugin nothing does,
+ * so a clock-driven module sits silent forever with everything apparently
+ * configured correctly. breakbeat gates on it in five places; sequencers,
+ * arps and every tempo-synced effect are the same.
+ *
+ * Setting get_bpm and get_beat_position is therefore NOT enough, and that is
+ * the part that looks finished and is not: those feed the chain's own LFOs,
+ * and a module asking "is the transport running" never sees them.
+ *
+ * 24 pulses per quarter note, phase taken from the host's PPQ position so a
+ * tick lands on the beat rather than wherever playback happened to start.
+ */
+class TransportClock
+{
+public:
+    void reset() { wasPlaying = false; nextTick = 0.0; }
+
+    /** Emit the realtime bytes this block is due, in order.
+     *
+     * Takes a sink rather than the chain, so the byte sequence can be
+     * asserted directly. The phase, the loop-wrap re-phasing and the
+     * catch-up cap are the parts that are easy to get wrong and impossible
+     * to see from the audio. */
+    void advance (bool playing, double ppqStart, double ppqEnd,
+                  const std::function<void (uint8_t)>& send);
+
+private:
+    static constexpr int kPPQN = 24;
+    /* A locate can jump the playhead by minutes. Ticks are a catch-up
+     * mechanism, not a log, so a jump re-phases rather than emitting the
+     * thousands of pulses in between. */
+    static constexpr int kMaxTicksPerBlock = 96;
+
+    bool   wasPlaying = false;
+    double nextTick = 0.0;      // in ticks, absolute
+};
+
 class SchwungAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -237,6 +282,7 @@ private:
     std::array<MacroParameter*, kMacroCount> macroParams {};
 
     RateBridge bridge;
+    TransportClock clock;
 
     /* True only while setStateInformation runs. A binding made during a
      * restore resolves its range but does NOT adopt the module's current

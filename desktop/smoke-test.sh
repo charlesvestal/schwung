@@ -32,7 +32,13 @@ FLOOR=-60
 
 run_one() {
     local label="$1"; shift
-    local out; out=$("$RENDER" --modules "$MODULES" "$@" --seconds 2 -o "$TMP/o.wav" 2>&1)
+    # --play IS NOT OPTIONAL HERE. The chain answers get_clock_status from
+    # MIDI realtime bytes it has actually received, so a harness that never
+    # starts a clock reports every tempo-synced module as silent -- which
+    # reads as "the module is broken" rather than "the test never pressed
+    # play". breakbeat, sequencers, arps and every synced effect are in that
+    # class; the first sweep called them all failures.
+    local out; out=$("$RENDER" --modules "$MODULES" "$@" --play --bpm 120 --seconds 2 -o "$TMP/o.wav" 2>&1)
     local rms; rms=$(printf '%s\n' "$out" | sed -n 's/.*rms \(-*[0-9.]*\) dBFS.*/\1/p' | head -1)
 
     if [ -z "$rms" ]; then
