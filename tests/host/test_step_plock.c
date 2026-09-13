@@ -142,6 +142,39 @@ int main(void)
               rc3);
     }
 
+    /* 4b. AN UNSAVED CLIP STILL HAS A LENGTH, AND 0 IS NOT IT.
+     *
+     * Move does not write a clip to Song.abl until it has notes, so a clip
+     * made with Shift+Step 14 is selected, playable, and absent from the
+     * file. The length then came out 0 -- and 0 does not mean "zero length"
+     * here, it switches the OUTSIDE_CLIP check OFF, so a p-lock past the end
+     * of a brand-new clip was accepted unbounded at exactly the moment a user
+     * is filling one in. The strip names the bars and a new clip starts at 0,
+     * so the length is segments * quarters_per_bar.
+     *
+     * Pinned as the two OUTCOMES rather than by calling the host's private
+     * translation: with a length, the step past the end refuses. */
+    {
+        const double qpb = 4.0, res = 0.25;
+        const double strip_len = 1 * qpb;   /* one segment = one bar */
+        double ph4 = 0.0;
+
+        /* Inside that one bar: fine either way. */
+        CHECK(step_plock_phase(1, 15, qpb, res, strip_len, &ph4) == STEP_PLOCK_OK,
+              "the last step of a one-bar clip must be accepted");
+
+        /* Bar 2 step 1 is past a one-bar clip. WITH the strip length it is
+         * refused; with the old 0 it was silently accepted -- which is the
+         * whole defect, so assert both sides. */
+        CHECK(step_plock_phase(2, 0, qpb, res, strip_len, &ph4)
+                  == STEP_PLOCK_OUTSIDE_CLIP,
+              "past the end of an unsaved clip must refuse once its length is "
+              "known from the strip");
+        CHECK(step_plock_phase(2, 0, qpb, res, 0.0, &ph4) == STEP_PLOCK_OK,
+              "a length of 0 disables the bound -- if this ever refuses, the "
+              "fallback above is no longer load-bearing and can go");
+    }
+
     /* 5. NO BAR IS NOT BAR 1. The displayed bar comes off the strip, and a
      * one-bar loop draws no thickening at all, so `bold_segment` can be 0 --
      * which must refuse rather than silently mean the first bar. */
