@@ -10771,6 +10771,85 @@ function shadowDisplayHidden() {
  * module name. It is the smallest thing that can be seen from playing
  * position, and it is gone the moment the recall lands.
  */
+/*
+ * A P-LOCK LANDED: the mod-dot plus, top right, for PLOCK_MARK_MS.
+ *
+ * WHY A MARK AT ALL. The gesture is silent by nature -- a p-lock changes
+ * nothing you can hear until the loop comes round to that step -- so there was
+ * no answer to "did that work?" on any screen. Eight p-locks landed correctly
+ * on hardware and were reported as the feature being broken, which is a worse
+ * outcome than a refusal: a refusal at least names itself in
+ * `lanes:plock_reason`.
+ *
+ * WHY HERE, beside the snapshot mark, rather than in the knob grid. A module
+ * that draws its own screen from `ui_chain.js` (9W9 does) is exactly the case
+ * that could not p-lock at all until the decision moved below the UI, and
+ * anything drawn from the param-pages layer would be invisible to it for the
+ * same reason. This runs after the view switch, over whatever drew -- the
+ * module's own frame included.
+ *
+ * THE SAME PLUS THE KNOB GRID USES for a driven value (drawModDot): five
+ * fill_rects, and an even-sized mark cannot centre on a pixel. It is drawn on
+ * a cleared square because the surface underneath belongs to a module and
+ * cannot be assumed dark -- a white plus on a white cell is no mark at all.
+ *
+ * The seq is read straight from SHM (~free) rather than asking the chain
+ * `lanes:plocked` per frame (~2.8 ms, more than a whole page render).
+ */
+const PLOCK_MARK_MS = 600;
+const PLOCK_MARK_SIZE = 7;   /* the cleared square; the plus is 5 inside it */
+let plockMarkSeq = null;     /* null = never sampled, so the first read arms nothing */
+let plockMarkUntil = 0;
+
+/*
+ * Is a lane driving a parameter in the slot on screen RIGHT NOW?
+ *
+ * THE PLAYBACK HALF, and the one actually asked for: a landed p-lock is
+ * invisible until the loop reaches it, and when it does, a module drawing its
+ * own screen still shows nothing -- automation running and nothing running
+ * look identical. The knob grid has the per-key form of this already (the mod
+ * dot riding the arc, off `<key>:modulated`); this is the same fact at slot
+ * altitude, for the surfaces that cannot draw a per-knob mark.
+ *
+ * Straight out of SHM (a bit per slot, republished by the shim every ~46 ms),
+ * so it costs nothing to ask every frame.
+ */
+function lanesDrivingHere() {
+    if (typeof shadow_get_lanes_driving_mask !== "function") return false;
+    try { return ((shadow_get_lanes_driving_mask() >> selectedSlot) & 1) !== 0; }
+    catch (e) { return false; }
+}
+
+function drawPlockMark() {
+    if (typeof shadow_get_plock_seq !== "function") return;
+    let seq = 0;
+    try { seq = shadow_get_plock_seq(); } catch (e) { return; }
+    /* The FIRST sample only establishes a baseline. Without this every entry
+     * to the UI would flash a mark for the last p-lock of the previous
+     * session, which is a lie about what just happened. */
+    if (plockMarkSeq === null) { plockMarkSeq = seq; return; }
+    if (seq !== plockMarkSeq) {
+        plockMarkSeq = seq;
+        plockMarkUntil = Date.now() + PLOCK_MARK_MS;
+    }
+    /* ONE GLYPH, TWO DURATIONS, one meaning -- "automation is here". Steady
+     * while a lane drives this slot, and forced on for PLOCK_MARK_MS when a
+     * p-lock lands, which is the case where nothing is driving yet (the
+     * transport may be stopped) and the user still needs an answer. A second
+     * glyph for the second duration would be two things to learn for one
+     * fact. */
+    if (Date.now() >= plockMarkUntil && !lanesDrivingHere()) return;
+    if (shadowDisplayHidden()) return;
+    const n = PLOCK_MARK_SIZE, x = 128 - n, y = 0;
+    fill_rect(x, y, n, n, 0);
+    const cx = x + 3, cy = y + 3;
+    fill_rect(cx, cy, 1, 1, 1);
+    fill_rect(cx - 1, cy, 1, 1, 1);
+    fill_rect(cx + 1, cy, 1, 1, 1);
+    fill_rect(cx, cy - 1, 1, 1, 1);
+    fill_rect(cx, cy + 1, 1, 1, 1);
+}
+
 function drawSnapshotPendingMark() {
     if (!snapshotQueuedPending || shadowDisplayHidden()) return;
     const w = 9, h = 9, x = 128 - w, y = 0;
@@ -26807,6 +26886,10 @@ globalThis.tick = function() {
         /* ...and the armed-recall mark, after it: the toast is transient and
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
+        /* ...and the p-lock mark, which outlives neither: it is its own
+         * 600 ms and belongs on top of both, since it reports something that
+         * happened just now. */
+        drawPlockMark();
     }
 
     } catch (e) {

@@ -123,3 +123,55 @@ grep -q '"recording"' "$lanes" \
   || fail "the chain must SERVE lanes:recording -- the host has no other way to ask"
 
 echo "PASS: plock-from-write guards"
+
+# ...AND IT MUST SAY SO. The gesture is silent by nature -- a p-lock changes
+# nothing audible until the loop reaches that step -- so eight correct p-locks
+# on hardware were reported as the feature not working. The mark is the fix,
+# and what it is pinned on is that it can never claim more than happened.
+cbody=$(awk '/^static void shadow_lanes_plock_confirm/,/^}/' "$src")
+[ -n "$cbody" ] || fail "could not find shadow_lanes_plock_confirm in $src"
+echo "$cbody" | grep -q 'lanes:plocked' \
+  || fail "the mark must be confirmed by the CHAIN's own answer -- forwarding a p-lock is not the same as landing one (unknown param, full store)"
+echo "$cbody" | grep -q 'plock_seq++' || fail "shadow_lanes_plock_confirm must bump plock_seq"
+
+# All THREE paths that write `lanes:plock` confirm, or the gesture reports
+# itself on some screens and not others -- this feature's recurring shape.
+n=$(grep -c 'shadow_lanes_plock_confirm(slot)' "$src" || true)
+[ "$n" = "3" ] || fail "expected the confirm at all THREE plock write sites (write-time, SHM, direct/web), found $n"
+
+# APPENDED, never inserted: sizeof(shadow_control_t) is a contract between two
+# binaries and schwung-manager reads a raw offset out of the same struct.
+tail_field=$(awk '/^typedef struct shadow_control_t/,/^} shadow_control_t;/' src/host/shadow_constants.h \
+             | grep -E '^\s+volatile ' | tail -1)
+echo "$tail_field" | grep -qE 'plock_seq|lanes_driving_mask' \
+  || fail "the lanes fields must be APPENDED to shadow_control_t -- inserting one moves every field behind it, and sizeof is a contract between two binaries"
+
+# The first read of the counter must arm NOTHING, or every entry to the UI
+# flashes a mark for the previous session's last p-lock.
+mark=$(awk '/^function drawPlockMark/,/^}/' src/shadow/shadow_ui.js)
+[ -n "$mark" ] || fail "could not find drawPlockMark in src/shadow/shadow_ui.js"
+echo "$mark" | grep -q 'plockMarkSeq === null' \
+  || fail "drawPlockMark must take a baseline on its first sample rather than treating it as a change"
+grep -q 'drawPlockMark();' src/shadow/shadow_ui.js \
+  || fail "drawPlockMark must be CALLED -- from the overlay block after the view switch, so it lands over a module's own frame too"
+
+echo "PASS: plock landed-mark"
+
+# THE PLAYBACK HALF. A landed p-lock is invisible until the loop reaches it,
+# and when it does, a module drawing its own screen still shows nothing --
+# automation running and nothing running look identical. The knob grid has the
+# per-key form (the mod dot, off `<key>:modulated`); this is slot altitude.
+grep -q 'strcmp(sub, "driving")' "$lanes" \
+  || fail "the chain must serve lanes:driving -- the UI has no other way to know a lane is speaking"
+pub=$(awk '/^void shadow_lanes_publish_driving/,/^}/' "$src")
+[ -n "$pub" ] || fail "could not find shadow_lanes_publish_driving in $src"
+echo "$pub" | grep -q 'lanes_driving_mask = mask' \
+  || fail "the publisher must write the whole mask each pass -- a lamp that only ever ORs bits in never goes out"
+grep -q 'LANES_DRIVING_PUBLISH_FRAMES) == 0' src/schwung_shim.c \
+  || fail "the shim must publish the lamp periodically, not per frame (four chain get_params on every SPI callback)"
+echo "$mark" >/dev/null   # re-read: drawPlockMark changed above
+mark=$(awk '/^function drawPlockMark/,/^}/' src/shadow/shadow_ui.js)
+echo "$mark" | grep -q 'lanesDrivingHere()' \
+  || fail "the mark must stay lit while a lane is driving, not only flash when one lands -- the flash alone was the reported gap"
+
+echo "PASS: automation lamp"

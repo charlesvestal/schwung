@@ -819,6 +819,25 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
 
     /* Readable as well as writable: the arm comes from Move's Record LED
      * through the shim, so the UI has no other way to know it. */
+    /* HOW MANY LANES ARE DRIVING A PARAMETER RIGHT NOW.
+     *
+     * The playback half of "you cannot tell what is happening". A lane's value
+     * lands on the module through an override, so on the knob grid it shows as
+     * the mod dot riding the arc -- but a module that draws its OWN screen has
+     * no such mark, and automation running was indistinguishable from nothing
+     * running. This is the slot-altitude form of the same fact the per-key
+     * `:modulated` already answers.
+     *
+     * `driving` is the flag lane_tick sets when it emits an override and
+     * lane_release_one clears, so this needs no second notion of "active" --
+     * it counts the lanes that ARE speaking, not the ones that exist. */
+    if (strcmp(sub, "driving") == 0) {
+        int n = 0;
+        for (int i = 0; i < LANE_MAX; i++)
+            if (inst->lanes.lanes[i].used && inst->lanes.lanes[i].driving) n++;
+        return snprintf(buf, buf_len, "%d", n);
+    }
+
     /* WOULD THIS WRITE BE RECORDED? Read by the host to refuse turning a
      * recording pass into p-locks -- see lane_is_recording. It IS the
      * predicate, not a restatement of it. */
