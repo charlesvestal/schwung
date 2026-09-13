@@ -591,6 +591,16 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   condition, never a copy of it. And `no_bar` on a module's own screen was a
   STATE artifact (the strip names one track, and only that track's slot),
   measured, not a structural blocker.
+- **A STEP IS TWO GESTURES: a TAP toggles Move's note, a HOLD locks the
+  parameter** (`step_note_withhold`, `STEP_TAP_MS` 250). The press is DEFERRED,
+  not swallowed — swallowing it outright removed Move's own step editing for as
+  long as the grid was up. A tap is replayed to Move **after**
+  `shadow_midi_in_compact()`, on/off in consecutive frames; a hold is never
+  replayed, which is what makes a **lock trig** (automation on a step with no
+  note) possible. **`step_observe` is armed for a module-drawn grid as well as
+  `PARAM_PAGES`** — gating it on the host's view alone meant that on 9W9 no
+  step reached the UI and none was withheld from Move, failing silently in both
+  directions.
 - **HOLD A STEP TO SEE AND EDIT WHAT IS LOCKED ON IT.** `<key>:held` (shim
   answers; chain evaluates via `lanes:probe`) returns `"<value> <exact>"` —
   `exact` meaning a point SITS there, not that the curve passes through. The
