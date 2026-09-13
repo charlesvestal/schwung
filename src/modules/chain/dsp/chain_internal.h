@@ -855,6 +855,12 @@ typedef struct chain_instance {
      * worked until the loop comes round, which is exactly the ambiguity the
      * rest of this feature spends its instrumentation on. */
     int    lanes_last_plocked;
+    /* Points copied by the last `lanes:double`. Reported for the same reason
+     * as the others: a gesture that silently did nothing is indistinguishable
+     * from one that worked until the second half comes round. */
+    int    lanes_last_doubled;
+    /* Lanes carried onto a duplicated clip by the last `lanes:copy_clip`. */
+    int    lanes_last_copied;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];
