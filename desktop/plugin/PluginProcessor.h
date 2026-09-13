@@ -42,10 +42,25 @@ extern "C" {
  *
  * A FIXED BANK IS FORCED BY THE FORMATS. VST3 and AU want the parameter list
  * at instantiation, while Schwung's parameters are runtime-discovered string
- * keys that depend on which module is loaded. Publishing "Macro 1..N" and
- * letting the user bind each to a key is the standard answer, and it keeps a
- * saved Live set valid when the bound module changes underneath it. */
-static constexpr int kMacroCount = 8;
+ * keys that depend on which module is loaded. So the bank has to be big enough
+ * for the LARGEST module in the fleet, not for a comfortable-looking screen.
+ *
+ * MEASURED, from tests/fixtures/module-contracts.json (100 modules captured
+ * off a device):
+ *
+ *     minijv  433      surge 303      forge 250      mrdrums 231
+ *     median   19      >=64: 22       >=128: 13      >=256: 2
+ *
+ * 512 covers minijv with headroom. It is deliberately not the median: a bank
+ * sized for the typical module silently truncates the big ones, and the
+ * parameters that go missing are the ones at the end of the list, which is
+ * exactly where a module puts its least-used and therefore least-noticed
+ * controls. Most instances bind a couple of dozen of these and leave the rest
+ * idle -- an unbound macro costs one float compare per block and nothing else.
+ *
+ * This does NOT cover a chain whose synth is minijv AND whose eight FX are all
+ * large. Nothing fixed can; the formats do not allow a list that grows. */
+static constexpr int kMacroCount = 512;
 
 /* A macro's binding: the chain key it writes, plus the range read from that
  * module's own chain_params.
@@ -57,10 +72,42 @@ static constexpr int kMacroCount = 8;
 struct MacroBinding
 {
     juce::String key;         // e.g. "synth:timbre"; empty means unbound
+    juce::String label;       // the module's own name for it, e.g. "Timbre"
     float        min = 0.0f;
     float        max = 1.0f;
     bool         resolved = false;
+    bool         userSet = false;   // typed by hand; auto-bind must not clobber it
     juce::String status;      // why it is not resolved, for the editor to show
+};
+
+/*
+ * A macro whose NAME follows whatever it is bound to.
+ *
+ * The formats fix the parameter LIST at instantiation, but not every parameter
+ * ATTRIBUTE: getName() is virtual, and both VST3 and AU can be told the titles
+ * changed. So the bank stays eight slots for the host's whole life while
+ * "Macro 1" reads as "Timbre" in Live's automation list once a module is
+ * loaded. Without this the eight lanes are indistinguishable in the one place
+ * you actually pick them.
+ */
+class MacroParameter : public juce::AudioParameterFloat
+{
+public:
+    MacroParameter (const juce::String& pid, const juce::String& fallback)
+        : juce::AudioParameterFloat (juce::ParameterID { pid, 1 }, fallback,
+                                     juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f),
+          fallbackName (fallback) {}
+
+    juce::String getName (int maxLen) const override
+    {
+        const auto n = displayName.isNotEmpty() ? displayName : fallbackName;
+        return n.substring (0, maxLen);
+    }
+
+    void setDisplayName (const juce::String& n) { displayName = n; }
+
+private:
+    juce::String fallbackName, displayName;
 };
 
 /* 44100 Hz -> the host's rate, and 128-frame blocks -> the host's block size.
@@ -143,6 +190,7 @@ public:
 
     const MacroBinding& getBinding (int i) const { return bindings[(size_t) i]; }
     void setBinding (int i, const juce::String& key);
+    void setBinding (int i, const juce::String& key, bool byUser);
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -151,7 +199,7 @@ private:
     void scanModules();
     void bringUpChain();
     bool resolveRange (const juce::String& key, float& lo, float& hi, juce::String& why);
-    void pushMacroWrite (int index, float normalised);
+    void autoBindMacros();
 
     juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
 
@@ -161,7 +209,7 @@ private:
 
     std::array<MacroBinding, kMacroCount> bindings;
     std::array<std::atomic<float>, kMacroCount> lastSent {};
-    std::array<juce::RangedAudioParameter*, kMacroCount> macroParams {};
+    std::array<MacroParameter*, kMacroCount> macroParams {};
 
     RateBridge bridge;
 
