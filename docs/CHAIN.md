@@ -841,6 +841,23 @@ pieces of it exist and are tested; the input plumbing is not written.
   **Verified on hardware** by counting notes in `Song.abl`: a 1.5 s hold left
   the clip at 25 notes, a 90 ms tap took it to 24, and another tap restored it.
 
+- **THE WHOLE GESTURE IS VERIFIED IN PIXELS, ON BOTH KINDS OF GRID**, by
+  locking every parameter of a module at one step through the test bus,
+  holding that step, and diffing the OLED (`/dev/shm/schwung-display-live`):
+
+  | module | grid | bytes changed while held |
+  |---|---|---|
+  | hank (no `ui_chain.js`) | the HOST's `PARAM_PAGES` | 564 |
+  | 9W9 (`createController` from its own `ui_chain.js`) | its own | 278 |
+
+  In both the dials jump to the locked value and the label bands become
+  inverted strips carrying it. Both had to be checked: the host grid and a
+  module-drawn one differ in exactly the layer that has now hidden four
+  separate facilities from module-drawn grids.
+
+  **Locking 40 keys hit the store**: 31 landed and the rest were refused
+  `store_full` against `LANE_MAX` 32, which is the cap doing its job.
+
 - **`step_observe` HAD TO BE ARMED FOR A MODULE-DRAWN GRID TOO, and this is the
   fourth instance of one blind spot.** It asked `view === VIEWS.PARAM_PAGES`
   alone, so on 9W9 — which draws its grid in `COMPONENT_EDIT` from its own
