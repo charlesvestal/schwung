@@ -693,6 +693,20 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   the hook wraps `setParam` rather than sitting on one of six call sites).
   Verified on hardware, driven entirely by injection. The forward is PASSIVE,
   so a p-lock also toggles a note until the swallow lands.
+- **CLEARING HAS FOUR GRAINS and undo is a SWAP.** `lanes:clear` was the only
+  one and empties the whole SLOT — every clip, every parameter. Beside it now:
+  `clear_clip` (the bound clip), `clear_param` (one knob on it), and
+  `clear_target` (one component, which is what the module's own page offers,
+  because that is where the knobs you automated are). `lanes:undo` is one
+  level and SWAPS its buffer, so the same verb is redo — the right shape when
+  the mistake is HEARD rather than seen. **The store cannot clear anything by
+  itself**: a driving lane holds a modulation override, and dropping it
+  without releasing leaves the parameter pinned where automation last wrote
+  it. On the grid this is its own **Automation** section (the words matter:
+  "Clear Clip Automation" truncates to "Clear Clip...", which beside Move's
+  own clip deletion reads as *delete this clip*), each row naming its clip as
+  `C1` — never `T3C1`, since `lane_track` IS the slot index. **Undo is slot
+  level only**, one buffer per slot.
 - **A clip Move has not saved yet can be recorded onto, and the two missing
   facts arrive separately.** The length comes from the step editor's strip NOW
   (bar resolution, origin assumed 0); the identity and true origin come from
