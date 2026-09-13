@@ -715,6 +715,8 @@ export function createController(io = {}) {
         heldDecOwned: false,
         /* One refusal read per held-step gesture, not per detent. */
         stepRefusalChecked: false,
+        /* Which step a pending write was made under, by key -- see sendPending. */
+        pendingStep: Object.create(null),
         /* Delete held while a step is: armed, and whether a knob was picked. */
         stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
@@ -1495,11 +1497,26 @@ export function createController(io = {}) {
      * Nothing else would ever write it out. Cheap when there is nothing
      * pending — the common case — since it is only object-key iteration.
      */
+    /* A write made under a held step goes out as a P-LOCK on THAT step,
+     * whenever it finally goes and whatever the shim currently thinks is held.
+     * See the stamp in the turn handler. */
+    function sendPending(key) {
+        const step = s.pendingStep[key];
+        if (step === undefined) { setParam(fullKey(key), s.pendingWrite[key]); return; }
+        delete s.pendingStep[key];
+        const fk = fullKey(key);
+        const colon = fk.indexOf(":");
+        if (colon <= 0) { setParam(fk, s.pendingWrite[key]); return; }
+        setParam("lanes:plock_step",
+                 fk.substring(0, colon) + " " + fk.substring(colon + 1) +
+                 " " + step + " " + s.pendingWrite[key]);
+    }
+
     function flushDueWrites() {
         const t = now();
         for (const key in s.pendingWrite) {
             if (t - (s.lastWriteMs[key] || 0) < SETPARAM_THROTTLE_MS) continue;
-            setParam(fullKey(key), s.pendingWrite[key]);
+            sendPending(key);
                 replanIfCondition(key);
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
@@ -1510,7 +1527,7 @@ export function createController(io = {}) {
      * swap, visible_if re-plan) must never silently drop one. */
     function flushDueWritesUnconditionally() {
         for (const key in s.pendingWrite) {
-            setParam(fullKey(key), s.pendingWrite[key]);
+            sendPending(key);
                 replanIfCondition(key);
         }
     }
@@ -3411,6 +3428,23 @@ export function createController(io = {}) {
      */
     function cacheWritten(key, wire) {
         if (s.heldStep >= 0) {
+            /* THE WRITE CARRIES THE STEP IT WAS MADE UNDER.
+             *
+             * The p-lock decision used to be the shim's, read from whatever
+             * step was held when the write ARRIVED -- and a knob write is
+             * DEBOUNCED, so a write made under a step could land after the
+             * finger left it and be taken for an ordinary track edit.
+             * Converting on release only moved the race: tick() calls
+             * flushDueWrites() ~90 lines BEFORE syncHeldStep(), so whichever
+             * ran first that tick decided, and the leak went from "gaps 0-5"
+             * to intermittent -- 13 of 30 trials, scattered across gaps 0-15.
+             *
+             * Provenance instead of ordering: the stamp travels WITH the
+             * write, so no sequence of flush and sync can misattribute it, and
+             * flushDueWritesUnconditionally (a module swap, a visible_if
+             * re-plan) is covered by the same fact rather than needing its own
+             * copy of the rule. */
+            s.pendingStep[key] = s.heldStep;
             s.heldValues[key] = { value: wire, exact: true };
             const p = page();
             if (p) applyHeldDecorations(p);
@@ -4332,6 +4366,18 @@ export function createController(io = {}) {
     }
 
     function onEditCc(cc, down) {
+        /* UNDO IS NOT HANDLED HERE, and the attempt is worth recording.
+         *
+         * Routing CC 56 to `lanes:undo` while a step is held looked right --
+         * the real automation undo is several screens away in Slot Settings --
+         * and the handler never ran: with a step held, Copy and Delete reach
+         * this function (235 and 176 bytes drawn on the panel) and Undo
+         * arrives nowhere, while Move does not get it either once the shim
+         * claims it. Rather than ship a button that does nothing, the shim no
+         * longer claims 56 and Undo is Move's again. Re-adding this branch
+         * without first explaining why 56 is forwarded differently from 60 and
+         * 119 will reproduce the dead button.
+         */
         if (cc === 56) {
             if (!down) return true;
             const u = s.editUndo;
@@ -4343,24 +4389,6 @@ export function createController(io = {}) {
             announce("undone");
             return true;
         }
-        /* DELETE WHILE A STEP IS HELD is the step's automation, not the
-         * instance gesture. Checked before `instanceLevel()` because a module
-         * with no child levels would otherwise return false here and hand
-         * Delete back to Move, which deletes the CLIP. */
-        /* UNDO, while a step is held, is the automation's undo -- not Move's.
-         * Unclaimed it reached Move and undid a NOTE edit, which is both
-         * surprising and destructive-adjacent; and the real undo lives several
-         * screens away in Slot Settings, which nobody finds mid-gesture. */
-        if (cc === 56 && down && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
-            setParam("lanes:undo", "1");
-            for (const k in s.heldValues) delete s.heldValues[k];
-            const p0 = page();
-            if (p0) { for (const k of p0.keys) if (k) delete s.values[k]; applyHeldDecorations(p0); }
-            notice("AUTOMATION UNDONE");
-            announce("automation undone");
-            return true;
-        }
-        if (cc === 56 && !down && (s.heldStep >= 0 || liveHeldStep() >= 0)) return true;
         /* COPY is CLAIMED and inert. Elektron copies a trig's locks with the
          * trig and we have no such verb yet -- but leaving the button
          * unclaimed is not neutral: it reaches Move, which DUPLICATES THE

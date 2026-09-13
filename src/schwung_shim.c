@@ -8325,6 +8325,23 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * or the ones left behind keep doing whatever
                                  * MOVE does with them.
                                  *
+                                 * UNDO (56) IS DELIBERATELY NOT IN THIS LIST,
+                                 * and that is a measured retreat rather than
+                                 * an oversight. Claimed, it was swallowed from
+                                 * Move and then delivered to NOBODY -- a dead
+                                 * button. Measured with a step held: Copy drew
+                                 * 235 bytes on the panel and Delete 176, while
+                                 * Undo changed ZERO, and a note toggled on
+                                 * immediately before stayed toggled, so Move
+                                 * never saw it either. Copy and Delete are
+                                 * claimed because unclaimed they DUPLICATE and
+                                 * DELETE clips; Undo unclaimed merely does
+                                 * Move's own undo, which is surprising but not
+                                 * destructive. A known gap beats a dead
+                                 * button. The automation undo lives in Slot
+                                 * Settings until the forwarding difference is
+                                 * understood.
+                                 *
                                  * That is the clear-this-step gesture (hold a
                                  * step, Delete, pick a knob), and it is host
                                  * vocabulary rather than a module's -- neither
@@ -8347,7 +8364,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * excludes it for a module, so Shift+Delete is
                                  * still the host's snapshot recall. */
                                 const int step_owns_edit_cc =
-                                    (d1 == 56 || d1 == 60 || d1 == 119) &&
+                                    (d1 == 60 || d1 == 119) &&
                                     shadow_steps_held_mask != 0 &&
                                     shadow_control && shadow_control->step_observe;
                                 /* Shift+<button> is the host's own vocabulary
