@@ -1,0 +1,107 @@
+{
+  "_comment": [
+    "Which score a module gets, keyed on its taxonomy SUBCATEGORY.",
+    "A module may override any of this with a preview.json in its own repo.",
+    "",
+    "`audio: null` means NO AUDIO PREVIEW, deliberately -- streaming, live-input,",
+    "assistant and tuner modules have nothing deterministic to render, and a",
+    "synthesised clip for them would be a fabrication rather than a preview.",
+    "",
+    "`score: demo_score` is scores/demo_score.mjs: arp, chords, melody, each",
+    "section ending in a rest. EVERY MODULE PLAYS IT AT THE SAME TEMPO -- that is",
+    "the point of a shared score, and an earlier attempt to spread the phrase to",
+    "suit each preset's release made every preset play at a different speed, which",
+    "made nothing comparable to anything. The space is written into the score",
+    "instead: 34% of it is silence and the longest rest is 3.0 s, which is longer",
+    "than the longest release measured across the fleet.",
+    "",
+    "`_by_tag` overrides the subcategory rule for a module carrying that tag."
+  ],
+  "default": {
+    "seconds": 27,
+    "tail": 3,
+    "presets": 4,
+    "octave_fit": true,
+    "adaptive_density": false,
+    "score": "demo_score"
+  },
+  "sound_generator": {
+    "polysynth": {},
+    "mono-bass": {
+      "presets": 3,
+      "transpose": -12,
+      "_why": "A bass patch previewed in the treble is a preview of the wrong instrument. The octave fit puts note 60 where note 60 belongs; this then moves the PHRASE down an octave, which is a musical decision the fit cannot make."
+    },
+    "west-coast": {
+      "presets": 3
+    },
+    "fm": {},
+    "wavetable": {},
+    "macro-hybrid": {},
+    "physical-modeling": {},
+    "chiptune-retro": {},
+    "sampler-rompler": {},
+    "granular": {},
+    "drum-machine": {
+      "octave_fit": false,
+      "presets": 3,
+      "_why": "A drum machine is played on its own voices, not on a melodic line; the score is built from the module's declared voices at render time.",
+      "score": null
+    },
+    "streaming-live-input": {
+      "audio": null,
+      "_why": "no deterministic source"
+    }
+  },
+  "audio_fx": {
+    "_all": {
+      "source": "wurl",
+      "wet": 0.5,
+      "presets": 1,
+      "_why": "An FX is previewed on a real instrument playing the same phrase every other module plays, so effects are comparable with each other and with the synths. The source is chosen by MEASUREMENT, not taste: wurl renders C4 at 262.5 Hz with tight pitch and a +27.2 dB attack. The previous source (obxd, default preset) rendered at 525 Hz -- an octave high -- with a +11.7 dB attack and a detuned unison that smears whatever the effect does. A slow-attack pad is worse still: hera's Strings 1 is in tune and has -3.5 dB of attack, so a reverb has nothing to excite it. Dry/wet goes to 50% OF THE RANGE THE MODULE DECLARES."
+    },
+    "filter-eq": {
+      "sweep": "always",
+      "_why": "A filter or an EQ held still is a preview of nothing -- spectral shaping IS the module. The best candidate is swept even when it does not clear the usual threshold: a four-band console EQ moves the spectrum far less than a resonant filter does, and would otherwise get a static clip of an effect doing almost nothing."
+    }
+  },
+  "midi_fx": {
+    "_all": {
+      "source": "wurl",
+      "presets": 1,
+      "_why": "Driven into ONE reference instrument, the same one the audio FX use, so a preview that changes means the MIDI FX changed."
+    }
+  },
+  "tool": {
+    "sequencer": {
+      "source": "wurl",
+      "presets": 1
+    },
+    "sampling-editing": {
+      "audio": null
+    },
+    "tuner-analysis": {
+      "audio": null,
+      "_why": "nothing to render without an input"
+    },
+    "assistant": {
+      "audio": null,
+      "_why": "needs an API key and a person"
+    },
+    "performance": {
+      "audio": null
+    }
+  },
+  "overtake": {
+    "_all": {
+      "audio": null,
+      "_why": "An overtake module owns the whole surface and is not fed MIDI from a slot; there is no score that means anything."
+    }
+  },
+  "_by_tag": {
+    "bass": {
+      "transpose": -12,
+      "_why": "Applies to a bass patch that is NOT in the Mono & Bass subcategory -- tb3po is a tool, and a bass preset can live inside a polysynth. A tag rule overrides the subcategory's, and stacks with nothing: transpose is set, not accumulated."
+    }
+  }
+}
