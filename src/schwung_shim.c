@@ -6063,6 +6063,69 @@ static uint64_t spi_last_frame_total_us = 0;
  * Contains all domain logic that was previously in the ioctl() pre-ioctl section:
  * MIDI monitoring, audio mixing, display compositing, LED injection, etc.
  * ============================================================================ */
+/* TEST BUS: deliver injected packets AS IF THE HARDWARE SENT THEM.
+ *
+ * Dormant unless shadow_control->inject_as_hardware is set (see its comment).
+ * The ordinary drain writes only the shadow mailbox, so an injected press
+ * drives Move and is invisible to Schwung's own scans -- which read the
+ * hardware one. Writing both puts the packet exactly where the library's
+ * hw->shadow copy just left the real ones: every filter, claim and swallow
+ * site downstream then treats it identically to a finger.
+ *
+ * IT RUNS IN BOTH HALVES OF THE FRAME, and that is not redundancy.
+ * `shadow_forward_midi()` -- the shadow UI's ONLY feed -- runs in
+ * shim_pre_transfer, *before* the ioctl, because the hardware clears the
+ * mailbox during the transaction. A packet delivered only in post_transfer
+ * therefore reached every shim-side decoder and NO UI: measured, injected jog
+ * turns and clicks moved nothing on screen while injected step notes updated
+ * `held_step` in the same run, which reads as "the UI ignores injected input"
+ * and is really "the UI was fed an hour earlier in the frame".
+ *
+ * So the PRE half PEEKS (`pop` = 0) into the shadow mailbox, which is what the
+ * UI forward reads, and the POST half POPS into both, which is what the shim's
+ * own scans read. One packet, both consumers, same frame -- and the pre-write
+ * is wiped by the hw->shadow copy before Move can see it twice.
+ *
+ * A zeroed MIDI_IN slot is a TERMINATOR, so a packet goes in the FIRST empty
+ * slot and nothing behind it moves. Bounded to four packets a frame and to
+ * SHADOW_MIDI_IN_BYTES; no allocation, no logging. */
+static void shim_inject_as_hardware(uint8_t *shadow, uint8_t *hw, int pop)
+{
+    if (!shadow_midi_inject_shm || !shadow) return;
+    uint8_t *shm_ = shadow + MIDI_IN_OFFSET;
+    uint8_t *hwm = hw ? hw + MIDI_IN_OFFSET : NULL;
+    for (int n = 0; n < 4; n++) {
+        uint8_t pkt[4];
+        /* The popping pass always takes the head (each pop advances it); the
+         * peeking pass walks forward instead, or it would deliver the same
+         * packet four times. */
+        if (!shadow_midi_inject_peek_at(shadow_midi_inject_shm, pkt, pop ? 0 : n))
+            break;
+        int off_sh = -1, off_hw = -1;
+        for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
+            if (shm_[j] == 0 && shm_[j+1] == 0 && shm_[j+2] == 0 && shm_[j+3] == 0) {
+                off_sh = j; break;
+            }
+        if (hwm) {
+            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
+                if (hwm[j] == 0 && hwm[j+1] == 0 && hwm[j+2] == 0 && hwm[j+3] == 0) {
+                    off_hw = j; break;
+                }
+        }
+        /* Both buffers must have room, or the packet stays queued rather than
+         * landing in one and not the other -- half-delivered is a state no
+         * real press can produce. */
+        if (off_sh < 0 || (hwm && off_hw < 0)) break;
+        if (pop) shadow_midi_inject_pop(shadow_midi_inject_shm);
+        memcpy(shm_ + off_sh, pkt, 4);
+        memset(shm_ + off_sh + 4, 0, 4);      /* the timestamp half */
+        if (hwm) {
+            memcpy(hwm + off_hw, pkt, 4);
+            memset(hwm + off_hw + 4, 0, 4);
+        }
+    }
+}
+
 static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
 {
     (void)ctx;
@@ -6457,6 +6520,13 @@ static void shim_pre_transfer(void *ctx, uint8_t *shadow, int size)
     /* NOTE: MIDI filtering moved to AFTER ioctl - see post-ioctl section below */
 
     /* === SHADOW INSTRUMENT: PRE-IOCTL PROCESSING === */
+
+    /* TEST BUS, the PEEK half: the UI's feed is this forward, and it runs
+     * before the ioctl, so a packet delivered only in post_transfer is
+     * invisible to every screen. See shim_inject_as_hardware(). */
+    if (shadow_control && shadow_control->inject_as_hardware) {
+        shim_inject_as_hardware(shadow, hardware_mmap_addr, 0);
+    }
 
     /* Forward MIDI BEFORE ioctl - hardware clears the buffer during transaction */
     TIME_SECTION_START();
@@ -7620,43 +7690,12 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
 
     /* TEST BUS: deliver injected packets AS IF THE HARDWARE SENT THEM.
      *
-     * Dormant unless shadow_control->inject_as_hardware is set (see its
-     * comment). The ordinary drain writes only the shadow mailbox, so an
-     * injected press drives Move and is invisible to Schwung's own scans --
-     * which reads the hardware one. Writing both here, at the top of
-     * post_transfer, puts the packet exactly where the library's hw->shadow
-     * copy just left the real ones: every filter, claim and swallow site
-     * downstream then treats it identically to a finger.
-     *
-     * A zeroed MIDI_IN slot is a TERMINATOR, so a packet goes in the FIRST
-     * empty slot and nothing behind it moves. Bounded to four packets a frame
-     * and to SHADOW_MIDI_IN_BYTES; no allocation, no logging. */
-    if (shadow_control && shadow_control->inject_as_hardware &&
-        shadow_midi_inject_shm && hw) {
-        uint8_t *hwm = (uint8_t *)hw + MIDI_IN_OFFSET;
-        uint8_t *shm_ = shadow + MIDI_IN_OFFSET;
-        for (int n = 0; n < 4; n++) {
-            uint8_t pkt[4];
-            if (!shadow_midi_inject_peek(shadow_midi_inject_shm, pkt)) break;
-            /* Both buffers must have room, or the packet stays queued rather
-             * than landing in one and not the other -- half-delivered is a
-             * state no real press can produce. */
-            int off_hw = -1, off_sh = -1;
-            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
-                if (hwm[j] == 0 && hwm[j+1] == 0 && hwm[j+2] == 0 && hwm[j+3] == 0) {
-                    off_hw = j; break;
-                }
-            for (int j = 0; j < SHADOW_MIDI_IN_BYTES; j += 8)
-                if (shm_[j] == 0 && shm_[j+1] == 0 && shm_[j+2] == 0 && shm_[j+3] == 0) {
-                    off_sh = j; break;
-                }
-            if (off_hw < 0 || off_sh < 0) break;
-            shadow_midi_inject_pop(shadow_midi_inject_shm);
-            memcpy(hwm + off_hw, pkt, 4);
-            memset(hwm + off_hw + 4, 0, 4);      /* the timestamp half */
-            memcpy(shm_ + off_sh, pkt, 4);
-            memset(shm_ + off_sh + 4, 0, 4);
-        }
+     * See shim_inject_as_hardware(). This half POPS, and is what every
+     * post-ioctl consumer sees -- the gesture decoders, midi_monitor, the
+     * held-step tracker. The UI's own feed is served by the peek in
+     * shim_pre_transfer. */
+    if (shadow_control && shadow_control->inject_as_hardware && hw) {
+        shim_inject_as_hardware(shadow, (uint8_t *)hw, 1);
     }
 
     /*
