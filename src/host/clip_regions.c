@@ -59,6 +59,7 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
     if (!json || !out) return 0;
     memset(out, 0, sizeof(*out));
     out->step_resolution = 0.25;   /* 1/16, Move's default */
+    out->step_grid_triplet = 0;
     /* ABSENT, not note 0. Written before the scan so a slot the scan never
      * reaches -- an empty slot, or a document that stops early -- reports the
      * unknown rather than the lowest real note number. */
@@ -149,8 +150,11 @@ int clip_regions_parse(const char *json, size_t len, clip_regions_t *out)
                         double quarters = 4.0 * (double)num / (double)den;
                         if (suffix == 't' || suffix == 'T')
                             quarters *= 2.0 / 3.0;     /* three in the space of two */
-                        if (suffix == '\0' || suffix == 't' || suffix == 'T')
+                        if (suffix == '\0' || suffix == 't' || suffix == 'T') {
                             out->step_resolution = quarters;
+                            out->step_grid_triplet =
+                                (suffix == 't' || suffix == 'T') ? 1 : 0;
+                        }
                     }
                 }
             } else if (d_tracks != D_UNSET && depth == d_tracks &&

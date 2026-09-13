@@ -141,9 +141,33 @@ static inline int step_plock_phase(int bar_1based, int step_index,
  * A negative scroll is refused rather than clamped: it is not a page, and
  * clamping it to 0 would place a p-lock on the first bar of a clip the user
  * is not looking at. */
+/* ON A TRIPLET GRID, A QUARTER OF THE BUTTONS ARE NOT STEPS.
+ *
+ * Move lays triplets out three to a group and DEACTIVATES every fourth
+ * button, so a page carries 12 steps across 16 buttons. Measured 2026-09-13:
+ * one right-arrow at 1/16t moved the scroll 0 -> 2.0, which is 12 steps of
+ * 1/6 quarter exactly, and Move 2.1.0's notes say the same ("24 steps across
+ * two pages, with every fourth step deactivated").
+ *
+ * So the button index is NOT the step index, and treating it as one puts
+ * every value from the fourth button onward progressively early -- button 4
+ * is step 3, button 8 is step 6. Returns -1 for a button that is not a step.
+ *
+ * The triplet-ness has to be carried separately from the resolution because
+ * the duration cannot reveal it: 1/16t is 1/6 of a quarter, and so would a
+ * straight 1/24 be. */
+static inline int step_plock_button_to_step(int button, int triplet)
+{
+    if (button < 0 || button >= STEP_STRIP_STEPS_PER_PAGE) return -1;
+    if (!triplet) return button;
+    if ((button % 4) == 3) return -1;      /* the deactivated one */
+    return button - (button / 4);
+}
+
 static inline int step_plock_phase_from_scroll(double scroll_beats,
                                                int step_index,
                                                double step_resolution,
+                                               int triplet_grid,
                                                double clip_len_quarters,
                                                double *out_phase)
 {
@@ -152,10 +176,12 @@ static inline int step_plock_phase_from_scroll(double scroll_beats,
         return STEP_PLOCK_NO_GRID;
     if (!isfinite(scroll_beats) || scroll_beats < 0.0)
         return STEP_PLOCK_NO_BAR;
-    if (step_index < 0 || step_index >= STEP_STRIP_STEPS_PER_PAGE)
+    const int step_in_page = step_plock_button_to_step(step_index,
+                                                       triplet_grid);
+    if (step_in_page < 0)
         return STEP_PLOCK_BAD_INDEX;
 
-    const double phase = scroll_beats + (double)step_index * step_resolution;
+    const double phase = scroll_beats + (double)step_in_page * step_resolution;
     if (!isfinite(phase) || phase < 0.0) return STEP_PLOCK_NO_GRID;
     /* Past the end is refused for the same reason as the bar form: Move lets
      * you page onto the "+" beyond a clip, and a scroll sitting exactly at the

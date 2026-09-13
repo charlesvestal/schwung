@@ -85,6 +85,14 @@ typedef struct {
      * as well as parsed because an unrecognised form must be visible rather
      * than silently turned into a number -- see step_resolution. */
     char   step_res_raw[12];
+    /* Is the grid a TRIPLET one ("1/16t")? Not derivable from
+     * `step_resolution` -- 1/16t and a hypothetical 1/24 have the same
+     * duration -- and it changes which BUTTONS are steps at all: Move lays a
+     * triplet grid out three-to-a-group and DEACTIVATES every fourth button,
+     * so a page is 12 steps rather than 16. Measured 2026-09-13: one
+     * right-arrow at 1/16t moved the scroll 0 -> 2.0, which is exactly 12
+     * steps of 1/6 quarter. */
+    int    step_grid_triplet;
     /* The SONG's time signature, 0/0 if absent. Load-bearing for a clip Move
      * has not saved yet: the clip is not in the file, but the song is. */
     int    sig_upper;

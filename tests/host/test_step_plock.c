@@ -186,17 +186,17 @@ int main(void)
     {
         double ph5 = 0.0;
         /* 11/8, 1/16, page 1 of the bar: button 3 is the fourth sixteenth. */
-        CHECK(step_plock_phase_from_scroll(0.0, 3, 0.25, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(0.0, 3, 0.25, 0, 5.5, &ph5)
                   == STEP_PLOCK_OK && fabs(ph5 - 0.75) < 1e-12,
               "scroll 0 button 3 must be 0.75: ph=%f", ph5);
 
         /* Page 2 of that same bar begins at step 16 = quarter 4.0. Button 0
          * there is the seventeenth sixteenth -- the step the bar form cannot
          * express at all. */
-        CHECK(step_plock_phase_from_scroll(4.0, 0, 0.25, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(4.0, 0, 0.25, 0, 5.5, &ph5)
                   == STEP_PLOCK_OK && fabs(ph5 - 4.0) < 1e-12,
               "scroll 4.0 button 0 must be 4.0: ph=%f", ph5);
-        CHECK(step_plock_phase_from_scroll(4.0, 5, 0.25, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(4.0, 5, 0.25, 0, 5.5, &ph5)
                   == STEP_PLOCK_OK && fabs(ph5 - 5.25) < 1e-12,
               "the last real step of a 22-step bar must be reachable: ph=%f",
               ph5);
@@ -207,17 +207,67 @@ int main(void)
               "the bar form must still refuse a 22-step bar");
 
         /* The "+" past the end of the clip is a bar that does not exist. */
-        CHECK(step_plock_phase_from_scroll(5.5, 0, 0.25, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(5.5, 0, 0.25, 0, 5.5, &ph5)
                   == STEP_PLOCK_OUTSIDE_CLIP,
               "a scroll sitting at the loop end is the add-a-bar slot");
 
         /* Refusals, not clamps. */
-        CHECK(step_plock_phase_from_scroll(-1.0, 0, 0.25, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(-1.0, 0, 0.25, 0, 5.5, &ph5)
                   == STEP_PLOCK_NO_BAR, "a negative scroll must refuse");
-        CHECK(step_plock_phase_from_scroll(0.0, 16, 0.25, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(0.0, 16, 0.25, 0, 5.5, &ph5)
                   == STEP_PLOCK_BAD_INDEX, "there is no button 16");
-        CHECK(step_plock_phase_from_scroll(0.0, 0, 0.0, 5.5, &ph5)
+        CHECK(step_plock_phase_from_scroll(0.0, 0, 0.0, 0, 5.5, &ph5)
                   == STEP_PLOCK_NO_GRID, "a zero grid must refuse");
+    }
+
+    /* 4d. A TRIPLET GRID DEACTIVATES EVERY FOURTH BUTTON.
+     *
+     * Move lays triplets three to a group, so 16 buttons carry 12 steps and a
+     * page is 12 * res, not 16 * res. MEASURED, not read off the manual
+     * alone: at 1/16t one right-arrow moved the scroll 0 -> 2.0, and
+     * 2.0 / (1/6) = 12 exactly.
+     *
+     * Without this the button index is used as the step index and every value
+     * from the fourth button on lands progressively EARLY -- button 4 written
+     * at step 4 when it is step 3. It is silent, and it gets worse across the
+     * page, which is the signature of a mapping error rather than a latency. */
+    {
+        const double t16 = 1.0 / 6.0;      /* 1/16t in quarters */
+        double ph6 = 0.0;
+
+        CHECK(step_plock_button_to_step(0, 1) == 0 &&
+              step_plock_button_to_step(1, 1) == 1 &&
+              step_plock_button_to_step(2, 1) == 2,
+              "the first three buttons of a triplet group are steps 0..2");
+        CHECK(step_plock_button_to_step(3, 1) == -1 &&
+              step_plock_button_to_step(7, 1) == -1 &&
+              step_plock_button_to_step(15, 1) == -1,
+              "every fourth button is not a step");
+        CHECK(step_plock_button_to_step(4, 1) == 3 &&
+              step_plock_button_to_step(8, 1) == 6 &&
+              step_plock_button_to_step(14, 1) == 11,
+              "button 14 is the twelfth step: got %d",
+              step_plock_button_to_step(14, 1));
+        /* 12 steps to a page is what the scroll measurement pins. */
+        CHECK(fabs(12 * t16 - 2.0) < 1e-12,
+              "12 triplet steps must be the 2.0 quarters Move scrolled by");
+
+        /* A straight grid is unaffected -- every button is a step. */
+        CHECK(step_plock_button_to_step(3, 0) == 3 &&
+              step_plock_button_to_step(15, 0) == 15,
+              "a straight grid must not lose buttons");
+
+        CHECK(step_plock_phase_from_scroll(2.0, 4, t16, 1, 8.0, &ph6)
+                  == STEP_PLOCK_OK && fabs(ph6 - (2.0 + 3 * t16)) < 1e-12,
+              "triplet button 4 on page 2 is step 3 of that page: ph=%f", ph6);
+        CHECK(step_plock_phase_from_scroll(2.0, 3, t16, 1, 8.0, &ph6)
+                  == STEP_PLOCK_BAD_INDEX,
+              "a deactivated button must refuse, not land on a neighbour");
+        /* The same button on a STRAIGHT grid is a step, so the flag is doing
+         * the work and not some other guard. */
+        CHECK(step_plock_phase_from_scroll(2.0, 3, 0.25, 0, 8.0, &ph6)
+                  == STEP_PLOCK_OK,
+              "button 3 on a straight grid is a perfectly good step");
     }
 
     /* 5. NO BAR IS NOT BAR 1. The displayed bar comes off the strip, and a
