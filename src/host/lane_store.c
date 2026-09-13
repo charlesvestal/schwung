@@ -57,7 +57,40 @@ lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
         if (fp) ln->fp = *fp;
         return ln;
     }
-    return 0;   /* full: the caller reports it, never silently discards */
+
+    /* FULL -- SO TAKE AN ORPHAN'S SLOT BEFORE REFUSING.
+     *
+     * An orphaned lane belongs to a clip that has been DELETED. It is kept on
+     * purpose: deleting a clip is undoable, and the lane coming back with it
+     * is the whole reason orphaning is a flag rather than a free(). But it is
+     * kept INVISIBLY, and it goes on occupying one of LANE_MAX -- so a user
+     * who deletes clips for a while arrives at a slot that silently refuses
+     * new automation, with nothing on screen to say why or what to clear.
+     * Refusing because of clips that no longer exist is the worse failure.
+     *
+     * NEVER EVICT ONE THAT IS STILL DRIVING. Orphaning does not release the
+     * modulation override (chain_set_clip_deleted only sets the flag), and
+     * this function is pure -- it cannot hand an override back. Dropping a
+     * driving lane would pin its parameter wherever the automation last wrote
+     * it with nothing left to move it, which is the same hazard that keeps
+     * the clear verbs in the chain rather than here.
+     *
+     * Oldest-first is not worth the field: any orphan is a clip the user
+     * deleted, so the first one found is as good a victim as the best one. */
+    for (int i = 0; i < LANE_MAX; i++) {
+        ln = &st->lanes[i];
+        if (!ln->used || !ln->orphaned || ln->driving) continue;
+        memset(ln, 0, sizeof(*ln));
+        ln->used = 1;
+        snprintf(ln->target, sizeof(ln->target), "%s", target);
+        snprintf(ln->param, sizeof(ln->param), "%s", param);
+        ln->track = track;
+        ln->slot = slot;
+        if (fp) ln->fp = *fp;
+        ln->evicted_orphan = 1;
+        return ln;
+    }
+    return 0;   /* full of LIVE lanes: the caller reports it, never silently discards */
 }
 
 static int lane_nearest(const lane_t *ln, double phase) {

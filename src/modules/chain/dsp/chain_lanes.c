@@ -514,7 +514,20 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      * a clip POSITION to key the lane to, and a parameter the module
      * declares. */
     if (strcmp(sub, "plock") == 0) {
+        /* EVERY REFUSAL HERE HAS A NAME NOW.
+         *
+         * There were four silent returns and all of them left `plocked` at 0,
+         * which is one bit for four unrelated causes. The one that actually
+         * bit: a p-lock naming a parameter the module does not have creates
+         * nothing and says nothing -- typing `roomsize` for freeverb's
+         * `room_size` produced no lane and no complaint, which is
+         * indistinguishable from the feature being broken.
+         *
+         * Same argument as lanes:plock_reason on the host side, which names
+         * the refusals of the step->phase translation. This names the
+         * refusals of the WRITE. */
         inst->lanes_last_plocked = 0;
+        inst->lanes_plock_refusal = LANE_PLOCK_BAD_REQUEST;
         if (!val) return;
         char target[16] = {0}, param[32] = {0};
         double phase = 0.0;
@@ -527,19 +540,23 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         if (consumed <= 0 || !val[consumed]) return;
         const char *value_str = val + consumed;
         if (!isfinite(phase) || phase < 0.0) return;
+        inst->lanes_plock_refusal = LANE_PLOCK_NO_CLIP;
         if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
 
+        inst->lanes_plock_refusal = LANE_PLOCK_UNKNOWN_PARAM;
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
         if (!pinfo) return;
         const float v = dsp_value_to_float(value_str, pinfo, pinfo->default_val);
 
         lane_fingerprint_t fp;
         lane_current_fingerprint(inst, &fp);
+        inst->lanes_plock_refusal = LANE_PLOCK_STORE_FULL;
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
                                 inst->lane_track, inst->lane_clip_slot, &fp);
         if (!ln) return;
         lane_write(ln, phase, v, 1);
         inst->lanes_last_plocked = 1;
+        inst->lanes_plock_refusal = LANE_PLOCK_OK;
         return;
     }
 
@@ -744,6 +761,15 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
             return snprintf(buf, buf_len, "%s", "");
         return snprintf(buf, buf_len, "%d %d",
                         inst->lane_track, inst->lane_clip_slot);
+    }
+
+    if (strcmp(sub, "plock_refused") == 0) {
+        static const char *names[] = {
+            "ok", "bad_request", "no_clip", "unknown_param", "store_full"
+        };
+        int r = inst->lanes_plock_refusal;
+        if (r < 0 || r > LANE_PLOCK_STORE_FULL) r = LANE_PLOCK_BAD_REQUEST;
+        return snprintf(buf, buf_len, "%d %s", r, names[r]);
     }
 
     if (strcmp(sub, "undone") == 0)

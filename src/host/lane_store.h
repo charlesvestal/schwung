@@ -148,6 +148,11 @@ typedef struct {
     int  orphaned;       /* the clip was deleted; retained, silent */
     int  n;
     int  full_hits;      /* writes that had to replace a neighbour */
+    /* This lane took an ORPHAN's slot because the store was full. Recorded
+     * rather than done silently: it is the one allocation that destroys
+     * something, and "my automation for a deleted clip disappeared" needs an
+     * answer better than a shrug. */
+    int  evicted_orphan;
     /* How many times this lane has had a real fingerprint stamped on it (0 or
      * 1 in practice). Counted rather than flagged because "a take recorded
      * blind was re-origined" is the kind of thing that must be reportable: by
