@@ -625,23 +625,51 @@ pieces of it exist and are tested; the input plumbing is not written.
   p-lock produces a slope and p-locking over a recorded point produces a
   rectangle. Serialized as an optional third field on the `P` line, absent
   meaning 0, so an ordinary sweep's document is byte-identical to before.
-- **A held step's phase is `step_plock.h`**, the inverse of the mapping the
-  device scored 26/26:
-  `phase = ((bar - 1) * steps_per_bar + index) * step_resolution`.
-- **The displayed bar comes from the STRIP, not from Move's announcement.**
-  `bold_segment` is the thickened bar, read off the screen; `shadow_editor_bar`
-  needs the screen reader running — measured with it off, it stayed 0 through
-  repeated arrow presses, so an oracle built on it is absent exactly when
-  nobody has turned that on. This is what settles what the design doc called
-  "the least certain part of Project 1".
-- **A MULTI-PAGE BAR IS REFUSED, not guessed.** A bar fits the 16 step buttons
-  only while `steps_per_bar <= 16`: true for 4/4 at 1/16 (Move: "the entire bar
-  can be accessed at once"), false for 1/32, and false for **11/8 at 1/16**,
-  which pages 16 + 6 at the default grid. Move shows the page number on the
-  display and we do not read it, so the answer is `MULTI_PAGE` — a p-lock one
-  page out is a value on the wrong sixteenth, silently. Bar 0 is refused too:
-  a one-bar loop draws no thickening, so `bold_segment` can be 0, and that must
-  not quietly mean bar 1.
+- **MOVE NAMES THE DISPLAYED PAGE ITSELF, and that is the whole mapping.**
+  `stepEditorScrollPosition` is the origin of the 16 buttons in quarters, per
+  clip, so a held step is `phase = scroll + step * step_resolution` —
+  `step_plock_phase_from_scroll()`. No bar, no signature, no page count: 4/4
+  and 11/8 are one code path.
+
+  It replaced a bar-and-page reconstruction that could only REFUSE a bar
+  spanning more than 16 buttons (`MULTI_PAGE`), which is every bar of an 11/8
+  set at 1/16 — 22 steps — so p-locks did not work at all there. The bar form
+  survives for a clip the file has never seen.
+
+  **The live strip is the cross-check**, because the scroll is as old as
+  Move's last save: where the strip names a bar the scroll must fall inside
+  it, and where they disagree the live reading wins. That check is what
+  correctly rejects a scroll sitting at the loop end — Move lets you page onto
+  the `+` beyond a clip, which is a bar that does not exist yet.
+- **A TRIPLET GRID DEACTIVATES EVERY FOURTH BUTTON**, so a page is 12 steps
+  across 16 buttons and `button != step` (button 4 is step 3, button 14 is
+  step 11; button 3 refuses). Measured: at 1/16t one right-arrow moved the
+  scroll 0 → 2.0, exactly 12 × (1/6). Carried as a flag beside the
+  resolution because the DURATION cannot reveal it — 1/16t and a straight
+  1/24 are both 1/6 of a quarter. Without it every value from the fourth
+  button on lands progressively early, which reads as "triplets drift".
+- **The Step Grid is GLOBAL PER SET** (Move's manual), so parsing it once at
+  song level is right and there is no per-clip grid to miss.
+- **A P-LOCK EDITS THE SELECTED CLIP, NOT THE PLAYING ONE.** The live identity
+  decodes PLAYBACK and says `clip_slot -1` for a stopped track — correct for a
+  lane's position gate, and wrong here, because step editing is mostly done
+  stopped. Move records the selection as **`isPlaying` on the clip**, which
+  survives a stop and names the clip `Shift+Step 14` just created:
+  `clip_regions_selected_slot()`. Prefer the live answer while something is
+  playing, the file only when nothing is.
+- **The bar strip's vocabulary** (manual): a **thick** segment is the selected
+  bar *in* the loop, a **thin** one is in the loop but not selected, and a
+  **`+`** is a bar *outside* it. A one-bar loop draws thin with no thickening,
+  so `bold_segment` is 0 there — which is also how the strip says "I cannot
+  name a bar". `step_strip_displayed_bar()` is the one place that tells those
+  apart, via `single_thin`; reading `bold_segment` directly refused every
+  single-bar clip.
+- **A refusal can name itself.** `lanes:plock_reason` reports the last refusal
+  per slot (`no_bar`, `no_grid`, `bad_index`, `multi_page`, `outside_clip`,
+  `bad_request`, or `ok`). The translation runs on the SPI callback where
+  `shadow_log()` is a no-op, so without this a p-lock that did nothing offered
+  one bit — `lanes:plocked` staying 0 — for five distinct causes, and one
+  defect hid another.
 - **`lanes:plock_step` IS THE GESTURE'S KEY**, and the step→phase translation
   happens **once**, shim-side, because every fact it needs lives there: the
   displayed bar (the strip's `bold_segment`), the grid and signature
