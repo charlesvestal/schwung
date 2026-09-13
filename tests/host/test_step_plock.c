@@ -6,7 +6,9 @@
  */
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include "step_plock.h"
+#include "step_strip.h"
 
 static int fails = 0;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: "); printf(__VA_ARGS__); \
@@ -68,6 +70,76 @@ int main(void)
         rc = step_plock_phase(1, 12, 4.0, res, 16.0, &ph);
         CHECK(rc == STEP_PLOCK_BAD_INDEX,
               "1/8t gives 12 steps per bar, so step 13 is not one: rc=%d", rc);
+    }
+
+    /* 5a. ...BUT THE STRIP NAMES BAR 1 WITHOUT THICKENING ANYTHING.
+     *
+     * Case 5 below is right about the pure function and was, on its own,
+     * actively misleading: it pins the refusal and reads as though the
+     * one-bar case is handled. It is not the function's to handle. A one-bar
+     * loop draws a thin line and no bold segment, so the field the caller was
+     * reading is 0 -- indistinguishable there from "no reading" -- and every
+     * single-bar clip had its p-locks refused on hardware while this file was
+     * green. That is the common short clip, and it is exactly what Move's
+     * Shift+Step 14 (new clip) gives you.
+     *
+     * So the assertion that was missing is on the STEP BETWEEN the reader and
+     * the function, which is why that step is now a named function rather
+     * than an expression at the call site. */
+    {
+        step_strip_t ss;
+        memset(&ss, 0, sizeof ss);
+
+        ss.valid = 1; ss.segments = 1; ss.single_thin = 1; ss.bold_segment = 0;
+        CHECK(step_strip_displayed_bar(&ss, 2, 2) == 1,
+              "a one-bar loop's thin line IS bar 1, not 'unknown': got %d",
+              step_strip_displayed_bar(&ss, 2, 2));
+
+        /* ...and it still has to be THIS track's editor. */
+        CHECK(step_strip_displayed_bar(&ss, 3, 2) == 0,
+              "a reading paired with another track must not name a bar");
+
+        ss.single_thin = 0; ss.segments = 4; ss.bold_segment = 3;
+        CHECK(step_strip_displayed_bar(&ss, 2, 2) == 3,
+              "a thickened segment is the displayed bar: got %d",
+              step_strip_displayed_bar(&ss, 2, 2));
+
+        /* An invalid reading names nothing, however inviting its fields look. */
+        ss.valid = 0;
+        CHECK(step_strip_displayed_bar(&ss, 2, 2) == 0,
+              "an invalid strip must not name a bar");
+        CHECK(step_strip_displayed_bar(NULL, 2, 2) == 0,
+              "a NULL strip must not name a bar");
+
+        /* And the whole point: what that resolution feeds must now SUCCEED
+         * where the old expression refused. 4/4, 1/16, one bar = 16 steps. */
+        double ph2 = 0.0;
+        memset(&ss, 0, sizeof ss);
+        ss.valid = 1; ss.segments = 1; ss.single_thin = 1;
+        int rc2 = step_plock_phase(step_strip_displayed_bar(&ss, 2, 2), 3,
+                                   4.0, 0.25, 4.0, &ph2);
+        CHECK(rc2 == STEP_PLOCK_OK && fabs(ph2 - 0.75) < 1e-12,
+              "a p-lock on a one-bar 4/4 clip must land at 0.75: rc=%d ph=%f",
+              rc2, ph2);
+
+        /* ...AND RESOLVING THE BAR IS NOT THE SAME AS UNBLOCKING THE SET.
+         *
+         * Measured on the device 2026-09-13: an 11/8 set on a 1/16 grid is
+         * 5.5 / 0.25 = 22 steps to the bar against 16 buttons, so the bar
+         * spans two pages and every p-lock on it refuses -- with the bar now
+         * correctly named as 1. The two defects sat on top of each other and
+         * the first hid the second, which is why this is pinned rather than
+         * left as a comment: someone verifying the single_thin fix on that
+         * set would see no change and reasonably conclude it had not worked.
+         *
+         * Lifting it needs a PAGE, which the strip does not name -- see
+         * step_plock.h's formula, where `page` is already a term. */
+        double ph3 = 0.0;
+        int rc3 = step_plock_phase(step_strip_displayed_bar(&ss, 2, 2), 3,
+                                   5.5, 0.25, 5.5, &ph3);
+        CHECK(rc3 == STEP_PLOCK_MULTI_PAGE,
+              "11/8 at 1/16 is 22 steps to the bar: expected MULTI_PAGE, rc=%d",
+              rc3);
     }
 
     /* 5. NO BAR IS NOT BAR 1. The displayed bar comes off the strip, and a
