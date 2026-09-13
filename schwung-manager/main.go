@@ -1466,9 +1466,24 @@ func (app *App) handleModuleDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A module that ships a web_ui.html has a browser UI of its own, and
+	// until now the only way to reach it was to know the asset URL by
+	// heart: the Remote UI announces one for a chain component or an
+	// overtake TOOL (discovered by probing overtake_dsp:module_id), so a
+	// module with no DSP -- an overtake module that is all ui.js, say --
+	// had a page nothing linked to. The lookup already exists; this just
+	// uses it from the module page too.
+	webUIURL := ""
+	if modDir != "" {
+		if _, err := os.Stat(filepath.Join(modDir, "web_ui.html")); err == nil {
+			webUIURL = "/api/remote-ui/module-assets/" + id + "/web_ui.html"
+		}
+	}
+
 	data := map[string]any{
 		"Title":          mod.Name,
 		"Module":         mod,
+		"WebUIURL":       webUIURL,
 		"Installed":      installed,
 		"ModuleDir":      modDir,
 		"AssetsDir":      assetsDir,

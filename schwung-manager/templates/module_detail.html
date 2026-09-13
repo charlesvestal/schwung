@@ -197,6 +197,9 @@
         </form>
         <a class="btn btn-secondary" href="{{releaseURL .Module.GithubRepo (channelVersion (releaseMeta .Module.ID .ReleaseMeta) .Channel)}}" target="_blank" rel="noopener noreferrer">Release Notes</a>
         {{end}}
+        {{if .WebUIURL}}
+        <a class="btn btn-secondary" href="{{.WebUIURL}}">Open web UI</a>
+        {{end}}
         <form method="POST" action="/modules/{{.Module.ID}}/uninstall" class="inline-form" data-confirm="Uninstall {{.Module.Name}}?" data-confirm-title="Uninstall" data-confirm-label="Uninstall" data-confirm-danger="true">
             <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
             <button type="submit" class="btn btn-danger">Uninstall</button>
