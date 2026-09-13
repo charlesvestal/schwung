@@ -107,6 +107,61 @@ else {
 held = 9; ticks(12);                          /* step 9 locks nothing */
 if (decOf(LOCKED) || decOf(FREE)) bad.push("an empty :held answer became a lock -- every 'no' must show nothing");
 
+/*
+ * AND IT MUST LOOK LIKE ELEKTRON'S, which is a PIXEL fact.
+ *
+ * Every Elektron manual that documents parameter locks says the same sentence:
+ * "the graphics become inverted for the locked parameter, and the locked
+ * parameter value is displayed". Ours drew the value into the knob and marked
+ * the cell with a 2x2 corner, which is something you have to be told about.
+ * A decoration object being correct says nothing about that, so this counts
+ * INK in the locked cell's label band: an inverted band is a filled strip and
+ * a label is a few strokes, so the difference is not subtle.
+ */
+const { createFramebuffer, drawContext } = await import(REPO + "/tools/param-pages/harness.mjs");
+/*
+ * The assertion is a SHAPE, not an ink count. An inverted band is a
+ * CONTIGUOUS filled run -- the strip Elektron describes -- while a label is
+ * strokes with gaps, so the longest horizontal run separates them cleanly at
+ * any value width. Counting ink does not: "20" inverted has barely more lit
+ * pixels than the word "Tune" drawn normally (43 -> 52 measured), so a
+ * threshold on ink would either miss the inversion or fire on a long label.
+ *
+ * The band rows are measured, not assumed: diffing a held frame against an
+ * unheld one puts row 0's label band at y 23..31 and row 1's at y 52..60.
+ */
+function bandRun(fb, slot) {
+    const row = slot < 4 ? 0 : 1, c = slot % 4;
+    const y0 = row === 0 ? 23 : 52, y1 = row === 0 ? 31 : 60;
+    let best = 0;
+    for (let y = y0; y <= y1; y++) {
+        let run = 0;
+        for (let x = c * 32; x < c * 32 + 32; x++) {
+            run = fb.pixels[y * fb.width + x] ? run + 1 : 0;
+            if (run > best) best = run;
+        }
+    }
+    return best;
+}
+function shot() {
+    const fb = createFramebuffer();
+    ctrl.render(drawContext(fb), { title: "9W9" });
+    return fb;
+}
+const lockedSlot = ctrl.page.keys.indexOf(LOCKED);
+const freeSlot = ctrl.page.keys.indexOf(FREE);
+held = -1; ticks(14);
+const idle = shot();
+held = 5; ticks(14);
+const hold = shot();
+if (!(bandRun(hold, lockedSlot) >= 8))
+    bad.push("the locked cell's label band is not a filled STRIP while the step is held (longest run " +
+             bandRun(hold, lockedSlot) + "px) -- Elektron's headline mark is the inversion, not a corner pixel");
+if (bandRun(idle, lockedSlot) >= 8)
+    bad.push("the band reads as inverted with NO step held (run " + bandRun(idle, lockedSlot) + "px)");
+if (bandRun(hold, freeSlot) !== bandRun(idle, freeSlot))
+    bad.push("an UNLOCKED cell changed under a held step -- it must keep showing the track's own value");
+
 if (bad.length) { for (const b of bad) console.log("FAIL: " + b); process.exit(1); }
 console.log("PASS: step-held locks (show, turn-from-lock, release, empty-is-not-a-value)");
 EOF
