@@ -1009,6 +1009,40 @@ stop.
 | `lanes:clip` | get | Which clip this slot is bound to, `"<track> <slot>"` 0-based, or **empty** for none. The UI needs it to NAME what a clip-scoped action will act on: without it the row is a promise about a clip the user cannot see. |
 | `lanes:plock_reason` | get | Why the last p-lock was refused — `ok`, `no_bar`, `no_grid`, `bad_index`, `multi_page`, `outside_clip`, `bad_request`. The translation runs on the SPI callback where `shadow_log()` is a no-op, so without this a p-lock that did nothing offered one bit (`lanes:plocked` staying 0) for five distinct causes, and one defect hid another. |
 
+**WHAT IT COSTS, measured 2026-09-13** — and the shape is the surprise. Four
+readings on one slot with a clip playing and the same synth loaded, taken from
+`/schwung-perf`'s `slot_render_avg` with the ONLY difference being the lanes:
+
+| lanes | breakpoints | slot render |
+|---|---|---|
+| 0 | 0 | 2.0 us |
+| 4 | 32 | 15.3 us |
+| 8 | 48 | 21.9 us |
+| 8 | 108 | 23.1 us |
+
+Fits **~6.7 us fixed + ~1.65 us per automated PARAMETER + ~0.02 us per
+breakpoint**. The last column is the point: sixty extra breakpoints cost
+**1.2 us between them**, so a lane's length is nearly free and its EXISTENCE
+is what costs — `find_param_by_key` is a strcmp scan run twice per lane per
+block, and that is the per-lane term.
+
+**MEASURE IT AGAINST THE WORK, NOT THE FRAME.** A 2134 us frame is mostly
+`ioctl` — 1845 us of idle IRQ wait, which is not our time — so "1% of a
+frame" flatters this badly. What Schwung actually spends per frame
+(`frame_pre + frame_post`) is **266 us with no automation and 287 us with
+eight automated parameters**: the same 21 us is **+8% of the work we do**.
+
+Scaled out: one slot at the `LANE_MAX` 32 is ~59 us (+22%), and all four
+slots full is ~236 us, which roughly **doubles** Schwung's per-frame work.
+That is still ~500 us against a 2134 us frame with ~1600 us idle, so it is
+not dangerous — but it is real, and it is per-PARAMETER.
+
+So of the two inefficiencies left unfixed on purpose so that a measurement
+could decide: caching the `chain_param_info_t *` on the lane is the one that
+would pay, because it IS the per-lane term. `lane_eval`'s rescan from index 0
+is **not worth fixing** — sixty extra breakpoints cost 1.2 us between them,
+which is the term the numbers say is already free.
+
 **THE STORE CANNOT CLEAR ANYTHING BY ITSELF**, which is why the three
 clip-scoped verbs live in the chain and `lane_store.h` only offers
 predicates (`lane_is_for_clip`, `lane_is_for_param`, `lane_clear_one`): a
