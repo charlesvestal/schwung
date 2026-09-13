@@ -413,7 +413,7 @@ void SchwungAudioProcessor::setBinding (int i, const juce::String& key, bool byU
      * there, then records it as sent. Nothing is written until a human or an
      * automation lane actually moves the control.
      */
-    if (b.resolved && sd != nullptr)
+    if (b.resolved && sd != nullptr && ! restoring)
     {
         char cur[128];
         int n;
@@ -443,6 +443,14 @@ void SchwungAudioProcessor::setBinding (int i, const juce::String& key, bool byU
     }
     else
     {
+        /* -1 marks the macro dirty, so processBlock writes it out.
+         *
+         * THIS IS THE RESTORE PATH, AND IT MUST NOT ADOPT. Reopening a Live
+         * set replaces the parameter state first and loads the module second;
+         * if binding then adopted the module's freshly-constructed DEFAULTS it
+         * would overwrite every value the set just restored, and the project
+         * would reopen sounding like a new instance. Saved values win, and are
+         * pushed INTO the module instead. */
         lastSent[(size_t) i].store (-1.0f);
     }
 }
@@ -536,6 +544,10 @@ void SchwungAudioProcessor::setStateInformation (const void* data, int sizeInByt
 {
     auto xml = getXmlFromBinary (data, sizeInBytes);
     if (xml == nullptr) return;
+
+    /* Everything under here is a RESTORE: the values in the file are the
+     * truth, not whatever a freshly loaded module happens to default to. */
+    const juce::ScopedValueSetter<bool> restoreScope (restoring, true);
 
     auto state = juce::ValueTree::fromXml (*xml);
     if (! state.isValid()) return;

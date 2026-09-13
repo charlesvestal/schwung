@@ -213,6 +213,11 @@ private:
 
     RateBridge bridge;
 
+    /* True only while setStateInformation runs. A binding made during a
+     * restore resolves its range but does NOT adopt the module's current
+     * value -- see setBinding. */
+    bool restoring = false;
+
     /* Guards every call into the chain. Taken with try_lock on the audio
      * thread, which then outputs silence rather than blocking -- a module
      * load can take hundreds of milliseconds and waiting for it on the audio
