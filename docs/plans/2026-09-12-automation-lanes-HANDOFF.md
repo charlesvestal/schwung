@@ -12,6 +12,46 @@ history now, not instruction.
 
 ---
 
+## Confidence audit #4 — the gesture, and the thing that unlocked it
+
+**The blocker was my own assumption, twice.** First that recording needed a
+hand on a knob (it needs a *param write*, which `schwung-testd` makes), then
+that the step gesture could never be driven ("by construction"). The second was
+also wrong: the injector wrote only Move's mailbox, so
+**`inject_as_hardware`** now writes both, and an injected press arrives where a
+real one does. With it set, `selected_track` follows injected Track presses and
+an injected Shift+Vol+Track1 opens the shadow UI.
+
+Built and verified since audit #3:
+
+| | evidence |
+|---|---|
+| Hardware-path injection | Track 3 → `selected_track` 3 (was: invisible) |
+| `step_observe` forward | passive on hardware: a step press took the clip 3 → 4 notes and back |
+| Held-step tracking | unit-tested, and the mutation **fails** (it did not, at first — see below) |
+| `lanes:plock_step` | `P 1 0.81 1` under 4/4; refused under 11/8 (22 steps/bar) |
+| `lanes:plock` | writes a held point, drives the plugin, releases on clear |
+| Set change clears lanes | **a real bug**, found and fixed, verified via the real `SET_CHANGED` flag |
+
+**What is left is one integration**, not a mechanism: navigating to a
+component's knob grid and turning a knob with a step held. I could not drive
+that blind — jog clicks from the slot editor never reached a component page —
+and each piece on either side of it is verified. For you that is one gesture.
+
+**Two lessons worth keeping.** A mutation test that PASSED: `heldStepIndex()`
+scanned for any held step, duplicating the decision `onStepNote` already makes,
+so removing that decision left the test green. It is a read of one variable
+now. And the p-lock write had to be translated in **both** param paths — the
+first version sat only in the web UI's, so the key the real gesture uses fell
+through and was dropped with no log line at all.
+
+**A p-lock also toggles a note today.** The step forward is passive, because
+withholding a step needs a latched both-edge swallow in the MIDI filter, whose
+failure mode is a stuck button. Undo fixes a stray note; a stuck filter does
+not. That is the next change, and it now has a harness that can test it.
+
+---
+
 ## Confidence audit #3, 2026-09-13 — where it actually stands
 
 Everything on the list is now verified on hardware **except one thing**, and
