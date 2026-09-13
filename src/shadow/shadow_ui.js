@@ -2334,6 +2334,29 @@ function componentParamPagesIo(slotIndex, componentKey) {
             markComponentParamWrite(slotIndex, componentKey);
             return ok;
         },
+        /* THE P-LOCK GESTURE'S OTHER HALF: hold a step, turn a knob.
+         *
+         * Called by the controller AFTER a value is committed, with what was
+         * actually written -- which is the only moment that knows it, since a
+         * turn walks from a cached value through the parameter's own step and
+         * range. If a step button is held, that value is locked to the step.
+         *
+         * `<target> <param>` is split off the full key rather than rebuilt:
+         * the chain's lane store is keyed by exactly those two fields, and a
+         * second way of deriving them is a second thing to get wrong. The BAR
+         * is not passed at all -- the shim reads it off Move's own strip (see
+         * `lanes:plock_step`), so the UI never models the editor's paging. */
+        onValueWritten: (fullKey, wire) => {
+            const step = heldStepIndex();
+            if (step < 0) return;
+            const colon = fullKey.indexOf(":");
+            if (colon <= 0) return;
+            const target = fullKey.substring(0, colon);
+            const param = fullKey.substring(colon + 1);
+            if (!target || !param) return;
+            setSlotParam(slotIndex, "lanes:plock_step",
+                         target + " " + param + " " + step + " " + wire);
+        },
     };
 }
 
@@ -19436,6 +19459,71 @@ function moduleClaimedCcs(moduleId) {
  * returns without writing or logging, which is also what lets this restate
  * rather than memoise — the shim drops the flag unilaterally on the
  * display-mode edge and at init, and a JS mirror of that would latch. */
+/* WHICH STEP BUTTON IS HELD, or -1.
+ *
+ * Fed by the shim's step_observe forward (notes 16-31) and used by the p-lock
+ * gesture. The LAST press wins: two fingers down is not a gesture anyone can
+ * mean, and taking the earlier one would make the second press feel dead.
+ *
+ * Held state is tracked as a SET rather than a single index so that releasing
+ * one of two held steps leaves the other held -- the same reason the shim
+ * latches a claimed button per note rather than keeping one "a button is
+ * down" flag.
+ */
+const stepHeld = [];       /* index 0..15 -> truthy while held */
+let stepHeldLast = -1;
+
+function noteStepIndex(note) {
+    return (note >= 16 && note <= 31) ? (note - 16) : -1;
+}
+
+function onStepNote(note, velocity) {
+    const idx = noteStepIndex(note);
+    if (idx < 0) return false;
+    if (velocity > 0) {
+        stepHeld[idx] = 1;
+        stepHeldLast = idx;
+    } else {
+        stepHeld[idx] = 0;
+        if (stepHeldLast === idx) {
+            stepHeldLast = -1;
+            for (let i = 0; i < 16; i++) if (stepHeld[i]) stepHeldLast = i;
+        }
+    }
+    return true;
+}
+
+/* A READ, not a second search. `onStepNote` already decides which step is the
+ * held one -- including falling back to another that is still down -- and a
+ * scan here duplicated that decision: mutating the fallback out of onStepNote
+ * left the test green, because this loop quietly did the same job. One fact,
+ * one place; the mutation fails now. */
+function heldStepIndex() {
+    return (stepHeldLast >= 0 && stepHeld[stepHeldLast]) ? stepHeldLast : -1;
+}
+
+/* Ask the shim to forward step notes while a chain component's knob grid is on
+ * screen -- the only place the p-lock gesture can be made.
+ *
+ * RESTATED EVERY FRAME, never memoised: the shim drops step_observe itself
+ * when the shadow display closes, so a mirror would latch and the gesture
+ * would die silently after the first dismiss. That is the mistake pad_observe
+ * already paid for, and the binding is idempotent against the SHM for exactly
+ * this reason. Held state is dropped with the flag, or a step released while
+ * the UI was not watching stays "held" forever. */
+function reconcileStepObserve() {
+    if (typeof host_step_observe !== "function") return;
+    const want = (currentView === VIEWS.PARAM_PAGES) &&
+                 paramPagesComponent() !== null &&
+                 paramPagesComponent() !== undefined &&
+                 paramPagesSlot() >= 0;
+    host_step_observe(want ? 1 : 0);
+    if (!want) {
+        for (let i = 0; i < 16; i++) stepHeld[i] = 0;
+        stepHeldLast = -1;
+    }
+}
+
 function reconcilePadBlock() {
     if (isTextEntryActive()) return;
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
@@ -24957,6 +25045,7 @@ globalThis.tick = function() {
      * table above reconcileCcClaim(). */
     reconcileCcClaim();
     reconcilePadBlock();
+    reconcileStepObserve();
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
@@ -27115,6 +27204,22 @@ globalThis.onMidiMessageInternal = function(data) {
             }
             return;
         }
+    }
+
+    /* STEP BUTTONS (notes 16-31), while the shim is forwarding them: remember
+     * which is held, for the p-lock gesture. Both edges, and BEFORE the
+     * handlers below, which return early for their own notes -- a release that
+     * never arrives leaves a step held forever, and the next knob turn on any
+     * page would p-lock it.
+     *
+     * Records only; the write happens on the knob's commit
+     * (componentParamPagesIo's onValueWritten), because that is the only point
+     * that knows the value the turn produced. Does NOT return: nothing else
+     * uses these notes, and swallowing them here would hide them from a tool
+     * that might. */
+    if (((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
+            noteStepIndex(d1) >= 0) {
+        onStepNote(d1, ((status & 0xF0) === MidiNoteOn) ? d2 : 0);
     }
 
     /* Handle Note On for knob touch - peek at current value without turning
