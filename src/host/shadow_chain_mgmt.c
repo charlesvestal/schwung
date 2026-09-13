@@ -3277,6 +3277,102 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
     return 1;
 }
 
+/* Defined in schwung_shim.c; see its comment for the two guards it owns.
+ *
+ * WEAK, so the tests/host units that compile this file WITHOUT the shim still
+ * link -- there are several, and they exist to exercise chain management, not
+ * the gesture. The shim's definition is strong and wins wherever both are
+ * present, so the device never sees this one. A test that wants the gesture
+ * supplies its own. */
+int shim_plock_held_step(void);
+__attribute__((weak)) int shim_plock_held_step(void) { return -1; }
+
+/* IS THIS A CHAIN COMPONENT'S PARAMETER, and if so where does it split?
+ *
+ * `synth:cutoff`, `fx3:mix`, `midi_fx1:rate` -- the three addresses a lane can
+ * name as its target. Returns the offset of the ':' or 0. Deliberately NOT a
+ * general "has a colon" test: `lanes:`, `slot:`, `buses:` and the rest share
+ * that shape and are not parameters of anything. */
+static int shadow_component_param_split(const char *key)
+{
+    if (!key) return 0;
+    const char *c = strchr(key, ':');
+    if (!c || c == key) return 0;
+    size_t n = (size_t)(c - key);
+    if (n == 5 && strncmp(key, "synth", 5) == 0) return (int)n;
+    if (n > 2 && strncmp(key, "fx", 2) == 0) {
+        for (size_t i = 2; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
+        return (int)n;
+    }
+    if (n > 7 && strncmp(key, "midi_fx", 7) == 0) {
+        for (size_t i = 7; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
+        return (int)n;
+    }
+    return 0;
+}
+
+/* A COMPONENT WRITE MADE WHILE A STEP IS HELD IS A P-LOCK.
+ *
+ * Decided here rather than in the UI because every UI's writes pass through
+ * here, and a module drawing its own screen from `ui_chain.js` has no host io
+ * to hook -- which is why 9W9 could record automation but never p-lock.
+ *
+ * The live write still happens: a p-lock sets the value AND stores it, exactly
+ * as turning the knob without a step held would sound. This only ADDS the
+ * breakpoint.
+ *
+ * `shim_plock_held_step()` owns both guards (exactly one step, shadow display
+ * up); see its comment. */
+static void shadow_lanes_plock_from_write(uint8_t slot, const char *key,
+                                          const char *value)
+{
+    if (!key || !value) return;
+    int step = shim_plock_held_step();
+    if (step < 0) return;
+    int split = shadow_component_param_split(key);
+    if (split <= 0) return;
+    if (slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_chain_slots[slot].active || !shadow_chain_slots[slot].instance)
+        return;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->set_param) return;
+
+    /* A RECORDING PASS IS NEVER CONVERTED.
+     *
+     * A p-lock writes a RECTANGLE at one phase; a recorded sweep writes a
+     * slope across a span -- into the SAME lane. So while a take is running,
+     * a held step (stale, or simply still down from the p-lock before it)
+     * would punch stepped points through the sweep as it is being recorded,
+     * which is how this whole mechanism came out on its first attempt: not
+     * "the p-lock did nothing" but "the automation got worse".
+     *
+     * Asked of the chain rather than reconstructed here, because the answer
+     * is the record branch's own condition (`lane_is_recording`, chain_lanes.c)
+     * and a host-side copy of it would be free to disagree. A failed read is
+     * NOT a no -- `get_param` answering < 0 means the chain did not serve the
+     * key, and converting on the strength of that is exactly the tri-state
+     * mistake documented in CLAUDE.md -- so anything but a clear "0" refuses.
+     *
+     * Costs two nothing-calls per component write WHILE A STEP IS HELD, which
+     * is a gesture, not a stream. */
+    if (!shadow_plugin_v2->get_param) return;
+    char rec[8] = {0};
+    int rn = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                         "lanes:recording", rec, sizeof(rec));
+    if (rn < 0 || rec[0] != '0') return;
+
+    /* STATIC for the same reason the plock_step forward is: a
+     * SHADOW_PARAM_VALUE_LEN buffer on the SPI callback's stack is what the
+     * param-contract raise had to undo once already. */
+    static char req[SHADOW_PARAM_VALUE_LEN];
+    static char fwd[SHADOW_PARAM_VALUE_LEN];
+    int n = snprintf(req, sizeof(req), "%.*s %s %d %s",
+                     split, key, key + split + 1, step, value);
+    if (n <= 0 || (size_t)n >= sizeof(req)) return;
+    if (!shadow_lanes_plock_step_translate(slot, req, fwd, sizeof(fwd))) return;
+    shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
+                                "lanes:plock", fwd);
+}
+
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
 
     /* Master FX params (web set-ring path). Web-originated sets arrive here via
@@ -3342,6 +3438,11 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
         shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance, key, value);
         if (host.on_param_changed) host.on_param_changed(slot, key, value);
     }
+
+    /* ...and if a step was held, that write was also a p-lock. AFTER the live
+     * write, so the knob sounds exactly as it would with no step held; this
+     * only adds the breakpoint. */
+    shadow_lanes_plock_from_write(slot, key, value);
 }
 
 int shadow_param_publish_response(uint32_t req_id) {
@@ -5153,6 +5254,13 @@ void shadow_inprocess_handle_param_request(void) {
 
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                         key_copy, value_copy);
+            /* ...and if a step was held, that write was ALSO a p-lock. This is
+             * the path a module's own `ui_chain.js` writes through, which is
+             * why the gesture has to be decided here and not in the host's
+             * param-pages io -- see shadow_lanes_plock_from_write. Runs after
+             * the live write, and is a no-op for `lanes:*` keys, so the
+             * translated plock above cannot re-enter it. */
+            shadow_lanes_plock_from_write(slot, key_copy, value_copy);
             shadow_param->error = 0;
             shadow_param->result_len = 0;
 
