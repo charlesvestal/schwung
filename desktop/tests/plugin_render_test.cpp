@@ -15,6 +15,7 @@
  */
 #include "../plugin/PluginProcessor.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -262,6 +263,73 @@ int main (int argc, char** argv)
                      b.getSynth().toRawUTF8(),
                      b.getFx (0).isEmpty() ? "-" : b.getFx (0).toRawUTF8(),
                      sa.length());
+    }
+
+    /* ---- THE TRANSPORT CLOCK --------------------------------------------
+     *
+     * The chain does NOT read the host's transport. It overrides
+     * get_clock_status with its own, answered from MIDI realtime bytes it has
+     * actually received, so a clock-gated module stays silent forever unless
+     * the plugin synthesises 0xFA / 0xF8 / 0xFC from the playhead. breakbeat
+     * checks it in five places; sequencers and arps are the same class.
+     *
+     * Setting get_bpm and get_beat_position is NOT enough, which is the part
+     * that looks finished and is not -- verified on the device path: with the
+     * transport set but no realtime bytes, breakbeat logged clock_status=1
+     * and rendered silence; with the bytes, clock_status=2 and -19.6 dBFS.
+     *
+     * Asserted on the byte sequence because that is the contract, and none of
+     * it is visible in the audio.
+     */
+    {
+        TransportClock tc;
+        std::vector<uint8_t> got;
+        auto sink = [&got] (uint8_t b) { got.push_back (b); };
+
+        // Stopped: nothing at all.
+        tc.advance (false, 0.0, 0.25, sink);
+        if (! got.empty()) return fail ("clock emitted while the transport was stopped");
+
+        // Starting mid-bar: Start first, then ticks phased to the playhead.
+        got.clear();
+        tc.advance (true, 4.0, 4.25, sink);
+        if (got.empty() || got[0] != 0xFA) return fail ("no MIDI Start when playback began");
+        const int firstTicks = (int) std::count (got.begin(), got.end(), (uint8_t) 0xF8);
+        if (firstTicks < 5 || firstTicks > 7)
+            return fail ("wrong tick count for a quarter beat (expected 6 at 24 PPQN)");
+
+        // A whole beat is 24 ticks.
+        got.clear();
+        for (int i = 0; i < 4; ++i)
+            tc.advance (true, 4.25 + i * 0.25, 4.5 + i * 0.25, sink);
+        const int beatTicks = (int) std::count (got.begin(), got.end(), (uint8_t) 0xF8);
+        if (beatTicks != 24)
+            return fail ("a beat did not carry 24 ticks");
+
+        // A loop wrap jumps the playhead BACKWARDS. Re-phase, do not go mute
+        // until the old count catches up -- which for a long loop is forever.
+        got.clear();
+        tc.advance (true, 0.0, 0.25, sink);
+        if (std::count (got.begin(), got.end(), (uint8_t) 0xF8) < 5)
+            return fail ("clock went quiet after a backwards jump (loop wrap)");
+
+        // Stop, exactly once.
+        got.clear();
+        tc.advance (false, 1.0, 1.25, sink);
+        if (std::count (got.begin(), got.end(), (uint8_t) 0xFC) != 1)
+            return fail ("no single MIDI Stop when playback ended");
+
+        // A locate across minutes must not emit the thousands of pulses
+        // between: ticks are catch-up, not a log.
+        got.clear();
+        tc.advance (true, 0.0, 0.1, sink);
+        got.clear();
+        tc.advance (true, 0.1, 500.0, sink);
+        const int flood = (int) std::count (got.begin(), got.end(), (uint8_t) 0xF8);
+        if (flood > 96)
+            return fail ("a locate flooded the chain with ticks");
+
+        std::printf ("transport clock: start/stop, 24 PPQN, wrap re-phase, locate capped at %d\n", flood);
     }
 
     std::printf ("PASS: the plugin renders Schwung audio through the rate bridge\n");

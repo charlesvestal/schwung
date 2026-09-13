@@ -40,7 +40,10 @@ typedef struct { int frame; uint8_t b[3]; } ev_t;
 int main(int argc, char **argv) {
     const char *root = NULL, *synth = NULL, *fx = NULL, *out = "out.wav";
     const char *getk[16]; int nget = 0;
+    const char *setkv[16]; int nset = 0;
     double seconds = 4.0;
+    double bpm = 120.0;
+    int playing = 0;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--modules") && i + 1 < argc) root  = argv[++i];
@@ -49,10 +52,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "-o")        && i + 1 < argc) out   = argv[++i];
         else if (!strcmp(argv[i], "--get")     && i + 1 < argc && nget < 16) getk[nget++] = argv[++i];
-        else { fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--seconds N] [-o out.wav]\n", argv[0]); return 2; }
+        else if (!strcmp(argv[i], "--bpm")     && i + 1 < argc) bpm = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--set")     && i + 1 < argc && nset < 16) setkv[nset++] = argv[++i];
+        else if (!strcmp(argv[i], "--play")) playing = 1;
+        else { fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--play] [--bpm N] [--seconds N] [-o out.wav]\n", argv[0]); return 2; }
     }
     if (!root || (!synth && nget == 0)) {
-        fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--seconds N] [-o out.wav]\n", argv[0]);
+        fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--play] [--bpm N] [--seconds N] [-o out.wav]\n", argv[0]);
         return 2;
     }
 
@@ -61,6 +67,16 @@ int main(int argc, char **argv) {
 
     schwung_desktop_set_param(sd, "synth:module", synth);
     if (fx) schwung_desktop_set_param(sd, "fx1:module", fx);
+
+    /* --set key=value, applied after the modules load. */
+    for (int i = 0; i < nset; i++) {
+        char tmp[1024];
+        snprintf(tmp, sizeof(tmp), "%s", setkv[i]);
+        char *eq = strchr(tmp, '=');
+        if (!eq) { fprintf(stderr, "render: --set needs key=value: %s\n", setkv[i]); continue; }
+        *eq = 0;
+        schwung_desktop_set_param(sd, tmp, eq + 1);
+    }
 
     /* Read back what the chain says is loaded.
      *
@@ -106,8 +122,49 @@ int main(int argc, char **argv) {
     int16_t *pcm = calloc((size_t)total * 2, sizeof(int16_t));
     if (!pcm) { schwung_desktop_destroy(sd); return 1; }
 
+    /*
+     * THE TRANSPORT IS PART OF THE INSTRUMENT, NOT A DETAIL.
+     *
+     * A clock-gated module does nothing at all while the transport is
+     * stopped, and it is RIGHT to do nothing -- breakbeat checks
+     * get_clock_status() == RUNNING in five places before it will play. A
+     * harness that never starts a clock therefore reports every one of them as
+     * silent, which reads as "the module is broken" rather than "the test
+     * never pressed play". That mistake cost a whole fleet sweep.
+     *
+     * --play advances a real beat position at --bpm, exactly as a DAW's
+     * playhead does.
+     */
+    double beat = 0.0;
+    double next_tick = 0.0;
+    int started = 0;
+    const double beats_per_block = (double)SCHWUNG_BLOCK / (double)SCHWUNG_RATE * bpm / 60.0;
+
     int ei = 0;
     for (int off = 0; off < total; off += SCHWUNG_BLOCK) {
+        schwung_desktop_set_transport(sd, bpm, playing ? beat : -1.0, playing);
+
+        /* THE REALTIME CLOCK IS A SEPARATE CHANNEL, and it is the one that
+         * decides whether a clock-gated module plays at all. The chain
+         * overrides get_clock_status with its own, answered from 0xFA/0xF8/
+         * 0xFC bytes it has actually received -- setting the transport above
+         * is invisible to it. */
+        if (playing) {
+            if (!started) {
+                uint8_t start = 0xFA;
+                schwung_desktop_midi(sd, &start, 1);
+                started = 1;
+                next_tick = 0.0;
+            }
+            double end_tick = (beat + beats_per_block) * 24.0;
+            int guard = 0;
+            while (next_tick <= end_tick && guard++ < 96) {
+                uint8_t tick = 0xF8;
+                schwung_desktop_midi(sd, &tick, 1);
+                next_tick += 1.0;
+            }
+            beat += beats_per_block;
+        }
         /* Fire every event whose frame falls INSIDE this block. Testing
          * `frame == off` silently never fires unless the frame happens to be a
          * multiple of the block size -- the probe harness lost three separate
