@@ -536,6 +536,65 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      * outside the window is dormant rather than wrong. What it does require is
      * a clip POSITION to key the lane to, and a parameter the module
      * declares. */
+    /* REMOVE WHAT IS LOCKED ON ONE STEP: "<phase>" for every lane of this
+     * clip, or "<phase> <target> <param>" for one of them.
+     *
+     * THE GRAIN THAT WAS MISSING. `clear`, `clear_clip`, `clear_param` and
+     * `clear_target` all take a whole lane or more, so a single bad p-lock
+     * could not be removed at all -- you had to throw away the parameter's
+     * entire automation to get rid of one step. That is the gap this closes.
+     *
+     * A POINT IS "ON" THE STEP within LANE_MIN_POINT_BEATS, the same window
+     * lane_write replaces in, so what this removes is exactly what a p-lock
+     * there would have overwritten -- the two verbs agree about what "this
+     * step" means by sharing the constant rather than by matching.
+     *
+     * IT TAKES A RECORDED POINT TOO, if one happens to sit on the step. The
+     * alternative -- only `hold` points -- would make the gesture refuse
+     * exactly where a sweep crosses a step the user can see and wants clear,
+     * and "nothing happened" is worse than a curve with one fewer breakpoint;
+     * the span either side interpolates across the gap.
+     *
+     * A LANE EMPTIED THIS WAY IS FREED, and its override released first: the
+     * point of clearing the last lock on a parameter is that the knob gets it
+     * back, and a used-but-empty lane would keep driving the value it last
+     * computed.
+     *
+     * Undo takes the whole store, as the other clear verbs do, so a mis-aimed
+     * clear is one `lanes:undo` away. */
+    if (strcmp(sub, "clear_point") == 0) {
+        inst->lanes_last_cleared = 0;
+        if (!val) return;
+        char target[16] = {0}, param[32] = {0};
+        double phase = 0.0;
+        const int got = sscanf(val, "%lf %15s %31s", &phase, target, param);
+        if (got < 1 || !isfinite(phase) || phase < 0.0) return;
+        const int one = (got == 3);
+        if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+        lane_undo_take(inst);
+        int n = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            lane_t *ln = &inst->lanes.lanes[i];
+            if (!ln->used) continue;
+            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            if (one && (strcmp(ln->target, target) != 0 ||
+                        strcmp(ln->param, param) != 0)) continue;
+            int w = 0;
+            for (int k = 0; k < ln->n; k++) {
+                if (fabs(ln->pts[k].phase - phase) < LANE_MIN_POINT_BEATS) { n++; continue; }
+                ln->pts[w++] = ln->pts[k];
+            }
+            if (w == ln->n) continue;               /* nothing on this step */
+            ln->n = w;
+            if (ln->n == 0) {
+                if (ln->driving) lane_release_one(inst, ln);
+                lane_clear_one(ln);
+            }
+        }
+        inst->lanes_last_cleared = n;
+        return;
+    }
+
     /* WHAT DOES A LANE HOLD AT THIS PHASE? "<target> <param> <phase>" in,
      * `lanes:probe` read back out.
      *

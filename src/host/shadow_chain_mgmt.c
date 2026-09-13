@@ -5395,6 +5395,35 @@ void shadow_inprocess_handle_param_request(void) {
                 shim_rt_audit_note_module(value_copy[0] ? value_copy : "(unload)");
             }
 
+            /* REMOVE WHAT IS LOCKED ON THE HELD STEP: "" for all of it, or
+             * "<target> <param>" for one parameter. Same translation as the
+             * write, through the same function, so the step a clear removes
+             * from is by construction the step a p-lock would have written to.
+             *
+             * Refused if no single step is held or the step has no phase --
+             * and a refusal forwards NOTHING, because `lanes:clear_point`
+             * with a missing phase would be read as phase 0 and take the
+             * downbeat's automation instead. */
+            if (strcmp(key_copy, "lanes:clear_step") == 0) {
+                int cstep = shim_plock_held_step();
+                double cphase = 0.0;
+                if (cstep >= 0 &&
+                    shadow_lanes_step_phase(slot, cstep, &cphase, NULL) == STEP_PLOCK_OK) {
+                    static char cfwd[SHADOW_PARAM_VALUE_LEN];
+                    snprintf(cfwd, sizeof(cfwd), "%.17g%s%s", cphase,
+                             value_copy[0] ? " " : "", value_copy);
+                    strncpy(key_copy, "lanes:clear_point", sizeof(key_copy) - 1);
+                    key_copy[sizeof(key_copy) - 1] = '\0';
+                    strncpy(value_copy, cfwd, SHADOW_PARAM_VALUE_LEN - 1);
+                    value_copy[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
+                } else {
+                    shadow_param->error = 0;
+                    shadow_param->result_len = 0;
+                    shadow_param_publish_response(req_id);
+                    return;
+                }
+            }
+
             /* The gesture's key, translated before the forward: the chain
              * serves `lanes:plock` (a phase) and not `plock_step` (a step
              * button), so without this it falls through and is dropped. */
