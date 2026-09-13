@@ -3257,7 +3257,9 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
     }
 
     if (scroll_ok)
-        rc = step_plock_phase_from_scroll(scroll, step, res, clip_len, &phase);
+        rc = step_plock_phase_from_scroll(scroll, step, res,
+                                          rg ? rg->step_grid_triplet : 0,
+                                          clip_len, &phase);
     else
         rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
     if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = rc;
