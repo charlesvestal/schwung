@@ -108,6 +108,54 @@ int main (int argc, char** argv)
     if (peak >= 1.0f)
         return fail ("output is clipping at full scale");
 
+    /* ---- TWO INSTANCES IN ONE PROCESS ------------------------------------
+     *
+     * A Live set with two Schwung tracks is two SchwungAudioProcessors in one
+     * host process, sharing one dlopen'd chain.dylib and whatever process-wide
+     * state sits behind it. That is the ordinary case, not an edge case, and
+     * nothing above this line exercises it. */
+    {
+        SchwungAudioProcessor a, b;
+        a.setSynth (synth);
+        b.setSynth (synth);
+        a.prepareToPlay (kRate, kBlock);
+        b.prepareToPlay (kRate, kBlock);
+
+        juce::AudioBuffer<float> ba (2, kBlock), bb (2, kBlock);
+        double sa = 0.0, sbv = 0.0;
+
+        for (int n = 0; n < 120; ++n)
+        {
+            juce::MidiBuffer ma, mb;
+            if (n == 2)
+            {
+                ma.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+                mb.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+            }
+            ba.clear(); bb.clear();
+            a.processBlock (ba, ma);
+            b.processBlock (bb, mb);
+
+            for (int i = 0; i < kBlock; ++i)
+            {
+                const float x = ba.getSample (0, i), y = bb.getSample (0, i);
+                if (! std::isfinite (x) || ! std::isfinite (y))
+                    return fail ("two instances: non-finite output");
+                sa += (double) x * x;
+                sbv += (double) y * y;
+            }
+        }
+
+        const double ra = std::sqrt (sa / (120.0 * kBlock));
+        const double rb = std::sqrt (sbv / (120.0 * kBlock));
+        std::printf ("two instances: A %.1f dBFS   B %.1f dBFS\n",
+                     ra > 0 ? 20.0 * std::log10 (ra) : -999.0,
+                     rb > 0 ? 20.0 * std::log10 (rb) : -999.0);
+
+        if (ra <= 0.0 || rb <= 0.0)
+            return fail ("two instances: one of them is silent -- shared state between plugin instances");
+    }
+
     std::printf ("PASS: the plugin renders Schwung audio through the rate bridge\n");
     return 0;
 }
