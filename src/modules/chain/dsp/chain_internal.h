@@ -855,6 +855,11 @@ typedef struct chain_instance {
      * worked until the loop comes round, which is exactly the ambiguity the
      * rest of this feature spends its instrumentation on. */
     int    lanes_last_plocked;
+    int    lanes_last_undone;
+    /* ONE-DEEP UNDO of the whole slot's automation, swapped rather than
+     * copied back so the same verb is redo. See lane_store_swap(). */
+    lane_store_t lanes_undo;
+    int    lanes_undo_valid;
     /* Points copied by the last `lanes:double`. Reported for the same reason
      * as the others: a gesture that silently did nothing is indistinguishable
      * from one that worked until the second half comes round. */
@@ -1237,6 +1242,8 @@ CHAIN_INTERNAL int smoother_update(param_smoother_t *smoother);
 /* chain_lanes.c */
 CHAIN_INTERNAL void lane_tick(chain_instance_t *inst);
 CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
+/* Snapshot the store for one-deep undo/redo; see lane_store_swap(). */
+CHAIN_INTERNAL void lane_undo_take(chain_instance_t *inst);
 CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst);
 CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target,
                                      const char *param, const char *val);

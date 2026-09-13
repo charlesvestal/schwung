@@ -1009,6 +1009,82 @@ int main(void) {
         }
     }
 
+    /* CLEARING AT THE RIGHT GRAIN, and undo that is its own redo.
+     *
+     * `lanes:clear` empties the whole SLOT -- every clip, every parameter --
+     * which was the only granularity there was, and far blunter than what is
+     * actually wanted: "that clip" or "that knob". The key is
+     * (track, slot, target, param), so each grain is just which fields match.
+     *
+     * The store cannot do the clearing itself: a DRIVING lane holds a
+     * modulation override on the chain, and dropping it without handing that
+     * back leaves the parameter pinned wherever the automation last wrote it,
+     * with nothing left to move it. Hence predicates here, release in the
+     * chain. */
+    {
+        lane_store_t cst;
+        lane_store_reset(&cst);
+        lane_fingerprint_t cfp;
+        memset(&cfp, 0, sizeof cfp);
+
+        lane_t *la = lane_alloc(&cst, "synth", "pinch", 0, 1, &cfp);
+        lane_t *lb = lane_alloc(&cst, "synth", "morph", 0, 1, &cfp);
+        lane_t *lc = lane_alloc(&cst, "synth", "pinch", 0, 2, &cfp);
+        lane_t *ld = lane_alloc(&cst, "synth", "pinch", 1, 1, &cfp);
+        CHECK(la && lb && lc && ld, "four distinct lanes must be allocatable");
+
+        CHECK(lane_is_for_clip(la, 0, 1) && lane_is_for_clip(lb, 0, 1),
+              "both parameters of clip (0,1) belong to it");
+        CHECK(!lane_is_for_clip(lc, 0, 1),
+              "a different clip SLOT is a different clip");
+        CHECK(!lane_is_for_clip(ld, 0, 1),
+              "the same slot on another TRACK is a different clip");
+
+        CHECK(lane_is_for_param(la, 0, 1, "synth", "pinch"),
+              "the parameter grain matches target AND param");
+        CHECK(!lane_is_for_param(lb, 0, 1, "synth", "pinch"),
+              "a sibling parameter of the same clip must NOT match");
+        CHECK(!lane_is_for_param(la, 0, 1, "fx1", "pinch"),
+              "the same param name on another target must not match");
+
+        lane_clear_one(la);
+        CHECK(!la->used, "a cleared lane is unused");
+        CHECK(lb->used && lc->used && ld->used,
+              "clearing one lane must not disturb its neighbours");
+    }
+
+    /* UNDO IS A SWAP, so the same verb is redo -- which matters more for
+     * automation than for text: the mistake is HEARD, not seen, and the real
+     * gesture is "put it back; no, the other one". */
+    {
+        lane_store_t cur, undo;
+        lane_store_reset(&cur);
+        lane_store_reset(&undo);
+        lane_fingerprint_t ufp;
+        memset(&ufp, 0, sizeof ufp);
+        lane_alloc(&cur, "synth", "pinch", 0, 1, &ufp);
+
+        int n_cur = 0, n_undo = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            if (cur.lanes[i].used) n_cur++;
+            if (undo.lanes[i].used) n_undo++;
+        }
+        CHECK(n_cur == 1 && n_undo == 0, "one lane, empty undo buffer");
+
+        lane_store_swap(&cur, &undo);
+        n_cur = n_undo = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            if (cur.lanes[i].used) n_cur++;
+            if (undo.lanes[i].used) n_undo++;
+        }
+        CHECK(n_cur == 0 && n_undo == 1, "the swap moved the lane across");
+
+        lane_store_swap(&cur, &undo);
+        n_cur = 0;
+        for (int i = 0; i < LANE_MAX; i++) if (cur.lanes[i].used) n_cur++;
+        CHECK(n_cur == 1, "swapping twice is the identity -- undo, then redo");
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

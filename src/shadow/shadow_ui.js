@@ -5591,6 +5591,8 @@ const CHAIN_SETTINGS_ITEMS = [
      * `showsValue` -- an action row draws no value by default, and asking for
      * one here would spend a ~2.8 ms round trip per draw to print "-". */
     { key: "clear_lanes", label: "Clear Lanes", type: "action" },
+    { key: "clear_clip_lanes", label: "Clear Clip Lanes", type: "action" },
+    { key: "undo_lane_edit", label: "Undo Lane Edit", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
@@ -10167,6 +10169,59 @@ function restoreSlotLanes(i) {
  * when the slot serves an empty document, and an eMMC write (~120 ms measured)
  * inside a click handler is the cost that cache exists to avoid.
  */
+/* CLEAR ONLY THE CLIP IN FRONT OF YOU.
+ *
+ * `Clear Lanes` empties the whole SLOT -- every clip, every parameter -- which
+ * was the only grain there was, and is far blunter than the thing people
+ * actually want after one bad take. The chain resolves "this clip" from the
+ * clip the slot is bound to; with nothing playing and nothing selected there
+ * is no clip to name, and a count of 0 is what says so. */
+function clearSlotClipLanes(slot) {
+    setSlotParam(slot, "lanes:clear_clip", "1");
+    const raw = getSlotParam(slot, "lanes:cleared");
+    if (raw === null || raw === "") {
+        announce("Clear clip lanes: no answer");
+        return;
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+        announce("Clear clip lanes: no answer");
+        return;
+    }
+    if (n === 0) {
+        announce("No automation on this clip");
+        return;
+    }
+    announce("Cleared " + n + " lane" + (n === 1 ? "" : "s") + " on this clip");
+}
+
+/* UNDO THE LAST AUTOMATION EDIT -- and press it again to redo, because the
+ * chain SWAPS its one buffer rather than copying back. That is the right shape
+ * for automation specifically: the mistake is HEARD rather than seen, so the
+ * real gesture is "put it back; no, the other one".
+ *
+ * One level deep, deliberately. It covers the case that actually happens (a
+ * take, a clear, a double, one p-lock) without a history to keep consistent
+ * with the clip underneath it. */
+function undoSlotLaneEdit(slot) {
+    const can = getSlotParam(slot, "lanes:undoable");
+    if (can === null) {
+        announce("Undo automation: no answer");
+        return;
+    }
+    if (can !== "1") {
+        announce("Nothing to undo");
+        return;
+    }
+    setSlotParam(slot, "lanes:undo", "1");
+    const done = getSlotParam(slot, "lanes:undone");
+    if (done === null) {
+        announce("Undo automation: no answer");
+        return;
+    }
+    announce(done === "1" ? "Automation edit undone" : "Nothing to undo");
+}
+
 function clearSlotLanes(slot) {
     setSlotParam(slot, "lanes:clear", "1");
     const raw = getSlotParam(slot, "lanes:cleared");
@@ -14187,6 +14242,16 @@ function runChainSettingAction(slot, key) {
      * list the way Save/Delete do (gridActionOpenedSomething stays false). */
     if (key === "clear_lanes") {
         clearSlotLanes(slot);
+        return;
+    }
+
+    if (key === "clear_clip_lanes") {
+        clearSlotClipLanes(slot);
+        return;
+    }
+
+    if (key === "undo_lane_edit") {
+        undoSlotLaneEdit(slot);
         return;
     }
 
@@ -23922,6 +23987,8 @@ function drawHelpDetail() {
     /* ...and the same slot list's `Clear Lanes` row. One implementation, three
      * surfaces — see clearSlotLanes. */
     _ctx.clearSlotLanes = (slot) => clearSlotLanes(slot);
+    _ctx.clearSlotClipLanes = (slot) => clearSlotClipLanes(slot);
+    _ctx.undoSlotLaneEdit = (slot) => undoSlotLaneEdit(slot);
     /* The knob grid's write path asks this whether a refused recording needs
      * announcing (shadow_ui_param_pages.mjs). */
     _ctx.noteLaneWriteRefusal = (slot, key) => noteLaneWriteRefusal(slot, key);

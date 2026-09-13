@@ -27,6 +27,7 @@
 #ifndef LANE_STORE_H
 #define LANE_STORE_H
 
+#include <string.h>
 #include <stdint.h>   /* lane_point_t's hold flag */
 
 #ifdef __cplusplus
@@ -191,6 +192,47 @@ typedef struct {
 typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
 
 void   lane_store_reset(lane_store_t *st);
+
+/* Does this lane belong to that clip? The key is (track, slot, target,
+ * param), so a clip's automation is every lane sharing its first two fields.
+ *
+ * THE STORE CANNOT CLEAR ANYTHING BY ITSELF. A driving lane holds a modulation
+ * override on the chain, and dropping the lane without handing that back
+ * leaves the parameter pinned at whatever the automation last wrote, with
+ * nothing left to move it. So the caller walks these, releases each, and then
+ * calls lane_clear_one -- which is why this is a predicate and not a
+ * clear_clip() that would have to know what a chain is. */
+static inline int lane_is_for_clip(const lane_t *ln, int track, int slot)
+{
+    return ln && ln->used && ln->track == track && ln->slot == slot;
+}
+
+static inline int lane_is_for_param(const lane_t *ln, int track, int slot,
+                                    const char *target, const char *param)
+{
+    if (!lane_is_for_clip(ln, track, slot)) return 0;
+    if (!target || !param) return 0;
+    return strcmp(ln->target, target) == 0 && strcmp(ln->param, param) == 0;
+}
+
+/* Forget one lane. Its override must already have been released. */
+static inline void lane_clear_one(lane_t *ln)
+{
+    if (ln) memset(ln, 0, sizeof(*ln));
+}
+
+/* ONE-DEEP UNDO, and it is a SWAP rather than a copy-back.
+ *
+ * Swapping makes undo its own inverse, so the same key is redo -- which
+ * matters more here than in a text editor: an automation mistake is heard
+ * rather than seen, and "put it back, no, the other one" is the actual
+ * gesture. The cost is one extra lane_store_t on the instance (37 KB), which
+ * is nothing beside the 8 MB it already carries, and no allocation.
+ *
+ * RT: a memcpy on the SPI callback. Taken before DISCRETE edits and once at
+ * the start of a recording pass -- never per recorded point, which would be
+ * 37 KB per breakpoint of a sweep. */
+void   lane_store_swap(lane_store_t *a, lane_store_t *b);
 
 /* Find the lane for (track, slot, target, param), or NULL.
  *

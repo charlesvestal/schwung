@@ -417,3 +417,17 @@ int lane_double(lane_t *ln, double loop_start, double loop_len) {
     }
     return copied;
 }
+
+void lane_store_swap(lane_store_t *a, lane_store_t *b)
+{
+    if (!a || !b) return;
+    /* Three memcpys through a static rather than a stack temporary: a
+     * lane_store_t is 37 KB and this runs on the SPI callback, whose frame is
+     * already the tightest budget in the system (patch_info_t took it to
+     * 232 KB when SLOT_BUSES went 4 -> 8). Not reentrant, and does not need to
+     * be: every caller is that one thread. */
+    static lane_store_t tmp;
+    memcpy(&tmp, a, sizeof(tmp));
+    memcpy(a, b, sizeof(*a));
+    memcpy(b, &tmp, sizeof(*b));
+}
