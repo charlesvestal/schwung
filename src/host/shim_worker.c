@@ -646,18 +646,14 @@ static void clip_regions_tick(void)
             }
             if (dst < 0) continue;
             const clip_region_t *d = &g_regions.slots[t][dst];
-            /* A clip with no notes cannot be told from another clip with no
-             * notes, and "duplicate of an empty clip" is not worth guessing
-             * at -- the absent fingerprint is {0, -1} and matching on it would
-             * copy automation onto any new empty clip. */
-            if (d->note_count == 0 && d->first_note < 0) continue;
             for (int src = 0; src < CLIP_SLOTS; src++) {
                 if (src == dst || !before.slots[t][src].exists) continue;
-                const clip_region_t *o = &g_regions.slots[t][src];
-                if (!o->exists) continue;
-                if (o->note_count != d->note_count) continue;
-                if (o->first_note != d->first_note) continue;
-                if (!(o->loop_len == d->loop_len)) continue;
+                /* The match itself is clip_region_is_duplicate_of(), which is
+                 * where the note-less guard lives -- see clip_regions.h. It is
+                 * pure so tests/host can drive it; this loop owns only the
+                 * "was empty, now exists" half, which needs two parses. */
+                if (!clip_region_is_duplicate_of(&g_regions.slots[t][src], d))
+                    continue;
                 g_clip_copy_track = t;
                 g_clip_copy_src = src;
                 g_clip_copy_dst = dst;
