@@ -950,6 +950,41 @@ static volatile int shadow_pads_held = 0;
  * a counter drifts, and a drifted counter latches the scanner off forever. */
 static volatile uint32_t shadow_steps_held_mask = 0;
 
+/* THE HELD STEP A P-LOCK SHOULD LAND ON, or -1.
+ *
+ * The gesture is hold a step, turn a knob. Its UI half lived in the host's
+ * param-pages io (`onValueWritten`) and was armed only while `VIEWS.PARAM_PAGES`
+ * was up -- so a module that draws its OWN screen from `ui_chain.js` could not
+ * p-lock at all. 9W9 is one, and RECORDING worked there the whole time
+ * (lane_on_set_param intercepts every component write, whatever UI made it),
+ * which is what made the gap look like a module bug rather than ours. Exactly
+ * the shape of the enum peek, which lived in the same layer and was invisible
+ * to the same modules.
+ *
+ * So the decision moves BELOW the UI, to the one place every write already
+ * passes and the held steps are already tracked. Two conditions, both
+ * deliberate:
+ *
+ *  - EXACTLY ONE step. Two held steps name no single phase, and picking the
+ *    lowest would silently p-lock a step the user did not mean.
+ *  - The shadow display is UP. Otherwise Move owns the screen, a held step is
+ *    Move's own gesture, and a chain write that happens to coincide (a web UI
+ *    knob, say) would plant a breakpoint nobody asked for.
+ *
+ * NOT static, and do not make it so: shadow_chain_mgmt.c calls it. A shared
+ * library LINKS CLEAN with the symbol undefined, so marking it static builds
+ * green and then fails at LOAD -- which for an LD_PRELOAD shim means
+ * MoveOriginal does not start. Measured the hard way: a crash loop, ~7 s a
+ * cycle, with nothing in dmesg. */
+int shim_plock_held_step(void)
+{
+    if (!shadow_display_mode) return -1;
+    uint32_t m = shadow_steps_held_mask;
+    if (m == 0 || (m & (m - 1)) != 0) return -1;   /* none, or more than one */
+    for (int i = 0; i < 16; i++) if (m & (1u << i)) return i;
+    return -1;
+}
+
 
 
 /* Is jog encoder currently being touched? (note 9) */
@@ -970,7 +1005,10 @@ void shim_gesture_state(int *shift, int *vol, unsigned *pending,
     }
     if (pending) *pending = p;
     if (fired) *fired = f;
-    if (vol_during) *vol_during = v;
+    /* The held-step mask rides in the top 16 bits: a p-lock that does not
+     * happen is otherwise silent, and "did the shim even see the step" is the
+     * first question. */
+    if (vol_during) *vol_during = v | ((shadow_steps_held_mask & 0xFFFFu) << 16);
 }
 
 /* Set when Shift+Step 15 (Move's Double Loop) is seen on cable 0, consumed by
