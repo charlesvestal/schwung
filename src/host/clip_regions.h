@@ -150,6 +150,32 @@ int clip_regions_geometry_differs(const clip_regions_t *a,
 double clip_regions_quarters_per_bar(const clip_regions_t *rg,
                                      int track, int slot);
 
+/* THE SELECTED CLIP on `track`, from the file's `isPlaying` flag, or -1.
+ *
+ * NOT the same question as "what is playing", and conflating them is what
+ * made p-locks refuse on a stopped track. The live identity in clip_state
+ * answers PLAYBACK -- it is decoded from the pad LEDs and correctly says
+ * clip_slot -1 when a track is playing nothing. But Move's step editor still
+ * shows a clip, and a p-lock is an EDIT of that clip: it has to work with the
+ * transport stopped, which is how most step editing is done.
+ *
+ * Move records the selection as `isPlaying` on the clip, which is its name
+ * for it and not ours -- it survives a stop, and after Shift+Step 14 it names
+ * the clip just created. Measured 2026-09-13: transport stopped, editor on
+ * T3s2, the live identity said "nothing playing" and the file said
+ * isPlaying on exactly T3s2.
+ *
+ * It is the FILE, so it is as old as Move's last save. Prefer the live
+ * identity while something is actually playing; this is for when nothing is. */
+static inline int clip_regions_selected_slot(const clip_regions_t *rg, int track)
+{
+    if (!rg || !rg->valid || track < 0 || track >= CLIP_TRACKS) return -1;
+    for (int s = 0; s < CLIP_SLOTS; s++)
+        if (rg->slots[track][s].exists && rg->slots[track][s].is_playing)
+            return s;
+    return -1;
+}
+
 void clip_regions_forget_deleted(const clip_regions_t *before,
                                  const clip_regions_t *after,
                                  clip_state_t *st,
