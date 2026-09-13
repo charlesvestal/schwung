@@ -1125,6 +1125,70 @@ int main(void) {
         }
     }
 
+    /* ------------------------------------------------------------------
+     * A P-LOCK PLAYS ON THE FIRST PASS -- it must not wait for the loop.
+     *
+     * Charles: "do p-locks show on the FIRST play after setting? They seemed
+     * to need a loop first." They did, and the reason is `punch_until_wrap`:
+     * an unarmed component write under an existing lane hands the parameter
+     * to the knob until the clip wraps, which is right for turning a knob and
+     * wrong for the gesture that WRITES A LOCK -- the old path did both, so
+     * the lock existed and the lane stayed muted past it.
+     *
+     * The write-time p-lock now REPLACES the live write rather than
+     * accompanying it, so nothing punches, and the point plays the first time
+     * the transport reaches it. Both directions are checked here because the
+     * difference is the whole answer.
+     * ------------------------------------------------------------------ */
+    {
+        chain_instance_t *pl = calloc(1, sizeof(*pl));
+        if (pl) {
+            setup_fake_synth(pl);
+            lane_fingerprint_t pfp = { 0.0, 8.0, 3, 60 };
+            pl->lane_track = 0; pl->lane_clip_slot = 0;
+            pl->clip_phase_valid = 1; pl->clip_loop_len = 8.0; pl->clip_loop_start = 0.0;
+            lane_t *pln = lane_alloc(&pl->lanes, "synth", "cutoff", 0, 0, &pfp);
+            CHECK(pln != NULL, "p-lock test: lane_alloc");
+            if (pln) {
+                lane_write(pln, 0.0, 20.0f, 0);
+
+                /* The gesture as it works now: the chain sees the p-lock and
+                 * NOT the component write. */
+                pl->clip_phase_beats = 1.0;
+                lane_tick(pl);
+                lane_param_set(pl, "plock", "synth cutoff 6 70");
+                CHECK(pln->punch_until_wrap == 0,
+                      "a p-lock punched the lane out -- it will not be heard until the loop wraps");
+                pl->clip_phase_beats = 6.0;
+                lane_tick(pl);
+                CHECK(fake_value("cutoff") == 70.0f,
+                      "a p-lock did not play on the FIRST pass: %f", fake_value("cutoff"));
+
+                /* The control, and the old behaviour: an unarmed component
+                 * write DOES punch, so the same point is silent until the
+                 * wrap. Without this the test above could pass for reasons
+                 * unrelated to the punch. */
+                pl->clip_phase_beats = 1.0;
+                lane_tick(pl);
+                ui_set_synth_param(pl, "cutoff", "33");
+                CHECK(pln->punch_until_wrap == 1,
+                      "an unarmed knob turn no longer punches -- the encoder is inaudible under a lane");
+                pl->clip_phase_beats = 6.0;
+                lane_tick(pl);
+                CHECK(fake_value("cutoff") != 70.0f,
+                      "a punched lane drove the parameter anyway (%f)", fake_value("cutoff"));
+                /* ...and the wrap ends it: the lock plays from then on. */
+                pl->clip_phase_beats = 0.5;
+                lane_tick(pl);
+                pl->clip_phase_beats = 6.0;
+                lane_tick(pl);
+                CHECK(fake_value("cutoff") == 70.0f,
+                      "the punch outlived its wrap: %f", fake_value("cutoff"));
+            }
+            free(pl);
+        }
+    }
+
     free(inst);
     if (fails) {
         printf("FAILURES: %d\n", fails);
