@@ -667,6 +667,22 @@ static JSValue js_shadow_get_lanes_driving_mask(JSContext *ctx, JSValueConst thi
     return JS_NewInt32(ctx, shadow_control->lanes_driving_mask);
 }
 
+/* shadow_get_held_step() -> int
+ *
+ * The step button under the user's finger (0..15) or -1. The SHIM decides it
+ * -- exactly one step, shadow display up, the same conditions that make a
+ * component write a p-lock -- so the UI and the write agree about which step
+ * a gesture is on by construction rather than by two rules that match.
+ *
+ * A byte out of SHM, so the grid can ask every frame.
+ */
+static JSValue js_shadow_get_held_step(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, -1);
+    uint8_t hs = shadow_control->held_step;
+    return JS_NewInt32(ctx, hs == SHADOW_HELD_STEP_NONE ? -1 : (int)hs);
+}
+
 /* shadow_get_move_ui_mode() -> int
  * Returns Move's UI mode from shared control struct:
  * 0=unknown, 1=session, 2=note, 3=set_overview
@@ -3258,6 +3274,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_display_mode", JS_NewCFunction(ctx, js_shadow_get_display_mode, "shadow_get_display_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_plock_seq", JS_NewCFunction(ctx, js_shadow_get_plock_seq, "shadow_get_plock_seq", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step", JS_NewCFunction(ctx, js_shadow_get_held_step, "shadow_get_held_step", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_lanes_driving_mask", JS_NewCFunction(ctx, js_shadow_get_lanes_driving_mask, "shadow_get_lanes_driving_mask", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));

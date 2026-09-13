@@ -536,6 +536,72 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
      * outside the window is dormant rather than wrong. What it does require is
      * a clip POSITION to key the lane to, and a parameter the module
      * declares. */
+    /* WHAT DOES A LANE HOLD AT THIS PHASE? "<target> <param> <phase>" in,
+     * `lanes:probe` read back out.
+     *
+     * The question behind "hold a step and see the value locked on it". It is
+     * a SET because a GET cannot carry arguments -- a param key is one token
+     * and this asks about three things -- and the answer is stashed rather
+     * than returned for the same reason. One question at a time, on the SPI
+     * callback, which is the only thread that serves params.
+     *
+     * IT ANSWERS THE CURVE, not the point store: `lane_eval` is what will
+     * actually play at that phase, and a step showing anything else would be
+     * a promise the playback does not keep. `exact` reports separately
+     * whether a point SITS there -- within LANE_MIN_POINT_BEATS, the same
+     * window lane_write replaces in, so "exact" means "turning here edits
+     * this point" and nothing else.
+     *
+     * The TYPE comes from the module's metadata, like everywhere else, so a
+     * probe reads an enum as a step and a float as a slope. */
+    if (strcmp(sub, "probe") == 0) {
+        inst->lanes_probe_have = 0;
+        inst->lanes_probe_exact = 0;
+        inst->lanes_probe_value = 0.0f;
+        inst->lanes_probe_stepped = 0;
+        if (!val) return;
+        char target[16] = {0}, param[32] = {0};
+        double phase = 0.0, lo = 0.0, len = 0.0;
+        /* THE WINDOW IS THE CALLER'S TO NAME, and that is not a convenience.
+         * lane_eval answers nothing for a loop_len of 0, and the instance's
+         * live geometry IS 0 whenever the transport is stopped -- which is
+         * when step editing is mostly done, so a probe using it answered
+         * "nothing locked here" for every p-lock on a stopped clip. The host
+         * knows the clip's length from Move's own file and strip (it computes
+         * it for the step->phase translation already), so it passes it. Two
+         * arguments, both optional: a caller that has no window falls back to
+         * the live one, which is right while something is playing. */
+        int got = sscanf(val, "%15s %31s %lf %lf %lf", target, param, &phase,
+                         &lo, &len);
+        if (got < 3) return;
+        if (got < 5 || !isfinite(lo) || !isfinite(len) || len <= 0.0) {
+            lo = inst->clip_loop_start;
+            len = inst->clip_loop_len;
+        }
+        if (!isfinite(phase) || phase < 0.0) return;
+        if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+        lane_t *ln = lane_find(&inst->lanes, target, param,
+                               inst->lane_track, inst->lane_clip_slot);
+        if (!ln) return;
+        chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
+        if (!pinfo) return;
+        const int stepped = (pinfo->type == KNOB_TYPE_INT ||
+                             pinfo->type == KNOB_TYPE_ENUM);
+        float v = 0.0f;
+        if (!lane_eval(ln, phase, lo, len, stepped, &v))
+            return;
+        inst->lanes_probe_value = v;
+        inst->lanes_probe_stepped = stepped;
+        inst->lanes_probe_have = 1;
+        for (int i = 0; i < ln->n; i++) {
+            if (fabs(ln->pts[i].phase - phase) < LANE_MIN_POINT_BEATS) {
+                inst->lanes_probe_exact = 1;
+                break;
+            }
+        }
+        return;
+    }
+
     if (strcmp(sub, "plock") == 0) {
         /* EVERY REFUSAL HERE HAS A NAME NOW.
          *
@@ -784,6 +850,20 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
             return snprintf(buf, buf_len, "%s", "");
         return snprintf(buf, buf_len, "%d %d",
                         inst->lane_track, inst->lane_clip_slot);
+    }
+
+    /* The answer to the last `lanes:probe`: "<value> <exact>", or empty for
+     * "this lane has nothing to say at that phase" -- which is NOT the value
+     * 0.0, the same distinction lane_eval's return carries and the same one
+     * the UI must not collapse, or every unautomated knob would read 0 while
+     * a step is held. */
+    if (strcmp(sub, "probe") == 0) {
+        if (!inst->lanes_probe_have) return snprintf(buf, buf_len, "%s", "");
+        if (inst->lanes_probe_stepped)
+            return snprintf(buf, buf_len, "%d %d", (int)inst->lanes_probe_value,
+                            inst->lanes_probe_exact);
+        return snprintf(buf, buf_len, "%.6f %d", inst->lanes_probe_value,
+                        inst->lanes_probe_exact);
     }
 
     if (strcmp(sub, "plock_refused") == 0) {
