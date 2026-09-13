@@ -2091,6 +2091,22 @@ static void shadow_inprocess_render_to_buffer(void) {
              * Guarded on the pointer because the export is optional: a chain
              * DSP built before lanes resolves NULL, and every slot is simply
              * never told, which reads downstream as "phase unknown". */
+            /* A STOPPED TRANSPORT HAS NO PHASE, and saying so is what
+             * hands the parameter back.
+             *
+             * The phase is anchor + elapsed pulses, so when the clock
+             * stops it FREEZES rather than becoming unknown -- and a
+             * frozen phase is a perfectly good one, so every lane went on
+             * driving its parameter at whatever value the stop happened to
+             * land on, for as long as the device sat there. Measured: the
+             * knob read 0.2 and the synth stayed at 0.9 indefinitely, with
+             * nothing but an unarmed turn or a clear to get it back.
+             *
+             * `lane_tick` already does the right thing with an unknown
+             * phase -- it releases everything it drives, once -- so this
+             * only has to tell it the truth. The transport service knows:
+             * a Stop (0xFC) clears `running`, and with no active source
+             * the beat position is negative. */
             if (shadow_chain_set_clip_phase) {
                 double lane_phase = 0.0, lane_loop = 0.0;
                 double lane_fp[4] = { 0.0, 0.0, 0.0, -1.0 };
@@ -2098,6 +2114,8 @@ static void shadow_inprocess_render_to_buffer(void) {
                 int lane_ok = shadow_slot_clip_phase(s, &lane_phase, &lane_loop,
                                                      &lane_clip, &lane_fp_ok,
                                                      lane_fp);
+                if (lane_ok && shadow_transport_beat_position() < 0.0)
+                    lane_ok = 0;
                 shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
                                             lane_ok, lane_phase, lane_loop,
                                             s, lane_clip, lane_fp_ok, lane_fp);
@@ -7677,6 +7695,18 @@ static uint8_t  step_press_vel[16];
  * a tap any finger can produce, and Move is entitled to see a shape it could
  * have received from hardware. */
 static uint8_t step_tap_replay[16];
+/* A press that DID something on the grid is not a tap, however short it was.
+ *
+ * The tap/hold split is a stopwatch, and a stopwatch cannot tell a quick
+ * gesture from a quick mistake: pressing a step, flicking a knob and letting
+ * go inside STEP_TAP_MS wrote a p-lock AND handed Move the tap, so one
+ * gesture locked a value and DELETED A NOTE. Measured: lock stored at phase
+ * 3.75 and Song.abl went 14 notes -> 13.
+ *
+ * Set by whatever consumed the press -- a landed p-lock, or arming the clear
+ * gesture -- and cleared with the latch. The stopwatch still decides for a
+ * press that did nothing else, which is the case it is good at. */
+static uint8_t step_used[16];
 static uint8_t claim_press_blocked[128];
 
 /* A withheld step press or release, and what it decides.
@@ -7689,6 +7719,14 @@ static uint8_t claim_press_blocked[128];
  * Called from BOTH swallow sites (the gated one and the unconditional drain),
  * so the answer cannot differ depending on whether the grid was still up when
  * the finger came off. */
+/* "The step under the finger DID something" -- see step_used. Called by
+ * shadow_chain_mgmt.c when a p-lock lands, so the release cannot also be
+ * replayed to Move as a note toggle. */
+void shim_step_mark_used(int step)
+{
+    if (step >= 0 && step < 16) step_used[step] = 1;
+}
+
 static void step_note_withhold(uint8_t note, uint8_t vel)
 {
     if (note < 16 || note > 31) return;
@@ -7712,9 +7750,13 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
         step_swallow_latch[i] = 1;
         step_press_ms[i] = now_mono_ms();
         step_press_vel[i] = vel;
+        step_used[i] = 0;
         return;
     }
     step_swallow_latch[i] = 0;
+    /* A press that was consumed by the grid is never replayed, whatever the
+     * stopwatch says. */
+    if (step_used[i]) { step_used[i] = 0; step_press_ms[i] = 0; return; }
     /* A press we never saw cannot have been a tap: `step_press_ms` of 0 means
      * the latch was set by an older build or a lost press, and replaying then
      * would put a note on a step nobody touched. */
