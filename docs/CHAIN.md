@@ -820,6 +820,20 @@ pieces of it exist and are tested; the input plumbing is not written.
   `held_step 4`, release → 255, **two steps down → 255** (the "exactly one"
   guard).
 
+- **A P-LOCK PLAYS ON THE FIRST PASS, and it used not to.** Reported from the
+  device as "they seemed to need a loop first", and that was exactly right:
+  `punch_until_wrap` hands a parameter to the knob until the clip wraps, and
+  it is set by an unarmed component write under an existing lane. The old
+  gesture wrote the VALUE and the LOCK, so the value write punched the lane
+  out and the lock — correctly stored — was silent until the loop came round.
+
+  A landed p-lock replaces the live write now, so nothing punches. A REFUSED
+  one still writes the value and still punches, which is the right way round:
+  no lock was stored, so the turn must be audible. Both directions are in
+  `tests/host/test_chain_lanes_playback.c`, including that an unarmed turn
+  still punches — without that control the first assertion could pass for
+  reasons having nothing to do with the punch.
+
 - **REMOVING ONE STEP'S AUTOMATION: hold DELETE, then PICK.** There was no
   grain for this at all — `clear`, `clear_clip`, `clear_param` and
   `clear_target` each take a whole lane or more, so getting rid of one bad
