@@ -46,6 +46,17 @@ void lane_record_end_all(chain_instance_t *inst) {
         lane_record_end(&inst->lanes.lanes[i]);
 }
 
+/* Remember the whole store so the next edit can be taken back.
+ *
+ * Called before DISCRETE edits and once at the start of a recording pass --
+ * never per recorded point, which would be a 37 KB memcpy per breakpoint of a
+ * sweep on the SPI callback. */
+void lane_undo_take(chain_instance_t *inst) {
+    if (!inst) return;
+    memcpy(&inst->lanes_undo, &inst->lanes, sizeof(inst->lanes_undo));
+    inst->lanes_undo_valid = 1;
+}
+
 void lane_release_all(chain_instance_t *inst) {
     if (!inst) return;
     for (int i = 0; i < LANE_MAX; i++) {
@@ -613,12 +624,72 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
 
     if (strcmp(sub, "clear") == 0) {
         if (!val || atoi(val) == 0) return;
+        lane_undo_take(inst);
         lane_release_all(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++)
             if (inst->lanes.lanes[i].used) n++;
         lane_store_reset(&inst->lanes);
         inst->lanes_last_cleared = n;
+        return;
+    }
+
+    /* CLEAR ONE CLIP'S AUTOMATION. `lanes:clear` empties the whole SLOT --
+     * every clip, every parameter -- which is the only granularity that
+     * existed and is far blunter than the thing people want ("undo what I
+     * just did to this clip"). The clip is the one this slot is currently
+     * bound to; with nothing playing and nothing selected there is no clip to
+     * name, so it refuses rather than guessing at one. */
+    if (strcmp(sub, "clear_clip") == 0) {
+        if (!val || atoi(val) == 0) return;
+        inst->lanes_last_cleared = 0;
+        if (inst->lane_clip_slot < 0) return;
+        lane_undo_take(inst);
+        int n = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            lane_t *ln = &inst->lanes.lanes[i];
+            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot))
+                continue;
+            if (ln->driving) lane_release_one(inst, ln);
+            lane_clear_one(ln);
+            n++;
+        }
+        inst->lanes_last_cleared = n;
+        return;
+    }
+
+    /* CLEAR ONE PARAMETER'S LANE on the current clip: "<target> <param>".
+     * The finest grain, and the one that matches how a mistake is made --
+     * one knob, one clip. */
+    if (strcmp(sub, "clear_param") == 0) {
+        char target[16] = {0}, param[32] = {0};
+        inst->lanes_last_cleared = 0;
+        if (!val || sscanf(val, "%15s %31s", target, param) != 2) return;
+        if (inst->lane_clip_slot < 0) return;
+        lane_undo_take(inst);
+        int n = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            lane_t *ln = &inst->lanes.lanes[i];
+            if (!lane_is_for_param(ln, inst->lane_track, inst->lane_clip_slot,
+                                   target, param))
+                continue;
+            if (ln->driving) lane_release_one(inst, ln);
+            lane_clear_one(ln);
+            n++;
+        }
+        inst->lanes_last_cleared = n;
+        return;
+    }
+
+    /* UNDO, which is also REDO -- the buffer is swapped, not copied back.
+     * Every override is released first: the lanes about to be swapped out are
+     * holding them, and the set swapped in must re-establish its own. */
+    if (strcmp(sub, "undo") == 0) {
+        if (!val || atoi(val) == 0) return;
+        if (!inst->lanes_undo_valid) { inst->lanes_last_undone = 0; return; }
+        lane_release_all(inst);
+        lane_store_swap(&inst->lanes, &inst->lanes_undo);
+        inst->lanes_last_undone = 1;
         return;
     }
 }
@@ -635,6 +706,12 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * was too small, which the UI must not mistake for empty or it truncates
      * a good lanes_<i>.json with half a document. */
     if (strcmp(sub, "state") == 0) return lane_serve_state(inst, buf, buf_len);
+
+    if (strcmp(sub, "undone") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_undone);
+
+    if (strcmp(sub, "undoable") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_undo_valid ? 1 : 0);
 
     if (strcmp(sub, "cleared") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_cleared);
