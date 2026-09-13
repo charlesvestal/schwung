@@ -71,12 +71,17 @@ command grep -q '(d1 < 128 && claim_press_blocked\[d1\])' "$shim" \
 echo "  ok  whoever received the press receives the release"
 
 # ---- 3. Shift-held presses are never claimed ---------------------------------
-command grep -A1 'claim_press_blocked\[d1\] =' "$shim" | command grep -q '!shadow_shift_held' \
+# The whole ASSIGNMENT STATEMENT, not a fixed window after it: the claim
+# expression grew a second term (the step-clear gesture claims Delete while a
+# step is held) and a `grep -A1` stopped seeing the Shift guard that had not
+# moved. A pin that fails on reformatting is a pin that gets loosened to pass.
+claim_stmt=$(awk '/claim_press_blocked\[d1\] =/,/;/' "$shim" | head -20)
+echo "$claim_stmt" | command grep -q '!shadow_shift_held' \
   || fail "a Shift-held button can be claimed -- Shift+Copy / Shift+Delete are the host's snapshot/recall"
 echo "  ok  Shift+<button> stays the host's"
 
 # ---- 4. the host-owned controls are refused by the shim ----------------------
-command grep -A1 'claim_press_blocked\[d1\] =' "$shim" | command grep -q '!claim_denied_cc(d1)' \
+echo "$claim_stmt" | command grep -q '!claim_denied_cc(d1)' \
   || fail "the latch does not consult claim_denied_cc -- a module could claim Shift, Mute or the jog"
 denied=$(sed -n '/^static int claim_denied_cc(uint8_t cc) {/,/^}/p' "$shim")
 [ -n "$denied" ] || fail "claim_denied_cc is gone"
