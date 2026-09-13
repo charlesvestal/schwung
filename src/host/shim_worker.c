@@ -398,6 +398,9 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
+/* Defined in schwung_shim.c; see its comment. */
+void shim_gesture_state(int *shift, int *vol, unsigned *pending,
+                        unsigned *fired, unsigned *vol_during);
 #include <sys/stat.h>
 #include "clip_regions.h"
 #include "step_strip.h"
@@ -1139,6 +1142,20 @@ static void clip_state_tick(void)
                 g_regions.step_res_raw[0] ? g_regions.step_res_raw : "?",
                 step_strip_segments_for_track(0), step_strip_segments_for_track(1),
                 step_strip_segments_for_track(2), step_strip_segments_for_track(3));
+
+        /* THE GESTURE GATE, because a long press that opens nothing is silent
+         * in exactly the way a refused p-lock was: five terms, and from
+         * outside the device every one of them looks like "nothing
+         * happened". */
+        {
+            int g_shift = 0, g_vol = 0;
+            unsigned g_pend = 0, g_fired = 0, g_voldur = 0;
+            shim_gesture_state(&g_shift, &g_vol, &g_pend, &g_fired, &g_voldur);
+            fprintf(jf, ",\n \"gesture\": {\"shift_held\":%d,\"vol_touched\":%d,"
+                    "\"track_pending\":%u,\"track_fired\":%u,"
+                    "\"vol_during_press\":%u}",
+                    g_shift, g_vol, g_pend, g_fired, g_voldur);
+        }
     }
     fprintf(jf, "}\n");
     fclose(jf);

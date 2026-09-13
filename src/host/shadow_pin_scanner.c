@@ -77,6 +77,17 @@ int pin_accumulate_slice(int idx, const uint8_t *data, int bytes)
 
         /* File-triggered display dump.
          *
+         * THIS IS MOVE'S FRAME, NOT THE PANEL'S. The scanner reassembles what
+         * MOVE draws, upstream of the shim's compositor, so when the shadow UI
+         * owns the OLED this file still shows Move underneath it. Dumping it
+         * to check a Schwung screen therefore reports "the shadow UI did not
+         * open" no matter what is actually lit, and that misreading cost most
+         * of a session: a long-press was fired, display_mode was 1, shadow_ui
+         * was running, and every screenshot showed Move.
+         *
+         * For what is ON THE PANEL read /dev/shm/schwung-display-live, which
+         * is the composited frame, same 1024-byte 128x64 1-bit layout.
+         *
          * NOT /tmp. The device's root FS is ~463 MB and usually 100% full, and
          * /tmp lives on it -- a dump that lands there fails silently or fills
          * the last free block. Everything armed or written on the device goes

@@ -882,6 +882,19 @@ static void shadow_update_held_track(uint8_t cc, int pressed)
 
 static struct timespec track_press_time[4];
 static uint8_t track_longpress_pending[4];
+
+/* WHY A GESTURE DID NOT FIRE, readable from the worker's clip_state.json.
+ *
+ * A long press that does not open anything is silent in exactly the way the
+ * p-lock refusal was: the gate has five terms (pending, not-already-fired,
+ * shift not held, volume not touched, not vol-touched-during-this-press) and
+ * from outside the device they all look identical -- nothing happened. Two
+ * sessions were spent guessing at which term it was.
+ *
+ * Read from the worker, written only here. Torn reads are not a concern: each
+ * is an independent byte and the consumer is a 1 Hz debug dump. */
+void shim_gesture_state(int *shift, int *vol, unsigned *pending,
+                        unsigned *fired, unsigned *vol_during);
 static uint8_t track_longpress_fired[4];
 /* Set if the volume knob is touched at any point while a Track button is held.
  * Once set, that track's long-press is suppressed for the remainder of the press,
@@ -936,10 +949,30 @@ static volatile int shadow_pads_held = 0;
  * that already held it.  Set/clear by note number is idempotent under both;
  * a counter drifts, and a drifted counter latches the scanner off forever. */
 static volatile uint32_t shadow_steps_held_mask = 0;
+
+
+
 /* Is jog encoder currently being touched? (note 9) */
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
+
+void shim_gesture_state(int *shift, int *vol, unsigned *pending,
+                        unsigned *fired, unsigned *vol_during)
+{
+    if (shift) *shift = shadow_shift_held ? 1 : 0;
+    if (vol)   *vol   = shadow_volume_knob_touched ? 1 : 0;
+    unsigned p = 0, f = 0, v = 0;
+    for (int i = 0; i < 4; i++) {
+        if (track_longpress_pending[i]) p |= (1u << i);
+        if (track_longpress_fired[i])   f |= (1u << i);
+        if (track_vol_touched_during_press[i]) v |= (1u << i);
+    }
+    if (pending) *pending = p;
+    if (fired) *fired = f;
+    if (vol_during) *vol_during = v;
+}
+
 /* Set when Shift+Step 15 (Move's Double Loop) is seen on cable 0, consumed by
  * the per-slot lane push in the next pre-transfer. A flag rather than a direct
  * call because the gesture is decoded in the post-ioctl scan, where a slot's
