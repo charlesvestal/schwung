@@ -247,7 +247,12 @@ if needs_rebuild build/schwung-shim.so \
     src/host/master_fx_key.h src/host/send_fx_key.h src/host/bus_mix.h \
     src/host/link_audio.h src/host/shadow_shm_util.h; then
     echo "Building shim..."
-    "${CROSS_PREFIX}gcc" -g3 -shared -fPIC \
+    # -Wl,--no-undefined: A SHARED LIBRARY LINKS CLEAN WITH UNDEFINED SYMBOLS,
+    # and for an LD_PRELOAD shim the failure then lands at LOAD -- MoveOriginal
+    # does not start and the device crash-loops with nothing in dmesg.
+    # Measured 2026-09-13: one `static` on a function called from another
+    # translation unit cost exactly that.
+    "${CROSS_PREFIX}gcc" -g3 -shared -fPIC -Wl,--no-undefined \
         -o build/schwung-shim.so \
         src/schwung_shim.c \
         src/lib/schwung_spi_lib.c \
