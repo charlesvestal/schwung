@@ -657,6 +657,52 @@ int main(void)
     CHECK(!clip_regions_parse_file("../fixtures/does_not_exist.json", &bad),
           "a missing file must fail");
 
+    /* A COPIED CLIP, AND THE NOTE-LESS CLIP THAT MUST NOT LOOK LIKE ONE.
+     *
+     * "A clip was copied" is recognised from the file as a slot that was
+     * empty now holding a clip matching a sibling, and the match is CONTENT:
+     * note count, lowest note, loop length. The dangerous case is the empty
+     * one -- two clips with no notes are indistinguishable by that test, so
+     * without an explicit guard any newly arrived empty clip matches any
+     * other and has somebody's automation copied onto it.
+     *
+     * Not hypothetical: Move 2.1.0's Bounce Clips to Audio puts a note-less
+     * clip in a new slot, and so does Shift+Step 14 before anything has been
+     * played into it. */
+    {
+        clip_region_t a, b, empty1, empty2;
+        memset(&a, 0, sizeof a);
+        a.exists = 1; a.note_count = 4; a.first_note = 60; a.loop_len = 8.0;
+        b = a;
+        CHECK(clip_region_is_duplicate_of(&a, &b) == 1,
+              "same content must read as a duplicate");
+
+        b = a; b.note_count = 5;
+        CHECK(clip_region_is_duplicate_of(&a, &b) == 0,
+              "a different note count is not a duplicate");
+        b = a; b.first_note = 62;
+        CHECK(clip_region_is_duplicate_of(&a, &b) == 0,
+              "a different lowest note is not a duplicate");
+        b = a; b.loop_len = 16.0;
+        CHECK(clip_region_is_duplicate_of(&a, &b) == 0,
+              "a different loop length is not a duplicate");
+
+        /* The one that matters. */
+        memset(&empty1, 0, sizeof empty1);
+        empty1.exists = 1; empty1.note_count = 0; empty1.first_note = -1;
+        empty1.loop_len = 8.0;
+        empty2 = empty1;
+        CHECK(clip_region_is_duplicate_of(&empty1, &empty2) == 0,
+              "a note-less clip must NEVER read as a duplicate -- a bounce, or "
+              "a fresh Shift+Step 14 clip, would inherit someone else's lane");
+
+        b = a; b.exists = 0;
+        CHECK(clip_region_is_duplicate_of(&a, &b) == 0,
+              "a destination that does not exist is not a duplicate");
+        CHECK(clip_region_is_duplicate_of(NULL, &a) == 0,
+              "NULL is not a duplicate");
+    }
+
     if (failures) { printf("\n%d CHECK(s) failed\n", failures); return 1; }
     printf("\nall clip_regions checks passed (%d clips)\n", n);
     return 0;
