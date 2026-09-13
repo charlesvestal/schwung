@@ -38,11 +38,21 @@
  * bar, so 11/8 and 4/4 are the same code, and the MULTI_PAGE refusal below
  * does not arise: a bar that spans two pages has each page named directly.
  *
- * Measured 2026-09-13: on a one-bar 11/8 clip (loop 0..5.5) a single
- * right-arrow moved the file's scroll to exactly 5.5 -- one bar, landing on
- * the "+" that adds another. The strip's segment count did NOT change, which
- * is what had made the page look unreadable: the strip counts BARS, and the
- * page had moved within one.
+ * Measured 2026-09-13 on a one-bar 11/8 clip (loop 0..5.5, 22 steps at 1/16):
+ * one right-arrow moved the file's scroll from 0 to exactly 4.0 -- SIXTEEN
+ * STEPS, not a bar -- and a second to 5.5, the "+" that adds another bar. So
+ * a page is 16 steps, as Move 2.1.0's notes say ("when bars exceed 16 steps,
+ * they display across multiple pages using arrow buttons"), and steps 16..21
+ * of that bar live on page 2 and are perfectly reachable.
+ *
+ * (An earlier revision of this comment said a press moved a whole BAR. That
+ * read a two-press sequence as one, and it is the kind of error this form is
+ * immune to anyway: the scroll is taken as given rather than reconstructed,
+ * so what the arrows step by never enters the arithmetic.)
+ *
+ * The strip's segment count does NOT change as you page, which is what had
+ * made the page look unreadable: the strip counts BARS, and the page moves
+ * within one.
  *
  * ITS ONE WEAKNESS IS AGE. It comes from Song.abl, which Move writes lazily,
  * so paging and immediately p-locking can read the previous page. The bar
