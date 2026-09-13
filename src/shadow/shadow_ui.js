@@ -19511,9 +19511,10 @@ function heldStepIndex() {
  * already paid for, and the binding is idempotent against the SHM for exactly
  * this reason. Held state is dropped with the flag, or a step released while
  * the UI was not watching stays "held" forever. */
+let uiViewLogTick = 0;
 function reconcileStepObserve() {
     if (typeof host_step_observe !== "function") return;
-    const want = (currentView === VIEWS.PARAM_PAGES) &&
+    const want = (view === VIEWS.PARAM_PAGES) &&
                  paramPagesComponent() !== null &&
                  paramPagesComponent() !== undefined &&
                  paramPagesSlot() >= 0;
@@ -25046,6 +25047,22 @@ globalThis.tick = function() {
     reconcileCcClaim();
     reconcilePadBlock();
     reconcileStepObserve();
+    /* WHERE THE UI IS, once a second, when the debug log is armed.
+     *
+     * Every other instrument in this session could see Move (its screen, its
+     * file, its LEDs) and none could see the shadow UI's own view, which is
+     * why navigating it from a harness meant guessing. debugLog is a no-op
+     * unless /data/UserData/schwung/debug_log_on exists, and the throttle is
+     * the same 1 Hz the clip-state readout uses. */
+    uiViewLogTick = (uiViewLogTick + 1) % 60;
+    if (uiViewLogTick === 0) {
+        try {
+            debugLog("ui_view: " + view +
+                     " slot=" + paramPagesSlot() +
+                     " component=" + String(paramPagesComponent()) +
+                     " step_observe_want=" + (view === VIEWS.PARAM_PAGES));
+        } catch (e) { /* an observability line must never break the tick */ }
+    }
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
@@ -27220,6 +27237,8 @@ globalThis.onMidiMessageInternal = function(data) {
     if (((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
             noteStepIndex(d1) >= 0) {
         onStepNote(d1, ((status & 0xF0) === MidiNoteOn) ? d2 : 0);
+        debugLog("plock: step note " + d1 + " v" + d2 +
+                 " held=" + heldStepIndex());
     }
 
     /* Handle Note On for knob touch - peek at current value without turning

@@ -524,7 +524,7 @@ function pageHasKnobs(p) {
 
 export function createController(io = {}) {
     const getParam = io.getParam || (() => null);
-    const setParam = io.setParam || (() => {});
+    const rawSetParam = io.setParam || (() => {});
     /* Called AFTER a value is committed, with what was actually written.
      *
      * The p-lock gesture needs exactly this moment: "hold a step, turn a knob"
@@ -534,6 +534,17 @@ export function createController(io = {}) {
      * page belongs to a chain slot -- so this stays one optional call rather
      * than the controller learning about step buttons. */
     const onValueWritten = io.onValueWritten || null;
+    /* WRAPPED, not hooked at one call site. A knob turn's write is DEBOUNCED --
+     * the turn sets a pending value and `flushDueWrites` writes it a moment
+     * later -- so hooking the immediate commit missed the very gesture this
+     * exists for: verified on the device, where the parameter moved and the
+     * hook never fired. There are six write sites and they will not stay six;
+     * wrapping is the only version that cannot drift. */
+    const setParam = (key, value) => {
+        const r = rawSetParam(key, value);
+        if (onValueWritten) onValueWritten(key, value);
+        return r;
+    };
     const announce = io.announce || (() => {});
     /* Optional: is this param currently driven by a modulation source? The
      * library cannot answer that — it is host state — so it is injected, and
@@ -3448,7 +3459,6 @@ export function createController(io = {}) {
         delete s.pendingWrite[key];
         delete s.knobStates[key];
         setParam(fullKey(key), wire);
-        if (onValueWritten) onValueWritten(fullKey(key), wire);
         replanIfCondition(key);
         return wire;
     }
