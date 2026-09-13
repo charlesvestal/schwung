@@ -3291,6 +3291,11 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
     return rc;
 }
 
+/* Weak for the same reason: the tests/host units that compile this file
+ * without the shim must still link. */
+void shim_step_mark_used(int step);
+__attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
+
 static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
                                              char *out, int out_len) {
     char target[16] = {0}, param[32] = {0};
@@ -3336,10 +3341,6 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
  * supplies its own. */
 int shim_plock_held_step(void);
 __attribute__((weak)) int shim_plock_held_step(void) { return -1; }
-/* Weak for the same reason: the tests/host units that compile this file
- * without the shim must still link. */
-void shim_step_mark_used(int step);
-__attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
 
 /* IS THIS A CHAIN COMPONENT'S PARAMETER, and if so where does it split?
  *
