@@ -70,6 +70,15 @@ cc -O1 -Wall -Wextra -Wno-unused-parameter -I "$tmp" -o "$tmp/t" "$tmp/t.c" || f
 n=$(grep -c 'shadow_lanes_plock_from_write(slot,' "$src" || true)
 [ "$n" = "2" ] || fail "expected the write-time p-lock on BOTH param paths (direct + SHM), found $n"
 
+# A LANDED P-LOCK REPLACES THE LIVE WRITE, it does not accompany it. Elektron's
+# rule: holding a trig and turning edits that step and leaves the track value
+# alone. Applying both is one gesture changing two things, and the one you did
+# not ask for is the one that plays on every other step.
+n=$(grep -c 'if (!shadow_lanes_plock_from_write(slot,' "$src" || true)
+[ "$n" = "2" ] || fail "both param paths must SUPPRESS the live write on a landed p-lock, found $n"
+grep -q 'lanes:plocked", landed' "$src" \
+  || fail "from_write must report whether the p-lock LANDED -- suppressing the write on a refusal is a dead knob"
+
 # The guards live in the shim, together, so neither call site can forget one.
 #
 # Matched WITHOUT a storage class. The first version of this pinned
@@ -103,7 +112,7 @@ grep -q -- '-Wl,--no-undefined' scripts/build.sh \
 # recorded into, so a stale held step made ordinary recording WORSE. The two
 # gestures are mutually exclusive by construction now, and the condition is
 # the record branch's own -- asked of the chain, never restated here.
-body=$(awk '/^static void shadow_lanes_plock_from_write/,/^}/' "$src")
+body=$(awk '/^static int shadow_lanes_plock_from_write/,/^}/' "$src")
 [ -n "$body" ] || fail "could not find shadow_lanes_plock_from_write in $src"
 echo "$body" | grep -q 'lanes:recording' \
   || fail "the write-time p-lock must refuse while a recording pass is running, or a held step punches stepped points through a take"
@@ -143,7 +152,7 @@ n=$(grep -c 'shadow_lanes_plock_confirm(slot)' "$src" || true)
 # binaries and schwung-manager reads a raw offset out of the same struct.
 tail_field=$(awk '/^typedef struct shadow_control_t/,/^} shadow_control_t;/' src/host/shadow_constants.h \
              | grep -E '^\s+volatile ' | tail -1)
-echo "$tail_field" | grep -qE 'plock_seq|lanes_driving_mask' \
+echo "$tail_field" | grep -qE 'plock_seq|lanes_driving_mask|held_step' \
   || fail "the lanes fields must be APPENDED to shadow_control_t -- inserting one moves every field behind it, and sizeof is a contract between two binaries"
 
 # The first read of the counter must arm NOTHING, or every entry to the UI

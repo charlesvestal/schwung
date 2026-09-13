@@ -867,6 +867,22 @@ typedef struct chain_instance {
     /* Why the last lanes:plock was refused; see LANE_PLOCK_* and the comment
      * at the plock verb. */
     int    lanes_plock_refusal;
+    /* THE LAST `lanes:probe` ANSWER: what a lane holds at one phase.
+     *
+     * A GET cannot carry arguments -- a param key is one token, and the phase,
+     * target and param are three -- so the question is asked as a SET and the
+     * answer read back. Single-threaded on the SPI callback, one question at
+     * a time, which is what makes a stashed answer safe here.
+     *
+     * `have` distinguishes "no lane, or nothing to say at that phase" from the
+     * value 0.0, exactly as lane_eval's own return does. `exact` says a point
+     * sits AT that phase (within LANE_MIN_POINT_BEATS) rather than the curve
+     * merely passing through it -- a held step showing a value it does not own
+     * would invite editing the wrong point. */
+    int    lanes_probe_have;
+    int    lanes_probe_exact;
+    float  lanes_probe_value;
+    int    lanes_probe_stepped;
     /* ONE-DEEP UNDO of the whole slot's automation, swapped rather than
      * copied back so the same verb is redo. See lane_store_swap(). */
     lane_store_t lanes_undo;

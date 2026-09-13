@@ -107,6 +107,8 @@
  * each). A lamp, so ~46 ms is far finer than an eye; per-frame would put four
  * chain get_params on every callback for no visible gain. */
 #define LANES_DRIVING_PUBLISH_FRAMES 16
+/* `held_step` when no single step is held. Unsigned, so not -1. */
+#define SHADOW_HELD_STEP_NONE 0xFF
 #define CONTROL_BUFFER_SIZE 256
 #define SHADOW_UI_BUFFER_SIZE     512
 /* The param segment: SHADOW_PARAM_VALUE_LEN plus shadow_param_t's header,
@@ -590,6 +592,21 @@ typedef struct shadow_control_t {
      * APPENDED, for the reason stated on pad_observe.
      */
     volatile uint8_t lanes_driving_mask;
+    /*
+     * THE STEP BUTTON UNDER THE USER'S FINGER, 0..15, or 0xFF for none.
+     *
+     * The shim already decides this (shim_plock_held_step: exactly one step,
+     * shadow display up) because a component write while a step is held is a
+     * p-lock. The UI needs the same answer to show what is LOCKED on that
+     * step, and it needs it every frame -- so it is published rather than
+     * asked. A param read is ~2.8 ms; this is a byte.
+     *
+     * 0xFF rather than -1 because the field is unsigned, and "none" has to be
+     * a value the UI can test rather than a bit pattern it has to know.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t held_step;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */

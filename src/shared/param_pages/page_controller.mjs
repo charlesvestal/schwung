@@ -578,6 +578,25 @@ export function createController(io = {}) {
      */
     const isModulated = io.isModulated || null;
     /*
+     * WHICH STEP BUTTON IS HELD, 0..15, or -1.
+     *
+     * Asked of the device by default, because the alternative is another
+     * facility that only the host's io has -- the mistake that left 9W9 with
+     * no enum peek, no p-lock and no modulation marks. The shim publishes it
+     * as a byte in SHM (it decides the same question for the write side, so
+     * the value shown and the value a turn replaces cannot disagree), and
+     * reading a byte costs nothing, unlike a param round trip at ~2.8 ms.
+     *
+     * Injectable so tests can drive it, and `typeof`-guarded so the preview
+     * harness -- node, no device, no bindings -- simply sees no step held.
+     */
+    const heldStepOf = io.heldStep || (() => {
+        try {
+            return (typeof globalThis.shadow_get_held_step === "function")
+                ? globalThis.shadow_get_held_step() : -1;
+        } catch (e) { return -1; }
+    });
+    /*
      * Optional: how the HOST wants a value read on a given surface.
      *
      *   formatValue(fullKey, raw, surface) -> string | null
@@ -675,6 +694,12 @@ export function createController(io = {}) {
          * tick() because they are the only values that move on their own. */
         modValues: Object.create(null),
         modProbeCursor: 0,
+        /* The step-held read: which step, what each key is locked to there,
+         * and how far round the page the reads have got. */
+        heldStep: -1,
+        heldValues: Object.create(null),
+        heldCursor: 0,
+        heldDecOwned: false,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
         modCursor: 0,
         /* key -> tick at which reads may resume */
@@ -2157,6 +2182,10 @@ export function createController(io = {}) {
         if (!pageHasKnobs(p)) return null;
 
         refreshModulatedValues(p);
+        /* Before anything spends this tick's stop: which step is under the
+         * finger decides whether the held lane below runs at all, and it is a
+         * free SHM byte rather than a read. */
+        syncHeldStep(p);
 
         /* One extra stop in the rotation reads the preset name, which a
          * hardware synth would put in its display and which no module declares
@@ -2253,6 +2282,51 @@ export function createController(io = {}) {
          * leave osirus's `(loading)` enum placeholder up for good in the one
          * test that waits for it. A lane that takes a turn must never be able
          * to starve one that fires on a schedule. */
+        /*
+         * HOLD A STEP AND SEE WHAT IS LOCKED ON IT.
+         *
+         * The read half of the p-lock gesture. Writing one has worked for a
+         * while -- hold a step, turn a knob, the value is stored on that step
+         * -- and nothing on the screen ever said so, which is what made a
+         * working feature read as a missing one: you set values you could
+         * never see again.
+         *
+         * `<key>:held` is answered by the shim, which knows the held step and
+         * owns the step->phase arithmetic; the chain evaluates its lane at
+         * that phase. Empty is every kind of "no" -- no step, two steps, a
+         * step the strip cannot place, no lane, nothing at that phase -- and
+         * none of them is the value 0, which is why this never writes a
+         * decoration for an empty answer. A knob reading someone else`s number
+         * because a step went down would be worse than showing nothing.
+         *
+         * It SPENDS A STOP, like the modulation probe: the page fills in over
+         * one rotation (~130 ms for eight knobs), and the budget stays one
+         * read per tick. Ahead of the probe because it is the transient of the
+         * two -- the finger is on the button now.
+         */
+        if (s.heldStep >= 0 && p.keys.length) {
+            const key = p.keys[s.heldCursor % p.keys.length];
+            s.heldCursor = (s.heldCursor + 1) % p.keys.length;
+            if (key) {
+                const a = getParam(fullKey(key) + ":held");
+                if (a === null || a === undefined || a === "") {
+                    delete s.heldValues[key];
+                } else {
+                    /* "<value> <exact>" -- `exact` says a point SITS on this
+                     * step rather than the curve passing through it. Both are
+                     * shown; only an exact one is what a turn would replace,
+                     * which is the distinction a lock mark has to carry or it
+                     * invites editing a point that is not there. */
+                    const sp = a.lastIndexOf(" ");
+                    const v = sp > 0 ? a.slice(0, sp) : a;
+                    const exact = sp > 0 && a.slice(sp + 1) === "1";
+                    s.heldValues[key] = { value: v, exact };
+                }
+                applyHeldDecorations(p);
+            }
+            return null;
+        }
+
         /*
          * THE MODULATION PROBE, for a consumer that injects no predicate.
          *
@@ -3304,6 +3378,31 @@ export function createController(io = {}) {
      * identically here and in the list editor, writes through, and holds off
      * reads for that key until it settles.
      */
+    /*
+     * THE VALUE WE JUST WROTE, cached so the cell is steady between reads --
+     * and UNDER A HELD STEP THAT IS THE LOCK, NOT THE BASE.
+     *
+     * Writing `s.values` while a step is held would leave the base cache
+     * holding a number that only ever belonged to one step. Nothing re-reads a
+     * key that already has a value until the cursor comes round to it, so the
+     * knob would go on walking from that number after the finger came off, and
+     * the base the user thinks they are editing would be a step's value.
+     * Elektron's rule as well: a trig-held turn does not move the track value.
+     *
+     * `exact` is asserted because it is about to be true -- this write puts a
+     * point ON that step.
+     */
+    function cacheWritten(key, wire) {
+        if (s.heldStep >= 0) {
+            s.heldValues[key] = { value: wire, exact: true };
+            const p = page();
+            if (p) applyHeldDecorations(p);
+        } else {
+            s.values[key] = wire;
+        }
+        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+    }
+
     function onKnobTurn(slot, direction, nowMs, { fine = false } = {}) {
         if (s.hintLines) dismissHint();
         const key = keyAt(slot);
@@ -3380,7 +3479,25 @@ export function createController(io = {}) {
              * case that reads here — and since that read IS from the device,
              * it is also allowed to settle the enum wire format, for a page
              * whose first gesture beats its first read. */
-            let raw = s.values[key];
+            /*
+             * A TURN CONTINUES FROM WHAT THE CELL IS SHOWING, and while a step
+             * is held that is the value LOCKED on that step -- not the base.
+             *
+             * This is the half that makes the gesture coherent rather than
+             * merely visible, and it is Elektron's model: holding a trig shows
+             * what that step will play, and an encoder turn edits THAT value.
+             * Seeding from the base would jump the knob on the first detent --
+             * from the lock you can see to a number you cannot -- and then
+             * p-lock the jumped value, so what you see would contradict what
+             * you get.
+             *
+             * An unlocked param under a held step still seeds from the base,
+             * which is also Elektron: the first turn CREATES a lock starting
+             * from what the track is doing.
+             */
+            const heldSeed = (s.heldStep >= 0 && s.heldValues[key])
+                ? s.heldValues[key].value : undefined;
+            let raw = heldSeed !== undefined ? heldSeed : s.values[key];
             if (raw === undefined) {
                 raw = getParam(fullKey(key));
                 learnEnumWireFormat(meta, raw);
@@ -3479,8 +3596,7 @@ export function createController(io = {}) {
             s.peek = null;
         }
 
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        cacheWritten(key, wire);
         /* Throttled — see SETPARAM_THROTTLE_MS. A miss is never lost: it is
          * left in pendingWrite for tick() to flush once the window passes,
          * and onKnobTouch(false) flushes immediately on release. */
@@ -3534,8 +3650,7 @@ export function createController(io = {}) {
         const n = Array.isArray(meta.options) ? meta.options.length : 0;
         if (n > 0) i = Math.max(0, Math.min(n - 1, i));
         const wire = enumWireValue(meta, i);
-        s.values[key] = wire;
-        s.settleUntil[key] = s.tickCount + SETTLE_TICKS;
+        cacheWritten(key, wire);
         s.lastWriteMs[key] = now();
         delete s.pendingWrite[key];
         delete s.knobStates[key];
@@ -4233,6 +4348,58 @@ export function createController(io = {}) {
      * Skips a key that is being turned, for the same reason the value cursor
      * does (`settleUntil`): a read issued before the turn lands after it.
      */
+    /*
+     * The step-held reads, as the decorations the renderer already draws.
+     *
+     * `decorations[slot] = {locked, value}` exists for a sequencer's parameter
+     * locks and draws exactly what is wanted here: the locked value in the
+     * cell, a top-left corner mark, graphics standing down so a picture
+     * spanning four cells cannot hide which of them is locked. The screen
+     * reader reads them too. So this is a wiring job and not a drawing one.
+     *
+     * A CALLER'S OWN DECORATIONS WIN. A tool that sets them is describing its
+     * own locks, and silently replacing those with ours would be a worse bug
+     * than the missing feature. `heldDecOwned` is what lets the release clear
+     * only what we installed.
+     */
+    function applyHeldDecorations(p) {
+        if (s.decorations && !s.heldDecOwned) return;
+        let any = false;
+        const dec = [];
+        for (let i = 0; i < p.keys.length; i++) {
+            const k = p.keys[i];
+            const h = k ? s.heldValues[k] : null;
+            if (!h) { dec.push(null); continue; }
+            any = true;
+            dec.push({ locked: true, value: h.value, exact: h.exact });
+        }
+        if (any) { s.decorations = dec; s.heldDecOwned = true; }
+        else if (s.heldDecOwned) { s.decorations = null; s.heldDecOwned = false; }
+    }
+
+    /* The finger moved to another step, or came off one. Everything read for
+     * the old step is about a different phase now, so it goes -- a stale lock
+     * shown on the wrong step is the one outcome worse than no lock at all. */
+    function syncHeldStep(p) {
+        let now = -1;
+        try { now = heldStepOf(); } catch (e) { now = -1; }
+        if (typeof now !== "number" || !(now >= 0)) now = -1;
+        if (now === s.heldStep) return;
+        s.heldStep = now;
+        s.heldCursor = 0;
+        /* The knob engine seeds ONCE per key and then walks its own state, so
+         * a state seeded from step 5's lock would keep walking from it after
+         * the finger moved to step 9 -- or came off entirely, editing the BASE
+         * from a number that belonged to a step. Dropping the state is what
+         * makes the next turn re-seed from whatever the cell shows then. Only
+         * the keys that had a lock: everything else is already walking from
+         * the base, and re-seeding those would throw away sub-step precision
+         * mid-gesture. */
+        for (const k in s.heldValues) delete s.knobStates[k];
+        for (const k in s.heldValues) delete s.heldValues[k];
+        if (s.heldDecOwned) { s.decorations = null; s.heldDecOwned = false; }
+    }
+
     function refreshModulatedValues(p) {
         const modKeys = [];
         for (const k of p.keys) {
@@ -5145,6 +5312,13 @@ export function createController(io = {}) {
          *  it. Read-only view of the cache the renderer uses — the injected
          *  isModulated is deliberately NOT called during a draw. */
         isModulatedCached: (key) => !!s.modCache[key],
+        /** The decorations in force -- a caller's own, or the step-held locks
+         *  this builds while a step is down. Read-only view, for the host's
+         *  screen reader and for tests: what the cells are showing is the only
+         *  honest assertion about a gesture whose whole purpose is display. */
+        get decorations() { return s.decorations; },
+        /** The step button under the finger, or -1. */
+        get heldStep() { return s.heldStep; },
         /** Which instance of `level` is focused, zero-based. The editor
          *  hand-off needs it: without it the editor re-asks which child,
          *  when the grid already knows. */
