@@ -940,6 +940,11 @@ static volatile uint32_t shadow_steps_held_mask = 0;
 static volatile int shadow_jog_touched = 0;
 /* Is shift button currently held? (CC 49) - global for cross-function access */
 static volatile int shadow_shift_held = 0;
+/* Set when Shift+Step 15 (Move's Double Loop) is seen on cable 0, consumed by
+ * the per-slot lane push in the next pre-transfer. A flag rather than a direct
+ * call because the gesture is decoded in the post-ioctl scan, where a slot's
+ * plugin instance is not the thing in hand. */
+static volatile int lane_double_pending = 0;
 /* Suppress plain volume-touch hide until touch is fully released after
  * Shift+Vol shortcut launches, avoiding a brief native volume flash. */
 static volatile int shadow_block_plain_volume_hide_until_release = 0;
@@ -1994,6 +1999,16 @@ static void shadow_inprocess_render_to_buffer(void) {
      * render cost stacks into a single ~1ms spike. */
     uint32_t probe_burst_this_frame = 0;
     if (shadow_plugin_v2 && shadow_plugin_v2->render_block) {
+        /* TAKEN ONCE, FOR ALL FOUR SLOTS, and cleared here rather than in
+         * post_transfer. The gesture is detected in midi_monitor(), which runs
+         * in PRE-transfer -- so a clear in post_transfer wiped the flag in the
+         * same frame it was set and no slot ever saw it. Measured: Move
+         * doubled the clip and the lane reported nothing, three placements
+         * running. Reading it into a local first also means every slot sees
+         * the same answer, which a mid-loop clear would not give. */
+        const int lane_double_now = lane_double_pending;
+        lane_double_pending = 0;
+
         for (int s = 0; s < SHADOW_CHAIN_INSTANCES; s++) {
             if (!shadow_chain_slots[s].active || !shadow_chain_slots[s].instance) continue;
 
@@ -2040,6 +2055,20 @@ static void shadow_inprocess_render_to_buffer(void) {
                 }
             }
 
+            /* MOVE DOUBLED THE LOOP (Shift+Step 15). Its manual calls that
+             * doubling "notes and automation", so every lane on the playing
+             * clip copies its points one loop-length later.
+             *
+             * Pushed the frame the gesture is SEEN rather than when the
+             * clip's new length appears: Move writes that ~10 s later, and a
+             * lane that waited would be silent over the new bars until then --
+             * indistinguishable from one that simply failed. The flag is
+             * consumed here, once per slot, because the gesture is a moment
+             * and this loop is where a slot's instance is in hand. */
+            if (shadow_plugin_v2->set_param && lane_double_now)
+                shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                            "lanes:double", "1");
+
             /* A DELETED clip orphans its lanes, and the crossing is
              * worker-publishes / callback-pushes.
              *
@@ -2070,6 +2099,28 @@ static void shadow_inprocess_render_to_buffer(void) {
                         shadow_chain_set_clip_deleted(
                             shadow_chain_slots[s].instance,
                             b / CLIP_SLOTS, b % CLIP_SLOTS);
+                    }
+                }
+            }
+
+            /* A DUPLICATED CLIP TAKES ITS AUTOMATION WITH IT, published by
+             * the worker the same way a deletion is and consumed here for the
+             * same reason: this is where a slot's instance is in hand.
+             *
+             * Only the track whose slot index matches is told, because a lane
+             * lives on the chain instance that owns that Move track -- the
+             * same rule the deletion consumer above states. */
+            if (shadow_plugin_v2->set_param) {
+                static uint32_t lane_copy_gen_seen[SHADOW_CHAIN_INSTANCES];
+                uint32_t cgen = shadow_clip_copy_generation();
+                if (cgen != lane_copy_gen_seen[s]) {
+                    lane_copy_gen_seen[s] = cgen;
+                    if (cgen != 0 && shadow_clip_copy_track() == (int)s) {
+                        char arg[32];
+                        snprintf(arg, sizeof(arg), "%d %d",
+                                 shadow_clip_copy_src(), shadow_clip_copy_dst());
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:copy_clip", arg);
                     }
                 }
             }
@@ -5705,6 +5756,29 @@ void midi_monitor()
         if (midi_0 + midi_1 + midi_2 == 0)
         {
             continue;
+        }
+
+        /* SHIFT + STEP 15 = Move's DOUBLE LOOP, which its own manual describes
+         * as doubling "notes and automation" -- so every lane on that clip
+         * copies its points one loop-length later (lanes:double).
+         *
+         * HERE, in the hotkey scan, because this is the only cable-0 walk that
+         * runs WHATEVER IS ON SCREEN. Three earlier placements each failed for
+         * the same kind of reason and each was measured rather than reasoned:
+         * inside the shadow-display branch (never runs with Move in front),
+         * inside the `type == 0xB0` branch (a note cannot match), and inside a
+         * second scan that turned out to be display-gated too. Every time, the
+         * clip doubled and the lane reported nothing.
+         *
+         * Never swallowed: Move must still perform its half. Step 15 is note
+         * 30 (steps are notes 16-31), and `shiftHeld` is this scan's own
+         * state, updated a few lines below -- so the gesture is read from the
+         * same place that defines what "Shift" means. */
+        if (cable == 0x00 && (midi_0 & 0xF0) == 0x90 && midi_1 == 30 &&
+            midi_2 > 0) {
+            if (shiftHeld) lane_double_pending = 1;
+            shadow_log(shiftHeld ? "lanes: Double Loop gesture seen"
+                                 : "lanes: step 15 with no Shift");
         }
 
         int controlMessage = 0xb0;
@@ -9350,7 +9424,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
                     if (d2 == 0) claim_press_blocked[d1] = CLAIM_LATCH_NONE;
                 }
-
                 /* THE STEP GESTURE'S OWED RELEASES, same rule and same reason.
                  * A step whose press was withheld keeps its latch across the
                  * grid being left or the display closing, so the release is
@@ -9443,8 +9516,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * The UI needs the RAW step number, which is why this cannot
                  * be reconstructed downstream: Move turns the press into an
                  * ordinary note before anything else sees it. */
+                /* A BARE STEP ONLY. Shift+step belongs to MOVE -- Double
+                 * Loop (15), quantize (16), new clip (14), the Workflow,
+                 * Tempo, Groove, Keys and Repeat menus -- and the p-lock
+                 * gesture is a bare step plus a knob. Swallowing a Shift+step
+                 * took those shortcuts away whenever Schwung's grid was on
+                 * screen, which is how this was found: Shift+Step 14 stopped
+                 * creating clips. Worse for Double Loop, where the lane would
+                 * have doubled while Move never doubled the notes. */
                 if (shadow_control && shadow_control->step_observe &&
-                    d1 >= 16 && d1 <= 31 && shadow_ui_midi_shm) {
+                    d1 >= 16 && d1 <= 31 && !shadow_shift_held &&
+                    shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08,
                                            status, d1, d2);
                     /* AND WITHHELD FROM MOVE. Holding a step to set a value

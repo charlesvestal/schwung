@@ -922,6 +922,93 @@ int main(void) {
         }
     }
 
+    /* ============== DOUBLE LOOP TAKES THE AUTOMATION WITH IT ==========
+     *
+     * Move's own Double Loop (Shift+Step 15) is documented as doubling a loop
+     * "including its notes and automation". A lane that did not follow would
+     * leave the second half silent while the notes played -- the automation
+     * and the music disagreeing from that bar on.
+     */
+    {
+        lane_store_t db;
+        lane_store_reset(&db);
+        lane_fingerprint_t fp = { 0.0, 8.0, 3, 60 };
+        lane_t *dl = lane_alloc(&db, "synth", "cutoff", 0, 0, &fp);
+        CHECK(dl != NULL, "double lane alloc");
+        if (dl) {
+            lane_write(dl, 1.0, 0.20f, 0);
+            lane_write(dl, 5.0, 0.80f, 1);      /* a p-lock, shape and all */
+            const int copied = lane_double(dl, 0.0, 8.0);
+            CHECK(copied == 2, "copied %d point(s), want 2", copied);
+            CHECK(dl->n == 4, "n=%d, want 4", dl->n);
+            CHECK(fabs(dl->pts[2].phase - 9.0) < 1e-9 &&
+                  fabsf(dl->pts[2].value - 0.20f) < 1e-6f,
+                  "the first copy is at %f = %f, want 9.0 = 0.20",
+                  dl->pts[2].phase, dl->pts[2].value);
+            CHECK(fabs(dl->pts[3].phase - 13.0) < 1e-9 &&
+                  dl->pts[3].hold == 1,
+                  "the second copy is at %f (hold=%d) -- SHAPE travels with the "
+                  "value, or a doubled p-lock becomes a ramp",
+                  dl->pts[3].phase, dl->pts[3].hold);
+
+            /* THE COPIES ARE DORMANT until the clip's new length arrives.
+             * Move writes the doubled loop to Song.abl ~10 s later, and a
+             * point past the current window does not play -- the same rule
+             * that governs any lengthened clip. */
+            CHECK(lane_eval(dl, 5.0, 0.0, 8.0, 0, &v) == 1 &&
+                  fabsf(v - 0.80f) < 1e-6f,
+                  "the original half stopped playing: %f", v);
+            /* ...and once the window grows, the second half plays the same. */
+            CHECK(lane_eval(dl, 13.0, 0.0, 16.0, 0, &v) == 1 &&
+                  fabsf(v - 0.80f) < 1e-6f,
+                  "the copied half does not play at 13.0 in a 16-beat window: "
+                  "%f", v);
+            CHECK(lane_eval(dl, 9.0, 0.0, 16.0, 0, &v) == 1 &&
+                  fabsf(v - 0.20f) < 1e-6f,
+                  "the copied half is wrong at 9.0: %f", v);
+        }
+    }
+    {
+        /* POINTS OUTSIDE THE WINDOW ARE NOT COPIED -- they belong to material
+         * this gesture did not touch, and copying them would scatter values
+         * into bars nobody doubled. */
+        lane_store_t db;
+        lane_store_reset(&db);
+        lane_fingerprint_t fp = { 8.0, 4.0, 3, 60 };
+        lane_t *dl = lane_alloc(&db, "synth", "cutoff", 0, 0, &fp);
+        CHECK(dl != NULL, "window lane alloc");
+        if (dl) {
+            lane_write(dl, 2.0, 0.10f, 0);      /* before the window */
+            lane_write(dl, 9.0, 0.50f, 0);      /* inside  [8, 12)   */
+            lane_write(dl, 20.0, 0.90f, 0);     /* past it            */
+            const int copied = lane_double(dl, 8.0, 4.0);
+            CHECK(copied == 1, "copied %d, want 1 (only the point inside)", copied);
+            CHECK(lane_eval(dl, 13.0, 8.0, 12.0, 0, &v) == 1 &&
+                  fabsf(v - 0.50f) < 1e-6f,
+                  "the copy did not land at 13.0 (9.0 + 4): %f", v);
+        }
+    }
+    {
+        /* A REFUSAL LEAVES THE LANE ALONE: an unusable window is not a reason
+         * to scatter points at NaN, and a lane with nothing inside the window
+         * copies nothing rather than reporting success. */
+        lane_store_t db;
+        lane_store_reset(&db);
+        lane_fingerprint_t fp = { 0.0, 8.0, 3, 60 };
+        lane_t *dl = lane_alloc(&db, "synth", "cutoff", 0, 0, &fp);
+        CHECK(dl != NULL, "refusal lane alloc");
+        if (dl) {
+            lane_write(dl, 1.0, 0.2f, 0);
+            CHECK(lane_double(dl, 0.0, 0.0) == 0 && dl->n == 1,
+                  "a zero-length window copied something (n=%d)", dl->n);
+            CHECK(lane_double(dl, 0.0, NAN) == 0 && dl->n == 1,
+                  "a NaN length copied something (n=%d)", dl->n);
+            CHECK(lane_double(dl, 40.0, 8.0) == 0 && dl->n == 1,
+                  "a window with no points in it copied something (n=%d)",
+                  dl->n);
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

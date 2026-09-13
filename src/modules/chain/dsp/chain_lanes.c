@@ -532,6 +532,85 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         return;
     }
 
+    /* MOVE DOUBLED THE LOOP (Shift+Step 15), which its manual describes as
+     * doubling "notes and automation". Every lane at the playing position
+     * copies its points one loop-length later, so the second half plays what
+     * the first half did.
+     *
+     * Fired by the shim the moment it sees the gesture, NOT by watching the
+     * clip's length change: the new length reaches Song.abl about 10 s later,
+     * and a lane that waited would be silent over the new bars until then --
+     * and indistinguishable from one that had simply failed. The copies land
+     * in the second half, dormant until the window grows to include them,
+     * which is the same rule that already governs a lengthened clip.
+     *
+     * Every lane for the CURRENT clip position, because the gesture acts on
+     * the selected clip and a lane is bound to one. */
+    if (strcmp(sub, "double") == 0) {
+        /* Zeroed first, for the reason on copy_clip below. */
+        inst->lanes_last_doubled = 0;
+        if (!val || atoi(val) == 0) return;
+        if (!(inst->clip_loop_len > 0.0) || !(inst->clip_loop_start >= 0.0)) return;
+        int total = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            lane_t *ln = &inst->lanes.lanes[i];
+            if (!ln->used || ln->stale || ln->orphaned) continue;
+            if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot)
+                continue;
+            total += lane_double(ln, inst->clip_loop_start, inst->clip_loop_len);
+        }
+        inst->lanes_last_doubled = total;
+        return;
+    }
+
+    /* A CLIP WAS DUPLICATED: "<src_slot> <dst_slot>" on this track.
+     *
+     * Move's own Double Loop is documented as carrying automation, and a
+     * duplicated CLIP is the same expectation -- a copy that arrives silent is
+     * a copy of half the thing. The worker recognises the duplicate from the
+     * file (see shadow_chain_mgmt.h) and the callback hands it here.
+     *
+     * The destination's lanes are REPLACED, not merged: a slot that was empty
+     * a moment ago has no automation of its own worth preserving, and merging
+     * two curves is not something the user could have asked for. The source is
+     * untouched.
+     *
+     * The fingerprint is copied verbatim, which is exactly right: the
+     * duplicate has the same notes, so the same fingerprint matches it. */
+    if (strcmp(sub, "copy_clip") == 0) {
+        /* ZEROED FIRST. Every `return` below is a refusal, and leaving the
+         * previous call's count in place makes a refusal read as a success --
+         * which is the exact ambiguity these counters exist to remove. */
+        inst->lanes_last_copied = 0;
+        int src = -1, dst = -1;
+        if (!val || sscanf(val, "%d %d", &src, &dst) != 2) return;
+        if (src < 0 || dst < 0 || src == dst) return;
+        if (inst->lane_track < 0) return;
+        const int track = inst->lane_track;
+        int copied = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            const lane_t *from = &inst->lanes.lanes[i];
+            if (!from->used || from->track != track || from->slot != src) continue;
+            /* An empty or unidentified source carries nothing worth copying,
+             * and copying the ABSENT fingerprint would plant a lane that can
+             * never match anything. */
+            if (from->n <= 0 || lane_fp_absent(&from->fp)) continue;
+            lane_t *to = lane_alloc(&inst->lanes, from->target, from->param,
+                                    track, dst, &from->fp);
+            if (!to) break;          /* store full: as many as fit, in order */
+            /* Points only -- never `driving`, `stale`, the punch pair or the
+             * recording pass. Those describe THIS block on the source lane,
+             * and lane_alloc has already zeroed them on a fresh slot. */
+            to->n = 0;
+            for (int k = 0; k < from->n; k++)
+                lane_write(to, from->pts[k].phase, from->pts[k].value,
+                           from->pts[k].hold);
+            copied++;
+        }
+        inst->lanes_last_copied = copied;
+        return;
+    }
+
     if (strcmp(sub, "clear") == 0) {
         if (!val || atoi(val) == 0) return;
         lane_release_all(inst);
@@ -561,6 +640,10 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
         return snprintf(buf, buf_len, "%d", inst->lanes_last_cleared);
     if (strcmp(sub, "plocked") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_plocked);
+    if (strcmp(sub, "doubled") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_doubled);
+    if (strcmp(sub, "copied") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_copied);
 
     /* WHY a recording was refused. 0 is UNKNOWN -- the shim could not say
      * where in the clip we are -- and not phase zero, which is what lets the

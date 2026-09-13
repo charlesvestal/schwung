@@ -232,6 +232,22 @@ extern void (*shadow_chain_set_clip_deleted)(void *instance, int track,
 uint32_t shadow_clip_deleted_generation(void);
 uint32_t shadow_clip_deleted_mask(void);
 
+/* A clip was DUPLICATED: its automation should travel with it. Published by
+ * the worker exactly like the deletion mask -- fields first, generation LAST,
+ * so a reader that sees a new generation is looking at settled ones -- and
+ * consumed by the SPI callback's per-slot loop, the only place a chain
+ * instance is in hand.
+ *
+ * A duplicate is recognised by WHAT IT IS: a clip in a slot that was empty at
+ * the previous parse, whose notes and loop length match one already on that
+ * track. Not by the Copy button, because a clip can be duplicated more than
+ * one way (Move 2.1.0 added copy/paste between slots) and a button press is a
+ * moment that can be missed, while the file states the result. */
+uint32_t shadow_clip_copy_generation(void);
+int shadow_clip_copy_track(void);
+int shadow_clip_copy_src(void);
+int shadow_clip_copy_dst(void);
+
 /* Where slot `slot`'s Move track is in its playing clip. Returns 1 for a known
  * phase, 0 for UNKNOWN -- never phase 0. *clip_slot and *fp_valid answer
  * identity and are filled either way; see the definition. */

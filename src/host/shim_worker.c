@@ -460,8 +460,30 @@ const clip_regions_t *shadow_clip_regions(void) { return &g_regions; }
 static volatile uint32_t g_clip_deleted_mask;
 static volatile uint32_t g_clip_deleted_gen;
 
+/* A CLIP WAS DUPLICATED, so its automation should travel with it.
+ *
+ * Published the same way the deletion mask is -- fields first, generation
+ * last -- and consumed by the SPI callback's per-slot loop, which is the only
+ * place a chain instance is in hand.
+ *
+ * Recognised by what a duplicate IS: a clip that was not in this slot before,
+ * whose notes and geometry match one that was already on the same track. The
+ * Copy BUTTON is not used as the trigger, because a copy can be made in more
+ * than one way and a button press is a moment we might miss, while the file
+ * states the result. The cost is a false positive when a user builds a clip
+ * that matches another note for note and bar for bar -- at which point
+ * inheriting that clip's automation is not obviously wrong. */
+static volatile int      g_clip_copy_track = -1;
+static volatile int      g_clip_copy_src   = -1;
+static volatile int      g_clip_copy_dst   = -1;
+static volatile uint32_t g_clip_copy_gen;
+
 uint32_t shadow_clip_deleted_generation(void) { return g_clip_deleted_gen; }
 uint32_t shadow_clip_deleted_mask(void) { return g_clip_deleted_mask; }
+uint32_t shadow_clip_copy_generation(void) { return g_clip_copy_gen; }
+int shadow_clip_copy_track(void) { return g_clip_copy_track; }
+int shadow_clip_copy_src(void)   { return g_clip_copy_src; }
+int shadow_clip_copy_dst(void)   { return g_clip_copy_dst; }
 
 /* Phase check tallies, per track. The step editor shows ONE track, so only
  * one of these should score highly -- which track it is falls out of the
@@ -603,6 +625,45 @@ static void clip_regions_tick(void)
         if (deleted) {
             g_clip_deleted_mask = deleted;
             g_clip_deleted_gen++;
+        }
+
+        /* AND THE COMPLEMENT: a clip that ARRIVED, matching one already on the
+         * track -- a duplicate. Move's Copy lands in the next free slot, so
+         * the source is still there to compare against.
+         *
+         * Only one is published per re-parse. Two duplicates inside one save
+         * window is not a thing a hand does, and a queue here would be state
+         * to keep in sync for a case that does not occur; the second would be
+         * recognised on the next parse if it somehow did, since the shape of
+         * the test is "new slot, matching sibling" and that stays true. */
+        for (int t = 0; t < CLIP_TRACKS && g_clip_copy_gen == 0; t++) { (void)t; }
+        for (int t = 0; t < CLIP_TRACKS; t++) {
+            int dst = -1;
+            for (int s2 = 0; s2 < CLIP_SLOTS; s2++) {
+                if (g_regions.slots[t][s2].exists && !before.slots[t][s2].exists) {
+                    dst = s2; break;
+                }
+            }
+            if (dst < 0) continue;
+            const clip_region_t *d = &g_regions.slots[t][dst];
+            /* A clip with no notes cannot be told from another clip with no
+             * notes, and "duplicate of an empty clip" is not worth guessing
+             * at -- the absent fingerprint is {0, -1} and matching on it would
+             * copy automation onto any new empty clip. */
+            if (d->note_count == 0 && d->first_note < 0) continue;
+            for (int src = 0; src < CLIP_SLOTS; src++) {
+                if (src == dst || !before.slots[t][src].exists) continue;
+                const clip_region_t *o = &g_regions.slots[t][src];
+                if (!o->exists) continue;
+                if (o->note_count != d->note_count) continue;
+                if (o->first_note != d->first_note) continue;
+                if (!(o->loop_len == d->loop_len)) continue;
+                g_clip_copy_track = t;
+                g_clip_copy_src = src;
+                g_clip_copy_dst = dst;
+                g_clip_copy_gen++;        /* generation LAST, as above */
+                break;
+            }
         }
     }
 

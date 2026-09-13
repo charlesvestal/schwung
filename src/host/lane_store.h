@@ -289,6 +289,29 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
 /* Does this lane still describe the clip that is there now? */
 int lane_fingerprint_matches(const lane_t *ln, const lane_fingerprint_t *now);
 
+/* DOUBLE the lane: every point inside the window is copied one window-length
+ * later, so the automation repeats exactly as the notes do.
+ *
+ * Move's own Double Loop (Shift+Step 15) is documented as doubling a loop
+ * "including its notes and automation", so a lane that did not follow would
+ * leave the second half silent while the notes played -- the automation and
+ * the music would disagree from that moment on.
+ *
+ * Called BEFORE the clip's new length is known: Move writes the doubled loop
+ * to Song.abl about 10 s later, and the copies land in the second half, which
+ * is dormant until the window grows to include it. That ordering is why this
+ * takes the CURRENT window rather than reading a length that has not arrived.
+ *
+ * Points outside the window are left alone -- they belong to material this
+ * gesture did not touch. A lane that would overflow LANE_POINTS_MAX copies as
+ * much as it can, in phase order, rather than refusing: a partially doubled
+ * lane is audibly close, and refusing outright would leave the second half
+ * silent, which is the outcome this exists to prevent.
+ *
+ * Returns the number of points copied. RT: SPI callback, one pass, no
+ * allocation. */
+int lane_double(lane_t *ln, double loop_start, double loop_len);
+
 /* ADOPT a real fingerprint onto a lane recorded blind, and re-origin its
  * points in the same step.
  *
