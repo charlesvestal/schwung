@@ -105,10 +105,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout SchwungAudioProcessor::makeL
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
     for (int i = 0; i < kMacroCount; ++i)
-        layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { "macro" + juce::String (i + 1), 1 },
-            "Macro " + juce::String (i + 1),
-            juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f));
+        layout.add (std::make_unique<MacroParameter> ("macro" + juce::String (i + 1),
+                                                      "Macro " + juce::String (i + 1)));
     return layout;
 }
 
@@ -118,7 +116,7 @@ SchwungAudioProcessor::SchwungAudioProcessor()
 {
     for (int i = 0; i < kMacroCount; ++i)
     {
-        macroParams[(size_t) i] = apvts.getParameter ("macro" + juce::String (i + 1));
+        macroParams[(size_t) i] = dynamic_cast<MacroParameter*> (apvts.getParameter ("macro" + juce::String (i + 1)));
         lastSent[(size_t) i].store (-1.0f);
     }
 
@@ -220,7 +218,9 @@ void SchwungAudioProcessor::setSynth (const juce::String& id)
      * resolved again -- the same key can mean per-cent in one module and dB in
      * the next. */
     for (int i = 0; i < kMacroCount; ++i)
-        setBinding (i, bindings[(size_t) i].key);
+        setBinding (i, bindings[(size_t) i].key, bindings[(size_t) i].userSet);
+
+    autoBindMacros();
 }
 
 void SchwungAudioProcessor::setFx (const juce::String& id)
@@ -237,7 +237,7 @@ void SchwungAudioProcessor::setFx (const juce::String& id)
     suspendProcessing (false);
 
     for (int i = 0; i < kMacroCount; ++i)
-        setBinding (i, bindings[(size_t) i].key);
+        setBinding (i, bindings[(size_t) i].key, bindings[(size_t) i].userSet);
 }
 
 /*
@@ -308,7 +308,73 @@ bool SchwungAudioProcessor::resolveRange (const juce::String& key, float& lo, fl
     return false;
 }
 
+/*
+ * Fill the macro bank from whatever module is loaded.
+ *
+ * Without this the bank is eight empty slots and the only way to reach a
+ * parameter is to know its key and type it, which is not a user interface.
+ * The module already publishes everything needed -- key, display name and
+ * range -- in its own chain_params; this just takes the first kMacroCount of
+ * them, in the order the module declares, which is the order its own pages use.
+ *
+ * A macro the user bound BY HAND is left alone. Auto-binding is a starting
+ * point, not a policy, and silently overwriting a deliberate binding on every
+ * module change would make the manual field useless.
+ */
+void SchwungAudioProcessor::autoBindMacros()
+{
+    if (sd == nullptr || currentSynth.isEmpty()) return;
+
+    std::vector<char> buf ((size_t) 262144);
+    int n;
+    {
+        const std::lock_guard<std::mutex> lock (chainLock);
+        n = schwung_desktop_get_param (sd, "synth:chain_params", buf.data(), (int) buf.size());
+    }
+    if (n <= 0) return;   // a failed or unserved read binds nothing, and says nothing
+
+    auto parsed = juce::JSON::parse (juce::String::fromUTF8 (buf.data(), n));
+    auto* arr = parsed.getArray();
+    if (arr == nullptr) return;
+
+    int slot = 0;
+    for (const auto& item : *arr)
+    {
+        if (slot >= kMacroCount) break;
+        while (slot < kMacroCount && bindings[(size_t) slot].userSet) ++slot;
+        if (slot >= kMacroCount) break;
+
+        const auto key = item.getProperty ("key", {}).toString();
+        if (key.isEmpty()) continue;
+
+        setBinding (slot, "synth:" + key, /*byUser=*/false);
+        bindings[(size_t) slot].label = item.getProperty ("name", key).toString();
+
+        if (auto* p = macroParams[(size_t) slot])
+            p->setDisplayName (bindings[(size_t) slot].label);
+        ++slot;
+    }
+
+    /* Clear any trailing auto-bindings left over from a module with more
+     * parameters than this one. */
+    for (; slot < kMacroCount; ++slot)
+        if (! bindings[(size_t) slot].userSet)
+        {
+            setBinding (slot, {}, false);
+            if (auto* p = macroParams[(size_t) slot]) p->setDisplayName ({});
+        }
+
+    /* Tell the host the titles moved. Without this Live keeps showing
+     * "Macro 1..8" in its automation list until the plugin is reloaded. */
+    updateHostDisplay (juce::AudioProcessor::ChangeDetails{}.withParameterInfoChanged (true));
+}
+
 void SchwungAudioProcessor::setBinding (int i, const juce::String& key)
+{
+    setBinding (i, key, /*byUser=*/true);
+}
+
+void SchwungAudioProcessor::setBinding (int i, const juce::String& key, bool byUser)
 {
     if (! juce::isPositiveAndBelow (i, kMacroCount)) return;
 
@@ -318,6 +384,8 @@ void SchwungAudioProcessor::setBinding (int i, const juce::String& key)
     b.min = 0.0f;
     b.max = 1.0f;
     b.status = {};
+    b.label = {};
+    if (byUser) b.userSet = key.isNotEmpty();
 
     if (key.isEmpty()) { b.status = "unbound"; return; }
 
@@ -332,7 +400,51 @@ void SchwungAudioProcessor::setBinding (int i, const juce::String& key)
         b.status = "refused: " + why;
     }
 
-    lastSent[(size_t) i].store (-1.0f);   // force a resend at the new range
+    /*
+     * ADOPT THE MODULE'S CURRENT VALUE. DO NOT PUSH THE MACRO'S.
+     *
+     * A macro defaults to 0.0, and binding it used to mark the value dirty so
+     * the next processBlock wrote it out. With auto-binding that meant every
+     * parameter of a freshly loaded module was slammed to its MINIMUM -- level,
+     * sustain, decay and all -- the instant it loaded. braids went from
+     * -21 dBFS to silence, and the module looked broken rather than overwritten.
+     *
+     * So the binding reads what the module already has and moves the macro
+     * there, then records it as sent. Nothing is written until a human or an
+     * automation lane actually moves the control.
+     */
+    if (b.resolved && sd != nullptr)
+    {
+        char cur[128];
+        int n;
+        {
+            const std::lock_guard<std::mutex> lock (chainLock);
+            n = schwung_desktop_get_param (sd, b.key.toRawUTF8(), cur, (int) sizeof (cur));
+        }
+
+        if (n > 0)
+        {
+            const float span = b.max - b.min;
+            const float norm = (span > 0.0f)
+                             ? juce::jlimit (0.0f, 1.0f, ((float) juce::String (cur).getDoubleValue() - b.min) / span)
+                             : 0.0f;
+            if (auto* p = macroParams[(size_t) i])
+                p->setValueNotifyingHost (norm);
+            lastSent[(size_t) i].store (norm);
+        }
+        else
+        {
+            /* A read that did not complete is not a value. Leave the macro
+             * where it is and mark it sent, so an unknown current value is
+             * never "corrected" to the macro's default. */
+            if (auto* p = macroParams[(size_t) i])
+                lastSent[(size_t) i].store (p->convertTo0to1 (p->get()));
+        }
+    }
+    else
+    {
+        lastSent[(size_t) i].store (-1.0f);
+    }
 }
 
 void SchwungAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -382,7 +494,7 @@ void SchwungAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         const auto& b = bindings[(size_t) i];
         if (! b.resolved) continue;
 
-        const float norm = macroParams[(size_t) i]->getValue();
+        const float norm = macroParams[(size_t) i]->convertTo0to1 (macroParams[(size_t) i]->get());
         if (std::abs (norm - lastSent[(size_t) i].load()) < 1.0e-6f) continue;
         lastSent[(size_t) i].store (norm);
 

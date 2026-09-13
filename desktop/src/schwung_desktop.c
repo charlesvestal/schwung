@@ -36,6 +36,10 @@
 
 #include "host/plugin_api_v1.h"
 
+/* The SPI transfer is 768 bytes mmap'd to 4096. Nothing here talks to any
+ * hardware, but the region has to EXIST -- see the mailbox comment below. */
+#define SCHWUNG_MAILBOX_BYTES 4096
+
 struct schwung_desktop {
     void             *handle;
     plugin_api_v2_t  *api;
@@ -46,6 +50,25 @@ struct schwung_desktop {
     double bpm;
     double beat;
     int    running;
+
+    /* A SYNTHETIC SPI MAILBOX, AND IT IS NOT OPTIONAL.
+     *
+     * mapped_memory was NULL here at first, on the reasoning that a desktop
+     * host has no mailbox and the field is guarded like every other. It is
+     * not: it is a POINTER TO DATA, not a callback, so `if (host->fn)` never
+     * covers it, and a module that reads its audio-in region does not check.
+     * schwung-vocoder SIGSEGVs on the first render_block -- which in a DAW is
+     * not a silent module, it is Live going down with the project unsaved.
+     *
+     * Same shape of trap as sample_rate being a plain int (see above): the
+     * "every module guards its host access" reasoning only ever covered the
+     * function pointers.
+     *
+     * Zeroed, so a line-input module reads silence and behaves as though
+     * nothing is plugged in. Feeding the plugin's actual input bus into
+     * audio_in_offset is the next step and makes vocoder, talkbox, breath and
+     * the rest genuinely work; this much stops them crashing. */
+    uint8_t mailbox[SCHWUNG_MAILBOX_BYTES];
 };
 
 /* The host callbacks are C function pointers with no context argument, so the
@@ -119,6 +142,9 @@ schwung_desktop_t *schwung_desktop_create(const char *module_root,
     sd->host.get_bpm          = desktop_get_bpm;
     sd->host.get_beat_position = desktop_get_beat_position;
     sd->host.get_clock_status = desktop_get_clock_status;
+    sd->host.mapped_memory    = sd->mailbox;      /* never NULL -- see above */
+    sd->host.audio_out_offset = MOVE_AUDIO_OUT_OFFSET;
+    sd->host.audio_in_offset  = MOVE_AUDIO_IN_OFFSET;
 
     sd->api = init_v2(&sd->host);
     if (!sd->api || sd->api->api_version != 2) {
