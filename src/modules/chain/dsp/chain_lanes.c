@@ -282,6 +282,29 @@ void lane_current_fingerprint(chain_instance_t *inst, lane_fingerprint_t *out) {
     if (inst && inst->clip_fp_valid) *out = inst->clip_fp;
 }
 
+/* IS A RECORDING PASS THE THING THIS WRITE IS DOING?
+ *
+ * The exact condition the record branch of lane_on_set_param takes, lifted so
+ * that it can be ASKED as well as taken. The host has to know it: a component
+ * write made while a step is held is also a p-lock (see
+ * shadow_lanes_plock_from_write), and a p-lock writes a RECTANGLE into the
+ * same lane a sweep is being recorded into -- so a stale or incidental held
+ * step would punch stepped points through a take. Charles reported exactly
+ * that, which is why the write-time p-lock was reverted once already.
+ *
+ * The two gestures are mutually exclusive by construction now, and the
+ * condition lives HERE, once. Restating it host-side would be a second copy
+ * of the recording predicate, free to disagree with this one -- the failure
+ * mode this feature has already paid for elsewhere (`synth:last_note`, the
+ * transport grid).
+ *
+ * Armed WITHOUT a phase is deliberately not recording: such a write records
+ * nothing, so it is still free to be a p-lock, which needs no phase. */
+static int lane_is_recording(const chain_instance_t *inst) {
+    return inst && inst->lane_armed && inst->clip_phase_valid &&
+           inst->clip_loop_len > 0.0;
+}
+
 /* A parameter write arrived from the UI.
  *
  * THIS IS NOT CALLED BY PLAYBACK. chain_mod_set_param_string writes the
@@ -313,7 +336,7 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
      * write with no phase records NOTHING -- "we could not tell where in the
      * clip we are" is a third answer, and writing it at 0.0 would plant a
      * breakpoint on a downbeat the user never played. */
-    if (inst->lane_armed && inst->clip_phase_valid && inst->clip_loop_len > 0.0) {
+    if (lane_is_recording(inst)) {
         lane_fingerprint_t fp;
         lane_current_fingerprint(inst, &fp);
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
@@ -796,6 +819,12 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
 
     /* Readable as well as writable: the arm comes from Move's Record LED
      * through the shim, so the UI has no other way to know it. */
+    /* WOULD THIS WRITE BE RECORDED? Read by the host to refuse turning a
+     * recording pass into p-locks -- see lane_is_recording. It IS the
+     * predicate, not a restatement of it. */
+    if (strcmp(sub, "recording") == 0)
+        return snprintf(buf, buf_len, "%d", lane_is_recording(inst) ? 1 : 0);
+
     if (strcmp(sub, "armed") == 0)
         return snprintf(buf, buf_len, "%d", inst->lane_armed ? 1 : 0);
 
