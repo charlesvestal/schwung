@@ -39,6 +39,7 @@ typedef struct { int frame; uint8_t b[3]; } ev_t;
 
 int main(int argc, char **argv) {
     const char *root = NULL, *synth = NULL, *fx = NULL, *out = "out.wav";
+    const char *getk[16]; int nget = 0;
     double seconds = 4.0;
 
     for (int i = 1; i < argc; i++) {
@@ -47,9 +48,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--fx")      && i + 1 < argc) fx    = argv[++i];
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) seconds = atof(argv[++i]);
         else if (!strcmp(argv[i], "-o")        && i + 1 < argc) out   = argv[++i];
+        else if (!strcmp(argv[i], "--get")     && i + 1 < argc && nget < 16) getk[nget++] = argv[++i];
         else { fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--seconds N] [-o out.wav]\n", argv[0]); return 2; }
     }
-    if (!root || !synth) {
+    if (!root || (!synth && nget == 0)) {
         fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--seconds N] [-o out.wav]\n", argv[0]);
         return 2;
     }
@@ -72,6 +74,22 @@ int main(int argc, char **argv) {
     int n = schwung_desktop_get_param(sd, "synth_module", buf, sizeof(buf));
     if (n < 0) fprintf(stderr, "render: synth:module read did not complete\n");
     else       fprintf(stderr, "render: synth_module = '%s'\n", buf);
+
+    /* --get: report a parameter and stop. The THREE answers are kept apart --
+     * a failed read and an empty answer are different facts, and a caller that
+     * merges them cannot tell "no such key" from "nothing is loaded". */
+    if (nget > 0) {
+        char *big = malloc(262144);
+        for (int g = 0; g < nget; g++) {
+            int r = schwung_desktop_get_param(sd, getk[g], big, 262144);
+            if (r < 0)       printf("%-26s <read did not complete>\n", getk[g]);
+            else if (r == 0) printf("%-26s <served, empty>\n", getk[g]);
+            else             printf("%-26s %d bytes | %.160s\n", getk[g], r, big);
+        }
+        free(big);
+        schwung_desktop_destroy(sd);
+        return 0;
+    }
 
     int total = (int)(seconds * SCHWUNG_RATE);
     total -= total % SCHWUNG_BLOCK;

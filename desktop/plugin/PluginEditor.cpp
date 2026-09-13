@@ -11,7 +11,7 @@ namespace
 
     constexpr int kRowH   = 34;
     constexpr int kPad    = 12;
-    constexpr int kHeadH  = 108;
+    constexpr int kHeadH  = 208;
 }
 
 // ---------------------------------------------------------------- MacroRow
@@ -141,34 +141,66 @@ SchwungAudioProcessorEditor::SchwungAudioProcessorEditor (SchwungAudioProcessor&
         addAndMakeVisible (l);
     };
     initLabel (synthLabel, "SYNTH");
-    initLabel (fxLabel, "FX 1");
+    initLabel (midiFxLabel, "MIDI FX   1 - 8");
+    initLabel (fxLabel, "AUDIO FX   1 - 8");
 
-    auto initBox = [this] (juce::ComboBox& b, const juce::StringArray& items, const juce::String& current)
+    auto style = [] (juce::ComboBox& b)
     {
         b.setColour (juce::ComboBox::backgroundColourId, kSurface);
         b.setColour (juce::ComboBox::textColourId, kInk);
         b.setColour (juce::ComboBox::outlineColourId, juce::Colour (0xff2a3134));
+    };
+
+    /* Item id 1 is always "(none)", so the module list starts at 2 and a
+     * module's index is recoverable from the id. The chain spells an empty
+     * position "None"; the editor spells it "(none)" and the processor
+     * translates -- writing the display string through would load a module
+     * called "(none)". */
+    auto fill = [] (juce::ComboBox& b, const juce::StringArray& items, const juce::String& current)
+    {
         b.addItem ("(none)", 1);
         for (int i = 0; i < items.size(); ++i)
             b.addItem (items[i], i + 2);
         b.setText (current.isEmpty() ? "(none)" : current, juce::dontSendNotification);
-        addAndMakeVisible (b);
     };
-    initBox (synthBox, proc.getAvailableSynths(), proc.getSynth());
-    initBox (fxBox, proc.getAvailableFx(), proc.getFx());
 
+    style (synthBox);
+    fill (synthBox, proc.getAvailableSynths(), proc.getSynth());
+    addAndMakeVisible (synthBox);
     synthBox.onChange = [this]
     {
         const auto t = synthBox.getText();
         proc.setSynth (t == "(none)" ? juce::String() : t);
         reloadRows();
     };
-    fxBox.onChange = [this]
+
+    for (int i = 0; i < kMidiFxSlots; ++i)
     {
-        const auto t = fxBox.getText();
-        proc.setFx (t == "(none)" ? juce::String() : t);
-        reloadRows();
-    };
+        auto* b = midiFxBoxes.add (new juce::ComboBox());
+        style (*b);
+        fill (*b, proc.getAvailableMidiFx(), proc.getMidiFx (i));
+        addAndMakeVisible (b);
+        b->onChange = [this, i, b]
+        {
+            const auto t = b->getText();
+            proc.setMidiFx (i, t == "(none)" ? juce::String() : t);
+            reloadRows();
+        };
+    }
+
+    for (int i = 0; i < kFxSlots; ++i)
+    {
+        auto* b = fxBoxes.add (new juce::ComboBox());
+        style (*b);
+        fill (*b, proc.getAvailableFx(), proc.getFx (i));
+        addAndMakeVisible (b);
+        b->onChange = [this, i, b]
+        {
+            const auto t = b->getText();
+            proc.setFx (i, t == "(none)" ? juce::String() : t);
+            reloadRows();
+        };
+    }
 
     statusLabel.setFont (juce::FontOptions (11.0f));
     statusLabel.setColour (juce::Label::textColourId, kInkFaint);
@@ -186,9 +218,9 @@ SchwungAudioProcessorEditor::SchwungAudioProcessorEditor (SchwungAudioProcessor&
 
     reloadRows();
 
-    setSize (640, 520);
+    setSize (720, 620);
     setResizable (true, true);
-    setResizeLimits (520, 280, 1200, 1400);
+    setResizeLimits (620, 380, 1400, 1600);
     startTimerHz (4);
 }
 
@@ -234,19 +266,32 @@ void SchwungAudioProcessorEditor::resized()
 
     auto head = r.removeFromTop (kHeadH - kPad - 6);
     title.setBounds (head.removeFromTop (26));
-    head.removeFromTop (6);
+    head.removeFromTop (4);
 
-    auto pickers = head.removeFromTop (44);
-    auto left = pickers.removeFromLeft (pickers.getWidth() / 2 - 6);
-    synthLabel.setBounds (left.removeFromTop (14));
-    synthBox.setBounds (left.removeFromTop (24));
+    synthLabel.setBounds (head.removeFromTop (14));
+    synthBox.setBounds (head.removeFromTop (24));
+    head.removeFromTop (8);
 
-    pickers.removeFromLeft (12);
-    fxLabel.setBounds (pickers.removeFromTop (14));
-    fxBox.setBounds (pickers.removeFromTop (24));
+    /* Both FX rows are eight boxes across the full width. The chain's order is
+     * left to right and that is the order they are laid out in, so the strip
+     * reads as the signal path it is. */
+    auto strip = [&head] (juce::Label& label, juce::OwnedArray<juce::ComboBox>& boxes)
+    {
+        label.setBounds (head.removeFromTop (14));
+        auto row = head.removeFromTop (22);
+        const int gap = 3;
+        const int w = (row.getWidth() - gap * (boxes.size() - 1)) / boxes.size();
+        for (int i = 0; i < boxes.size(); ++i)
+        {
+            boxes[i]->setBounds (row.removeFromLeft (w));
+            if (i + 1 < boxes.size()) row.removeFromLeft (gap);
+        }
+        head.removeFromTop (6);
+    };
+    strip (midiFxLabel, midiFxBoxes);
+    strip (fxLabel, fxBoxes);
 
     statusLabel.setBounds (head.removeFromTop (16));
-
     countLabel.setBounds (getWidth() - kPad - 170, kHeadH - 4, 170, 14);
 
     r.removeFromTop (18);

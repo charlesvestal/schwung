@@ -180,6 +180,7 @@ void SchwungAudioProcessor::scanModules()
 
     add (juce::File (moduleRoot).getChildFile ("sound_generators"), availableSynths);
     add (juce::File (moduleRoot).getChildFile ("audio_fx"), availableFx);
+    add (juce::File (moduleRoot).getChildFile ("midi_fx"), availableMidiFx);
 }
 
 void SchwungAudioProcessor::bringUpChain()
@@ -199,45 +200,92 @@ void SchwungAudioProcessor::bringUpChain()
     status = (sd != nullptr) ? "Chain ready." : "Chain failed to load from " + moduleRoot;
 }
 
-void SchwungAudioProcessor::setSynth (const juce::String& id)
+/*
+ * Load a module into one position.
+ *
+ * Suspended rather than locked-and-hoped: a create_instance can read samples
+ * off disk for hundreds of milliseconds, and waiting for that on the audio
+ * thread is the dropout this exists to avoid.
+ *
+ * An EMPTY id means "empty this position", and the chain spells that "None" --
+ * writing "" is not the same thing and leaves whatever was there running.
+ */
+void SchwungAudioProcessor::loadModuleAt (const juce::String& writeKey,
+                                          const juce::String& id,
+                                          juce::String& slotStore)
 {
-    /* Suspend rather than lock-and-hope: a create_instance can read samples
-     * off disk for hundreds of milliseconds. */
     suspendProcessing (true);
     {
         const std::lock_guard<std::mutex> lock (chainLock);
         if (sd != nullptr)
         {
-            schwung_desktop_set_param (sd, "synth:module", id.toRawUTF8());
-            currentSynth = id;
+            schwung_desktop_set_param (sd, writeKey.toRawUTF8(),
+                                       id.isEmpty() ? "None" : id.toRawUTF8());
+            slotStore = id;
         }
     }
     suspendProcessing (false);
-
-    /* Ranges belong to the module that just loaded, so every binding has to be
-     * resolved again -- the same key can mean per-cent in one module and dB in
-     * the next. */
-    for (int i = 0; i < kMacroCount; ++i)
-        setBinding (i, bindings[(size_t) i].key, bindings[(size_t) i].userSet);
-
-    autoBindMacros();
 }
 
-void SchwungAudioProcessor::setFx (const juce::String& id)
+/* Re-resolve every binding. Ranges belong to the module that just loaded --
+ * the same key means per-cent in one module and dB in the next -- so a load
+ * invalidates all of them, bound by hand or not. */
+void SchwungAudioProcessor::rebindAll (bool adopt)
 {
+    const juce::ScopedValueSetter<bool> scope (restoring, ! adopt);
+    for (int i = 0; i < kMacroCount; ++i)
+        setBinding (i, bindings[(size_t) i].key, bindings[(size_t) i].userSet);
+}
+
+void SchwungAudioProcessor::setSynth (const juce::String& id)
+{
+    loadModuleAt ("synth:module", id, currentSynth);
+    rebindAll (! restoring);
+    if (! restoring) autoBindMacros();
+}
+
+void SchwungAudioProcessor::setFx (int pos, const juce::String& id)
+{
+    if (! juce::isPositiveAndBelow (pos, kFxSlots)) return;
+    loadModuleAt ("fx" + juce::String (pos + 1) + ":module", id, fxModules[(size_t) pos]);
+    rebindAll (! restoring);
+}
+
+void SchwungAudioProcessor::setMidiFx (int pos, const juce::String& id)
+{
+    if (! juce::isPositiveAndBelow (pos, kMidiFxSlots)) return;
+    loadModuleAt ("midi_fx" + juce::String (pos + 1) + ":module", id, midiFxModules[(size_t) pos]);
+    rebindAll (! restoring);
+}
+
+/* ---- the opaque state blob -------------------------------------------- */
+
+juce::String SchwungAudioProcessor::readState (const juce::String& prefix)
+{
+    if (sd == nullptr) return {};
+    std::vector<char> buf ((size_t) 262144);
+    int n;
+    {
+        const std::lock_guard<std::mutex> lock (chainLock);
+        n = schwung_desktop_get_param (sd, (prefix + ":state").toRawUTF8(),
+                                       buf.data(), (int) buf.size());
+    }
+    /* n < 0 is a read that did not complete and n == 0 is a module with no
+     * state. Neither is an error, and neither may be saved as "" -- writing an
+     * empty blob back on restore is what would wipe a module that simply
+     * failed to answer this once. */
+    return n > 0 ? juce::String::fromUTF8 (buf.data(), n) : juce::String();
+}
+
+void SchwungAudioProcessor::writeState (const juce::String& prefix, const juce::String& blob)
+{
+    if (sd == nullptr || blob.isEmpty()) return;
     suspendProcessing (true);
     {
         const std::lock_guard<std::mutex> lock (chainLock);
-        if (sd != nullptr)
-        {
-            schwung_desktop_set_param (sd, "fx1:module", id.toRawUTF8());
-            currentFx = id;
-        }
+        schwung_desktop_set_param (sd, (prefix + ":state").toRawUTF8(), blob.toRawUTF8());
     }
     suspendProcessing (false);
-
-    for (int i = 0; i < kMacroCount; ++i)
-        setBinding (i, bindings[(size_t) i].key, bindings[(size_t) i].userSet);
 }
 
 /*
@@ -527,14 +575,47 @@ juce::AudioProcessorEditor* SchwungAudioProcessor::createEditor()
     return new SchwungAudioProcessorEditor (*this);
 }
 
+/*
+ * WHAT A SAVED LIVE SET HAS TO CARRY.
+ *
+ * Module ids and macro bindings are not enough, and saving only those is the
+ * quietest kind of data loss: the project reopens, the right modules load, the
+ * chain works -- and it sounds like a new instance, because every parameter a
+ * macro does not happen to cover came back at its default. Worse for a sampler
+ * or a drum module, where the sample and the kit are not parameters at all.
+ *
+ * The opaque "<prefix>:state" blob is the module's WHOLE configuration and is
+ * the only thing that carries those. It is saved per position.
+ */
 void SchwungAudioProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     auto state = apvts.copyState();
     auto chain = state.getOrCreateChildWithName ("chain", nullptr);
+
     chain.setProperty ("synth", currentSynth, nullptr);
-    chain.setProperty ("fx", currentFx, nullptr);
+    chain.setProperty ("synthState", readState ("synth"), nullptr);
+
+    for (int i = 0; i < kFxSlots; ++i)
+    {
+        const auto n = juce::String (i + 1);
+        chain.setProperty ("fx" + n, fxModules[(size_t) i], nullptr);
+        if (fxModules[(size_t) i].isNotEmpty())
+            chain.setProperty ("fx" + n + "State", readState ("fx" + n), nullptr);
+    }
+
+    for (int i = 0; i < kMidiFxSlots; ++i)
+    {
+        const auto n = juce::String (i + 1);
+        chain.setProperty ("mfx" + n, midiFxModules[(size_t) i], nullptr);
+        if (midiFxModules[(size_t) i].isNotEmpty())
+            chain.setProperty ("mfx" + n + "State", readState ("midi_fx" + n), nullptr);
+    }
+
+    /* Only bound macros are written. 512 properties per instance, almost all
+     * empty, would bloat every Live set that ever loaded this plugin. */
     for (int i = 0; i < kMacroCount; ++i)
-        chain.setProperty ("bind" + juce::String (i), bindings[(size_t) i].key, nullptr);
+        if (bindings[(size_t) i].key.isNotEmpty())
+            chain.setProperty ("bind" + juce::String (i), bindings[(size_t) i].key, nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, dest);
@@ -545,10 +626,6 @@ void SchwungAudioProcessor::setStateInformation (const void* data, int sizeInByt
     auto xml = getXmlFromBinary (data, sizeInBytes);
     if (xml == nullptr) return;
 
-    /* Everything under here is a RESTORE: the values in the file are the
-     * truth, not whatever a freshly loaded module happens to default to. */
-    const juce::ScopedValueSetter<bool> restoreScope (restoring, true);
-
     auto state = juce::ValueTree::fromXml (*xml);
     if (! state.isValid()) return;
     apvts.replaceState (state);
@@ -556,15 +633,51 @@ void SchwungAudioProcessor::setStateInformation (const void* data, int sizeInByt
     auto chain = state.getChildWithName ("chain");
     if (! chain.isValid()) return;
 
-    /* Order matters: the synth has to be loaded before a binding can resolve
-     * its range, because the range belongs to the module. */
-    const auto synth = chain.getProperty ("synth", "").toString();
-    const auto fx    = chain.getProperty ("fx", "").toString();
-    if (synth.isNotEmpty()) setSynth (synth);
-    if (fx.isNotEmpty())    setFx (fx);
+    /*
+     * ORDER IS THE WHOLE THING HERE.
+     *
+     *   1. load the modules            -- a state blob is meaningless until the
+     *                                     module that understands it exists
+     *   2. write the state blobs       -- this is what restores the SOUND
+     *   3. re-read the bindings        -- ranges belong to the loaded module
+     *   4. adopt, LAST                 -- so the macros show the restored
+     *                                     values rather than overwriting them
+     *
+     * `restoring` suppresses adoption for steps 1-3. Doing it any earlier
+     * pushes a freshly constructed module's defaults over the file: the
+     * project reopens sounding wrong, with nothing logged and a perfectly
+     * valid set on disk. That failure shipped for about an hour.
+     */
+    {
+        const juce::ScopedValueSetter<bool> scope (restoring, true);
 
-    for (int i = 0; i < kMacroCount; ++i)
-        setBinding (i, chain.getProperty ("bind" + juce::String (i), "").toString());
+        for (int i = 0; i < kMacroCount; ++i)
+            setBinding (i, chain.getProperty ("bind" + juce::String (i), "").toString(), true);
+
+        setSynth (chain.getProperty ("synth", "").toString());
+
+        for (int i = 0; i < kFxSlots; ++i)
+            setFx (i, chain.getProperty ("fx" + juce::String (i + 1), "").toString());
+
+        for (int i = 0; i < kMidiFxSlots; ++i)
+            setMidiFx (i, chain.getProperty ("mfx" + juce::String (i + 1), "").toString());
+
+        writeState ("synth", chain.getProperty ("synthState", "").toString());
+
+        for (int i = 0; i < kFxSlots; ++i)
+        {
+            const auto n = juce::String (i + 1);
+            writeState ("fx" + n, chain.getProperty ("fx" + n + "State", "").toString());
+        }
+        for (int i = 0; i < kMidiFxSlots; ++i)
+        {
+            const auto n = juce::String (i + 1);
+            writeState ("midi_fx" + n, chain.getProperty ("mfx" + n + "State", "").toString());
+        }
+    }
+
+    autoBindMacros();
+    rebindAll (/*adopt=*/true);
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
