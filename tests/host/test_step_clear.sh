@@ -113,3 +113,35 @@ echo "$body" | grep -q 'lane_undo_take' \
 # would read a missing phase as 0 and take the downbeat's automation.
 grep -q 'lanes:clear_step' src/host/shadow_chain_mgmt.c \
   || fail "the host must translate lanes:clear_step -- the chain knows only phases"
+
+# ...AND DELETE MUST NOT REACH MOVE, WHICH DELETES THE CLIP.
+#
+# The claim is otherwise module-driven (capabilities.claims_edit_ccs) and
+# neither 9W9 nor hank declares it, so the button the on-screen notice invites
+# you to press would have gone straight to Move's own delete. Decided in the
+# SHIM, not by widening the JS claim set: a claim reconciled on the UI tick can
+# land a frame after the press it is meant to cover, and one leaked press is a
+# lost clip.
+shim=src/schwung_shim.c
+grep -q 'step_owns_delete' "$shim" \
+  || fail "the shim must claim Delete while a step is held, or it reaches Move and deletes the CLIP"
+body=$(awk '/step_owns_delete =/,/step_observe;/' "$shim")
+echo "$body" | grep -q 'shadow_steps_held_mask != 0' \
+  || fail "the claim must require a step to be DOWN -- otherwise Move loses Delete everywhere on the grid"
+echo "$body" | grep -q 'step_observe' \
+  || fail "the claim must require the grid to be watching steps"
+grep -q '(claim_cc_set(d1) || step_owns_delete) &&' "$shim" \
+  || fail "the step claim must sit beside the module claim, under the same shift and denied-CC guards"
+
+# ...and a MODULE-DRAWN grid must get the gesture too.
+#
+# 9W9 and every other module that draws its own grid route input through the
+# shared decodeInput/applyInput, not through the host's param-pages path. With
+# the edit CCs decoded only in the host's path, Delete was withheld from Move
+# (safe) and then delivered to nobody -- the notice on screen invited a gesture
+# that could not fire. Fifth instance of one blind spot in this feature alone.
+inp=src/shared/param_pages/page_input.mjs
+grep -q 'type: "edit"' "$inp" \
+  || fail "decodeInput must decode the edit CCs, or a module-drawn grid never sees Delete"
+grep -q 'case "edit":' "$inp" \
+  || fail "applyInput must route the edit intent to controller.onEditCc"

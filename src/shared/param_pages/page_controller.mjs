@@ -590,6 +590,19 @@ export function createController(io = {}) {
      * Injectable so tests can drive it, and `typeof`-guarded so the preview
      * harness -- node, no device, no bindings -- simply sees no step held.
      */
+    /* The device's answer, right now, guarded -- as opposed to `s.heldStep`,
+     * which the rotation only refreshes on a KNOB page. Clearing a step's
+     * automation is not a knob-page fact: on a module's own grid the screen is
+     * often its section picker or a menu when the finger goes down, and the
+     * gesture must still work there. Measured: the whole-step clear did
+     * nothing on 9W9 for exactly this reason, while the same press worked on
+     * the host's grid. */
+    const liveHeldStep = () => {
+        try {
+            const v = heldStepOf();
+            return (typeof v === "number" && v >= 0) ? v : -1;
+        } catch (e) { return -1; }
+    };
     const heldStepOf = io.heldStep || (() => {
         try {
             return (typeof globalThis.shadow_get_held_step === "function")
@@ -3827,7 +3840,7 @@ export function createController(io = {}) {
          * this step goes. On the TOUCH, not the turn -- a turn under a held
          * step writes a p-lock, so asking for a turn here would create the
          * thing it is meant to remove. */
-        if (down && s.stepClear && s.heldStep >= 0) {
+        if (down && s.stepClear && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
             const k = keyAt(slot);
             if (k && clearHeldStep(k)) {
                 s.stepClear.picked = true;
@@ -4267,7 +4280,7 @@ export function createController(io = {}) {
      * p-lock would have written to.
      */
     function clearHeldStep(key) {
-        if (s.heldStep < 0) return false;
+        if (s.heldStep < 0 && liveHeldStep() < 0) return false;
         /* `<target> <param>`, split off the full key rather than rebuilt: the
          * chain's lane store is keyed by exactly those two fields, and a
          * second way of deriving them is a second thing to get wrong -- the
@@ -4308,7 +4321,8 @@ export function createController(io = {}) {
          * instance gesture. Checked before `instanceLevel()` because a module
          * with no child levels would otherwise return false here and hand
          * Delete back to Move, which deletes the CLIP. */
-        if (cc === 119 && (down ? s.heldStep >= 0 : !!s.stepClear)) {
+        if (cc === 119 && (down ? (s.heldStep >= 0 || liveHeldStep() >= 0)
+                                : !!s.stepClear)) {
             if (down) {
                 s.stepClear = { picked: false };
                 notice("CLEAR STEP: TOUCH A KNOB, OR RELEASE FOR ALL", 4000, true);
