@@ -98,6 +98,49 @@ void RateBridge::pull (schwung_desktop_t* sd, float* outL, float* outR, int numS
 }
 
 // =====================================================================
+// TransportClock
+// =====================================================================
+
+void TransportClock::advance (bool playing, double ppqStart, double ppqEnd,
+                              const std::function<void (uint8_t)>& send)
+{
+    if (playing && ! wasPlaying)
+    {
+        send (0xFA);                                   // Start
+        /* Phase to the playhead, not to zero. Starting the count here is what
+         * puts a tick on the beat when playback begins mid-bar. */
+        nextTick = std::ceil (ppqStart * kPPQN);
+        wasPlaying = true;
+    }
+    else if (! playing && wasPlaying)
+    {
+        send (0xFC);                                   // Stop
+        wasPlaying = false;
+        return;
+    }
+
+    if (! playing) return;
+
+    const double endTick = ppqEnd * kPPQN;
+
+    /* A backwards jump (loop wrap, locate) means the old count is meaningless.
+     * Re-phase rather than emitting nothing until the playhead catches up. */
+    if (endTick + 1.0 < nextTick)
+        nextTick = std::ceil (ppqStart * kPPQN);
+
+    int emitted = 0;
+    while (nextTick <= endTick && emitted < kMaxTicksPerBlock)
+    {
+        send (0xF8);                                   // Timing Clock
+        nextTick += 1.0;
+        ++emitted;
+    }
+
+    if (emitted >= kMaxTicksPerBlock)
+        nextTick = std::ceil (endTick);                // gave up catching up
+}
+
+// =====================================================================
 // Processor
 // =====================================================================
 
@@ -506,6 +549,7 @@ void SchwungAudioProcessor::setBinding (int i, const juce::String& key, bool byU
 void SchwungAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     bridge.prepare (sampleRate, samplesPerBlock);
+    clock.reset();
     setLatencySamples (bridge.getLatencySamples());
     for (auto& v : lastSent) v.store (-1.0f);
 }
@@ -536,9 +580,27 @@ void SchwungAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     {
         if (auto pos = ph->getPosition())
         {
-            const double bpm  = pos->getBpm().orFallback (120.0);
-            const double beat = pos->getPpqPosition().orFallback (-1.0);
-            schwung_desktop_set_transport (sd, bpm, beat, pos->getIsPlaying() ? 1 : 0);
+            const double bpm     = pos->getBpm().orFallback (120.0);
+            const double beat    = pos->getPpqPosition().orFallback (-1.0);
+            const bool   playing = pos->getIsPlaying();
+
+            schwung_desktop_set_transport (sd, bpm, beat, playing ? 1 : 0);
+
+            /* And the realtime clock, which is a SEPARATE channel the chain
+             * answers get_clock_status from -- see TransportClock. Emitted
+             * before this block's MIDI so a module that starts on 0xFA is
+             * running by the time the first note arrives. */
+            if (beat >= 0.0)
+            {
+                const double blockBeats = (double) buffer.getNumSamples()
+                                        / juce::jmax (1.0, getSampleRate()) * bpm / 60.0;
+                clock.advance (playing, beat, beat + blockBeats,
+                               [this] (uint8_t status)
+                               {
+                                   const uint8_t msg[1] = { status };
+                                   schwung_desktop_midi (sd, msg, 1);
+                               });
+            }
         }
     }
 
