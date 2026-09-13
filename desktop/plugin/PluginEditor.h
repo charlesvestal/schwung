@@ -35,6 +35,24 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
+/* The macro bank is 512 slots, so the rows SCROLL and only the interesting
+ * ones exist. Building 512 row components -- each with a text editor, a slider
+ * and two labels -- is thousands of widgets for a window that shows a dozen,
+ * and JUCE lays out every one of them on every resize. */
+class MacroList : public juce::Component
+{
+public:
+    explicit MacroList (SchwungAudioProcessor& p) : proc (p) {}
+    void rebuild();
+    void refresh();
+    void resized() override;
+    int  preferredHeight() const;
+
+private:
+    SchwungAudioProcessor& proc;
+    juce::OwnedArray<MacroRow> rows;
+};
+
 class SchwungAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Timer
 {
@@ -45,12 +63,14 @@ public:
 
 private:
     void timerCallback() override;
+    void reloadRows();
 
     SchwungAudioProcessor& proc;
 
     juce::ComboBox synthBox, fxBox;
-    juce::Label    synthLabel, fxLabel, statusLabel, title;
-    juce::OwnedArray<MacroRow> rows;
+    juce::Label    synthLabel, fxLabel, statusLabel, title, countLabel;
+    juce::Viewport viewport;
+    MacroList      list { proc };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SchwungAudioProcessorEditor)
 };

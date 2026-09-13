@@ -32,7 +32,11 @@ MacroRow::MacroRow (SchwungAudioProcessor& p, int index) : proc (p), idx (index)
     addAndMakeVisible (keyField);
 
     slider.setSliderStyle (juce::Slider::LinearHorizontal);
-    slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 56, 20);
+    slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 62, 20);
+    /* Three places, not JUCE's default. At six the value did not fit the box
+     * and rendered as "0.00000..." -- a number with its digits cut off is
+     * worse than a rounder one. */
+    slider.setNumDecimalPlacesToDisplay (3);
     slider.setColour (juce::Slider::trackColourId, kSignal);
     slider.setColour (juce::Slider::thumbColourId, kSignal);
     slider.setColour (juce::Slider::textBoxTextColourId, kInk);
@@ -54,7 +58,12 @@ void MacroRow::refresh()
     const auto& b = proc.getBinding (idx);
     if (keyField.getText() != b.key)
         keyField.setText (b.key, juce::dontSendNotification);
-    range.setText (b.status, juce::dontSendNotification);
+
+    /* Prefer the module's OWN name for the parameter. "Timbre" is what its
+     * pages call it and what Live now shows in the automation list; the raw
+     * key is already visible in the field to the left. */
+    range.setText (b.label.isNotEmpty() ? b.label + "   " + b.status : b.status,
+                   juce::dontSendNotification);
     range.setColour (juce::Label::textColourId,
                      b.status.startsWith ("refused") ? kRefused : kInkFaint);
 }
@@ -69,6 +78,49 @@ void MacroRow::resized()
     range.setBounds (r.removeFromRight (130));
     r.removeFromRight (8);
     slider.setBounds (r);
+}
+
+
+// --------------------------------------------------------------- MacroList
+//
+// Only the interesting slots get a row: everything bound, plus a few spare at
+// the end so a key can still be typed by hand. With kMacroCount at 512 the
+// alternative is ~2000 widgets for a window that shows a dozen.
+
+void MacroList::rebuild()
+{
+    rows.clear();
+
+    int lastBound = -1;
+    for (int i = 0; i < kMacroCount; ++i)
+        if (proc.getBinding (i).key.isNotEmpty())
+            lastBound = i;
+
+    const int spare = 4;
+    const int shown = juce::jmin (kMacroCount, lastBound + 1 + spare);
+
+    for (int i = 0; i < shown; ++i)
+        addAndMakeVisible (rows.add (new MacroRow (proc, i)));
+
+    setSize (getWidth() > 0 ? getWidth() : 600, preferredHeight());
+    resized();
+}
+
+void MacroList::refresh()
+{
+    for (auto* r : rows) r->refresh();
+}
+
+int MacroList::preferredHeight() const
+{
+    return juce::jmax (1, rows.size()) * kRowH;
+}
+
+void MacroList::resized()
+{
+    auto r = getLocalBounds();
+    for (auto* row : rows)
+        row->setBounds (r.removeFromTop (kRowH));
 }
 
 // ------------------------------------------------------------------ Editor
@@ -109,24 +161,48 @@ SchwungAudioProcessorEditor::SchwungAudioProcessorEditor (SchwungAudioProcessor&
     {
         const auto t = synthBox.getText();
         proc.setSynth (t == "(none)" ? juce::String() : t);
-        for (auto* r : rows) r->refresh();
+        reloadRows();
     };
     fxBox.onChange = [this]
     {
         const auto t = fxBox.getText();
         proc.setFx (t == "(none)" ? juce::String() : t);
-        for (auto* r : rows) r->refresh();
+        reloadRows();
     };
 
     statusLabel.setFont (juce::FontOptions (11.0f));
     statusLabel.setColour (juce::Label::textColourId, kInkFaint);
     addAndMakeVisible (statusLabel);
 
-    for (int i = 0; i < kMacroCount; ++i)
-        addAndMakeVisible (rows.add (new MacroRow (proc, i)));
+    countLabel.setFont (juce::FontOptions (10.0f));
+    countLabel.setColour (juce::Label::textColourId, kInkFaint);
+    countLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (countLabel);
 
-    setSize (620, kHeadH + kMacroCount * kRowH + kPad * 2);
+    viewport.setViewedComponent (&list, false);
+    viewport.setScrollBarsShown (true, false);
+    viewport.setColour (juce::ScrollBar::thumbColourId, juce::Colour (0xff3a4449));
+    addAndMakeVisible (viewport);
+
+    reloadRows();
+
+    setSize (640, 520);
+    setResizable (true, true);
+    setResizeLimits (520, 280, 1200, 1400);
     startTimerHz (4);
+}
+
+void SchwungAudioProcessorEditor::reloadRows()
+{
+    list.rebuild();
+
+    int bound = 0;
+    for (int i = 0; i < kMacroCount; ++i)
+        if (proc.getBinding (i).resolved) ++bound;
+
+    countLabel.setText (juce::String (bound) + " of " + juce::String (kMacroCount) + " macros bound",
+                        juce::dontSendNotification);
+    resized();
 }
 
 void SchwungAudioProcessorEditor::timerCallback()
@@ -138,15 +214,17 @@ void SchwungAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.fillAll (kGround);
 
-    /* One hairline under the header, so the chain selectors read as a
-     * different kind of thing from the macro rows below them. */
     g.setColour (juce::Colour (0xff2a3134));
     g.drawHorizontalLine (kHeadH - 6, (float) kPad, (float) (getWidth() - kPad));
 
     g.setColour (kInkFaint);
     g.setFont (juce::FontOptions (10.0f));
-    g.drawText ("MACROS  \xe2\x80\x94  bind a chain key, then automate",
-                kPad, kHeadH - 2, getWidth() - kPad * 2, 14,
+    /* ASCII only. A raw "\xe2\x80\x94" in a narrow literal reaches
+     * juce::String through the char* constructor, which does not treat it as
+     * UTF-8 -- the em-dash rendered as "a EUR" mojibake. Anything non-ASCII
+     * here needs CharPointer_UTF8; a hyphen needs nothing. */
+    g.drawText ("MACROS - bound to the loaded module, automatable in the host",
+                kPad, kHeadH - 4, getWidth() - kPad * 2 - 170, 14,
                 juce::Justification::centredLeft);
 }
 
@@ -169,7 +247,9 @@ void SchwungAudioProcessorEditor::resized()
 
     statusLabel.setBounds (head.removeFromTop (16));
 
+    countLabel.setBounds (getWidth() - kPad - 170, kHeadH - 4, 170, 14);
+
     r.removeFromTop (18);
-    for (auto* row : rows)
-        row->setBounds (r.removeFromTop (kRowH));
+    viewport.setBounds (r);
+    list.setSize (viewport.getMaximumVisibleWidth(), list.preferredHeight());
 }
