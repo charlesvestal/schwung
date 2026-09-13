@@ -1085,6 +1085,60 @@ int main(void) {
         CHECK(n_cur == 1, "swapping twice is the identity -- undo, then redo");
     }
 
+    /* A FULL STORE MUST SPEND AN ORPHAN BEFORE IT REFUSES.
+     *
+     * An orphaned lane belongs to a clip that was DELETED, and it is kept on
+     * purpose so that undoing the delete brings the automation back with it.
+     * But it is kept invisibly and still occupies one of LANE_MAX, so without
+     * this a user who deletes clips for a while reaches a slot that silently
+     * refuses new automation -- no message, nothing on screen to clear.
+     *
+     * The guard that must survive: an orphan STILL DRIVING is not a victim.
+     * Orphaning does not release the modulation override, and lane_alloc is
+     * pure -- it cannot hand one back -- so dropping that lane would pin its
+     * parameter wherever automation last wrote it. */
+    {
+        lane_store_t fs;
+        lane_store_reset(&fs);
+        lane_fingerprint_t ffp;
+        memset(&ffp, 0, sizeof ffp);
+
+        char pname[24];
+        for (int i = 0; i < LANE_MAX; i++) {
+            snprintf(pname, sizeof pname, "p%d", i);
+            CHECK(lane_alloc(&fs, "synth", pname, 0, 0, &ffp) != NULL,
+                  "the store should hold LANE_MAX lanes, failed at %d", i);
+        }
+        CHECK(lane_alloc(&fs, "synth", "one_more", 0, 0, &ffp) == NULL,
+              "a store full of LIVE lanes must refuse -- evicting one would "
+              "throw away automation for a clip that still exists");
+
+        /* Orphan one, and the next allocation takes its place. */
+        fs.lanes[7].orphaned = 1;
+        lane_t *taken = lane_alloc(&fs, "synth", "one_more", 0, 0, &ffp);
+        CHECK(taken != NULL, "a full store must spend an ORPHAN rather than refuse");
+        CHECK(taken == &fs.lanes[7], "the orphan's slot is the one taken");
+        CHECK(strcmp(taken->param, "one_more") == 0 && !taken->orphaned,
+              "the evicted slot must be rebound cleanly, got param=%s orphaned=%d",
+              taken->param, taken->orphaned);
+        CHECK(taken->evicted_orphan == 1,
+              "an eviction must be RECORDED -- it is the one allocation that "
+              "destroys something");
+
+        /* ...but never one that is still driving. */
+        lane_store_reset(&fs);
+        for (int i = 0; i < LANE_MAX; i++) {
+            snprintf(pname, sizeof pname, "q%d", i);
+            lane_alloc(&fs, "synth", pname, 0, 0, &ffp);
+        }
+        fs.lanes[3].orphaned = 1;
+        fs.lanes[3].driving = 1;
+        CHECK(lane_alloc(&fs, "synth", "nope", 0, 0, &ffp) == NULL,
+              "an orphan that is STILL DRIVING must not be evicted -- its "
+              "override would never be handed back and the parameter would "
+              "stay pinned where the automation left it");
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

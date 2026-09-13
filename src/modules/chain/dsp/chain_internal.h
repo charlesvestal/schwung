@@ -532,6 +532,14 @@ static inline int bus_fx_ready(const slot_bus_t *bus)
 }
 
 /* Chain instance state - contains all per-instance data for v2 API */
+enum {
+    LANE_PLOCK_OK = 0,
+    LANE_PLOCK_BAD_REQUEST,
+    LANE_PLOCK_NO_CLIP,
+    LANE_PLOCK_UNKNOWN_PARAM,   /* the module has no such parameter */
+    LANE_PLOCK_STORE_FULL,
+};
+
 typedef struct chain_instance {
     /* Module directory */
     char module_dir[MAX_PATH_LEN];
@@ -856,6 +864,9 @@ typedef struct chain_instance {
      * rest of this feature spends its instrumentation on. */
     int    lanes_last_plocked;
     int    lanes_last_undone;
+    /* Why the last lanes:plock was refused; see LANE_PLOCK_* and the comment
+     * at the plock verb. */
+    int    lanes_plock_refusal;
     /* ONE-DEEP UNDO of the whole slot's automation, swapped rather than
      * copied back so the same verb is redo. See lane_store_swap(). */
     lane_store_t lanes_undo;
