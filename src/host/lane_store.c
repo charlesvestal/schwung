@@ -105,6 +105,14 @@ static int lane_nearest(const lane_t *ln, double phase) {
 }
 
 void lane_write(lane_t *ln, double phase, float value, int hold) {
+    lane_write_span(ln, phase, value, hold, 0.0);
+}
+
+/* See lane_point_t: `span` is how long a HELD point stands before the lane
+ * goes back to whatever is underneath. 0 keeps the old meaning (until the next
+ * point), which is what every recorded sweep and every lane already on disk
+ * means. */
+void lane_write_span(lane_t *ln, double phase, float value, int hold, double span) {
     /* `phase < 0.0` is false for NaN, so a NaN phase would otherwise sail
      * through every comparison below (insertion, thinning, overflow-nearest)
      * and land in pts[] -- isfinite() is the only comparison NaN cannot
@@ -128,6 +136,11 @@ void lane_write(lane_t *ln, double phase, float value, int hold) {
         if (d < LANE_MIN_POINT_BEATS) {
             ln->pts[i].value = value;
             ln->pts[i].hold = hold ? 1 : 0;
+            /* The SPAN is replaced with the shape, for the reason the flag is:
+             * recording a sweep over a lock must leave a slope with no span,
+             * and locking over a recorded point must leave a step-long
+             * rectangle. */
+            ln->pts[i].span = (float)((span > 0.0 && isfinite(span)) ? span : 0.0);
             return;
         }
     }
@@ -144,6 +157,7 @@ void lane_write(lane_t *ln, double phase, float value, int hold) {
         ln->pts[i].phase = phase;
         ln->pts[i].value = value;
         ln->pts[i].hold = hold ? 1 : 0;
+        ln->pts[i].span = (float)((span > 0.0 && isfinite(span)) ? span : 0.0);
         ln->full_hits++;
         /* Re-sort the single moved element. */
         while (i > 0 && ln->pts[i - 1].phase > ln->pts[i].phase) {
@@ -165,6 +179,7 @@ void lane_write(lane_t *ln, double phase, float value, int hold) {
     ln->pts[at].phase = phase;
     ln->pts[at].value = value;
     ln->pts[at].hold = hold ? 1 : 0;
+    ln->pts[at].span = (float)((span > 0.0 && isfinite(span)) ? span : 0.0);
     ln->n++;
 }
 
@@ -199,6 +214,44 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
     }
     if (last < 0) return 0;
 
+    /*
+     * A SPANNED POINT IS AN EDIT TO ONE STEP, so it owns [phase, phase+span)
+     * and NOTHING ELSE. Asked first, because inside that window it beats every
+     * rule below -- including the "before the first point" and "after the last
+     * point" holds, which are what made a single lock mean the whole bar and
+     * the bar BEFORE it too.
+     *
+     * Outside every span the lane answers as if the spanned points were not
+     * there: that is what lets a recorded sweep keep playing underneath a
+     * lock, and what makes a lane of nothing but locks go SILENT between them
+     * so the knob owns the parameter again.
+     */
+    int have_span = 0;
+    for (int i = first; i <= last; i++) {
+        const lane_point_t *p = &ln->pts[i];
+        if (!(p->hold && p->span > 0.0f && isfinite(p->span))) continue;
+        have_span = 1;
+        if (phase >= p->phase && phase < p->phase + (double)p->span) {
+            *out = p->value;
+            return 1;
+        }
+    }
+    if (have_span) {
+        /* Re-run the window over the UNSPANNED points only. A lane that is
+         * nothing but locks has none, and answers "nothing to say" between
+         * them -- which releases the override, which is the whole point of a
+         * lock ending at its step. */
+        int f2 = -1, l2 = -1;
+        for (int i = first; i <= last; i++) {
+            const lane_point_t *p = &ln->pts[i];
+            if (p->hold && p->span > 0.0f && isfinite(p->span)) continue;
+            if (f2 < 0) f2 = i;
+            l2 = i;
+        }
+        if (l2 < 0) return 0;
+        first = f2; last = l2;
+    }
+
     if (phase <= ln->pts[first].phase) { *out = ln->pts[first].value; return 1; }
     if (phase >= ln->pts[last].phase) { *out = ln->pts[last].value; return 1; }
 
@@ -209,6 +262,19 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
          * interpolation endpoint -- letting it through computed span=NaN,
          * t=NaN, and an affirmative-looking NaN result. */
         if (!isfinite(a->phase) || !isfinite(b->phase)) continue;
+        /* A spanned lock is not an endpoint for anything: it owns its own
+         * window and is invisible everywhere else, so a sweep either side of
+         * it interpolates across as though it were not in the array. */
+        if (a->hold && a->span > 0.0f) continue;
+        if (b->hold && b->span > 0.0f) {
+            /* ...and the segment ENDING on one runs to the next unspanned
+             * point instead. Walking forward keeps the array order. */
+            int k = i + 2;
+            while (k <= last && ln->pts[k].hold && ln->pts[k].span > 0.0f) k++;
+            if (k > last) { if (phase >= a->phase) { *out = a->value; return 1; } continue; }
+            b = &ln->pts[k];
+            if (phase > b->phase) continue;
+        }
         if (phase < a->phase || phase > b->phase) continue;
         /* `stepped` is the PARAMETER's type (an enum cannot ramp); `a->hold`
          * is this POINT's own shape. Either one holds, and the point's flag is

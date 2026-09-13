@@ -67,7 +67,15 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
              * existed and no version bump is needed -- the reader defaults an
              * absent third field to 0, the same rule the L line's trailing
              * fields already use. */
-            if (ln->pts[k].hold)
+            /* ...and the SPAN is a FOURTH field, written only when a held
+             * point has one, for the same reason: a lane written before locks
+             * ended at their own step reads back byte-identical and keeps its
+             * old meaning (hold until the next point). */
+            if (ln->pts[k].hold && ln->pts[k].span > 0.0f)
+                APPEND("P " FMT_D " " FMT_F " 1 " FMT_D "\n",
+                       ln->pts[k].phase, (double)ln->pts[k].value,
+                       (double)ln->pts[k].span);
+            else if (ln->pts[k].hold)
                 APPEND("P " FMT_D " " FMT_F " 1\n",
                        ln->pts[k].phase, (double)ln->pts[k].value);
             else
@@ -222,11 +230,18 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
              * defaulted value plants 0.0 on a breakpoint the user never
              * played. The THIRD is optional and absent means 0, so a document
              * written before the flag existed reads identically. */
-            int got = sscanf(line, "P %lf %lf %d", &phase, &value, &hold);
+            double span = 0.0;
+            int got = sscanf(line, "P %lf %lf %d %lf", &phase, &value, &hold, &span);
             if (got < 2) return 0;
             if (got < 3) hold = 0;
+            if (got < 4) span = 0.0;
             if (hold != 0 && hold != 1) return 0;   /* not a flag */
             if (!isfinite(phase) || phase < 0.0 || !isfinite(value)) return 0;
+            /* A span is a LENGTH: negative or non-finite is a corrupt document,
+             * not a point to interpret generously -- it would own a window
+             * running backwards over everything before it. */
+            if (!isfinite(span) || span < 0.0) return 0;
+            if (span > 0.0 && !hold) return 0;      /* only a held point has one */
             /* lane_eval walks pts[] assuming ascending phase, so an unsorted
              * document would evaluate to the wrong curve rather than to an
              * error. */
@@ -238,6 +253,7 @@ static int parse_doc(lane_store_t *st, const char *doc, int apply) {
                 cur->pts[cur->n].phase = phase;
                 cur->pts[cur->n].value = (float)value;
                 cur->pts[cur->n].hold = (uint8_t)hold;
+                cur->pts[cur->n].span = (float)span;
                 cur->n++;
             }
             continue;

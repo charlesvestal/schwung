@@ -820,6 +820,36 @@ pieces of it exist and are tested; the input plumbing is not written.
   `held_step 4`, release → 255, **two steps down → 255** (the "exactly one"
   guard).
 
+- **A P-LOCK ENDS AT ITS OWN STEP — "you're just editing a step".** A held
+  point used to stand until the next point, and the "before the first point"
+  rule held it BACKWARDS to the start, so one lock at step 4 was the whole
+  bar: measured on the device, all sixteen steps reported the locked value and
+  playback was already at it before phase 1. That is what an automation lane
+  does; it is not what locking a step means, and the in-product help promised
+  the second one.
+
+  `lane_point_t` carries a **`span`**, and a spanned point owns
+  `[phase, phase+span)` and nothing else. Outside every span the lane answers
+  as if the spanned points were not in the array — which is what lets a
+  recorded sweep keep playing underneath a lock, and what makes a lane of
+  nothing but locks go SILENT between them so the knob owns the parameter
+  again. **Zero is the legacy meaning** (hold until the next point), so every
+  lane already on disk behaves exactly as it did and a recorded sweep never
+  has a span at all.
+
+  **The step LENGTH comes from the host**, which is the only side that knows
+  the grid — the chain is told, never asked to work it out, the same split as
+  the phase. It rides in `lanes:plock` as an optional field BEFORE the value
+  (the value is whatever remains verbatim, since an enum option can contain
+  spaces), told apart from a value by requiring both a number there AND
+  something after it. Serialized as an optional FOURTH field on the `P` line,
+  written only when a held point has one.
+
+  Verified on hardware: `P 1 0.899999976 1 0.25` stored for step 4 of a 1/16
+  grid, `<key>:held` empty on steps 0, 2, 3, 5, 8 and 15, and in pixels —
+  holding the locked step changes 360 bytes of the panel, holding its
+  neighbour changes **zero**.
+
 - **A P-LOCK PLAYS ON THE FIRST PASS, and it used not to.** Reported from the
   device as "they seemed to need a loop first", and that was exactly right:
   `punch_until_wrap` hands a parameter to the knob until the clip wraps, and
