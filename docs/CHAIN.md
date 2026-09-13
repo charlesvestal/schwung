@@ -820,6 +820,39 @@ pieces of it exist and are tested; the input plumbing is not written.
   `held_step 4`, release → 255, **two steps down → 255** (the "exactly one"
   guard).
 
+- **A STEP IS TWO GESTURES AND THE RELEASE SAYS WHICH: tap toggles the note,
+  hold locks the parameter.** The grid withholds every bare step press so that
+  locking a value does not also write a note — and swallowing it outright took
+  Move's own step editing away for as long as the grid was on screen: while
+  Schwung was up you could not put a note on a step at all. Elektron splits the
+  same button the same way, so the press is DEFERRED rather than swallowed
+  (`step_note_withhold`, `STEP_TAP_MS` = 250). Under the threshold Move is
+  handed the press and release it never saw, synthesised into the free tail
+  **after** `shadow_midi_in_compact()` (where the slots are contiguous and
+  nothing above may still be pairing `sh[j]` with `hw[j]`), note-on in one
+  frame and note-off in the next. Over it, Move is told nothing: that is a
+  **lock trig** — automation on a step with no note.
+
+  Both swallow sites take the decision through one function, because a tap can
+  end *after* the grid is dismissed and is still a tap. A release with no
+  recorded press replays NOTHING, or a latch surviving a redeploy puts a note
+  on a step nobody touched.
+
+  **Verified on hardware** by counting notes in `Song.abl`: a 1.5 s hold left
+  the clip at 25 notes, a 90 ms tap took it to 24, and another tap restored it.
+
+- **`step_observe` HAD TO BE ARMED FOR A MODULE-DRAWN GRID TOO, and this is the
+  fourth instance of one blind spot.** It asked `view === VIEWS.PARAM_PAGES`
+  alone, so on 9W9 — which draws its grid in `COMPONENT_EDIT` from its own
+  `ui_chain.js` — no step was forwarded to the UI and **no step was withheld
+  from Move**. It fails silently in both directions: no p-lock gesture, and
+  every press toggling a note. Measured before the fix: a 1.5 s hold ADDED a
+  note and a tap removed one, i.e. Move receiving every press as if the grid
+  were not there. The condition is now the same "a module owns this screen"
+  test `reconcilePadBlock` uses, so the two cannot drift. A p-lock is a CHAIN
+  gesture — any component's parameter can be locked — so which UI draws the
+  knobs cannot decide whether a held step means "lock this".
+
 - **The shadow UI had no observable for its own view**, which is why driving it
   from a harness was guesswork — and why a `ReferenceError` in a reconcile
   (`currentView`; the variable is `view`) went unnoticed while it aborted every
