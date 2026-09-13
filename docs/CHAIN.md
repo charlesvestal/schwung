@@ -1000,6 +1000,40 @@ stop.
 | `lanes:clear` | set | Throw this slot's automation away. Releases first, then resets. Guarded on a non-zero value so a stray `=0` cannot destroy a set's automation. |
 | `lanes:cleared` | get | How many lanes the last clear threw away. Written unconditionally, so a second press answers `0` rather than repeating the first take's number. |
 | `lanes:phase_valid` | get | **Why** a recording was refused. `0` is *unknown*, not phase zero. |
+| `lanes:clear_clip` | set | Throw away only the automation of the clip this slot is bound to — every parameter of every component, and no other clip. With nothing playing and nothing selected there is no clip to name, so it refuses and reports `0` rather than guessing at one. |
+| `lanes:clear_param` | set | `"<target> <param>"` — one knob on that clip. The finest grain, and the one that matches how the mistake is made. |
+| `lanes:clear_target` | set | `"<target>"` — one component's automation on that clip. What the module's own page offers, because that is where the knobs you automated are. |
+| `lanes:undo` | set | Put the last automation edit back — and press it again to redo, because the buffer is **swapped**, not copied back. One level. |
+| `lanes:undone` | get | `1` if the last undo did something. `0` when there was nothing to put back. |
+| `lanes:undoable` | get | Whether anything has been recorded into the undo buffer yet, so a row can say *Nothing to undo* without performing one. |
+| `lanes:clip` | get | Which clip this slot is bound to, `"<track> <slot>"` 0-based, or **empty** for none. The UI needs it to NAME what a clip-scoped action will act on: without it the row is a promise about a clip the user cannot see. |
+| `lanes:plock_reason` | get | Why the last p-lock was refused — `ok`, `no_bar`, `no_grid`, `bad_index`, `multi_page`, `outside_clip`, `bad_request`. The translation runs on the SPI callback where `shadow_log()` is a no-op, so without this a p-lock that did nothing offered one bit (`lanes:plocked` staying 0) for five distinct causes, and one defect hid another. |
+
+**THE STORE CANNOT CLEAR ANYTHING BY ITSELF**, which is why the three
+clip-scoped verbs live in the chain and `lane_store.h` only offers
+predicates (`lane_is_for_clip`, `lane_is_for_param`, `lane_clear_one`): a
+**driving** lane holds a modulation override, and dropping the lane without
+handing that back leaves the parameter pinned wherever the automation last
+wrote it, with nothing left to move it.
+
+**Undo is a SWAP, and that is the right shape for automation specifically.**
+The mistake is *heard*, not seen, so the real gesture is "put it back; no, the
+other one". It costs one extra `lane_store_t` on the instance (37 KB beside
+the 8 MB already there) and no allocation. The snapshot is taken before
+DISCRETE edits and once at the start of a recording pass — never per recorded
+point, which would be a 37 KB memcpy per breakpoint of a sweep on the SPI
+callback.
+
+**On-device surface.** The knob grid gives automation its own **section**
+(Main / Sends / LFO 1 / LFO 2 / **Automation** / Actions) holding *Clear This
+Clip*, *Clear All Clips* and *Undo Last Edit*; each component's **Module**
+page carries *Clear Automation* for that component alone. Both name the clip
+in the row's value (`C1`) — never the track, which `lane_track` makes equal to
+the slot index and which every breadcrumb already shows. **Undo is offered
+only at slot level**: one buffer per slot, shared by every module in it, so a
+module-scoped undo is not something it can honestly promise. The word on
+every row is *automation*; **lane** is this codebase's term for the store and
+means nothing to somebody reading a menu.
 
 All of them arrive through **one** branch in `v2_set_param` / `v2_get_param`
 that forwards the key past `lanes:` to `lane_param_set` / `lane_param_get`.
