@@ -158,6 +158,34 @@ int clip_regions_geometry_differs(const clip_regions_t *a,
 double clip_regions_quarters_per_bar(const clip_regions_t *rg,
                                      int track, int slot);
 
+/* IS `dst` A DUPLICATE OF `src`? -- the test behind "a clip was copied".
+ *
+ * Move's Copy duplicates the selected clip into the next free slot, and the
+ * file is the only place we see it, so a copy is recognised as "a slot that
+ * was empty now holds a clip matching a sibling". The comparison is the
+ * clip's CONTENT: how many notes, which note is lowest, and how long the
+ * loop is.
+ *
+ * A NOTE-LESS CLIP IS NEVER A DUPLICATE, and that guard is load-bearing
+ * rather than tidy. Two clips with no notes are indistinguishable by this
+ * test, so without it any newly arrived empty clip would match any other and
+ * have somebody's automation copied onto it. Move 2.1.0's Bounce Clips to
+ * Audio lands exactly that way -- a new slot holding a clip with no notes --
+ * and so does Shift+Step 14 before you play anything into it.
+ *
+ * Pure so it can be tested: the caller owns the "was empty, now exists" half,
+ * which is the part that needs two parses to see. */
+static inline int clip_region_is_duplicate_of(const clip_region_t *src,
+                                              const clip_region_t *dst)
+{
+    if (!src || !dst || !src->exists || !dst->exists) return 0;
+    if (dst->note_count == 0 && dst->first_note < 0) return 0;
+    if (src->note_count != dst->note_count) return 0;
+    if (src->first_note != dst->first_note) return 0;
+    if (src->loop_len != dst->loop_len) return 0;
+    return 1;
+}
+
 /* THE SELECTED CLIP on `track`, from the file's `isPlaying` flag, or -1.
  *
  * NOT the same question as "what is playing", and conflating them is what
