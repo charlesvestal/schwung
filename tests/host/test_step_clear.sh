@@ -151,5 +151,14 @@ grep -q 'case "edit":' "$inp" \
 # made the copy the selected one, so every p-lock afterwards addressed a
 # different clip slot than the lane being edited. Undo was the same shape --
 # it reached Move and undid a NOTE edit.
-echo "$body" | grep -q 'd1 == 56 || d1 == 60 || d1 == 119' \
-  || fail "the step claim must take Undo, Copy AND Delete -- the ones left behind keep doing whatever MOVE does with them"
+# COPY AND DELETE, and deliberately NOT Undo. The pair that is destructive
+# unclaimed (Delete deletes clips, Copy duplicates them and selects the copy)
+# is claimed; Undo is left to Move, because claiming it produced a DEAD
+# BUTTON -- swallowed from Move and delivered to nobody. Measured with a step
+# held: Copy drew 235 bytes on the panel, Delete 176, Undo ZERO, and a note
+# toggled on just before stayed toggled. A known gap beats a dead button.
+echo "$body" | grep -q 'd1 == 60 || d1 == 119' \
+  || fail "the step claim must take Copy AND Delete -- unclaimed they duplicate and delete CLIPS"
+if echo "$body" | grep -q 'd1 == 56'; then
+  fail "Undo must NOT be claimed: it is forwarded differently from 60/119 and becomes a dead button"
+fi
