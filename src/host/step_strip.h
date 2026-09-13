@@ -177,7 +177,7 @@ typedef struct {
      * segments, a 41 px bold). Not exhaustive -- it is three screens. */
     int    single_thin;
     int    reject;           /* STEP_STRIP_* -- why not, when !valid */
-    int    segments;         /* 16-step PAGES, 1..STEP_STRIP_MAX_SEGMENTS */
+    int    segments;         /* BARS, rounded up. 1..STEP_STRIP_MAX_SEGMENTS */
     int    bold_segment;     /* the displayed page, 1..segments (0 = unknown) */
     int    playhead_col;     /* x of the playhead, or -1 */
     int    playhead_evidence;/* STEP_STRIP_PH_* bits */
@@ -207,9 +207,20 @@ void step_strip_observe(const uint8_t *frame, int selected_track);
 unsigned step_strip_latest(step_strip_t *out, int *track);
 
 /* The last reading that was VALID, for the per-track loop-length cache:
- * SEGMENTS for `track`, or 0 if no valid frame has named that track. Multiply
- * by STEP_STRIP_STEPS_PER_PAGE * step_resolution for a length in quarters --
- * never by 4, and never by the bar. */
+ * SEGMENTS for `track`, or 0 if no valid frame has named that track.
+ *
+ * MULTIPLY BY THE BAR -- `clip_regions_quarters_per_bar()` -- not by
+ * STEP_STRIP_STEPS_PER_PAGE * step_resolution. This said the latter, which is
+ * right only in 4/4 on a 1/16 grid, where a bar and a 16-step page are the
+ * same 4 quarters; it is the coincidence this file warns about elsewhere and
+ * then fell for. On the 11/8 set it was measured on, the two differ by 27%
+ * (4.0 against 5.5) and the wrong one is silently short.
+ *
+ * Move's manual says each line is a BAR, and the measurement agrees: the one
+ * clip that separates the two (16 quarters = 2.91 bars but exactly 4 pages)
+ * drew THREE segments. So this answers a RANGE, ((n-1) * qpb, n * qpb], and
+ * is exact only when the loop is a whole number of bars -- which a clip Move
+ * created in the current signature is. */
 int step_strip_segments_for_track(int track);
 
 /* THE DISPLAYED BAR the strip names for `track`, 1-based, or 0 for "it cannot
