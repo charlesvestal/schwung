@@ -156,6 +156,114 @@ int main (int argc, char** argv)
             return fail ("two instances: one of them is silent -- shared state between plugin instances");
     }
 
+    auto renderRms = [] (SchwungAudioProcessor& p) -> double
+    {
+        juce::AudioBuffer<float> b (2, kBlock);
+        double acc = 0.0; int count = 0;
+        for (int n = 0; n < 120; ++n)
+        {
+            juce::MidiBuffer m;
+            if (n == 2) m.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            b.clear();
+            p.processBlock (b, m);
+            for (int i = 0; i < kBlock; ++i)
+            {
+                const float v = b.getSample (0, i);
+                acc += (double) v * v;
+                ++count;
+            }
+        }
+        return std::sqrt (acc / juce::jmax (1, count));
+    };
+
+    /* ---- SAVE, REOPEN, GET THE SAME CHAIN BACK --------------------------
+     *
+     * Covers state persistence, the FX positions and the MIDI FX positions
+     * together, because nothing short of it does: a plugin that saves module
+     * ids and macro bindings alone passes every other check in this file and
+     * still reopens a project sounding like a new instance -- every parameter
+     * no macro happened to cover back at its default, and a sampler's sample
+     * gone entirely.
+     *
+     * WHAT IT COMPARES, AND WHY NOT LEVEL. The obvious test is "render before,
+     * render after, same dBFS". It does not work, and the positive control
+     * below is what proves it rather than an argument: rendering the SAME
+     * processor twice gives -24.2 then -19.2 dBFS. braids' oscillator phase
+     * and freeverb's tail carry from one render into the next, so a note lands
+     * differently the second time. A 5 dB spread on an unchanged instance
+     * means level cannot resolve a 0.5 dB claim about a changed one, and a
+     * tolerance wide enough to pass would be wide enough to miss the bug.
+     *
+     * The state blob is the right instrument: it IS the module's whole
+     * configuration, it is what restore writes, and it is exactly
+     * reproducible. Rendering is still checked -- for audibility, which is the
+     * part a blob comparison cannot see, since a blob that round-trips through
+     * the file and is never applied compares equal and restores nothing.
+     */
+    {
+        SchwungAudioProcessor a;
+        a.setSynth (synth);
+        if (a.getAvailableFx().contains ("freeverb")) a.setFx (0, "freeverb");
+        a.prepareToPlay (kRate, kBlock);
+
+        /* Move something well away from its default. Deliberately a parameter
+         * reached through the module's own state rather than only through a
+         * macro -- the claim is that the MODULE's configuration travels. */
+        a.setBinding (0, "synth:engine");
+        if (auto* p0 = a.apvts.getParameter ("macro1"))
+            p0->setValueNotifyingHost (0.45f);
+
+        const double r1 = renderRms (a);
+        const double r2 = renderRms (a);
+        std::printf ("control: one instance, two renders: %.2f / %.2f dBFS  (spread %.2f dB)\n",
+                     20.0 * std::log10 (r1), 20.0 * std::log10 (r2),
+                     std::abs (20.0 * std::log10 (r1) - 20.0 * std::log10 (r2)));
+
+        juce::MemoryBlock saved;
+        a.getStateInformation (saved);
+        if (saved.getSize() == 0) return fail ("save produced nothing");
+
+        SchwungAudioProcessor b;
+        b.setStateInformation (saved.getData(), (int) saved.getSize());
+        b.prepareToPlay (kRate, kBlock);
+
+        if (b.getSynth() != a.getSynth())   return fail ("restore lost the synth");
+        if (b.getFx (0) != a.getFx (0))     return fail ("restore lost fx1");
+
+        const auto sa = a.readState ("synth");
+        const auto sb = b.readState ("synth");
+        if (sa.isEmpty())                   return fail ("the synth served no state to save");
+
+        /* THE SAVED STATE MUST DIFFER FROM A FRESH MODULE'S.
+         *
+         * Without this the whole round-trip passes on defaults: if the macro
+         * write never reached the module, or the blob were never applied, both
+         * sides would hold the same untouched configuration and compare equal.
+         * A test whose subject happens to equal the default cannot tell
+         * "restored correctly" from "never changed in the first place". */
+        {
+            SchwungAudioProcessor fresh;
+            fresh.setSynth (synth);
+            if (fresh.readState ("synth") == sa)
+                return fail ("saved state equals a fresh module's -- the edit never landed, "
+                             "so the round-trip proves nothing");
+        }
+        if (sa != sb)
+        {
+            std::printf ("  saved   : %.300s\n", sa.toRawUTF8());
+            std::printf ("  restored: %.300s\n", sb.toRawUTF8());
+            return fail ("restored synth state differs from what was saved");
+        }
+
+        if (renderRms (b) <= 0.0)
+            return fail ("restored instance is silent -- state compared equal but was never applied");
+
+        std::printf ("save/restore: %s + %s, %d-byte synth state round-tripped\n",
+                     b.getSynth().toRawUTF8(),
+                     b.getFx (0).isEmpty() ? "-" : b.getFx (0).toRawUTF8(),
+                     sa.length());
+    }
+
     std::printf ("PASS: the plugin renders Schwung audio through the rate bridge\n");
     return 0;
 }

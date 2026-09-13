@@ -62,6 +62,12 @@ extern "C" {
  * large. Nothing fixed can; the formats do not allow a list that grows. */
 static constexpr int kMacroCount = 512;
 
+/* The chain has always run eight audio FX and eight MIDI FX. The plugin
+ * exposed one of each, which is not a smaller feature -- it is a chain the
+ * user cannot build. MAX_AUDIO_FX / MAX_MIDI_FX in chain_internal.h. */
+static constexpr int kFxSlots = 8;
+static constexpr int kMidiFxSlots = 8;
+
 /* A macro's binding: the chain key it writes, plus the range read from that
  * module's own chain_params.
  *
@@ -185,8 +191,20 @@ public:
     juce::String getSynth() const { return currentSynth; }
     void setSynth (const juce::String& id);
 
-    juce::String getFx() const { return currentFx; }
-    void setFx (const juce::String& id);
+    juce::StringArray getAvailableMidiFx() const { return availableMidiFx; }
+
+    juce::String getFx (int pos) const      { return fxModules[(size_t) pos]; }
+    juce::String getMidiFx (int pos) const  { return midiFxModules[(size_t) pos]; }
+    void setFx (int pos, const juce::String& id);
+    void setMidiFx (int pos, const juce::String& id);
+
+    /* The opaque per-component blob. "synth:state" and "fx<N>:state" answer a
+     * module's WHOLE parameter set as JSON -- 294 bytes for braids -- and
+     * writing it back restores it. It is the only thing carrying a module's
+     * samples, preset and internal config, none of which a macro can reach.
+     * Public so a test can diff what was saved against what came back. */
+    juce::String readState (const juce::String& prefix);
+    void writeState (const juce::String& prefix, const juce::String& blob);
 
     const MacroBinding& getBinding (int i) const { return bindings[(size_t) i]; }
     void setBinding (int i, const juce::String& key);
@@ -200,12 +218,19 @@ private:
     void bringUpChain();
     bool resolveRange (const juce::String& key, float& lo, float& hi, juce::String& why);
     void autoBindMacros();
+    void loadModuleAt (const juce::String& writeKey, const juce::String& id,
+                       juce::String& slotStore);
+    void rebindAll (bool adopt);
+
+
 
     juce::AudioProcessorValueTreeState::ParameterLayout makeLayout();
 
     schwung_desktop_t* sd = nullptr;
-    juce::String moduleRoot, status, currentSynth, currentFx;
-    juce::StringArray availableSynths, availableFx;
+    juce::String moduleRoot, status, currentSynth;
+    std::array<juce::String, kFxSlots> fxModules;
+    std::array<juce::String, kMidiFxSlots> midiFxModules;
+    juce::StringArray availableSynths, availableFx, availableMidiFx;
 
     std::array<MacroBinding, kMacroCount> bindings;
     std::array<std::atomic<float>, kMacroCount> lastSent {};

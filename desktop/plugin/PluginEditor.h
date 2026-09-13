@@ -67,8 +67,9 @@ private:
 
     SchwungAudioProcessor& proc;
 
-    juce::ComboBox synthBox, fxBox;
-    juce::Label    synthLabel, fxLabel, statusLabel, title, countLabel;
+    juce::ComboBox synthBox;
+    juce::OwnedArray<juce::ComboBox> fxBoxes, midiFxBoxes;
+    juce::Label    synthLabel, fxLabel, midiFxLabel, statusLabel, title, countLabel;
     juce::Viewport viewport;
     MacroList      list { proc };
 
