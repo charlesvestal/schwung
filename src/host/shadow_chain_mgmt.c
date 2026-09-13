@@ -3138,6 +3138,35 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
  * indistinguishable from one that worked until the loop comes round.
  *
  * Returns 1 with `out` filled, else 0. */
+/* WHY THE LAST P-LOCK WAS REFUSED, per slot, readable as `lanes:plock_reason`.
+ *
+ * The refusal is SILENT BY CONSTRUCTION and the comment at the call site said
+ * "with the reason logged", which was not true and could not be: this runs on
+ * the SPI callback, where shadow_log() is a no-op. So a p-lock that did
+ * nothing offered exactly one bit -- `lanes:plocked` staying 0 -- and five
+ * different causes produce that bit. It cost a session: a p-lock refused for
+ * NO_BAR on every single-bar clip was indistinguishable, from outside, from
+ * one refused for MULTI_PAGE, and the first defect hid the second.
+ *
+ * Same argument as the always-on `param-slow` line naming its KEY rather than
+ * reporting that something was slow. Zero is STEP_PLOCK_OK, so a slot that has
+ * never refused reads 0 -- which is also what a success leaves, deliberately:
+ * the question this answers is "why did the one I just did not take", and a
+ * stale reason surviving a success is how that gets answered wrongly. */
+static int g_plock_last_reason[SHADOW_CHAIN_INSTANCES];
+
+const char *shadow_lanes_plock_reason_name(int rc) {
+    switch (rc) {
+        case STEP_PLOCK_OK:           return "ok";
+        case STEP_PLOCK_NO_BAR:       return "no_bar";
+        case STEP_PLOCK_NO_GRID:      return "no_grid";
+        case STEP_PLOCK_BAD_INDEX:    return "bad_index";
+        case STEP_PLOCK_MULTI_PAGE:   return "multi_page";
+        case STEP_PLOCK_OUTSIDE_CLIP: return "outside_clip";
+        default:                      return "unknown";
+    }
+}
+
 static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
                                              char *out, int out_len) {
     char target[16] = {0}, param[32] = {0};
@@ -3146,6 +3175,9 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
         sscanf(value, "%15s %31s %d %n", target, param, &step, &consumed) < 3 ||
         consumed <= 0 || !value[consumed]) {
         shadow_log("lanes: plock_step needs \"<target> <param> <step> <value>\"");
+        /* Never reached step_plock_phase, so it has no code of its own; it is
+         * still a refusal the caller is owed a name for. */
+        if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = -1;
         return 0;
     }
     step_strip_t ss;
@@ -3162,13 +3194,15 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
         rg->slots[slot][cslot].exists)
         clip_len = rg->slots[slot][cslot].loop_start +
                    rg->slots[slot][cslot].loop_len;
-    /* The bar must come from a CURRENT reading of THIS track's editor. A stale
-     * bold segment, or one belonging to another track -- which is what the
-     * strip reports when the selection has moved -- would place the p-lock on
-     * a bar the user is not looking at. */
-    int bar = (ss.valid && strip_track == (int)slot) ? ss.bold_segment : 0;
+    /* The bar must come from a CURRENT reading of THIS track's editor -- a
+     * stale bold segment, or one belonging to another track, would place the
+     * p-lock on a bar the user is not looking at -- and a ONE-BAR loop names
+     * its bar by drawing no thickening at all. Both live in
+     * step_strip_displayed_bar(). */
+    int bar = step_strip_displayed_bar(&ss, strip_track, (int)slot);
     double phase = 0.0;
     int rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
+    if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = rc;
     if (rc != STEP_PLOCK_OK) {
         char msg[144];
         snprintf(msg, sizeof(msg),
@@ -5045,7 +5079,9 @@ void shadow_inprocess_handle_param_request(void) {
                     strncpy(value_copy, plock_fwd, SHADOW_PARAM_VALUE_LEN - 1);
                     value_copy[SHADOW_PARAM_VALUE_LEN - 1] = '\0';
                 } else {
-                    /* Refused, with the reason logged. Answer the request
+                    /* Refused. The reason is NOT logged -- this is the SPI
+                     * callback and shadow_log() is a no-op here -- it is
+                     * recorded for `lanes:plock_reason`. Answer the request
                      * rather than forwarding a key the chain will not serve:
                      * `lanes:plocked` stays 0 and the caller can see it. */
                     shadow_param->error = 0;
@@ -5166,6 +5202,19 @@ void shadow_inprocess_handle_param_request(void) {
         }
     }
     else if (req_type == 2) {  /* GET param */
+        /* Host-side key: the translation that refuses lives here, not in the
+         * chain plugin, so the plugin cannot answer this one. Served ahead of
+         * the forward for that reason. */
+        if (strcmp(shadow_param->key, "lanes:plock_reason") == 0) {
+            int rc = (slot < SHADOW_CHAIN_INSTANCES) ? g_plock_last_reason[slot] : 0;
+            int n = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d %s",
+                             rc, (rc == -1) ? "bad_request"
+                                            : shadow_lanes_plock_reason_name(rc));
+            shadow_param->result_len = (n > 0) ? n : 0;
+            shadow_param->error = 0;
+            shadow_param_publish_response(req_id);
+            return;
+        }
         if (shadow_plugin_v2->get_param) {
             memset(shadow_param->value, 0, 256);
             int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,

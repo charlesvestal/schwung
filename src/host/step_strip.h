@@ -212,6 +212,33 @@ unsigned step_strip_latest(step_strip_t *out, int *track);
  * never by 4, and never by the bar. */
 int step_strip_segments_for_track(int track);
 
+/* THE DISPLAYED BAR the strip names for `track`, 1-based, or 0 for "it cannot
+ * say" -- which is what step_plock_phase() wants, and it refuses 0 rather than
+ * guessing the first bar.
+ *
+ * THE ONE-BAR CASE IS THE WHOLE REASON THIS IS A FUNCTION. A one-bar loop
+ * draws a thin line and no thickening, so `bold_segment` is 0 -- identical, at
+ * that field, to "no reading". Every consumer that reached past `valid` for
+ * the bold segment therefore refused every single-bar clip, which is the
+ * common short clip AND exactly what Move's Shift+Step 14 creates. The reader
+ * flagged the shape as `single_thin` and defended the pure function against a
+ * bare 0; what was missing was the step BETWEEN them, so it now exists once
+ * instead of at each call site.
+ *
+ * The selection is checked here too: the strip shows ONE track, and a reading
+ * paired with a different one would place a p-lock on a bar the user is not
+ * looking at. */
+static inline int step_strip_displayed_bar(const step_strip_t *ss,
+                                           int strip_track, int track)
+{
+    if (!ss || !ss->valid || strip_track != track) return 0;
+    /* Mutually exclusive by construction (`single_thin` is set only when there
+     * is no bold and exactly one segment), so the order does not matter --
+     * stated because a later reader will wonder. */
+    if (ss->single_thin) return 1;
+    return ss->bold_segment;
+}
+
 /* Forget everything. A set change invalidates every cached length. */
 void step_strip_reset(void);
 
