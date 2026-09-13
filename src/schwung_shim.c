@@ -7693,6 +7693,21 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
 {
     if (note < 16 || note > 31) return;
     const int i = note - 16;
+    /* THE HELD-STEP MASK IS MAINTAINED HERE TOO, and without this the gesture
+     * eats itself.
+     *
+     * `shadow_steps_held_mask` is otherwise kept by midi_monitor(), which
+     * reads the HARDWARE mailbox -- and midi_in_swallow zeroes that mailbox
+     * along with Move's copy. So the moment a step is withheld, the tracker
+     * stops seeing it: `shim_plock_held_step()` answers -1, `held_step` reads
+     * NONE, no `<key>:held` resolves and no write becomes a p-lock. Measured
+     * on hardware the moment the swallow was armed for a module-drawn grid --
+     * the step was down and the shim reported 255.
+     *
+     * A mask, not a counter, so setting a bit that midi_monitor may also set
+     * (when the grid is not up and nothing is swallowed) cannot drift. */
+    if (vel > 0) shadow_steps_held_mask |= (1u << i);
+    else         shadow_steps_held_mask &= ~(1u << i);
     if (vel > 0) {
         step_swallow_latch[i] = 1;
         step_press_ms[i] = now_mono_ms();

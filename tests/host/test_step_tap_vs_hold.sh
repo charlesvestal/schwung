@@ -34,6 +34,10 @@ static uint8_t  step_swallow_latch[16];
 static uint64_t step_press_ms[16];
 static uint8_t  step_press_vel[16];
 static uint8_t  step_tap_replay[16];
+/* The real one is volatile and lives beside the SPI callback's state; here it
+ * only has to exist, so that the mask maintenance inside the lifted function
+ * compiles and can be asserted on. */
+static volatile uint32_t shadow_steps_held_mask;
 static uint64_t g_now = 1000;            /* never 0: 0 means "no press seen" */
 static uint64_t now_mono_ms(void) { return g_now; }
 
@@ -47,6 +51,7 @@ static void reset(void) {
     memset(step_press_ms, 0, sizeof(step_press_ms));
     memset(step_press_vel, 0, sizeof(step_press_vel));
     memset(step_tap_replay, 0, sizeof(step_tap_replay));
+    shadow_steps_held_mask = 0;
     g_now = 1000;
 }
 
@@ -54,10 +59,14 @@ int main(void) {
     /* A TAP: Move gets the note it would have got. */
     reset();
     step_note_withhold(20, 100);
+    CHECK(shadow_steps_held_mask == (1u << 4),
+          "the withhold must mark the step HELD itself -- the swallow is what stops "
+          "midi_monitor from ever seeing the press, and without this the gesture eats itself");
     CHECK(step_swallow_latch[4] == 1, "a press must latch, or its release reaches Move as an orphan button-up");
     CHECK(step_press_vel[4] == 100, "the press's own velocity must be kept -- a replay at 127 writes a different note than the finger did");
     g_now += STEP_TAP_MS - 1;
     step_note_withhold(20, 0);
+    CHECK(shadow_steps_held_mask == 0, "the release must clear the mask, or the step stays held forever");
     CHECK(step_tap_replay[4] == 1, "a release inside STEP_TAP_MS is a TAP and must be replayed to Move");
     CHECK(step_swallow_latch[4] == 0, "the release retires the latch");
 
@@ -120,3 +129,17 @@ line_replay=$(grep -n 'step_tap_replay\[i\] = on ? 2 : 0;' "$src" | cut -d: -f1)
 # grid is dismissed toggles nothing.
 n=$(grep -c 'step_note_withhold(d1, d2)' "$src" || true)
 [ "$n" = "2" ] || fail "both the gated swallow and the unconditional drain must call step_note_withhold, found $n"
+
+# AND THE WITHHOLD MUST KEEP THE HELD-STEP MASK ITSELF.
+#
+# `shadow_steps_held_mask` is otherwise maintained by midi_monitor(), which
+# reads the HARDWARE mailbox -- and midi_in_swallow zeroes that mailbox along
+# with Move's copy. So a withheld step is invisible to the tracker: held_step
+# reads NONE, no `<key>:held` resolves, and no write becomes a p-lock. The
+# gesture eats itself, and it did: measured on hardware with the step down and
+# the shim reporting 255.
+fnbody=$(awk '/^static void step_note_withhold/,/^}/' "$src")
+echo "$fnbody" | grep -q 'shadow_steps_held_mask |= (1u << i)' \
+  || fail "the withhold must SET the held-step mask -- the swallow is what stops midi_monitor from seeing the press"
+echo "$fnbody" | grep -q 'shadow_steps_held_mask &= ~(1u << i)' \
+  || fail "and clear it on the release, or the step stays held forever"
