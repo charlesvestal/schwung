@@ -820,6 +820,40 @@ pieces of it exist and are tested; the input plumbing is not written.
   `held_step 4`, release → 255, **two steps down → 255** (the "exactly one"
   guard).
 
+- **REMOVING ONE STEP'S AUTOMATION: hold DELETE, then PICK.** There was no
+  grain for this at all — `clear`, `clear_clip`, `clear_param` and
+  `clear_target` each take a whole lane or more, so getting rid of one bad
+  p-lock meant throwing away that parameter's entire automation.
+
+  Elektron removes a lock by **pressing the encoder** of that parameter, and
+  **Move has no encoder press** — the only press is the jog. So the gesture is
+  the one this grid already uses for instance copy/clear: with a step held,
+  **Delete arms**, a **knob touch picks** that parameter, and **releasing
+  without a pick takes the whole step**. The notice says so, because a gesture
+  nobody can discover is one nobody uses. The pick is on the TOUCH, not a
+  turn: a turn under a held step writes a p-lock, so asking for one would
+  create the thing it is meant to remove.
+
+  **Delete must be claimed even when the module has no child levels**, or it
+  falls through to Move, which deletes the CLIP. That check sits before
+  `instanceLevel()` for exactly that reason.
+
+  `lanes:clear_point` takes `"<phase>"` (every lane of the clip) or
+  `"<phase> <target> <param>"` (one), and the host translates the held step
+  through the SAME function the write uses, so a clear and a p-lock cannot
+  disagree about which step is which. A point is "on" the step within
+  `LANE_MIN_POINT_BEATS` — the window `lane_write` replaces in — and a
+  recorded point sitting there goes too: refusing exactly where a sweep
+  crosses a visible step would be worse than a curve with one fewer
+  breakpoint. **A lane emptied this way is freed and its override released**,
+  or the parameter stays stuck at the value it last drove instead of returning
+  to the knob. Undo takes the whole store, like every other clear verb.
+
+  **Verified on hardware:** two locks on step 9 and one on step 11; clearing
+  one parameter left the other's lock reading `55 1` and turned the cleared
+  one's answer to `55 0` (the curve still passes, no point there); clearing
+  the rest emptied it; step 11 still read `55 1`.
+
 - **A STEP IS TWO GESTURES AND THE RELEASE SAYS WHICH: tap toggles the note,
   hold locks the parameter.** The grid withholds every bare step press so that
   locking a value does not also write a note — and swallowing it outright took

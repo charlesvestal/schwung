@@ -700,6 +700,8 @@ export function createController(io = {}) {
         heldValues: Object.create(null),
         heldCursor: 0,
         heldDecOwned: false,
+        /* Delete held while a step is: armed, and whether a knob was picked. */
+        stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
         modCursor: 0,
         /* key -> tick at which reads may resume */
@@ -3821,6 +3823,21 @@ export function createController(io = {}) {
      */
     function onKnobTouch(slot, down) {
         if (s.hintLines) dismissHint();
+        /* THE PICK, while Delete is held over a held step: this knob's lock on
+         * this step goes. On the TOUCH, not the turn -- a turn under a held
+         * step writes a p-lock, so asking for a turn here would create the
+         * thing it is meant to remove. */
+        if (down && s.stepClear && s.heldStep >= 0) {
+            const k = keyAt(slot);
+            if (k && clearHeldStep(k)) {
+                s.stepClear.picked = true;
+                const m = metaAt(slot);
+                const label = (m && (m.name || m.label)) || k;
+                notice(String(label).toUpperCase() + " CLEARED");
+                announce(label + " cleared");
+                return;
+            }
+        }
         /* A finger on a knob means you are aiming, not reading — and if it is a
          * different knob the list is describing a parameter you have left. */
         s.peek = null;
@@ -4231,6 +4248,50 @@ export function createController(io = {}) {
     }
 
     /** Copy (60) / Delete (119) / Undo (56). Returns whether the event was taken. */
+    /*
+     * REMOVE WHAT IS LOCKED ON THE HELD STEP.
+     *
+     * There was no grain for this at all: `clear`, `clear_clip`, `clear_param`
+     * and `clear_target` each take a whole lane or more, so getting rid of one
+     * bad p-lock meant throwing away that parameter's entire automation.
+     *
+     * Elektron removes a lock by PRESSING THE ENCODER of the parameter, and
+     * Move has no encoder press -- the only press is the jog. So the gesture
+     * is the one this grid already uses for instance copy/clear: hold DELETE,
+     * then PICK. A knob touch picks that parameter; releasing Delete without
+     * picking clears the whole step. The notice says so, because a gesture
+     * nobody can discover is one nobody uses.
+     *
+     * The step->phase translation is the shim's, through the same function the
+     * WRITE uses, so what a clear removes from is by construction the step a
+     * p-lock would have written to.
+     */
+    function clearHeldStep(key) {
+        if (s.heldStep < 0) return false;
+        /* `<target> <param>`, split off the full key rather than rebuilt: the
+         * chain's lane store is keyed by exactly those two fields, and a
+         * second way of deriving them is a second thing to get wrong -- the
+         * same rule the p-lock write follows. */
+        let arg = "";
+        if (key) {
+            const fk = fullKey(key);
+            const colon = fk.indexOf(":");
+            if (colon <= 0) return false;
+            arg = fk.substring(0, colon) + " " + fk.substring(colon + 1);
+        }
+        setParam("lanes:clear_step", arg);
+        if (key) delete s.heldValues[key];
+        else for (const k in s.heldValues) delete s.heldValues[k];
+        const p = page();
+        if (p) applyHeldDecorations(p);
+        /* The values the cells fall back to are the BASE, which the rotation
+         * has not necessarily read since the lock was showing. Dropping them
+         * makes it re-read rather than show a number that was never the
+         * track's. */
+        if (key) delete s.values[key]; else for (const k of (p ? p.keys : [])) delete s.values[k];
+        return true;
+    }
+
     function onEditCc(cc, down) {
         if (cc === 56) {
             if (!down) return true;
@@ -4241,6 +4302,27 @@ export function createController(io = {}) {
             if (childIndexFor(u.level) === u.index) dropChildLevelCache(u.level);
             notice("UNDONE " + childLabel(u.def, u.index).toUpperCase());
             announce("undone");
+            return true;
+        }
+        /* DELETE WHILE A STEP IS HELD is the step's automation, not the
+         * instance gesture. Checked before `instanceLevel()` because a module
+         * with no child levels would otherwise return false here and hand
+         * Delete back to Move, which deletes the CLIP. */
+        if (cc === 119 && (down ? s.heldStep >= 0 : !!s.stepClear)) {
+            if (down) {
+                s.stepClear = { picked: false };
+                notice("CLEAR STEP: TOUCH A KNOB, OR RELEASE FOR ALL", 4000, true);
+                announce("clear step, touch a knob, or release for all");
+            } else {
+                const picked = s.stepClear.picked;
+                s.stepClear = null;
+                if (s.notice && s.notice.prompt) s.notice = null;
+                if (!picked) {
+                    clearHeldStep(null);
+                    notice("STEP CLEARED");
+                    announce("step cleared");
+                }
+            }
             return true;
         }
         if (cc !== 60 && cc !== 119) return false;

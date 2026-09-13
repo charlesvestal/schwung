@@ -591,6 +591,14 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   condition, never a copy of it. And `no_bar` on a module's own screen was a
   STATE artifact (the strip names one track, and only that track's slot),
   measured, not a structural blocker.
+- **REMOVE ONE STEP'S AUTOMATION: hold DELETE, then PICK** — a knob touch
+  takes that parameter, releasing without a pick takes the whole step
+  (`lanes:clear_point`, host-translated from the held step). The grain did not
+  exist: every other clear verb takes a whole lane or more. Move has no
+  encoder press, so Elektron's verb is re-mapped onto the grid's own
+  copy/clear idiom. **Delete must be claimed even with no child levels**, or
+  it reaches Move and deletes the CLIP. A lane emptied this way is FREED and
+  its override released, or the parameter stays stuck where the lane left it.
 - **A STEP IS TWO GESTURES: a TAP toggles Move's note, a HOLD locks the
   parameter** (`step_note_withhold`, `STEP_TAP_MS` 250). The press is DEFERRED,
   not swallowed — swallowing it outright removed Move's own step editing for as
