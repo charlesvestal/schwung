@@ -4321,6 +4321,30 @@ export function createController(io = {}) {
          * instance gesture. Checked before `instanceLevel()` because a module
          * with no child levels would otherwise return false here and hand
          * Delete back to Move, which deletes the CLIP. */
+        /* UNDO, while a step is held, is the automation's undo -- not Move's.
+         * Unclaimed it reached Move and undid a NOTE edit, which is both
+         * surprising and destructive-adjacent; and the real undo lives several
+         * screens away in Slot Settings, which nobody finds mid-gesture. */
+        if (cc === 56 && down && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
+            setParam("lanes:undo", "1");
+            for (const k in s.heldValues) delete s.heldValues[k];
+            const p0 = page();
+            if (p0) { for (const k of p0.keys) if (k) delete s.values[k]; applyHeldDecorations(p0); }
+            notice("AUTOMATION UNDONE");
+            announce("automation undone");
+            return true;
+        }
+        if (cc === 56 && !down && (s.heldStep >= 0 || liveHeldStep() >= 0)) return true;
+        /* COPY is CLAIMED and inert. Elektron copies a trig's locks with the
+         * trig and we have no such verb yet -- but leaving the button
+         * unclaimed is not neutral: it reaches Move, which DUPLICATES THE
+         * CLIP and selects the duplicate, so the next p-lock addresses a
+         * different clip than the one being edited. Saying "not yet" is the
+         * honest failure; doing something destructive is not. */
+        if (cc === 60 && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
+            if (down) { notice("COPY LOCKS: NOT YET"); announce("copying locks is not supported yet"); }
+            return true;
+        }
         if (cc === 119 && (down ? (s.heldStep >= 0 || liveHeldStep() >= 0)
                                 : !!s.stepClear)) {
             if (down) {

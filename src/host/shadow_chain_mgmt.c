@@ -3179,7 +3179,7 @@ const char *shadow_lanes_plock_reason_name(int rc) {
  * is locked here" -- and answering that from a second copy of this
  * arithmetic is how this feature has already been bitten twice. */
 static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
-                                   double *out_clip_len)
+                                   double *out_clip_len, double *out_step_len)
 {
     double phase = 0.0;
     int rc;
@@ -3274,6 +3274,11 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
      * phase: it is computed here anyway (the OUTSIDE_CLIP bound), and it is
      * the one window that does not vanish when the transport stops. */
     if (out_clip_len) *out_clip_len = clip_len;
+    /* HOW LONG A STEP IS, so a p-lock can end at the end of its own step
+     * instead of standing until the next point. The grid resolution lives
+     * here and nowhere else -- the chain is told, never asked to work it out,
+     * the same split as the phase itself. */
+    if (out_step_len) *out_step_len = res;
     if (rc == STEP_PLOCK_OK) *out_phase = phase;
     else if (slot < SHADOW_CHAIN_INSTANCES) {
         char msg[144];
@@ -3299,12 +3304,17 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
         if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = -1;
         return 0;
     }
-    double phase = 0.0;
-    int rc = shadow_lanes_step_phase(slot, step, &phase, NULL);
+    double phase = 0.0, step_len = 0.0;
+    int rc = shadow_lanes_step_phase(slot, step, &phase, NULL, &step_len);
     if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = rc;
     if (rc != STEP_PLOCK_OK) return 0;
-    snprintf(out, (size_t)out_len, "%s %s %.17g %s", target, param, phase,
-             value + consumed);
+    /* THE SPAN RIDES WITH THE PHASE. A p-lock is an edit to ONE STEP: it ends
+     * where the step ends and the parameter goes back to whatever is
+     * underneath -- the recorded curve, or the knob. Without it a single lock
+     * stood for the rest of the loop AND backwards over everything before it,
+     * so one lock at step 4 was the whole bar. */
+    snprintf(out, (size_t)out_len, "%s %s %.17g %.17g %s", target, param, phase,
+             step_len > 0.0 ? step_len : 0.0, value + consumed);
     return 1;
 }
 
@@ -3376,7 +3386,7 @@ static int shadow_lanes_held_value(uint8_t slot, const char *key, int held_at,
     int step = shim_plock_held_step();
     if (step < 0) return 0;
     double phase = 0.0, clip_len = 0.0;
-    if (shadow_lanes_step_phase(slot, step, &phase, &clip_len) != STEP_PLOCK_OK)
+    if (shadow_lanes_step_phase(slot, step, &phase, &clip_len, NULL) != STEP_PLOCK_OK)
         return 0;
 
     /* A GET cannot carry three arguments, so the question is a SET and the
@@ -5408,7 +5418,7 @@ void shadow_inprocess_handle_param_request(void) {
                 int cstep = shim_plock_held_step();
                 double cphase = 0.0;
                 if (cstep >= 0 &&
-                    shadow_lanes_step_phase(slot, cstep, &cphase, NULL) == STEP_PLOCK_OK) {
+                    shadow_lanes_step_phase(slot, cstep, &cphase, NULL, NULL) == STEP_PLOCK_OK) {
                     static char cfwd[SHADOW_PARAM_VALUE_LEN];
                     snprintf(cfwd, sizeof(cfwd), "%.17g%s%s", cphase,
                              value_copy[0] ? " " : "", value_copy);

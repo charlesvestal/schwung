@@ -591,6 +591,17 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   condition, never a copy of it. And `no_bar` on a module's own screen was a
   STATE artifact (the strip names one track, and only that track's slot),
   measured, not a structural blocker.
+- **A P-LOCK OWNS ONE STEP, via `lane_point_t.span`** — `[phase, phase+span)`
+  and nothing else; outside it the lane answers as if the spanned points were
+  absent, so a sweep underneath keeps playing and a lane of only locks goes
+  SILENT between them. A held point with **span 0 keeps the legacy meaning**
+  (hold until the next point), so lanes on disk are unchanged. The step LENGTH
+  is the HOST's to supply. Before this, one lock meant the whole bar and the
+  part of it BEFORE the lock too.
+- **The edit buttons are claimed as a ROW while a step is held.** Claiming
+  only Delete (which deletes clips) left Copy reaching Move, which DUPLICATES
+  the clip and selects the copy — so later p-locks addressed a different clip
+  than the lane being edited. Undo reached Move too and undid a NOTE edit.
 - **REMOVE ONE STEP'S AUTOMATION: hold DELETE, then PICK** — a knob touch
   takes that parameter, releasing without a pick takes the whole step
   (`lanes:clear_point`, host-translated from the held step). The grain did not

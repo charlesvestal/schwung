@@ -108,7 +108,25 @@ extern "C" {
  * FREE, and that is why it goes in now: {double, float} is 12 bytes padded to
  * 16, so the flag costs nothing and the alternative is migrating documents
  * later. A `uint8_t` rather than a bitfield so the serializer can print it. */
-typedef struct { double phase; float value; uint8_t hold; } lane_point_t;
+/* A BREAKPOINT, and `span` is what makes a p-lock mean one STEP.
+ *
+ * `hold` says this point's value stands instead of ramping into the next one.
+ * `span` says HOW LONG it stands: a p-lock is an edit to ONE STEP, so it ends
+ * at the end of that step and the parameter goes back to whatever it would
+ * otherwise be doing -- the recorded curve underneath, or the knob.
+ *
+ * Without it a single lock meant the whole bar, and backwards as well: with
+ * one lock at step 4 every one of the sixteen steps read the locked value, and
+ * playback was already at it before phase 1. That is what an automation lane
+ * does and not what "lock this step" means, and the help text promised the
+ * second one.
+ *
+ * ZERO IS THE LEGACY MEANING -- hold until the next point -- so every lane
+ * already on disk keeps behaving exactly as it did, and a recorded sweep
+ * (hold = 0) never has a span at all. The step LENGTH comes from the host,
+ * which is the only side that knows the grid: the chain is told, never asked
+ * to work it out. */
+typedef struct { double phase; float value; uint8_t hold; float span; } lane_point_t;
 
 /* What the clip looked like when the lane was recorded. ONLY THE CONTENT HALF
  * IS COMPARED (lane_fingerprint_matches): the note count catches a copy of a
@@ -271,6 +289,11 @@ lane_t *lane_alloc(lane_store_t *st, const char *target, const char *param,
  * breakpoint. A recorded knob sweep is 0 -- it IS a slope -- and a step p-lock
  * is 1. */
 void lane_write(lane_t *ln, double phase, float value, int hold);
+
+/* lane_write, plus the SPAN a held point covers (see lane_point_t). A span of
+ * 0 is exactly lane_write's behaviour, which is why that signature is left
+ * alone -- every existing caller means "until the next point". */
+void lane_write_span(lane_t *ln, double phase, float value, int hold, double span);
 
 /* ONE WRITE OF A RECORDING PASS.
  *

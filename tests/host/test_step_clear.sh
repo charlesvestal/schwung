@@ -123,14 +123,14 @@ grep -q 'lanes:clear_step' src/host/shadow_chain_mgmt.c \
 # land a frame after the press it is meant to cover, and one leaked press is a
 # lost clip.
 shim=src/schwung_shim.c
-grep -q 'step_owns_delete' "$shim" \
-  || fail "the shim must claim Delete while a step is held, or it reaches Move and deletes the CLIP"
-body=$(awk '/step_owns_delete =/,/step_observe;/' "$shim")
+grep -q 'step_owns_edit_cc' "$shim" \
+  || fail "the shim must claim the edit buttons while a step is held, or they reach Move -- Delete DELETES the clip and Copy DUPLICATES it"
+body=$(awk '/step_owns_edit_cc =/,/step_observe;/' "$shim")
 echo "$body" | grep -q 'shadow_steps_held_mask != 0' \
   || fail "the claim must require a step to be DOWN -- otherwise Move loses Delete everywhere on the grid"
 echo "$body" | grep -q 'step_observe' \
   || fail "the claim must require the grid to be watching steps"
-grep -q '(claim_cc_set(d1) || step_owns_delete) &&' "$shim" \
+grep -q '(claim_cc_set(d1) || step_owns_edit_cc) &&' "$shim" \
   || fail "the step claim must sit beside the module claim, under the same shift and denied-CC guards"
 
 # ...and a MODULE-DRAWN grid must get the gesture too.
@@ -145,3 +145,11 @@ grep -q 'type: "edit"' "$inp" \
   || fail "decodeInput must decode the edit CCs, or a module-drawn grid never sees Delete"
 grep -q 'case "edit":' "$inp" \
   || fail "applyInput must route the edit intent to controller.onEditCc"
+
+# ALL THREE edit buttons, not just the one with a job. Claiming Delete alone
+# cost a DUPLICATED CLIP: Copy fell through to Move, duplicated the clip and
+# made the copy the selected one, so every p-lock afterwards addressed a
+# different clip slot than the lane being edited. Undo was the same shape --
+# it reached Move and undid a NOTE edit.
+echo "$body" | grep -q 'd1 == 56 || d1 == 60 || d1 == 119' \
+  || fail "the step claim must take Undo, Copy AND Delete -- the ones left behind keep doing whatever MOVE does with them"
