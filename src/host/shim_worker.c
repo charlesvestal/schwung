@@ -709,7 +709,15 @@ static void clip_regions_tick(void)
         if (!tr->identity_valid || tr->clip_slot < 0) continue;
         const clip_region_t *r = &g_regions.slots[t][tr->clip_slot];
         if (!r->exists || !r->have_scroll) continue;
-        g_editor_bar[t] = (int)(r->scroll_beats / 4.0) + 1;
+        /* THE BAR IS NOT ALWAYS FOUR QUARTERS. This divided by a literal
+         * 4.0, so on the 11/8 set it reported bar 2 for a scroll of 4.0 --
+         * which is page 2 of bar ONE. It feeds the bar-level column of the
+         * phase check, so a 4/4 assumption here shows up as that column
+         * disagreeing with a correct playhead and being believed. */
+        double qpb_b = clip_regions_quarters_per_bar(&g_regions, t,
+                                                     tr->clip_slot);
+        if (!(qpb_b > 0.0)) continue;
+        g_editor_bar[t] = (int)(r->scroll_beats / qpb_b) + 1;
     }
 }
 

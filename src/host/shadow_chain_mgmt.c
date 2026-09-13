@@ -3189,6 +3189,14 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
     int cslot = (cs && slot < CLIP_TRACKS && cs->tracks[slot].identity_valid)
               ? cs->tracks[slot].clip_slot : -1;
     const clip_regions_t *rg = shadow_clip_regions();
+    /* A P-LOCK EDITS THE CLIP ON SCREEN, which is the SELECTED clip, not the
+     * playing one. The live identity above answers playback and says -1 for a
+     * track playing nothing -- correct for a lane's position gate and wrong
+     * here, because step editing is mostly done stopped. Fall back to Move's
+     * own selection only when nothing is playing, so a playing track keeps the
+     * live answer and never the file's older one. */
+    if (cslot < 0)
+        cslot = clip_regions_selected_slot(rg, (int)slot);
     double res = (rg && rg->step_resolution > 0.0) ? rg->step_resolution : 0.25;
     double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
     double clip_len = 0.0;
