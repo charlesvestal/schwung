@@ -10,6 +10,17 @@
 #ifndef CHAIN_INTERNAL_H
 #define CHAIN_INTERNAL_H
 
+/* _GNU_SOURCE BEFORE THE FIRST LIBC HEADER, not merely before <sched.h>.
+ * glibc's features.h latches __USE_GNU the first time ANY libc header pulls
+ * it in and is then include-guarded, so a define placed further down has no
+ * effect at all. host/schwung_port.h needs CPU_SET/sched_setaffinity on
+ * Linux, and this header is the common root of the eight translation units
+ * that reach it — chain_bus.c and chain_host.c already define it at the top
+ * of the .c for the same reason. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +35,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
-#include <malloc.h>
+#include "host/schwung_port.h"
 
 #include "chain_idle_tick.h"
 
@@ -736,7 +747,7 @@ typedef struct chain_instance {
      * chain_bus_worker_stop) — a usleep poll loop would make every destroy wait
      * out its period on the callback.
      */
-    sem_t bus_worker_sem;
+    schwung_sem_t bus_worker_sem;
     int bus_worker_sem_ok;   /* sem_init succeeded; guards sem_destroy */
 
     /* Audio FX state */
