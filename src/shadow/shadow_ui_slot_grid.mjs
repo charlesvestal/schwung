@@ -328,6 +328,8 @@ export const SLOT_GRID_ACTIONS = [
      * it announces is what says whether there was anything to clear, and a row
      * hidden until a lane exists would need a per-draw read to decide. */
     { label: "Clear Lanes", action: "clear_lanes", when: null },
+    { label: "Clear Clip Lanes", action: "clear_clip_lanes", when: null },
+    { label: "Undo Lane Edit", action: "undo_lane_edit", when: null },
     { label: "Save", action: "save", when: null },
     /* Save As stays even with nothing saved: it goes straight to the keyboard
      * where Save offers a generated name. Only DELETE is meaningless. Same

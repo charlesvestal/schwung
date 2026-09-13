@@ -59,6 +59,8 @@ export const SLOT_SETTINGS = [
      * implementation -- a row on two of the three is the asymmetry the `buses`
      * comment above calls worse than either. */
     { key: "clear_lanes", label: "Clear Lanes", type: "action" },
+    { key: "clear_clip_lanes", label: "Clear Clip Lanes", type: "action" },
+    { key: "undo_lane_edit", label: "Undo Lane Edit", type: "action" },
 ];
 
 /*
@@ -108,6 +110,8 @@ export function getSlotSettingValue(slot, setting) {
     /* Nothing to show, and answered HERE so the fallback below does not spend
      * a ~2.8 ms IPC round trip per draw reading a key no slot serves. */
     if (setting.key === "clear_lanes") return "";
+    if (setting.key === "clear_clip_lanes") return "";
+    if (setting.key === "undo_lane_edit") return "";
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";
 
@@ -347,6 +351,10 @@ export function handleSlotSettingsSelect() {
             enterPatchBrowser(selectedSlot);
         } else if (setting.key === "chain") {
             enterChainEdit(selectedSlot);
+        } else if (setting.key === "clear_clip_lanes") {
+            if (ctx.clearSlotClipLanes) ctx.clearSlotClipLanes(selectedSlot);
+        } else if (setting.key === "undo_lane_edit") {
+            if (ctx.undoSlotLaneEdit) ctx.undoSlotLaneEdit(selectedSlot);
         } else if (setting.key === "clear_lanes") {
             /* Acts and announces; it opens nothing, so this screen stays up
              * and the announcement is the whole feedback. */
