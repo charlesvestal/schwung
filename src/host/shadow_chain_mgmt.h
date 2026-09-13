@@ -416,6 +416,11 @@ void shadow_master_fx_lfo_tick(int frames);
 /* Direct param set (web UI ring buffer — doesn't touch shadow_param_t) */
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value);
 
+/* Publish which slots have a lane driving a parameter into
+ * shadow_control_t.lanes_driving_mask, for the UI's automation lamp. Called
+ * from the shim every LANES_DRIVING_PUBLISH_FRAMES. */
+void shadow_lanes_publish_driving(void);
+
 /* Legacy single-slot macros */
 #define shadow_master_fx_handle (shadow_master_fx_slots[0].handle)
 #define shadow_master_fx (shadow_master_fx_slots[0].api)

@@ -707,6 +707,60 @@ pieces of it exist and are tested; the input plumbing is not written.
   commit missed the very gesture it exists for: the parameter moved on the
   device and the hook never fired. Six write sites today, and six will not stay
   six.
+- **A MODULE THAT DRAWS ITS OWN SCREEN COULD NOT P-LOCK, and the decision had
+  to move below the UI.** Both halves of the gesture lived in the host's
+  param-pages path: `onValueWritten` is part of the io the HOST builds, and
+  `reconcileStepObserve()` arms `step_observe` only while `VIEWS.PARAM_PAGES`
+  is up. A module binding the controller from its own `ui_chain.js` (9W9,
+  via `createController`) supplies its own io and runs in `COMPONENT_EDIT`, so
+  it had neither. **Recording worked there the whole time** —
+  `lane_on_set_param` intercepts every component write, whatever UI made it —
+  which is exactly what made this read as a module bug rather than ours. Same
+  shape as the enum peek, which lived in the same layer and was invisible to
+  the same modules.
+
+  So a component write made while **exactly one** step is held is also a
+  p-lock, decided in `shadow_lanes_plock_from_write()` where every write
+  already passes. The live write still happens first, so the knob sounds as it
+  would with no step held; this only adds the breakpoint.
+
+- **A RECORDING PASS IS NEVER CONVERTED, and that is why the first attempt was
+  reverted.** It added a p-lock after every component write while a step was
+  held. A p-lock writes a RECTANGLE at one phase; recording writes a SLOPE
+  across a span — into the same lane — so a stale or incidental held step
+  punched stepped points through a take as it was being recorded. The report
+  was not "the p-lock did nothing" but *"or even automation? worse than
+  before"*, which is the worse failure of the two. The guard asks the chain
+  `lanes:recording`, which IS the record branch's own condition
+  (`lane_is_recording`), never a host-side restatement of it; **a failed read
+  is not a "no"**.
+
+- **`no_bar` ON A MODULE'S OWN UI WAS A STATE ARTIFACT, not a structural
+  blocker** — and believing otherwise cost the revert. Measured with 9W9 up on
+  its own screen and its clip playing: `step_strip valid=true reject=0 track=1
+  segments=1 single_thin=1`, and `lanes:plock_step synth bd_c_drive 3 100`
+  landing as `P 0.75 100 1`. The strip is decoded from `pin_display_frame()` —
+  the PIN scanner's reassembly of MOVE's frame, upstream of Schwung's
+  compositor — so it survives Schwung owning the OLED. What it does NOT
+  survive is the selection: the strip shows ONE track, and it is only a bar
+  when that track is the slot's.
+
+- **THE GESTURE IS SILENT BY NATURE, so it needs a MARK.** A p-lock changes
+  nothing audible until the loop reaches that step, so "did that work?" had no
+  answer on any screen — and eight p-locks that landed correctly on hardware
+  were reported as the feature not working. That is worse than a refusal,
+  which at least names itself in `lanes:plock_reason`.
+
+  `shadow_control_t.plock_seq` is bumped once per **accepted** p-lock — asked
+  of the chain via `lanes:plocked`, never assumed from "we forwarded it", or
+  the mark would appear for an unknown param or a full store. All THREE write
+  paths confirm (write-time, SHM, direct/web) or the gesture reports itself on
+  some screens and not others. `drawPlockMark()` draws the knob grid's own
+  mod-dot plus, top right, for 600 ms, from the overlay block **after** the
+  view switch — which is what puts it over a module's own frame too. It is
+  read straight out of SHM: a `lanes:plocked` param read per frame is ~2.8 ms,
+  more than a whole page render.
+
 - **The shadow UI had no observable for its own view**, which is why driving it
   from a harness was guesswork — and why a `ReferenceError` in a reconcile
   (`currentView`; the variable is `view`) went unnoticed while it aborted every

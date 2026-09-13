@@ -3311,6 +3311,67 @@ static int shadow_component_param_split(const char *key)
     return 0;
 }
 
+/* SAY THAT ONE LANDED, so the UI can draw a mark.
+ *
+ * The gesture had no confirmation on any screen. It is silent by nature -- a
+ * p-lock changes nothing you can hear until the loop comes round to that step
+ * -- so "did that work?" had no answer, and eight correct p-locks on hardware
+ * were reported as the feature not working. That is a worse failure than a
+ * refusal, because a refusal at least has `lanes:plock_reason`.
+ *
+ * ASKED OF THE CHAIN, not assumed from "we forwarded it": the write can still
+ * be refused for a parameter the module does not declare or a full store, and
+ * a mark drawn for a p-lock that did not land is how a user learns to
+ * distrust the mark. `lanes:plocked` is the chain's own answer to exactly
+ * this question.
+ *
+ * The counter is never reset here. The UI compares it for INEQUALITY and owns
+ * the mark's lifetime; clearing it from this side would be the writer
+ * deciding how long the reader gets to look. */
+static void shadow_lanes_plock_confirm(uint8_t slot)
+{
+    if (slot >= SHADOW_CHAIN_INSTANCES) return;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) return;
+    if (!shadow_chain_slots[slot].instance) return;
+    char landed[8] = {0};
+    int n = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                        "lanes:plocked", landed, sizeof(landed));
+    if (n <= 0 || landed[0] != '1') return;
+    shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+    if (ctrl) ctrl->plock_seq++;
+}
+
+/* WHICH SLOTS ARE BEING DRIVEN BY A LANE, into the SHM lamp the UI reads.
+ *
+ * Polled rather than pushed because `driving` is a per-block property of the
+ * chain's own lanes and nothing edges it: a lane stops driving by simply not
+ * being asked again, so there is no event to publish from. The poll is bounded
+ * (LANE_MAX per slot, a flag test each) and runs at LANES_DRIVING_PUBLISH_FRAMES,
+ * not per frame -- it lights a lamp.
+ *
+ * Answers ZERO for a slot whose read fails, deliberately: the lamp must go out
+ * when we cannot say, never latch on. That is the opposite of the tri-state
+ * rule for a CONTRACT read -- a contract we cannot read must not produce a
+ * plan, while a lamp we cannot read must not keep claiming something is
+ * happening. */
+void shadow_lanes_publish_driving(void)
+{
+    shadow_control_t *ctrl = host.shadow_control_ptr ? *host.shadow_control_ptr : NULL;
+    if (!ctrl) return;
+    uint8_t mask = 0;
+    if (shadow_plugin_v2 && shadow_plugin_v2->get_param) {
+        for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES && slot < 8; slot++) {
+            if (!shadow_chain_slots[slot].active ||
+                !shadow_chain_slots[slot].instance) continue;
+            char n[8] = {0};
+            int rn = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                 "lanes:driving", n, sizeof(n));
+            if (rn > 0 && n[0] && n[0] != '0') mask |= (uint8_t)(1u << slot);
+        }
+    }
+    ctrl->lanes_driving_mask = mask;
+}
+
 /* A COMPONENT WRITE MADE WHILE A STEP IS HELD IS A P-LOCK.
  *
  * Decided here rather than in the UI because every UI's writes pass through
@@ -3371,6 +3432,7 @@ static void shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     if (!shadow_lanes_plock_step_translate(slot, req, fwd, sizeof(fwd))) return;
     shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                 "lanes:plock", fwd);
+    shadow_lanes_plock_confirm(slot);
 }
 
 void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
@@ -3424,9 +3486,14 @@ void shadow_direct_set_param(uint8_t slot, const char *key, const char *value) {
             shadow_plugin_v2 && shadow_plugin_v2->set_param &&
             slot < SHADOW_CHAIN_INSTANCES &&
             shadow_chain_slots[slot].active &&
-            shadow_chain_slots[slot].instance)
+            shadow_chain_slots[slot].instance) {
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                         "lanes:plock", fwd);
+            /* Same mark as the other two paths. All THREE confirm, or the
+             * gesture reports itself on some screens and not others -- which
+             * is the shape of the bug this whole feature keeps rediscovering. */
+            shadow_lanes_plock_confirm(slot);
+        }
         return;
     }
 
@@ -5254,6 +5321,13 @@ void shadow_inprocess_handle_param_request(void) {
 
             shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                         key_copy, value_copy);
+            /* The OTHER p-lock path -- the host's param-pages io, which writes
+             * `lanes:plock_step` and had it translated above -- needs the same
+             * mark as the write-time gesture, and this is where its write
+             * lands. Keyed off the TRANSLATED key, so a caller writing
+             * `lanes:plock` directly is confirmed too. */
+            if (strcmp(key_copy, "lanes:plock") == 0)
+                shadow_lanes_plock_confirm(slot);
             /* ...and if a step was held, that write was ALSO a p-lock. This is
              * the path a module's own `ui_chain.js` writes through, which is
              * why the gesture has to be decided here and not in the host's
