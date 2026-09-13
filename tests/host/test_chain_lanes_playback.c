@@ -435,37 +435,58 @@ int main(void) {
                   "a matching fingerprint did not play: %f", fake_value("cutoff"));
             CHECK(fl->stale == 0, "a matching fingerprint marked the lane stale");
 
-            /* 15. A different clip in the same position: STALE, silent, and
-             *     KEPT. Playing the wrong clip's automation is worse than none
-             *     at all, and nothing on screen would explain it. */
+            /* 15. CONTENT CHANGED WITH NO DELETION IS AN EDIT, and the lane
+             *     FOLLOWS it.
+             *
+             *     This case asserted the opposite until 2026-09-13 -- "a
+             *     replacement clip must mark the lane stale" -- and that rule
+             *     cost more than it bought: the fingerprint is note count plus
+             *     first note, so adding or deleting ONE note read as a
+             *     replacement and the clip's automation went silent. Measured
+             *     on hardware: a lane driving at 0.9 read the knob's 0.47
+             *     after a single step press. Editing notes is most of what
+             *     anyone does to a clip.
+             *
+             *     Identity is CONTINUITY instead. A clip that was really
+             *     replaced went through a deletion, which the worker reports
+             *     as `orphaned` (case 17 below, still asserted) -- so a
+             *     mismatch while NOT orphaned is the same clip, edited, and
+             *     the lane re-stamps its fingerprint and plays on.
+             *
+             *     The hole, stated plainly: a clip deleted and recreated in
+             *     the same slot inside one save window (~10 s) shows no
+             *     deletion, so the lane treats it as an edit. That is worse
+             *     than silence when it happens, and rarer than editing a note,
+             *     which is what it replaces. */
             chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, other);
             lane_tick(fpi);
-            CHECK(fl->stale == 1, "a replacement clip did not mark the lane stale");
-            CHECK(fl->driving == 0, "a stale lane is still driving");
-            CHECK(fl->used == 1 && fl->n == 2,
-                  "a stale lane lost its content (used=%d n=%d) -- staleness is "
-                  "retention, not deletion", fl->used, fl->n);
-            fake_poke("cutoff", "77");
-            {
-                int before = fake_writes("cutoff");
-                lane_tick(fpi);
-                lane_tick(fpi);
-                CHECK(fake_value("cutoff") == 77.0f,
-                      "a stale lane drove the parameter to %f", fake_value("cutoff"));
-                CHECK(fake_writes("cutoff") == before,
-                      "a stale lane wrote %d time(s)",
-                      fake_writes("cutoff") - before);
-            }
-
-            /* 16. The original comes back -- an undo. The fingerprint match is
-             *     what re-binds it; stranding it would need a gesture the UI
-             *     does not have. */
-            chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
-            lane_tick(fpi);
-            CHECK(fl->stale == 0, "the clip came back and the lane stayed stale");
+            CHECK(fl->stale == 0,
+                  "an edited clip marked its lane stale -- every note edit "
+                  "would silence the automation");
+            CHECK(fl->fp.note_count == 5,
+                  "the fingerprint did not follow the edit (%d)",
+                  fl->fp.note_count);
             CHECK(fake_value("cutoff") == 50.0f,
-                  "the clip came back and the lane did not resume: %f",
+                  "the lane stopped driving after an edit: %f",
                   fake_value("cutoff"));
+
+            /* 16. And it keeps playing as the clip goes on being edited --
+             *     the re-stamp is not a one-shot. */
+            {
+                double edited_again[4] = { 0.0, 8.0, 6.0, 55.0 };
+                chain_set_clip_phase(fpi, 1, 3.0, 8.0, 0, 0, 1, edited_again);
+                lane_tick(fpi);
+                CHECK(fl->stale == 0 && fake_value("cutoff") == 65.0f,
+                      "a second edit silenced the lane (stale=%d value=%f)",
+                      fl->stale, fake_value("cutoff"));
+                /* Back to the original content and phase for the cases below,
+                 * which are about DELETION rather than editing. */
+                chain_set_clip_phase(fpi, 1, 2.0, 8.0, 0, 0, 1, same);
+                lane_tick(fpi);
+                CHECK(fake_value("cutoff") == 50.0f,
+                      "restoring the content did not restore the value: %f",
+                      fake_value("cutoff"));
+            }
 
             /* 17. THE CLIP WAS DELETED. Orphaned, silent -- and STILL THERE.
              *     Move saves Song.abl ~35 s after an edit, so "absent from the
@@ -945,6 +966,100 @@ int main(void) {
                   "at the second p-lock's own phase, got %f",
                   fake_value("cutoff"));
             free(pk);
+        }
+    }
+
+    /* ======= EDITING A CLIP'S NOTES MUST NOT SILENCE ITS LANE =========
+     *
+     * The fingerprint is note count plus first note, so adding or deleting one
+     * note broke it and the automation went silent -- measured on hardware, a
+     * lane driving at 0.9 read the knob's 0.47 after a single step press.
+     * Identity is CONTINUITY: a replaced clip went through a deletion, which
+     * the worker reports as `orphaned`, so a mismatch while not orphaned is
+     * the same clip edited and the lane re-stamps.
+     *
+     * Asserted on the VALUE THE LANE PRODUCES at a moving phase, not on a
+     * repeated one: an override does not re-write a value it already wrote, so
+     * poking the plugin and expecting a rewrite measures nothing. The first
+     * version of this test did exactly that and failed for that reason.
+     */
+    {
+        chain_instance_t *ed = calloc(1, sizeof(*ed));
+        CHECK(ed != NULL, "calloc for the edit instance");
+        if (ed) {
+            setup_fake_synth(ed);
+            ed->lane_track = 0;
+            ed->lane_clip_slot = 0;
+
+            lane_fingerprint_t fp0 = { 0.0, 8.0, 3, 60 };
+            lane_t *el = lane_alloc(&ed->lanes, "synth", "cutoff", 0, 0, &fp0);
+            CHECK(el != NULL, "edit lane alloc");
+            if (el) {
+                /* A ramp, so every phase has its own value. */
+                lane_write(el, 0.0, 20.0f, 0);
+                lane_write(el, 4.0, 80.0f, 0);
+
+                double same[4] = { 0.0, 8.0, 3.0, 60.0 };
+                chain_set_clip_phase(ed, 1, 2.0, 8.0, 0, 0, 1, same);
+                lane_tick(ed);
+                CHECK(fake_value("cutoff") == 50.0f,
+                      "premise: the lane drives its own clip at phase 2 (%f)",
+                      fake_value("cutoff"));
+
+                /* A NOTE IS ADDED -- 4 notes now. The lane keeps playing, and
+                 * its fingerprint follows so later comparisons are against
+                 * what is actually there. */
+                double edited[4] = { 0.0, 8.0, 4.0, 60.0 };
+                chain_set_clip_phase(ed, 1, 3.0, 8.0, 0, 0, 1, edited);
+                lane_tick(ed);
+                CHECK(el->stale == 0,
+                      "an edited clip marked its lane stale -- every note edit "
+                      "would silence the automation");
+                CHECK(fake_value("cutoff") == 65.0f,
+                      "the lane stopped driving after a note edit: %f at "
+                      "phase 3, want 65", fake_value("cutoff"));
+                CHECK(el->fp.note_count == 4,
+                      "the fingerprint did not follow the edit (%d)",
+                      el->fp.note_count);
+
+                /* DELETING THE EARLIEST NOTE changes first_note, and is just
+                 * as ordinary. */
+                double first_gone[4] = { 0.0, 8.0, 3.0, 67.0 };
+                chain_set_clip_phase(ed, 1, 1.0, 8.0, 0, 0, 1, first_gone);
+                lane_tick(ed);
+                CHECK(el->stale == 0 && fake_value("cutoff") == 35.0f,
+                      "deleting the earliest note silenced the lane (stale=%d "
+                      "value=%f, want 35)", el->stale, fake_value("cutoff"));
+
+                /* BUT A DELETED CLIP STILL ORPHANS, and a DIFFERENT clip
+                 * arriving there must not inherit the lane. That guard is what
+                 * the re-stamp must not dissolve. */
+                chain_set_clip_deleted(ed, 0, 0);
+                CHECK(el->orphaned == 1, "the deletion did not orphan the lane");
+                fake_poke("cutoff", "7");
+                double stranger[4] = { 0.0, 16.0, 9.0, 41.0 };
+                chain_set_clip_phase(ed, 1, 2.0, 16.0, 0, 0, 1, stranger);
+                lane_tick(ed);
+                CHECK(el->orphaned == 1 && el->stale == 1,
+                      "an orphaned lane adopted a stranger (orphaned=%d "
+                      "stale=%d)", el->orphaned, el->stale);
+                CHECK(fake_value("cutoff") != 50.0f,
+                      "an orphaned lane played its own curve on the new clip: "
+                      "%f", fake_value("cutoff"));
+
+                /* ...and the clip coming back (an UNDO) restores it, which is
+                 * only possible because the fingerprint is still compared. */
+                double restored[4] = { 0.0, 8.0, 3.0, 67.0 };
+                chain_set_clip_phase(ed, 1, 2.0, 8.0, 0, 0, 1, restored);
+                lane_tick(ed);
+                CHECK(el->orphaned == 0 && el->stale == 0,
+                      "an undone deletion did not restore the lane "
+                      "(orphaned=%d stale=%d)", el->orphaned, el->stale);
+                CHECK(fake_value("cutoff") == 50.0f,
+                      "the restored lane is not driving: %f at phase 2",
+                      fake_value("cutoff"));
+            }
+            free(ed);
         }
     }
 

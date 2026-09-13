@@ -848,7 +848,32 @@ made and then edited, so re-origining would have to guess and would put every
 value a bar out while looking healthy. Both loop fields are recorded for
 **diagnostics only**.
 
-On a mismatch the lane is **stale: retained, silent, and never guessed at.** A
+**IDENTITY IS CONTINUITY; the fingerprint is the tiebreak for the
+discontinuous case.** A content mismatch while the lane is NOT orphaned is an
+EDIT — the lane re-stamps its fingerprint and plays on. That rule replaced
+"any content change is a replacement", which cost more than it bought:
+`note_count` plus `first_note` means **adding or deleting ONE note** read as a
+replacement, so a clip's automation went silent the moment anyone edited it.
+Measured on hardware — a lane driving at 0.9 with `:modulated` 1 read the
+knob's 0.47 and 0 after a single step press. Editing notes, copying a bar and
+deleting notes are most of what anyone does to a clip.
+
+A clip that was really replaced went through a **deletion**, which the worker's
+before/after parse reports as `orphaned` — and an orphaned lane still refuses a
+stranger, still comes back when the original clip does, and a lane carrying the
+**absent** fingerprint is excluded from re-stamping entirely (it was never
+identified, so there is nothing to call an edit of; those go through
+`lane_adopt_fingerprint`, which demands that this session recorded them blind).
+
+The hole this leaves, stated plainly: a clip deleted and recreated in the same
+slot **inside one save window (~10 s)** shows no deletion to the worker, so the
+lane treats it as an edit and plays on the new clip. That is worse than silence
+when it happens, and rarer than editing a note, which is the failure it
+replaces — and Move's own Copy lands in the next FREE slot rather than over an
+existing clip.
+
+On a mismatch of the kind that remains, the lane is **stale: retained, silent,
+and never guessed at.** A
 clip copied into a slot that once held automation does not inherit it. A match
 clears both `stale` and `orphaned` — the clip coming back is an undo, and there
 is no gesture in the UI that would otherwise un-strand a lane. A *mismatch* only
