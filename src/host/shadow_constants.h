@@ -103,6 +103,10 @@
  * for the other order: an old consumer asking for 84 attaches to a 256-byte
  * segment quite happily.
  */
+/* How often the shim republishes lanes_driving_mask, in SPI frames (~2.9 ms
+ * each). A lamp, so ~46 ms is far finer than an eye; per-frame would put four
+ * chain get_params on every callback for no visible gain. */
+#define LANES_DRIVING_PUBLISH_FRAMES 16
 #define CONTROL_BUFFER_SIZE 256
 #define SHADOW_UI_BUFFER_SIZE     512
 /* The param segment: SHADOW_PARAM_VALUE_LEN plus shadow_param_t's header,
@@ -548,6 +552,44 @@ typedef struct shadow_control_t {
      * APPENDED, for the reason stated on pad_observe.
      */
     volatile uint8_t step_observe;
+    /*
+     * A P-LOCK WAS ACCEPTED -- bumped once per landed breakpoint, never reset.
+     *
+     * THE GESTURE HAD NO CONFIRMATION AT ALL, on any screen, and that is what
+     * made a working feature read as a broken one: eight p-locks landed on
+     * hardware, correctly, and were reported as "it didn't work" because
+     * nothing on the panel said so and the value only speaks a loop later.
+     *
+     * A COUNTER, not a flag: the UI must be able to tell a second p-lock from
+     * the first one still being shown, and a flag the UI clears would be a
+     * write from the reader into the writer's segment. Wrap is harmless --
+     * the UI compares for INEQUALITY, never magnitude.
+     *
+     * Read straight out of the SHM by the shadow UI, because the alternative
+     * is a `lanes:plocked` param read PER FRAME, and one IPC round trip
+     * (~2.8 ms) costs more than redrawing the whole screen (1.68 ms).
+     *
+     * APPENDED, for the reason stated on pad_observe: sizeof is a contract
+     * between two binaries, and only appending is free.
+     */
+    volatile uint32_t plock_seq;
+    /*
+     * WHICH SLOTS HAVE A LANE DRIVING A PARAMETER RIGHT NOW, one bit each.
+     *
+     * The playback half of the same problem plock_seq solves for the gesture:
+     * automation running was indistinguishable from nothing running on a
+     * module that draws its own screen. The knob grid has the per-key mark
+     * already (`<key>:modulated`, the dot riding the arc); this is the same
+     * fact at SLOT altitude, for the surfaces that cannot draw a per-knob one.
+     *
+     * Published by the shim (shadow_lanes_publish_driving) every
+     * LANES_DRIVING_PUBLISH_FRAMES rather than per frame: it is a lamp, and a
+     * lamp does not need 344 Hz. Read straight from SHM by the UI, because the
+     * alternative is a param read per frame at ~2.8 ms.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t lanes_driving_mask;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */

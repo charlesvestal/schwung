@@ -578,6 +578,27 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   rebuilds every position behind it, losing arp phase and reverb tails.
 - Per-position arrays split into VALUE and **OWNED-BUFFER**. Zeroing an owned
   pointer instead of rotating it is a SIGSEGV on the SPI callback.
+- **A P-LOCK IS DECIDED BELOW THE UI, and a RECORDING PASS is never converted.**
+  Hold a step, turn a knob. Both halves used to live in the host's param-pages
+  io, so a module drawing its own screen from `ui_chain.js` could RECORD
+  automation and never p-lock — `lane_on_set_param` intercepts every component
+  write, which is what made it read as a module bug. A component write made
+  while exactly ONE step is held is now also a p-lock
+  (`shadow_lanes_plock_from_write`). The guard is what this took two attempts
+  to get: a p-lock writes a RECTANGLE, recording writes a SLOPE, into the same
+  lane — so a stale held step made ordinary recording WORSE, not merely
+  useless. It asks the chain `lanes:recording`, the record branch's own
+  condition, never a copy of it. And `no_bar` on a module's own screen was a
+  STATE artifact (the strip names one track, and only that track's slot),
+  measured, not a structural blocker.
+- **THE GESTURE IS SILENT, so it draws a MARK** — the knob grid's mod-dot plus,
+  top right, 600 ms, from the overlay block AFTER the view switch so it lands
+  over a module's own frame. Eight p-locks that landed correctly were reported
+  as the feature not working, because nothing on the panel says so and the
+  value only speaks a loop later. `shadow_control_t.plock_seq` counts ACCEPTED
+  ones — asked of `lanes:plocked`, never assumed from "we forwarded it", and
+  bumped at all THREE write paths or the gesture reports itself on some screens
+  and not others.
 - **`synth:last_note` is recorded at BOTH synth-feed paths**, via
   `chain_record_synth_note`. `v2_tick_midi_fx` is the one that looks optional
   and is not: an ARPEGGIATOR emits from `tick()`, not `process_midi()`, so

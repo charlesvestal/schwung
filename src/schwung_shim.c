@@ -4500,6 +4500,13 @@ static void shadow_mix_audio(void)
     /* Increment shim counter for shadow's drift correction */
     shadow_control->shim_counter++;
 
+    /* THE AUTOMATION LAMP. Which slots have a lane driving something, for the
+     * UI to show while a clip plays -- the one thing a module drawing its own
+     * screen cannot report for itself. Every 16th frame (~46 ms): it is a
+     * lamp, not a value, and the poll walks four chains' lanes. */
+    if ((shadow_control->shim_counter % LANES_DRIVING_PUBLISH_FRAMES) == 0)
+        shadow_lanes_publish_driving();
+
     /* Copy Move's audio to shared memory so shadow can mix it */
     if (shadow_movein_shm) {
         memcpy(shadow_movein_shm, mailbox_audio, AUDIO_BUFFER_SIZE);
