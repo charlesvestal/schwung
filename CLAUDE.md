@@ -660,8 +660,12 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   mapping: `phase = ((bar-1)*steps_per_bar + index) * step_resolution`, with the
   displayed bar from the STRIP's `bold_segment` — not Move's "Bar N", which
   needs the screen reader and reads 0 without it. A **multi-page bar is
-  REFUSED** (11/8 at 1/16 pages 16+6, so this is not exotic), as is bar 0. The
-  GESTURE is unbuilt: a held step must be swallowed from Move or it edits notes.
+  REFUSED** (11/8 at 1/16 pages 16+6, so this is not exotic), as is bar 0.
+  **The GESTURE works** — `step_observe` forwards Move's steps to the UI, which
+  writes `lanes:plock_step` on a knob COMMIT (a turn's write is DEBOUNCED, so
+  the hook wraps `setParam` rather than sitting on one of six call sites).
+  Verified on hardware, driven entirely by injection. The forward is PASSIVE,
+  so a p-lock also toggles a note until the swallow lands.
 - **A clip Move has not saved yet can be recorded onto, and the two missing
   facts arrive separately.** The length comes from the step editor's strip NOW
   (bar resolution, origin assumed 0); the identity and true origin come from
