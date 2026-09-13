@@ -591,6 +591,17 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   condition, never a copy of it. And `no_bar` on a module's own screen was a
   STATE artifact (the strip names one track, and only that track's slot),
   measured, not a structural blocker.
+- **HOLD A STEP TO SEE AND EDIT WHAT IS LOCKED ON IT.** `<key>:held` (shim
+  answers; chain evaluates via `lanes:probe`) returns `"<value> <exact>"` —
+  `exact` meaning a point SITS there, not that the curve passes through. The
+  window must be passed IN: `lane_eval` says nothing for a zero `loop_len`,
+  and the live geometry is zero whenever the transport is stopped, which is
+  when step editing happens. Every "no" is the empty string, never 0. The
+  gesture follows Elektron: the turn continues from the LOCK, and a landed
+  p-lock REPLACES the live write instead of accompanying it — a refusal still
+  falls through, so a knob never goes dead. Which step is held comes from the
+  SHIM (`shadow_control_t.held_step`), so the value shown and the value a turn
+  replaces cannot disagree.
 - **THE GESTURE IS SILENT, so it draws a MARK** — the knob grid's mod-dot plus,
   top right, 600 ms, from the overlay block AFTER the view switch so it lands
   over a module's own frame. Eight p-locks that landed correctly were reported

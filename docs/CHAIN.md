@@ -761,6 +761,65 @@ pieces of it exist and are tested; the input plumbing is not written.
   read straight out of SHM: a `lanes:plocked` param read per frame is ~2.8 ms,
   more than a whole page render.
 
+- **HOLD A STEP AND SEE WHAT IS LOCKED ON IT** — the READ half, which did not
+  exist while the write half worked. You could set a value on a step and never
+  see one again, which is most of why a working gesture was reported as broken.
+
+  `<target>:<param>:held` is answered by the SHIM, because the held step and
+  the step→phase arithmetic both live there and the chain knows only phases;
+  the chain evaluates its lane at that phase (`lanes:probe`) and answers
+  `"<value> <exact>"`. **`exact` is a separate fact**: it says a point SITS on
+  that step (within `LANE_MIN_POINT_BEATS`, the window `lane_write` replaces
+  in) rather than the curve merely passing through, so "turning here edits
+  this point" is what the mark means. Every kind of "no" — no step, two steps,
+  a step the strip cannot place, no lane, nothing at that phase — is the EMPTY
+  STRING, and none of them is the value 0.
+
+  **The window goes with the question.** `lane_eval` answers nothing for a
+  `loop_len` of 0, and the chain's live geometry IS 0 whenever the transport
+  is stopped — which is when step editing is mostly done, so the first version
+  read "nothing locked here" for every p-lock on a stopped clip. The host
+  passes `[0, clip_len)`, which it has already computed for the translation's
+  own OUTSIDE_CLIP bound. Verified on hardware, transport stopped: step 0 →
+  `101 1`, step 2 → `101 0` (the curve holds, no point there), step 4 →
+  `109 1`, a parameter with no lane → empty.
+
+- **THE GESTURE IS ELEKTRON'S, and two of its rules were missing.** Holding a
+  trig shows what that step will play; an encoder turn continues **from the
+  value on screen**; releasing returns the display to the track's values; and
+  **the track value is not what a trig-held turn changes.**
+  - The turn seeds from the lock (`heldValues`) rather than the base, or the
+    first detent jumps from a number you can see to one you cannot and then
+    p-locks the jumped value. An unlocked param under a held step still seeds
+    from the base — also Elektron: the first turn CREATES a lock from what the
+    track is doing.
+  - A landed p-lock **REPLACES** the live write rather than accompanying it.
+    The first version applied both, so one gesture silently changed two things
+    and the one you did not ask for is the one that plays on every other step.
+    Only a p-lock that LANDED suppresses the write: a refusal falls through to
+    the ordinary write, so a knob never goes dead for a reason nothing states.
+  - The optimistic value cache follows the same rule (`cacheWritten`), or the
+    base cache ends up holding a number that belonged to one step — and
+    nothing re-reads a key that already has a value until the cursor comes
+    round, so the knob would keep walking from it after the finger came off.
+  - `knobStates` for locked keys are dropped when the finger moves between
+    steps or comes off one, because the knob engine seeds once and then walks
+    its own state.
+
+  The display is the renderer's existing `decorations[slot] = {locked, value}`
+  — the sequencer parameter-lock path, whose own comment already said "on the
+  step-held view, where locks are read". **A caller's own decorations win**;
+  `heldDecOwned` is what lets the release clear only what the grid installed.
+
+- **Which step is held comes from the SHIM, not from an io hook**
+  (`shadow_control_t.held_step`, a byte; `shadow_get_held_step()`). The shim
+  already decides it for the write side, so the value shown and the value a
+  turn replaces cannot disagree — and a hook only the host's io supplied would
+  have been invisible to every module-drawn grid, which is the mistake this
+  feature has now made three times. Verified on hardware: step note 20 →
+  `held_step 4`, release → 255, **two steps down → 255** (the "exactly one"
+  guard).
+
 - **The shadow UI had no observable for its own view**, which is why driving it
   from a harness was guesswork — and why a `ReferenceError` in a reconcile
   (`currentView`; the variable is `view`) went unnoticed while it aborted every

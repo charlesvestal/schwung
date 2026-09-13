@@ -4507,6 +4507,16 @@ static void shadow_mix_audio(void)
     if ((shadow_control->shim_counter % LANES_DRIVING_PUBLISH_FRAMES) == 0)
         shadow_lanes_publish_driving();
 
+    /* ...and the held step itself, EVERY frame, not on the lamp's cadence: it
+     * is one byte, and it is what the UI shows the locked value from. A press
+     * that took 46 ms to be noticed would read as the grid lagging the
+     * finger. */
+    {
+        int hs = shim_plock_held_step();
+        shadow_control->held_step = (hs >= 0 && hs < 16)
+                                  ? (uint8_t)hs : SHADOW_HELD_STEP_NONE;
+    }
+
     /* Copy Move's audio to shared memory so shadow can mix it */
     if (shadow_movein_shm) {
         memcpy(shadow_movein_shm, mailbox_audio, AUDIO_BUFFER_SIZE);
