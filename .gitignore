@@ -55,3 +55,12 @@ out/
 *.rx2
 *.rex
 tools/param-pages/assets.local.json
+
+# ...but tests/fixtures/ is CHECKED-IN DATA, not payload. The blanket rules
+# above are there to keep ROMs and samples out of the tree; a captured OLED
+# frame is 1 KB of test input that the suite cannot run without. Ignoring it
+# passes locally (where the capture still sits on disk) and fails only in CI,
+# which is the slowest possible place to learn a fixture was never committed.
+!tests/fixtures/*.bin
+!tests/fixtures/*.syx
+!tests/fixtures/*.wav
