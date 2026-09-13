@@ -22,14 +22,34 @@ ui=src/shadow/shadow_ui.js
 # on paramPagesEnabled), so a row present only on the list forms is
 # unreachable for most users -- which docs/SHADOW_UI.md records as having
 # happened before.
-awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots" | grep -q 'Clear Lanes' \
-  || fail "Clear Lanes missing from SLOT_SETTINGS ($slots)"
-awk '/export const SLOT_GRID_ACTIONS = \[/,/^\];/' "$grid" | grep -q 'Clear Lanes' \
-  || fail "Clear Lanes missing from SLOT_GRID_ACTIONS ($grid)"
+#
+# THE WORD IS AUTOMATION, NOT LANES. "Lane" is this codebase's term for the
+# store and means nothing to a user reading a menu, so the on-device rows say
+# automation and only the code says lane.
+awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots" | grep -q 'Clear All Automation' \
+  || fail "Clear All Automation missing from SLOT_SETTINGS ($slots)"
+awk '/export const SLOT_SETTINGS = \[/,/^\];/' "$slots" | grep -q 'Clear Clip Automation' \
+  || fail "Clear Clip Automation missing from SLOT_SETTINGS ($slots)"
+# On the GRID the same three live under their own Automation level rather than
+# among the Actions -- see slotGridHierarchy. Asserted against that level, so
+# moving them back into SLOT_GRID_ACTIONS (where the full words do not fit
+# beside the clip name) fails here.
+awk '/levels.automation = \{/,/^    \};/' "$grid" | grep -q 'clear_clip_lanes' \
+  || fail "the grid Automation level must offer the per-clip clear ($grid)"
+awk '/levels.automation = \{/,/^    \};/' "$grid" | grep -q 'clear_lanes' \
+  || fail "the grid Automation level must offer the all-clips clear ($grid)"
+awk '/levels.automation = \{/,/^    \};/' "$grid" | grep -q 'undo_lane_edit' \
+  || fail "the grid Automation level must offer Undo ($grid)"
 # The third form of the same screen. A row on two of the three is the
 # asymmetry SLOT_SETTINGS' own `buses` comment calls worse than either.
-awk '/^const CHAIN_SETTINGS_ITEMS = \[/,/^\];/' "$ui" | grep -q 'Clear Lanes' \
-  || fail "Clear Lanes missing from CHAIN_SETTINGS_ITEMS ($ui)"
+awk '/^const CHAIN_SETTINGS_ITEMS = \[/,/^\];/' "$ui" | grep -q 'Clear All Automation' \
+  || fail "Clear All Automation missing from CHAIN_SETTINGS_ITEMS ($ui)"
+
+# AND THE MODULE'S OWN PAGE carries the per-module clear, because that is
+# where the knobs you automated are. Slot-level clearing is two menus away
+# from them.
+grep -q 'clear_component_lanes' "$ui" \
+  || fail "the component Module page must offer Clear Automation ($ui)"
 
 # ...and all three must reach the SAME implementation. Three copies of the
 # read-and-announce is three chances for one of them to announce a count it
