@@ -337,6 +337,10 @@ export const SETPARAM_THROTTLE_MS = 20;
  * them every block, and it would cost nothing per frame instead of 2.8ms.
  */
 export const MOD_FAST_READS_PER_TICK = 1;
+/* One rotation stop in this many goes to the modulation probe, for a consumer
+ * that injects no `isModulated`. Not a read budget -- it SPENDS a stop, so the
+ * budget stays exactly one read per tick; see the probe for why that matters. */
+export const MOD_PROBE_EVERY = 6;
 
 /**
  * How long the header keeps following a knob that was TURNED but is not held.
@@ -546,10 +550,33 @@ export function createController(io = {}) {
         return r;
     };
     const announce = io.announce || (() => {});
-    /* Optional: is this param currently driven by a modulation source? The
-     * library cannot answer that — it is host state — so it is injected, and
-     * defaults to "no" for callers that have no modulation. */
-    const isModulated = io.isModulated || (() => false);
+    /*
+     * Optional: is this param currently driven by a modulation source?
+     *
+     * THE DEFAULT IS THE DEVICE'S OWN ANSWER, not "no", and that correction is
+     * the third instance of one blind spot. A module that binds this
+     * controller from its own `ui_chain.js` (9W9) supplies an io of
+     * getParam/setParam/announce and nothing else, so it took the old
+     * `() => false`: `modCache` was empty for every key, `refreshModulatedValues`
+     * had nothing to read, and the pointer showed the BASE while an LFO or an
+     * automation lane drove the parameter underneath it. Nothing was wrong on
+     * screen -- the knob simply never moved, which reads as "automation isn't
+     * playing" rather than as a missing hook. The same layer split hid the
+     * enum peek and the p-lock gesture from the same modules.
+     *
+     * `<key>:modulated` is served by the chain for every chain target, so the
+     * consumer that HAS a chain behind it gets the marks by existing, and one
+     * that does not answers "" and lands on false exactly as before. The host
+     * still injects its own (`isHierarchyParamModulated`), which adds a
+     * base-vs-live fallback for targets that do not implement `:modulated`;
+     * this default deliberately does not, because a guess belongs with the
+     * consumer that knows what its keys are.
+     *
+     * It costs ONE read per tick, on the value rotation that was already
+     * paying for that key -- never per draw. That distinction is what the
+     * comment at `modCache` is about.
+     */
+    const isModulated = io.isModulated || null;
     /*
      * Optional: how the HOST wants a value read on a given surface.
      *
@@ -647,6 +674,7 @@ export function createController(io = {}) {
          * Only modulated keys are in here, and they get their own fast lane in
          * tick() because they are the only values that move on their own. */
         modValues: Object.create(null),
+        modProbeCursor: 0,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
         modCursor: 0,
         /* key -> tick at which reads may resume */
@@ -2219,6 +2247,55 @@ export function createController(io = {}) {
             maybeResettle(() => reloadIfChanged(s.lastLoadOpts));
         }
 
+        /* AFTER the metadata retry, deliberately. The probe RETURNS, so ahead
+         * of it it could eat a retry tick outright whenever the two cadences
+         * coincided -- which they do every 1032 ticks, and that was enough to
+         * leave osirus's `(loading)` enum placeholder up for good in the one
+         * test that waits for it. A lane that takes a turn must never be able
+         * to starve one that fires on a schedule. */
+        /*
+         * THE MODULATION PROBE, for a consumer that injects no predicate.
+         *
+         * `isModulated` is host state, so the library used to default to a
+         * flat "no" -- and a module that binds this controller from its own
+         * `ui_chain.js` (9W9) supplies getParam/setParam/announce and nothing
+         * else. Its `modCache` stayed empty, `refreshModulatedValues` had
+         * nothing to read, and the knob showed the BASE while an LFO or an
+         * automation lane drove the parameter underneath it. Not an error and
+         * not a missing page: the knob simply never moved, which reads as
+         * "automation isn't playing".
+         *
+         * IT SPENDS A STOP, it does not add a read. The cursor's budget is ONE
+         * read per tick and that is a frame-rate fact (an IPC round trip is
+         * ~2.8 ms against a 1.68 ms whole-page render), so probing alongside
+         * the value would have doubled it for exactly the consumers that own
+         * their own screen. One stop in MOD_PROBE_EVERY goes to the flag
+         * instead of to a value; a page is fully probed within
+         * keys * MOD_PROBE_EVERY ticks (~0.8 s for eight knobs at 60 Hz),
+         * which is the right timescale -- modulation starts and stops when a
+         * routing is edited or playback reaches a lane, never per frame.
+         *
+         * The host injects its own predicate and never reaches this: its reads
+         * happen inside the io, outside this budget, and it carries a
+         * base-vs-live fallback for targets that do not serve `:modulated`.
+         */
+        if (!isModulated && p.keys.length &&
+            s.tickCount % MOD_PROBE_EVERY === 0) {
+            const key = p.keys[s.modProbeCursor % p.keys.length];
+            s.modProbeCursor = (s.modProbeCursor + 1) % p.keys.length;
+            if (key) {
+                const m = getParam(fullKey(key) + ":modulated");
+                /* Tri-state as everywhere: "" is a channel that does not serve
+                 * the key (no modulation system behind this consumer) and null
+                 * is a read that did not complete. Neither is "not modulated
+                 * any more", so neither clears a flag. */
+                if (m === "1") s.modCache[key] = true;
+                else if (m === "0") s.modCache[key] = false;
+            }
+            return null;
+        }
+
+
         if (at === p.keys.length) {
             const pn = getParam(`${s.prefix}:preset_name`);
             s.presetName = (pn && pn.length) ? pn : null;
@@ -2305,7 +2382,11 @@ export function createController(io = {}) {
          * animation drawn from that is a slideshow.
          */
         const _lm = s.metaIndex ? s.metaIndex.getOrGuess(key) : null;
-        s.modCache[key] = !!isModulated(fullKey(key)) || !!(_lm && _lm.live === true);
+        /* With no injected predicate the flag comes from the PROBE lane below,
+         * which spends a rotation stop rather than adding a read -- so leave
+         * whatever it last found rather than clearing it here. */
+        if (isModulated) s.modCache[key] = !!isModulated(fullKey(key));
+        if (_lm && _lm.live === true) s.modCache[key] = true;
 
         /* The pointer wants the base — what the user set — so ask for it
          * directly. (Since #276 the plain key also answers with the base for
