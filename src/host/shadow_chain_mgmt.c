@@ -3308,6 +3308,15 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
     int rc = shadow_lanes_step_phase(slot, step, &phase, NULL, &step_len);
     if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = rc;
     if (rc != STEP_PLOCK_OK) return 0;
+    /* THE PRESS IS SPENT, and it is marked HERE because this is the one place
+     * every p-lock passes through: the write-time gesture, the host's
+     * param-pages io writing `lanes:plock_step`, and the test bus all arrive
+     * at this translate. Marking it at the write-time site alone left the
+     * other two replaying the press to Move as a tap -- measured on hardware,
+     * a fast lock through `plock_step` still took the clip from 34 notes to
+     * 35, which is the defect this was supposed to fix, surviving in the paths
+     * the fix did not cover. */
+    shim_step_mark_used(step);
     /* THE SPAN RIDES WITH THE PHASE. A p-lock is an edit to ONE STEP: it ends
      * where the step ends and the parameter goes back to whatever is
      * underneath -- the recorded curve, or the knob. Without it a single lock
@@ -3327,6 +3336,10 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
  * supplies its own. */
 int shim_plock_held_step(void);
 __attribute__((weak)) int shim_plock_held_step(void) { return -1; }
+/* Weak for the same reason: the tests/host units that compile this file
+ * without the shim must still link. */
+void shim_step_mark_used(int step);
+__attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
 
 /* IS THIS A CHAIN COMPONENT'S PARAMETER, and if so where does it split?
  *
@@ -3536,6 +3549,10 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     shadow_plugin_v2->set_param(shadow_chain_slots[slot].instance,
                                 "lanes:plock", fwd);
     shadow_lanes_plock_confirm(slot);
+    /* The press is SPENT: it wrote a lock, so its release must not also be
+     * replayed to Move as a tap. A gesture under STEP_TAP_MS otherwise both
+     * locked a value and toggled the note off. */
+    shim_step_mark_used(step);
     /* DID IT LAND? The caller suppresses the live write on a 1, so a refused
      * p-lock must never report one: an unknown parameter or a full store would
      * otherwise turn a knob into a dead knob -- no lock, no sound, no reason.
@@ -5419,6 +5436,9 @@ void shadow_inprocess_handle_param_request(void) {
                 double cphase = 0.0;
                 if (cstep >= 0 &&
                     shadow_lanes_step_phase(slot, cstep, &cphase, NULL, NULL) == STEP_PLOCK_OK) {
+                    /* Clearing is also something the press DID, so its release
+                     * must not toggle a note on the way out. */
+                    shim_step_mark_used(cstep);
                     static char cfwd[SHADOW_PARAM_VALUE_LEN];
                     snprintf(cfwd, sizeof(cfwd), "%.17g%s%s", cphase,
                              value_copy[0] ? " " : "", value_copy);

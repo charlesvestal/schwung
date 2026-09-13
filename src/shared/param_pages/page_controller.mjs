@@ -713,6 +713,8 @@ export function createController(io = {}) {
         heldValues: Object.create(null),
         heldCursor: 0,
         heldDecOwned: false,
+        /* One refusal read per held-step gesture, not per detent. */
+        stepRefusalChecked: false,
         /* Delete held while a step is: armed, and whether a knob was picked. */
         stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
@@ -3412,6 +3414,30 @@ export function createController(io = {}) {
             s.heldValues[key] = { value: wire, exact: true };
             const p = page();
             if (p) applyHeldDecorations(p);
+            /* A REFUSED LOCK IS SAID OUT LOUD, because the fallback is
+             * INVISIBLE and wrong: the shim writes the value to the TRACK when
+             * it cannot place the step (no bar, a full store, a step outside
+             * the clip), so the user hears the sound change, concludes the
+             * lock took, and has in fact edited the value that plays on every
+             * OTHER step. `lanes:plock_reason` and `lanes:plock_refused` have
+             * existed since the feature shipped and no surface read either.
+             *
+             * One read per GESTURE, not per detent: `stepRefusalTick` is
+             * cleared when the step changes, so a spin costs one round trip
+             * and a refusal is reported once. */
+            if (!s.stepRefusalChecked) {
+                s.stepRefusalChecked = true;
+                const why = getParam("lanes:plock_reason");
+                const refused = getParam("lanes:plock_refused");
+                const bad = (why && !/^0 /.test(why)) ? why : null;
+                const bad2 = (refused && !/^0 /.test(refused)) ? refused : null;
+                const name = (t) => String(t).replace(/^-?\d+\s*/, "").replace(/_/g, " ");
+                if (bad || bad2) {
+                    const msg = name(bad || bad2);
+                    notice("NOT LOCKED: " + msg.toUpperCase(), 4000);
+                    announce("not locked, " + msg);
+                }
+            }
         } else {
             s.values[key] = wire;
         }
@@ -4505,6 +4531,36 @@ export function createController(io = {}) {
         try { now = heldStepOf(); } catch (e) { now = -1; }
         if (typeof now !== "number" || !(now >= 0)) now = -1;
         if (now === s.heldStep) return;
+        /*
+         * THE LAST DETENT MUST NOT LEAK INTO THE TRACK VALUE.
+         *
+         * A knob turn is DEBOUNCED (SETPARAM_THROTTLE_MS), and the p-lock
+         * decision is made shim-side from the step held AT THE MOMENT OF THE
+         * WRITE. Let go of the step within that window -- which is what
+         * flick-and-lift does, the ordinary Elektron hand movement -- and the
+         * pending write flushes with no step held and lands as an ordinary
+         * track-value edit, on top of the lock that already landed. Measured:
+         * releasing 0-5 frames after the last detent moved the base from
+         * 0.2000 to 0.2400/0.2600/0.2800, while 15+ frames was clean.
+         *
+         * So a write still pending when the finger leaves the step is sent
+         * HERE, as an explicit p-lock on the step it belonged to, and removed
+         * from the queue. The UI knows both halves; the shim, by then, knows
+         * neither.
+         */
+        if (s.heldStep >= 0) {
+            for (const key in s.pendingWrite) {
+                if (!s.heldValues[key]) continue;      /* not part of this lock */
+                const fk = fullKey(key);
+                const colon = fk.indexOf(":");
+                if (colon > 0) {
+                    setParam("lanes:plock_step",
+                             fk.substring(0, colon) + " " + fk.substring(colon + 1) +
+                             " " + s.heldStep + " " + s.pendingWrite[key]);
+                }
+                delete s.pendingWrite[key];
+            }
+        }
         s.heldStep = now;
         s.heldCursor = 0;
         /* The knob engine seeds ONCE per key and then walks its own state, so
@@ -4515,6 +4571,7 @@ export function createController(io = {}) {
          * the keys that had a lock: everything else is already walking from
          * the base, and re-seeding those would throw away sub-step precision
          * mid-gesture. */
+        s.stepRefusalChecked = false;
         for (const k in s.heldValues) delete s.knobStates[k];
         for (const k in s.heldValues) delete s.heldValues[k];
         if (s.heldDecOwned) { s.decorations = null; s.heldDecOwned = false; }

@@ -719,6 +719,24 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
                                 inst->lane_track, inst->lane_clip_slot, &fp);
         if (!ln) return;
+        /* A FULL LANE REFUSES A LOCK RATHER THAN MOVING SOMEBODY ELSE'S.
+         *
+         * lane_write's overflow rule takes the NEAREST point and relocates it
+         * -- "degrade resolution rather than drop the gesture", which is right
+         * for a recorded sweep, where losing a breakpoint mid-curve is a hole
+         * the user cannot see or fix. It is wrong for a discrete edit:
+         * measured, a lock written into a 64-point lane silently moved the
+         * lock at phase 100.0 to phase 1.0 and reported success, mark and all.
+         *
+         * Refused with the name that already exists, so the UI can say why.
+         * Only when the point would be NEW -- a lock replacing one already on
+         * that step is not an overflow. */
+        if (ln->n >= LANE_POINTS_MAX) {
+            int on_step = 0;
+            for (int i = 0; i < ln->n; i++)
+                if (fabs(ln->pts[i].phase - phase) < LANE_MIN_POINT_BEATS) { on_step = 1; break; }
+            if (!on_step) return;          /* refusal already named STORE_FULL */
+        }
         lane_write_span(ln, phase, v, 1, span);
         inst->lanes_last_plocked = 1;
         inst->lanes_plock_refusal = LANE_PLOCK_OK;

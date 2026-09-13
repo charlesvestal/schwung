@@ -38,6 +38,8 @@ static uint8_t  step_tap_replay[16];
  * only has to exist, so that the mask maintenance inside the lifted function
  * compiles and can be asserted on. */
 static volatile uint32_t shadow_steps_held_mask;
+/* "The press already did something on the grid" -- see step_used. */
+static uint8_t step_used[16];
 static uint64_t g_now = 1000;            /* never 0: 0 means "no press seen" */
 static uint64_t now_mono_ms(void) { return g_now; }
 
@@ -51,6 +53,7 @@ static void reset(void) {
     memset(step_press_ms, 0, sizeof(step_press_ms));
     memset(step_press_vel, 0, sizeof(step_press_vel));
     memset(step_tap_replay, 0, sizeof(step_tap_replay));
+    memset(step_used, 0, sizeof(step_used));
     shadow_steps_held_mask = 0;
     g_now = 1000;
 }
@@ -69,6 +72,21 @@ int main(void) {
     CHECK(shadow_steps_held_mask == 0, "the release must clear the mask, or the step stays held forever");
     CHECK(step_tap_replay[4] == 1, "a release inside STEP_TAP_MS is a TAP and must be replayed to Move");
     CHECK(step_swallow_latch[4] == 0, "the release retires the latch");
+
+    /* A PRESS THAT DID SOMETHING IS NEVER A TAP, however short it was.
+     *
+     * The split is a stopwatch and a stopwatch cannot tell a quick gesture
+     * from a quick mistake: pressing a step, flicking a knob and letting go
+     * inside the window wrote a p-lock AND handed Move the tap, so one gesture
+     * locked a value and DELETED A NOTE (measured: Song.abl 14 -> 13). */
+    reset();
+    step_note_withhold(20, 100);
+    step_used[4] = 1;                       /* a p-lock landed on this press */
+    g_now += 10;                            /* ...and it was quick */
+    step_note_withhold(20, 0);
+    CHECK(step_tap_replay[4] == 0,
+          "a press that wrote a p-lock was replayed as a tap -- one gesture both locked a value and toggled the note");
+    CHECK(step_used[4] == 0, "the used flag must retire with the latch");
 
     /* A HOLD: Move is told nothing, which is what makes a lock trig possible. */
     reset();
@@ -143,3 +161,12 @@ echo "$fnbody" | grep -q 'shadow_steps_held_mask |= (1u << i)' \
   || fail "the withhold must SET the held-step mask -- the swallow is what stops midi_monitor from seeing the press"
 echo "$fnbody" | grep -q 'shadow_steps_held_mask &= ~(1u << i)' \
   || fail "and clear it on the release, or the step stays held forever"
+
+# ...and the mark must sit where EVERY p-lock path passes, not only the
+# write-time one. The host's param-pages io writes `lanes:plock_step`, as does
+# the test bus; marking only at the write-time site left both of those
+# replaying the press to Move as a tap (measured: 34 notes -> 35).
+grep -q 'shim_step_mark_used(step);' src/host/shadow_chain_mgmt.c \
+  || fail "the step->phase translate must mark the press spent -- it is the one place every p-lock path goes through"
+n=$(awk '/^static int shadow_lanes_plock_step_translate/,/^}/' src/host/shadow_chain_mgmt.c | grep -c 'shim_step_mark_used')
+[ "$n" = "1" ] || fail "expected the mark inside the translate, found $n"
