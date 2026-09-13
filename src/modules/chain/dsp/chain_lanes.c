@@ -683,9 +683,26 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         /* %n after the three fixed fields, so whatever remains is the VALUE
          * verbatim -- an enum option can contain spaces, and re-parsing it
          * with %s would silently keep only the first word. */
-        if (sscanf(val, "%15s %31s %lf %n", target, param, &phase, &consumed) < 3)
-            return;
-        if (consumed <= 0 || !val[consumed]) return;
+        /* "<target> <param> <phase> [<span>] <value>".
+         *
+         * The SPAN is optional and sits before the value, because the value is
+         * whatever remains VERBATIM (an enum option can contain spaces, so
+         * re-parsing it with %s would keep only the first word). Told apart
+         * from a value by requiring BOTH a number there AND something after
+         * it: "synth cutoff 1.0 70" parses as a span of 70 with nothing
+         * following, which is how the four-field form identifies itself. */
+        double span = 0.0;
+        int consumed5 = 0;
+        if (sscanf(val, "%15s %31s %lf %lf %n", target, param, &phase, &span,
+                   &consumed5) == 4 && consumed5 > 0 && val[consumed5]) {
+            consumed = consumed5;
+        } else {
+            span = 0.0;
+            if (sscanf(val, "%15s %31s %lf %n", target, param, &phase, &consumed) < 3)
+                return;
+            if (consumed <= 0 || !val[consumed]) return;
+        }
+        if (!isfinite(span) || span < 0.0) span = 0.0;
         const char *value_str = val + consumed;
         if (!isfinite(phase) || phase < 0.0) return;
         inst->lanes_plock_refusal = LANE_PLOCK_NO_CLIP;
@@ -702,7 +719,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
                                 inst->lane_track, inst->lane_clip_slot, &fp);
         if (!ln) return;
-        lane_write(ln, phase, v, 1);
+        lane_write_span(ln, phase, v, 1, span);
         inst->lanes_last_plocked = 1;
         inst->lanes_plock_refusal = LANE_PLOCK_OK;
         return;

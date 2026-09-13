@@ -1139,6 +1139,71 @@ int main(void) {
               "stay pinned where the automation left it");
     }
 
+    /* ------------------------------------------------------------------
+     * A P-LOCK ENDS AT ITS OWN STEP.
+     *
+     * "end at its own step! you're just editing a step!" -- and before the
+     * span existed a single lock meant the whole bar AND the bar before it: a
+     * held point stood until the next point, and the "before the first point"
+     * rule held it backwards to phase 0. Measured on the device with one lock
+     * at step 4: every one of the sixteen steps reported the locked value, and
+     * playback was already at it before phase 1.
+     * ------------------------------------------------------------------ */
+    {
+        lane_store_t st; lane_store_reset(&st);
+        lane_fingerprint_t fp = { 0.0, 4.0, 1, 60 };
+        lane_t *ln = lane_alloc(&st, "synth", "cutoff", 0, 0, &fp);
+        CHECK(ln != NULL, "span: lane_alloc");
+        if (ln) {
+            float v = -1.0f;
+            /* One lock on step 4 of a 1/16 grid: phase 1.0, span 0.25. */
+            lane_write_span(ln, 1.0, 90.0f, 1, 0.25);
+
+            CHECK(lane_eval(ln, 1.0, 0.0, 4.0, 0, &v) && v == 90.0f,
+                  "the lock does not play at its own phase (%f)", v);
+            CHECK(lane_eval(ln, 1.24, 0.0, 4.0, 0, &v) && v == 90.0f,
+                  "the lock ended before its step did (%f)", v);
+            /* ...and NOT one sample past it, in either direction. */
+            CHECK(lane_eval(ln, 1.25, 0.0, 4.0, 0, &v) == 0,
+                  "the lock outlived its own step -- it stood at %f", v);
+            CHECK(lane_eval(ln, 0.0, 0.0, 4.0, 0, &v) == 0,
+                  "the lock reached BACKWARDS to the downbeat (%f)", v);
+            CHECK(lane_eval(ln, 3.9, 0.0, 4.0, 0, &v) == 0,
+                  "the lock stood for the rest of the loop (%f)", v);
+
+            /* THE CONTROL, and the old meaning: a held point with NO span is
+             * still "until the next point", so every lane already on disk
+             * behaves exactly as it did. Without this the test above could
+             * pass because spans broke holding altogether. */
+            lane_store_reset(&st);
+            lane_t *lg = lane_alloc(&st, "synth", "cutoff", 0, 0, &fp);
+            CHECK(lg != NULL, "span: legacy lane_alloc");
+            if (lg) {
+                lane_write(lg, 1.0, 90.0f, 1);
+                CHECK(lane_eval(lg, 3.9, 0.0, 4.0, 0, &v) && v == 90.0f,
+                      "a legacy held point stopped holding (%f)", v);
+            }
+
+            /* A RECORDED SWEEP UNDERNEATH KEEPS PLAYING outside the lock:
+             * the lock owns its step and is invisible everywhere else, so the
+             * curve interpolates across it as though it were not there. */
+            lane_store_reset(&st);
+            lane_t *lm = lane_alloc(&st, "synth", "cutoff", 0, 0, &fp);
+            CHECK(lm != NULL, "span: mixed lane_alloc");
+            if (lm) {
+                lane_write(lm, 0.0, 0.0f, 0);          /* sweep 0 -> 40 over 4 beats */
+                lane_write(lm, 4.0, 40.0f, 0);
+                lane_write_span(lm, 1.0, 90.0f, 1, 0.25);
+                CHECK(lane_eval(lm, 1.1, 0.0, 8.0, 0, &v) && v == 90.0f,
+                      "the lock did not win inside its step over a sweep (%f)", v);
+                CHECK(lane_eval(lm, 2.0, 0.0, 8.0, 0, &v) && v == 20.0f,
+                      "the sweep did not resume after the lock's step (%f)", v);
+                CHECK(lane_eval(lm, 0.5, 0.0, 8.0, 0, &v) && v == 5.0f,
+                      "the lock disturbed the sweep BEFORE it (%f)", v);
+            }
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

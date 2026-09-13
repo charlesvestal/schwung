@@ -8266,8 +8266,22 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              * held, and a claim dropping mid-hold delivers Move an
                              * orphan release. */
                             if (d2 > 0) {
-                                /* DELETE BELONGS TO THE GRID WHILE A STEP IS
-                                 * HELD, whatever the module claims.
+                                /* THE EDIT BUTTONS BELONG TO THE GRID WHILE A
+                                 * STEP IS HELD, whatever the module claims --
+                                 * ALL THREE, not just the one with a job.
+                                 *
+                                 * Claiming only Delete cost a DUPLICATED CLIP.
+                                 * Delete was claimed because it deletes clips;
+                                 * Copy was not, so Copy on a held step reached
+                                 * Move, duplicated the clip AND made the copy
+                                 * the SELECTED one -- so every p-lock after it
+                                 * silently addressed a different clip slot
+                                 * than the lane being edited. Undo was the
+                                 * same shape: it reached Move and undid a NOTE
+                                 * edit. A modifier gesture has to take the
+                                 * whole row of buttons its neighbours sit in,
+                                 * or the ones left behind keep doing whatever
+                                 * MOVE does with them.
                                  *
                                  * That is the clear-this-step gesture (hold a
                                  * step, Delete, pick a knob), and it is host
@@ -8290,8 +8304,9 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * Shift is excluded by the same term that
                                  * excludes it for a module, so Shift+Delete is
                                  * still the host's snapshot recall. */
-                                const int step_owns_delete =
-                                    (d1 == 119) && shadow_steps_held_mask != 0 &&
+                                const int step_owns_edit_cc =
+                                    (d1 == 56 || d1 == 60 || d1 == 119) &&
+                                    shadow_steps_held_mask != 0 &&
                                     shadow_control && shadow_control->step_observe;
                                 /* Shift+<button> is the host's own vocabulary
                                  * (Shift+Copy / Shift+Delete = snapshot and
@@ -8299,7 +8314,7 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
                                 claim_press_blocked[d1] =
-                                    ((claim_cc_set(d1) || step_owns_delete) &&
+                                    ((claim_cc_set(d1) || step_owns_edit_cc) &&
                                      !claim_denied_cc(d1) && !shadow_shift_held)
                                         ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
                             }
