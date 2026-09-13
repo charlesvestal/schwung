@@ -10391,11 +10391,20 @@ const SNAPSHOT_SUBDIR = "/snapshot";
 
 function snapshotDir() { return activeSlotStateDir + SNAPSHOT_SUBDIR; }
 
-/* The twelve files a snapshot is: four slots and eight Master FX positions. */
+/* The files a snapshot is: four slots, eight Master FX positions, and each
+ * slot's AUTOMATION LANES.
+ *
+ * The lanes were missing, and their absence was not a decision anyone made:
+ * Shift+Copy restored a slot's sound while leaving whatever automation
+ * happened to be live, so half the state came back and half did not. A lane is
+ * slot state -- it is written by the same autosave pass, into the same
+ * directory -- and a snapshot that takes one and not the other is a snapshot
+ * of something the user cannot name. */
 function snapshotFileNames() {
     const names = [];
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/slot_" + i + ".json");
     for (let i = 0; i < MASTER_FX_SLOTS; i++) names.push("/master_fx_" + i + ".json");
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/lanes_" + i + ".json");
     return names;
 }
 
@@ -10524,6 +10533,30 @@ function snapshotRecall() {
         debugLog("snapshot: skipped " + r.prefix + " (" + r.reason +
                  (r.was ? ", was " + r.was : "") + (r.now ? ", now " + r.now : "") + ")");
     }
+    /* THE LANES, per slot and independently of the component plan above.
+     *
+     * They are not part of `records` because a lane is not a component: the
+     * plan's business is "is the module at this position still the one the
+     * snapshot was taken from", and a lane is addressed by (track, slot) and
+     * carries its own fingerprint for exactly that question. Writing
+     * `lanes:state` is the same call the set-change restore makes.
+     *
+     * AN ABSENT FILE CLEARS, and that is the half that makes this an A/B
+     * rather than an accumulation: if the snapshot was taken before any
+     * automation existed, recalling it must take the automation away again.
+     * `lanes:clear` also releases the overrides, so no parameter is left
+     * stranded where a lane stopped driving it. */
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        let laneDoc = null;
+        try { laneDoc = host_read_file(dir + "/lanes_" + i + ".json"); } catch (e) {}
+        if (laneDoc && laneDoc.length > 0) {
+            setSlotParam(i, "lanes:state", laneDoc);
+            lastWrittenLaneJson[i] = laneDoc;
+        } else {
+            clearSlotLanesQuietly(i);
+        }
+    }
+
     debugLog("snapshot: restored " + plan.writes.length + ", skipped " + plan.skipped);
 
     /*
