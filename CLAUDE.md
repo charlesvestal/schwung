@@ -662,10 +662,23 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   `lane_point_t.hold` (free — the struct was padded) holds a value to the next
   point instead of ramping, the LEFT point of a segment deciding, and a rewrite
   replaces the shape with the value. `step_plock.h` inverts the verified
-  mapping: `phase = ((bar-1)*steps_per_bar + index) * step_resolution`, with the
-  displayed bar from the STRIP's `bold_segment` — not Move's "Bar N", which
-  needs the screen reader and reads 0 without it. A **multi-page bar is
-  REFUSED** (11/8 at 1/16 pages 16+6, so this is not exotic), as is bar 0.
+  mapping — but **Move NAMES the displayed page itself**, so the mapping is
+  just `phase = stepEditorScrollPosition + step * res`: no bar, no signature,
+  no page count, and 4/4 and 11/8 are one path. The bar-and-page form it
+  replaced could only REFUSE a bar wider than the 16 buttons, which is every
+  bar of an 11/8 set at 1/16 (22 steps) — p-locks did not work there at all.
+  The scroll is FILE-aged, so the live strip cross-checks it and wins on
+  disagreement. Three more that each cost a hardware session:
+  a **TRIPLET grid deactivates every fourth BUTTON** (12 steps per page, so
+  `button != step`, and the duration cannot reveal triplet-ness — 1/16t and a
+  straight 1/24 are both 1/6); a **p-lock edits the SELECTED clip**, which the
+  file calls `isPlaying`, never the playing one (the live identity says -1 when
+  stopped, and stopped is how step editing is done); and a **one-bar loop
+  draws thin with no thickening**, so `bold_segment` 0 means both "bar 1" and
+  "cannot say" — `step_strip_displayed_bar()` is the only thing that tells
+  them apart. `lanes:plock_reason` names the refusal, because this runs on the
+  SPI callback where `shadow_log()` is a no-op and five causes otherwise share
+  one bit.
   **The GESTURE works** — `step_observe` forwards Move's steps to the UI, which
   writes `lanes:plock_step` on a knob COMMIT (a turn's write is DEBOUNCED, so
   the hook wraps `setParam` rather than sitting on one of six call sites).
