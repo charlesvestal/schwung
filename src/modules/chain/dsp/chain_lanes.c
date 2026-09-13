@@ -139,6 +139,44 @@ void lane_tick(chain_instance_t *inst) {
             if (lane_fingerprint_matches(ln, &inst->clip_fp)) {
                 ln->stale = 0;
                 ln->orphaned = 0;
+            } else if (!ln->orphaned && !lane_fp_absent(&ln->fp)) {
+                /* AN EDIT, NOT A REPLACEMENT -- so re-stamp rather than go
+                 * stale.
+                 *
+                 * The fingerprint is note count plus first note, so ADDING OR
+                 * DELETING ONE NOTE broke it and the clip's automation went
+                 * silent. Measured on hardware: a lane driving at 0.9 with
+                 * `:modulated` 1 read 0.47 and 0 after a single step press.
+                 * Every editing gesture does this -- add a note, delete one,
+                 * copy a bar -- which is most of what anyone does to a clip,
+                 * and nothing on screen explains it.
+                 *
+                 * IDENTITY IS CONTINUITY, and the fingerprint is the tiebreak
+                 * for the discontinuous case. A clip that was REPLACED went
+                 * through a deletion, and the worker's before/after parse sets
+                 * `orphaned` for exactly that -- so a mismatch while NOT
+                 * orphaned is the same clip, edited. The guard that matters is
+                 * kept: an orphaned position stays silent until the clip it
+                 * was recorded against comes back, which is what makes an undo
+                 * restore automation instead of a stranger inheriting it.
+                 *
+                 * The hole this leaves, stated plainly: a clip deleted and
+                 * recreated in the same slot INSIDE one save window (~10 s)
+                 * shows no deletion to the worker, so the lane treats it as an
+                 * edit and plays on the new clip. That is a worse failure than
+                 * silence -- but it is rarer than editing a note, which is the
+                 * failure it replaces, and Move's own Copy lands in the next
+                 * FREE slot rather than over an existing clip.
+                 *
+                 * A lane with the ABSENT fingerprint is excluded: it was never
+                 * identified, so there is nothing to call an edit OF. Those go
+                 * through lane_adopt_fingerprint, which demands that THIS
+                 * session recorded them blind -- otherwise a placeholder
+                 * loaded from disk would bind to the first clip it met, which
+                 * is the one outcome this design has always refused. */
+                ln->fp = inst->clip_fp;
+                ln->stale = 0;
+                ln->adopted++;
             } else {
                 ln->stale = 1;
             }

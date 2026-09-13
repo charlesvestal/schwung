@@ -7404,6 +7404,16 @@ static inline void midi_in_swallow(uint8_t *shadow_midi_in, uint8_t *hw_midi_in,
 #define CLAIM_LATCH_NONE     0
 #define CLAIM_LATCH_RELEASED 1   /* last press was claimed; button is up */
 #define CLAIM_LATCH_HELD     2   /* claimed press delivered, release still owed */
+
+/* A STEP BUTTON WITHHELD FROM MOVE FOR THE P-LOCK GESTURE, per step 0..15.
+ *
+ * Set when a press is swallowed, cleared when its release is. It exists for
+ * the same reason the claim latch does: swallowing a press and letting its
+ * RELEASE through hands Move a button-up for a key it never saw go down, and
+ * Move acts on it. The gesture's own flag cannot answer "is a release still
+ * owed?" -- `step_observe` drops the moment the grid is left, which is
+ * routinely BETWEEN a press and its release. */
+static uint8_t step_swallow_latch[16];
 static uint8_t claim_press_blocked[128];
 
 /* Controls the host owns and a module may NEVER claim: how you leave the
@@ -9341,6 +9351,17 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     if (d2 == 0) claim_press_blocked[d1] = CLAIM_LATCH_NONE;
                 }
 
+                /* THE STEP GESTURE'S OWED RELEASES, same rule and same reason.
+                 * A step whose press was withheld keeps its latch across the
+                 * grid being left or the display closing, so the release is
+                 * withheld too and Move is never handed half a press. Runs
+                 * unconditionally -- the latch, not the flag, is what says a
+                 * release is owed. */
+                if (d1 >= 16 && d1 <= 31 && step_swallow_latch[d1 - 16]) {
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    if (d2 == 0) step_swallow_latch[d1 - 16] = 0;
+                }
+
                 /* Mute (CC 88) is passed through to Move firmware unconditionally,
                  * even while the shadow UI is shown, so Move-native Mute+Pad
                  * (per-drum mute) works. shadow_mute_held is already updated from
@@ -9426,6 +9447,25 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     d1 >= 16 && d1 <= 31 && shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08,
                                            status, d1, d2);
+                    /* AND WITHHELD FROM MOVE. Holding a step to set a value
+                     * must not also toggle a note in the clip -- it did, and
+                     * that is a defect rather than a cost: the gesture is
+                     * "set this parameter ON this step", and the clip's notes
+                     * are not part of it.
+                     *
+                     * midi_in_swallow silences BOTH buffers; zeroing only the
+                     * hardware mailbox is a no-op for Move and plants a
+                     * terminator in front of our own scans. Latched, because
+                     * the release must follow the press even if the grid is
+                     * left in between -- a button-up for a key Move never saw
+                     * go down is one Move acts on.
+                     *
+                     * `continue` because the event is GONE: nothing below --
+                     * capture rules, DSP routing -- may act on a press that
+                     * Move itself will never see. */
+                    midi_in_swallow(shadow + MIDI_IN_OFFSET, src, j);
+                    step_swallow_latch[d1 - 16] = (d2 > 0) ? 1 : 0;
+                    continue;
                 }
 
                 /* Check capture rules for focused slot.

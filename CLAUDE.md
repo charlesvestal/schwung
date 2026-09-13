@@ -641,7 +641,12 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   The arm is Move's own Record button, read off its LED. See `docs/CHAIN.md`.
   **Only the CONTENT half of the fingerprint is compared** — neither loop field
   is, because a clip that grew and a clip whose loop was dragged are both the
-  same clip, and going stale on either is silent.
+  same clip, and going stale on either is silent. **And a content mismatch
+  while NOT orphaned is an EDIT**: the lane re-stamps and plays on. Identity is
+  CONTINUITY — a replaced clip went through a deletion, which the worker
+  reports as `orphaned`. Before that, `note_count` + `first_note` meant adding
+  or deleting ONE note silenced the clip's automation (measured on hardware),
+  which is most of what anyone does to a clip.
 - **A breakpoint is CLIP TIME in QUARTERS, and the loop is a WINDOW over it.**
   Move's notes are absolute from the clip's start (a clip whose loop is 8..20
   carries a note at 0.0, which does not play), so a lane in the same coordinate
