@@ -3183,6 +3183,8 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
     step_strip_t ss;
     int strip_track = -1;
     step_strip_latest(&ss, &strip_track);
+    const int bar_strip_len_valid = (ss.valid && strip_track == (int)slot &&
+                                     ss.segments > 0);
     const clip_state_t *cs = clip_state_current();
     int cslot = (cs && slot < CLIP_TRACKS && cs->tracks[slot].identity_valid)
               ? cs->tracks[slot].clip_slot : -1;
@@ -3194,6 +3196,22 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
         rg->slots[slot][cslot].exists)
         clip_len = rg->slots[slot][cslot].loop_start +
                    rg->slots[slot][cslot].loop_len;
+    /* A CLIP MOVE HAS NOT SAVED STILL HAS A LENGTH, AND THE SCREEN IS SHOWING
+     * IT. Move does not write a clip to Song.abl until it has notes -- a clip
+     * created with Shift+Step 14 is selected and playable and simply absent
+     * from the file -- so the branch above leaves 0, and 0 does not mean
+     * "zero length", it disables the OUTSIDE_CLIP check entirely. A p-lock
+     * past the end of a brand-new clip was therefore accepted unbounded, at
+     * exactly the moment the user is most likely to be filling one in.
+     *
+     * The strip names the bar count and the loop starts at 0 for a new clip,
+     * so the length is segments * quarters_per_bar -- the same conversion the
+     * worker already measured (step_strip.h). It is the UPPER end of a range,
+     * which is the right end to bound with: a whole-bar clip (what Move
+     * creates) makes it exact, and erring long refuses nothing legitimate,
+     * where erring short would refuse real steps in the final bar. */
+    if (clip_len <= 0.0 && bar_strip_len_valid)
+        clip_len = (double)ss.segments * qpb;
     /* The bar must come from a CURRENT reading of THIS track's editor -- a
      * stale bold segment, or one belonging to another track, would place the
      * p-lock on a bar the user is not looking at -- and a ONE-BAR loop names
