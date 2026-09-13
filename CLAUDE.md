@@ -313,6 +313,15 @@ CC 79 is the host volume knob by default. Modules can claim it via `capabilities
 
 Pads notes 68–99. Steps notes 16–31. Tracks CCs 40–43 (**reversed**: CC43=Track1, CC40=Track4). Key CCs: 3 (jog click), 14 (jog turn), 49 (shift), 50 (menu), 51 (back), 71–78 (knobs). Notes 0–9: capacitive knob touch (filter if unused).
 
+**CC 50 is ALSO Move's Note/Session toggle**, which is worth knowing because
+"menu" reads as ours. Pressed while Move owns the screen it puts up *Session
+Mode*, and **in Session Mode the PADS LAUNCH CLIPS**: rows descend by eight
+(92–99 = Track 1, 84 = Track 2, 76 = Track 3, 68 = Track 4) and the column is
+the clip slot, so note 76 launches Track 3 clip 1. Pressing a playing clip
+RETRIGGERS it rather than stopping it. Measured 2026-09-13 by injection —
+and only after scanning every other CC and note in 0–127 for it, because the
+one already named in this line was the one not tried.
+
 ## SPI Protocol
 
 `/dev/ablspi0.0`, 768-byte transfers at 20 MHz, mmap'd to 4096.
