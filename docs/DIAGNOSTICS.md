@@ -308,3 +308,31 @@ the natural latency FIRST.
 
 The inherited figure for that latency was "~35 s" and it is wrong by 3.5x,
 which matters because every design around the blind window was sized against it.
+
+### Driving SCHWUNG's own input, not just Move's
+
+`schwung_inject` alone is **one-sided**: the drain writes the SHADOW mailbox
+(Move's copy) while Schwung's control decoding scans `hardware_mmap_addr`, so
+an injected press moves Move and is invisible to Schwung. That is what made
+every Schwung-side input feature untestable by harness.
+
+`shadow_control_t.inject_as_hardware` (default 0, poke it in `/dev/shm`) makes
+the drain write **both** buffers at the top of `shim_post_transfer` — where the
+library's hw→shadow copy has just left the real events — so an injected packet
+arrives exactly where and when a real one would.
+
+```
+python3 -c 'import mmap,os; f=os.open("/dev/shm/schwung-control",os.O_RDWR); \
+  m=mmap.mmap(f,256); m[108]=1; m.flush()'      # offset: offsetof(inject_as_hardware)
+```
+
+Measured 2026-09-13: with it clear, an injected Track 3 press left
+`selected_track` at 1; with it set, `selected_track` followed to 3 and then 2,
+and an injected Shift+Vol+Track1 opened the shadow UI. **Clear it when done** —
+it makes every injected packet look like hardware, including the ones
+song-mode and an overtake DSP send.
+
+The offset is `offsetof(shadow_control_t, inject_as_hardware)`; compile
+`src/host/shadow_constants.h` on the host and print it rather than counting
+fields, because appending a field moves nothing but reading a stale offset
+writes over whatever is there now.
