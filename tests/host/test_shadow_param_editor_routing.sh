@@ -586,12 +586,23 @@ function gotoSlotFor(name) {
 
     /* Walk to the actions menu and activate an entry through the REAL input
      * path — the menu is inert until entered, so this is two clicks. */
+    /* THERE ARE TWO MENUS NOW, and Automation comes first -- so stopping at
+     * the first menu found lands on the wrong one. Walk to the menu that
+     * carries Knob Mapping, and check on the way past that the Automation
+     * menu is the one preceding it. */
     let guard = 0, page = V.currentParamPage();
-    while (page && page.kind !== "menu" && guard++ < 20) {
+    let sawAutomation = false;
+    while (page && guard++ < 20) {
+      const ls = page.kind === "menu" ? (page.entries || []).map((e) => e.label) : [];
+      if (page.kind === "menu" && ls.includes("Knob Mapping")) break;
+      if (page.kind === "menu" && ls.includes("Clear This Clip")) sawAutomation = true;
       feed([0xb0, 14, 1]);
       for (let i = 0; i < 4; i++) V.tickParamPages();
       page = V.currentParamPage();
     }
+    if (!sawAutomation)
+      fail("the Automation menu must come before Actions -- its rows are what a " +
+           "recorded knob move is undone from, and Actions is where Save lives");
     if (!page || page.kind !== "menu") {
       fail("slot settings has no actions menu page");
     } else {

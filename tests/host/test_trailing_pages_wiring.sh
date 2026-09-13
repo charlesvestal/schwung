@@ -324,6 +324,13 @@ const body = [
     // passing nothing at all, and the row would still show a count either way.
     "let listCountArgs = [];",
     "function moduleListsCountFor(id) { listCountArgs.push(id); return listCount; }",
+    // "Clear Automation" names the clip it will act on, and that name is an
+    // IPC read -- stubbed like the two above so the real row is asserted. The
+    // ARGUMENT is recorded for the same reason moduleListsCountFor records
+    // one: a row naming the clip of some OTHER slot still looks right.
+    "let clipLabelValue = \"\";",
+    "let clipLabelArgs = [];",
+    "function slotClipLabel(s) { clipLabelArgs.push(s); return clipLabelValue; }",
     grab("moduleMenuEntries"),
     grab("componentTrailingMenus"),
     "return {",
@@ -335,6 +342,8 @@ const body = [
     "  setListCount: (n) => { listCount = n; },",
     "  listCountArgs: () => listCountArgs.slice(),",
     "  clearListCountArgs: () => { listCountArgs = []; },",
+    "  setClipLabel: (v) => { clipLabelValue = v; },",
+    "  clipLabelArgs: () => clipLabelArgs.slice(),",
     "};",
 ].join("\n");
 
@@ -392,9 +401,29 @@ if (!presetRow(r.dirty).value.startsWith("*"))
 // Module page, module with NO help.json: Add to List (unconditional) then the
 // two destructive rows, and no row that would open an empty viewer.
 const moduleActions = actions(r.clean[1]);
-if (moduleActions.join(",") !== "module_lists,swap_module,remove_module")
+if (moduleActions.join(",") !== "module_lists,clear_component_lanes,swap_module,remove_module")
     fail("Module page for a module with no help content must offer exactly Add to List, " +
-         "Swap Module, Remove Module, got " + moduleActions.join(","));
+         "Clear Automation, Swap Module, Remove Module, got " + moduleActions.join(","));
+
+// CLEAR AUTOMATION NAMES ITS CLIP, and is asked for THIS slot.
+//
+// It sits ABOVE the destructive pair on purpose: it is the one row here that
+// undoes work you did with the knobs on this component, so it belongs with
+// the module rows rather than beneath the swap that replaces the module.
+// Without the clip in the value the row is a promise about a clip the page
+// cannot show -- the same reason the slot-level row carries one.
+harness.setClipLabel("C2");
+const clipRun = harness.run(1, "synth", "synth");
+const clearRow = clipRun[1].entries.find((e) => e.action === "clear_component_lanes");
+if (!clearRow || clearRow.label !== "Clear Automation")
+    fail("the module page must carry a Clear Automation row, got " + JSON.stringify(clearRow));
+if (clearRow.value !== "C2")
+    fail("Clear Automation must name the clip it will act on, got " + JSON.stringify(clearRow.value));
+const clipArgs = harness.clipLabelArgs();
+if (!clipArgs.length || clipArgs[clipArgs.length - 1] !== 1)
+    fail("the clip name must be asked for THIS slot -- a call passing another slot still " +
+         "renders a plausible row. Got " + JSON.stringify(clipArgs));
+harness.setClipLabel("");
 
 // The Add to List value is the number of lists holding the module, and BLANK
 // at zero -- a "0" is a count nobody asked for on a row that is offering to
@@ -418,9 +447,9 @@ harness.setListCount(0);
 harness.setHelpChildren([{ title: "Overview", lines: ["x"] }]);
 const withHelp = harness.run(1, "synth", "synth");
 const withHelpActions = actions(withHelp[1]);
-if (withHelpActions.join(",") !== "module_help,module_lists,swap_module,remove_module")
+if (withHelpActions.join(",") !== "module_help,module_lists,clear_component_lanes,swap_module,remove_module")
     fail("Module page for a module WITH help content must offer Module Help, Add to List, " +
-         "Swap Module, Remove Module in that order, got " + withHelpActions.join(","));
+         "Clear Automation, Swap Module, Remove Module in that order, got " + withHelpActions.join(","));
 if (withHelp[1].entries[0].label !== "Module Help")
     fail("the help row must be labelled \"Module Help\", got " + JSON.stringify(withHelp[1].entries[0]));
 // An EMPTY children array is no help content -- getModuleHelpChildren already

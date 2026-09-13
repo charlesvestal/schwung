@@ -58,9 +58,9 @@ export const SLOT_SETTINGS = [
      * and the knob grid's Actions menu carry the same row and reach the same
      * implementation -- a row on two of the three is the asymmetry the `buses`
      * comment above calls worse than either. */
-    { key: "clear_lanes", label: "Clear Lanes", type: "action" },
-    { key: "clear_clip_lanes", label: "Clear Clip Lanes", type: "action" },
-    { key: "undo_lane_edit", label: "Undo Lane Edit", type: "action" },
+    { key: "clear_lanes", label: "Clear All Automation", type: "action" },
+    { key: "clear_clip_lanes", label: "Clear Clip Automation", type: "action" },
+    { key: "undo_lane_edit", label: "Undo Automation Edit", type: "action" },
 ];
 
 /*
@@ -110,7 +110,11 @@ export function getSlotSettingValue(slot, setting) {
     /* Nothing to show, and answered HERE so the fallback below does not spend
      * a ~2.8 ms IPC round trip per draw reading a key no slot serves. */
     if (setting.key === "clear_lanes") return "";
-    if (setting.key === "clear_clip_lanes") return "";
+    /* The clip this will act on -- see slotClipLabel. Shown in the VALUE
+     * column, which is where a list row already puts "what this is about". */
+    if (setting.key === "clear_clip_lanes") {
+        return ctx.slotClipLabel ? ctx.slotClipLabel(slot) : "";
+    }
     if (setting.key === "undo_lane_edit") return "";
     const val = getSlotParam(slot, setting.key);
     if (val === null) return "-";

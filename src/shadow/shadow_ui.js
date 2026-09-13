@@ -2494,7 +2494,7 @@ function moduleListsCountFor(moduleId) {
  * two rows under it are the destructive ones, and reading before swapping or
  * removing is the order the page is for.
  */
-function moduleMenuEntries(moduleId) {
+function moduleMenuEntries(moduleId, clipLabel) {
     const entries = [];
     if (getModuleHelpChildren(moduleId)) {
         entries.push({ label: "Module Help", action: "module_help" });
@@ -2507,6 +2507,20 @@ function moduleMenuEntries(moduleId) {
     const inLists = moduleListsCountFor(moduleId);
     entries.push({ label: "Add to List", value: inLists > 0 ? String(inLists) : "",
                    action: "module_lists" });
+    /* CLEAR THIS MODULE'S AUTOMATION, on the clip that is playing.
+     *
+     * Here rather than only under the slot because this is where the knobs
+     * you automated are: you record by turning one on this component's pages,
+     * so "undo what I just did to this module" belongs beside them. The slot's
+     * own Automation section keeps the wider scopes -- every module on this
+     * clip, and every clip -- and keeps UNDO, which is slot-wide by
+     * construction and cannot be honestly offered per module.
+     *
+     * The clip is named in the value for the same reason it is on the slot
+     * row: without it the row is a promise about a clip the page cannot
+     * show. */
+    entries.push({ label: "Clear Automation", value: clipLabel || "",
+                   action: "clear_component_lanes" });
     entries.push({ label: "Swap Module", action: "swap_module" });
     entries.push({ label: "Remove Module", action: "remove_module" });
     return entries;
@@ -2570,7 +2584,8 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
          * already plan a page called that, so claimName would dedupe this to
          * "Presets - 2". "My Presets" (46px) collides with nothing. */
         { name: "My Presets", entries: presetEntries },
-        { name: "Module", entries: moduleMenuEntries(loaded.module) },
+        { name: "Module", entries: moduleMenuEntries(loaded.module,
+                                                      slotClipLabel(slotIndex)) },
     ];
 }
 
@@ -2727,6 +2742,12 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
              * Back is the only exit from them, so the return is written at
              * that one site. */
             return true;
+        }
+
+        case "clear_component_lanes": {
+            clearComponentLanes(slotIndex, componentKey);
+            result = true;
+            break;
         }
 
         case "swap_module": {
@@ -5590,9 +5611,9 @@ const CHAIN_SETTINGS_ITEMS = [
     /* Automation lanes: the only gesture that undoes a recorded knob move. No
      * `showsValue` -- an action row draws no value by default, and asking for
      * one here would spend a ~2.8 ms round trip per draw to print "-". */
-    { key: "clear_lanes", label: "Clear Lanes", type: "action" },
-    { key: "clear_clip_lanes", label: "Clear Clip Lanes", type: "action" },
-    { key: "undo_lane_edit", label: "Undo Lane Edit", type: "action" },
+    { key: "clear_lanes", label: "Clear All Automation", type: "action" },
+    { key: "clear_clip_lanes", label: "Clear Clip Automation", type: "action" },
+    { key: "undo_lane_edit", label: "Undo Automation Edit", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
@@ -10176,23 +10197,81 @@ function restoreSlotLanes(i) {
  * actually want after one bad take. The chain resolves "this clip" from the
  * clip the slot is bound to; with nothing playing and nothing selected there
  * is no clip to name, and a count of 0 is what says so. */
-function clearSlotClipLanes(slot) {
-    setSlotParam(slot, "lanes:clear_clip", "1");
+/* "T3C2" for the clip this slot is bound to, or "none".
+ *
+ * Move numbers tracks and clip slots from 1 on the surface while the chain
+ * counts from 0, so the conversion happens HERE, once, rather than in each
+ * caller -- an off-by-one in a label that names what an action will destroy
+ * is worse than no label.
+ *
+ * CACHED, because this feeds a row LABEL: an uncached read is ~2.8 ms against
+ * a 1.68 ms whole-page render, so paying it per draw would make the menu
+ * slower to paint than the grid it sits over. */
+function slotClipLabel(slot) {
+    const cfg = chainConfigs[slot];
+    const mid = cfg && cfg.synth && cfg.synth.module;
+    if (!mid) return "none";
+    const raw = getSlotParamCached(slot, "lanes:clip", mid);
+    /* A FAILED read is not "no clip". null means the channel did not answer,
+     * and printing "none" for it would say the slot is bound to nothing --
+     * which is a claim about the clip, from an answer that was never about
+     * the clip. Say nothing instead. */
+    if (raw === null) return "";
+    if (raw === "") return "none";
+    const parts = String(raw).trim().split(/\s+/);
+    const t = parseInt(parts[0], 10), c = parseInt(parts[1], 10);
+    /* The track is still PARSED and validated even though it is not shown:
+     * a malformed answer must not produce a confident-looking "C1". */
+    if (!Number.isFinite(t) || !Number.isFinite(c) || t < 0 || c < 0) return "";
+    return "C" + (c + 1);
+}
+
+/* Clear ONE component's automation on the clip that is playing.
+ *
+ * `componentKey` is the chain address ("synth", "fx3"), which is exactly what
+ * a lane stores as its target, so no translation is needed and none is done --
+ * a mapping here would be a second place for the two to drift apart. */
+function clearComponentLanes(slot, componentKey) {
+    if (!componentKey) return;
+    setSlotParam(slot, "lanes:clear_target", String(componentKey));
     const raw = getSlotParam(slot, "lanes:cleared");
     if (raw === null || raw === "") {
-        announce("Clear clip lanes: no answer");
+        announce("Clear automation: no answer");
         return;
     }
     const n = parseInt(raw, 10);
     if (isNaN(n)) {
-        announce("Clear clip lanes: no answer");
+        announce("Clear automation: no answer");
+        return;
+    }
+    if (n === 0) {
+        announce("No automation for this module on this clip");
+        return;
+    }
+    const where = slotClipLabel(slot);
+    announce("Cleared " + n + " parameter" + (n === 1 ? "" : "s") +
+             (where && where !== "none" ? " on " + where : ""));
+}
+
+function clearSlotClipLanes(slot) {
+    setSlotParam(slot, "lanes:clear_clip", "1");
+    const raw = getSlotParam(slot, "lanes:cleared");
+    if (raw === null || raw === "") {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+        announce("Clear lanes: no answer");
         return;
     }
     if (n === 0) {
         announce("No automation on this clip");
         return;
     }
-    announce("Cleared " + n + " lane" + (n === 1 ? "" : "s") + " on this clip");
+    const where = slotClipLabel(slot);
+    announce("Cleared " + n + " lane" + (n === 1 ? "" : "s") +
+             (where && where !== "none" ? " on " + where : " on this clip"));
 }
 
 /* UNDO THE LAST AUTOMATION EDIT -- and press it again to redo, because the
@@ -14433,6 +14512,8 @@ function slotGridIoFor(slotIndex) {
         /* Gates the Buses action. Cached and conservative on a failed read —
          * see chainSynthSplits. */
         hasSplitVoices: () => chainSynthSplits(slotIndex),
+        /* Names the clip on the `Clear Clip Lanes` row -- see slotClipLabel. */
+        clipLabel: () => slotClipLabel(slotIndex),
         /* An LFO's target reads as a name, not as "fx1" — see
          * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
          * editor uses, so the grid and the list can never describe the same
@@ -23988,6 +24069,7 @@ function drawHelpDetail() {
      * surfaces — see clearSlotLanes. */
     _ctx.clearSlotLanes = (slot) => clearSlotLanes(slot);
     _ctx.clearSlotClipLanes = (slot) => clearSlotClipLanes(slot);
+    _ctx.slotClipLabel = (slot) => slotClipLabel(slot);
     _ctx.undoSlotLaneEdit = (slot) => undoSlotLaneEdit(slot);
     /* The knob grid's write path asks this whether a refused recording needs
      * announcing (shadow_ui_param_pages.mjs). */

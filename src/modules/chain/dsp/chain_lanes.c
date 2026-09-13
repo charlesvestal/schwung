@@ -681,6 +681,33 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         return;
     }
 
+    /* CLEAR ONE COMPONENT'S AUTOMATION on the current clip: "<target>".
+     *
+     * The grain the MODULE PAGE offers, and the reason it exists there: you
+     * record automation by turning a knob on a component's own pages, so
+     * "clear what I just did to this module" belongs beside those knobs
+     * rather than two menus away under the slot. Spans every parameter of
+     * that component and no others. */
+    if (strcmp(sub, "clear_target") == 0) {
+        char target[16] = {0};
+        inst->lanes_last_cleared = 0;
+        if (!val || sscanf(val, "%15s", target) != 1) return;
+        if (inst->lane_clip_slot < 0) return;
+        lane_undo_take(inst);
+        int n = 0;
+        for (int i = 0; i < LANE_MAX; i++) {
+            lane_t *ln = &inst->lanes.lanes[i];
+            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot))
+                continue;
+            if (strcmp(ln->target, target) != 0) continue;
+            if (ln->driving) lane_release_one(inst, ln);
+            lane_clear_one(ln);
+            n++;
+        }
+        inst->lanes_last_cleared = n;
+        return;
+    }
+
     /* UNDO, which is also REDO -- the buffer is swapped, not copied back.
      * Every override is released first: the lanes about to be swapped out are
      * holding them, and the set swapped in must re-establish its own. */
@@ -706,6 +733,18 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * was too small, which the UI must not mistake for empty or it truncates
      * a good lanes_<i>.json with half a document. */
     if (strcmp(sub, "state") == 0) return lane_serve_state(inst, buf, buf_len);
+
+    /* WHICH CLIP this slot is bound to, as "<track> <slot>" 0-based, or empty
+     * when it is bound to none. The UI needs it to NAME what a clip-scoped
+     * action will act on: "Clear Clip" is a promise about a clip the user
+     * cannot see from the row, and an empty answer is what lets the row say
+     * so instead of clearing something unexpected. */
+    if (strcmp(sub, "clip") == 0) {
+        if (inst->lane_track < 0 || inst->lane_clip_slot < 0)
+            return snprintf(buf, buf_len, "%s", "");
+        return snprintf(buf, buf_len, "%d %d",
+                        inst->lane_track, inst->lane_clip_slot);
+    }
 
     if (strcmp(sub, "undone") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_undone);
