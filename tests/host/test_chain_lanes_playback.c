@@ -1063,6 +1063,68 @@ int main(void) {
         }
     }
 
+    /* ========== A DUPLICATED CLIP TAKES ITS AUTOMATION WITH IT ========
+     *
+     * Move's Double Loop is documented as carrying automation, and a
+     * duplicated CLIP is the same expectation: a copy that arrives silent is a
+     * copy of half the thing.
+     */
+    {
+        chain_instance_t *cp = calloc(1, sizeof(*cp));
+        CHECK(cp != NULL, "calloc for the copy instance");
+        if (cp) {
+            setup_fake_synth(cp);
+            cp->lane_track = 0;
+            cp->lane_clip_slot = 1;
+            lane_fingerprint_t fp = { 0.0, 8.0, 3, 60 };
+            lane_t *sl = lane_alloc(&cp->lanes, "synth", "cutoff", 0, 1, &fp);
+            CHECK(sl != NULL, "source lane alloc");
+            if (sl) {
+                lane_write(sl, 1.0, 20.0f, 0);
+                lane_write(sl, 5.0, 80.0f, 1);
+
+                lane_param_set(cp, "copy_clip", "1 4");
+                CHECK(strcmp(lane_get(cp, "copied"), "1") == 0,
+                      "the clip copy carried %s lane(s), want 1",
+                      lane_get(cp, "copied"));
+
+                lane_t *dl = lane_find(&cp->lanes, "synth", "cutoff", 0, 4);
+                CHECK(dl != NULL, "no lane at the destination slot");
+                if (dl) {
+                    CHECK(dl->n == 2, "the copy has %d point(s), want 2", dl->n);
+                    CHECK(fabs(dl->pts[0].phase - 1.0) < 1e-9 &&
+                          fabsf(dl->pts[0].value - 20.0f) < 1e-6f,
+                          "point 0 came across as %f = %f",
+                          dl->pts[0].phase, dl->pts[0].value);
+                    CHECK(dl->pts[1].hold == 1,
+                          "the p-lock's SHAPE did not come across (hold=%d)",
+                          dl->pts[1].hold);
+                    CHECK(dl->fp.note_count == 3 && dl->fp.first_note == 60,
+                          "the fingerprint did not come across (%d/%d) -- the "
+                          "duplicate has the same notes, so it must match it",
+                          dl->fp.note_count, dl->fp.first_note);
+                    /* RUNTIME STATE DOES NOT: `driving` and the pass describe
+                     * the SOURCE lane's current block. */
+                    CHECK(dl->driving == 0 && dl->rec_active == 0,
+                          "runtime state was copied (driving=%d rec=%d)",
+                          dl->driving, dl->rec_active);
+                }
+                /* The source is untouched. */
+                CHECK(sl->n == 2, "the source lost points (%d)", sl->n);
+
+                /* REFUSALS: a malformed argument, and a source slot with no
+                 * lanes, both report 0 rather than pretending. */
+                lane_param_set(cp, "copy_clip", "1");
+                CHECK(strcmp(lane_get(cp, "copied"), "0") == 0,
+                      "a malformed copy_clip reported success");
+                lane_param_set(cp, "copy_clip", "6 7");
+                CHECK(strcmp(lane_get(cp, "copied"), "0") == 0,
+                      "copying from an empty slot reported success");
+            }
+            free(cp);
+        }
+    }
+
     free(inst);
     if (fails) {
         printf("FAILURES: %d\n", fails);

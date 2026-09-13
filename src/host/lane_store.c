@@ -180,8 +180,18 @@ int lane_eval(const lane_t *ln, double phase, double loop_start,
         /* `stepped` is the PARAMETER's type (an enum cannot ramp); `a->hold`
          * is this POINT's own shape. Either one holds, and the point's flag is
          * what makes a p-lock sound like a step rather than a glide into the
-         * next one. */
-        if (stepped || a->hold) { *out = a->value; return 1; }
+         * next one.
+         *
+         * AT EXACTLY THE NEXT POINT'S PHASE, THE NEXT POINT WINS. A rectangle
+         * runs up to the following point and stops there -- extending it
+         * through that phase makes the new value one evaluation late, and at
+         * the wrap of a doubled loop it is a whole block of the wrong value.
+         * The interpolating branch below already does this (t = 1 gives
+         * b->value); only the holding one had to be told. */
+        if (stepped || a->hold) {
+            *out = (phase >= b->phase) ? b->value : a->value;
+            return 1;
+        }
         double span = b->phase - a->phase;
         if (span <= 0.0) { *out = b->value; return 1; }
         double t = (phase - a->phase) / span;
@@ -380,4 +390,30 @@ int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now) {
     ln->stale = 0;
     ln->adopted++;
     return 1;
+}
+
+int lane_double(lane_t *ln, double loop_start, double loop_len) {
+    if (!ln || !ln->used) return 0;
+    if (!isfinite(loop_start) || loop_start < 0.0) return 0;
+    if (!isfinite(loop_len) || loop_len <= 0.0) return 0;
+    const double win_hi = loop_start + loop_len;
+
+    /* Collected FIRST, then written: lane_write inserts in phase order and
+     * shifts the array, so walking and writing in one pass would re-read
+     * points this call had just added and double them again, forever. */
+    lane_point_t src[LANE_POINTS_MAX];
+    int n = 0;
+    for (int i = 0; i < ln->n && n < LANE_POINTS_MAX; i++) {
+        const double ph = ln->pts[i].phase;
+        if (!isfinite(ph) || ph < loop_start || ph >= win_hi) continue;
+        src[n++] = ln->pts[i];
+    }
+
+    int copied = 0;
+    for (int i = 0; i < n; i++) {
+        if (ln->n >= LANE_POINTS_MAX) break;   /* as much as fits, in order */
+        lane_write(ln, src[i].phase + loop_len, src[i].value, src[i].hold);
+        copied++;
+    }
+    return copied;
 }
