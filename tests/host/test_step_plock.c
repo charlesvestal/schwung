@@ -175,6 +175,51 @@ int main(void)
               "fallback above is no longer load-bearing and can go");
     }
 
+    /* 4c. THE SCROLL FORM -- Move naming the page itself.
+     *
+     * `stepEditorScrollPosition` is the origin of the 16 buttons in quarters,
+     * so the held button needs no bar, no signature and no page count. This is
+     * what retires MULTI_PAGE for the case that actually occurs: an 11/8 bar
+     * at 1/16 is 22 steps and pages 16 + 6, and the bar form can only refuse
+     * it. Measured on the device: one right-arrow on a one-bar 11/8 clip moved
+     * the scroll to exactly 5.5, one whole bar. */
+    {
+        double ph5 = 0.0;
+        /* 11/8, 1/16, page 1 of the bar: button 3 is the fourth sixteenth. */
+        CHECK(step_plock_phase_from_scroll(0.0, 3, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_OK && fabs(ph5 - 0.75) < 1e-12,
+              "scroll 0 button 3 must be 0.75: ph=%f", ph5);
+
+        /* Page 2 of that same bar begins at step 16 = quarter 4.0. Button 0
+         * there is the seventeenth sixteenth -- the step the bar form cannot
+         * express at all. */
+        CHECK(step_plock_phase_from_scroll(4.0, 0, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_OK && fabs(ph5 - 4.0) < 1e-12,
+              "scroll 4.0 button 0 must be 4.0: ph=%f", ph5);
+        CHECK(step_plock_phase_from_scroll(4.0, 5, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_OK && fabs(ph5 - 5.25) < 1e-12,
+              "the last real step of a 22-step bar must be reachable: ph=%f",
+              ph5);
+        /* ...and the same input to the bar form refuses, which is the whole
+         * point of adding this one. */
+        CHECK(step_plock_phase(1, 5, 5.5, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_MULTI_PAGE,
+              "the bar form must still refuse a 22-step bar");
+
+        /* The "+" past the end of the clip is a bar that does not exist. */
+        CHECK(step_plock_phase_from_scroll(5.5, 0, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_OUTSIDE_CLIP,
+              "a scroll sitting at the loop end is the add-a-bar slot");
+
+        /* Refusals, not clamps. */
+        CHECK(step_plock_phase_from_scroll(-1.0, 0, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_NO_BAR, "a negative scroll must refuse");
+        CHECK(step_plock_phase_from_scroll(0.0, 16, 0.25, 5.5, &ph5)
+                  == STEP_PLOCK_BAD_INDEX, "there is no button 16");
+        CHECK(step_plock_phase_from_scroll(0.0, 0, 0.0, 5.5, &ph5)
+                  == STEP_PLOCK_NO_GRID, "a zero grid must refuse");
+    }
+
     /* 5. NO BAR IS NOT BAR 1. The displayed bar comes off the strip, and a
      * one-bar loop draws no thickening at all, so `bold_segment` can be 0 --
      * which must refuse rather than silently mean the first bar. */

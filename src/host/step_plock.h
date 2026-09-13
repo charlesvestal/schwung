@@ -25,14 +25,31 @@
  * stayed 0 through repeated arrow presses, so an oracle built on it is absent
  * exactly when nobody has turned that on.
  *
- * WHERE THE PAGE COMES FROM: nowhere, and that is a REFUSAL rather than a
- * guess. A bar spans one page only while `steps_per_bar <= STEPS_PER_PAGE` --
- * true for 4/4 at 1/16 (the default, and Move's own "the entire bar can be
- * accessed at once") and false for 11/8 at 1/16, which pages 16 + 6. Move puts
- * the page number on the display as you move between pages; we do not read it
- * yet. So a multi-page bar answers "cannot tell", and the caller must not
- * write a breakpoint at a phase it cannot place: a p-lock one page out is a
- * value on the wrong sixteenth, silently.
+ * WHERE THE PAGE COMES FROM: `stepEditorScrollPosition`, and it makes the
+ * arithmetic above unnecessary rather than merely feasible.
+ *
+ * MOVE RECORDS THE PAGE ORIGIN ITSELF, per clip, in quarters -- so the
+ * displayed page does not have to be reconstructed from a bar, a page index
+ * and a steps-per-bar at all. The held button is simply
+ *
+ *     phase = scroll_beats + idx * step_resolution
+ *
+ * which is `step_plock_phase_from_scroll()`. It carries no signature and no
+ * bar, so 11/8 and 4/4 are the same code, and the MULTI_PAGE refusal below
+ * does not arise: a bar that spans two pages has each page named directly.
+ *
+ * Measured 2026-09-13: on a one-bar 11/8 clip (loop 0..5.5) a single
+ * right-arrow moved the file's scroll to exactly 5.5 -- one bar, landing on
+ * the "+" that adds another. The strip's segment count did NOT change, which
+ * is what had made the page look unreadable: the strip counts BARS, and the
+ * page had moved within one.
+ *
+ * ITS ONE WEAKNESS IS AGE. It comes from Song.abl, which Move writes lazily,
+ * so paging and immediately p-locking can read the previous page. The bar
+ * strip is live and is the cross-check: where it names a bar, the scroll must
+ * fall inside it, and where they disagree the LIVE reading wins. The
+ * bar-and-page form below is kept for that path and for a clip the file has
+ * never seen.
  *
  * The other refusals are the same kind: an unusable bar or index, a grid we
  * could not parse (step_resolution <= 0), and a clip whose length is unknown.
@@ -97,6 +114,43 @@ static inline int step_plock_phase(int bar_1based, int step_index,
     const double phase = ((double)(bar_1based - 1) * (double)steps_per_bar
                           + (double)step_index) * step_resolution;
     if (!isfinite(phase) || phase < 0.0) return STEP_PLOCK_NO_GRID;
+    if (clip_len_quarters > 0.0 && phase >= clip_len_quarters)
+        return STEP_PLOCK_OUTSIDE_CLIP;
+    if (out_phase) *out_phase = phase;
+    return STEP_PLOCK_OK;
+}
+
+/* THE SCROLL FORM: the displayed page's origin, straight from Move.
+ *
+ * `scroll_beats` is where the 16 buttons START, in quarters from the clip's
+ * own zero, so button `step_index` is that many steps further on. No bar, no
+ * signature, no page count -- which is why this has no MULTI_PAGE refusal to
+ * make: a bar spanning two pages simply has two scroll positions, and Move
+ * has already told us which one is up.
+ *
+ * A negative scroll is refused rather than clamped: it is not a page, and
+ * clamping it to 0 would place a p-lock on the first bar of a clip the user
+ * is not looking at. */
+static inline int step_plock_phase_from_scroll(double scroll_beats,
+                                               int step_index,
+                                               double step_resolution,
+                                               double clip_len_quarters,
+                                               double *out_phase)
+{
+    if (out_phase) *out_phase = NAN;
+    if (!isfinite(step_resolution) || step_resolution <= 0.0)
+        return STEP_PLOCK_NO_GRID;
+    if (!isfinite(scroll_beats) || scroll_beats < 0.0)
+        return STEP_PLOCK_NO_BAR;
+    if (step_index < 0 || step_index >= STEP_STRIP_STEPS_PER_PAGE)
+        return STEP_PLOCK_BAD_INDEX;
+
+    const double phase = scroll_beats + (double)step_index * step_resolution;
+    if (!isfinite(phase) || phase < 0.0) return STEP_PLOCK_NO_GRID;
+    /* Past the end is refused for the same reason as the bar form: Move lets
+     * you page onto the "+" beyond a clip, and a scroll sitting exactly at the
+     * loop end is that -- a bar that does not exist yet, which a lane has no
+     * time for. */
     if (clip_len_quarters > 0.0 && phase >= clip_len_quarters)
         return STEP_PLOCK_OUTSIDE_CLIP;
     if (out_phase) *out_phase = phase;

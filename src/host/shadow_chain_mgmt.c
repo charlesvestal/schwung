@@ -3219,7 +3219,39 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
      * step_strip_displayed_bar(). */
     int bar = step_strip_displayed_bar(&ss, strip_track, (int)slot);
     double phase = 0.0;
-    int rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
+    int rc;
+
+    /* MOVE NAMES THE DISPLAYED PAGE ITSELF, so prefer it and reconstruct only
+     * when it is missing or stale. `stepEditorScrollPosition` is the origin of
+     * the 16 buttons in quarters, per clip, which needs no signature and no
+     * page count -- 11/8 and 4/4 take the same path and a bar spanning two
+     * pages has each named directly.
+     *
+     * THE LIVE STRIP IS THE CROSS-CHECK, because the scroll comes from a file
+     * Move writes lazily: page and immediately p-lock and it still reads the
+     * previous page. Where the strip names a bar, the scroll must land inside
+     * that bar; where they disagree the LIVE reading wins, since a stale
+     * scroll places the p-lock on a bar the user has already left. */
+    int scroll_ok = 0;
+    double scroll = 0.0;
+    if (rg && rg->valid && cslot >= 0 && cslot < CLIP_SLOTS &&
+        rg->slots[slot][cslot].exists && rg->slots[slot][cslot].have_scroll) {
+        scroll = rg->slots[slot][cslot].scroll_beats;
+        scroll_ok = 1;
+        if (bar >= 1 && isfinite(qpb) && qpb > 0.0) {
+            const double bar_lo = (double)(bar - 1) * qpb;
+            /* A half-step of slack: the two are measured independently and an
+             * exact-equality test on doubles would reject a correct pair. */
+            if (scroll < bar_lo - res * 0.5 ||
+                scroll >= bar_lo + qpb - res * 0.5)
+                scroll_ok = 0;
+        }
+    }
+
+    if (scroll_ok)
+        rc = step_plock_phase_from_scroll(scroll, step, res, clip_len, &phase);
+    else
+        rc = step_plock_phase(bar, step, qpb, res, clip_len, &phase);
     if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = rc;
     if (rc != STEP_PLOCK_OK) {
         char msg[144];
