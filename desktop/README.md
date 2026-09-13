@@ -64,12 +64,52 @@ simply named `.so` rather than teaching every path construction in
 `chain_host.c` and `chain_bus.c` a platform suffix. The two platforms never
 share an install tree.
 
+## Module data, and the /data mirror
+
+21 of 78 module repos hardcode device-absolute paths — overwhelmingly Move's
+user library:
+
+```
+/data/UserData/UserLibrary/Wavetables   10 uses
+/data/UserData/UserLibrary/Samples       6
+/data/UserData/UserLibrary/Tablor        3
+```
+
+plus per-module stores like breakbeat's. These are not a configuration
+mistake — on the device that path is simply where content lives — so the fix
+is to make the path exist here rather than to patch 21 repos and every future
+one.
+
+```bash
+desktop/setup-data-mirror.sh          # builds the tree, prints the one
+                                      # privileged step (it does not run it)
+desktop/setup-data-mirror.sh --check  # status
+```
+
+macOS's root filesystem is read-only and SIP-protected, so `/data` cannot be
+`mkdir`'d. `/etc/synthetic.conf` is Apple's supported mechanism for declaring
+symlinks at `/`, and `apfs.util -B` applies it without a reboot. The mirror
+target deliberately contains **no spaces**: `synthetic.conf` is tab-separated
+and a path with a space in it is a good way to get a silently ignored line.
+
 ## Verify
 
 ```bash
 # The chain, with no DAW, no GUI and no audio device in the way.
 ./build/desktop/schwung-render --modules build/desktop/modules \
     --synth braids --fx freeverb -o /tmp/out.wav
+
+# --play is not optional for anything tempo-synced (see below).
+./build/desktop/schwung-render --modules build/desktop/modules \
+    --synth breakbeat --play --bpm 120 \
+    --set synth:A_sample_path=/path/to/loop.wav -o /tmp/beat.wav
+
+# Ask the chain a question. --get keeps the three answers apart.
+./build/desktop/schwung-render --modules build/desktop/modules \
+    --synth braids --get synth:chain_params --get synth:state
+
+# Every installed module, loaded in a real chain, reported by level.
+desktop/smoke-test.sh
 
 # The PLUGIN, at 48 kHz in 512-frame blocks -- i.e. entirely through the rate
 # bridge. Fails on silence, NaN or clipping.
@@ -107,14 +147,31 @@ which is what `schwung-plugin-test` is for.
 - **`userApplicationDataDirectory` is `~/Library` on macOS**, not
   `~/Library/Application Support`.
 
+- **Setting the host transport is NOT the same as sending a clock, and a
+  tempo-synced module can only see the second.** The chain overrides
+  `get_clock_status` with its own (`chain_midi.c`), answered from MIDI
+  realtime bytes it has actually received — `0xFA` / `0xF8` / `0xFC`. On the
+  device the shim broadcasts Move's clock into every slot; the plugin
+  synthesises it from the playhead in `TransportClock`. `get_bpm` and
+  `get_beat_position` feed the chain's own LFOs and are invisible to this.
+  breakbeat with the transport set but no bytes: `clock_status=1`, silence.
+  With the bytes: `clock_status=2`, −19.6 dBFS.
+
+- **A module can be silent for more than one reason at a time.** breakbeat
+  needed the clock *and* a sample, and fixing only the first leaves it looking
+  exactly as broken as before.
+
 ## Not here yet
 
-- **The 128×64 shadow UI.** Task 0.8 of the plan. The plugin window binds macros;
-  it does not draw Move's screens. That needs `shadow_ui.c`'s process and its
-  shared-memory protocol ported, which is the largest remaining piece.
-- **Line-input modules.** `mapped_memory` is NULL, so vocoder, talkbox, gate,
-  ducker and NAM have no input. Phase 1 fills a synthetic SPI mailbox from the
-  plugin's input bus.
+- **The 128×64 shadow UI.** The plugin window picks modules and binds macros;
+  it does not draw Move's screens. `shadow_ui.c` is already a separate process
+  talking only over shared memory, but the nineteen segment names are
+  compile-time constants — fine for one host per machine, wrong for one per
+  track. Reimplementing `shadow_shm_map()` as a per-instance allocator makes
+  the whole UI instance-safe without editing it.
+- **Line-input modules.** `mapped_memory` is a zeroed mailbox, so vocoder,
+  talkbox, breath, gate and ducker load and run but hear silence. Feeding the
+  plugin's input bus into `audio_in_offset` is what makes them work.
 - **Set import.** No bundle format yet; the chain comes up empty and is built
   from the window.
 - **Windows.** No `fork`, no POSIX shared memory, no `dlopen`.
