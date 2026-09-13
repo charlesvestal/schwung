@@ -11,7 +11,9 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#ifdef __linux__
 #include <link.h>
+#endif
 #include <sched.h>
 #include <errno.h>
 #include "chain_internal.h"
@@ -556,12 +558,19 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
      * before the UI can be used to remove it.
      */
     {
+#ifdef __linux__
         struct link_map *lm = NULL;
         if (dlinfo(handle, RTLD_DI_LINKMAP, &lm) == 0 && lm) {
             snprintf(msg, sizeof(msg), "loaded %s base=0x%lx",
                      module_name, (unsigned long)lm->l_addr);
             v2_chain_log(inst, msg);
         }
+#else
+        /* dlinfo()/struct link_map are glibc extensions. The desktop host
+         * (macOS) has its own crash reporting and no ASLR-offset problem to
+         * solve here, so the base is simply not logged. */
+        (void)handle;
+#endif
     }
 
     /* Optional per-voice render. Discovered by dlsym exactly as fx_on_midi is,
@@ -1171,7 +1180,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         chain_bus_clear_all(inst);
         inst->current_patch = -1;
         inst->dirty = 0;
-        malloc_trim(0);
+        schwung_malloc_trim();
     }
     else if (strcmp(key, "knob_cc_out") == 0) {
         int new_mode = (val && atoi(val)) ? 1 : 0;

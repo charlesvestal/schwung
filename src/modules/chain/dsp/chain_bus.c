@@ -858,11 +858,7 @@ void chain_bus_worker_reconcile(chain_instance_t *inst, int b, const int *run_fl
  * even dereferenced.
  */
 static void *chain_bus_worker_fn(void *arg) {
-    struct sched_param sp = { .sched_priority = 0 };
-    sched_setscheduler(0, SCHED_OTHER, &sp);
-    cpu_set_t set; CPU_ZERO(&set);
-    CPU_SET(0, &set); CPU_SET(1, &set); CPU_SET(2, &set);   /* core 3 is SPI's */
-    sched_setaffinity(0, sizeof(set), &set);
+    schwung_thread_become_worker();
 
     chain_instance_t *inst = (chain_instance_t *)arg;
 
@@ -871,7 +867,7 @@ static void *chain_bus_worker_fn(void *arg) {
          * from the stop below. sem_wait is restartable, so EINTR is a retry and
          * not an exit — exiting on a stray signal would leave later requests
          * unserved with nothing to report it. */
-        while (sem_wait(&inst->bus_worker_sem) != 0) {
+        while (schwung_sem_wait(&inst->bus_worker_sem) != 0) {
             if (errno == EINTR) continue;
             /* Anything else is unreachable (EINVAL needs a destroyed
              * semaphore, and sem_destroy only runs after the join) — but
@@ -943,7 +939,7 @@ void chain_bus_post_work(chain_instance_t *inst, int bus) {
     if (!inst->bus_worker_started) {
         if (!inst->bus_worker_sem_ok) {
             /* sem_init writes the struct in place — no allocation, no lock. */
-            if (sem_init(&inst->bus_worker_sem, 0, 0) != 0) return;
+            if (schwung_sem_init(&inst->bus_worker_sem) != 0) return;
             inst->bus_worker_sem_ok = 1;
         }
         __atomic_store_n(&inst->bus_worker_started, 1, __ATOMIC_RELEASE);
@@ -954,7 +950,7 @@ void chain_bus_post_work(chain_instance_t *inst, int bus) {
             return;
         }
     }
-    sem_post(&inst->bus_worker_sem);
+    schwung_sem_post(&inst->bus_worker_sem);
 }
 
 /* Stop and JOIN the worker. Runs on the callback (destroy_instance does), and
@@ -965,11 +961,11 @@ void chain_bus_worker_stop(chain_instance_t *inst) {
     if (!inst) return;
     if (inst->bus_worker_started) {
         __atomic_store_n(&inst->bus_worker_started, 0, __ATOMIC_RELEASE);
-        sem_post(&inst->bus_worker_sem);
+        schwung_sem_post(&inst->bus_worker_sem);
         pthread_join(inst->bus_worker, NULL);
     }
     if (inst->bus_worker_sem_ok) {
-        sem_destroy(&inst->bus_worker_sem);
+        schwung_sem_destroy(&inst->bus_worker_sem);
         inst->bus_worker_sem_ok = 0;
     }
 }
