@@ -8266,13 +8266,41 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                              * held, and a claim dropping mid-hold delivers Move an
                              * orphan release. */
                             if (d2 > 0) {
+                                /* DELETE BELONGS TO THE GRID WHILE A STEP IS
+                                 * HELD, whatever the module claims.
+                                 *
+                                 * That is the clear-this-step gesture (hold a
+                                 * step, Delete, pick a knob), and it is host
+                                 * vocabulary rather than a module's -- neither
+                                 * 9W9 nor hank declares `claims_edit_ccs`, so
+                                 * without this the button they are told to
+                                 * press reaches MOVE, which DELETES THE CLIP.
+                                 * A destructive miss, on a gesture the notice
+                                 * on screen invites.
+                                 *
+                                 * Decided in the shim rather than by widening
+                                 * the JS claim set, because a claim reconciled
+                                 * on the UI tick can arrive a frame after the
+                                 * press it is meant to cover, and one leaked
+                                 * press is a lost clip. Bounded to exactly the
+                                 * gesture: a step must be DOWN and the grid
+                                 * must be watching steps, so Move keeps Delete
+                                 * everywhere else.
+                                 *
+                                 * Shift is excluded by the same term that
+                                 * excludes it for a module, so Shift+Delete is
+                                 * still the host's snapshot recall. */
+                                const int step_owns_delete =
+                                    (d1 == 119) && shadow_steps_held_mask != 0 &&
+                                    shadow_control && shadow_control->step_observe;
                                 /* Shift+<button> is the host's own vocabulary
                                  * (Shift+Copy / Shift+Delete = snapshot and
                                  * recall, handled and swallowed in the post-ioctl
                                  * loop). A press with Shift held is never claimed:
                                  * the module gets the BARE buttons only. */
                                 claim_press_blocked[d1] =
-                                    (claim_cc_set(d1) && !claim_denied_cc(d1) && !shadow_shift_held)
+                                    ((claim_cc_set(d1) || step_owns_delete) &&
+                                     !claim_denied_cc(d1) && !shadow_shift_held)
                                         ? CLAIM_LATCH_HELD : CLAIM_LATCH_NONE;
                             }
                             if (claim_press_blocked[d1]) filter = 1;
