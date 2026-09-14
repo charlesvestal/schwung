@@ -70,11 +70,17 @@ held = -1; const idle = ink();
 held = 5;  const mapped = ink();
 if (!(mapped > idle + 40)) bad.push("no map appeared while a step was held (" + idle + " -> " + mapped + ")");
 
-/* A knob under a finger means you are editing, not looking: the map leaves and
- * the footer comes back. */
+/* AND IT STAYS UP WHILE A LOCK IS BEING SET. Holding a step and turning a
+ * knob IS the p-lock gesture, so dismissing on touch -- which is what this
+ * first did -- hid the strip during the one action it exists to support. */
 ctrl.onKnobTouch(2, true);
 const touchedInk = ink();
-if (touchedInk > idle + 40) bad.push("the map stayed up once a knob was touched (" + touchedInk + ")");
+if (!(touchedInk > idle + 40))
+    bad.push("the map left when a knob was touched -- that is the p-lock gesture (" + touchedInk + ")");
+ctrl.onKnobTurn(2, 1, Date.now());
+const turnedInk = ink();
+if (!(turnedInk > idle + 40))
+    bad.push("the map left when the lock was actually written (" + turnedInk + ")");
 ctrl.onKnobTouch(2, false);
 
 /* IT RISES, and the frame it rises through is the evidence. A panel that is
@@ -97,6 +103,33 @@ if (!(leaving > idle + 40)) bad.push("the map vanished instead of sliding out ("
 clock += 300;
 const gone = ink({ settle: false });
 if (gone > idle + 40) bad.push("the map never left (" + gone + ")");
+
+/* THE HELD STEP'S OUTLINE FLASHES, and the LOCK MARKS DO NOT.
+ * A static frame is one more thing on a strip of sixteen small marks and the
+ * eye does not find it; the cell that is CHANGING is the one the eye goes to.
+ * The marks must hold still, or the blink competes with the two shapes that
+ * mean "locked". */
+held = 8; ink();
+const cellInk = (fb, i) => {
+    let n = 0;
+    for (let y = 55; y <= 63; y++)
+        for (let x = i * 8; x < i * 8 + 8; x++) n += fb.pixels[y * 128 + x] ? 1 : 0;
+    return n;
+};
+{
+    const seenHeld = new Set(), seenMark = new Set();
+    for (let i = 0; i < 14; i++) {
+        clock += 90;
+        const fb = createFramebuffer();
+        ctrl.render(drawContext(fb), { title: "9W9" });
+        ctrl.renderOverlays(drawContext(fb), { clearScreen: () => {} });
+        seenHeld.add(cellInk(fb, 8));
+        seenMark.add(cellInk(fb, 1));      /* a locked step that is NOT held */
+    }
+    if (seenHeld.size < 2) bad.push("the held step's outline never changed -- it does not flash");
+    if (seenMark.size !== 1) bad.push("a lock MARK flickered; only the outline may blink");
+}
+held = -1; ink();
 
 /* ONE READ PER GESTURE, not per frame: the panel is drawn every tick and the
  * masks are fetched when the held step changes. */
@@ -127,7 +160,7 @@ if (!(after > before + 10))
 masks = "34866 2082";
 
 if (bad.length) { for (const b of bad) console.log("FAIL: " + b); process.exit(1); }
-console.log("PASS: lock map (appears on the gesture, one read, hides on touch, silent on a failed read)");
+console.log("PASS: lock map (appears on the gesture, one read, STAYS through the lock, silent on a failed read)");
 EOF
 node "$tmp/t.mjs" || fail "the lock map does not behave"
 
