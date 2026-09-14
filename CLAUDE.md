@@ -1819,6 +1819,14 @@ inline is how this file got to 151 KB.
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
+- `docs/MOVE_COPY_GESTURES.md` — **Move's own copy/paste**, for steps, pages and
+  clips, measured by driving each gesture and diffing `Song.abl`. Read it before
+  mirroring automation locks onto a copy. Copy is HELD and step presses **PAIR
+  UP** (source, destination, new source, …); **Loop + Copy** makes the pair
+  PAGES; re-tapping the source pastes onto itself and CONSUMES the pair rather
+  than cancelling; an EMPTY source is a no-op and does **not** clear the
+  destination. Its "Not known" section is load-bearing — a mirror built on the
+  untested half desyncs locks from notes silently.
 - `docs/MIDI_INJECTION.md` — Cable-2 injection / echo filter history
 - `docs/ADDRESSING_MOVE_SYNTHS.md` — Sending MIDI to Move tracks/slot synths from tools, overtake modules, chain MIDI FX. Ref: `src/modules/tools/seq-test/`.
 - `../schwung-catalog-site/manual.html` — User-facing manual (canonical, lives in the catalog-site repo)
