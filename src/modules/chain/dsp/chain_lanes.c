@@ -946,6 +946,46 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
                         inst->lane_track, inst->lane_clip_slot);
     }
 
+    /* EVERY POINT PHASE IN THIS CLIP, one line per lane:
+     *   "<target> <param> <phase> <phase> ...\n"
+     *
+     * For the lock map -- "which steps carry a lock" -- which is a question
+     * the chain cannot answer and the host cannot ask any other way. Steps are
+     * the host's vocabulary (grid, scroll, signature); points are the chain's.
+     * So the chain hands over the phases and the host decides which step each
+     * one lands on, using the same step->phase function the write and the read
+     * already share. Nothing here learns what a step is.
+     *
+     * Scoped to the CURRENT CLIP, because that is the only clip whose steps
+     * are on screen. Bounded by the store: LANE_MAX lines of at most
+     * LANE_POINTS_MAX phases.
+     *
+     * Values are deliberately absent. The map draws marks, not numbers, and a
+     * value per point would multiply the size of this for nothing. */
+    if (strcmp(sub, "phases") == 0) {
+        int off = 0;
+        if (inst->lane_track < 0 || inst->lane_clip_slot < 0)
+            return snprintf(buf, buf_len, "%s", "");
+        for (int i = 0; i < LANE_MAX; i++) {
+            const lane_t *ln = &inst->lanes.lanes[i];
+            if (!ln->used || ln->n <= 0) continue;
+            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            int n = snprintf(buf + off, (size_t)(buf_len - off), "%s %s",
+                             ln->target, ln->param);
+            if (n <= 0 || off + n >= buf_len) return off;      /* truncated: stop clean */
+            off += n;
+            for (int k = 0; k < ln->n; k++) {
+                n = snprintf(buf + off, (size_t)(buf_len - off), " %.17g", ln->pts[k].phase);
+                if (n <= 0 || off + n >= buf_len) return off;
+                off += n;
+            }
+            n = snprintf(buf + off, (size_t)(buf_len - off), "\n");
+            if (n <= 0 || off + n >= buf_len) return off;
+            off += n;
+        }
+        return off;
+    }
+
     /* The answer to the last `lanes:probe`: "<value> <exact>", or empty for
      * "this lane has nothing to say at that phase" -- which is NOT the value
      * 0.0, the same distinction lane_eval's return carries and the same one

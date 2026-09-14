@@ -39,6 +39,7 @@ import { renderPage, renderPicker, renderHint, LAYOUT_DIAL } from "./render_page
 import { renderPageMovy, drawFooter, drawHeader as drawHeaderMovy, drawBankBar,
          drawBrackets, drawPresetBody, displayValue, RULE_Y, LAYOUT_MOVY,
          movyHeaderFor, labelForCell, normalizedOf, widgetKindFor,
+         W as SCREEN_WIDTH, FOOTER_Y, FOOTER_H,
          MENU_LIST_X, MENU_LIST_Y, MENU_LIST_W } from "./render_page_movy.mjs";
 import { resolveViz, vizDiveTarget, VIZ_SWITCH } from "./viz.mjs";
 import { widgetsGeneration } from "./widget_registry.mjs";
@@ -717,6 +718,10 @@ export function createController(io = {}) {
         stepRefusalChecked: false,
         /* Which step a pending write was made under, by key -- see sendPending. */
         pendingStep: Object.create(null),
+        /* The lock map: two 16-bit masks, fetched once per held-step gesture. */
+        lockMap: null,
+        lockMapFor: -1,
+        lockMapAnim: null,
         /* Delete held while a step is: armed, and whether a knob was picked. */
         stepClear: null,
         /* Rotates over the modulated keys, so the fast lane stays bounded. */
@@ -5233,9 +5238,152 @@ export function createController(io = {}) {
         return vizGroups();
     }
 
+    /*
+     * THE LOCK MAP -- which of the sixteen steps carry a lock.
+     *
+     * A lock is invisible until you hold its step, so finding one you made
+     * earlier meant holding all sixteen and watching for an inverted band, on
+     * a page that might not be the page it lives on. The auditor called this
+     * the thing that dominates everything else, and it is: locking is a
+     * write-only medium without it, so you stop making locks you might want to
+     * revise -- which is most of them.
+     *
+     * IT IS A PEEK, not a strip, because the screen has no room for a strip:
+     * the header is the held-knob readout and the grid is eight cells. So it
+     * appears in the one moment it is wanted and nothing is displaced --
+     * while a step is held and NO knob is touched, which is the resting state
+     * of "where are my locks" and the state in which the header has nothing
+     * to say anyway. Touch a knob and it goes, because from then on you are
+     * editing and the cells are the answer.
+     *
+     * One read per gesture, not per frame: the masks are fetched when the
+     * held step changes and kept until it does again.
+     */
+    function lockMap() {
+        if (s.heldStep < 0 || s.touchOrder.length) {
+            /* THE CACHE ENDS WITH THE GESTURE, not with the step number.
+             * Keyed on the step alone, holding the SAME step twice re-used the
+             * first answer -- so a lock you had just made, on the step you made
+             * it on, was the one lock the map could not show you. Which reads
+             * as "the map does not see my lock" rather than as a stale read,
+             * because every other step was right. */
+            s.lockMapFor = -1;
+            return null;
+        }
+        if (s.lockMapFor !== s.heldStep) {
+            s.lockMapFor = s.heldStep;
+            s.lockMap = null;
+            const p = page();
+            const keys = (p && p.keys) ? p.keys.filter(Boolean) : [];
+            const fk = keys.length ? fullKey(keys[0]) : "";
+            const colon = fk.indexOf(":");
+            const target = colon > 0 ? fk.substring(0, colon) : "";
+            /* The page's own parameters, so the map can say which locks are
+             * editable from here and which are somewhere else in the slot. */
+            setParam("lanes:step_locks_query", target + " " + keys.join(","));
+            const raw = getParam("lanes:step_locks");
+            /* The tri-state, as everywhere: a read that did not complete says
+             * NOTHING about the clip, and drawing an empty map for it would
+             * report "no locks anywhere" -- the most misleading answer this
+             * panel could give. */
+            if (raw === null || raw === undefined || raw === "") return null;
+            const parts = String(raw).trim().split(/\s+/);
+            const uni = Number(parts[0]), pag = Number(parts[1]);
+            if (!isFinite(uni)) return null;
+            s.lockMap = { union: uni | 0, page: isFinite(pag) ? (pag | 0) : 0 };
+        }
+        return s.lockMap;
+    }
+
+    /*
+     * Sixteen cells across the width, one per step button: SOLID for a lock on
+     * a parameter of this page, a single pixel for one elsewhere in the slot
+     * -- "there is something here you cannot see from where you are" being the
+     * half that is missing entirely -- and the held step framed, so the panel
+     * also answers "which one am I on".
+     */
+    /*
+     * It RISES OVER THE FOOTER, and that is where the room is. The header is
+     * the held-knob readout -- the one line telling you which parameter you are
+     * changing -- and the grid is eight cells; covering either would take away
+     * what you are holding the step to see. The footer names gestures you
+     * already have your hands on, so for the length of the hold it is the
+     * cheapest nine rows on the screen.
+     *
+     * And it SLIDES, because appearing and disappearing in place over an
+     * existing band reads as a glitch: the motion is what says "this replaced
+     * the footer and the footer is coming back".
+     */
+    const LOCK_MAP_BOTTOM = FOOTER_Y + FOOTER_H;   /* 64 — the last row the footer owns */
+    const LOCK_MAP_H = LOCK_MAP_BOTTOM - RULE_Y;   /* 9 — the rule and the footer */
+    const LOCK_MAP_ANIM_MS = 110;
+
+    function lockMapFrame() {
+        const want = lockMap();
+        const t = now();
+        const a = s.lockMapAnim;
+        if (want) {
+            if (!a || !a.open) s.lockMapAnim = { open: true, since: t, map: want };
+            else a.map = want;
+        } else if (a && a.open) {
+            /* Keep the last map for the way out: the read is gone the instant
+             * the step is released, and a panel that vanishes mid-slide is the
+             * glitch the slide exists to avoid. */
+            s.lockMapAnim = { open: false, since: t, map: a.map };
+        }
+        const cur = s.lockMapAnim;
+        if (!cur) return null;
+        let p = (t - cur.since) / LOCK_MAP_ANIM_MS;
+        if (!(p >= 0)) p = 0;
+        if (p > 1) p = 1;
+        if (!cur.open && p >= 1) { s.lockMapAnim = null; return null; }
+        /* Ease out: fast off the edge, settling onto the rule. */
+        const e = cur.open ? 1 - (1 - p) * (1 - p) : p * p;
+        const off = Math.round((cur.open ? 1 - e : e) * LOCK_MAP_H);
+        return { map: cur.map, y: RULE_Y + off };
+    }
+
+    function drawLockMap(ctx, frame) {
+        const { map } = frame;
+        const y = frame.y, h = LOCK_MAP_H, cell = 8;
+        /* Blank exactly the rows the panel covers, never the whole band: the
+         * footer is already in the framebuffer from render(), so clearing only
+         * under the panel lets it be covered on the way in and UNCOVERED row by
+         * row on the way out. Clearing the band instead leaves the footer
+         * missing for the length of the slide and snapping back at the end,
+         * which is the thing that reads as a glitch. */
+        ctx.fillRect(0, y, SCREEN_WIDTH, LOCK_MAP_BOTTOM - y, 0);
+        ctx.fillRect(0, y, SCREEN_WIDTH, 1, 1);
+        for (let i = 0; i < 16; i++) {
+            const x = i * cell;
+            const onPage = (map.page >> i) & 1;
+            const anywhere = (map.union >> i) & 1;
+            if (onPage) ctx.fillRect(x + 1, y + 3, cell - 2, 5, 1);
+            else if (anywhere) ctx.fillRect(x + 1, y + 5, cell - 2, 2, 1);
+            if (i === s.heldStep) {
+                /* The held step is framed rather than filled: filling it would
+                 * be a seventeenth kind of mark meaning "here", competing with
+                 * the two that mean "locked". */
+                ctx.fillRect(x, y + 2, cell - 1, 1, 1);
+                ctx.fillRect(x, y + h - 1, cell - 1, 1, 1);
+                ctx.fillRect(x, y + 2, 1, h - 2, 1);
+                ctx.fillRect(x + cell - 2, y + 2, 1, h - 2, 1);
+            }
+        }
+        return true;
+    }
+
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
-        if (!peek) { const r = drawDeclaredCard(ctx); drawNotice(ctx); return r; }
+        if (!peek) {
+            const r = drawDeclaredCard(ctx);
+            /* Under the notice, over the card: a notice is a sentence about
+             * what just happened and must not be covered by a legend. */
+            const frame = lockMapFrame();
+            const m = frame ? drawLockMap(ctx, frame) : false;
+            drawNotice(ctx);
+            return r || m;
+        }
         /*
          * No clear, no overlay. Drawing the list into a frame we may not blank
          * would leave it interleaved with the grid underneath -- two screens at

@@ -3154,6 +3154,11 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
  * the question this answers is "why did the one I just did not take", and a
  * stale reason surviving a success is how that gets answered wrongly. */
 static int g_plock_last_reason[SHADOW_CHAIN_INSTANCES];
+/* The lock map's pending query, per slot. See lanes:step_locks_query. */
+static char g_step_locks_query[SHADOW_CHAIN_INSTANCES][544];
+/* Must equal LANE_MIN_POINT_BEATS (lane_store.h): "a point ON this step" has
+ * to mean the same thing to the map as it does to the write that made it. */
+#define STEP_LOCKS_POINT_WINDOW 0.01
 
 const char *shadow_lanes_plock_reason_name(int rc) {
     switch (rc) {
@@ -3426,6 +3431,114 @@ static int shadow_lanes_held_value(uint8_t slot, const char *key, int held_at,
     if (len >= out_len) len = out_len - 1;
     out[len] = '\0';
     return len;
+}
+
+/* WHICH OF THE SIXTEEN VISIBLE STEPS CARRY A LOCK -- the lock map.
+ *
+ * A lock is invisible until you hold its step, so finding one you made
+ * earlier meant holding all sixteen and watching for an inverted band, on a
+ * page that might not even be the page it lives on. This answers it in one
+ * read, as two 16-bit masks:
+ *
+ *   union   any lane of this clip has a point on that step
+ *   page    one of the parameters the UI named has a point on that step
+ *
+ * The second is what separates "there is a lock here" from "there is a lock
+ * here I can edit from where I am standing", which is the half that is
+ * missing entirely today.
+ *
+ * IT WALKS STEPS, NOT PHASES. Every step's phase comes from
+ * shadow_lanes_step_phase -- the same function the write and the `:held` read
+ * use -- so the map cannot disagree with them about which step is which. The
+ * alternative, inverting the grid arithmetic to turn a phase back into a step,
+ * is a second implementation of the one thing this feature has been bitten by
+ * duplicating.
+ *
+ * A step with no phase (outside the clip, a bar the strip cannot name) simply
+ * contributes no bit: absent, rather than guessed.
+ *
+ * Cost is one chain get_param for the phases plus 16 phase computations, none
+ * of which touch the param channel. Called on a gesture, not per frame. */
+static int shadow_lanes_step_locks(uint8_t slot, const char *query,
+                                   char *out, int out_len)
+{
+    if (!out || out_len <= 0) return -1;
+    out[0] = '\0';
+    if (slot >= SHADOW_CHAIN_INSTANCES) return -1;
+    if (!shadow_plugin_v2 || !shadow_plugin_v2->get_param) return -1;
+    if (!shadow_chain_slots[slot].active || !shadow_chain_slots[slot].instance) return -1;
+
+    /* "<target> <k1,k2,...>" -- the page's keys, so the second mask can be
+     * about what is under the user's hands. An empty query still answers the
+     * union, which is the useful half on its own. */
+    char qtarget[16] = {0}, qkeys[512] = {0};
+    if (query) sscanf(query, "%15s %511s", qtarget, qkeys);
+
+    static char phases[SHADOW_PARAM_VALUE_LEN];
+    int len = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                          "lanes:phases", phases, sizeof(phases));
+    if (len < 0) return -1;                      /* the read did not serve */
+    if (len >= (int)sizeof(phases)) len = (int)sizeof(phases) - 1;
+    phases[len] = '\0';
+
+    /* The sixteen step phases, once. */
+    double step_phase[16];
+    int step_ok[16];
+    for (int i = 0; i < 16; i++) {
+        double ph = 0.0;
+        step_ok[i] = (shadow_lanes_step_phase(slot, i, &ph, NULL, NULL) == STEP_PLOCK_OK);
+        step_phase[i] = ph;
+    }
+
+    unsigned uni = 0, pag = 0;
+    const char *line = phases;
+    while (*line) {
+        const char *eol = strchr(line, '\n');
+        if (!eol) eol = line + strlen(line);
+        char ltarget[16] = {0}, lparam[32] = {0};
+        int consumed = 0;
+        if (sscanf(line, "%15s %31s %n", ltarget, lparam, &consumed) == 2 && consumed > 0) {
+            /* Is this lane's parameter one the UI named? Compared as a whole
+             * token between commas, so `cut` cannot match `cutoff`. */
+            int on_page = 0;
+            if (qkeys[0] && strcmp(ltarget, qtarget) == 0) {
+                const char *p = qkeys;
+                const size_t n = strlen(lparam);
+                while (*p) {
+                    const char *c = strchr(p, ',');
+                    size_t seg = c ? (size_t)(c - p) : strlen(p);
+                    if (seg == n && strncmp(p, lparam, n) == 0) { on_page = 1; break; }
+                    if (!c) break;
+                    p = c + 1;
+                }
+            }
+            const char *cur = line + consumed;
+            while (cur < eol) {
+                char *end = NULL;
+                double ph = strtod(cur, &end);
+                if (end == cur) break;
+                for (int i = 0; i < 16; i++) {
+                    if (!step_ok[i]) continue;
+                    double d = ph - step_phase[i];
+                    if (d < 0) d = -d;
+                    /* The same window the chain replaces a point in, named
+                     * here rather than included: shadow_chain_mgmt.c does not
+                     * otherwise know the lane store, and pulling its header in
+                     * for one constant would drag the whole type in with it.
+                     * Pinned against the real one by tests/host. */
+                    if (d < STEP_LOCKS_POINT_WINDOW) {
+                        uni |= (1u << i);
+                        if (on_page) pag |= (1u << i);
+                        break;
+                    }
+                }
+                cur = end;
+            }
+        }
+        if (!*eol) break;
+        line = eol + 1;
+    }
+    return snprintf(out, (size_t)out_len, "%u %u", uni, pag);
 }
 
 /* SAY THAT ONE LANDED, so the UI can draw a mark.
@@ -5432,6 +5545,21 @@ void shadow_inprocess_handle_param_request(void) {
              * and a refusal forwards NOTHING, because `lanes:clear_point`
              * with a missing phase would be read as phase 0 and take the
              * downbeat's automation instead. */
+            /* The lock map's query: "<target> <k1,k2,...>", kept per slot
+             * until the next one. A GET cannot carry arguments, so the
+             * question is a SET and the answer is read back -- the same shape
+             * `lanes:probe` uses, for the same reason. */
+            if (strcmp(key_copy, "lanes:step_locks_query") == 0) {
+                if (slot < SHADOW_CHAIN_INSTANCES) {
+                    strncpy(g_step_locks_query[slot], value_copy,
+                            sizeof(g_step_locks_query[0]) - 1);
+                    g_step_locks_query[slot][sizeof(g_step_locks_query[0]) - 1] = '\0';
+                }
+                shadow_param->error = 0;
+                shadow_param->result_len = 0;
+                shadow_param_publish_response(req_id);
+                return;
+            }
             if (strcmp(key_copy, "lanes:clear_step") == 0) {
                 int cstep = shim_plock_held_step();
                 double cphase = 0.0;
@@ -5622,6 +5750,16 @@ void shadow_inprocess_handle_param_request(void) {
         /* Host-side key: the translation that refuses lives here, not in the
          * chain plugin, so the plugin cannot answer this one. Served ahead of
          * the forward for that reason. */
+        if (strcmp(shadow_param->key, "lanes:step_locks") == 0) {
+            int n = shadow_lanes_step_locks(slot, g_step_locks_query[slot],
+                                            shadow_param->value,
+                                            SHADOW_PARAM_VALUE_LEN);
+            shadow_param->result_len = (n > 0) ? n : 0;
+            if (n < 0) shadow_param->value[0] = '\0';
+            shadow_param->error = 0;
+            shadow_param_publish_response(req_id);
+            return;
+        }
         if (strcmp(shadow_param->key, "lanes:plock_reason") == 0) {
             int rc = (slot < SHADOW_CHAIN_INSTANCES) ? g_plock_last_reason[slot] : 0;
             int n = snprintf(shadow_param->value, SHADOW_PARAM_VALUE_LEN, "%d %s",
