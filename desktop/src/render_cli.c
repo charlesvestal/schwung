@@ -44,6 +44,7 @@ int main(int argc, char **argv) {
     double seconds = 4.0;
     double bpm = 120.0;
     int playing = 0;
+    int in_tone = 0;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i], "--modules") && i + 1 < argc) root  = argv[++i];
@@ -55,6 +56,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--bpm")     && i + 1 < argc) bpm = atof(argv[++i]);
         else if (!strcmp(argv[i], "--set")     && i + 1 < argc && nset < 16) setkv[nset++] = argv[++i];
         else if (!strcmp(argv[i], "--play")) playing = 1;
+        else if (!strcmp(argv[i], "--in-tone")) in_tone = 1;
         else { fprintf(stderr, "usage: %s --modules <root> --synth <id> [--fx <id>] [--play] [--bpm N] [--seconds N] [-o out.wav]\n", argv[0]); return 2; }
     }
     if (!root || (!synth && nget == 0)) {
@@ -172,6 +174,19 @@ int main(int argc, char **argv) {
         while (ei < nev && events[ei].frame >= off && events[ei].frame < off + SCHWUNG_BLOCK) {
             schwung_desktop_midi(sd, events[ei].b, 3);
             ei++;
+        }
+        /* --in-tone: a 220 Hz sine into the SPI mailbox's audio-in region,
+         * which is where a line-input module reads from. Written immediately
+         * before the render it belongs to. */
+        if (in_tone) {
+            static double ph = 0.0;
+            int16_t inbuf[SCHWUNG_BLOCK * 2];
+            for (int i = 0; i < SCHWUNG_BLOCK; i++) {
+                int16_t v = (int16_t)(0.5 * 32767.0 * sin(ph));
+                ph += 2.0 * M_PI * 220.0 / (double)SCHWUNG_RATE;
+                inbuf[i * 2] = v; inbuf[i * 2 + 1] = v;
+            }
+            schwung_desktop_set_audio_in(sd, inbuf);
         }
         schwung_desktop_render(sd, pcm + (size_t)off * 2);
     }
