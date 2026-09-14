@@ -278,12 +278,23 @@ void lane_tick(chain_instance_t *inst) {
          *
          * Bounded to the pass's own travel rather than to `rec_active`, from
          * lane_pass_live_at -- the SAME computation lane_record_point erases
-         * with, so the silent region and the erased region are one region. The
-         * rest of the loop keeps playing, which is what makes this
-         * punch-in/punch-out instead of a recording mode. */
+         * with, so the erased region can never exceed the pass. The rest of
+         * the loop keeps playing, which is what makes this punch-in/punch-out
+         * instead of a recording mode.
+         *
+         * The silent region and the erased region were once ONE region. They
+         * are not any more, and the seam is the WRAP -- see below. */
         const int pass_live = lane_pass_live_at(ln, inst->clip_phase_beats,
                                                 inst->clip_loop_start,
                                                 inst->clip_loop_len);
+
+        /* AND WHETHER IT SILENCES US IS A SECOND QUESTION -- see
+         * lane_pass_suppresses_at. `pass_live` is the pass's LIFETIME, shared
+         * with lane_record_point as the erase span, so it must survive the
+         * wrap. The SILENCE must not. */
+        const int pass_suppress = lane_pass_suppresses_at(
+            ln, inst->clip_phase_beats, inst->clip_loop_start,
+            inst->clip_loop_len);
 
         /* AND THE PASS ENDS HERE, which is punch-OUT. The transport has
          * carried a whole LANE_PASS_GAP_BEATS past the last write with no
@@ -293,7 +304,7 @@ void lane_tick(chain_instance_t *inst) {
          * refuses to erase across a gap that wide, so nothing is lost. */
         if (!pass_live && ln->rec_active) lane_record_end(ln);
 
-        if (ln->punch_until_wrap || pass_live) {
+        if (ln->punch_until_wrap || pass_suppress) {
             /* Through the ordinary release, which is ONCE-ONLY (`driving`):
              * re-emitting it every block would rewrite the base over the very
              * next knob detent, which is this same defect in a quieter form. */
