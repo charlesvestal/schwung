@@ -455,6 +455,44 @@ int main(void) {
         step_strip_reset();
     }
 
+    /* ---------------------------------------------------------------
+     * A CLIP THAT HAS NEVER PLAYED STILL HAS AN IDENTITY.
+     *
+     * `identity_valid` is set by a ch-9 ON -- a clip PLAYING -- and the
+     * decoder only runs in SESSION view, which is not where steps are
+     * edited. So two everyday states carry no identity at all: a clip you
+     * just made, and a clip playing since before you last looked at the
+     * session grid. Both reported from the device: "no clip on this track"
+     * while plainly looking at one, and "once I stopped and restarted it had
+     * the clip" -- a restart being what re-emits the LEDs.
+     *
+     * The WRITE path had already resolved this the other way ("a p-lock edits
+     * the clip on SCREEN, which is the SELECTED clip"), so the two halves of
+     * one gesture disagreed and the refusing half won. */
+    printf("identity falls back to the SELECTED clip when none has played\n");
+    reset_world();
+    set_track(0, 0, -1, 0, 0);                  /* nothing witnessed */
+    set_region(0, 3, 0.0, 4.0);
+    fake_regions.slots[0][3].is_playing = 1;    /* Move's own selection */
+    rc = call(0, &ph, &len, &cs, &fpv, fp);
+    CHECK(cs == 3, "expected the selected clip 3, got %d", cs);
+    /* ...and the PHASE is still unknown, which is the honest answer: nothing
+     * anchored it. Identity and anchor are separately valid. */
+    CHECK(rc == 0, "a never-played clip must not claim a phase");
+
+    /* A PLAYING CLIP STILL WINS. The fallback may not override a witnessed
+     * identity, or a track playing clip 1 while clip 3 is selected would bind
+     * its lanes to the wrong clip -- silently, which is the failure this
+     * whole gate exists to prevent. */
+    printf("a witnessed identity is never overridden by the selection\n");
+    reset_world();
+    set_track(0, 1, 1, 1, 0);
+    set_region(0, 1, 0.0, 4.0);
+    set_region(0, 3, 0.0, 4.0);
+    fake_regions.slots[0][3].is_playing = 1;
+    rc = call(0, &ph, &len, &cs, &fpv, fp);
+    CHECK(cs == 1, "the playing clip 1 must win over the selected 3, got %d", cs);
+
     if (failures == 0) {
         printf("PASS: shadow_slot_clip_phase (%d checks)\n", checks);
         return 0;
