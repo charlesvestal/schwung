@@ -452,7 +452,8 @@ int lane_pass_live_at(const lane_t *ln, double phase,
 }
 
 int lane_adopt_slot(lane_t *ln, int track, int slot,
-                    double recorded_len, double now_len) {
+                    double recorded_len, double now_len,
+                    const lane_fingerprint_t *now_fp) {
     if (!ln || !ln->used || !ln->slot_pending) return 0;
     if (!lane_slot_is_pending(ln->slot)) return 0;   /* already keyed */
     if (ln->track != track) return 0;
@@ -469,6 +470,28 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
     if (!isfinite(recorded_len) || recorded_len <= 0.0) return 0;
     if (!isfinite(now_len) || now_len <= 0.0) return 0;
     if (fabs(recorded_len - now_len) > 0.5) return 0;
+    /* THE IDENTITY COMES WITH THE ROW, and only once the length has agreed.
+     *
+     * A gesture made blind has an ABSENT fingerprint -- there were no notes to
+     * fingerprint -- and lane_fingerprint_matches refuses an absent one
+     * outright, so without this the lane is re-keyed correctly and then goes
+     * STALE the moment the clip appears: silent for good. Measured on
+     * hardware exactly that way.
+     *
+     * INSIDE the length check on purpose. Binding first would let a clip that
+     * is NOT ours leave its fingerprint on the lane, after which the lane is
+     * no longer absent and the real clip could never bind. One gate, one
+     * decision.
+     *
+     * NO RE-ORIGIN, which is what makes this different from
+     * lane_adopt_fingerprint: a blind p-lock's phase came from the bar on
+     * Move's own strip and is already true clip time, so moving it would take
+     * the lock off the step that was pressed. */
+    if (now_fp && lane_fp_absent(&ln->fp) && !lane_fp_absent(now_fp)) {
+        ln->fp = *now_fp;
+        ln->stale = 0;
+        ln->adopted++;
+    }
     ln->slot = slot;
     ln->slot_pending = 0;
     ln->pending_len = 0.0;

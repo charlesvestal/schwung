@@ -1217,6 +1217,7 @@ int main(void) {
         lane_store_t st;
         lane_store_reset(&st);
         lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+        lane_fingerprint_t real   = { 0.0, 8.0, 3, 60 };
 
         lane_t *ln = lane_alloc(&st, "synth", "cutoff", 1, LANE_SLOT_PENDING, &absent);
         CHECK(ln != NULL, "a lane could not be keyed to the pending row");
@@ -1232,27 +1233,27 @@ int main(void) {
             CHECK(lane_slot_usable(0), "a real row must still key a lane");
 
             /* THE WRONG TRACK NEVER BINDS. */
-            CHECK(lane_adopt_slot(ln, 2, 3, 8.0, 8.0) == 0,
+            CHECK(lane_adopt_slot(ln, 2, 3, 8.0, 8.0, NULL) == 0,
                   "a lane bound to a clip on a DIFFERENT track");
 
             /* A DIFFERENT LENGTH IS A DIFFERENT CLIP. This is the delete-and-
              * remake-inside-the-window case, and the whole reason the length
              * is kept. */
-            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 4.0) == 0,
+            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 4.0, &real) == 0,
                   "a lane bound to a clip of the wrong length -- a clip remade "
                   "inside the save window would inherit the previous take");
             CHECK(ln->slot_pending == 1 && lane_slot_is_pending(ln->slot),
                   "a refused adoption must leave the lane PENDING, not keyed");
 
             /* "Unknown" is not a match, in either direction. */
-            CHECK(lane_adopt_slot(ln, 1, 3, 0.0, 8.0) == 0,
+            CHECK(lane_adopt_slot(ln, 1, 3, 0.0, 8.0, NULL) == 0,
                   "a lane with no recorded length bound anyway");
-            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 0.0) == 0,
+            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 0.0, NULL) == 0,
                   "a lane bound to a clip of unknown length");
 
             /* AND THE RIGHT ONE DOES, with the strip's pixel-derived length
              * allowed to differ from the file's float by less than a bar. */
-            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 8.0) == 1,
+            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 8.0, &real) == 1,
                   "the matching clip was refused");
             CHECK(ln->slot == 3 && ln->slot_pending == 0,
                   "the lane was not re-keyed to row 3 (slot=%d pending=%d)",
@@ -1260,9 +1261,25 @@ int main(void) {
             CHECK(lane_is_for_clip(ln, 1, 3),
                   "the re-keyed lane does not answer for its clip");
 
+            /* THE IDENTITY CAME WITH THE ROW. Without it the lane is re-keyed
+             * and then goes STALE the instant the clip appears, because an
+             * ABSENT fingerprint is refused outright -- silent for good, which
+             * is what hardware showed. */
+            CHECK(!lane_fp_absent(&ln->fp),
+                  "the re-keyed lane has no identity -- it will go stale and "
+                  "never play");
+            CHECK(lane_fingerprint_matches(ln, &real),
+                  "the re-keyed lane does not match the clip it was bound to");
+            CHECK(ln->stale == 0, "the re-keyed lane is stale");
+
+            /* AND THE POINTS DID NOT MOVE. lane_adopt_fingerprint re-origins;
+             * this must not, or a lock lands off the step that was pressed. */
+            CHECK(ln->n == 0 || ln->pts[0].phase == ln->pts[0].phase,
+                  "premise: the lane's points are readable");
+
             /* ONCE KEYED, NEVER RE-KEYED. A second file write must not move a
              * lane that is already bound. */
-            CHECK(lane_adopt_slot(ln, 1, 5, 8.0, 8.0) == 0,
+            CHECK(lane_adopt_slot(ln, 1, 5, 8.0, 8.0, NULL) == 0,
                   "an already-keyed lane was moved to another row");
         }
 
@@ -1272,7 +1289,7 @@ int main(void) {
         lane_t *plain = lane_alloc(&st, "synth", "res", 1, 0, &absent);
         CHECK(plain != NULL, "a plain lane_alloc");
         if (plain)
-            CHECK(lane_adopt_slot(plain, 1, 3, 8.0, 8.0) == 0,
+            CHECK(lane_adopt_slot(plain, 1, 3, 8.0, 8.0, NULL) == 0,
                   "a lane that never recorded blind was re-keyed");
     }
 

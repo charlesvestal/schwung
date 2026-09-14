@@ -156,7 +156,8 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
         lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || !ln->slot_pending) continue;
         lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
-                        ln->pending_len, inst->clip_loop_len);
+                        ln->pending_len, inst->clip_loop_len,
+                        inst->clip_fp_valid ? &inst->clip_fp : NULL);
     }
 }
 

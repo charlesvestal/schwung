@@ -458,9 +458,19 @@ int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now);
  * confidently wrong, which is the outcome this design refuses everywhere else.
  * A mismatch leaves the lane pending, where it is visible and silent.
  *
+ * `now_fp` (optional) is the arriving clip's fingerprint. A lane keyed blind
+ * has an ABSENT one -- there were no notes yet -- and lane_fingerprint_matches
+ * refuses an absent fingerprint outright, so without taking it here the lane
+ * is re-keyed correctly and then goes STALE the moment the clip appears.
+ * Taken INSIDE the length check, so a clip that is not ours cannot leave its
+ * identity behind; and WITHOUT re-origining, unlike lane_adopt_fingerprint,
+ * because a blind p-lock's phase is already true clip time.
+ *
  * Returns 1 if the lane was re-keyed. */
 int lane_adopt_slot(lane_t *ln, int track, int slot,
-                    double recorded_len, double now_len);
+                    double recorded_len, double now_len,
+                    const lane_fingerprint_t *now_fp);
+
 
 #ifdef __cplusplus
 }
