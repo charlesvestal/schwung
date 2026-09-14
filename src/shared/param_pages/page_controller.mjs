@@ -5413,7 +5413,13 @@ export function createController(io = {}) {
      * held step changes and kept until it does again.
      */
     function lockMap() {
-        if (s.heldStep < 0 || s.touchOrder.length) {
+        /* A TOUCHED KNOB DOES NOT DISMISS IT. It did, on the reasoning that a
+         * knob under a finger means you are editing rather than looking -- but
+         * holding a step AND turning a knob IS the p-lock gesture, so that
+         * rule hid the strip during the one action it exists to support. You
+         * want to see which steps carry locks while you are putting one on a
+         * step, not only in the moment before. */
+        if (s.heldStep < 0) {
             /* THE CACHE ENDS WITH THE GESTURE, not with the step number.
              * Keyed on the step alone, holding the SAME step twice re-used the
              * first answer -- so a lock you had just made, on the step you made
@@ -5470,6 +5476,7 @@ export function createController(io = {}) {
     const LOCK_MAP_BOTTOM = FOOTER_Y + FOOTER_H;   /* 64 — the last row the footer owns */
     const LOCK_MAP_H = LOCK_MAP_BOTTOM - RULE_Y;   /* 9 — the rule and the footer */
     const LOCK_MAP_ANIM_MS = 110;
+    const LOCK_MAP_BLINK_MS = 620;
 
     function lockMapFrame() {
         const want = lockMap();
@@ -5493,7 +5500,13 @@ export function createController(io = {}) {
         /* Ease out: fast off the edge, settling onto the rule. */
         const e = cur.open ? 1 - (1 - p) * (1 - p) : p * p;
         const off = Math.round((cur.open ? 1 - e : e) * LOCK_MAP_H);
-        return { map: cur.map, y: RULE_Y + off };
+        /* The blink is computed HERE rather than in the draw so the draw stays
+         * a pure function of the frame it is handed -- the same reason the
+         * slide's offset is. Duty is deliberately long-on: the outline is a
+         * position marker first and an animation second, so it is present
+         * more often than not. */
+        const phase = (t % LOCK_MAP_BLINK_MS) / LOCK_MAP_BLINK_MS;
+        return { map: cur.map, y: RULE_Y + off, outline: phase < 0.65 };
     }
 
     function drawLockMap(ctx, frame) {
@@ -5513,10 +5526,18 @@ export function createController(io = {}) {
             const anywhere = (map.union >> i) & 1;
             if (onPage) ctx.fillRect(x + 1, y + 3, cell - 2, 5, 1);
             else if (anywhere) ctx.fillRect(x + 1, y + 5, cell - 2, 2, 1);
-            if (i === s.heldStep) {
+            if (i === s.heldStep && frame.outline) {
                 /* The held step is framed rather than filled: filling it would
                  * be a seventeenth kind of mark meaning "here", competing with
-                 * the two that mean "locked". */
+                 * the two that mean "locked".
+                 *
+                 * AND IT FLASHES. A static frame is one more thing on a strip
+                 * of sixteen small marks, and the eye does not find it; the
+                 * one cell that is CHANGING is the one the eye goes to, which
+                 * is exactly the job -- "this is the step you are editing".
+                 * Blinking the mark instead would fight the two marks that
+                 * mean "locked", so it is the OUTLINE that blinks and the
+                 * marks that stay still. */
                 ctx.fillRect(x, y + 2, cell - 1, 1, 1);
                 ctx.fillRect(x, y + h - 1, cell - 1, 1, 1);
                 ctx.fillRect(x, y + 2, 1, h - 2, 1);
