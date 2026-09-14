@@ -1126,5 +1126,35 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
     if (strcmp(sub, "armed") == 0)
         return snprintf(buf, buf_len, "%d", inst->lane_armed ? 1 : 0);
 
+    /* TEMPORARY DIAGNOSTIC -- see docs/plans/2026-09-14-automation-lanes-HANDOFF.md.
+     * The two mechanisms that can silence a lane (`punch_until_wrap`, and the
+     * recording pass via rec_active/rec_last_phase) are not separable from
+     * `lanes:driving`, which is one count of both. This reports them per lane
+     * beside the transport phase they are compared against, so the extra-loop
+     * report can be attributed rather than guessed at. Read-only; no state. */
+    if (strcmp(sub, "diag") == 0) {
+        int off = snprintf(buf, buf_len,
+                           "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d",
+                           inst->clip_phase_beats, inst->clip_phase_valid ? 1 : 0,
+                           inst->clip_loop_start, inst->clip_loop_len,
+                           inst->lane_armed ? 1 : 0,
+                           lane_is_recording(inst) ? 1 : 0);
+        for (int i = 0; i < LANE_MAX && off > 0 && off < buf_len; i++) {
+            const lane_t *ln = &inst->lanes.lanes[i];
+            if (!ln->used) continue;
+            const int live = lane_pass_live_at(ln, inst->clip_phase_beats,
+                                               inst->clip_loop_start,
+                                               inst->clip_loop_len);
+            off += snprintf(buf + off, buf_len - off,
+                            "\nL%d %s:%s n=%d drv=%d punch=%d pph=%.4f "
+                            "rec=%d rlp=%.4f live=%d stale=%d orph=%d",
+                            i, ln->target, ln->param, ln->n, ln->driving,
+                            ln->punch_until_wrap, ln->punch_phase,
+                            ln->rec_active, ln->rec_last_phase, live,
+                            ln->stale, ln->orphaned);
+        }
+        return off;
+    }
+
     return -1;
 }
