@@ -4,12 +4,13 @@ A map of **Ableton Move's firmware UI** — its views, its LED language, its
 buttons and its encoders — written so that a *program* can drive Move and know
 where it is.
 
-**Move has THREE readable channels and most of this document is about one of
+**Move has FIVE readable channels and most of this document is about one of
 them.** The control surface is §0–§10. **Move Manager — Ableton's own web app on
 port 80** (`http://move.local/`) — is §11–§12. **The firmware image**,
-`/opt/move/MoveOriginal`, is §13. The second and third were not considered until
-late, which is why several conclusions here that read "unreachable" were really
-"untried" — and both of them then overturned something.
+`/opt/move/MoveOriginal`, is §13. **The DSP tree and D-Bus** are §14. Everything
+after the first was added late, which is why several conclusions here that read
+"unreachable" were really "untried" — and each new channel overturned or closed
+something.
 
 **Firmware: Move 2.1.0**, confirmed two ways: on the device at **Setup → Update →
 Current Version** (`Move 2.1.0 / installed`), and over HTTP from
@@ -1826,13 +1827,101 @@ continuing: `SampleSlicingDelegate`, `SampleEditMenuDelegate`,
 **Reading the binary is the cheapest enumeration in this document** — 675 class
 names for one `strings` run, no device state touched, nothing to clean up.
 
+## 14. The fourth and fifth doors — the DSP tree and D-Bus
+
+§13 closed CC 40 / CC 43 across three channels **and named two it had not
+tried**. A gap with named untried doors is deferred, not closed. Both are now
+opened, read-only, and both are empty on this question.
+
+### 14.1 `/opt/move/Dsp/` contains no code at all
+
+```
+/opt/move/Dsp/Vector/Sprites/    194 files, ALL .wav, 56.8 MB
+```
+
+It is the **Vector synth's wavetable sprite library** — `Basic Shapes`,
+`Harmonic Series`, `Pulse Dual`, `Saw PW Detune`, `FM Feedback` and so on.
+`find /opt/move/Dsp -type f ! -name "*.wav"` returns **zero**. There is no DSP
+binary there to read.
+
+And there is no DSP binary anywhere else either: **`find /opt/move -name "*.so*"`
+returns zero.** Move ships no shared libraries — everything is statically linked
+into the executables, which is why `MoveOriginal` is 29.7 MB. **The DSP image and
+the UI image are the same file**, and §13 already read it.
+
+So this door was mis-named rather than unopened: there is nothing behind it that
+§13 did not already cover.
+
+### 14.2 D-Bus carries nothing about the surface
+
+The **complete** `com.ableton.*` D-Bus surface on the system bus, by
+introspection:
+
+| Object | Interface | Members |
+|---|---|---|
+| `/com/ableton/move` | — | 8 child nodes |
+| `…/settings` | `com.ableton.move.Settings` | signal `webServiceRedirectUri`; property `isMoveRunning` |
+| `…/screenreader` | `com.ableton.move.ScreenReader` | **signal `text`** |
+| `…/browser` | `com.ableton.move.Browser` | `importSongBundleFile`, `refreshCache`, `replaceFileReferences`, `saveSongIfDirty` |
+| `…/perf` | `com.ableton.move.PerformanceRecording` | `start`, `stop`, `pop` |
+| `…/songrenderer` | `com.ableton.move.SongRenderer` | `render`, `abort`; signal `status` |
+| `…/auth` | `com.ableton.move.WebServiceAuthentication` | `setSecret`; signal `secretDialogClosed` |
+| `…/cloudauth` | `com.ableton.move.CloudAuthentication` | `notifyAuthenticated`, `revokeTokens`, `status` |
+| `…/sshkeys` | `com.ableton.move.SSHKeys` | `requestAdd`; signal `requestAddFinished` |
+| `/com/ableton/System/HostName` | `com.ableton.system` | property `hostName` |
+| `/com/ableton/Update` | `com.ableton.update` | **`factoryReset`**, `registerSuccessfulStartup` |
+
+The other names on the bus are OS services, not Move's UI:
+`fi.w1.wpa_supplicant1`, `net.connman`, `org.freedesktop.Avahi`,
+`org.freedesktop.DBus`.
+
+**There is no LED interface, no animation signal and no surface state anywhere
+on it.** The only thing that describes the screen is the screen-reader `text`
+signal — which is the same source §11.2's SSE endpoint republishes over HTTP, and
+it is silent for the same reason (Move's screen reader is off).
+
+And the empirical check agrees with the introspection. Monitoring the whole
+system bus for **8 seconds while the pulse was running at ~50 LED events/s**:
+
+```
+messages: 1          ← and that one is NameAcquired, my own monitor connecting
+```
+
+**Zero Move traffic.** Whatever drives those two LEDs never reaches D-Bus.
+
+> ⚠️ `com.ableton.update` exposes **`factoryReset`** as a plain D-Bus method on
+> the system bus. It was introspected and **not called**. Anything enumerating
+> this bus should know it is one method call away from wiping the instrument.
+
+**`setSecret` on `…/auth` is the PIN flow from §11.1** seen from the other side —
+which is exactly what Schwung's `pin_check_and_speak()` watches for.
+
+### 14.3 CC 40 / CC 43: closed across five named channels
+
+| Channel | Result |
+|---|---|
+| **Control surface** | nine behavioural variations, two hypothesis classes — nothing moves it but the transport (§10.3, §11.6) |
+| **Move Manager HTTP API** | no LED or animation endpoint; an authenticated session and open SSE stream change the rate by nothing (§11–§12) |
+| **Firmware image** | `.symtab` stripped; `AnimatedColor` only a type parameter; of 675 RTTI classes, twelve LED delegates and **not one for a track button** (§13.3) |
+| **DSP tree** | 194 `.wav` files, no code, and no shared libraries anywhere under `/opt/move` (§14.1) |
+| **D-Bus** | no LED interface; **zero bus traffic** across 8 s while the pulse runs (§14.2) |
+
+The behaviour stays precisely characterised — **CC 43 blue at ~37.6/s, CC 40
+orange at ~12.4/s (`r` 32→48, `g` 13→19, `b` 0), both stopping dead the moment
+the transport runs and resuming when it stops** — and it is **not attributable
+from any channel reachable without new authorisation**.
+
+What would still be left to try, named so nobody has to guess: disassembling
+`.text` around `Animation.cpp`'s call sites (22.7 MB, stripped, and beyond what
+`strings` gives), or Ableton telling us.
+
 ---
 
 ## Where this map stops
 
-**Three channels were opened: the control surface (measured), Move Manager (read
+**Five channels were opened: the control surface (measured), Move Manager (read
 side measured, write side enumerated from Ableton's own source rather than
-tested), and the firmware image (read-only).** What remains is named, with its reason —
+tested), the firmware image, the DSP tree and D-Bus (all read-only).** What remains is named, with its reason —
 but note what §11 cost: the previous version of this sentence said "everything
 reachable" while an entire second channel had not been *considered*. A channel
 you have not thought of does not appear in a gap list. Treat the list below as
@@ -1841,7 +1930,7 @@ you have not thought of does not appear in a gap list. Treat the list below as
 | Gap | Why it stops here |
 |---|---|
 | **Creating** an audio track | Ten surface routes (§9.2) all fail, and Move Manager has no endpoint that edits a set's contents (§12.2). **Observing one is done** (§11.4). One untried route remains: uploading an `.ablbundle` that already contains an audio track (§12.2) — enumerated, not attempted. |
-| What CC 40 / CC 43's pulses represent | **Closed across three named channels**: the control surface (nine variations, §10.3, §11.6), the Move Manager API (§11–§12), and the firmware image (§13.3 — stripped `.symtab`, no animation class, no track-button LED delegate). Precisely characterised, not attributable. |
+| What CC 40 / CC 43's pulses represent | **Closed across FIVE named channels** (§14.3): the control surface (nine variations), the Move Manager API, the firmware image, the DSP tree (no code in it, and no shared libraries anywhere), and D-Bus (no LED interface; **zero** bus traffic across 8 s while the pulse runs). Precisely characterised, not attributable without new authorisation. |
 | ~~What the Set Overview step row encodes~~ | **SOLVED in §13.2** — it is the Shift shortcut layer painted persistently, with step 1 at `122` because you are already in Set Overview. Four sets, byte-identical; the firmware has no Song-Overview steps delegate. |
 | What the three Sampling settings items DO | Reached and **rendered** (§11.7) — a mic, a bar, a boxed waveform — but changing one and observing an effect was not done. |
 | A ninth context for Shift+Step 4/12/13 | Dead in eight (§8.1, §9.6) spanning both trap categories. Further contexts are unenumerable. |
@@ -1930,10 +2019,9 @@ Untested. A driver must not assume any of it.
   modal state. Further contexts are unenumerable.
 - **What the two idle pulses REPRESENT.** CC 43 blue at ~37.6/s, CC 40 orange at
   ~12.4/s, both gated on the transport being stopped (§10.3). Not attributable
-  from **any of the three channels**: nine behavioural variations on the surface
-  (§10.3, §11.6), the Manager API (§11–§12), and the firmware image (§13.3 —
-  stripped symbols, no animation class, no track-button LED delegate). Untried
-  fourth channels: the DSP binaries in `/opt/move/Dsp/`, and D-Bus.
+  from **any of five channels** (§14.3): the surface, the Manager API, the
+  firmware image, the DSP tree and D-Bus. No untried door remains short of
+  disassembling 22.7 MB of stripped `.text`, or asking Ableton.
 - ~~What the Set Overview step row encodes~~ — **answered in §13.2**: it is the
   Shift shortcut layer, painted persistently.
 - **What the three Sampling settings items DO.** Reached in §10.2 and
@@ -2347,6 +2435,21 @@ connection.
   "note": "the row is the SHIFT SHORTCUT LAYER painted persistently, not a Set Overview indicator",
   "observe": "step 1 = 122 (you are in Set Overview), the other shortcut steps = 124, steps 4/12/13 dark because those three shortcuts do not exist. Byte-identical across four loaded sets. The LOADED SET is marked on a PAD, channel 9.",
   "state": "set_overview"
+ },
+ {
+  "action": "enumerate_dbus",
+  "packets": "dbus-send --system --print-reply <path> org.freedesktop.DBus.Introspectable.Introspect",
+  "note": "READ ONLY - Introspect is safe; do NOT call methods. The complete com.ableton surface is in section 14.2.",
+  "observe": "com.ableton.move has 8 child objects (settings, screenreader, browser, perf, songrenderer, auth, cloudauth, sshkeys); com.ableton.system exposes hostName; com.ableton.update exposes factoryReset and registerSuccessfulStartup. NO LED or animation interface exists anywhere. dbus-monitor --system over 8 s while the LED pulse runs at ~50 events/s sees ZERO Move messages.",
+  "state": "unchanged",
+  "warning": "com.ableton.update exposes factoryReset as a plain system-bus method. Introspect it; never call it."
+ },
+ {
+  "action": "note_no_dsp_binaries",
+  "packets": "find /opt/move/Dsp -type f ! -name '*.wav' ; find /opt/move -name '*.so*'",
+  "note": "both return ZERO",
+  "observe": "/opt/move/Dsp is 194 wavetable .wav files for the Vector synth and contains no code; Move ships no shared libraries at all, so the DSP and UI images are the SAME statically-linked binary (MoveOriginal, read in section 13).",
+  "state": "unchanged"
  }
 ]
 ```
