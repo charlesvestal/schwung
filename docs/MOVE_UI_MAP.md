@@ -14,6 +14,11 @@ rather than an apology.
 The three questions every entry tries to answer are: **what packets**, **how do
 I know it worked**, and **where am I now**.
 
+The last of those is the hard one, and §2 is the result of testing it rather
+than asserting it: a claim in the first draft — "CC 118 tells you which view you
+are in" — did not survive, and is demoted there with the measurements that broke
+it and a scored 17-trial "get lost, then find yourself" experiment in its place.
+
 ---
 
 ## 0. Instrumentation — and one correction worth having
@@ -107,33 +112,146 @@ A Back with nothing to pop is a no-op (measured: Back inside the device carousel
 emitted no LED and changed nothing).
 
 To reach **Session** mode from the reset, add one `Menu` tap (§4.1) and verify
-`CC 118 → 0`.
+`CC 118 → 0`. Note `0` means *not Note*, not *Session* — see §2.2; from the
+reset state there is nothing else it could be, which is exactly why the reset is
+worth having.
 
 ---
 
 ## 2. Which view am I in?
 
-The single most useful fact in this document.
+The hardest question in this document, and the one where the first draft of this
+map was wrong. Read §2.1 before using anything in §2.
 
-### 2.1 `CC 118` is the Session/Note indicator
+### 2.1 There are at least THREE pad modes, not two
 
-| Mode | Move emits |
+"Session vs Note" is the wrong granularity. The pads mean three different things:
+
+| Pad mode | A pad press does | Discovered by |
+|---|---|---|
+| **Note** | plays the note / drum voice and selects it for step entry | pad flashes `126`, settles to `122`, step row repaints |
+| **Session** | launches the clip at `92 − 8·track + slot`; an **empty slot lights nothing at all** | ch 14 (queued) → ch 9 (playing), or total silence |
+| **Set Overview** | **LOADS A DIFFERENT SET** | the OLED's set name changes |
+
+That third one matters more than its share of the map. A driver that "probes
+with a harmless pad press" to find out where it is **will swap the user's set**
+if it happens to be in Set Overview. It happened here, twice, during this survey.
+
+### 2.2 `CC 118` — demoted: it is a TRANSITION signal, not a state you can read
+
+The first draft of this document called CC 118 "the Session/Note indicator" on
+the strength of four driven mode switches. That claim was too strong in two
+separate ways, and both were found by testing it rather than by reasoning:
+
+**(a) `CC 118 = 0` does not mean Session.** It means *not Note*. Entering Set
+Overview (Shift + Step 1) also emits `B0 76 00`. Session and Set Overview are
+indistinguishable on this CC.
+
+**(b) Move never emits it spontaneously**, so a driver arriving cold has nothing
+to read. It is emitted only when the Note-mode flag actually flips. Measured, by
+counting CC 118 in the LED stream for every route driven in this survey:
+
+| Route | Emits CC 118? | Observations |
+|---|---|---|
+| Menu tap that toggles the mode | **yes** — `0` or `124` | many |
+| Menu tap while an overlay screen is up | **no** — the tap dismisses the screen instead | 5+ |
+| Track button tap that changes the selected track | **yes** — `124` | 2 |
+| Track button tap on the track already selected | **no** — emits nothing at all | 1 |
+| Shift + Step 1 (Set Overview) | **yes** — `0` | 2 |
+| **Back** | **no** | every Back across 4 scored runs (`BACK_EMITTED_CC118: []`) |
+| Pad press / clip launch | **no** | 20+ |
+| Jog turn, jog click, Play/stop, knobs, Shift | **no** | all |
+
+So CC 118 **is** trustworthy for *following* a mode change you are watching for —
+which is more than `move_ui_mode` manages — and is **useless** for answering
+"where am I?" from a cold start.
+
+**Do not use "Menu twice" to provoke a restate.** It looks like a free
+self-restoring probe and it is a trap: when an overlay screen is up the first
+Menu tap only dismisses it, so two taps leave you in the **opposite** mode. A
+scored run of this method got 1 of 5 right and silently flipped the device in
+the rest.
+
+### 2.3 Localising cold: the Shift-release repaint
+
+This is the method that survived testing. It is **LED-only and
+non-destructive** — it presses nothing but Shift.
+
+```
+0BB0317F        hold Shift
+  (~350 ms)
+0BB03100        release  <-- read the step row Move sends HERE
+```
+
+On release Move restores the step row it covered with the shortcut layer.
+
+| What Move sends on release | Conclusion |
 |---|---|
-| Session | `B0 76 00`  (CC 118, value 0) |
-| Note    | `B0 76 7C`  (CC 118, value 124) |
+| step **Note-Ons** (`90 1x ..`), values from {70, 98, 104, 122, 124, 126} | **Note mode** — a step row exists |
+| **only note-offs** (`80 1x 00`) | **not Note** — Session or Set Overview |
+| **neither** — no step traffic at all | **inconclusive**: an overlay screen owns Shift. Press Back and retry |
 
-*Measured:* four mode switches driven with `Menu` (CC 50); CC 118 took exactly
-these two values each time, in the same LED burst as the mode card. Move re-emits
-it on every mode change, so a driver that misses one can force a re-emission by
-toggling Menu twice.
+To split Session from Set Overview, take the Shift **lamp** set in the same
+gesture (which step CCs went to 127) and test step 16: **step 16 dark ⇒ you are
+already in Set Overview.** Every Shift shortcut's lamp is dark while you are on
+the screen it opens, so the *missing* lamp names where you are — step 20 dark
+means the Tempo screen is open, and so on.
 
-*(Which physical LED CC 118 drives is **not known** — Move has no Note button.
-What is measured is the correlation.)*
+**Why not the lamp set alone?** It was the first candidate and it fails: the set
+varies with the track's *content*, not only with the mode. Track 1 (a drum kit)
+lit 12 lamps, track 3 lit 9, and a track with nothing on it lit none of the
+Note-only markers at all — so "no note markers" does not mean Session. Lamps
+21 and 23 also flip with the metronome/groove *state* rather than with the view.
+Scored on its own it got 3 of 5.
 
-### 2.2 The mode's LED refresh has two different shapes
+### 2.4 The get-lost experiment — 16 / 17
 
-On entering a mode Move repaints the whole surface. The two repaints are
-unmistakable:
+Run as a scored experiment, exactly as asked. Each trial: drive the reset, then
+a **pseudo-random walk of 7–9 presses** drawn from pads, track buttons, Back,
+Menu, jog turns and clicks, all four arrows, four Shift+Step screens, knobs and
+the master encoder — enough that the end state is genuinely not predictable —
+then answer "where am I?" using **only** §2.3, then check against an arbiter.
+
+*Arbiter (ground truth, deliberately not the rule under test):* the OLED's
+Set-Overview set-tile glyph identifies Set Overview; otherwise tap pad 92 and
+read Move's own answer — channel 9/14 ⇒ Session, no LED at all ⇒ Session (an
+empty slot), anything else ⇒ Note.
+
+| Batch | Trials | Correct |
+|---|---|---|
+| Mixed walk, 9 presses (seeds 301–312) | 12 | **11** |
+| Session-biased walk, 7 presses (seeds 501–505) | 5 | **5** |
+| **Total** | **17** | **16 (94 %)** |
+
+**The one failure was an `inconclusive`, not a wrong answer** (seed 310: walk
+ended `... jogclick, back, pad92, left, down`). The Shift release produced no
+step traffic at all, three Back presses did not clear it, and the rule gave up
+and said so. Truth was Note mode. That is the failure mode you want: it never
+answered confidently and wrongly in 17 trials.
+
+Two honest caveats on the number:
+
+- **The arbiter was wrong before the rule was.** Its first version classified
+  "pad 92 produced no LED" as Note, which made the rule look 0-for-5 on the
+  Session batch. The walk had switched the loaded set, so pad 92 no longer had a
+  clip under it. The rule was right in all five; the oracle was broken. Anyone
+  re-running this should expect to debug their oracle first.
+- **Zero of the 12 mixed trials landed in Session**, which is why the
+  Session-biased batch exists. Track buttons and Shift+Step both force you out
+  of Session, and a random walk containing them almost never ends there.
+
+### 2.5 When in doubt, do not read — RESET
+
+For anything that matters, §1 beats every probe in this section: five presses,
+lands in a byte-identical frame from every state tried, and leaves you knowing
+the mode *and* the track *and* the screen. The probes above exist for the case
+where resetting would destroy something you need (a queued clip, a held gesture).
+
+### 2.6 The mode's LED refresh has two different shapes
+
+When Move *does* change mode it repaints the whole surface, and the two repaints
+are unmistakable — useful when you are watching a transition rather than
+arriving cold.
 
 **Note mode** — writes *all sixteen* step notes and *every* pad note:
 
@@ -152,22 +270,11 @@ and writes each clip pad *twice*, on channel 0 and channel 9:
 B0 76 00                 CC 118 = 0
 ```
 
-### 2.3 The Shift lamp set differs by mode
+### 2.7 Screen-level views, by OLED signature
 
-Hold Shift (`0BB0317F`) and read which step CCs go to 127:
-
-| Mode | Steps lit (CC 16–31 = 127) |
-|---|---|
-| Session | 16, 17, 18, 20, 21, 22, 24 |
-| Note    | 16, 17, 18, 20, 21, 22, 24, **25, 26, 29, 30, 31** |
-
-*Measured once in each mode.* Release Shift to restore (`0BB03100`); Move sends
-the inverse burst.
-
-### 2.4 Screen-level views, by OLED signature
-
-These are screens layered *over* the pad mode; the pad mode does not change when
-they open.
+The OLED is **always readable and always current**, and it is the authority on
+the *screen* (as against the pad mode). These screens layer *over* the pad mode;
+opening one does not change what the pads do — except Set Overview, which does.
 
 | View | OLED signature (text band) | How you got there | Back leaves you |
 |---|---|---|---|
@@ -175,7 +282,7 @@ they open.
 | Mode card *(transient ~2 s)* | `Session Mode` / `Note Mode`, large, centred, boxed icon above | Menu tap | auto-dismiss |
 | Device carousel | a device name, e.g. `Dynamics`, `Saturator`, one boxed icon centred + neighbour icons | Menu tap then any jog turn | Back is a **no-op** here |
 | Device preset browser | three stacked rows of preset names | jog click on the carousel | back to the carousel |
-| Set Overview | `Set Overview` card, then `Set 3` + icon | Shift + Step 1 | — |
+| **Set Overview** | a distinctive set-tile icon glyph + the set's name (`Set 3`, `Empty Set`, `BNYX Demo 3`) | Shift + Step 1 | stays in Set Overview |
 | Tempo | `Tempo` + graphic | Shift + Step 5 | Set Overview / previous |
 | Metronome | `Metronome` / `On` | Shift + Step 6 | ditto |
 | Groove | `Groove` + graphic | Shift + Step 7 | ditto |
@@ -191,6 +298,10 @@ they open.
 *Every row above was reached and captured during this session.* Where a line
 reads `1??%` or `1/1?` the glyphs at those positions were not in the font table
 and were left unlabelled rather than guessed.
+
+The Set Overview row is the one worth hard-coding: its icon glyph identified Set
+Overview correctly in **every** observation (7/7), including from cold, and it is
+the only way to tell Set Overview from Session without touching a pad.
 
 ---
 
@@ -379,10 +490,14 @@ only in Note mode.
 
 ### 4.4 Pads and steps, per mode
 
-| Surface | Session | Note |
-|---|---|---|
-| Pads 68–99 | **launch the clip** at `92 − 8·track + slot`; queued (ch 14) then playing (ch 9); **also starts the transport** | play the note and make it the **selected** note for step entry (pad goes to `d2=122`) |
-| Steps 16–31 | tap produced **no observable effect** | **toggle a note** at that step for the selected pad note |
+| Surface | Session | Note | Set Overview |
+|---|---|---|---|
+| Pads 68–99 | **launch the clip** at `92 − 8·track + slot`; queued (ch 14) then playing (ch 9); **also starts the transport**. An empty slot emits **nothing at all** | play the note and make it the **selected** note for step entry (pad goes to `d2=122`) | **LOADS THE SET under that pad.** Measured twice, unintentionally both times |
+| Steps 16–31 | tap produced **no observable effect** | **toggle a note** at that step for the selected pad note | not tested |
+
+**The Set Overview column is the reason a driver must localise before it
+probes.** A pad press is the obvious "harmless" way to ask Move what mode it is
+in, and in one of the three modes it swaps the user's document.
 
 *Measured (Note view):* tapping step 16 lit it at 122 and, 14 s later, `Song.abl`
 carried a new note `(0.0, 60)` on that track. `Delete` + step 16 returned it to 98
@@ -429,6 +544,9 @@ What was determined for every control. "not tested" is an honest cell.
 | Steps 16–31 | no effect observed | toggle note | not tested | not tested |
 | Pads 68–99 | launch clip | play + select note | not tested | not tested |
 
+**Set Overview is absent from the columns above** on purpose: apart from "a pad
+loads that set" and "Back stays inside it", nothing in that mode was mapped.
+
 **Not covered at all:** every one of the 32 pads individually (only the
 layout-wide colour rule was measured, not the per-pad note mapping in Note view);
 the 8 knobs individually (only knob 1 was turned); Shift with any button other
@@ -448,10 +566,26 @@ Untested. A driver must not assume any of it.
   position where the list clamped, so they prove nothing. Likewise **whether
   repeated identical packets coalesce** — every repeat test was run against a
   clamped two-item list.
-- **What CC 118 physically is.** Only its correlation with Session/Note is
-  measured.
-- **Whether CC 118 tracks views other than Session/Note** — e.g. what it reads
-  inside Set Overview or the preset browser. It was never sampled there.
+- **What CC 118 physically is.** Only its correlation with the Note-mode flag
+  is measured.
+- **Whether there is a FOURTH pad mode.** Three were found (Note, Session, Set
+  Overview) and nothing systematic was done to look for more — the sampling
+  flow, a MIDI track and an audio track were never visited.
+- **Whether any state Move emits, anywhere, encodes the pad mode statically.**
+  Four candidates were tested and the results are in §2.2–2.3; no exhaustive
+  search of the LED surface was made. There may be a CC or a SysEx that simply
+  answers the question, and it was not found.
+- **Why the Shift-release repaint goes silent on some screens** (the one
+  inconclusive trial, and the Tempo/Groove screens). Something about those
+  screens claims Shift; which ones, and whether more than three Backs always
+  clears it, is unmeasured — three Backs was enough in 16 of 17 trials.
+- **What the Note-only Shift lamps (25, 26, 29, 30, 31) each require.** Their
+  presence varies with the track's content as well as the mode, which is what
+  made the lamp-set rule fail; the exact condition per lamp was not isolated.
+- **Whether the Shift probe is safe on every screen.** It was screen-neutral
+  wherever it was checked, but `disturbed: true` appeared on frames where a
+  transient card happened to be expiring, so a genuine Shift side effect on some
+  screen would not have been distinguished from that.
 - **The animation vocabulary in the channel nibble.** `BE 86 00` on Record was
   seen; nothing was decoded beyond "channel 14 appears on Record".
 - **SysEx command `08`** (`F0 00 21 1D 01 01 08 7F 7F F7`) — emitted on Undo and
@@ -478,6 +612,9 @@ Untested. A driver must not assume any of it.
 - **Anything in Session mode below the pad layer** — steps did nothing
   observable, but "nothing observable on the OLED and LED stream" is not the same
   as "nothing happened".
+- **What Set Overview's own surface does** beyond "a pad loads that set": the
+  jog, the steps, the arrows and Back were never mapped there, and it is the one
+  mode where a wrong press swaps the user's document.
 - **Whether the reset survives a modal that claims Back.** Four Backs cleared
   every state reached here; a confirmation dialog that swallows Back would defeat
   it and none was encountered.
@@ -497,8 +634,15 @@ connection.
    "state":"note_mode, track 1"},
 
   {"action":"toggle_session_note","packets":"0BB0327F s110 0BB03200",
-   "observe":"LED 'B0 76 00' => session, 'B0 76 7C' => note; OLED card 'Session Mode'/'Note Mode' ~2s",
-   "state":"session_mode | note_mode"},
+   "observe":"LED 'B0 76 00' => NOT note (session OR set overview), 'B0 76 7C' => note; OLED card ~2s",
+   "state":"session_mode | note_mode",
+   "warning":"with an overlay screen up this tap DISMISSES the screen and emits no CC118 — it does not toggle. Never assume two taps are a no-op."},
+
+  {"action":"localise_cold",       "packets":"0BB0317F s350 0BB03100",
+   "note":"read the step row Move sends on the RELEASE; see docs section 2.3",
+   "observe":"step Note-Ons (90 1x ..) => NOTE mode; only note-offs (80 1x 00) => not note; neither => inconclusive, press Back and retry. To split session from set overview, check whether step CC 16 went to 127 while Shift was held: dark => set overview.",
+   "state":"unchanged (non-destructive)",
+   "measured":"16 of 17 scored trials; the miss was a self-reported inconclusive"},
 
   {"action":"select_track",       "packets":"0BB0<2B|2A|29|28>7F s110 0BB0<..>00",
    "note":"CC 43,42,41,40 = tracks 1,2,3,4 (REVERSED)",
@@ -519,7 +663,7 @@ connection.
    "observe":"LED CC 85 -> 126 running, 124 stopped; 'pul=' advances only while 126", "state":"unchanged"},
 
   {"action":"launch_clip",        "packets":"0990<pad>77 s110 0980<pad>00",
-   "note":"session mode only; pad = 92 - 8*track + slot",
+   "note":"SESSION MODE ONLY; pad = 92 - 8*track + slot. The SAME packets in Set Overview LOAD A DIFFERENT SET — localise before you press a pad.",
    "observe":"'90 <pad> 7E' + '9E <pad> 7A' (queued), then '90 <pad> <colour>' + '99 <pad> 7A' (playing); also starts the transport",
    "state":"session_mode"},
 
