@@ -40,10 +40,36 @@ static void lane_release_one(chain_instance_t *inst, lane_t *ln) {
  * playing -- separate from lane_release_all, which skips lanes that are not
  * driving and is also called by paths (a state load, a clear) that empty the
  * store anyway. */
-void lane_record_end_all(chain_instance_t *inst) {
+CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
     if (!inst) return;
     for (int i = 0; i < LANE_MAX; i++)
         lane_record_end(&inst->lanes.lanes[i]);
+}
+
+/* A PUNCH CANNOT OUTLIVE THE TRANSPORT, and one that did was UNBOUNDED.
+ *
+ * The punch hands a target to the knob "until the loop comes round", and the
+ * only thing that ends it is a phase comparison in lane_tick. Losing the phase
+ * returns BEFORE that comparison -- so a punch armed before a stop survived the
+ * stop, and on the next Play the lane stayed silent from phase 0 until the
+ * transport passed back under `punch_phase`: a whole loop, near enough,
+ * whatever the user did in between.
+ *
+ * Which is reported as "I add p-locks with the clip stopped and I do not see
+ * them until after one loop" -- the locks are written, correctly, and then
+ * suppressed by a flag belonging to a gesture from before the stop. Nothing on
+ * screen explains it, and waiting one loop fixes it, which is exactly the
+ * shape that makes it read as "automation takes a loop to kick in".
+ *
+ * Ended here beside the recording pass because they are the same kind of
+ * state: both are a gesture's lifetime measured in transport time, and a
+ * stopped transport ends both. */
+CHAIN_INTERNAL void lane_punch_end_all(chain_instance_t *inst) {
+    if (!inst) return;
+    for (int i = 0; i < LANE_MAX; i++) {
+        inst->lanes.lanes[i].punch_until_wrap = 0;
+        inst->lanes.lanes[i].punch_phase = 0.0;
+    }
 }
 
 /* Remember the whole store so the next edit can be taken back.
@@ -85,6 +111,7 @@ void lane_tick(chain_instance_t *inst) {
          * continue from, so the next write that does have one must be a first
          * write rather than a sweep from a phase measured before the gap. */
         lane_record_end_all(inst);
+        lane_punch_end_all(inst);
         return;
     }
 

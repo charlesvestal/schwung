@@ -23,6 +23,12 @@ awk '/^static void step_note_withhold/,/^}/' "$src" > "$tmp/fn.inc"
 [ -s "$tmp/fn.inc" ] || fail "could not lift step_note_withhold out of $src"
 # The real threshold, never a copy of it.
 grep -E '^#define STEP_TAP_MS ' "$src" > "$tmp/tap.inc" || fail "STEP_TAP_MS is not defined in $src"
+# A FLOOR, not the exact value: what matters is that the window is wide enough
+# for a deliberate press, since every press past it silently does nothing and
+# reads as a dead button. 250 was measured on the device to be too tight.
+tapms=$(sed -E 's/.*STEP_TAP_MS[[:space:]]+([0-9]+).*/\1/' "$tmp/tap.inc")
+[ "$tapms" -ge 400 ] 2>/dev/null \
+  || fail "STEP_TAP_MS is ${tapms}ms -- too tight for a deliberate press (>=400)"
 
 cat > "$tmp/t.c" <<'EOF'
 #include <stdio.h>
@@ -170,3 +176,42 @@ grep -q 'shim_step_mark_used(step);' src/host/shadow_chain_mgmt.c \
   || fail "the step->phase translate must mark the press spent -- it is the one place every p-lock path goes through"
 n=$(awk '/^static int shadow_lanes_plock_step_translate/,/^}/' src/host/shadow_chain_mgmt.c | grep -c 'shim_step_mark_used')
 [ "$n" = "1" ] || fail "expected the mark inside the translate, found $n"
+
+# THE STEP BUTTONS COME BACK THE MOMENT OUR SCREEN DOES NOT.
+#
+# Reported from the device: "i can no longer actually toggle steps at all lol
+# ... in the sequencer to place notes."
+#
+# `step_observe` is written by shadow_ui from its `view`, and a view OUTLIVES A
+# DISMISS -- Menu hides the display and leaves the grid as the thing we would
+# draw next. So the flag sat at 1 with Move on screen and the shim went on
+# withholding every bare step press. The tap replay covered anything under
+# STEP_TAP_MS, so quick taps still toggled notes and deliberate presses did
+# not, which is what makes it read as a broken sequencer rather than as a
+# Schwung flag left on.
+#
+# Two gates, deliberately, and BOTH are pinned: the UI owns the flag, and the
+# shim refuses to act on it with Move on screen -- because what is at stake is
+# the user's step buttons, and a UI that lags or dies must not be able to take
+# them away.
+body=$(awk '/^function reconcileStepObserve/,/^}/' src/shadow/shadow_ui.js)
+[ -n "$body" ] || fail "reconcileStepObserve is gone"
+echo "$body" | grep -q 'shadow_get_display_mode' \
+  || fail "step_observe must not be wanted while Move owns the screen"
+echo "$body" | grep -qE 'const want = \(hostGrid \|\| !!moduleGrid\) && onScreen' \
+  || fail 'the display test must be part of the want expression, not a separate write'
+
+# The shim's own guard, at the site that withholds the press.
+swallow=$(grep -n "step_observe &&" -A 4 src/schwung_shim.c | grep -A 4 "d1 >= 16")
+grep -n "shadow_control->step_observe &&" -A 1 src/schwung_shim.c \
+  | grep -q "shadow_display_mode" \
+  || fail "the shim must not withhold a step press while Move owns the screen"
+
+# ...and the owed-release drain must STAY unconditional: a press begun on the
+# grid and released after a dismiss is still owed its release, and gating that
+# on the display hands Move a button-up for a press it never saw.
+drain=$(grep -n "step_swallow_latch\[d1 - 16\]" src/schwung_shim.c | head -1 | cut -d: -f1)
+[ -n "$drain" ] || fail "the owed-release drain is gone"
+sed -n "$((drain - 1)),${drain}p" src/schwung_shim.c | grep -q "shadow_display_mode" \
+  && fail "the owed-release drain must stay unconditional"
+echo "PASS: step observation follows the SCREEN, not the view"

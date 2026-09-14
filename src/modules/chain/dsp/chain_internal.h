@@ -1272,6 +1272,7 @@ CHAIN_INTERNAL void lane_release_all(chain_instance_t *inst);
 /* Snapshot the store for one-deep undo/redo; see lane_store_swap(). */
 CHAIN_INTERNAL void lane_undo_take(chain_instance_t *inst);
 CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst);
+CHAIN_INTERNAL void lane_punch_end_all(chain_instance_t *inst);
 CHAIN_INTERNAL void lane_on_set_param(chain_instance_t *inst, const char *target,
                                      const char *param, const char *val);
 CHAIN_INTERNAL void lane_current_fingerprint(chain_instance_t *inst,
