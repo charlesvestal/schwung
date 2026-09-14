@@ -348,6 +348,29 @@ double lane_pass_travel(double prev, double phase,
 int lane_pass_live_at(const lane_t *ln, double phase,
                       double loop_start, double loop_len);
 
+/* Does that pass SILENCE the lane at `phase`? A live pass that has not been
+ * carried across the loop's wrap since its last write.
+ *
+ * SILENCE AND LIFETIME ARE TWO QUESTIONS. lane_pass_live_at is also the ERASE
+ * span -- lane_record_point asks it what the hand swept -- so a sweep carried
+ * continuously across the loop point must stay live past the wrap, or the old
+ * curve survives underneath the new take at the top of the loop. But
+ * SUPPRESSION past the wrap silences the take's own playback of the points
+ * just written: measured 2026-09-14, a take whose last write lands near the
+ * loop end keeps its lane quiet for the remainder of LANE_PASS_GAP_BEATS,
+ * across the wrap and into the next loop. The overhang is
+ * (LANE_PASS_GAP_BEATS - distance from the last write to the loop end), so it
+ * is ~0 for a take that stops a beat early and approaches a whole beat for one
+ * carried up to the loop point.
+ *
+ * The wrap is the right boundary for the same reason `punch_until_wrap` uses
+ * it: once the transport has come round, the hand's claim is over and the
+ * recorded curve is what should be heard. A sweep still moving writes again
+ * within a block or two, which carries the pass past the wrap and resumes its
+ * silence. */
+int lane_pass_suppresses_at(const lane_t *ln, double phase,
+                            double loop_start, double loop_len);
+
 /* Value at `phase`, considering only points below loop_len.
  * `stepped` = 1 for int/enum params (hold), 0 for float (linear).
  * Returns 1 and writes *out, or 0 for "this lane has nothing to say" --
