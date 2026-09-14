@@ -63,8 +63,19 @@ observation of it as having established the constant across tempos.
 
 ### The step LEDs carry a playhead, and it reveals Move's PAGE
 
-Notes 16–31, `d2=126` is the playhead; `122` vs `102` distinguishes step
-content from empty. The playhead advanced every 6 pulses — exactly 1/16 — over
+Notes 16–31, `d2=126` is the playhead; `122` marks step content.
+
+> **CORRECTED 2026-09-14, and the `102` here is wrong** — see
+> `docs/MOVE_UI_MAP.md`, which decoded this on firmware 2.1.0. There is no
+> fixed "empty" value: it is a **per-track colour index** (98, 112 and 124 all
+> observed, 124 with no clip). And `122` **follows the selected drum voice**,
+> so the same step flips as you change pads with the clip untouched.
+>
+> **Test `== 122`, never `122` against a fixed empty value.** A comparison
+> against `102` — or against `98`, which an earlier pass of this same work
+> reported before finding the per-track variation — reads "empty" on a track
+> whose index simply differs, and reads it consistently, which is what makes it
+> dangerous rather than flaky. The playhead advanced every 6 pulses — exactly 1/16 — over
 200 events with **zero out-of-sequence jumps**.
 
 The load-bearing observation is the *gaps*:

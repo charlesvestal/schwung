@@ -1827,7 +1827,13 @@ inline is how this file got to 151 KB.
   landmine** that persists across screens and the reset until the next step press
   pastes, and **Menu is not idempotent on an overlay** (the first tap dismisses).
   **Move already owns hold-step + encoder as per-step automation**, which is the
-  gesture Schwung's own p-lock is built on.
+  gesture Schwung's own p-lock is built on — and its feedback is the encoder
+  RING turning red, never the step, which stays `122`. The step-content LED is
+  decoded there too: test **`== 122`**, never `122` against a fixed "empty"
+  value, because empty is a PER-TRACK colour index (98/112/124 seen) and `122`
+  follows the selected drum voice. Holding **Mute** publishes a per-track
+  automation mask on CCs 71-78 — the cheapest "does this parameter have
+  per-step automation?" query on the device, straight off the CC stream.
 - `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
   being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
   the two disagree the DEVICE is the authority. Carries the reconciliation table.
