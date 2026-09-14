@@ -146,12 +146,34 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
     const clip_state_t *cs = clip_state_current();
     if (!cs) return 0;
     const clip_track_state_t *tr = &cs->tracks[slot];
-    if (!tr->identity_valid || tr->clip_slot < 0 ||
-        tr->clip_slot >= CLIP_SLOTS) return 0;
-    *clip_slot = tr->clip_slot;
     const clip_regions_t *rg = shadow_clip_regions();
+    int cslot = (tr->identity_valid && tr->clip_slot >= 0 &&
+                 tr->clip_slot < CLIP_SLOTS) ? tr->clip_slot : -1;
+    /* A CLIP THAT HAS NEVER PLAYED STILL HAS AN IDENTITY, and it is the one
+     * on screen.
+     *
+     * `identity_valid` is set by a ch-9 ON -- a clip PLAYING. A clip you just
+     * made has never played, so it has none, and the chain was told
+     * `lane_clip_slot = -1`: every p-lock on it was refused with "no clip on
+     * this track" while the user was plainly looking at one. Reported from
+     * the device in those words, and it is the whole "new clip, add steps,
+     * p-lock them" flow.
+     *
+     * The WRITE path already resolved this the other way -- "a p-lock edits
+     * the clip on SCREEN, which is the SELECTED clip, not the playing one;
+     * step editing is mostly done stopped" -- so the two halves of the same
+     * gesture disagreed about which clip was being edited, and the half that
+     * refuses won. Same fallback, same gate: only when nothing is playing, so
+     * a playing track keeps the live answer and never the file's older one.
+     *
+     * Identity only. The PHASE still comes from a played clip's anchor, and
+     * "selected but never played" has no phase -- which is correct and is
+     * what the tri-state below already reports. */
+    if (cslot < 0) cslot = clip_regions_selected_slot(rg, (int)slot);
+    if (cslot < 0 || cslot >= CLIP_SLOTS) return 0;
+    *clip_slot = cslot;
     if (!rg || !rg->valid) return 0;
-    const clip_region_t *r = &rg->slots[slot][tr->clip_slot];
+    const clip_region_t *r = &rg->slots[slot][cslot];
     /* !(x > 0.0), not x <= 0.0: the second is FALSE for a NaN, so a torn read
      * of the regions table would reach clip_phase_beats() as a live length.
      * clip_phase_beats() spells it this way; both sites must mean the same
@@ -177,7 +199,7 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
          * safely take. */
         int segs = step_strip_segments_for_track(slot);
         if (segs <= 0 || !tr->anchor_valid) return 0;
-        double qpb = clip_regions_quarters_per_bar(rg, slot, tr->clip_slot);
+        double qpb = clip_regions_quarters_per_bar(rg, slot, cslot);
         double len = (double)segs * qpb;
         if (!(len > 0.0)) return 0;
         double ph = 0.0;
