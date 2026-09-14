@@ -605,7 +605,7 @@ automation.
 | The 32 pads individually in Note mode | the pad→pitch map needs one clip write per pad and an 8–14 s file settle each, ~8 minutes of device time for a map that `Song.abl` would give directly |
 | Knobs 2–7 individually | knobs 1 and 8 behaved identically (a parameter overlay + a ring value); the class looks uniform and was sampled, not enumerated |
 | **Creating** an audio track | ten surface routes and Move Manager all fail (§9.2, §11.2). **Observing** one is done — see §11.4 |
-| Move Manager's write side | file upload, firmware update, ssh enable and feature flags were deliberately not exercised on the user's instrument |
+| Move Manager's write side | fully **enumerated** in §12.2 from the app's source map; **not invoked** for the reasons in §12.4 (firmware/ssh/flags can take the instrument out of service or cut the channel Schwung depends on). One reversible directory create/delete round-trip was exercised. |
 | The sampling flow, Wi-Fi, Update | Update was opened only as far as Current Version; running one would reflash the user's instrument |
 | Set Overview's jog, arrows and Back beyond the tile screen | every probe there can change the loaded set |
 
@@ -1399,9 +1399,11 @@ Endpoint list lifted from the app bundle and then driven:
 | `GET /api/v1/screen-reader` | **an SSE stream of Move's screen-reader text** — see below |
 | also present | `/api/v1/update`, `/update/reboot`, `/ssh`, `/syslog{,/current,/zip}`, `/perf/{start,stop,pop}`, `/render`, `/language`, `/legal/licenses`, `/cloud-auth/{start,complete,revoke}`, `/feature-flags/{next,reset-next,schema}` |
 
-**It is a file and system manager, not a set editor.** Nothing in the surface
-creates or edits tracks, clips or devices — which is why the audio-track answer
-did not come from here either (§11.3).
+**It is a file and system manager, not a set editor.** Nothing in it creates or
+edits tracks, clips or devices — which is why the audio-track answer did not come
+from here either (§11.3). *(Refined in §12.2: whole sets **can** be listed,
+uploaded, renamed and deleted as `.ablbundle` objects. What has no endpoint is
+their contents.)*
 
 **`/api/v1/system/version` independently confirms the firmware** read off the
 OLED in §7 — 2.1.0, and it adds the build: commit `a6233f89a28a`, 2026-08-19,
@@ -1546,12 +1548,151 @@ the second — but neither was confirmed by changing one and observing an effect
 so both stay in Not known. The renders are here because an ASCII picture is more
 use to the next person than the phrase "not nameable".
 
+## 12. Move Manager's write side — enumerated, mostly not exercised
+
+§11 drove the read side. This section maps the **whole** API, including the parts
+that change the instrument, and states for each whether it was invoked. **Most
+were deliberately not invoked**, and that is a scope decision, not a limit of the
+device — the reasons are in §12.4.
+
+### 12.1 How this was enumerated: the app ships its own source
+
+Move serves a **source map** alongside the bundle:
+
+```
+GET /assets/index-CFUsWDQW.js.map        → 200, 6.4 MB, with sourcesContent
+```
+
+It contains the **original TypeScript of the API client**, so the endpoints,
+verbs and payload shapes below are read out of Ableton's own source rather than
+guessed from probing. Nineteen files under `packages/api-client/src/`, one per
+API module (`FilesApi.ts`, `DataApi.ts`, `MoveUpdateApi.ts`, …).
+
+**This costs the device nothing and is strictly better than probing** — it names
+methods a probe would never find and payload shapes a probe could only guess.
+Anyone extending this map should start here.
+
+### 12.2 The complete API
+
+`E` = exercised in this survey. `—` = enumerated only, never invoked.
+
+| | Method + path | What it does | Expects |
+|---|---|---|---|
+| **E** | `POST /api/v1/challenge` | puts a 6-digit PIN on the OLED | **`Content-Type: application/json`**, body `{}` |
+| **E** | `POST /api/v1/challenge-response` | exchanges the PIN for a 30-day cookie | `{"secret":"<pin>"}` |
+| **E** | `GET /api/v1/system/version` | firmware + build | — |
+| **E** | `GET /api/v1/is-move-running` | `{"isMoveRunning":bool}` | — |
+| **E** | `GET /api/v1/datetime` | ISO-8601 clock | — |
+| **E** | `GET /api/v1/language` | `{"languageCode":"en"}` — **answers unauthenticated** | — |
+| **E** | `GET /api/v1/feature-flags/current` `/schema` | the two flags and their schema — **`current` answers unauthenticated** | — |
+| **E** | `GET /api/v1/files/` and `/files/{path}` | directory listing of `UserLibrary` | — |
+| **E** | `GET /api/v1/data/Sets` | every set: `objectId`, `name`, `size`, `lastModifiedDateTime`, `cloudState` | — |
+| **E** | `OPTIONS /api/v1/files/{path}`, `/data/{bucket}` | capability discovery — see §12.3 | — |
+| **E** | `GET /api/v1/screen-reader` | SSE stream of screen-reader text | — |
+| **E** | `POST /api/v1/files/{path}` *(no body)* | **create a directory** | — |
+| **E** | `DELETE /api/v1/files/{path}` | **delete a file or directory** | — |
+| — | `PATCH /api/v1/files/{base}/{oldName}` | rename. The old path is **percent-encoded**, the new one is **not** | `{"path":"<base>/<newName>"}` |
+| — | `POST /api/v1/files/{path}` *(multipart)* | upload a file | `FormData`; extensions and size capped per directory (§12.3) |
+| — | `POST /api/v1/data/Sets` | upload a **set bundle** | `.ablbundle` |
+| — | `DELETE /api/v1/data/Sets/{objectId}` | delete a whole set | — |
+| — | `PATCH /api/v1/data/Sets/{objectId}` | rename a set | — |
+| — | `PATCH /api/v1/language` | change UI language | `{"languageCode":…}` |
+| — | `PATCH /api/v1/system/update-channel` | switch update channel | `{updateChannel}` |
+| — | `GET /api/v1/update/{channel}/{version}/` | check for an update | — |
+| — | `POST /api/v1/update` | **install a firmware update** | multipart |
+| — | `POST /api/v1/update/reboot` | **reboot to finish an update** | — |
+| — | `PATCH /api/v1/feature-flags/next` `/reset-next` | set / clear a flag for next boot | `{name, value}` |
+| — | `POST /api/v1/ssh` | **add an authorised SSH public key** | `{sshKey}` |
+| — | `GET /api/v1/syslog`, `/syslog/{id}`, `/current`, `/zip` | system logs | — |
+| — | `POST /api/v1/perf/start` `/stop` `/pop` | performance recording | — |
+| — | `POST /api/v1/render/{objectId}?format=…` | **render a set to audio**; `DELETE /api/v1/render/{id}` aborts | — |
+| — | `POST /api/v1/cloud-auth/start` `/complete` `/revoke` | Ableton Cloud linking | — |
+| — | `POST /api/v1/time` | set the system clock | ISO-8601 |
+
+**There is no API that edits the CONTENTS of a set.** §11.2 said "no set-editing
+API", which was too broad: sets can be **listed, uploaded, renamed and deleted**
+as whole `.ablbundle` objects. What has no endpoint is tracks, clips, devices or
+notes. That is why Move Manager offered no eleventh route to *creating* an audio
+track (§9.2) — though uploading a bundle that already contains one would work,
+and was not attempted.
+
+### 12.3 `OPTIONS` is honoured, and it is the cheapest thing in this document
+
+Only the `files` and `data` trees answer it; everything else 404s on OPTIONS.
+Where it answers it returns real capability headers:
+
+| Path | `Allow` | Extra headers |
+|---|---|---|
+| `/api/v1/files/` | `OPTIONS, GET` — **the root is read-only** | `Allowed-Audio-Conversion-File-Extensions: .aif, .aiff` |
+| `/api/v1/files/Sets` | `OPTIONS, GET, PATCH, DELETE` — **no POST** | ditto |
+| `/api/v1/files/Recordings` | `OPTIONS, GET, PATCH, DELETE` | ditto |
+| `/api/v1/files/Samples` | `OPTIONS, GET, POST, PATCH, DELETE` | `Allowed-Post-File-Size: 100000000`, `Allowed-Post-File-Extensions: .wav, .wave, .aif, .aiff, .aifc` |
+| `/api/v1/files/Track Presets` | `OPTIONS, GET, POST, PATCH, DELETE` | `Allowed-Post-File-Extensions: .ablpresetbundle` |
+| `/api/v1/data/Sets` | `GET, POST, DELETE, PATCH, OPTIONS` | `Allowed-Post-File-Extensions: .ablbundle` |
+
+So **per-directory write permissions and upload limits are discoverable without
+writing anything** — a 100 MB cap on Samples, and each tree accepts only its own
+bundle type.
+
+### 12.4 The one write that was exercised, and why the rest were not
+
+**Exercised** — a create/delete round-trip with a matching undo, on a throwaway
+name, touching nothing of the user's:
+
+```
+POST   /api/v1/files/Samples/zz-probe   → 200, appears in the listing
+PATCH  /api/v1/files/Samples/zz-probe   → 400 {"error":"… \"path\" property required by JSON body."}
+DELETE /api/v1/files/Samples/zz-probe   → 200
+GET    /api/v1/files/Samples            → clean; verified on disk, 0 entries left
+```
+
+The PATCH failure is itself the finding: **rename needs `{"path": "<base>/<newName>"}`**,
+and the server says so. The source confirms the asymmetric encoding — old path
+percent-encoded, new path not.
+
+**Deliberately NOT exercised**, with the reason:
+
+| Endpoint | Why not |
+|---|---|
+| `POST /api/v1/update`, `POST /api/v1/update/reboot` | **would change the firmware this entire document is pinned to (2.1.0) and can take the instrument out of service.** Not reversible from here and not authorised. |
+| `PATCH /api/v1/system/update-channel` | switching to a beta channel invites exactly that. |
+| `POST /api/v1/ssh` | installs an authorised key. **SSH is the channel Schwung and this survey both depend on**; anything touching it risks the access everything else needs. |
+| `PATCH /api/v1/feature-flags/next` `/reset-next` | unknown blast radius, applied at next boot, and one of the two flags governs a virtual-memory limit on the Move app. |
+| `POST /api/v1/data/Sets`, `DELETE`, `PATCH` on a set | whole-set upload/delete/rename against the user's eight sets. The user's "run wild" covered **clip, track and device contents**, not destroying his sets wholesale. |
+| `POST /api/v1/files/{path}` multipart upload | same reasoning; the create/delete round-trip already proves the write path is live. |
+| `POST /api/v1/render/{objectId}` | renders a set to audio — heavy, and its only abort is a DELETE against an id you must already hold. |
+| `POST /api/v1/cloud-auth/start` `/complete` | links the device to an Ableton Cloud account. Not mine to link. |
+| `POST /api/v1/time` | sets the system clock; nothing here needs it. |
+| `POST /api/v1/perf/*`, `GET /syslog/*` | harmless but irrelevant; enumerated for completeness. |
+
+**Every one of these is a scope decision, not a device limit.** They are all
+reachable, the payloads are in §12.2, and a future pass with explicit permission
+could drive any of them.
+
+### 12.5 Two things to carry away
+
+**The SSE screen-reader stream would replace this document's OCR pipeline.**
+`GET /api/v1/screen-reader` returns Move's screen text as
+`data: {"type":"text","text":"Drum Kit"}`. It is **gated on Move's own screen
+reader, which is OFF on this device**, so it emits the current screen and then
+stays silent. Anyone who can switch that on gets the OLED as text and needs none
+of §0's glyph table.
+
+**Authenticating issues a 30-day token and there is no revoke.**
+`Set-Cookie: Ableton-Challenge-Response-Token=…; Max-Age=2592000; HttpOnly;
+SameSite=Strict`. Nothing in the API revokes it — `/api/v1/cloud-auth/revoke` is
+for Ableton Cloud, not for this session. **Two such tokens were issued during
+this survey** (§11.1 and §12). The local cookie jars were deleted; the
+device-side grant stands until it expires. A user who wants it gone should
+assume a reboot or a firmware update is the only lever, and that was not tested.
+
 ---
 
 ## Where this map stops
 
-**Everything reachable from Move's control surface has been measured, and the
-read side of Move Manager with it.** What remains is named, with its reason —
+**Everything reachable from Move's control surface has been measured; Move
+Manager's read side with it; and its write side is enumerated from Ableton's own
+source rather than tested.** What remains is named, with its reason —
 but note what §11 cost: the previous version of this sentence said "everything
 reachable" while an entire second channel had not been *considered*. A channel
 you have not thought of does not appear in a gap list. Treat the list below as
@@ -1559,17 +1700,20 @@ you have not thought of does not appear in a gap list. Treat the list below as
 
 | Gap | Why it stops here |
 |---|---|
-| **Creating** an audio track | Ten surface routes (§9.2) and Move Manager (§11.2, no set-editing API) all fail. **Observing one is done** (§11.4) — three factory sets already contain them. |
+| **Creating** an audio track | Ten surface routes (§9.2) all fail, and Move Manager has no endpoint that edits a set's contents (§12.2). **Observing one is done** (§11.4). One untried route remains: uploading an `.ablbundle` that already contains an audio track (§12.2) — enumerated, not attempted. |
 | What CC 40 / CC 43's pulses represent | Characterised precisely (§10.3); **nine** variations across two hypothesis classes — musical state and external/network (§11.6) — move nothing but the transport. |
 | What the Set Overview step row encodes | An indicator no press acts on (§9.5). The obvious hypothesis, "it shows the loaded set", is **disproved** (§11.5): the pattern is identical under two different sets. |
 | What the three Sampling settings items DO | Reached and **rendered** (§11.7) — a mic, a bar, a boxed waveform — but changing one and observing an effect was not done. |
 | A ninth context for Shift+Step 4/12/13 | Dead in eight (§8.1, §9.6) spanning both trap categories. Further contexts are unenumerable. |
 | The upper bound of *every* per-step parameter | One measured to its clamp (§9.3, Grain Size 0–300 ms). The rest are device-defined. |
-| Everything Move Manager can WRITE | §11 drove the read side and the PIN flow. The write side — file upload, update, ssh, feature flags — was deliberately not exercised on the user's instrument. |
+| Move Manager's write endpoints | **Enumerated in full from Ableton's own source map** (§12.2) and deliberately not invoked (§12.4): firmware update and reboot, update channel, ssh key install, feature flags, whole-set upload/delete/rename, render, cloud linking, clock. A **scope decision, not a device limit** — payloads are documented and any of them is reachable with explicit permission. One reversible create/rename/delete round-trip WAS exercised. |
 
-That table is the *structural* ceiling — gaps the surface cannot answer. The
-**Not known** section below is the running list of everything else that was
-never nailed down, and it is longer; read both.
+That table is the ceiling. **Two of its rows are a scope decision rather than a
+device limit** — Move Manager's write endpoints, and the `.ablbundle` upload
+route to an audio track — and they say so, because "we chose not to" and "it
+cannot be done" are different facts and only one of them is about Move. The
+**Not known** section below is the longer running list of everything else that
+was never nailed down; read both.
 
 This document does not claim to be complete, and those two lists are the reason
 it does not. Several of its own headline claims were overturned by later
@@ -1584,6 +1728,15 @@ from a device whose set has since changed will read as a device behaviour. When
 something here disagrees with the instrument in front of you, the instrument is
 right.
 
+**And the honest summary of the whole exercise:** every conclusion that was
+overturned had been *asserted from one observation and then built on*. The
+method that worked — every time — was to vary the thing the claim depended on
+and look again: a second set broke CC 118, a second track type broke half the
+"in Note mode" rules, a second hypothesis class closed the idle pulse, counting
+per-CC instead of filtering broke the animation count, and reading the sets off
+disk broke "there is nothing to observe". None of those needed new tooling. They
+needed one more variation.
+
 ---
 
 ## Not known
@@ -1595,6 +1748,14 @@ Untested. A driver must not assume any of it.
   position where the list clamped, so they prove nothing. Likewise **whether
   repeated identical packets coalesce** — every repeat test was run against a
   clamped two-item list.
+- **What every NOT-EXERCISED Move Manager endpoint actually does** (§12.4). They
+  are enumerated with their payloads; none was invoked, by choice.
+- **Whether uploading an `.ablbundle` containing an audio track is a route to
+  creating one.** `POST /api/v1/data/Sets` accepts set bundles (§12.2); it was
+  not attempted, so "no route creates an audio track" remains a statement about
+  the **surface** plus the ten routes in §9.2.
+- **How to revoke the 30-day Move Manager token.** Nothing in the API does it
+  (§12.5); whether a reboot or update clears it was not tested.
 - **When CC 118's lamp changes, and why it is set-dependent.** It is the
   Sampling button's availability lamp (§9.1) and it did not fire at all on the
   mode toggles of a second set (§11.4). What governs Sampling's availability per
@@ -2012,6 +2173,28 @@ connection.
   "packets": "n/a - observations",
   "observe": "On an AUDIO track: pads are INERT (no LED at all), knobs open no parameter overlay, there is no per-step automation, the Mute automation mask is not transmitted, the step row is uniformly 126, the Shift layer loses its Note-only lamps (25/26/30/31), hold-step+jog reads 'Empty Audio Clip', and Sampling is still available. CC 118 did NOT fire on mode toggles in that set at all.",
   "state": "unchanged"
+ },
+ {
+  "action": "move_manager_enumerate_api",
+  "packets": "GET /assets/index-<hash>.js.map",
+  "note": "the app ships a 6.4 MB source map WITH sourcesContent - the original TypeScript of the API client, ~19 files under packages/api-client/src/",
+  "observe": "every endpoint, verb and payload shape, read without touching the device. Strictly better than probing.",
+  "state": "unchanged"
+ },
+ {
+  "action": "move_manager_options",
+  "packets": "OPTIONS /api/v1/files/<path> | /api/v1/data/<bucket>",
+  "note": "only the files and data trees answer OPTIONS; everything else 404s on it",
+  "observe": "Allow: per-directory verbs, plus Allowed-Post-File-Extensions and Allowed-Post-File-Size (100000000 on Samples). Per-directory write permission is discoverable WITHOUT writing.",
+  "state": "unchanged"
+ },
+ {
+  "action": "move_manager_file_write",
+  "packets": "POST /api/v1/files/<path> (no body) ; DELETE /api/v1/files/<path>",
+  "note": "the only write exercised - create and delete a throwaway directory, fully undone",
+  "observe": "POST 200 creates a directory; DELETE 200 removes it. RENAME is PATCH /api/v1/files/<base>/<oldNamePercentEncoded> with {\"path\":\"<base>/<newName>\"} - the old path is percent-encoded and the new one is NOT.",
+  "state": "unchanged if you delete what you create",
+  "destructive": true
  }
 ]
 ```
