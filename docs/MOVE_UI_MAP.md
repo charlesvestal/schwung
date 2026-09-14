@@ -4,10 +4,12 @@ A map of **Ableton Move's firmware UI** — its views, its LED language, its
 buttons and its encoders — written so that a *program* can drive Move and know
 where it is.
 
-**Move has TWO control channels and most of this document is about one of them.**
-The control surface is §0–§10. **Move Manager — Ableton's own web app on port 80**
-(`http://move.local/`) — is §11; it was not considered until late, which is why
-several conclusions here that read "unreachable" were really "untried".
+**Move has THREE readable channels and most of this document is about one of
+them.** The control surface is §0–§10. **Move Manager — Ableton's own web app on
+port 80** (`http://move.local/`) — is §11–§12. **The firmware image**,
+`/opt/move/MoveOriginal`, is §13. The second and third were not considered until
+late, which is why several conclusions here that read "unreachable" were really
+"untried" — and both of them then overturned something.
 
 **Firmware: Move 2.1.0**, confirmed two ways: on the device at **Setup → Update →
 Current Version** (`Move 2.1.0 / installed`), and over HTTP from
@@ -685,7 +687,7 @@ menu.
 |---|---|---|---|
 | 1 | 16 | Set Overview | any |
 | 2 | 17 | System (Battery / Wi-Fi / Update / …) | any |
-| 3 | 18 | Clip settings — `Max Length` / `Quantize` / `Step Grid` | any |
+| 3 | 18 | **Workflow Settings** (`WorkflowSettingsDialog`, §13.4) — the screen is untitled; it shows `Max Length` / `Quantize` / `Step Grid` | any |
 | 4 | 19 | **nothing, in five contexts** (§8.1) | — |
 | 5 | 20 | Tempo | any |
 | 6 | 21 | Metronome (`On` / `Off`) | any |
@@ -693,7 +695,7 @@ menu.
 | **8** | **23** | **16 Pitches — a toggle, reports `On` / `Off`** | **Drum Kit track only** |
 | 9 | 24 | Scale — `C Chromatic` / `Major` | any |
 | **10** | **25** | **Full Velocity — a toggle, reports `On` / `Off`** | **Drum Kit track only** |
-| 11 | 26 | Note Repeat (rate) | Note mode |
+| 11 | 26 | **Arpeggiator** (rate / settings) — first read as "Note Repeat"; the firmware has `ArpeggiatorRateDialog` and no note-repeat class (§13.4) | Note mode |
 | 12, 13 | 27, 28 | **nothing, in five contexts** (§8.1) | — |
 | 14 | 29 | New clip — **creates a clip** | Note mode |
 | **15** | **30** | **Double Loop** — `Loop doubled`, and the step row grows (§8.1) | Note mode |
@@ -1199,9 +1201,10 @@ can be read confidently as "no response".
 The Shift layer in Set Overview lights only `17, 18, 20, 24` — and step 16 is
 dark, which is the §2.3 tell for "you are already in Set Overview".
 
-What the 122 / 126 / dark positions encode is **still not known**; it is plainly
-an indicator of something (8 sets exist on disk, 14 step positions are lit), and
-no press acts on it.
+What the 122 / 126 / dark positions encode is **answered in §13.2**: the row is
+the **Shift shortcut layer**, drawn persistently, with step 1 at `122` because
+step 1 *is* Set Overview and you are already in it. That is why no press acts on
+it — the shortcuts need Shift held.
 
 ### 9.6 Shift + Step 4, 12, 13 — dead in eight contexts
 
@@ -1495,7 +1498,9 @@ is only *which positions were re-transmitted* — Move writes an LED when it
 changes, so a position missing from a capture is unchanged, not dark.
 
 So the most likely hypothesis — that the row indicates which set is loaded — is
-**disproved**: the pattern is identical across two different loaded sets. (What
+**disproved**: the pattern is identical across two different loaded sets (four,
+by §13.2). **§13.2 then identifies what it actually is**: the Shift shortcut
+layer, painted persistently. (What
 *does* mark the loaded set is a **pad**: in Set 3 pad 99 carried the channel-9
 marker, and with BNYX Demo 3 loaded no pad in the captured window did.) What the
 step row encodes remains unknown, but the obvious candidate has now been tested
@@ -1686,13 +1691,148 @@ this survey** (§11.1 and §12). The local cookie jars were deleted; the
 device-side grant stands until it expires. A user who wants it gone should
 assume a reboot or a firmware update is the only lever, and that was not tested.
 
+## 13. The third channel — Move's own firmware image
+
+`/opt/move/MoveOriginal` is Move's executable, 29,740,104 bytes, readable over
+ssh. **Read only** — nothing here modified, moved or replaced it; its size and
+mtime are unchanged (`Aug 19 13:03`).
+
+Aimed at the two questions §10–§12 closed as unattributable. **One is now
+solved; the other is genuinely closed across three named channels.**
+
+### 13.1 What the image will and will not tell you
+
+The binary is **stripped of `.symtab`** — 32 sections, `.dynsym` only (1,153
+entries, essentially imports). Internal function names are gone.
+
+What survives is **RTTI class names in `.rodata`**, and they are remarkably rich:
+**675 distinct `ableton::move` classes**, plus assert strings that carry their
+source paths (`products/move/MoveLib/src/…`). One single mangled symbol contains
+**Move's entire view tree** — every view, delegate and LED delegate, nested in
+construction order.
+
+```bash
+strings -n 6 /opt/move/MoveOriginal            # 22,991 strings
+# class names:
+grep -oE 'NS0_[0-9]+[A-Za-z]+' out | sed -E 's/^NS0_[0-9]+//' | sort -u
+```
+
+Source files named by asserts include `StepButtonColorUtils.cpp`,
+`SongOverviewView.cpp`, `Animation.cpp`, `ColorStyle.hpp`, `Color.cpp`,
+`DrumPadsView.cpp`, `MelodicPlayView.cpp`, `StepEditorView.cpp`,
+`ScreenReaderSurface.cpp`, `Clipboard.cpp`, `SampleRecorder.cpp`.
+
+### 13.2 SOLVED — the Set Overview step row is the Shift shortcut layer
+
+Loaded **four different sets** and read the row each time:
+
+| Loaded set | Step row |
+|---|---|
+| BNYX Demo 1 | `1:122`, `2,3,5,6,7,8,9,10,11,14,15,16 : 124`, **4, 12, 13 dark** |
+| BNYX Demo 2 | identical |
+| BNYX Demo 4 | identical |
+| Set 3 | identical |
+
+**Byte-identical across all four**, and the loaded set is marked correctly on a
+**pad** each time (ch 9 on pad 68, 69, 71, 99 respectively). So it certainly does
+not encode the set.
+
+**Then compare it with the Shift lamp set.** The lit positions are
+`1,2,3,5,6,7,8,9,10,11,14,15,16` and the dark ones are `4, 12, 13` — which is
+**exactly** the Shift+Step map of §7.3/§8.1: twelve shortcuts plus step 8
+(16 Pitches) on a drum-kit track, and steps 4, 12 and 13 unused *everywhere*
+(§8.1 and §9.6 proved those three dead in eight contexts).
+
+So the row is **the Shift shortcut layer, painted persistently in Set Overview**,
+with one position distinguished: **step 1 shows `122` instead of `124` because
+step 1 *is* Set Overview and you are already in it** — the same "the current
+screen's own lamp differs" rule §2.3 uses to detect Set Overview.
+
+The firmware agrees. Move names four step-row delegates —
+`LoopModeStepsDelegate`, `StepEditorDelegate`, `AudioTrackLoopModeStepsDelegate`,
+`AudioTrackStepsDelegate` — and **Song Overview (Move's internal name for Set
+Overview) has none of them**: it has `SongOverviewView` and
+`SongOverviewWheelViewDelegate`, a *wheel* (jog) delegate. Nothing in Song
+Overview owns the step row, which is why a press does nothing (§9.5) and why the
+row is invariant.
+
+**That closes it, and it retires a gap rather than restating one.**
+
+### 13.3 NOT SOLVED — CC 40 / CC 43's idle pulses, now closed across three channels
+
+The image does not name its LED animations:
+
+- **No `.symtab`.** Any `Animation.cpp` function names are stripped.
+- **`Animation.cpp` exists** as an assert path, and `AnimatedColor` exists as one
+  of four colour variants (`RgbPaletteColor`, `RgbColor`, `MonochromeColor`,
+  `AnimatedColor`) — but `AnimatedColor` appears only as a *type parameter*.
+  There is no animation-kind class, enum or table.
+- **Of the 675 `ableton::move` classes, twelve are LED delegates** — and every
+  one is a Shift-layer icon (`MainModeShiftStepIconLedDelegate`,
+  `MetronomeButtonIconLedDelegate`, `NewClipButtonIconLedDelegate`,
+  `FullVelocityButtonIconLedDelegate`, `QuantizeButtonIconLedDelegate`,
+  `DoubleLoopButtonIconLedDelegate`, `LayoutsButtonLedDelegate`,
+  `ArpeggiatorButtonIconLedDelegate`, `ArpeggiatorButtonLedDelegate`,
+  `GrooveAmountLedDelegate`, `DialogModeIconViewLedDelegate`,
+  `MainModeIconViewLedDelegate`). **There is no track-button LED delegate at
+  all**, and nothing carrying the measured colour values.
+
+So the honest statement is now three channels wide, each named:
+
+> **CC 40 and CC 43's idle pulses are not attributable from the control surface
+> (nine behavioural variations, §10.3 and §11.6), from the Move Manager HTTP API
+> (§11–§12), or from the firmware image (§13).** They remain precisely
+> characterised — ~12.4/s orange on CC 40, ~37.6/s blue on CC 43, both stopping
+> dead while the transport runs — and unattributed.
+
+That is a stronger claim than the one it replaces, because it says which doors
+were tried. A fourth channel would be the DSP binaries in `/opt/move/Dsp/`, the
+D-Bus interface, or a debug build — none of which was opened.
+
+### 13.4 What the view tree gives back for free
+
+The single view-tree symbol is a structural map of Move's UI, and it
+**cross-checks §7.3's Shift+Step layer**: twelve button delegates, one per lit
+lamp, in construction order — `SongOverviewModeButton`, `GrooveAmountButton`,
+`LayoutsButton`, `ScaleButton`, `WorkflowSettingsButton`, `TempoButton`,
+`MetronomeButton`, `ArpeggiatorButton`, `NewClipButton`, `FullVelocityButton`,
+`QuantizeButton`, `DoubleLoopButton`.
+
+Two corrections to §7.3 follow, both about **names**, not behaviour:
+
+- **Step 11 is the ARPEGGIATOR, not "Note Repeat".** §7.3 read the screen as
+  `C Repeat / Rate 1/1?`; the firmware has `ArpeggiatorButtonDelegate`,
+  `ArpeggiatorRateDialog`, `ArpeggiatorSettingsDialog` and
+  `ArpeggiatorStyleDialog`, and no note-repeat class at all.
+- **Step 3 is Move's "Workflow Settings"** (`WorkflowSettingsDialog`) — §7.3
+  described it by its contents (`Max Length / Quantize / Step Grid`) because the
+  screen carries no title.
+
+It also independently confirms **audio tracks are a first-class track type** —
+`AudioTrackStepsDelegate`, `AudioTrackLoopModeStepsDelegate`,
+`makeAudioTrackNoteModeStepsView`, `RecordButtonDelegateNoteModeAudioTrack`,
+`SampleRecordingButtonDelegateNoteModeAudioTrack` versus their `…MidiTrack`
+twins — which is exactly the split §11.4 measured on the surface.
+
+And it names a great deal this survey never reached, each a pointer for anyone
+continuing: `SampleSlicingDelegate`, `SampleEditMenuDelegate`,
+`BouncingDelegate`, `CaptureDelegate`, `ChokeParameterDelegate`,
+`RegionStartParameterView` / `RegionEndParameterView`, `LedBrightnessDelegate`,
+`RefreshRateDelegate`, `MidiClockModeMenuDelegate`,
+`UsbAudioOutputSourceDelegate`, `LinkSettingsDelegate`, `TrackColorsMenuDelegate`,
+`SongColorsMenuDelegate`, `ResetMoveDialogDelegate`, `InputGainDelegate`,
+`FixedMonitoringTrackDelegate`, `MaxRecordingLengthViewDelegate`.
+
+**Reading the binary is the cheapest enumeration in this document** — 675 class
+names for one `strings` run, no device state touched, nothing to clean up.
+
 ---
 
 ## Where this map stops
 
-**Everything reachable from Move's control surface has been measured; Move
-Manager's read side with it; and its write side is enumerated from Ableton's own
-source rather than tested.** What remains is named, with its reason —
+**Three channels were opened: the control surface (measured), Move Manager (read
+side measured, write side enumerated from Ableton's own source rather than
+tested), and the firmware image (read-only).** What remains is named, with its reason —
 but note what §11 cost: the previous version of this sentence said "everything
 reachable" while an entire second channel had not been *considered*. A channel
 you have not thought of does not appear in a gap list. Treat the list below as
@@ -1701,8 +1841,8 @@ you have not thought of does not appear in a gap list. Treat the list below as
 | Gap | Why it stops here |
 |---|---|
 | **Creating** an audio track | Ten surface routes (§9.2) all fail, and Move Manager has no endpoint that edits a set's contents (§12.2). **Observing one is done** (§11.4). One untried route remains: uploading an `.ablbundle` that already contains an audio track (§12.2) — enumerated, not attempted. |
-| What CC 40 / CC 43's pulses represent | Characterised precisely (§10.3); **nine** variations across two hypothesis classes — musical state and external/network (§11.6) — move nothing but the transport. |
-| What the Set Overview step row encodes | An indicator no press acts on (§9.5). The obvious hypothesis, "it shows the loaded set", is **disproved** (§11.5): the pattern is identical under two different sets. |
+| What CC 40 / CC 43's pulses represent | **Closed across three named channels**: the control surface (nine variations, §10.3, §11.6), the Move Manager API (§11–§12), and the firmware image (§13.3 — stripped `.symtab`, no animation class, no track-button LED delegate). Precisely characterised, not attributable. |
+| ~~What the Set Overview step row encodes~~ | **SOLVED in §13.2** — it is the Shift shortcut layer painted persistently, with step 1 at `122` because you are already in Set Overview. Four sets, byte-identical; the firmware has no Song-Overview steps delegate. |
 | What the three Sampling settings items DO | Reached and **rendered** (§11.7) — a mic, a bar, a boxed waveform — but changing one and observing an effect was not done. |
 | A ninth context for Shift+Step 4/12/13 | Dead in eight (§8.1, §9.6) spanning both trap categories. Further contexts are unenumerable. |
 | The upper bound of *every* per-step parameter | One measured to its clamp (§9.3, Grain Size 0–300 ms). The rest are device-defined. |
@@ -1788,16 +1928,14 @@ Untested. A driver must not assume any of it.
 - **Shift + Step 4, 12, 13 in a NINTH context.** Dead in eight (§8.1, §9.6),
   spanning both categories that caught the step-8/10 miss — a track type and a
   modal state. Further contexts are unenumerable.
-- **What the two idle pulses REPRESENT.** §10.3 characterises them fully — CC 43
-  blue at ~37.6/s, CC 40 orange at ~12.4/s, both gated on the transport being
-  stopped. **Nine** variations across two hypothesis classes moved nothing: the
-  instrument's musical state (§10.3) and external/network state (§11.6, an
-  authenticated Move Manager session with an open SSE stream). Closed as
-  characterised-but-unattributed.
-- **What the Set Overview step row ENCODES.** §9.5 reads it and shows a press
-  does nothing; §11.5 varies the loaded set and the pattern does **not** change,
-  which disproves the obvious hypothesis. The loaded set is marked on a **pad**
-  (channel 9), not on the step row.
+- **What the two idle pulses REPRESENT.** CC 43 blue at ~37.6/s, CC 40 orange at
+  ~12.4/s, both gated on the transport being stopped (§10.3). Not attributable
+  from **any of the three channels**: nine behavioural variations on the surface
+  (§10.3, §11.6), the Manager API (§11–§12), and the firmware image (§13.3 —
+  stripped symbols, no animation class, no track-button LED delegate). Untried
+  fourth channels: the DSP binaries in `/opt/move/Dsp/`, and D-Bus.
+- ~~What the Set Overview step row encodes~~ — **answered in §13.2**: it is the
+  Shift shortcut layer, painted persistently.
 - **What the three Sampling settings items DO.** Reached in §10.2 and
   **rendered** in §11.7 — a microphone, a level bar, a boxed waveform — but none
   was changed and observed, so the readings are descriptions, not functions.
@@ -2195,6 +2333,20 @@ connection.
   "observe": "POST 200 creates a directory; DELETE 200 removes it. RENAME is PATCH /api/v1/files/<base>/<oldNamePercentEncoded> with {\"path\":\"<base>/<newName>\"} - the old path is percent-encoded and the new one is NOT.",
   "state": "unchanged if you delete what you create",
   "destructive": true
+ },
+ {
+  "action": "read_firmware_class_names",
+  "packets": "strings -n 6 /opt/move/MoveOriginal",
+  "note": "READ ONLY. The binary is stripped of .symtab, but RTTI class names survive in .rodata - 675 distinct ableton::move classes, plus one mangled symbol containing Move's ENTIRE view tree in construction order.",
+  "observe": "grep -oE 'NS0_[0-9]+[A-Za-z]+' | sed -E 's/^NS0_[0-9]+//' | sort -u. Also assert strings carrying source paths (products/move/MoveLib/src/...). Cheapest enumeration in this document; touches no device state.",
+  "state": "unchanged"
+ },
+ {
+  "action": "set_overview_step_row",
+  "packets": "0BB0317F s80 09901077 s120 09801000 s80 0BB03100",
+  "note": "the row is the SHIFT SHORTCUT LAYER painted persistently, not a Set Overview indicator",
+  "observe": "step 1 = 122 (you are in Set Overview), the other shortcut steps = 124, steps 4/12/13 dark because those three shortcuts do not exist. Byte-identical across four loaded sets. The LOADED SET is marked on a PAD, channel 9.",
+  "state": "set_overview"
  }
 ]
 ```
