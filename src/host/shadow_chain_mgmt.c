@@ -186,7 +186,27 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * keyed to that, to be re-keyed when the file names the real row
      * (lane_adopt_slot). The length below comes off the same strip, and it is
      * what stops a clip remade inside the window inheriting the take. */
-    if (cslot < 0 && step_strip_segments_for_track((int)slot) > 0) {
+    /* ONLY WHEN THE CLIP IS GENUINELY UNKNOWN, which is narrower than "no row
+     * right now" and the difference cost playback.
+     *
+     * `clip_regions_selected_slot` answers the file's isPlaying, so a track
+     * whose clip is simply not marked playing -- the ordinary state with the
+     * transport stopped, and after a boot where nothing has been launched from
+     * Session view -- also lands here with cslot < 0. Reporting PENDING there
+     * hijacks the normal path: `lanes:clip` read `0 -2` while every lane was
+     * keyed to row 0, so nothing matched the position check and NO LANE DROVE
+     * AT ALL. Measured on hardware with the transport running.
+     *
+     * The blind window is the case where the file knows of no clip on this
+     * track whatsoever. If it knows of one, we are not blind -- we are merely
+     * unsure which, and inventing a row is worse than saying so. */
+    int track_has_clip_in_file = 0;
+    if (rg && rg->valid) {
+        for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
+            if (rg->slots[slot][cs2].exists) { track_has_clip_in_file = 1; break; }
+    }
+    if (cslot < 0 && !track_has_clip_in_file &&
+        step_strip_segments_for_track((int)slot) > 0) {
         int segs = step_strip_segments_for_track((int)slot);
         double qpb = clip_regions_quarters_per_bar(rg, (int)slot, -1);
         double len = (double)segs * qpb;
