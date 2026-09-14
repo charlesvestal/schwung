@@ -142,7 +142,7 @@ That third one matters more than its share of the map. A driver that "probes
 with a harmless pad press" to find out where it is **will swap the user's set**
 if it happens to be in Set Overview. It happened here, twice, during this survey.
 
-### 2.2 `CC 118` — demoted: it is a TRANSITION signal, not a state you can read
+### 2.2 `CC 118` — demoted twice: a TRANSITION signal, and it is the SAMPLING lamp
 
 The first draft of this document called CC 118 "the Session/Note indicator" on
 the strength of four driven mode switches. That claim was too strong in two
@@ -151,6 +151,14 @@ separate ways, and both were found by testing it rather than by reasoning:
 **(a) `CC 118 = 0` does not mean Session.** It means *not Note*. Entering Set
 Overview (Shift + Step 1) also emits `B0 76 00`. Session and Set Overview are
 indistinguishable on this CC.
+
+**(c) It is not a mode flag at all.** §9.1 swept every CC and found CC 118 is
+**Move's Sampling button**: pressing it prompts `Press pad`, and a pad press
+starts `Recording...`. Its lamp means *"Sampling is available here"* — available
+in Note mode, not in Session, which is the whole of the correlation. The values
+and routes below still hold; a driver just needs to know it is reading an
+availability lamp, so anything that moves where Sampling is offered breaks the
+inference in silence.
 
 **(b) Move never emits it spontaneously**, so a driver arriving cold has nothing
 to read. It is emitted only when the Note-mode flag actually flips. Measured, by
@@ -456,7 +464,7 @@ because each carries ~0.35 s of its own.
 | Mute | 88 | **mutes the track**; **Shift+Mute solos** (§7.2) | `Mute...` card; **the eight knob rings go dark** — they do NOT report automation | no |
 | Up | 55 | Note view, **melodic** track: **octave up**. **Nothing on a Drum Kit, nothing in Session or Set Overview** (§7.1) | not tested | no |
 | Down | 54 | **octave down**, same conditions | not tested | no |
-| Sampling | **87** | **no response of any kind**, tap or hold (§7.1) | — | — |
+| **Sampling** | **118** | **`Press pad` → pick a pad → `Recording...`**; Back cancels (§9.1). CC **87** is not it — 87 gives no response at all | **inert** — unavailable in Session | not tested |
 | Left | 62 | **previous clip page**; its own LED is **0 when there is no previous page**, 24 when there is | not tested | no |
 | Right | 63 | **next clip page**; same LED rule | not tested | no |
 | Jog click | 3 | opens the highlighted carousel item (device → its preset browser) | not tested | no |
@@ -542,7 +550,8 @@ firmware 2.1.0.
 | Play 85 | start/stop | start/stop | start/stop | not tested |
 | Record 86 | transport + record | not tested | not tested | not tested |
 | Capture 52 | **–** | not tested | not tested | not tested |
-| **Sampling 87** | **–** | not tested | not tested | not tested |
+| **Sampling 118** | `Press pad` → pad → records (§9.1) | **inert** | not tested | not tested |
+| Sampling 87 *(not a control)* | – | not tested | not tested | not tested |
 | Undo 56 | undo | undo | undo | not tested |
 | Loop 58 | Loop Length | – | – | not tested |
 | Copy 60 | duplicates clip | – | – | not tested |
@@ -554,8 +563,9 @@ firmware 2.1.0.
 | Jog turn 14 | device carousel | device carousel | not tested | **edits the overlay** |
 | Knobs 71–78 | device parameter | not tested | not tested | **unchanged — still the device parameter** |
 | Master 79 | volume overlay | volume overlay | not tested | not tested |
-| Knob touch 0–9 | **no measurable effect** — the "burst" was Move's idle LED animation (§8.5) | not tested | not tested | not tested |
-| Steps 16–31 | toggle note; **hold + encoder = per-step automation** (§8.2) | – | lit, but a press did nothing in a controlled trial (§8.6) | not tested |
+| Knob touch 0–9 | **no measurable effect** — the "burst" was Move's idle LED animation (§8.5, §9.4) | not tested | not tested | not tested |
+| **every other CC 0–127** | **swept; none responds** (§9.1) | – | – | – |
+| Steps 16–31 | toggle note; **hold + encoder = per-step automation** (§8.2) | – | **an indicator row; a press does nothing** (§9.5) | not tested |
 | Pads 68–99 | play + select | launch clip | **LOAD A SET** | still play |
 
 Modifier combinations are in §7.4, the Shift+Step layer in §7.3, Shift+button in
@@ -574,7 +584,7 @@ automation.
 | Record / Capture / Delete in Session and Set Overview | each is destructive and the Note-mode result already establishes what they do; Set Overview additionally risks a set switch |
 | The 32 pads individually in Note mode | the pad→pitch map needs one clip write per pad and an 8–14 s file settle each, ~8 minutes of device time for a map that `Song.abl` would give directly |
 | Knobs 2–7 individually | knobs 1 and 8 behaved identically (a parameter overlay + a ring value); the class looks uniform and was sampled, not enumerated |
-| Audio tracks, and any MIDI track that is not a Schwung slot | none existed in the set under test |
+| Audio tracks | **ten surface routes tried, none creates one** (§9.2), and the device has none to observe — a device reason, not a time one |
 | The sampling flow, Wi-Fi, Update | Update was opened only as far as Current Version; running one would reflash the user's instrument |
 | Set Overview's jog, arrows and Back beyond the tile screen | every probe there can change the loaded set |
 
@@ -1030,6 +1040,167 @@ but the rule stated there was over-general.
 | Shift+Step 4, 12, 13 in a *sixth* context | five were tested; a context nobody has thought of cannot be ruled out, but the drum-track trap that caused the original miss was specifically covered |
 | Audio tracks | none exist in the user's set; would need one created, which changes his document more than the answer is worth |
 
+## 9. The last five — and CC 118 is a BUTTON
+
+A finishing pass over the five items §8 left reachable-but-open. Four closed
+outright, one closed as a measured negative. It also overturned the single
+most-quoted claim in this document, found by a method that should have been run
+on day one: **sweeping the whole CC space for controls nobody had identified.**
+
+### 9.1 CC 118 is the SAMPLING button, not a mode indicator
+
+Tapping every CC from 0 to 127 and watching for Move to light that same CC back
+turned up exactly one unmapped control: **CC 118**. Pressing it puts `Press pad`
+on the screen; pressing a pad then starts `Recording...`. Back cancels. Holding
+it shows the same prompt and releasing cancels.
+
+So the correlation §2.1 was built on is real but the mechanism is not what it
+said:
+
+> **CC 118's LED value is "the Sampling button is available here", and Sampling
+> happens to be available in Note mode and not in Session.**
+
+Confirmed in both directions: in Session mode a CC 118 press does **nothing at
+all** (the screen never changes), which is exactly what a dark button should do.
+
+**This does not break the localisation rule in §2.1–2.2 — the values and the
+routes are unchanged — but it changes what a driver may safely infer.** CC 118
+reads "Sampling available", so any future firmware that makes sampling available
+somewhere else, or unavailable in Note mode, breaks the inference silently. The
+§2.3 Shift-release probe does not depend on it and remains the recommended
+method.
+
+Sampling's destination is a **pad only**: `Sampling + Track button` cancels the
+prompt and switches track, `Sampling + step` leaves the prompt up.
+
+The sweep found nothing else. **Every CC that responds is now accounted for**,
+which is as close to "the full set of buttons" as this method can get.
+
+### 9.2 Audio tracks — a measured negative
+
+**No gesture on the control surface creates an audio track**, and the user's
+device has none to observe, so the audio-track column of §6 cannot be filled from
+this instrument. Ten routes were driven and all failed:
+
+| Route | Result |
+|---|---|
+| Press an empty-looking track, jog-click | opens the **preset browser** (and the jog *loads* presets as it scrolls) |
+| Device carousel, walk to the end | no `+` entry; it clamps on the last device |
+| Device carousel + Delete | nothing |
+| Delete + Track button | nothing — **Delete does not delete a track** |
+| Shift + Track menu | exactly **three** rows — `MIDI Out`, `MIDI In`, `Color` — all three open into value lists, none offers a track type |
+| Sampling (CC 118) in Session | inert |
+| Shift + Sampling | identical to Sampling |
+| Shift + Capture | nothing |
+| Sampling + Track button | cancels, switches track |
+| Sampling + step | prompt stays up |
+
+All four of the user's tracks carry instruments (`Drum Kit`, a Schwung slot,
+`CPiano Rhodish`, `Mellow Bells`), and no track could be emptied from the
+surface either.
+
+**So the reason is a property of the device, not of the time available:** either
+audio tracks are created off the surface (Move Manager, a file drop) or by a
+gesture outside the ten above. Everything in this document that says "in Note
+mode the steps do X" therefore remains scoped to **MIDI tracks**, and the
+recipes in the appendix are written so that anyone who *has* an audio track can
+finish that column in minutes.
+
+*(Bonus mapping from the failed routes: the per-track menu's `MIDI In` list runs
+`Off, Auto, Ch1, Ch2, …` and `Color` is a list of numbered colours. Track 4's
+`MIDI In` was walked during this and put back to `Auto`.)*
+
+### 9.3 Per-step parameter range — bounded, and I had simply not turned far enough
+
+§8.2 reported no upper clamp in 24 detents. With 400:
+
+| Detents | `Grain Size` |
+|---|---|
+| start | `103 ms` |
+| +50 | `2?? ms` |
+| **+100** | **`300 ms`** |
+| +150 … +400 | `300 ms` — unchanged |
+| −100 | `21.? ms` |
+| **−200 … −500** | **`0.00 ms`** — unchanged |
+
+**A per-step value is clamped to the device parameter's own range** (0–300 ms
+for Grain Size), reached in ~100 detents and then immovable. Nothing about the
+per-step layer is unbounded. The earlier "no clamp found" was an artefact of a
+24-detent sweep, not a property of Move.
+
+### 9.4 CC 40's idle animation — characterised, including the one thing that stops it
+
+| State | CC 40 `3B 10` writes |
+|---|---|
+| Idle, track 1, Note | **13.5 /s** |
+| Idle, track 2, Note | 11.7 /s |
+| Idle, Session | 11.7 /s |
+| **Transport RUNNING** | **0 /s — it stops completely** |
+| After stop | 10.7 /s, resumes |
+
+It is a smooth orange pulse: `r` sweeps 32→48, `g` 13→19, `b` always 0, drifting
+a step or two per message. It is **independent of the selected track and of
+Note/Session**, and it is **gated on the transport**.
+
+Practically: **~12 LED events per second arrive on this surface with no input at
+all, and stop the moment playback starts.** Any event-count measurement must
+subtract this baseline, and a measurement taken while stopped is not comparable
+with one taken while running. It corrupted §7.9 of this document, where it was
+reported as a knob-touch "burst".
+
+What the pulse *means* is still unknown — CC 40 is the Track 4 button, but the
+animation follows neither the selected track nor that track's content.
+
+### 9.5 Set Overview's step row — it is an indicator, and a press does nothing
+
+Read on entry, with no press needed:
+
+```
+step:  1    2    3    4    5..11  12   13   14   15   16
+d2:   122  124  124  dark  124   126  dark 124  124  124
+```
+
+So the row is lit with the transient-chooser value 124, one step at 122, one at
+126, and two dark. Alongside it the pads carry the set grid (colour indices on
+channel 0, the loaded set additionally on channel 9 — here pad 99 = `122` + ch 9).
+
+**Pressing step 1, step 8 and step 16 each produced 22–37 LED events over ~2.2 s
+— which is the CC-40 idle animation and nothing else (§9.4: ~12/s × 2.2 s ≈ 26)
+— and the loaded set did not change.** That is the third independent confirmation
+of the §8.6 retraction, and this time the baseline is understood, so "22 events"
+can be read confidently as "no response".
+
+The Shift layer in Set Overview lights only `17, 18, 20, 24` — and step 16 is
+dark, which is the §2.3 tell for "you are already in Set Overview".
+
+What the 122 / 126 / dark positions encode is **still not known**; it is plainly
+an indicator of something (8 sets exist on disk, 14 step positions are lit), and
+no press acts on it.
+
+### 9.6 Shift + Step 4, 12, 13 — dead in eight contexts
+
+Three further contexts on top of §8.1's five:
+
+| Context | Steps 4 / 12 / 13 |
+|---|---|
+| A settings overlay (Tempo) on screen | no effect — the title stays `Tempo` |
+| A clip playing | no effect |
+| The Sampling `Press pad` prompt up | no effect — the prompt stays |
+
+With the Drum Kit, melodic, Session, Set Overview and transport-running contexts
+from §8.1 that is **eight**, including the two kinds of context that caught the
+step-8/10 miss (a track type, and a modal state). These three steps are unused.
+
+### 9.7 What remains, and why
+
+| Item | Reason it is not closed |
+|---|---|
+| The whole audio-track column | **no audio track can be brought into existence from the surface** (§9.2), and none exists on the device |
+| What CC 40's pulse represents | fully characterised but unattributed; it follows no track, mode or clip state that was varied |
+| What the Set Overview step row encodes | it is an indicator that no press acts on (§9.5); nothing on the surface interrogates it |
+| The sampling flow past `Recording...` | recording was started and cancelled; the take, its destination and its stop gesture were not pursued |
+| A ninth context for Shift+Step 4/12/13 | eight were tried, spanning both trap categories; further contexts are unenumerable |
+
 ---
 
 ## Not known
@@ -1068,16 +1239,17 @@ Untested. A driver must not assume any of it.
 - **Whether `3B 10` has siblings.** Every SysEx captured used sub-command `0x10`
   (button RGB). Pads and steps were always plain Note On, so a pad RGB path, if
   one exists, was never provoked.
-- **Shift + Step 4, 12, 13 in a sixth context.** Dead in all five that were
-  tried (§8.1), including the Drum Kit track whose omission caused the original
-  step-8/10 miss. A context nobody has thought of cannot be ruled out.
-- **What CC 40's idle animation is.** Move re-colours that one button LED
-  continuously with no input (§8.5) — ~20 events per 1.2 s. No channel was found
-  that explains it.
-- **The upper bound of a per-step parameter's range.** 24 up-detents never hit a
-  clamp; the bottom clamps at 0.00 (§8.2). The range is device-defined anyway.
-- **What the Set Overview step row displays**, and whether a step press there
-  ever acts (§8.6). Every probe risks loading a set, so it was stopped.
+- **Shift + Step 4, 12, 13 in a NINTH context.** Dead in eight (§8.1, §9.6),
+  spanning both categories that caught the step-8/10 miss — a track type and a
+  modal state. Further contexts are unenumerable.
+- **What CC 40's idle pulse REPRESENTS.** Fully characterised in §9.4 — ~12
+  writes/s, orange, stops dead while the transport runs, independent of track and
+  mode — but it follows nothing that was varied, so its meaning is unattributed.
+- **What the Set Overview step row ENCODES.** §9.5 reads it (122 / 126 / 124 /
+  two dark) and shows a press does nothing; what the positions mean is unknown
+  and nothing on the surface interrogates it.
+- **The sampling flow past `Recording...`.** §9.1 starts and cancels a take; the
+  recording's destination, length and stop gesture were not pursued.
 - **CC 87 (Sampling).** Nothing at all on injection, tapped or held. Either it is
   not the Sampling button or an injected CC 87 is filtered before Move sees it;
   not distinguished.
@@ -1104,8 +1276,11 @@ Untested. A driver must not assume any of it.
 - **Long-press semantics generally.** Track hold previewing and reverting is a
   **single observation**; no threshold was measured. The held-Menu preview (§7.8)
   is the one hold whose mechanism is now measured.
-- **Audio tracks.** Added in Move 2.0.0 and never visited — so every "in Note
-  mode the steps do X" claim in this document is implicitly *on a MIDI track*.
+- **Audio tracks.** Added in Move 2.0.0. **Ten surface routes were driven and
+  none creates one** (§9.2), and all four of the device's tracks carry
+  instruments, so there is none to observe. Every "in Note mode the steps do X"
+  claim here is therefore scoped to *MIDI tracks*. This is the one gap whose
+  reason is a property of the instrument rather than of effort.
 - **Clip paste onto an audio track or a drum pad.** The user states this bounces
   to audio in 2.1.0 rather than pasting instantly. **Recorded as the user's
   statement, not as a measurement** — it was deliberately not tested, and nothing
@@ -1386,6 +1561,29 @@ connection.
   "note": "the Shift-release repaint doubles as an instant clip readback",
   "observe": "step Note-On d2 == 122 means that step carries a note FOR THE SELECTED VOICE; any other value is empty (the empty value is a per-track colour index: 98, 112 and 124 all observed). Never test 122-vs-98.",
   "state": "unchanged"
+ },
+ {
+  "action": "sampling",
+  "packets": "0BB0767F s110 0BB07600 s1200 0990<pad>50 s110 0980<pad>00",
+  "note": "CC 118 is the Sampling button (found by sweeping every CC). Destination is a PAD only.",
+  "observe": "OLED 'Press pad', then 'Recording...'. Back cancels. In Session the button is inert and its lamp reads 0.",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "per_step_range_probe",
+  "packets": "0990<step>50 s400 <100x 0BB0<cc>01> s800 0980<step>00",
+  "note": "a per-step value is clamped to the device parameter's own range",
+  "observe": "measured on Grain Size: clamps at 300 ms after ~100 detents and at 0.00 ms going down; 300 further detents move nothing",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "idle_led_baseline",
+  "packets": "",
+  "note": "subtract this before reading any event count",
+  "observe": "with NO input Move writes CC 40's RGB ~12 times/s (orange, r 32-48). It STOPS entirely while the transport runs, so counts taken stopped and running are not comparable.",
+  "state": "unchanged"
  }
 ]
 ```
@@ -1403,7 +1601,7 @@ Up 55=0x37  Down 54=0x36  Left 62=0x3E  Right 63=0x3F
 Play 85=0x55  Record 86=0x56  Capture 52=0x34  Undo 56=0x38
 Loop 58=0x3A  Copy 60=0x3C  Delete 119=0x77  Mute 88=0x58
 Knobs 71-78 = 0x47..0x4E   Master 79=0x4F   Knob touch = notes 0-9
-Sampling 87=0x57 (no observed effect)
+Sampling 118=0x76 ('Press pad' -> pad -> records)   CC 87: no observed effect
 Steps 1-16 = notes 16-31 = 0x10..0x1F
 Pads = notes 68-99 = 0x44..0x63
 ```
