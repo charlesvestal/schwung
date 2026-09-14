@@ -1819,6 +1819,18 @@ inline is how this file got to 151 KB.
 - `docs/SPI_PROTOCOL.md` — Full SPI reference
 - `docs/REALTIME_SAFETY.md` — RT rules and JACK glitch root causes
 - `docs/SYSEX.md` — **SysEx, both directions**, and they fail for unrelated reasons. Test rig is a Mac on USB-C (Standalone Port = cable 2, no external gear). **A chain slot is WRITE-ONLY for SysEx** — an editor built as one waits forever. **The inbound ceiling is the sender's BURST RATE, not the message size**: 400/512/632 B all truncate at 381 B, yet two 316 B messages 100 ms apart both arrive whole.
+- `docs/MOVE_UI_MAP.md` — **Move's own UI, measured by driving it** on firmware
+  **2.1.0**: the known-state reset, how to tell which pad mode you are in (three
+  modes, not two — **Set Overview swaps the loaded SET from both its pads AND its
+  steps**), the LED language, every control per mode, and a machine-readable
+  action table. Two hazards a driver must respect: an **armed Copy source is a
+  landmine** that persists across screens and the reset until the next step press
+  pastes, and **Menu is not idempotent on an overlay** (the first tap dismisses).
+  **Move already owns hold-step + encoder as per-step automation**, which is the
+  gesture Schwung's own p-lock is built on.
+- `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
+  being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
+  the two disagree the DEVICE is the authority. Carries the reconciliation table.
 - `docs/MOVE_COPY_GESTURES.md` — **Move's own copy/paste**, for steps, pages and
   clips, measured by driving each gesture and diffing `Song.abl`. Read it before
   mirroring automation locks onto a copy. Copy is HELD and step presses **PAIR

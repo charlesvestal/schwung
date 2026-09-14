@@ -15,6 +15,26 @@ inferred from Move's documentation or from how a similar instrument behaves.
 Where something was NOT measured it says so, in "Not known" — that section is
 the point of the document, not an apology.
 
+> **SUPERSEDED IN PART — read this first.** A later sweep (firmware **2.1.0**,
+> `docs/MOVE_UI_MAP.md`) found this model INCOMPLETE rather than wrong. Every
+> sequence below was measured with Copy HELD, and it is correct for those. But:
+>
+> - **The armed source SURVIVES releasing Copy.** Copy down, press the source,
+>   release Copy, then press a destination — it still pastes. So "Copy is held"
+>   is not a precondition, only the way these measurements happened to be made.
+> - **The armed source then PERSISTS INDEFINITELY** — across screens and across
+>   the known-state reset. It was observed still armed minutes and dozens of
+>   presses later, when an unrelated held step printed `Notes pasted` and wrote
+>   a note nobody asked for. **`Copy + an empty step` clears it.** Treat an
+>   armed source as a landmine: the next step press anywhere pastes.
+> - **A second Copy press does NOT cancel**, despite Ableton's manual saying so.
+> - **Range copy (hold Copy, press-and-hold start, press end) WRITES NOTHING** —
+>   it is a SELECTION. The pairs model below would read it as a paste, which is
+>   the one place this document could have caused a wrong edit.
+>
+> The manual describes firmware ~1.5.x; the device is 2.1.0. Where they differ,
+> the device is the authority.
+
 ## The model
 
 All three are the same shape, which Charles described and the measurements
@@ -94,6 +114,11 @@ The verbs needed already exist in some form: a step is a phase within
 and shifting a span of points by a fixed offset is what `lane_double` does.
 
 ## Not known
+
+Some of the original gaps have since been closed by the 2.1.0 sweep in
+`docs/MOVE_UI_MAP.md` — the source surviving Copy's release, the absent cancel,
+and range copy being a selection are all up in the banner. What follows is what
+remains.
 
 Untested, and a mirror should not assume any of it:
 
