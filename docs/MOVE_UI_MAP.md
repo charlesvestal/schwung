@@ -550,7 +550,7 @@ firmware 2.1.0.
 | Play 85 | start/stop | start/stop | start/stop | not tested |
 | Record 86 | transport + record | not tested | not tested | not tested |
 | Capture 52 | **–** | not tested | not tested | not tested |
-| **Sampling 118** | `Press pad` → pad → records (§9.1) | **inert** | not tested | not tested |
+| **Sampling 118** | `Press pad` → one of the **16 drum pads** → `Recording...`; Back / that pad / CC 118 stop it, **Play does not** (§10.1) | **inert** | not tested | ignored while armed |
 | Sampling 87 *(not a control)* | – | not tested | not tested | not tested |
 | Undo 56 | undo | undo | undo | not tested |
 | Loop 58 | Loop Length | – | – | not tested |
@@ -1136,6 +1136,11 @@ per-step layer is unbounded. The earlier "no clamp found" was an artefact of a
 | Idle, track 2, Note | 11.7 /s |
 | Idle, Session | 11.7 /s |
 | **Transport RUNNING** | **0 /s — it stops completely** |
+
+**§10.3 corrects this table: there are TWO idle animations, not one.** CC 43
+(Track 1) pulses blue at ~37.6/s alongside CC 40's orange ~12.4/s; this section
+counted only `n=40` because its filter looked for that. Both stop with the
+transport. The real idle baseline is **~50 events/s**, not ~12.
 | After stop | 10.7 /s, resumes |
 
 It is a smooth orange pulse: `r` sweeps 32→48, `g` 13→19, `b` always 0, drifting
@@ -1198,8 +1203,158 @@ step-8/10 miss (a track type, and a modal state). These three steps are unused.
 | The whole audio-track column | **no audio track can be brought into existence from the surface** (§9.2), and none exists on the device |
 | What CC 40's pulse represents | fully characterised but unattributed; it follows no track, mode or clip state that was varied |
 | What the Set Overview step row encodes | it is an indicator that no press acts on (§9.5); nothing on the surface interrogates it |
-| The sampling flow past `Recording...` | recording was started and cancelled; the take, its destination and its stop gesture were not pursued |
+| ~~The sampling flow past `Recording...`~~ | **CLOSED in §10.1** — the stoppers, the valid destinations, the armed surface and the file destination are all measured |
 | A ninth context for Shift+Step 4/12/13 | eight were tried, spanning both trap categories; further contexts are unenumerable |
+
+## 10. The Sampling flow, and where this map stops
+
+### 10.1 Sampling, end to end
+
+`CC 118` is the Sampling button (§9.1). The whole flow, driven:
+
+```
+CC 118  ──▶  ARMED: "Press pad" + a boxed MICROPHONE icon
+              │
+              ├─ jog turn  ──▶  a "Sampling" settings screen (§10.2)
+              ├─ Back / Track button / Menu  ──▶  cancels
+              └─ press one of the 16 drum pads
+                        │
+                        ▼
+              RECORDING: "Recording..." + a live INPUT LEVEL METER
+                        │
+                        ├─ Back          ──▶ stops
+                        ├─ the same pad  ──▶ stops
+                        ├─ CC 118 again  ──▶ stops
+                        └─ Play (CC 85)  ──▶ IGNORED, recording continues
+```
+
+**The armed surface.** All sixteen drum pads light `d2 = 65`, and the currently
+selected drum pad additionally gets `126`. The step row is dark. Every knob-ring
+CC (71–78) is driven to 0.
+
+**Only the drum-rack pads are valid destinations.** Measured by arming and
+pressing six pads across the grid:
+
+| Pad | Result |
+|---|---|
+| 68, 76, 84, 92 | **records** |
+| 72, 99 | **ignored** — the prompt stays up |
+
+Lit-while-armed is exactly `68,69,70,71 / 76,77,78,79 / 84,85,86,87 / 92,93,94,95`
+— **the left four columns of all four rows**, i.e. the drum rack's 16 pads as a
+4×4 block on the left half of the grid. Pads outside it are inert in this mode.
+That is also the first direct measurement of the drum rack's physical layout in
+this document.
+
+**What the other controls do while ARMED:** knob turn, step press and Play are
+**ignored** (the prompt stays). The jog opens the settings screen. A **Track
+button** and **Menu** both cancel the prompt and do their normal job.
+
+**Play does not stop a recording.** Of the four stoppers tried, Back, the
+destination pad and CC 118 all end it; Play is ignored and the take keeps
+running. That asymmetry is worth knowing — a driver that "stops everything with
+Play" will leave a sampler running.
+
+**There is no auto-stop within 16 s** (watched in 2 s steps; the take was still
+going when Back ended it).
+
+**Where the sample lands:**
+
+```
+/data/UserData/UserLibrary/Recordings/<Set name> Rec <n>.wav
+```
+
+`<n>` increments per take and never reuses a number — takes 1…9 were produced
+across this session. File sizes tracked the hold duration exactly (≈3 s takes
+were ~630–700 KB, a ~7 s take 1.4 MB, an ~11 s take 2.0 MB), i.e. **the
+recording runs for exactly as long as it is left running**, with no rounding to
+a bar.
+
+*(All nine test takes were deleted afterwards; the Recordings folder is empty.)*
+
+### 10.2 The Sampling settings screen — reached, not named
+
+A jog turn while armed replaces `Press pad` with a screen titled **`Sampling`**,
+and a jog click opens a three-item row. Further jog turns do not change the
+title, so the items are not enumerated by name.
+
+The three items are **pictorial, with no text labels**: a small glyph that reads
+as a save/target icon, a wide horizontal bar, and a boxed icon. The OLED carries
+no words for them, so **they cannot be identified from the display alone** — this
+is a limit of the readback channel, not of effort. A user looking at the screen
+would recognise the icons; a program reading the framebuffer cannot.
+
+### 10.3 CC 40's pulse — characterised, unattributed, and there are TWO of them
+
+**Correction to §9.4:** it is not one LED. Counting per-CC rather than filtering
+for `n=40` shows **two** idle animations running together:
+
+| LED | Rate | Colour |
+|---|---|---|
+| **CC 43** (Track 1) | **~37.6 /s** | blue — `(r,r,255)` with `r` sweeping ~15→227 |
+| **CC 40** (Track 4) | **~12.4 /s** | orange — `(32…48, 13…19, 0)` |
+
+§9.4 only reported the slower one because the filter looked for `n=40`.
+
+**Both stop completely while the transport is running** — zero ring writes of any
+kind — and both resume when it stops. Confirmed over three start/stop cycles plus
+one in Session, four clean transitions.
+
+*A caution about that last one*: a Session trial initially looked like a
+counter-example (pulses continuing with a clip "playing"), but the clip at that
+pad had been deleted earlier in the survey, so the launch started nothing — and
+the *next* Play press, which really did start the transport, silenced the pulses
+as expected. The apparent contradiction was a stale assumption about the set's
+contents, not about Move.
+
+**Attribution failed.** Eight variations moved the rate by nothing beyond noise
+(11.2–13.8 /s for CC 40 throughout): selected track = 1, 3 or 4; track 4 muted;
+metronome on and off; Record armed; Sampling armed; Session vs Note. The two
+animated LEDs are the Track 1 and Track 4 buttons, but the animation follows
+neither selection nor mute nor clip content.
+
+**This is where it stops.** The pulse is precisely characterised — rate, colour
+range, both LEDs, and the one state that gates it — and its *meaning* is not
+observable from the control surface. Recorded as characterised-but-unattributed.
+
+**The practical consequence is the part that matters:** with no input at all this
+surface emits **~50 LED events per second** while the transport is stopped and
+**none** while it runs. Any event-count measurement must subtract that baseline,
+and counts taken stopped are not comparable with counts taken running. It has
+already corrupted one measurement in this document (§7.9's "knob-touch burst")
+and one in §9.4.
+
+---
+
+## Where this map stops
+
+**Everything reachable from Move's control surface has been measured.** What
+remains is named, with the reason it cannot be reached:
+
+| Gap | Why it stops here |
+|---|---|
+| The whole audio-track column | **Ten surface routes create no audio track** (§9.2) and the device has none to observe. A property of the instrument. |
+| What CC 40 / CC 43's pulses represent | Fully characterised (§10.3); eight targeted variations moved nothing. Not observable from the surface. |
+| What the Set Overview step row encodes | An indicator row that no press acts on (§9.5). Nothing on the surface interrogates it. |
+| The Sampling settings items | Reached (§10.2), but the screen is **pictorial with no text**, so the readback channel cannot name them. |
+| A ninth context for Shift+Step 4/12/13 | Dead in eight (§8.1, §9.6) spanning both trap categories. Further contexts are unenumerable. |
+| The upper bound of *every* per-step parameter | One was measured to its clamp (§9.3, Grain Size 0–300 ms). The rest are device-defined and would each need their own sweep. |
+
+That table is the *structural* ceiling — gaps the surface cannot answer. The
+**Not known** section below is the running list of everything else that was
+never nailed down, and it is longer; read both.
+
+This document does not claim to be complete, and those two lists are the reason
+it does not. Several of its own headline claims were overturned by later
+measurement — CC 118's meaning twice, the Mute layer, the Set Overview step row,
+the "empty step is 98" rule, and the idle-animation count — **every one of them
+by running a thing that had been asserted rather than measured.** Prefer a
+measurement to anything written here, including this sentence.
+
+One stale fact in this document is worth more than the map is: a claim written
+from a device whose set has since changed will read as a device behaviour. When
+something here disagrees with the instrument in front of you, the instrument is
+right.
 
 ---
 
@@ -1242,14 +1397,16 @@ Untested. A driver must not assume any of it.
 - **Shift + Step 4, 12, 13 in a NINTH context.** Dead in eight (§8.1, §9.6),
   spanning both categories that caught the step-8/10 miss — a track type and a
   modal state. Further contexts are unenumerable.
-- **What CC 40's idle pulse REPRESENTS.** Fully characterised in §9.4 — ~12
-  writes/s, orange, stops dead while the transport runs, independent of track and
-  mode — but it follows nothing that was varied, so its meaning is unattributed.
+- **What the two idle pulses REPRESENT.** §10.3 characterises them fully — CC 43
+  blue at ~37.6/s, CC 40 orange at ~12.4/s, both gated on the transport being
+  stopped — and **eight** targeted variations (selected track ×3, track muted,
+  metronome on/off, Record armed, Sampling armed, Session vs Note) moved nothing.
+  Not observable from the surface.
 - **What the Set Overview step row ENCODES.** §9.5 reads it (122 / 126 / 124 /
   two dark) and shows a press does nothing; what the positions mean is unknown
   and nothing on the surface interrogates it.
-- **The sampling flow past `Recording...`.** §9.1 starts and cancels a take; the
-  recording's destination, length and stop gesture were not pursued.
+- **The three items on the Sampling settings screen.** Reached in §10.2, but the
+  screen is **pictorial with no text**, so the OLED readback cannot name them.
 - **CC 87 (Sampling).** Nothing at all on injection, tapped or held. Either it is
   not the Sampling button or an injected CC 87 is filtered before Move sees it;
   not distinguished.
@@ -1566,9 +1723,11 @@ connection.
   "action": "sampling",
   "packets": "0BB0767F s110 0BB07600 s1200 0990<pad>50 s110 0980<pad>00",
   "note": "CC 118 is the Sampling button (found by sweeping every CC). Destination is a PAD only.",
-  "observe": "OLED 'Press pad', then 'Recording...'. Back cancels. In Session the button is inert and its lamp reads 0.",
+  "observe": "OLED 'Press pad' + a microphone icon, then 'Recording...' + a live input meter. Only the 16 drum-rack pads (68-71/76-79/84-87/92-95) are valid destinations; others are ignored. Back, the destination pad, or CC 118 again all STOP it - Play (CC 85) is IGNORED and the take keeps running. No auto-stop within 16 s.",
   "state": "note_mode",
-  "destructive": true
+  "destructive": true,
+  "result": "/data/UserData/UserLibrary/Recordings/<Set name> Rec <n>.wav, n increments per take",
+  "while_armed": "knob/step/Play ignored; jog opens a 'Sampling' settings screen; Track button and Menu cancel"
  },
  {
   "action": "per_step_range_probe",
@@ -1583,6 +1742,13 @@ connection.
   "packets": "",
   "note": "subtract this before reading any event count",
   "observe": "with NO input Move writes CC 40's RGB ~12 times/s (orange, r 32-48). It STOPS entirely while the transport runs, so counts taken stopped and running are not comparable.",
+  "state": "unchanged"
+ },
+ {
+  "action": "idle_led_baseline_v2",
+  "packets": "",
+  "note": "supersedes idle_led_baseline - there are TWO animations",
+  "observe": "with NO input, CC 43 pulses blue ~37.6/s and CC 40 orange ~12.4/s, ~50 events/s together. BOTH stop completely while the transport runs. Subtract this before reading any event count, and never compare a count taken stopped with one taken running.",
   "state": "unchanged"
  }
 ]
