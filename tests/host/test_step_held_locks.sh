@@ -201,7 +201,10 @@ echo "$body" | grep -q 'shadow_lanes_step_phase' \
 ctl=src/shared/param_pages/page_controller.mjs
 # BOTH entry points: a trigger can be fired by a turn and by a click, and
 # guarding one leaves the same trap one gesture away.
-n=$(grep -c 'TRIGGERS CANNOT BE LOCKED' "$ctl")
+# Matched case-insensitively on the WORDS: notices are sentence case now
+# (test_notice_wrapping), and this pin is about the refusal existing at both
+# entry points, not about how it is spelled.
+n=$(grep -ci 'notice("Triggers cannot be locked' "$ctl")
 [ "$n" = "2" ] || fail "expected the refusal at BOTH trigger entry points (turn and click), found $n"
 python3 - <<'PY' || fail "a refusal comes AFTER its fireTrigger -- it would fire and lock before refusing"
 import sys
@@ -212,7 +215,7 @@ while True:
     i = src.find("if (meta.writeOnly)", i)
     if i < 0: break
     seg = src[i:i+2500]
-    r = seg.find("TRIGGERS CANNOT BE LOCKED")
+    r = seg.lower().find("triggers cannot be locked")
     f = seg.find("fireTrigger(")
     if r < 0 or f < 0 or r > f: ok = False
     i += 1

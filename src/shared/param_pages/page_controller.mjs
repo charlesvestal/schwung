@@ -3579,7 +3579,7 @@ export function createController(io = {}) {
              * chosen.
              */
             if (s.heldStep >= 0 || liveHeldStep() >= 0) {
-                notice("TRIGGERS CANNOT BE LOCKED", 3000);
+                notice("Triggers cannot be locked", 3000);
                 announce("triggers cannot be locked to a step");
                 return null;
             }
@@ -3978,7 +3978,7 @@ export function createController(io = {}) {
                 s.stepClear.picked = true;
                 const m = metaAt(slot);
                 const label = (m && (m.name || m.label)) || k;
-                notice(String(label).toUpperCase() + " CLEARED");
+                notice(String(label) + " automation cleared");
                 announce(label + " cleared");
                 return;
             }
@@ -4174,7 +4174,7 @@ export function createController(io = {}) {
          * turn leaves the same trap one gesture away. */
         if (meta.writeOnly) {
             if (s.heldStep >= 0 || liveHeldStep() >= 0) {
-                notice("TRIGGERS CANNOT BE LOCKED", 3000);
+                notice("Triggers cannot be locked", 3000);
                 announce("triggers cannot be locked to a step");
                 return null;
             }
@@ -4438,6 +4438,14 @@ export function createController(io = {}) {
             arg = fk.substring(0, colon) + " " + fk.substring(colon + 1);
         }
         setParam("lanes:clear_step", arg);
+        /* AND THE MAP IS NOW WRONG. It is fetched once per held-step gesture
+         * and the clear happens INSIDE one, so the strip went on showing a
+         * mark for automation that had just been deleted -- for as long as the
+         * finger stayed down, which is exactly when the user is looking at it
+         * for confirmation. Invalidating rather than re-reading here: the next
+         * frame refetches, off the draw path, and one clear costs one read
+         * instead of one per cleared key. */
+        s.lockMapFor = -1;
         if (key) delete s.heldValues[key];
         else for (const k in s.heldValues) delete s.heldValues[k];
         const p = page();
@@ -4466,11 +4474,11 @@ export function createController(io = {}) {
         if (cc === 56) {
             if (!down) return true;
             const u = s.editUndo;
-            if (!u) { notice("NOTHING TO UNDO"); return true; }
+            if (!u) { notice("Nothing to undo"); return true; }
             writeInstance(u.def, u.index, u.snap);
             s.editUndo = null;
             if (childIndexFor(u.level) === u.index) dropChildLevelCache(u.level);
-            notice("UNDONE " + childLabel(u.def, u.index).toUpperCase());
+            notice("Undone " + childLabel(u.def, u.index));
             announce("undone");
             return true;
         }
@@ -4481,14 +4489,14 @@ export function createController(io = {}) {
          * different clip than the one being edited. Saying "not yet" is the
          * honest failure; doing something destructive is not. */
         if (cc === 60 && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
-            if (down) { notice("COPY LOCKS: NOT YET"); announce("copying locks is not supported yet"); }
+            if (down) { notice("Copying locks is not supported yet"); announce("copying locks is not supported yet"); }
             return true;
         }
         if (cc === 119 && (down ? (s.heldStep >= 0 || liveHeldStep() >= 0)
                                 : !!s.stepClear)) {
             if (down) {
                 s.stepClear = { picked: false };
-                notice("CLEAR STEP: TOUCH A KNOB, OR RELEASE FOR ALL", 4000, true);
+                notice("Clear step: touch a knob, or release for all", 4000, true);
                 announce("clear step, touch a knob, or release for all");
             } else {
                 const picked = s.stepClear.picked;
@@ -4496,8 +4504,8 @@ export function createController(io = {}) {
                 if (s.notice && s.notice.prompt) s.notice = null;
                 if (!picked) {
                     clearHeldStep(null);
-                    notice("STEP CLEARED");
-                    announce("step cleared");
+                    notice("Step automation cleared");
+                    announce("step automation cleared");
                 }
             }
             return true;
@@ -4522,11 +4530,11 @@ export function createController(io = {}) {
             /* Nothing is armed from a source we could not read. Arming anyway
              * would paste whatever partial answer arrived into every instance
              * picked afterwards, and report each one as a copy. */
-            if (!snap) { notice("READ FAILED"); announce("read failed"); return true; }
+            if (!snap) { notice("Read failed"); announce("read failed"); return true; }
         }
         s.editGesture = { kind, level: lvl.name, def: lvl.def, keys, from, last: from, snap };
         const label = childLabel(lvl.def, from).toUpperCase();
-        notice(kind === "copy" ? `COPY ${label}: PICK A TARGET` : "CLEAR: PICK A TARGET", 4000, true);
+        notice(kind === "copy" ? `Copy ${label}: pick a target` : "Clear: pick a target", 4000, true);
         announce(kind === "copy" ? `copy ${childLabel(lvl.def, from)}, pick a target` : "clear, pick a target");
         return true;
     }
@@ -4545,11 +4553,11 @@ export function createController(io = {}) {
          * named, and the gesture stays armed for the next pick. */
         const before = readInstance(g.def, idx, g.keys);
         const label = childLabel(g.def, idx).toUpperCase();
-        if (!before) { notice(label + ": READ FAILED", 4000); announce("read failed"); return; }
+        if (!before) { notice(label + ": read failed", 4000); announce("read failed"); return; }
         writeInstance(g.def, idx, g.kind === "copy" ? g.snap : clearedInstance(g.keys));
         s.editUndo = { level: g.level, def: g.def, index: idx, snap: before };
         dropChildLevelCache(g.level);               /* the grid is showing the instance just written */
-        notice((g.kind === "copy" ? "PASTED " : "CLEARED ") + label, 4000);
+        notice((g.kind === "copy" ? "Pasted " : "Cleared ") + label, 4000);
         announce((g.kind === "copy" ? "pasted " : "cleared ") + childLabel(g.def, idx));
     }
 
@@ -4602,7 +4610,7 @@ export function createController(io = {}) {
         const token = String(bad || bad2)
             .replace(/^-?\d+\s*/, "").replace(/_/g, " ");
         const msg = plockRefusalText(token);
-        notice("NOT LOCKED: " + msg.toUpperCase(), 4000);
+        notice("Not locked: " + msg, 4000);
         announce("not locked, " + msg);
         if (typeof console !== "undefined" && console.log) {
             console.log("plock-refused key=" + pr.key + " step=" + pr.step +
@@ -4639,6 +4647,40 @@ export function createController(io = {}) {
         return PLOCK_REFUSAL_TEXT[t] || t;
     }
 
+    /* WRAP AT THE FRAME, because a notice is a SENTENCE now.
+     *
+     * The old box was one line wide enough for its text or the frame, and it
+     * clipped in silence past that: "Step automation cleared" is ~138px in the
+     * 5x7 font against a 128px screen, so the last word simply was not there.
+     * Which is the same class of defect as the footer dropping a hint pair --
+     * a message that cannot say it did not fit.
+     *
+     * Greedy word wrap, measured with the caller's own textWidth so the answer
+     * is in PIXELS rather than characters; a single word too long for the line
+     * is left to overflow rather than broken mid-word, since every notice this
+     * draws is prose. Capped at three lines, which is 40px of a 64px screen --
+     * past that it is a screen, not a notice. */
+    const NOTICE_MAX_LINES = 3;
+    function noticeLines(ctx, text, maxW) {
+        const measure = (t) => (typeof ctx.textWidth === "function")
+            ? ctx.textWidth(t) : String(t).length * 6;
+        const words = String(text).split(/\s+/).filter(Boolean);
+        const lines = [];
+        let cur = "";
+        for (const w of words) {
+            const next = cur ? cur + " " + w : w;
+            if (cur && measure(next) > maxW) {
+                lines.push(cur);
+                cur = w;
+                if (lines.length === NOTICE_MAX_LINES) break;
+            } else {
+                cur = next;
+            }
+        }
+        if (cur && lines.length < NOTICE_MAX_LINES) lines.push(cur);
+        return lines.length ? lines : [String(text)];
+    }
+
     function drawNotice(ctx) {
         const n = s.notice;
         if (!n) return false;
@@ -4655,13 +4697,22 @@ export function createController(io = {}) {
         const W = fr && fr.w > 0 ? fr.w : (ctx.width || 128);
         const H = fr && fr.h > 0 ? fr.h : (ctx.height || 64);
         const text = String(n.text);
-        const tw = (typeof ctx.textWidth === "function") ? ctx.textWidth(text) : text.length * 6;
-        const w = Math.min(W - 4, tw + 8), h = 13;
+        const measure = (t) => (typeof ctx.textWidth === "function")
+            ? ctx.textWidth(t) : String(t).length * 6;
+        /* The widest line the box may hold: the frame less its border and the
+         * 4px of air on each side that `print` is offset by. */
+        const maxTextW = Math.max(8, W - 4 - 8);
+        const lines = noticeLines(ctx, text, maxTextW);
+        let widest = 0;
+        for (const l of lines) widest = Math.max(widest, measure(l));
+        const w = Math.min(W - 4, widest + 8);
+        const h = 5 + lines.length * 8;
         const x = fx + Math.floor((W - w) / 2), y = fy + Math.floor((H - h) / 2);
         ctx.fillRect(x, y, w, h, 0);
         ctx.fillRect(x, y, w, 1, 1); ctx.fillRect(x, y + h - 1, w, 1, 1);
         ctx.fillRect(x, y, 1, h, 1); ctx.fillRect(x + w - 1, y, 1, h, 1);
-        ctx.print(x + 4, y + 3, text, 1);
+        for (let i = 0; i < lines.length; i++)
+            ctx.print(x + 4, y + 3 + i * 8, lines[i], 1);
         return true;
     }
 

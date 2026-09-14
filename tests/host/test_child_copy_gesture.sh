@@ -171,7 +171,8 @@ import("./src/shared/param_pages/page_controller.mjs").then((PC) => {
   c.render(gctx, { title: "t", rect: RECT });
   prints.length = 0;
   c.renderOverlays(gctx, { clearScreen: () => {} });
-  const said = prints.filter(([, , t]) => t.indexOf("PASTED") === 0);
+  /* Sentence case: notices are messages, not alarms (test_notice_wrapping). */
+  const said = prints.filter(([, , t]) => /^Pasted/.test(t));
   if (!said.length) fail("the result notice did not survive the release");
   const [nx, ny] = said[0];
   if (nx < RECT.x || nx > RECT.x + RECT.w || ny < RECT.y || ny > RECT.y + RECT.h)
