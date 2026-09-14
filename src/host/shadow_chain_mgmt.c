@@ -13,6 +13,7 @@
 #include <strings.h>  /* strcasecmp */
 
 #include "shadow_chain_mgmt.h"
+#include "lane_trace.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
 #include "step_plock.h"       /* a held step button -> a phase, in one place */
@@ -3628,6 +3629,38 @@ void shadow_lanes_publish_driving(void)
         }
     }
     ctrl->lanes_driving_mask = mask;
+
+    /* AND WHILE WE ARE HERE, THE DIAGNOSTIC TRACE -- see lane_trace.h for why
+     * it is sampled in-process instead of polled over the param channel. This
+     * is the one place that already holds a slot's instance on the callback
+     * and already calls its get_param, so the trace costs one more bounded
+     * getter call per armed sample and no new walk.
+     *
+     * Armed by the worker (lane_trace_armed), never by an access() here: the
+     * callback does no file I/O. Silent and free when disarmed. */
+    if (lane_trace_armed() && shadow_plugin_v2 && shadow_plugin_v2->get_param &&
+        lane_trace_should_sample(ctrl->shim_counter)) {
+        for (int slot = 0; slot < SHADOW_CHAIN_INSTANCES && slot < 8; slot++) {
+            if (!shadow_chain_slots[slot].active ||
+                !shadow_chain_slots[slot].instance) continue;
+            char line[LANE_TRACE_LINE_MAX];
+            line[0] = '\0';
+            int rn = shadow_plugin_v2->get_param(shadow_chain_slots[slot].instance,
+                                                 "lanes:diag", line, sizeof(line));
+            if (rn <= 0) continue;
+            /* A getter answers snprintf-style, so `rn` can exceed the buffer.
+             * The buffer is already terminated either way; trusting `rn` is
+             * how a length becomes an over-read. */
+            line[sizeof(line) - 1] = '\0';
+            /* A slot with no lanes answers a head and nothing else. Recording
+             * those is 2.4 MB a minute of "nothing happened" across four
+             * slots, which buries the take. A lane appears in the answer the
+             * moment it is created, so nothing is missed by skipping them. */
+            if (!strchr(line, '\n')) continue;
+            lane_trace_push(lane_trace_ring(), ctrl->shim_counter,
+                            (uint32_t)slot, line);
+        }
+    }
 }
 
 /* A COMPONENT WRITE MADE WHILE A STEP IS HELD IS A P-LOCK.

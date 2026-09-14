@@ -398,6 +398,7 @@ extern int shim_touch_trace_on;
  *   read: /data/UserData/schwung/clip_state.log
  */
 #include "clip_state.h"
+#include "lane_trace.h"
 /* Defined in schwung_shim.c; see its comment. */
 void shim_gesture_state(int *shift, int *vol, unsigned *pending,
                         unsigned *fired, unsigned *vol_during);
@@ -931,6 +932,52 @@ static void clip_phase_check_tick(void)
             }
         }
         if (n < 32) break;
+    }
+}
+
+/* THE LANE TRACE, drained. The callback fills a preallocated ring (lane_trace.h);
+ * this is the only side that opens a file. Armed by
+ * /data/UserData/schwung/lanes_trace_on, polled here so the callback never
+ * calls access().
+ *
+ * Drained at the worker's full 5 Hz rather than the 1 Hz the clip readout uses:
+ * the ring holds ~51 s and a take plus its following loops is ~15 s, so this is
+ * belt and braces -- but a diagnostic that loses the take because its consumer
+ * was lazy is worse than no diagnostic, and the drops would only show up as a
+ * number after the fact. */
+static void lane_trace_tick(void)
+{
+    static int armed;
+    const int now = (access("/data/UserData/schwung/lanes_trace_on", F_OK) == 0);
+    if (now != armed) {
+        armed = now;
+        lane_trace_set_armed(now);
+        FILE *m = fopen("/data/UserData/schwung/lanes_trace.log", "a");
+        if (m) {
+            fprintf(m, "# lane trace %s\n", now ? "ARMED" : "disarmed");
+            fclose(m);
+        }
+        if (!now) return;
+    }
+    if (!armed) return;
+
+    lane_trace_entry_t e;
+    FILE *fp = NULL;
+    while (lane_trace_pop(lane_trace_ring(), &e)) {
+        if (!fp) {
+            /* Opened only when there is something to write, and closed each
+             * drain -- same reasoning as clip_state_tick: a FILE* held across
+             * an `rm` of the log writes to an unlinked inode and the readout
+             * goes silent in a way that looks like a dead worker. */
+            fp = fopen("/data/UserData/schwung/lanes_trace.log", "a");
+            if (!fp) return;
+        }
+        fprintf(fp, "f=%-9u s%u %s\n", e.frame, e.slot, e.line);
+    }
+    if (fp) {
+        const uint32_t d = lane_trace_ring()->dropped;
+        if (d) fprintf(fp, "# DROPPED %u samples (ring lapped)\n", d);
+        fclose(fp);
     }
 }
 
@@ -1617,6 +1664,7 @@ static void *worker_main(void *arg) {
         clip_regions_tick();
         clip_phase_check_tick();
         clip_state_tick();
+        lane_trace_tick();                       /* 5 Hz drain, no-op unless armed */
         worker_heartbeat();
         align_capture_tick();                    /* 5 Hz: arm on trigger, drain when full */
         if (tick % 5 == 0) {

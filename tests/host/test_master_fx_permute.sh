@@ -305,6 +305,11 @@ double clip_regions_quarters_per_bar(const void *rg, int track, int slot) {
 }
 EOF
 
+# lane_trace.c is LINKED, not stubbed: it owns the diagnostic ring that
+# shadow_lanes_publish_driving pushes into, and a stub would let the ring
+# be per-translation-unit again -- the writer filling one copy and the
+# reader draining another. Disarmed it does nothing, so the real file is
+# free here.
 # -lm because shadow_chain_mgmt.c pulls fmod/roundf in through the LFO
 # tick. macOS folds libm into libSystem, so a missing -lm links fine there and
 # only fails on the Linux CI runner -- which is exactly what it did.
@@ -339,6 +344,7 @@ cc -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function \
   -Isrc/host \
   -DFIXTURE_DIR="\"$work\"" \
   tests/host/test_master_fx_permute.c "$work/stubs.c" \
+  src/host/lane_trace.c \
   -lm -o "$bin"
 
 "$bin"
