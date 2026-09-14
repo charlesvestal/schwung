@@ -83,12 +83,23 @@ if (decOf(FREE)) bad.push("an unlocked param must keep showing the track value, 
 writes.length = 0;
 ctrl.onKnobTurn(ctrl.page.keys.indexOf(LOCKED), 1, 1000);
 ticks(6);
-const w = writes.find((x) => x.startsWith("synth:" + LOCKED + "="));
-if (!w) bad.push("a turn under a held step wrote nothing");
+/* The write NAMES THE STEP rather than being a plain component write the shim
+ * has to attribute from whatever is held when it arrives. That race is the
+ * leak: the shim clears held_step on the frame carrying the note-off while the
+ * UI reacts to the detent a tick later, so a write that does not name the step
+ * lands on the TRACK. */
+const w = writes.find((x) => x.startsWith("lanes:plock_step="));
+if (!w) bad.push("a turn under a held step did not write lanes:plock_step: " + JSON.stringify(writes));
 else {
-    const v = Number(w.split("=")[1]);
+    const parts = w.split("=")[1].split(" ");
+    if (parts[0] !== "synth" || parts[1] !== LOCKED)
+        bad.push("the p-lock named the wrong parameter: " + w);
+    if (Number(parts[2]) !== 5) bad.push("the p-lock named step " + parts[2] + ", not the held one (5)");
+    const v = Number(parts[3]);
     if (!(v > 19 && v < 40)) bad.push("the turn continued from " + v + " -- it must walk from the LOCK (20), not the base (100)");
 }
+if (writes.some((x) => x.startsWith("synth:" + LOCKED + "=")))
+    bad.push("a turn under a held step ALSO wrote the track value -- that is the leak");
 
 /* Release: the lock display goes, and the knob walks from the base again. */
 held = -1; ticks(12);
@@ -177,3 +188,33 @@ grep -q 'shim_plock_held_step' src/schwung_shim.c \
 body=$(awk '/THE READ HALF OF THE P-LOCK GESTURE/,/^}/' src/host/shadow_chain_mgmt.c)
 echo "$body" | grep -q 'shadow_lanes_step_phase' \
   || fail "the :held read must use the SAME step->phase function as the write, or the value shown is not the value a turn replaces"
+
+# A TRIGGER IS NOT LOCKED BY DEFAULT.
+#
+# Under a held step a write becomes a p-lock, so a momentary would re-fire at
+# that step on every pass. Measured on `palette`, whose Main page carries
+# `rnd_macro` on a knob: one fire per loop, and twenty seconds later the patch
+# had walked through four unrelated sounds, with no undo and no base value to
+# return to. Right for a retrig, a trap as the default every write-only param
+# gets for free -- and the gesture that arms it is a brush of a knob,
+# indistinguishable from the one that fires it.
+ctl=src/shared/param_pages/page_controller.mjs
+# BOTH entry points: a trigger can be fired by a turn and by a click, and
+# guarding one leaves the same trap one gesture away.
+n=$(grep -c 'TRIGGERS CANNOT BE LOCKED' "$ctl")
+[ "$n" = "2" ] || fail "expected the refusal at BOTH trigger entry points (turn and click), found $n"
+python3 - <<'PY' || fail "a refusal comes AFTER its fireTrigger -- it would fire and lock before refusing"
+import sys
+src = open("src/shared/param_pages/page_controller.mjs").read()
+ok = True
+i = 0
+while True:
+    i = src.find("if (meta.writeOnly)", i)
+    if i < 0: break
+    seg = src[i:i+2500]
+    r = seg.find("TRIGGERS CANNOT BE LOCKED")
+    f = seg.find("fireTrigger(")
+    if r < 0 or f < 0 or r > f: ok = False
+    i += 1
+sys.exit(0 if ok else 1)
+PY
