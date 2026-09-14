@@ -64,6 +64,44 @@ CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
  * Ended here beside the recording pass because they are the same kind of
  * state: both are a gesture's lifetime measured in transport time, and a
  * stopped transport ends both. */
+/* IS THIS PARAMETER AUTOMATED -- which is NOT "is an override live right now".
+ *
+ * The knob grid asks `<key>:modulated` to decide whether to show the driven
+ * value, and it asks about once a second (one rotation stop in
+ * MOD_PROBE_EVERY). The mod bus answers from its live sources, which for a
+ * lane means "the transport is inside a point's span right now". A p-lock's
+ * span is ONE STEP -- about 60 ms per loop at 120 BPM -- so a flag sampled at
+ * 1 Hz essentially never catches it: the key is never marked, never joins the
+ * fast read lane, never has `:effective` read, and the cell shows the base
+ * forever.
+ *
+ * Reported from the device as "i tried automating snare in 9w9 and while i
+ * HEAR it, i dont SEE it", which is the exact signature: the module gets the
+ * value at note time, and the screen samples a flag that is false 98% of the
+ * loop.
+ *
+ * So the lane answers for itself. "Automated" is a property of the LANE, not
+ * of the instant -- a parameter with a lane on the clip that is playing is
+ * automated even while the playhead is between its points, in the same way a
+ * parameter with an LFO routed to it is modulated while the LFO is at zero.
+ *
+ * Stale and orphaned lanes do NOT count: lane_eval refuses them, so they will
+ * never drive, and claiming otherwise would make the grid read `:effective`
+ * every tick for a value that can never change. */
+CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
+                                        const char *target, const char *param) {
+    if (!inst || !target || !param) return 0;
+    if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return 0;
+    for (int i = 0; i < LANE_MAX; i++) {
+        const lane_t *ln = &inst->lanes.lanes[i];
+        if (!ln->used || ln->stale || ln->orphaned || ln->n <= 0) continue;
+        if (lane_is_for_param(ln, inst->lane_track, inst->lane_clip_slot,
+                              target, param))
+            return 1;
+    }
+    return 0;
+}
+
 CHAIN_INTERNAL void lane_punch_end_all(chain_instance_t *inst) {
     if (!inst) return;
     for (int i = 0; i < LANE_MAX; i++) {
