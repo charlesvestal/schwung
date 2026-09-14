@@ -7687,7 +7687,23 @@ static uint8_t step_swallow_latch[16];
  * `step_press_vel` carries the original velocity because a replayed note must
  * be the note that was played -- Move's steps carry velocity, and inventing
  * 127 for a soft press would write a different note than the finger did. */
-#define STEP_TAP_MS 250
+/* 500, not 250.
+ *
+ * The first number was picked as "what a quick tap looks like", which is the
+ * wrong question: what matters is the SLOWEST press a user means as a tap,
+ * because every press past the threshold silently does nothing at all. A
+ * deliberate one -- looking at the grid, placing a note on the step you meant
+ * -- runs well past 250 ms, and reported from the device it read as the step
+ * buttons being dead rather than as a threshold being tight.
+ *
+ * The two errors are not equal, which is why it errs LONG. Too short loses a
+ * note the user asked for, with no feedback and nothing to do about it. Too
+ * long costs a lock gesture a note it did not want -- visible on the step
+ * LEDs and undone by tapping the step again. And the p-lock gesture does not
+ * depend on this at all: a press that WRITES is marked used and never
+ * replayed, whatever the stopwatch says, so locking quickly still leaves no
+ * note. The threshold only decides what a press that did NOTHING meant. */
+#define STEP_TAP_MS 500
 static uint64_t step_press_ms[16];
 static uint8_t  step_press_vel[16];
 /* 0 = nothing owed, 1 = owe Move the note-on, 2 = owe it the note-off. Two
@@ -9838,7 +9854,18 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                  * screen, which is how this was found: Shift+Step 14 stopped
                  * creating clips. Worse for Double Loop, where the lane would
                  * have doubled while Move never doubled the notes. */
+                /* AND ONLY WHILE OUR SCREEN IS UP. `step_observe` is written
+                 * by shadow_ui, whose `view` outlives a dismiss, so the flag
+                 * could sit at 1 with Move on screen and every bare step press
+                 * was withheld from the sequencer -- taps replayed, holds gone.
+                 * The UI owns the flag and now tests the display itself; this
+                 * is the backstop, because the cost of the flag being wrong is
+                 * the user's step buttons, and a UI that lags, wedges or dies
+                 * must not be able to take them away. The owed-release drain
+                 * above stays unconditional, so a press begun on the grid is
+                 * still completed correctly after a dismiss. */
                 if (shadow_control && shadow_control->step_observe &&
+                    shadow_display_mode &&
                     d1 >= 16 && d1 <= 31 && !shadow_shift_held &&
                     shadow_ui_midi_shm) {
                     shadow_ui_midi_publish((type == 0x90) ? 0x09 : 0x08,

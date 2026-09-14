@@ -19848,7 +19848,23 @@ function reconcileStepObserve() {
     const moduleGrid = view === VIEWS.COMPONENT_EDIT &&
                        loadedModuleUi && loadedModuleUi.tick &&
                        !coRunUiActive();
-    const want = hostGrid || !!moduleGrid;
+    /* AND THE SCREEN HAS TO BE OURS.
+     *
+     * `view` survives a dismiss -- Menu hides the display and leaves the grid
+     * as the view we would come back to -- so the two tests above stayed true
+     * with Move on screen, the flag stayed 1, and the shim went on WITHHOLDING
+     * every bare step press. Reported from the device as "I can no longer
+     * toggle steps at all, in the sequencer, to place notes": the tap replay
+     * covers a press under STEP_TAP_MS, so short taps still worked and
+     * anything deliberate did not, which is why it reads as the sequencer
+     * being broken rather than as a Schwung flag left on.
+     *
+     * Same test the feedback modal uses for "is our UI actually up", for the
+     * same reason: a view is what we would draw, not what the user is
+     * looking at. */
+    const onScreen = typeof shadow_get_display_mode !== "function" ||
+                     shadow_get_display_mode() === 1;
+    const want = (hostGrid || !!moduleGrid) && onScreen;
     host_step_observe(want ? 1 : 0);
     if (!want) {
         for (let i = 0; i < 16; i++) stepHeld[i] = 0;

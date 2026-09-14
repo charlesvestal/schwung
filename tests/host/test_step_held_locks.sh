@@ -254,3 +254,42 @@ const plain  = knob(base, null, null);
 if (modded !== locked) { console.log("FAIL: locked knob differs from modulated knob"); process.exit(1); }
 if (plain === locked)  { console.log("FAIL: a lock changed nothing in the knob"); process.exit(1); }
 JS
+
+# THE REFUSAL IS SAID IN THE USER'S WORDS, not the enum's.
+#
+# The codes are named for the branch that raised them and one reached the
+# device verbatim: "NOT LOCKED: UNKNOWN PARAM", which names no gesture, no
+# parameter and no remedy -- it reads as an internal error rather than as an
+# answer to what the user just did. The mapping is pinned here (not merely its
+# existence) because a message the user sees is the whole point of the feature:
+# a refusal the user cannot act on is barely better than the silence this
+# replaced.
+node -e '
+const fs = require("fs");
+const src = fs.readFileSync("src/shared/param_pages/page_controller.mjs", "utf8");
+const m = src.match(/const PLOCK_REFUSAL_TEXT = \{([\s\S]*?)\};/);
+if (!m) { console.log("FAIL: no refusal text table"); process.exit(1); }
+const table = m[1];
+const bad = [];
+/* Every name the CHAIN can answer with, from its own list. */
+const chain = fs.readFileSync("src/modules/chain/dsp/chain_lanes.c", "utf8");
+const names = chain.match(/"ok",\s*"bad_request",\s*"no_clip",\s*"unknown_param",\s*"store_full"/);
+if (!names) bad.push("the chain refusal names moved -- re-pin them");
+/* ...and every one the HOST can answer with. */
+const host = fs.readFileSync("src/host/shadow_chain_mgmt.c", "utf8");
+const hostNames = [...host.matchAll(/case STEP_PLOCK_[A-Z_]+:\s*return "([a-z_]+)";/g)].map(x => x[1]);
+for (const n of ["bad_request", "no_clip", "unknown_param", "store_full"].concat(hostNames)) {
+    if (n === "ok" || n === "unknown") continue;
+    const spaced = n.replace(/_/g, " ");
+    if (!table.includes("\"" + spaced + "\"")) bad.push("refusal \"" + n + "\" has no human wording");
+}
+/* And the wording must not be the token again -- that is the defect. */
+if (/"unknown param":\s*"unknown param"/.test(table)) bad.push("unknown_param still says unknown param");
+if (bad.length) { for (const b of bad) console.log("FAIL: " + b); process.exit(1); }
+console.log("ok  every refusal the shim or the chain can raise has a human wording");
+' || fail "the refusal wording table is incomplete"
+
+# The node block above prints its own PASS before these source pins run, so
+# say so at the END too: a script whose last line is PASS while a later check
+# failed is the shape that hides a failure.
+echo "PASS: step-held locks + refusal wording"

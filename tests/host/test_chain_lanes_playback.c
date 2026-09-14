@@ -1189,6 +1189,73 @@ int main(void) {
         }
     }
 
+    /* A PUNCH MUST NOT SURVIVE A TRANSPORT STOP.
+     *
+     * Reported from the device: "on a stopped clip, I add p-locks, I don't
+     * see them until after one loop."
+     *
+     * The punch hands a target to the knob until the loop comes round, and
+     * the ONLY thing that ends it is a phase comparison inside lane_tick.
+     * Losing the phase returns before that comparison -- so a punch armed
+     * before the stop survived it, and on the next Play the lane stayed
+     * silent from phase 0 until the transport passed back under punch_phase.
+     * A whole loop, near enough, with the locks written correctly the entire
+     * time and nothing on screen to explain the silence.
+     *
+     * Driven through the real entry point (chain_set_clip_phase with
+     * valid=0), because a test that clears the fields by hand cannot see a
+     * flag the stop path forgot. */
+    {
+        chain_instance_t *st = calloc(1, sizeof(chain_instance_t));
+        if (st) {
+            setup_fake_synth(st);
+            st->lane_track = 0;
+            st->lane_clip_slot = 0;
+            st->clip_phase_valid = 1;
+            st->clip_loop_start = 0.0;
+            st->clip_loop_len = 4.0;
+            /* A real fingerprint from the start: a lane recorded BLIND is
+             * a different story (origin_pending / adoption) and would test
+             * that instead of this. */
+            st->clip_fp_valid = 1;
+            st->clip_fp.loop_start = 0.0;
+            st->clip_fp.loop_len = 4.0;
+            st->clip_fp.note_count = 4;
+            st->clip_fp.first_note = 36;
+
+            /* A lane exists, and an unarmed turn late in the loop punches. */
+            st->lane_armed = 1;
+            st->clip_phase_beats = 0.0;
+            lane_on_set_param(st, "synth", "cutoff", "70");
+            st->lane_armed = 0;
+            st->clip_phase_beats = 3.5;
+            lane_on_set_param(st, "synth", "cutoff", "33");
+            lane_t *pln = lane_find(&st->lanes, "synth", "cutoff", 0, 0);
+            CHECK(pln && pln->punch_until_wrap == 1,
+                  "the unarmed turn did not punch (setup)");
+
+            /* STOP. The phase goes unknown through the shim's own call. */
+            chain_set_clip_phase(st, 0, 0.0, 0.0, 0, 0, 0, NULL);
+            lane_tick(st);
+            CHECK(pln && pln->punch_until_wrap == 0,
+                  "a punch survived the transport stop");
+
+            /* PLAY from the top: the lane drives on the FIRST pass, rather
+             * than waiting for the transport to come back under 3.5. */
+            fake_poke("cutoff", "0");
+            /* WITH a fingerprint: chain_set_clip_phase takes the loop START
+             * from fp[0], so a valid phase with fp_valid=0 leaves loop_start
+             * NaN and lane_tick returns before it does anything at all. */
+            const double play_fp[4] = { 0.0, 4.0, 4.0, 36.0 };
+            chain_set_clip_phase(st, 1, 0.25, 4.0, 0, 0, 1, play_fp);
+            lane_tick(st);
+            CHECK(fake_value("cutoff") == 70.0f,
+                  "the lane was still punched out on the first pass after a "
+                  "stop: %f", fake_value("cutoff"));
+            free(st);
+        }
+    }
+
     free(inst);
     if (fails) {
         printf("FAILURES: %d\n", fails);

@@ -3495,7 +3495,8 @@ export function createController(io = {}) {
                 const bad2 = (refused && !/^0 /.test(refused)) ? refused : null;
                 const name = (t) => String(t).replace(/^-?\d+\s*/, "").replace(/_/g, " ");
                 if (bad || bad2) {
-                    const msg = name(bad || bad2);
+                    const token = name(bad || bad2);
+                    const msg = plockRefusalText(token);
                     notice("NOT LOCKED: " + msg.toUpperCase(), 4000);
                     announce("not locked, " + msg);
                 }
@@ -4537,6 +4538,34 @@ export function createController(io = {}) {
     }
 
     /** A one-line floating notice, drawn over the page while it lasts. */
+    /* THE REASON IN THE USER'S WORDS, not the enum's.
+     *
+     * The refusal codes are named for the code path that raised them, and one
+     * of them reached the device as "NOT LOCKED: UNKNOWN PARAM" -- which says
+     * nothing about what the user did or what to do instead, and reads as an
+     * internal error rather than as an answer. `unknown_param` means the chain
+     * has no such parameter to automate; `no_clip` means the step belongs to
+     * no clip; `store_full` means this lane is out of points.
+     *
+     * An unrecognised token is passed through rather than replaced: a code
+     * added later must still say SOMETHING, and a token is more use than a
+     * blank. */
+    const PLOCK_REFUSAL_TEXT = {
+        "unknown param": "can't automate this",
+        "no clip":       "no clip on this track",
+        "store full":    "lane is full",
+        "bad request":   "step not recognised",
+        "bad index":     "not a step on this grid",
+        "no bar":        "no bar on screen",
+        "no grid":       "step grid unknown",
+        "multi page":    "bar spans pages",
+        "outside clip":  "past the clip's end",
+    };
+    function plockRefusalText(token) {
+        const t = String(token || "").trim().toLowerCase();
+        return PLOCK_REFUSAL_TEXT[t] || t;
+    }
+
     function drawNotice(ctx) {
         const n = s.notice;
         if (!n) return false;
