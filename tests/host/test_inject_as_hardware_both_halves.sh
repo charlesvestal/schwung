@@ -27,17 +27,26 @@ src=src/schwung_shim.c
 body=$(awk '/^static void shim_inject_as_hardware/,/^}/' "$src")
 [ -n "$body" ] || fail "could not find shim_inject_as_hardware in $src"
 
-echo "$body" | grep -q 'pop ? 0 : n' \
+# NEVER `echo "$big" | grep -q` HERE. `grep -q` exits at the first match and
+# closes the pipe; shim_pre_transfer's body is 66 KB, past Linux's 64 KB pipe
+# buffer, so the writer still has bytes to push and takes SIGPIPE -- under
+# `set -o pipefail` that is a FAILING pipeline, and the `||` then reports
+# whichever invariant the grep had just CONFIRMED. It read as "the PEEK pass is
+# missing" on a tree that has it, and it is invisible on macOS, whose pipe
+# buffer grows. A here-string is a temp file, not a pipe, so the reader cannot
+# close on the writer.
+grep -q 'pop ? 0 : n' <<<"$body" \
   || fail "the popping pass must take the head each time and the peeking pass must walk forward, or one packet is delivered four times"
-echo "$body" | grep -q 'if (pop) shadow_midi_inject_pop' \
+grep -q 'if (pop) shadow_midi_inject_pop' <<<"$body" \
   || fail "only ONE of the two passes may consume, or the UI and the shim cannot both see the same packet"
 
 # Both call sites, and the pre one must come BEFORE the forward it exists to feed.
 pre=$(awk '/^static void shim_pre_transfer/,/^}/' "$src")
-echo "$pre" | grep -q 'shim_inject_as_hardware(shadow, hardware_mmap_addr, 0)' \
+grep -q 'shim_inject_as_hardware(shadow, hardware_mmap_addr, 0)' <<<"$pre" \
   || fail "shim_pre_transfer must deliver the PEEK pass -- without it no injected input reaches any screen"
-line_inject=$(echo "$pre" | grep -n 'shim_inject_as_hardware' | head -1 | cut -d: -f1)
-line_fwd=$(echo "$pre" | grep -n 'shadow_forward_midi()' | head -1 | cut -d: -f1)
+# -m1 rather than `| head -1`, for the same reason: head closes the pipe on grep.
+line_inject=$(grep -n -m1 'shim_inject_as_hardware' <<<"$pre" | cut -d: -f1)
+line_fwd=$(grep -n -m1 'shadow_forward_midi()' <<<"$pre" | cut -d: -f1)
 [ -n "$line_inject" ] && [ -n "$line_fwd" ] || fail "could not locate both the injection and the forward in shim_pre_transfer"
 [ "$line_inject" -lt "$line_fwd" ] \
   || fail "the injection must run BEFORE shadow_forward_midi -- after it, the UI sees the packet a frame late or never"
