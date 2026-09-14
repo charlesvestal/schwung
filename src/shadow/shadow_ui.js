@@ -809,6 +809,12 @@ let autosaveJob = null;
  * thing the UI thread did). Cleared whenever the file set changes underneath
  * us, so the next pass rewrites unconditionally. */
 let lastWrittenSlotJson = [null, null, null, null];
+/* Has this slot's lane document been RESTORED (or confirmed absent) since the
+ * set was loaded? Until it has, the slot serving "" says nothing about what
+ * the user owns, so the autosave may not clear the file. See
+ * restoreSlotLanes, and persistSlotLanes for the one branch that consults it. */
+let laneRestoreConfirmed = [false, false, false, false];
+
 /* Same skip-if-unchanged, for lanes_N.json. A lane document only changes when
  * something records into it, so on an ordinary set this makes the extra write
  * free -- without it the autosave pass gained a second eMMC write every five
@@ -10112,6 +10118,16 @@ function persistSlotLanes(i) {
     const path = lanePathForSlot(i);
     if (doc === null) return;
     if (doc === "") {
+        /*
+         * A SLOT WHOSE RESTORE WAS NEVER CONFIRMED DOES NOT GET TO CLEAR ITS
+         * FILE. "Served-and-empty" is a fact about the DSP, and at boot the
+         * DSP is empty for a reason that has nothing to do with the user:
+         * `lanes:state` may not have landed yet. Deleting on that is how a
+         * set's automation disappears across a restart -- see
+         * restoreSlotLanes. An unconfirmed slot simply keeps its file until a
+         * restore succeeds or the user clears it explicitly.
+         */
+        if (!laneRestoreConfirmed[i]) return;
         /* Removing it once, and only if there is something there: an
          * unconditional remove every five seconds is the churn the write
          * cache exists to avoid. */
@@ -10163,14 +10179,43 @@ function clearSlotLanesQuietly(i) {
  * releases the overrides those lanes held. */
 function restoreSlotLanes(i) {
     const path = lanePathForSlot(i);
-    if (!host_file_exists(path)) { clearSlotLanesQuietly(i); return; }
+    laneRestoreConfirmed[i] = false;
+    if (!host_file_exists(path)) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
     const raw = host_read_file(path);
-    if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); return; }
+    if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
     setSlotParam(i, "lanes:state", raw);
-    /* What we just handed the DSP is what the file holds, so the next autosave
-     * can skip the write unless something recorded in the meantime. */
-    lastWrittenLaneJson[i] = raw;
-    debugLog("lanes: slot " + i + " restored from " + path);
+    /*
+     * AND READ IT BACK, because this write is how a user's automation is LOST.
+     *
+     * The write was issued and never checked, while `lastWrittenLaneJson` was
+     * set as though it had landed. A `lanes:state` push that does not complete
+     * -- the param channel is busiest exactly here, at boot, behind a chain
+     * that is still instantiating -- therefore left the DSP with no lanes and
+     * the cache saying "the file is already what the slot holds". Ten seconds
+     * later the autosave asked the slot, got "" (served-and-empty, a perfectly
+     * good answer), saw the cache disagree, and DELETED the file. Observed
+     * twice on this device: three lanes and 51 points gone across a restart,
+     * recoverable only because a copy had been taken by hand.
+     *
+     * The readback costs one IPC per slot per restore and turns a silent loss
+     * into a retry. `laneRestoreConfirmed` is what the autosave consults
+     * before it is allowed to clear anything -- an unconfirmed slot's file is
+     * never removed, whatever the slot says about itself.
+     */
+    const back = getSlotStateWithRetry(i, "lanes:state");
+    if (back && back.length > 0) {
+        laneRestoreConfirmed[i] = true;
+        lastWrittenLaneJson[i] = back;
+        debugLog("lanes: slot " + i + " restored from " + path);
+    } else {
+        /* Not confirmed: say nothing about the file, and leave the cache
+         * unset so the next autosave writes rather than skips if the slot
+         * turns out to hold something after all. */
+        lastWrittenLaneJson[i] = null;
+        debugLog("lanes: slot " + i + " restore NOT confirmed (" +
+                 (back === null ? "read did not complete" : "slot reports empty") +
+                 ") -- its file will not be cleared");
+    }
 }
 
 /*

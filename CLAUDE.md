@@ -591,6 +591,16 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   condition, never a copy of it. And `no_bar` on a module's own screen was a
   STATE artifact (the strip names one track, and only that track's slot),
   measured, not a structural blocker.
+- **A SLOT MAY NOT CLEAR ITS LANE FILE UNTIL A RESTORE IS CONFIRMED.**
+  `restoreSlotLanes` pushed the document with `setSlotParam` and never checked
+  it landed, while setting the write cache as though it had — and the param
+  channel is busiest exactly there, at boot, behind a chain still
+  instantiating. The autosave then asked the slot, got `""` (served-and-empty,
+  a perfectly good answer for an empty DSP), saw the cache disagree and
+  DELETED the file. Two sets of automation lost on one device, recovered only
+  from a hand-taken copy. The restore now READS BACK what it pushed, and the
+  delete branch refuses an unconfirmed slot — an absent or empty FILE still
+  confirms, because that is positive knowledge that the slot owns nothing.
 - **A P-LOCK OWNS ONE STEP, via `lane_point_t.span`** — `[phase, phase+span)`
   and nothing else; outside it the lane answers as if the spanned points were
   absent, so a sweep underneath keeps playing and a lane of only locks goes
