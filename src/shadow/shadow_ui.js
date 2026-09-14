@@ -45,6 +45,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
@@ -2355,11 +2356,24 @@ function componentParamPagesIo(slotIndex, componentKey) {
         onValueWritten: (fullKey, wire) => {
             const step = heldStepIndex();
             if (step < 0) return;
+            /* ONLY A COMPONENT PARAMETER. This hook sees EVERY write the
+             * controller makes, including its own control channel, and the
+             * old test -- "the key has a colon" -- was true of all of them.
+             * `lanes:step_locks_query` is the lock-map QUESTION the grid asks
+             * on a step press; converting it produced a `lanes:plock_step`
+             * naming target `lanes`, and the translate that receives one marks
+             * the press SPENT. A spent press is never replayed to Move, so the
+             * step never toggled its note -- reported as "I tap a step and no
+             * note appears, but after five or six taps it works", the
+             * intermittency being the map refreshing.
+             *
+             * The rule is the shim's own (component_key.mjs pins the two
+             * together), so the next `lanes:` key the grid needs cannot bring
+             * this back. */
+            if (!isComponentParamKey(fullKey)) return;
             const colon = fullKey.indexOf(":");
-            if (colon <= 0) return;
             const target = fullKey.substring(0, colon);
             const param = fullKey.substring(colon + 1);
-            if (!target || !param) return;
             setSlotParam(slotIndex, "lanes:plock_step",
                          target + " " + param + " " + step + " " + wire);
         },

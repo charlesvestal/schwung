@@ -3338,6 +3338,28 @@ __attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
 void shim_step_note_plock_key(const char *key);
 __attribute__((weak)) void shim_step_note_plock_key(const char *key) { (void)key; }
 
+/* Moved ABOVE the translate that uses it, rather than forward-declared: a
+ * declaration matching `^static int shadow_component_param_split` is a
+ * SECOND hit for the awk range tests/host/test_plock_from_write.sh lifts
+ * this function with, and the range then ran to the wrong closing brace. */
+static int shadow_component_param_split(const char *key)
+{
+    if (!key) return 0;
+    const char *c = strchr(key, ':');
+    if (!c || c == key) return 0;
+    size_t n = (size_t)(c - key);
+    if (n == 5 && strncmp(key, "synth", 5) == 0) return (int)n;
+    if (n > 2 && strncmp(key, "fx", 2) == 0) {
+        for (size_t i = 2; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
+        return (int)n;
+    }
+    if (n > 7 && strncmp(key, "midi_fx", 7) == 0) {
+        for (size_t i = 7; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
+        return (int)n;
+    }
+    return 0;
+}
+
 static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
                                              char *out, int out_len) {
     char target[16] = {0}, param[32] = {0};
@@ -3350,6 +3372,22 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
          * still a refusal the caller is owed a name for. */
         if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = -1;
         return 0;
+    }
+    /* AND THE TARGET MUST BE A COMPONENT. The backstop to the UI's own gate,
+     * here because the cost of the UI being wrong is the user's step buttons:
+     * this translate marks the press SPENT, so a `lanes:step_locks_query`
+     * arriving as a p-lock took the note toggle away with nothing on screen to
+     * explain it. Same rule as shadow_component_param_split -- reused rather
+     * than restated, since a second copy is what let the UI disagree. */
+    {
+        char probe[64];
+        int pn = snprintf(probe, sizeof(probe), "%s:x", target);
+        if (pn <= 0 || (size_t)pn >= sizeof(probe) ||
+            shadow_component_param_split(probe) <= 0) {
+            shadow_log("lanes: plock_step target is not a chain component");
+            if (slot < SHADOW_CHAIN_INSTANCES) g_plock_last_reason[slot] = -1;
+            return 0;
+        }
     }
     double phase = 0.0, step_len = 0.0;
     int rc = shadow_lanes_step_phase(slot, step, &phase, NULL, &step_len);
@@ -3395,23 +3433,6 @@ __attribute__((weak)) int shim_plock_held_step(void) { return -1; }
  * name as its target. Returns the offset of the ':' or 0. Deliberately NOT a
  * general "has a colon" test: `lanes:`, `slot:`, `buses:` and the rest share
  * that shape and are not parameters of anything. */
-static int shadow_component_param_split(const char *key)
-{
-    if (!key) return 0;
-    const char *c = strchr(key, ':');
-    if (!c || c == key) return 0;
-    size_t n = (size_t)(c - key);
-    if (n == 5 && strncmp(key, "synth", 5) == 0) return (int)n;
-    if (n > 2 && strncmp(key, "fx", 2) == 0) {
-        for (size_t i = 2; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
-        return (int)n;
-    }
-    if (n > 7 && strncmp(key, "midi_fx", 7) == 0) {
-        for (size_t i = 7; i < n; i++) if (key[i] < '0' || key[i] > '9') return 0;
-        return (int)n;
-    }
-    return 0;
-}
 
 /* THE READ HALF OF THE P-LOCK GESTURE: what does the lane hold on the step
  * currently under the user's finger?
