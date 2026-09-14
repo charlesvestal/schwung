@@ -130,6 +130,39 @@ static inline int step_plock_phase(int bar_1based, int step_index,
     return STEP_PLOCK_OK;
 }
 
+/* HOW LONG THE CLIP IS *NOW*, from the two sources that disagree.
+ *
+ * `file_len` is the clip's end in quarters as Song.abl last recorded it, and
+ * `strip_len` is what Move's own bar strip is DRAWING -- segments x
+ * quarters-per-bar, live off the screen.
+ *
+ * THE FILE LAGS BY TENS OF SECONDS. Move writes a clip about 10 s after it is
+ * made and ~35 s after an edit, so extending a clip and immediately locking a
+ * step in the new bars was refused as OUTSIDE_CLIP: the step WAS inside the
+ * clip, and the only thing that disagreed was a file not yet written.
+ * Reported from the device in exactly those terms -- "at that point it wasn't
+ * [past the end], it just hadn't synced with the file yet".
+ *
+ * THE LONGER OF THE TWO WINS, and the direction is the point rather than a
+ * tie-break. A step the user can SEE on the strip is a step that exists; the
+ * cost of erring long is accepting a lock on a bar that is about to exist
+ * anyway (the lane store already holds points beyond the current window
+ * dormant until the window grows -- the same rule a doubled loop relies on),
+ * while the cost of erring short is refusing an edit the user just made, with
+ * a message telling them their clip is shorter than it visibly is.
+ *
+ * This was already the rule for a clip with NO file entry at all, argued in
+ * the same direction ("erring long refuses nothing legitimate"); it was
+ * simply gated on the file being absent rather than on it being STALE, which
+ * is the same condition observed a few seconds later. */
+static inline double step_plock_clip_len(double file_len,
+                                         int strip_valid, double strip_len)
+{
+    double best = (file_len > 0.0 && isfinite(file_len)) ? file_len : 0.0;
+    if (strip_valid && isfinite(strip_len) && strip_len > best) best = strip_len;
+    return best;
+}
+
 /* THE SCROLL FORM: the displayed page's origin, straight from Move.
  *
  * `scroll_beats` is where the 16 buttons START, in quarters from the clip's

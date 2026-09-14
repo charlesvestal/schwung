@@ -14,8 +14,47 @@ static int fails = 0;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: "); printf(__VA_ARGS__); \
     printf("\n"); fails++; } } while (0)
 
+/* AN EXTENDED CLIP IS AS LONG AS THE SCREEN SAYS, not as long as the file
+ * last said. Reported from the device: extend a clip, lock a step in the new
+ * bars, and the lock is refused as "past the clip's end" -- because Song.abl
+ * is written tens of seconds later and the old length was the only one
+ * consulted. */
+static void test_clip_len_prefers_whichever_is_longer(void)
+{
+    printf("an extended clip's length comes from the strip, not the stale file\n");
+
+    /* The reported case: the file still says 2 bars, Move is drawing 4. */
+    CHECK(step_plock_clip_len(8.0, 1, 16.0) == 16.0,
+          "an extended clip must use the strip's 16, got %f",
+          step_plock_clip_len(8.0, 1, 16.0));
+
+    /* A clip with no file entry at all -- the case that already worked, and
+     * must keep working through the same helper. */
+    CHECK(step_plock_clip_len(0.0, 1, 16.0) == 16.0,
+          "a clip absent from the file must use the strip");
+
+    /* NO STRIP FOR THIS TRACK: the file is all there is. */
+    CHECK(step_plock_clip_len(8.0, 0, 16.0) == 8.0,
+          "without a valid strip the file's length must stand");
+
+    /* AND A SHORTER STRIP DOES NOT SHRINK THE CLIP. The strip can be stale or
+     * belong to a narrower view; erring long refuses nothing legitimate,
+     * while erring short refuses an edit the user can see on screen. */
+    CHECK(step_plock_clip_len(16.0, 1, 8.0) == 16.0,
+          "a shorter strip must not shrink the clip");
+
+    /* Neither source: zero, which DISABLES the bound rather than refusing
+     * everything -- unchanged behaviour, and the reason the caller treats 0
+     * as "unknown" rather than "empty". */
+    CHECK(step_plock_clip_len(0.0, 0, 0.0) == 0.0, "no source must answer 0");
+
+    /* A non-finite strip (a torn read) must never win. */
+    CHECK(step_plock_clip_len(8.0, 1, NAN) == 8.0, "a NaN strip must not win");
+}
+
 int main(void)
 {
+    test_clip_len_prefers_whichever_is_longer();
     double ph = 0.0;
     int rc;
 
