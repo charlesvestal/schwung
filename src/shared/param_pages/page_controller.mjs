@@ -3988,6 +3988,22 @@ export function createController(io = {}) {
          * this step goes. On the TOUCH, not the turn -- a turn under a held
          * step writes a p-lock, so asking for a turn here would create the
          * thing it is meant to remove. */
+        /* ...AND WITH NO STEP HELD, the whole lane.
+         *
+         * Asked of the HOST, not tracked from the CC. CC 119 only reaches this
+         * controller when a step is down or the module declared
+         * `claims_edit_ccs` -- 9W9 declares neither -- so a flag set from the
+         * CC would never once be true on the modules this is for. That is the
+         * "a grid feature is unreachable until the shim forwards its CC" trap,
+         * and this feature walked straight into it before the shim started
+         * publishing the byte (shadow_control_t.delete_held).
+         *
+         * The step branch below runs after, so the two can never both fire: a
+         * held step always means "on this step". */
+        if (down && io.deleteHeld && io.deleteHeld() &&
+            !(s.heldStep >= 0 || liveHeldStep() >= 0)) {
+            if (clearParamLane(slot)) return;
+        }
         if (down && s.stepClear && (s.heldStep >= 0 || liveHeldStep() >= 0)) {
             const k = keyAt(slot);
             if (k && clearHeldStep(k)) {
@@ -4496,6 +4512,65 @@ export function createController(io = {}) {
          * makes it re-read rather than show a number that was never the
          * track's. */
         if (key) delete s.values[key]; else for (const k of (p ? p.keys : [])) delete s.values[k];
+        return true;
+    }
+
+    /*
+     * DELETE + A KNOB, WITH NO STEP HELD: this knob's whole automation for
+     * this clip goes.
+     *
+     * The third of a set that reads as one sentence once it is complete -- the
+     * held STEP narrows the clear to a step, the KNOB narrows it to a
+     * parameter:
+     *
+     *     Delete + step, release    everything on that step
+     *     Delete + step + knob      that knob, on that step
+     *     Delete + knob             that knob's whole lane for this clip
+     *
+     * On the TOUCH, not the turn, for the same reason the step pick is: a turn
+     * would write a value on the way to deleting one.
+     *
+     * It ANNOUNCES WHAT IT REMOVED and stays undoable (`lanes:undo`, which
+     * clear_param snapshots into). A brush of a knob while Delete is held
+     * would otherwise wipe a lane silently, and "silently" is the part that
+     * makes it unrecoverable in practice -- you cannot undo what you did not
+     * know happened.
+     */
+    function clearParamLane(slot) {
+        const key = keyAt(slot);
+        if (!key) return false;
+        const fk = fullKey(key);
+        const colon = fk.indexOf(":");
+        if (colon <= 0) return false;
+        setParam("lanes:clear_param",
+                 fk.substring(0, colon) + " " + fk.substring(colon + 1));
+        /* The count, for the same reason the step clear needs one: a clear
+         * that reports success without one cannot be told from a clear that
+         * removed nothing. A read that did not complete is a THIRD answer. */
+        const raw = getParam("lanes:cleared");
+        const n = (raw === null || raw === undefined || raw === "")
+                ? -1 : Number(raw);
+        const cleared = isFinite(n) ? n : -1;
+
+        const m = metaAt(slot);
+        const label = (m && (m.name || m.label)) || key;
+        if (cleared === 0) {
+            notice("No " + String(label) + " automation in this clip");
+            announce("no " + label + " automation in this clip");
+        } else if (cleared > 0) {
+            notice(String(label) + " automation cleared");
+            announce(label + " automation cleared");
+        } else {
+            notice("Clear sent, result unknown");
+            announce("clear sent, result unknown");
+        }
+        /* The map and the cached values are now wrong in exactly the way they
+         * are after a step clear -- same invalidation, same reasons. */
+        s.lockMapFor = -1;
+        delete s.heldValues[key];
+        delete s.values[key];
+        const p = page();
+        if (p) applyHeldDecorations(p);
         return true;
     }
 

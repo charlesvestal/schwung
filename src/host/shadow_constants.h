@@ -630,6 +630,31 @@ typedef struct shadow_control_t {
      * APPENDED, for the reason stated on pad_observe.
      */
     volatile uint8_t held_step_is_hold;
+    /*
+     * MOVE'S DELETE BUTTON IS DOWN (CC 119), 0 or 1.
+     *
+     * For "Delete + a knob, with no step held" -- clear that knob's whole
+     * automation for this clip, the third of the clear set whose other two
+     * are the held-step gestures.
+     *
+     * PUBLISHED AS A BYTE rather than forwarding the CC, and the difference
+     * matters. The raw CC reaches the grid's edit handler, which ALSO arms the
+     * child copy/clear gesture -- so forwarding it would switch that on for
+     * every module that never declared `claims_edit_ccs`, which is a
+     * behaviour change nobody asked for. A byte feeds exactly the one gesture.
+     *
+     * PASSIVE: nothing is withheld from Move, so Delete keeps doing whatever
+     * Move does with it. That is deliberate but it leaves a real edge -- a
+     * Delete pressed and NOT followed by a knob reaches Move, and a lone
+     * Delete DELETES THE SELECTED CLIP (measured on hardware 2026-09-14:
+     * clips [0,1] -> [0] from one press with nothing else held). The gesture
+     * itself is safe; abandoning it half-way is not. Closing that needs the
+     * press withheld and replayed if no knob follows -- the shape the step
+     * tap/hold split already uses -- and is not done here.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t delete_held;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */

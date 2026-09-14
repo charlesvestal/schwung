@@ -2357,6 +2357,10 @@ function componentParamPagesIo(slotIndex, componentKey) {
          * HOLD -- see shadow_control_t.held_step_is_hold. The controller uses
          * it to keep a TAP from asking the lock map anything. */
         heldStepIsHold: () => shadow_get_held_step_is_hold() === 1,
+        /* Move's Delete button, for "Delete + a knob clears this knob's whole
+         * automation for this clip". A byte from the shim rather than the CC,
+         * which never reaches the grid unless a step is held. */
+        deleteHeld: () => shadow_get_delete_held() === 1,
         onValueWritten: (fullKey, wire) => {
             const step = heldStepIndex();
             if (step < 0) return;

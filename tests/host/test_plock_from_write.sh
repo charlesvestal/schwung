@@ -149,11 +149,37 @@ n=$(grep -c 'shadow_lanes_plock_confirm(slot)' "$src" || true)
 [ "$n" = "3" ] || fail "expected the confirm at all THREE plock write sites (write-time, SHM, direct/web), found $n"
 
 # APPENDED, never inserted: sizeof(shadow_control_t) is a contract between two
-# binaries and schwung-manager reads a raw offset out of the same struct.
-tail_field=$(awk '/^typedef struct shadow_control_t/,/^} shadow_control_t;/' src/host/shadow_constants.h \
-             | grep -E '^\s+volatile ' | tail -1)
-echo "$tail_field" | grep -qE 'plock_seq|lanes_driving_mask|held_step' \
-  || fail "the lanes fields must be APPENDED to shadow_control_t -- inserting one moves every field behind it, and sizeof is a contract between two binaries"
+# binaries and schwung-manager reads `stay_in_shadow` out of the same struct at
+# a raw offset.
+#
+# EACH FIELD'S POSITION IS PINNED, and getting here took three tries worth
+# recording, because the two weaker forms both PASSED a mutation that inserted
+# a field:
+#
+#   "the last field is one of these three"  - a name list that has to be edited
+#       every time a field is appended. The same shape as install.sh's
+#       features.json key list, which this project has already been burned by:
+#       a check you must update to keep it passing gets updated, and stops
+#       meaning anything.
+#   "they appear in this relative order"    - putting a new field BETWEEN two of
+#       them leaves their order intact. Mutated and it passed.
+#
+# Only the absolute position moves when something is inserted, and it moves for
+# every field behind the insertion. Appending to the tail never shifts one, so
+# these numbers do not need touching in the normal case -- if one fails, the
+# layout moved and that is the finding, not a number to bump.
+fields=$(awk '/^typedef struct shadow_control_t/,/^} shadow_control_t;/' src/host/shadow_constants.h \
+         | grep -E '^\s+volatile ' | sed -E 's/.*[ *]([a-z_0-9]+)(\[[0-9]*\])?;.*/\1/')
+idx_of() { echo "$fields" | grep -nxF "$1" | cut -d: -f1; }
+check_at() {
+  local got; got=$(idx_of "$1")
+  [ -n "$got" ] || fail "$1 has left shadow_control_t -- the lanes fields are a published layout"
+  [ "$got" = "$2" ] \
+    || fail "$1 is volatile field $got, not $2 -- a field was INSERTED ahead of it, which shifts every offset behind it"
+}
+check_at plock_seq          69
+check_at lanes_driving_mask 70
+check_at held_step          71
 
 # The first read of the counter must arm NOTHING, or every entry to the UI
 # flashes a mark for the previous session's last p-lock.

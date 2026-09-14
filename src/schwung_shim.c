@@ -9066,6 +9066,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
                 }
 
+                /* Delete button (CC 119): publish the held state for the
+                 * grid's "Delete + knob clears this knob's lane" gesture.
+                 * PASSIVE -- nothing is withheld, so Move keeps Delete. See
+                 * shadow_control_t.delete_held for what that costs. */
+                if (d1 == CC_DELETE && shadow_control) {
+                    shadow_control->delete_held = (d2 > 0) ? 1 : 0;
+                }
+
                 /* Menu button long-press detection */
                 if (d1 == CC_MENU && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
                     if (d2 > 0) {
