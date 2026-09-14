@@ -362,6 +362,19 @@ int chain_mod_get_base_for_subkey(chain_instance_t *inst,
     return chain_mod_get_param_string(inst, target, param, buf, buf_len);
 }
 
+/* A DEFAULT OF "no lane", so this file can be compiled and linked ON ITS OWN.
+ *
+ * Three unit tests build chain_mod.c without the lanes TU, and a hard call
+ * there is a link error rather than a behaviour change -- the same reason
+ * `shim_step_mark_used` is weak on the host side. The strong definition in
+ * chain_lanes.c wins wherever the chain is actually built. */
+__attribute__((weak)) int lane_automates_param(chain_instance_t *inst,
+                                               const char *target,
+                                               const char *param) {
+    (void)inst; (void)target; (void)param;
+    return 0;
+}
+
 /* Optional getter helper: key suffix ':modulated' returns whether a target
  * currently has at least one active modulation source. */
 int chain_mod_get_modulated_for_subkey(chain_instance_t *inst,
@@ -385,6 +398,14 @@ int chain_mod_get_modulated_for_subkey(chain_instance_t *inst,
 
     mod_target_state_t *entry = chain_mod_find_target_entry(inst, target, param);
     if (entry && entry->active && chain_mod_has_active_sources(entry)) {
+        return snprintf(buf, buf_len, "1");
+    }
+    /* ...or a LANE automates it, even with no override live this instant.
+     * A p-lock's override is up for one step per loop and this flag is
+     * sampled about once a second, so asking only the live sources answers
+     * "not automated" almost every time it is asked -- and the cell then
+     * shows the base while the ear hears the lock. See lane_automates_param. */
+    if (lane_automates_param(inst, target, param)) {
         return snprintf(buf, buf_len, "1");
     }
     return snprintf(buf, buf_len, "0");

@@ -311,6 +311,14 @@ export function enterParamPages(slot, component, prefix, restorePageName, io, ch
                 return ctx.setSlotParam(currentSlot, key, value);
             },
             announce,
+            /* THE SHIM'S CONFIRMATION COUNTER, so a p-lock that landed can be
+             * recognised without asking the refusal registers at all. Bumped
+             * only when a lock is confirmed, which makes it provenance rather
+             * than timing -- see judgePendingRefusal. */
+            plockSeq: () => {
+                if (typeof shadow_get_plock_seq !== "function") return null;
+                try { return shadow_get_plock_seq(); } catch (e) { return null; }
+            },
             /* The list editor marks these with "~"; the grid ticks the cell.
              * A synthesised contract may answer for itself — slot settings
              * does, because the generic oracle both got it wrong for `slot:*`
