@@ -601,6 +601,12 @@ layout, and the shape-edit verbs. Read it before touching `modules/chain/dsp/`.
   from a hand-taken copy. The restore now READS BACK what it pushed, and the
   delete branch refuses an unconfirmed slot — an absent or empty FILE still
   confirms, because that is positive knowledge that the slot owns nothing.
+- **A LOCK IS DRAWN AS MODULATION IS**: pointer on the BASE, mark at the
+  step's value, and the mark is what moves as you turn. Replacing the pointer
+  made the cell mean one thing while held and another during playback — two
+  grammars for one picture. "An LFO drives this to 0.1" and "this step plays
+  0.1" now render pixel-identically in the knob; the corner mark and the
+  inverted band are what say *which step*.
 - **A P-LOCK OWNS ONE STEP, via `lane_point_t.span`** — `[phase, phase+span)`
   and nothing else; outside it the lane answers as if the spanned points were
   absent, so a sweep underneath keeps playing and a lane of only locks goes
