@@ -4,10 +4,17 @@ A map of **Ableton Move's firmware UI** — its views, its LED language, its
 buttons and its encoders — written so that a *program* can drive Move and know
 where it is.
 
-**Firmware: Move 2.1.0**, read on the device from **Setup → Update → Current
-Version** (Shift+Step 2 → Update → Current Version → `Move 2.1.0 / installed`).
-Every claim here is on that version, and everything was measured on **MIDI
-tracks** — audio tracks (added in 2.0.0) were never visited.
+**Move has TWO control channels and most of this document is about one of them.**
+The control surface is §0–§10. **Move Manager — Ableton's own web app on port 80**
+(`http://move.local/`) — is §11; it was not considered until late, which is why
+several conclusions here that read "unreachable" were really "untried".
+
+**Firmware: Move 2.1.0**, confirmed two ways: on the device at **Setup → Update →
+Current Version** (`Move 2.1.0 / installed`), and over HTTP from
+`GET /api/v1/system/version`, which adds the build — commit `a6233f89a28a`,
+2026-08-19, AbletonOS v3.18. Unless a row says otherwise, surface behaviour was
+measured on **MIDI tracks**; **audio tracks are swept in §11.4** and differ
+substantially.
 
 Everything below was produced on 2026-09-14 by injecting USB-MIDI packets into
 Move and observing two channels that cost nothing: Move's native OLED
@@ -117,9 +124,9 @@ A Back with nothing to pop is a no-op (measured: Back inside the device carousel
 emitted no LED and changed nothing).
 
 To reach **Session** mode from the reset, add one `Menu` tap (§4.1) and verify
-`CC 118 → 0`. Note `0` means *not Note*, not *Session* — see §2.2; from the
-reset state there is nothing else it could be, which is exactly why the reset is
-worth having.
+`CC 118 → 0` **if it fires at all** — §2.2/§11.4: it is the Sampling lamp and its
+correlation with the mode is set-dependent. From the reset state the mode is
+known by construction, which is exactly why the reset is worth having.
 
 ---
 
@@ -142,7 +149,7 @@ That third one matters more than its share of the map. A driver that "probes
 with a harmless pad press" to find out where it is **will swap the user's set**
 if it happens to be in Set Overview. It happened here, twice, during this survey.
 
-### 2.2 `CC 118` — demoted twice: a TRANSITION signal, and it is the SAMPLING lamp
+### 2.2 `CC 118` — DO NOT USE IT FOR THE MODE (demoted three times; see §11.4)
 
 The first draft of this document called CC 118 "the Session/Note indicator" on
 the strength of four driven mode switches. That claim was too strong in two
@@ -154,11 +161,18 @@ indistinguishable on this CC.
 
 **(c) It is not a mode flag at all.** §9.1 swept every CC and found CC 118 is
 **Move's Sampling button**: pressing it prompts `Press pad`, and a pad press
-starts `Recording...`. Its lamp means *"Sampling is available here"* — available
-in Note mode, not in Session, which is the whole of the correlation. The values
-and routes below still hold; a driver just needs to know it is reading an
-availability lamp, so anything that moves where Sampling is offered breaks the
-inference in silence.
+starts `Recording...`. Its lamp means *"Sampling is available here"*.
+
+**(d) And the correlation is SET-DEPENDENT.** §11.4: on `BNYX Demo 3`, toggling
+Note↔Session emitted **no CC 118 at all** in either direction on any of its three
+tracks, while the screen changed to `Session Mode` normally. The lamp only
+transmits when availability *changes*, and whether it changes across a mode
+toggle depends on the set. It tracked the mode in the one set this map was first
+written against — that is the whole of it.
+
+**Use §2.3.** The tables below are kept because they are accurate for what CC 118
+*is*, and a driver watching a transition may still see it; they are no longer a
+way to answer "which mode am I in".
 
 **(b) Move never emits it spontaneously**, so a driver arriving cold has nothing
 to read. It is emitted only when the Note-mode flag actually flips. Measured, by
@@ -206,7 +220,13 @@ On release Move restores the step row it covered with the shortcut layer.
 
 To split Session from Set Overview, take the Shift **lamp** set in the same
 gesture (which step CCs went to 127) and test step 16: **step 16 dark ⇒ you are
-already in Set Overview.** Every Shift shortcut's lamp is dark while you are on
+already in Set Overview.**
+
+**The lamps are for that split ONLY — never as the primary mode test.** On an
+**audio track** in Note mode the Note-only lamps (25, 26, 30, 31) are absent
+entirely (§11.4), so a lamp-based mode test would report "not Note" while you are
+in it. The release repaint is unaffected: an audio track's step row is still
+populated (every lit step reads `126`). Every Shift shortcut's lamp is dark while you are on
 the screen it opens, so the *missing* lamp names where you are — step 20 dark
 means the Tempo screen is open, and so on.
 
@@ -584,7 +604,8 @@ automation.
 | Record / Capture / Delete in Session and Set Overview | each is destructive and the Note-mode result already establishes what they do; Set Overview additionally risks a set switch |
 | The 32 pads individually in Note mode | the pad→pitch map needs one clip write per pad and an 8–14 s file settle each, ~8 minutes of device time for a map that `Song.abl` would give directly |
 | Knobs 2–7 individually | knobs 1 and 8 behaved identically (a parameter overlay + a ring value); the class looks uniform and was sampled, not enumerated |
-| Audio tracks | **ten surface routes tried, none creates one** (§9.2), and the device has none to observe — a device reason, not a time one |
+| **Creating** an audio track | ten surface routes and Move Manager all fail (§9.2, §11.2). **Observing** one is done — see §11.4 |
+| Move Manager's write side | file upload, firmware update, ssh enable and feature flags were deliberately not exercised on the user's instrument |
 | The sampling flow, Wi-Fi, Update | Update was opened only as far as Current Version; running one would reflash the user's instrument |
 | Set Overview's jog, arrows and Back beyond the tile screen | every probe there can change the loaded set |
 
@@ -1324,21 +1345,227 @@ and counts taken stopped are not comparable with counts taken running. It has
 already corrupted one measurement in this document (§7.9's "knob-touch burst")
 and one in §9.4.
 
+## 11. The second channel — Move Manager, and the audio tracks that were there all along
+
+**Move serves its own web app on port 80.** `http://move.local/` is Ableton's
+**Move Manager** (Schwung's manager is a different thing on :7700). This document
+had never considered it, and "everything reachable has been measured" in §10 was
+therefore false: it meant *everything reachable from the control surface*. A
+whole second control channel had not been named as untried — it had not been
+thought of. That is a worse failure than a wrong measurement, and it produced the
+two biggest corrections below.
+
+### 11.1 Authenticating: the PIN is on Move's own screen
+
+```
+POST /api/v1/challenge            Content-Type: application/json, body {}
+        ──▶ Move displays a six-digit PIN in large type on its OLED
+POST /api/v1/challenge-response   {"secret":"<pin>"}
+        ──▶ 200 + Set-Cookie: Ableton-Challenge-Response-Token=…  (Max-Age 2592000 = 30 days)
+```
+
+Two mechanics worth knowing:
+
+- **The `Content-Type: application/json` header is load-bearing.** A plain
+  `POST` with no body returns **400 with an empty body** — indistinguishable
+  from "refused". Adding the header and `{}` returns 200 and puts the PIN up.
+  An `Origin`/`Referer` pair does *not* help; the content type is the whole
+  difference.
+- **Wrong attempts are rate-limited and counted**: a wrong secret returns 401
+  with `X-Retries-Left: 2`, and the app's own code handles a 429 with
+  `Retry-After`. So this is not brute-forceable and a driver gets three tries.
+
+The PIN is rendered in a large font that the glyph table in §0 does not cover; it
+was read by rendering each digit's bitmap directly. **A `5` and a `6` differ only
+in whether the bowl's left wall is closed above the base** — the first attempt
+misread exactly that and burned a retry.
+
+Unauthenticated, only `/api/v1/language` and `/api/v1/feature-flags/current`
+answer; everything else is `401 {"error":"Unset credentials"}`.
+
+### 11.2 What the channel exposes
+
+Endpoint list lifted from the app bundle and then driven:
+
+| Endpoint | Answer (measured) |
+|---|---|
+| `GET /api/v1/system/version` | `{"version":"2.1.0","branch":"move/release-v2.1.0","commit":"a6233f89a28a","commitDate":"2026-08-19","os":"AbletonOS v3.18","coreLibraryVersion":"0.59"}` |
+| `GET /api/v1/is-move-running` | `{"isMoveRunning":true}` |
+| `GET /api/v1/datetime` | `2026-09-14T21:29:30Z` |
+| `GET /api/v1/system/update-channel` | `{"updateChannel":"move-stable"}` |
+| `GET /api/v1/cloud-auth/status` | `{"status":"notAuthenticated"}` |
+| `GET /api/v1/feature-flags/current` | `{"enableScreenReader":false,"enableVirtualMemoryLimit":true}` — and the schema shows those are the **only two flags**; neither has anything to do with audio tracks |
+| `GET /api/v1/files/` | a JSON file listing of `UserLibrary` (`Sets`, `Recordings`, `Samples`, `Track Presets`, `Audio Effects`) |
+| `GET /api/v1/screen-reader` | **an SSE stream of Move's screen-reader text** — see below |
+| also present | `/api/v1/update`, `/update/reboot`, `/ssh`, `/syslog{,/current,/zip}`, `/perf/{start,stop,pop}`, `/render`, `/language`, `/legal/licenses`, `/cloud-auth/{start,complete,revoke}`, `/feature-flags/{next,reset-next,schema}` |
+
+**It is a file and system manager, not a set editor.** Nothing in the surface
+creates or edits tracks, clips or devices — which is why the audio-track answer
+did not come from here either (§11.3).
+
+**`/api/v1/system/version` independently confirms the firmware** read off the
+OLED in §7 — 2.1.0, and it adds the build: commit `a6233f89a28a`, 2026-08-19,
+AbletonOS v3.18.
+
+**The screen-reader SSE would have replaced the whole OCR pipeline** — if it were
+switched on. Connecting returns `data: {"type":"text","text":"Drum Kit"}`, i.e.
+the current screen as *text*. But driving twelve screen changes (the Sampling
+flow and its settings screen) produced **no further events**: announcements are
+gated on Move's own screen-reader setting, which is off on this device. So the
+endpoint exists, answers, and is silent in this configuration. **A driver that
+can turn Move's screen reader on gets a text feed of the OLED for free**, and
+would not need §0's glyph table at all.
+
+### 11.3 Audio tracks — the measurement was right and the conclusion was wrong
+
+§9.2 concluded "no audio track can be brought into existence from the surface,
+**and the device has none to observe**". The first half still stands — ten
+surface routes, all negative, and Move Manager adds no eleventh, because it has
+no set-editing API.
+
+**The second half was wrong. Three of the eight sets on the device already
+contain audio tracks**, and I had never loaded them. Reading every
+`Song.abl` directly (`tracks[].kind`):
+
+| Set | Track kinds |
+|---|---|
+| Set 3, BNYX Demo 1, 2, 4 | `midi, midi, midi, midi` |
+| **BNYX Demo 3** | **`audio, audio`**, midi, midi |
+| **Jose Castillo** | **`audio, audio, audio`**, midi |
+| **Alice Ivy** | **`audio, audio, audio`**, midi |
+| **Heavy Mellow** | midi, **`audio, audio, audio`** |
+
+So the track type is `kind: "audio"` vs `kind: "midi"` in the set file, the
+device had audio tracks the whole time, and the column was reachable by loading
+`BNYX Demo 3` from the Set Overview grid (pad 70). Which I then did.
+
+### 11.4 An AUDIO track on the surface
+
+Swept on `BNYX Demo 3`, tracks 1 and 2 (audio) against track 3 (MIDI) in the same
+set, so the comparison is within one document.
+
+| | **Audio track** | MIDI track (same set) |
+|---|---|---|
+| Track screen | icon row differs; the name row reads **`Audio Track`** | `Melodic Sampler` etc. |
+| Step row | **every lit step is `126`** (T1: steps 1–4 and 9–16; T2: steps 1–8) | content values (`122` = note, `82` = empty on this track) |
+| Pads | **inert — a pad press produces no LED event at all** | pad flashes `126`, settles `122` |
+| Knobs | **no parameter overlay** — the screen does not change | `Transpose` etc. |
+| Shift lamps | `16,17,18,20,21,22,24,29` — **none of the Note-only markers** | `…,25,26,29,30,31` |
+| Mute automation mask | **nothing written at all** (CCs 71–78 silent) | all `0` |
+| Hold step + jog | **`Empty Audio Clip`** | the clip's name |
+| Hold step + knob | no parameter overlay | `Transpose` |
+| Sampling (CC 118) | **available** — `Press pad` | available |
+
+So on an audio track: **the pads, the knobs and per-step automation are all
+absent**, the step row switches from a content map to a uniform `126`, and the
+Shift layer loses its Note-only entries. Every claim in this document of the form
+"in Note mode the steps do X" is confirmed to be **MIDI-track-only**.
+
+**And CC 118 did not fire at all.** Toggling Note↔Session with Menu on all three
+tracks of this set emitted **no CC 118 in either direction**, while the screen
+changed to `Session Mode` normally. In `Set 3` the same toggle reliably emitted
+`0` / `124`.
+
+That is the **fourth** correction to the CC 118 story, and the decisive one:
+
+> **CC 118 is not a usable mode signal. It is the Sampling button's availability
+> lamp, it only transmits when that availability changes, and whether it changes
+> across a mode toggle is SET-DEPENDENT.** It happened to track the mode in the
+> one set this map was written against.
+
+§2.3's Shift-**release** probe is unaffected — it reads the step row, which on an
+audio track is still populated, so it still answers "Note". But §2.3's
+*secondary* lamp test inherits a caveat: **the Note-only lamps are absent on an
+audio track**, so the lamps must never be used as the primary mode test. They are
+only for splitting Session from Set Overview, which is what §2.3 already says.
+
+### 11.5 Set Overview's step row — varied, and it does not encode the loaded set
+
+The row was read under two different loaded sets:
+
+| Loaded set | Step row |
+|---|---|
+| BNYX Demo 3 | `1:122`, `2,3,5,6,7,9,14 : 124` |
+| Set 3 | `1:122`, `2,3,5,6,7,8,9,10,11,14,15,16 : 124` |
+
+**Step 1 is `122` and everything else is `124` in both.** The apparent difference
+is only *which positions were re-transmitted* — Move writes an LED when it
+changes, so a position missing from a capture is unchanged, not dark.
+
+So the most likely hypothesis — that the row indicates which set is loaded — is
+**disproved**: the pattern is identical across two different loaded sets. (What
+*does* mark the loaded set is a **pad**: in Set 3 pad 99 carried the channel-9
+marker, and with BNYX Demo 3 loaded no pad in the captured window did.) What the
+step row encodes remains unknown, but the obvious candidate has now been tested
+and rejected rather than left untried.
+
+### 11.6 CC 40 / CC 43 — a second hypothesis class, also negative
+
+§10.3 tried eight variations of the instrument's *musical* state. The external
+class was tried too: with an authenticated Move Manager session **and** an open
+SSE stream from this host, the rates were **CC 43 = 38.0/s, CC 40 = 14.6/s** —
+indistinguishable from the idle baseline.
+
+Nine variations, two hypothesis classes, nothing moves it except the transport.
+**Recorded as characterised-but-unattributed and closed.**
+
+### 11.7 The Sampling settings icons, described
+
+The three items on the screen §10.2 reached, rendered from the framebuffer.
+Ableton's published Sampling documentation is for ~1.5.x and these are on 2.1.0,
+so they are described rather than named:
+
+```
+item 1  (7x13)          item 2  (52x10)        item 3  (23x22, boxed)
+  .###.                 ####################     #######################
+  .###.                 ####################     #.....................#
+  .###.                 ####################     #........#####....#...#
+  #####                 ####################     #......##.....##.#....#
+  #...#                 ....................     #.....#.........#.....#
+  #...#                 ....................     #....#........#..#....#
+  #...#                 ####################     #....#......#....#....#
+  #...#                 ####################     #....#..#.#...#..#....#
+  #####                 ####################     #....#.###....##.#....#
+  ..#..                 ####################     #......##.....##......#
+  ..#..                                          #.....#.#.....#.......#
+  ..#..                                          #....#................#
+                                                 #######################
+```
+
+- **Item 1** is a small solid block above a wide bar above a short stem — it
+  reads as a **microphone on a stand**, matching the boxed mic icon on the
+  `Press pad` screen.
+- **Item 2** is two long horizontal bars with a gap — a **level/threshold bar**
+  or a slider track.
+- **Item 3** is a boxed pictogram of **two crossing curved strokes**, most like a
+  waveform or a routing/crossfade glyph.
+
+Item 1's match to the arm screen's mic makes **input source** the natural reading
+for it, and item 2's bar makes **a level or threshold** the natural reading for
+the second — but neither was confirmed by changing one and observing an effect,
+so both stay in Not known. The renders are here because an ASCII picture is more
+use to the next person than the phrase "not nameable".
+
 ---
 
 ## Where this map stops
 
-**Everything reachable from Move's control surface has been measured.** What
-remains is named, with the reason it cannot be reached:
+**Everything reachable from Move's control surface has been measured, and the
+read side of Move Manager with it.** What remains is named, with its reason —
+but note what §11 cost: the previous version of this sentence said "everything
+reachable" while an entire second channel had not been *considered*. A channel
+you have not thought of does not appear in a gap list. Treat the list below as
+"what we know we do not know".
 
 | Gap | Why it stops here |
 |---|---|
-| The whole audio-track column | **Ten surface routes create no audio track** (§9.2) and the device has none to observe. A property of the instrument. |
-| What CC 40 / CC 43's pulses represent | Fully characterised (§10.3); eight targeted variations moved nothing. Not observable from the surface. |
-| What the Set Overview step row encodes | An indicator row that no press acts on (§9.5). Nothing on the surface interrogates it. |
-| The Sampling settings items | Reached (§10.2), but the screen is **pictorial with no text**, so the readback channel cannot name them. |
+| **Creating** an audio track | Ten surface routes (§9.2) and Move Manager (§11.2, no set-editing API) all fail. **Observing one is done** (§11.4) — three factory sets already contain them. |
+| What CC 40 / CC 43's pulses represent | Characterised precisely (§10.3); **nine** variations across two hypothesis classes — musical state and external/network (§11.6) — move nothing but the transport. |
+| What the Set Overview step row encodes | An indicator no press acts on (§9.5). The obvious hypothesis, "it shows the loaded set", is **disproved** (§11.5): the pattern is identical under two different sets. |
+| What the three Sampling settings items DO | Reached and **rendered** (§11.7) — a mic, a bar, a boxed waveform — but changing one and observing an effect was not done. |
 | A ninth context for Shift+Step 4/12/13 | Dead in eight (§8.1, §9.6) spanning both trap categories. Further contexts are unenumerable. |
-| The upper bound of *every* per-step parameter | One was measured to its clamp (§9.3, Grain Size 0–300 ms). The rest are device-defined and would each need their own sweep. |
+| The upper bound of *every* per-step parameter | One measured to its clamp (§9.3, Grain Size 0–300 ms). The rest are device-defined. |
+| Everything Move Manager can WRITE | §11 drove the read side and the PIN flow. The write side — file upload, update, ssh, feature flags — was deliberately not exercised on the user's instrument. |
 
 That table is the *structural* ceiling — gaps the surface cannot answer. The
 **Not known** section below is the running list of everything else that was
@@ -1346,10 +1573,11 @@ never nailed down, and it is longer; read both.
 
 This document does not claim to be complete, and those two lists are the reason
 it does not. Several of its own headline claims were overturned by later
-measurement — CC 118's meaning twice, the Mute layer, the Set Overview step row,
-the "empty step is 98" rule, and the idle-animation count — **every one of them
-by running a thing that had been asserted rather than measured.** Prefer a
-measurement to anything written here, including this sentence.
+measurement — CC 118 **three times**, the Mute layer, the Set Overview step row,
+the "empty step is 98" rule, the idle-animation count, and "the device has no
+audio track to observe" — **every one of them by running a thing that had been
+asserted rather than measured.** Prefer a measurement to anything written here,
+including this sentence.
 
 One stale fact in this document is worth more than the map is: a claim written
 from a device whose set has since changed will read as a device behaviour. When
@@ -1367,8 +1595,10 @@ Untested. A driver must not assume any of it.
   position where the list clamped, so they prove nothing. Likewise **whether
   repeated identical packets coalesce** — every repeat test was run against a
   clamped two-item list.
-- **What CC 118 physically is.** Only its correlation with the Note-mode flag
-  is measured.
+- **When CC 118's lamp changes, and why it is set-dependent.** It is the
+  Sampling button's availability lamp (§9.1) and it did not fire at all on the
+  mode toggles of a second set (§11.4). What governs Sampling's availability per
+  set was not established.
 - **Whether there is a FOURTH pad mode.** Three were found (Note, Session, Set
   Overview) and nothing systematic was done to look for more — the sampling
   flow, a MIDI track and an audio track were never visited.
@@ -1399,14 +1629,19 @@ Untested. A driver must not assume any of it.
   modal state. Further contexts are unenumerable.
 - **What the two idle pulses REPRESENT.** §10.3 characterises them fully — CC 43
   blue at ~37.6/s, CC 40 orange at ~12.4/s, both gated on the transport being
-  stopped — and **eight** targeted variations (selected track ×3, track muted,
-  metronome on/off, Record armed, Sampling armed, Session vs Note) moved nothing.
-  Not observable from the surface.
-- **What the Set Overview step row ENCODES.** §9.5 reads it (122 / 126 / 124 /
-  two dark) and shows a press does nothing; what the positions mean is unknown
-  and nothing on the surface interrogates it.
-- **The three items on the Sampling settings screen.** Reached in §10.2, but the
-  screen is **pictorial with no text**, so the OLED readback cannot name them.
+  stopped. **Nine** variations across two hypothesis classes moved nothing: the
+  instrument's musical state (§10.3) and external/network state (§11.6, an
+  authenticated Move Manager session with an open SSE stream). Closed as
+  characterised-but-unattributed.
+- **What the Set Overview step row ENCODES.** §9.5 reads it and shows a press
+  does nothing; §11.5 varies the loaded set and the pattern does **not** change,
+  which disproves the obvious hypothesis. The loaded set is marked on a **pad**
+  (channel 9), not on the step row.
+- **What the three Sampling settings items DO.** Reached in §10.2 and
+  **rendered** in §11.7 — a microphone, a level bar, a boxed waveform — but none
+  was changed and observed, so the readings are descriptions, not functions.
+  Move's screen-reader SSE (§11.2) would name them if Move's own screen reader
+  were switched on.
 - **CC 87 (Sampling).** Nothing at all on injection, tapped or held. Either it is
   not the Sampling button or an injected CC 87 is filtered before Move sees it;
   not distinguished.
@@ -1433,11 +1668,11 @@ Untested. A driver must not assume any of it.
 - **Long-press semantics generally.** Track hold previewing and reverting is a
   **single observation**; no threshold was measured. The held-Menu preview (§7.8)
   is the one hold whose mechanism is now measured.
-- **Audio tracks.** Added in Move 2.0.0. **Ten surface routes were driven and
-  none creates one** (§9.2), and all four of the device's tracks carry
-  instruments, so there is none to observe. Every "in Note mode the steps do X"
-  claim here is therefore scoped to *MIDI tracks*. This is the one gap whose
-  reason is a property of the instrument rather than of effort.
+- **CREATING an audio track.** Ten surface routes (§9.2) and Move Manager
+  (§11.2 — it has no set-editing API) all fail. *Observing* one is no longer a
+  gap: §11.4 sweeps two, loaded from a factory set. The claim that "the device
+  has none to observe" was **wrong** — three of its eight sets contain audio
+  tracks and none of them had been loaded.
 - **Clip paste onto an audio track or a drum pad.** The user states this bounces
   to audio in 2.1.0 rather than pasting instantly. **Recorded as the user's
   statement, not as a measurement** — it was deliberately not tested, and nothing
@@ -1749,6 +1984,33 @@ connection.
   "packets": "",
   "note": "supersedes idle_led_baseline - there are TWO animations",
   "observe": "with NO input, CC 43 pulses blue ~37.6/s and CC 40 orange ~12.4/s, ~50 events/s together. BOTH stop completely while the transport runs. Subtract this before reading any event count, and never compare a count taken stopped with one taken running.",
+  "state": "unchanged"
+ },
+ {
+  "action": "move_manager_authenticate",
+  "packets": "HTTP, not MIDI",
+  "note": "Move Manager is Ableton's own web app on port 80 - a SECOND control channel, distinct from Schwung's manager on 7700",
+  "observe": "POST /api/v1/challenge with Content-Type: application/json and body {} -> 200 and a six-digit PIN appears on Move's OLED in a large font. POST /api/v1/challenge-response {\"secret\":\"<pin>\"} -> 200 + Set-Cookie Ableton-Challenge-Response-Token (Max-Age 30 days). A plain POST with no JSON content type returns 400 with an EMPTY body. A wrong secret is 401 with X-Retries-Left; three tries then 429.",
+  "state": "authenticated for 30 days"
+ },
+ {
+  "action": "move_manager_read",
+  "packets": "HTTP GET with that cookie",
+  "observe": "/api/v1/system/version (firmware + build), /is-move-running, /datetime, /system/update-channel, /cloud-auth/status, /feature-flags/{current,schema}, /files/ (a JSON listing of UserLibrary), /screen-reader (SSE of the screen-reader TEXT - silent unless Move's own screen reader is on). There is NO set/track/clip editing API.",
+  "state": "unchanged"
+ },
+ {
+  "action": "load_a_set_with_audio_tracks",
+  "packets": "0BB0317F s80 09901077 s120 09801000 s80 0BB03100 s1800 0BB0337F s90 0BB03300 s1200 0990<pad>50 s110 0980<pad>00",
+  "note": "track kind is tracks[].kind == 'audio' | 'midi' in Song.abl. On this device BNYX Demo 3, Jose Castillo, Alice Ivy and Heavy Mellow carry audio tracks; Set 3 and BNYX Demo 1/2/4 do not.",
+  "observe": "the set name on the OLED changes; allow ~3 s",
+  "state": "that set loaded",
+  "destructive": true
+ },
+ {
+  "action": "audio_track_surface",
+  "packets": "n/a - observations",
+  "observe": "On an AUDIO track: pads are INERT (no LED at all), knobs open no parameter overlay, there is no per-step automation, the Mute automation mask is not transmitted, the step row is uniformly 126, the Shift layer loses its Note-only lamps (25/26/30/31), hold-step+jog reads 'Empty Audio Clip', and Sampling is still available. CC 118 did NOT fire on mode toggles in that set at all.",
   "state": "unchanged"
  }
 ]
