@@ -928,8 +928,24 @@ pieces of it exist and are tested; the input plumbing is not written.
   | hank (no `ui_chain.js`) | the HOST's `PARAM_PAGES` | 564 |
   | 9W9 (`createController` from its own `ui_chain.js`) | its own | 278 |
 
-  In both the dials jump to the locked value and the label bands become
-  inverted strips carrying it. Both had to be checked: the host grid and a
+  In both the label bands become inverted strips carrying the locked value.
+  (The dials *jumped* to it at the time; see the next bullet for why they no
+  longer do.)
+
+- **A LOCK IS SHOWN THE WAY MODULATION IS: the pointer keeps the BASE and the
+  mark rides at the step's value.** The lock used to replace the pointer,
+  which made one picture mean two different things — while you held the step
+  the pointer was the step's value, and while the lane played it back the
+  pointer was the base with a mark at the driven value. Same cell, two
+  grammars, and the user has to know which mode they are in to read it.
+
+  Now they are the same picture. Rendered side by side, "an LFO is driving
+  this to 0.1" and "this step plays 0.1" are pixel-identical in the knob:
+  pointer at 0.9, mark at 0.1. What a held step adds is the corner mark and
+  the inverted band, which say *which step* rather than *what value*. **The
+  mark is also what moves as you turn**, because the value being set is the
+  step's, not the track's — and a widget that can only show one value shows
+  the lock, for the same reason it shows a modulated value. Both had to be checked: the host grid and a
   module-drawn one differ in exactly the layer that has now hidden four
   separate facilities from module-drawn grids.
 

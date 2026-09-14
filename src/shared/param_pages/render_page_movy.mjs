@@ -2634,11 +2634,28 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
              * at all. It looked like it worked because the graphics stand-down
              * moved the screen at the same moment.
              *
-             * The lock is what the step will play, so it wins over both the
-             * base and the modulated live value.
+             * The lock is what the step will play, so it wins over the
+             * modulated live value -- but NOT over the base, which the
+             * pointer keeps. See the arguments below.
              */
-            drawKnobWidget(ctx, g, col, rowY, meta, raw,
-                           modValues ? modValues[key] : undefined,
+            drawKnobWidget(ctx, g, col, rowY, meta,
+                           /* THE POINTER KEEPS THE BASE. A lock is what
+                            * AUTOMATION does to this parameter, and automation
+                            * already has a language on this grid: the pointer
+                            * is what you dialled, the mark rides at what is
+                            * being played. Moving the pointer to the lock
+                            * instead made the cell mean one thing while you
+                            * held the step and another while the lane played
+                            * it back -- same picture, two grammars. */
+                           values ? values[key] : null,
+                           /* ...and the lock rides as the MARK, which is also
+                            * what moves as you turn: the value being set is
+                            * the step's, not the track's. */
+                           decValue !== undefined ? decValue
+                               : (modValues ? modValues[key] : undefined),
+                           /* A widget that can only show ONE value shows the
+                            * lock, for the same reason it shows a modulated
+                            * value: it is what the step will play. */
                            decValue !== undefined ? decValue
                                : (liveValues ? liveValues[key] : undefined),
                            cellText, btnPhase,

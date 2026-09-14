@@ -218,3 +218,39 @@ while True:
     i += 1
 sys.exit(0 if ok else 1)
 PY
+
+# A LOCK IS DRAWN THE WAY MODULATION IS, and the point is that ONE picture
+# cannot mean two things depending on which mode you are in.
+#
+# The lock used to replace the POINTER, so while you held a step the pointer
+# was the step's value, and while the lane played the same lock back the
+# pointer was the base with a mark at the driven value. Same cell, two
+# grammars. Now the knob is pixel-identical between "an LFO is driving this to
+# X" and "this step plays X"; what a held step adds is the corner mark and the
+# inverted band, which say WHICH STEP rather than what value.
+node - <<'JS' || fail "a held step and a modulated value no longer draw the same knob"
+const REPO = process.cwd();
+const { renderPageMovy } = await import(REPO + "/src/shared/param_pages/render_page_movy.mjs");
+const { buildMetaIndex } = await import(REPO + "/src/shared/param_pages/param_meta.mjs");
+const { createFramebuffer, drawContext } = await import(REPO + "/tools/param-pages/harness.mjs");
+const metaIndex = buildMetaIndex([{ key: "cutoff", name: "Cutoff", type: "float", min: 0, max: 1, step: 0.01, default: 0.5 }]);
+const page = { kind: "knobs", name: "P", keys: ["cutoff"] };
+const knob = (values, decorations, modValues) => {
+  const fb = createFramebuffer();
+  renderPageMovy(drawContext(fb), { page, metaIndex, values, decorations, modValues,
+    title: "T", pageIndex: 0, pageCount: 1, touched: -1, viz: [] });
+  /* The knob's INTERIOR: columns 4..31 of cell 0, rows 10..22. The corner
+   * mark lives at x=1..2 and the label band below row 23, and those two are
+   * exactly what a held step is ALLOWED to add -- including them would make
+   * this assertion trivially false and hide the thing it is checking. */
+  let out = "";
+  for (let y = 10; y <= 22; y++) out += fb.pixels.slice(y * 128 + 4, y * 128 + 32).join("");
+  return out;
+};
+const base = { cutoff: "0.9" };
+const modded = knob(base, null, { cutoff: "0.1" });
+const locked = knob(base, [{ locked: true, value: "0.1" }], null);
+const plain  = knob(base, null, null);
+if (modded !== locked) { console.log("FAIL: locked knob differs from modulated knob"); process.exit(1); }
+if (plain === locked)  { console.log("FAIL: a lock changed nothing in the knob"); process.exit(1); }
+JS
