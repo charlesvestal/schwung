@@ -4553,6 +4553,16 @@ static void shadow_mix_audio(void)
         int hs = shim_plock_held_step();
         shadow_control->held_step = (hs >= 0 && hs < 16)
                                   ? (uint8_t)hs : SHADOW_HELD_STEP_NONE;
+        /* ...AND WHETHER IT HAS BECOME A HOLD, from the same press timestamp
+         * the tap/hold split already uses. Published here rather than timed
+         * in the UI so STEP_TAP_MS stays one number in one place.
+         *
+         * A press with no timestamp is NOT a hold: `step_press_ms` is 0 when
+         * the press was never withheld (the grid was not up when it landed),
+         * and treating that as "held forever" would open the map on a press
+         * we cannot measure. */
+        shadow_control->held_step_is_hold =
+            (uint8_t)(shim_step_press_is_hold(hs) ? 1 : 0);
     }
 
     /* Copy Move's audio to shared memory so shadow can mix it */
@@ -7761,6 +7771,17 @@ static uint8_t claim_press_blocked[128];
 void shim_step_mark_used(int step)
 {
     if (step >= 0 && step < 16) step_used[step] = 1;
+}
+
+int shim_step_press_is_hold(int step)
+{
+    if (step < 0 || step >= 16) return 0;
+    /* No timestamp is "cannot tell", not "held forever": step_press_ms is 0
+     * when the press was never withheld, i.e. the grid was not up when it
+     * landed. Opening the map on a press we cannot measure is the failure
+     * this whole flag exists to avoid. */
+    if (step_press_ms[step] == 0) return 0;
+    return (now_mono_ms() - step_press_ms[step]) >= STEP_TAP_MS;
 }
 
 static void step_note_withhold(uint8_t note, uint8_t vel)

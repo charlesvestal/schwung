@@ -683,6 +683,26 @@ static JSValue js_shadow_get_held_step(JSContext *ctx, JSValueConst this_val, in
     return JS_NewInt32(ctx, hs == SHADOW_HELD_STEP_NONE ? -1 : (int)hs);
 }
 
+/* shadow_get_held_step_is_hold() -> int
+ *
+ * Has that press become a HOLD rather than a tap? 1 or 0.
+ *
+ * Separate from shadow_get_held_step() because the two facts are needed at
+ * different moments: `held_step` goes live on the PRESS, since a p-lock must
+ * work faster than the tap threshold, while anything that should not happen
+ * on a TAP has to wait for this. The lock map is the case that named it -- it
+ * was asking its question on every press, and that question being converted
+ * into an edit is what took Move's step buttons away.
+ *
+ * The verdict is the SHIM's, from STEP_TAP_MS beside the press timestamps, so
+ * the threshold is not copied here.
+ */
+static JSValue js_shadow_get_held_step_is_hold(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+    (void)this_val; (void)argc; (void)argv;
+    if (!shadow_control) return JS_NewInt32(ctx, 0);
+    return JS_NewInt32(ctx, shadow_control->held_step_is_hold ? 1 : 0);
+}
+
 /* shadow_get_move_ui_mode() -> int
  * Returns Move's UI mode from shared control struct:
  * 0=unknown, 1=session, 2=note, 3=set_overview
@@ -3275,6 +3295,7 @@ static void init_javascript(JSRuntime **prt, JSContext **pctx) {
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_move_ui_mode", JS_NewCFunction(ctx, js_shadow_get_move_ui_mode, "shadow_get_move_ui_mode", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_plock_seq", JS_NewCFunction(ctx, js_shadow_get_plock_seq, "shadow_get_plock_seq", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step", JS_NewCFunction(ctx, js_shadow_get_held_step, "shadow_get_held_step", 0));
+    JS_SetPropertyStr(ctx, global_obj, "shadow_get_held_step_is_hold", JS_NewCFunction(ctx, js_shadow_get_held_step_is_hold, "shadow_get_held_step_is_hold", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_get_lanes_driving_mask", JS_NewCFunction(ctx, js_shadow_get_lanes_driving_mask, "shadow_get_lanes_driving_mask", 0));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_overtake_mode", JS_NewCFunction(ctx, js_shadow_set_overtake_mode, "shadow_set_overtake_mode", 1));
     JS_SetPropertyStr(ctx, global_obj, "shadow_set_skip_led_clear", JS_NewCFunction(ctx, js_shadow_set_skip_led_clear, "shadow_set_skip_led_clear", 1));

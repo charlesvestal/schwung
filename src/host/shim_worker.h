@@ -92,6 +92,13 @@ extern volatile int shim_step_tap_emitted;   /* packets actually written */
 extern volatile int shim_step_tap_noroom;    /* MIDI_IN full, deferred */
 extern volatile int shim_step_hold_ms_last;  /* the last release's held time */
 extern char shim_step_plock_key[64];         /* the key that last spent a press */
+
+/* Has the press on `step` been down long enough to be a HOLD rather than a
+ * tap? Lives beside the press timestamps and STEP_TAP_MS (schwung_shim.c) so
+ * the threshold stays ONE number: the alternative is a stopwatch in the UI,
+ * which is a second copy of a constant that already exists. 0 for a step with
+ * no press on record -- that is "cannot tell", not "held forever". */
+int shim_step_press_is_hold(int step);
 extern volatile int shim_ui_midi_out_drops;
 
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),

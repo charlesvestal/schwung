@@ -2373,7 +2373,23 @@ export function createController(io = {}) {
          * read per tick. Ahead of the probe because it is the transient of the
          * two -- the finger is on the button now.
          */
-        if (s.heldStep >= 0 && p.keys.length) {
+        /* THE HELD READOUT WAITS FOR THE HOLD, exactly as the lock map does.
+         *
+         * Both are the same gesture's presentation and they were appearing at
+         * different moments: the values on the PRESS, the map half a second
+         * later. Reported from the device -- "we show the knob value before
+         * the map comes in, it should appear when the map is there".
+         *
+         * It also completes the other half of the point: with this gated too,
+         * a TAP does no IPC at all. This read is one param per tick while a
+         * step is down, and a tap was paying it for nothing.
+         *
+         * THE WRITE PATH IS NOT GATED and must not be: a p-lock has to work
+         * faster than the tap threshold (hold a step, turn a knob, done inside
+         * 100 ms), and it seeds `heldValues` itself when it writes, so the
+         * pending-flush that turns a late detent into a lock still finds it. */
+        if (s.heldStep >= 0 && p.keys.length &&
+            !(io.heldStepIsHold && !io.heldStepIsHold())) {
             const key = p.keys[s.heldCursor % p.keys.length];
             s.heldCursor = (s.heldCursor + 1) % p.keys.length;
             if (key) {
@@ -3978,8 +3994,17 @@ export function createController(io = {}) {
                 s.stepClear.picked = true;
                 const m = metaAt(slot);
                 const label = (m && (m.name || m.label)) || k;
-                notice(String(label) + " automation cleared");
-                announce(label + " cleared");
+                const n = s.lastCleared;
+                if (n === 0) {
+                    notice("No " + String(label) + " lock on this step");
+                    announce("no " + label + " lock on this step");
+                } else if (n > 0) {
+                    notice(String(label) + " automation cleared");
+                    announce(label + " cleared");
+                } else {
+                    notice("Clear sent, result unknown");
+                    announce("clear sent, result unknown");
+                }
                 return;
             }
         }
@@ -4438,6 +4463,22 @@ export function createController(io = {}) {
             arg = fk.substring(0, colon) + " " + fk.substring(colon + 1);
         }
         setParam("lanes:clear_step", arg);
+        /* AND HOW MANY POINTS ACTUALLY WENT. `lanes:cleared` exists for this
+         * exact reason -- the chain writes it unconditionally, so a second
+         * press answers 0 rather than repeating the first one's number -- and
+         * nothing read it. Both notices fired on "a step was held and the key
+         * split", which is true of a clear that removed nothing, so the UI
+         * said "Step automation cleared" whether or not it had. Reported from
+         * the device as "it says it cleared it, but holding the step again
+         * still shows it", which is indistinguishable from a broken clear and
+         * is how a reporting bug gets chased as a behavioural one.
+         *
+         * The tri-state applies as everywhere: a read that did not complete is
+         * NOT zero, and must not be reported as "nothing was there". */
+        const rawCleared = getParam("lanes:cleared");
+        const cleared = (rawCleared === null || rawCleared === undefined ||
+                         rawCleared === "") ? -1 : Number(rawCleared);
+        s.lastCleared = isFinite(cleared) ? cleared : -1;
         /* AND THE MAP IS NOW WRONG. It is fetched once per held-step gesture
          * and the clear happens INSIDE one, so the strip went on showing a
          * mark for automation that had just been deleted -- for as long as the
@@ -4504,8 +4545,21 @@ export function createController(io = {}) {
                 if (s.notice && s.notice.prompt) s.notice = null;
                 if (!picked) {
                     clearHeldStep(null);
-                    notice("Step automation cleared");
-                    announce("step automation cleared");
+                    /* NAME WHAT HAPPENED. "Nothing to clear" is a useful
+                     * answer and was being reported as success; an unreadable
+                     * count is a third thing again and must not claim
+                     * either. */
+                    const n = s.lastCleared;
+                    if (n === 0) {
+                        notice("Nothing locked on this step");
+                        announce("nothing locked on this step");
+                    } else if (n > 0) {
+                        notice("Step automation cleared (" + n + ")");
+                        announce("step automation cleared, " + n);
+                    } else {
+                        notice("Clear sent, result unknown");
+                        announce("clear sent, result unknown");
+                    }
                 }
             }
             return true;
@@ -5429,6 +5483,19 @@ export function createController(io = {}) {
             s.lockMapFor = -1;
             return null;
         }
+        /* A TAP MUST NOT ASK. `held_step` goes live on the PRESS, because a
+         * p-lock has to work faster than the tap threshold -- so acting on it
+         * alone meant every step press fired this query, and that question
+         * being converted into an edit is what took the step buttons away.
+         * The shim publishes whether the press has become a HOLD, from the
+         * same STEP_TAP_MS the tap/hold split uses; waiting for it also means
+         * a tap costs NO IPC at all, which on this surface is the point (a
+         * read is ~2.8 ms against a 1.68 ms whole-page render).
+         *
+         * A host that cannot answer (a module binding this controller from
+         * its own ui_chain.js supplies no such io) keeps the old behaviour
+         * rather than losing the map entirely. */
+        if (io.heldStepIsHold && !io.heldStepIsHold()) return null;
         if (s.lockMapFor !== s.heldStep) {
             s.lockMapFor = s.heldStep;
             s.lockMap = null;

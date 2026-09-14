@@ -2599,6 +2599,27 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          */
         const dec = decorations ? decorations[slot] : null;
         const locked = !!(dec && dec.locked);
+        /* ...AND WHETHER A POINT ACTUALLY SITS HERE.
+         *
+         * The two are not the same and the corner has always meant the second
+         * one -- see the comment above: inversion says "you are being shown a
+         * value", the corner says "there is a lock here". `exact` was read off
+         * `<key>:held`, carried into the decoration, and then never drawn, so
+         * a value the recorded CURVE merely passes through wore the lock mark
+         * exactly like a real lock.
+         *
+         * Reported from the device: clearing a lock left the knob showing a
+         * value, which is correct -- the readout answers the curve, and a
+         * recorded sweep still interpolates across the step whose point you
+         * removed -- but with the corner still lit there was nothing on screen
+         * to say the lock was gone, so a working clear looked like a broken
+         * one. "we cleared the LOCK but the recorded automation lane is still
+         * there and that's maybe what I'm seeing" -- exactly that.
+         *
+         * A decoration that does not carry `exact` keeps the old meaning, so a
+         * host that never supplied it is unchanged. */
+        const lockedExact = !!(dec && (dec.exact === undefined ? dec.locked
+                                                               : dec.exact));
         const decValue = (dec && dec.value !== undefined && dec.value !== null)
             ? dec.value : undefined;
         const raw = decValue !== undefined ? decValue : (values ? values[key] : null);
@@ -2721,7 +2742,7 @@ export function drawKnobRow(ctx, o, row, rowY, lblY, geom) {
          * fact about this one parameter, and the controller already stands
          * graphics down while decorations are live precisely so a picture
          * cannot hide which of the cells it spans is locked. */
-        if (locked) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
+        if (lockedExact) ctx.fillRect(cellLeft(g, col) + 1, rowY, 2, 2, 1);
 
         /*
          * `short_name` is for the CELL only -- the same split as short_options.

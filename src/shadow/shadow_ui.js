@@ -2353,6 +2353,10 @@ function componentParamPagesIo(slotIndex, componentKey) {
          * second way of deriving them is a second thing to get wrong. The BAR
          * is not passed at all -- the shim reads it off Move's own strip (see
          * `lanes:plock_step`), so the UI never models the editor's paging. */
+        /* The shim's own verdict on whether the held press has become a
+         * HOLD -- see shadow_control_t.held_step_is_hold. The controller uses
+         * it to keep a TAP from asking the lock map anything. */
+        heldStepIsHold: () => shadow_get_held_step_is_hold() === 1,
         onValueWritten: (fullKey, wire) => {
             const step = heldStepIndex();
             if (step < 0) return;

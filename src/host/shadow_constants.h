@@ -607,6 +607,29 @@ typedef struct shadow_control_t {
      * APPENDED, for the reason stated on pad_observe.
      */
     volatile uint8_t held_step;
+    /*
+     * ...AND WHETHER THAT PRESS HAS BECOME A HOLD, 0 or 1.
+     *
+     * `held_step` goes live on the PRESS, because the p-lock gesture must work
+     * faster than the tap threshold -- hold a step, turn a knob, done inside
+     * 100 ms. But a press under STEP_TAP_MS is still a TAP, and the grid was
+     * acting on `held_step` alone: every press fired the lock-map query, and
+     * that question being converted into an edit is what took the step buttons
+     * away (see component_key.mjs).
+     *
+     * So the two facts are published separately. The map waits for this one.
+     * A tap then costs NO IPC at all, which on this surface is the point: a
+     * param read is ~2.8 ms against a 1.68 ms whole-page render.
+     *
+     * PUBLISHED RATHER THAN TIMED IN THE UI, because the threshold is
+     * STEP_TAP_MS and it lives in the shim beside the press timestamps. A UI
+     * stopwatch would be a second copy of a number that already exists, which
+     * is how the transport grid and the recall-quantize off-by-one both got
+     * wrong in two places at once.
+     *
+     * APPENDED, for the reason stated on pad_observe.
+     */
+    volatile uint8_t held_step_is_hold;
 } shadow_control_t;
 
 /* Values for shadow_control_t.speaker_eq_mode. */
