@@ -19,6 +19,13 @@ void RateBridge::prepare (double hostSampleRate, int maxBlock)
     fifoL.assign ((size_t) capacity, 0.0f);
     fifoR.assign ((size_t) capacity, 0.0f);
 
+    /* The input FIFO holds HOST-rate samples, so it is sized by the inverse
+     * ratio plus the same slack. */
+    const double invRatio = ratio > 0.0 ? 1.0 / ratio : 1.0;
+    const int inCapacity = (int) std::ceil ((maxBlock + SCHWUNG_BLOCK * 4) * invRatio) + 64;
+    inFifoL.assign ((size_t) inCapacity, 0.0f);
+    inFifoR.assign ((size_t) inCapacity, 0.0f);
+
     /* A Lagrange interpolator needs samples on both sides of its read point.
      * At the host's rate that is a handful of frames; reported so the DAW can
      * line this track up with the rest of the set. Zero when no conversion is
@@ -35,10 +42,115 @@ void RateBridge::reset()
     readPos = writePos = 0;
     interpL.reset();
     interpR.reset();
+
+    std::fill (inFifoL.begin(), inFifoL.end(), 0.0f);
+    std::fill (inFifoR.begin(), inFifoR.end(), 0.0f);
+    inRead = inWrite = 0;
+    inPrimed = false;
+    inInterpL.reset();
+    inInterpR.reset();
+
+    /*
+     * PRIME THE INPUT WITH ONE BLOCK OF SILENCE, or it never works at all.
+     *
+     * pull() deliberately keeps one whole Schwung block buffered ahead of what
+     * the host asked for, so the chain renders slightly AHEAD of delivery. The
+     * input is pushed on the host's schedule, so consumption permanently leads
+     * supply by that same block -- a fixed deficit the steady state can never
+     * repay, leaving `have < need` forever and every block reading as silence.
+     * The symptom is a line-input module that is correctly routed, correctly
+     * enabled, and completely deaf.
+     *
+     * Priming with exactly that block turns the deficit into one block of
+     * input latency (~2.9 ms) and makes the steady state balance.
+     */
+    const double invRatio = ratio > 0.0 ? 1.0 / ratio : 1.0;
+    const int prime = (int) std::ceil (SCHWUNG_BLOCK * invRatio) + 8;
+    if (prime > 0 && prime < (int) inFifoL.size())
+    {
+        inWrite = prime;          // the buffer is already zeroed
+        inPrimed = true;
+    }
+}
+
+void RateBridge::pushInput (const float* inL, const float* inR, int numSamples)
+{
+    if (numSamples <= 0 || inFifoL.empty()) return;
+
+    if (inWrite + numSamples > (int) inFifoL.size())
+    {
+        const int live = inWrite - inRead;
+        if (live > 0)
+        {
+            std::memmove (inFifoL.data(), inFifoL.data() + inRead, sizeof (float) * (size_t) live);
+            std::memmove (inFifoR.data(), inFifoR.data() + inRead, sizeof (float) * (size_t) live);
+        }
+        inRead = 0;
+        inWrite = juce::jmax (0, live);
+
+        /* Still no room: the host is pushing faster than the chain consumes
+         * (it cannot, in steady state) or prepare() was never called for this
+         * block size. Drop rather than overrun -- a stale tail is worse than
+         * a gap, and the next block re-syncs. */
+        if (inWrite + numSamples > (int) inFifoL.size())
+        {
+            inRead = inWrite = 0;
+            return;
+        }
+    }
+
+    if (inL) std::memcpy (inFifoL.data() + inWrite, inL, sizeof (float) * (size_t) numSamples);
+    else     std::memset (inFifoL.data() + inWrite, 0, sizeof (float) * (size_t) numSamples);
+    if (inR) std::memcpy (inFifoR.data() + inWrite, inR, sizeof (float) * (size_t) numSamples);
+    else     std::memcpy (inFifoR.data() + inWrite, inFifoL.data() + inWrite, sizeof (float) * (size_t) numSamples);
+
+    inWrite += numSamples;
+    inPrimed = true;
 }
 
 void RateBridge::renderOneBlock (schwung_desktop_t* sd)
 {
+    /* Publish this block's INPUT first: the module reads the mailbox during
+     * render_block, so filling it afterwards would deliver every block one
+     * late -- audible as a fixed 2.9 ms lag on a vocoder, and invisible in
+     * anything that only checks for signal. */
+    {
+        const double invRatio = ratio > 0.0 ? 1.0 / ratio : 1.0;
+        const int need = (int) std::ceil (SCHWUNG_BLOCK * invRatio) + 4;
+        const int have = inWrite - inRead;
+
+        if (! inPrimed || have < need)
+        {
+            /* Nothing routed in, or the stream has not filled yet. Silence is
+             * the honest answer; the alternative is repeating the last block. */
+            schwung_desktop_set_audio_in (sd, nullptr);
+        }
+        else
+        {
+            if (passthrough)
+            {
+                std::memcpy (inTmpL.data(), inFifoL.data() + inRead, sizeof (float) * SCHWUNG_BLOCK);
+                std::memcpy (inTmpR.data(), inFifoR.data() + inRead, sizeof (float) * SCHWUNG_BLOCK);
+                inRead += SCHWUNG_BLOCK;
+            }
+            else
+            {
+                const int usedL = inInterpL.process (invRatio, inFifoL.data() + inRead,
+                                                     inTmpL.data(), SCHWUNG_BLOCK);
+                const int usedR = inInterpR.process (invRatio, inFifoR.data() + inRead,
+                                                     inTmpR.data(), SCHWUNG_BLOCK);
+                inRead += juce::jmax (usedL, usedR);
+            }
+
+            for (int i = 0; i < SCHWUNG_BLOCK; ++i)
+            {
+                inBlock[(size_t) (i * 2)]     = (int16_t) juce::jlimit (-32768, 32767, (int) (inTmpL[(size_t) i] * 32767.0f));
+                inBlock[(size_t) (i * 2 + 1)] = (int16_t) juce::jlimit (-32768, 32767, (int) (inTmpR[(size_t) i] * 32767.0f));
+            }
+            schwung_desktop_set_audio_in (sd, inBlock.data());
+        }
+    }
+
     schwung_desktop_render (sd, blockBuf.data());
 
     if (writePos + SCHWUNG_BLOCK > (int) fifoL.size())
@@ -154,7 +266,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout SchwungAudioProcessor::makeL
 }
 
 SchwungAudioProcessor::SchwungAudioProcessor()
-    : juce::AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    /* A SIDECHAIN INPUT ON AN INSTRUMENT, and the trailing `false` is
+     * deliberate: the bus is disabled by default, so a host that routes
+     * nothing in sees an ordinary stereo-out synth and nothing changes for it.
+     * It exists for the line-input modules -- vocoder, talkbox, breath, gate,
+     * ducker -- which read the SPI mailbox rather than taking audio as an
+     * argument. */
+    : juce::AudioProcessor (BusesProperties()
+                                .withOutput ("Output",    juce::AudioChannelSet::stereo(), true)
+                                .withInput  ("Sidechain", juce::AudioChannelSet::stereo(), false)),
       apvts (*this, nullptr, "SCHWUNG", makeLayout())
 {
     for (int i = 0; i < kMacroCount; ++i)
@@ -567,14 +687,28 @@ bool SchwungAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) 
 void SchwungAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
 {
     juce::ScopedNoDenormals noDenormals;
-    buffer.clear();
+
+    /* NOT buffer.clear() -- NOT YET.
+     *
+     * With a sidechain enabled the AudioBuffer carries the INPUT channels too,
+     * so clearing it here zeroes the audio we are about to read and a vocoder
+     * hears silence with everything correctly routed. Only the OUTPUT bus is
+     * cleared, and only after the input has been taken. */
+    auto clearOutput = [&buffer, this]
+    {
+        auto out = getBusBuffer (buffer, false, 0);
+        out.clear();
+    };
 
     /* try_lock, never lock. The message thread holds this across a module
      * load; waiting for that here is exactly the dropout the suspend is meant
      * to prevent, and a suspended host may still call us once on the way in. */
     std::unique_lock<std::mutex> lock (chainLock, std::try_to_lock);
     if (! lock.owns_lock() || sd == nullptr)
+    {
+        clearOutput();
         return;
+    }
 
     if (auto* ph = getPlayHead())
     {
@@ -629,7 +763,33 @@ void SchwungAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
             schwung_desktop_midi (sd, msg.getRawData(), msg.getRawDataSize());
     }
 
-    bridge.pull (sd, buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples());
+    /*
+     * INPUT BEFORE OUTPUT, AND BEFORE THE CLEAR.
+     *
+     * With one input bus and one output bus JUCE lays them over the SAME
+     * buffer channels, so clearing the output first zeroes the sidechain we
+     * are about to read -- a line-input module then hears silence with
+     * everything correctly routed and enabled.
+     *
+     * And it must precede pull(), because pull() is what drives the renders
+     * that consume the mailbox.
+     */
+    if (auto* inBus = getBusCount (true) > 0 ? getBus (true, 0) : nullptr)
+    {
+        if (inBus->isEnabled())
+        {
+            auto sc = getBusBuffer (buffer, true, 0);
+            if (sc.getNumChannels() >= 2)
+                bridge.pushInput (sc.getReadPointer (0), sc.getReadPointer (1), sc.getNumSamples());
+            else if (sc.getNumChannels() == 1)
+                bridge.pushInput (sc.getReadPointer (0), nullptr, sc.getNumSamples());
+        }
+    }
+
+    clearOutput();
+
+    auto out = getBusBuffer (buffer, false, 0);
+    bridge.pull (sd, out.getWritePointer (0), out.getWritePointer (1), out.getNumSamples());
 }
 
 juce::AudioProcessorEditor* SchwungAudioProcessor::createEditor()

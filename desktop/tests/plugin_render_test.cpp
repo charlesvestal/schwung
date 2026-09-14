@@ -332,6 +332,91 @@ int main (int argc, char** argv)
         std::printf ("transport clock: start/stop, 24 PPQN, wrap re-phase, locate capped at %d\n", flood);
     }
 
+    /* ---- LINE INPUT ------------------------------------------------------
+     *
+     * A line-input module does not receive audio as an argument. It reads the
+     * SPI mailbox at host->audio_in_offset, because that is where the codec
+     * puts it on the device -- so the plugin has to fill the same region, in
+     * the same layout, before each render_block. `linein` exists to pass that
+     * region straight through, which makes it the one honest instrument for
+     * this: anything that comes out came from the sidechain.
+     *
+     * Checked in BOTH directions. Silence in must give silence out, or the
+     * test would pass on a module that hums on its own and prove nothing about
+     * routing.
+     */
+    if (proc.getAvailableSynths().contains ("linein"))
+    {
+        SchwungAudioProcessor p;
+        p.setSynth ("linein");
+        p.prepareToPlay (kRate, kBlock);
+
+        /* Enable the sidechain the way a host would. */
+        auto layout = p.getBusesLayout();
+        layout.inputBuses.set (0, juce::AudioChannelSet::stereo());
+        const bool enabled = p.setBusesLayout (layout);
+        std::printf ("line input: sidechain %s\n", enabled ? "enabled" : "REFUSED by the layout");
+        if (! enabled) return fail ("the plugin refused a stereo sidechain");
+
+        p.prepareToPlay (kRate, kBlock);
+
+        auto runWith = [&] (bool feed) -> double
+        {
+            /* TWO channels, not four. With one input bus and one output bus
+             * JUCE lays them over the SAME buffer channels -- the usual
+             * in-place arrangement -- so the sidechain arrives in channels
+             * 0-1, exactly where the output will be written. That is why
+             * processBlock must read the input BEFORE clearing the output,
+             * and why a 4-channel buffer writes the tone nowhere. */
+            juce::AudioBuffer<float> b (juce::jmax (p.getTotalNumInputChannels(),
+                                                    p.getTotalNumOutputChannels()), kBlock);
+            double acc = 0.0; int count = 0;
+            double phase = 0.0;
+            const double inc = 2.0 * juce::MathConstants<double>::pi * 220.0 / kRate;
+
+            for (int n = 0; n < 60; ++n)
+            {
+                b.clear();
+                if (feed)
+                    for (int i = 0; i < kBlock; ++i)
+                    {
+                        const float v = 0.5f * (float) std::sin (phase);
+                        phase += inc;
+                        b.setSample (0, i, v);
+                        if (b.getNumChannels() > 1) b.setSample (1, i, v);
+                    }
+
+                juce::MidiBuffer m;
+                p.processBlock (b, m);
+
+                if (n >= 20)   // skip the bridge priming
+                    for (int i = 0; i < kBlock; ++i)
+                    {
+                        const float o = b.getSample (0, i);
+                        acc += (double) o * o;
+                        ++count;
+                    }
+            }
+            return std::sqrt (acc / juce::jmax (1, count));
+        };
+
+        const double quiet = runWith (false);
+        const double loud  = runWith (true);
+
+        std::printf ("line input: silence in %.1f dBFS, signal in %.1f dBFS\n",
+                     quiet > 0 ? 20.0 * std::log10 (quiet) : -999.0,
+                     loud  > 0 ? 20.0 * std::log10 (loud)  : -999.0);
+
+        if (loud <= 0.0)
+            return fail ("line input produced nothing -- the sidechain is not reaching the mailbox");
+        if (quiet > 0.0 && loud / quiet < 4.0)
+            return fail ("output barely changed with input -- not actually passing the sidechain through");
+    }
+    else
+    {
+        std::printf ("line input: SKIPPED (linein not installed)\n");
+    }
+
     std::printf ("PASS: the plugin renders Schwung audio through the rate bridge\n");
     return 0;
 }

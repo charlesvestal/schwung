@@ -63,6 +63,19 @@ cc -g -O2 $SHARED \
     -Isrc -lm
 cp src/modules/audio_fx/freeverb/module.json "$MODULES/audio_fx/freeverb/" 2>/dev/null || true
 
+# ------------------------------------------------------------------ linein --
+# Bundled, and the ONE module whose whole job is to pass the line input
+# through -- which makes it the instrument for testing that the plugin's
+# sidechain actually reaches the SPI mailbox a module reads from.
+echo "=== linein ==="
+mkdir -p "$MODULES/sound_generators/linein"
+# shellcheck disable=SC2086
+cc -g -O2 $SHARED \
+    src/modules/sound_generators/linein/linein.c \
+    -o "$MODULES/sound_generators/linein/dsp.so" \
+    -Isrc -lm
+cp src/modules/sound_generators/linein/module.json "$MODULES/sound_generators/linein/" 2>/dev/null || true
+
 # ------------------------------------------------------------------ braids --
 # First external module ported. Pure C++14, no submodules, and its build.sh
 # already honours CROSS_PREFIX -- which is what makes a native build a flag
