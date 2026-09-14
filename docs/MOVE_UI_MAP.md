@@ -159,7 +159,7 @@ counting CC 118 in the LED stream for every route driven in this survey:
 | Route | Emits CC 118? | Observations |
 |---|---|---|
 | Menu tap that toggles the mode | **yes** — `0` or `124` | many |
-| Menu tap while an overlay screen is up | **no** — the tap dismisses the screen instead | 5+ |
+| Menu tap while an overlay screen is up | **yes, it toggles** — 18/18 under control (§8.4). An earlier "no" is **not reproducible** and came from an uncontrolled starting state | 18 controlled |
 | Track button tap that changes the selected track | **yes** — `124` | 2 |
 | Track button tap on the track already selected | **no** — emits nothing at all | 1 |
 | Shift + Step 1 (Set Overview) | **yes** — `0` | 2 |
@@ -361,11 +361,16 @@ note-off means dark.
 
 | `d2` | Meaning |
 |---|---|
-| **98** | step is **empty** |
-| **122** | step **holds a note** |
+| **122** | step **holds a note for the currently selected voice** |
 | **126** | **playhead** is on this step |
+| **127** | the step is **held down**; also seen under the playhead while recording |
 | 124 | step is an option in a transient chooser (Shift layer, Loop Length) |
-| 127 | seen on the step under the playhead while **recording** |
+| 98 / 112 / … | **empty — but the exact value is a per-track colour index**, see §8.8 |
+
+**Test `== 122`, never `122 vs 98`.** The empty value was 98 on one track, 112
+on another and 124 on a track with no clip; and 122 follows the *selected drum
+voice*, so the same step flips between 122 and the empty value as you change
+pads without the clip changing at all. §8.8 has the measurements.
 
 *Measured:* in Note mode on the track whose clip (`Song.abl`, track index 1)
 contains notes at `startTime` 2.75, 3.5 and 3.75, Move lit **exactly** steps 27,
@@ -549,8 +554,8 @@ firmware 2.1.0.
 | Jog turn 14 | device carousel | device carousel | not tested | **edits the overlay** |
 | Knobs 71–78 | device parameter | not tested | not tested | **unchanged — still the device parameter** |
 | Master 79 | volume overlay | volume overlay | not tested | not tested |
-| Knob touch 0–9 | **large unexplained LED burst** | not tested | not tested | not tested |
-| Steps 16–31 | toggle note | – | **LOAD A SET** | not tested |
+| Knob touch 0–9 | **no measurable effect** — the "burst" was Move's idle LED animation (§8.5) | not tested | not tested | not tested |
+| Steps 16–31 | toggle note; **hold + encoder = per-step automation** (§8.2) | – | lit, but a press did nothing in a controlled trial (§8.6) | not tested |
 | Pads 68–99 | play + select | launch clip | **LOAD A SET** | still play |
 
 Modifier combinations are in §7.4, the Shift+Step layer in §7.3, Shift+button in
@@ -650,7 +655,7 @@ menu.
 | 1 | 16 | Set Overview | any |
 | 2 | 17 | System (Battery / Wi-Fi / Update / …) | any |
 | 3 | 18 | Clip settings — `Max Length` / `Quantize` / `Step Grid` | any |
-| 4 | 19 | *nothing — lamp dark in every mode tested* | — |
+| 4 | 19 | **nothing, in five contexts** (§8.1) | — |
 | 5 | 20 | Tempo | any |
 | 6 | 21 | Metronome (`On` / `Off`) | any |
 | 7 | 22 | Groove | any |
@@ -658,10 +663,10 @@ menu.
 | 9 | 24 | Scale — `C Chromatic` / `Major` | any |
 | **10** | **25** | **Full Velocity — a toggle, reports `On` / `Off`** | **Drum Kit track only** |
 | 11 | 26 | Note Repeat (rate) | Note mode |
-| 12, 13 | 27, 28 | *nothing — lamp dark* | — |
+| 12, 13 | 27, 28 | **nothing, in five contexts** (§8.1) | — |
 | 14 | 29 | New clip — **creates a clip** | Note mode |
-| 15 | 30 | LED-only change, no screen (believed Double Loop; **still unverified**) | Note mode |
-| 16 | 31 | LED-only change, no screen — **still undetermined** | Note mode |
+| **15** | **30** | **Double Loop** — `Loop doubled`, and the step row grows (§8.1) | Note mode |
+| **16** | **31** | **Quantize** — `Clip <n>% Quantized` (§8.1) | Note mode, both track kinds, also while running |
 
 **Steps 8 and 10 are context-dependent, not absent.** The last draft recorded
 them as unlit with no action; both were probed from Set Overview. Re-run from
@@ -682,14 +687,16 @@ Modifier held down, one control operated, modifier released. Note mode, track 1.
 | Copy + jog / knob / Play | nothing — the knob keeps its normal parameter |
 | **Delete + step** | **clears that step** (LED 122 → 98) |
 | **Delete alone** | deletes the clip |
-| **Mute held** | `Mute...` card; **all eight knob-ring LEDs go DARK** |
+| **Mute held** | `Mute...` card; CCs 71–78 show a **per-track automation mask** — 127 = that parameter has per-step automation, 0 = it does not (**§8.3**; an earlier claim here that they "go dark" was wrong) |
 | Loop held | Loop Length chooser; all 16 steps → 124, current length marked on channel 9 |
 | **Hold step + knob 1–8** | **per-step parameter automation — see §7.5** |
 | **Hold step + jog** | **Note Length** |
 
-**The Mute layer does not report automation on the rings.** Holding Mute sets
-CCs 71–78 to 0 — the rings go out. Measured directly from the CC stream; no
-`3B 10` ring colours are sent while Mute is held.
+**CORRECTED in §8.3 — the Mute layer DOES report automation.** This paragraph
+originally said the rings go dark; that came from a broken filter in the capture
+script. Holding Mute drives CCs 71–78 to a binary mask where **127 means that
+parameter carries per-step automation somewhere in the clip**, proven by making
+one bit flip on demand. See §8.3.
 
 ### 7.5 The two gestures that matter most
 
@@ -707,6 +714,10 @@ and 8 and then the jog. A first attempt found nothing because the held step was
 
 **This is the collision the brief anticipated**: Schwung has built its own
 p-lock on the same physical gesture, and Move already owns it.
+
+§8.2 enumerates the eight parameters, proves the per-step independence, and
+settles the red question: **the red is on the encoder RINGS, and a p-locked step
+is never recoloured** — it stays at 122.
 
 #### The Copy contradiction, settled — the manual model wins on 2.1.0
 
@@ -766,9 +777,12 @@ Loop Length chooser last exactly as long as the button is held.
 Two ways to change the loaded set by accident, both measured:
 
 - **Any of the 32 pads loads the set under it.** Known from the last pass.
-- **The 16 STEP buttons also load sets.** New: steps 1, 5 and 16 each produced a
-  ~100-event repaint and the set name on screen changed (`Set 3` → `BNYX Demo
-  1`). Whether they address the same grid as the pads was not established.
+- ~~**The 16 STEP buttons also load sets.**~~ **RETRACTED — see §8.6.** In a
+  controlled re-run a step press in Set Overview produced **zero** LED events and
+  no set change. The original observation followed an uncontrolled random walk
+  and only the first of three presses changed anything, which is the signature of
+  a load already in flight. The step row *is* lit in Set Overview and what it
+  displays is not known, so treat a step there as unproven rather than safe.
 
 Everything else tested in Set Overview (Loop, Copy, Mute, Play, the four arrows,
 jog click) did nothing. Track buttons and Menu leave it.
@@ -802,6 +816,219 @@ Injecting knob-touch note-on/note-off produced **large LED bursts (120–137
 events)** including `3B 10` RGB writes to the track-button CCs 41–43 with vivid
 colours. The effect was not isolated from the surrounding state and **is not
 understood**; it is in Not known rather than described here.
+
+## 8. Closing the named gaps
+
+A finishing pass over everything §7 left open. Each item below is **closed** or
+carries a **stated reason it cannot be**. Two earlier claims in this document
+were wrong and are corrected here; they are called out rather than quietly
+edited, because a reader who already acted on them needs to know.
+
+### 8.1 Shift + Step 4, 12, 13, 15, 16 — closed
+
+Each of the five was driven in **five contexts**: Note mode on a Drum Kit track,
+Note mode on a melodic track, Session, Set Overview, and Note mode with the
+**transport running**. 25 trials.
+
+| Step | Verdict |
+|---|---|
+| **15** | **Double Loop — confirmed.** OLED `Loop doubled`, and the step row grew (`mapdiff {15: (126 → 112)}`). The belief carried from Schwung's `CLAUDE.md` is now measured. |
+| **16** | **Quantize.** OLED `Clip <n>% Quantized`. Fires in Note mode on both track kinds and while running. |
+| **4, 12, 13** | **No action in any of the five contexts.** LED event counts sat at the Shift-layer repaint baseline (58–100 events, identical to a step that does nothing) and no screen or step-map change occurred anywhere. |
+
+The step-8/10 trap was specifically guarded against: those two were dead from Set
+Overview and alive from a Drum Kit track, so all five were re-run from a Drum Kit
+track first. **4, 12 and 13 are dead everywhere tested** — that is a closed cell,
+not an unlit lamp.
+
+*Caveat on the method:* in Session and Set Overview the "screen changed"
+detector fires spuriously, because the before-frame is a transient card (`Session
+Mode`, `Set Overview`) that expires during the trial. The real signal there is
+that **all five leave the identical after-screen**, i.e. the default one.
+
+### 8.2 Per-step automation, fully enumerated — closed
+
+**The eight parameters are the selected device's own eight knob parameters —
+the same row the knobs edit unheld.** They are not a separate automation-only
+set. Measured on a Drum Kit track, holding a step that carries a note and
+nudging each encoder in turn:
+
+| Knob | Parameter | Example value |
+|---|---|---|
+| K1 | `Transpose` | `0 st` |
+| K2 | `Start` | `0.0 %` |
+| K3 | `Attack` | `1.10 ms` |
+| K4 | `Hold` | `6?3 ms` |
+| K5 | `Decay` | `??.? ms` |
+| K6 | `Playback Effect` | `Stretch` *(an enum)* |
+| K7 | `Stretch Factor` | `1.00` |
+| K8 | `Grain Size` | `103 ms` |
+
+**The names come from the DEVICE**, which is why the same gesture on a Schwung
+chain slot shows generic `Schwung S2 K1` … `K8` — Move has no parameter names
+for a device it does not know. A driver must not expect fixed names.
+
+**It really is per-step**, proven by independence rather than by the label:
+drive K1 up 20 detents on step 1, then read K1 on steps 2 and 3 → `0.00`, then
+read step 1 again → the driven value. Repeated on a second track with
+`Transpose`: same step `1 st`, other step `0 st`.
+
+**Range:** K1 clamps at `0.00` at the bottom (48 down-detents stopped there);
+no upper clamp was reached in 24 up-detents (~0.97 per detent). Upper bound not
+established.
+
+**The jog, in the same gesture, edits `Note Length`** — the hold opens directly
+onto that screen.
+
+#### The red is on the RINGS, and the step never turns red
+
+- **A held step reads `d2 = 127`** on its own LED, and **the step's content value
+  is unchanged afterwards** — still `122`. Checked immediately after setting a
+  p-lock, and again after leaving the track and coming back. **Move does not
+  recolour a step that carries per-step automation.** There is no red step.
+- **While a step is held, every encoder ring turns RED** (`g = b = 0`): the
+  idle rings were `(30,0,0)`-ish and the knob being driven went to
+  `(106,0,0)` → `(107,0,0)`. Brightness is the value.
+
+That last point is directly load-bearing: Schwung's p-lock is built on this
+gesture, and **Move's own feedback for it is the ring colour, not the step.**
+
+### 8.3 The Mute layer — my earlier claim was WRONG
+
+§7.4 said "holding Mute turns all eight knob-ring LEDs dark". **That is
+incorrect.** Holding Mute drives CCs 71–78 to a **binary per-track mask** of 0
+and 127:
+
+| Track | Mask (CC 71 → 78) |
+|---|---|
+| Track 1, Drum Kit | `0, 127, 127, 127, 127, 0, 127, 127` |
+| Track 2, Schwung slot (generic K1–K8) | all `127` |
+| Track 4, empty (no device, no clip) | all `0` |
+
+**The mask means "this parameter has per-step automation somewhere in the
+clip", and that is proven, not inferred.** Track 1 rests with bit 71
+(`Transpose`) clear. Give `Transpose` a per-step value on one step, release,
+re-read: **bit 71 flips 0 → 127**, and bit 76 (`Playback Effect`, untouched)
+stays clear. One bit, one cause.
+
+So the documented behaviour — *hold Mute and the rings report automation
+status* — is real, and it is readable straight off the CC stream with no SysEx
+decoding. The earlier wrong reading came from a broken filter in my own capture
+script, not from the device.
+
+This also explains the resting ring hues: the rings that are **red** are exactly
+the ones the Mute mask sets to 127, and the **grey** ones are exactly the
+zeros (`71=(142,142,142)` and `76=(30,30,30)` grey; `72..75,77,78` red at
+varying brightness). Red ⇔ has automation; brightness ⇔ value.
+
+### 8.4 Menu on an overlay — deterministic; the earlier anomaly is not reproducible
+
+Re-run **3 times in each of 6 contexts, 18 trials, identical timing**:
+
+| Context when Menu is pressed | CC 118 | Result |
+|---|---|---|
+| Tempo settings overlay | `0` ×3 | → Session |
+| Scale settings overlay | `0` ×3 | → Session |
+| Knob parameter overlay | `0` ×3 | → Session |
+| Device carousel | `124` ×3 | → Note |
+| Mode card still on screen | `124` ×3 | → Note |
+| Plain track screen | `0` ×3 | → Session |
+
+**Menu toggled the mode in all 18 trials.** The two 124 rows are toggles too —
+those setups reach the carousel *via* a Menu tap, so the device was already in
+Session.
+
+So **§2.2's "a Menu tap while an overlay screen is up dismisses it and emits no
+CC 118" does not reproduce.** The original observation came from a probe run
+*after an uncontrolled random walk and four Back presses*, where the starting
+context was unknown. The safe statement is: Menu toggles deterministically in
+every context measured under control; **"Menu twice" is still not recommended as
+a restate probe**, because a single unexplained observation of it failing exists
+and the held-Menu and Shift-release probes are both better.
+
+### 8.5 The knob-touch "burst" was my own measurement error
+
+**Move continuously animates at least one button LED with nothing happening.**
+A 1.2 s window with **no input at all** carries **20 LED events** — a stream of
+`3B 10 n=40 rgb=(35,14,0) / (36,14,0) / (34,13,0) …`, i.e. CC 40 (Track 4)
+being re-coloured with a slowly drifting orange.
+
+Against that baseline a knob touch is nearly nothing: 49 events for touch-on
+(28 of them the n=40 animation), 38 for touch-off, and 30 / 28 on two repeats.
+The "120–137 event burst" reported in §7.9 was **the idle animation plus the
+surrounding state**, not a touch feature.
+
+**The lesson generalises: any event-count measurement on this device must
+subtract an idle baseline.** What CC 40's animation actually represents is not
+known.
+
+### 8.6 Set Overview's steps — my earlier claim was WRONG
+
+§7.7 said the 16 step buttons load sets. **In a controlled trial they do
+nothing**: entering Set Overview cleanly and pressing step 1 produced **zero LED
+events** and no set change (the screen moved only from the `Set Overview` card to
+the set tile, which is the card expiring).
+
+The earlier observation — set name changing from `Set 3` to `BNYX Demo 1`
+coincident with a step press — came from a run that followed an uncontrolled
+random walk, and **only the first of three step presses changed anything**, which
+is the signature of a load that was already in flight. It is attributed to the
+preceding state, not to the step.
+
+What *is* measured about the Set Overview surface:
+
+- **The pads are the set grid** (27 pad LED writes on entry, colour indices on
+  channel 0, the loaded set marked on channel 9). **A pad press loads that
+  set** — unchanged, and still the hazard.
+- **The steps ARE lit** (42 step LED writes on entry, values 122/124/126/127), so
+  the row displays *something*. What, and what a step press does in some other
+  Set Overview state, is **not known**.
+
+**For a driver the safety rule is unchanged and still conservative:** know the
+pad mode before injecting a pad, and treat a step in Set Overview as unproven
+rather than safe.
+
+### 8.7 The held Note/Session preview — already scored, and it loses
+
+§7.8 covers this: holding Menu flips the mode for the duration of the hold and
+flips it back on release (`CC 118 → 0` on press, `→ 124` on release, full
+repaint each way), so it *is* a real non-destructive preview. Scored head to
+head over six random walks it got **4 / 6** against the Shift-release probe's
+**6 / 6**, because it is blind to Set Overview — where it emits no CC 118 at
+all, and where a wrong answer is the dangerous one. §2.3 stands.
+
+### 8.8 A correction to §3.3: the "empty step" value is NOT fixed at 98
+
+Decoding step value **112** turned up a bug in an earlier claim. Selecting each
+drum pad in turn and re-reading the step row:
+
+| Selected pad | Steps at 122 | Steps at 112 |
+|---|---|---|
+| 68 | 2, 4, 5, 9, 13 | all the rest |
+| 69 | *(none)* | all 16 |
+| 70 | 10 | all the rest |
+| 71, 72 | *(none)* | all 16 |
+
+So **122 follows the currently selected drum voice** — it marks "this step
+carries a note *for the voice under your finger*", not "this step has any note".
+And the *other* value is **not always 98**: it was 98 on track 2, **112** on
+track 1, and **124** on a track with no clip at all. It behaves like a
+per-track colour index.
+
+**The reliable content test is `== 122`, not `122 vs 98`.** The original
+verification in §3.3 stands (it was done on track 2, where empty really is 98)
+but the rule stated there was over-general.
+
+### 8.9 What is still open, and why
+
+| Item | Why it is not closed |
+|---|---|
+| Upper bound of a per-step parameter's range | 24 up-detents never hit a clamp; needs a long sweep per parameter and the value is device-defined anyway |
+| What CC 40's idle animation means | it runs with no input and no visible cause; no channel was found that explains it |
+| What the Set Overview step row displays, and whether a step press ever acts | every probe there risks loading a set; ruled out as not worth the user's document |
+| The Move-2.1.0 "red step" the manual describes | **actively looked for and not found** — a held step is 127, a p-locked step stays 122 across a track change. If it exists it is not on this firmware's step LEDs |
+| Shift+Step 4, 12, 13 in a *sixth* context | five were tested; a context nobody has thought of cannot be ruled out, but the drum-track trap that caused the original miss was specifically covered |
+| Audio tracks | none exist in the user's set; would need one created, which changes his document more than the answer is worth |
 
 ---
 
@@ -841,31 +1068,30 @@ Untested. A driver must not assume any of it.
 - **Whether `3B 10` has siblings.** Every SysEx captured used sub-command `0x10`
   (button RGB). Pads and steps were always plain Note On, so a pad RGB path, if
   one exists, was never provoked.
-- **Shift + Step 15 and 16.** Both produce LED traffic and no screen. Step 15 is
-  believed to be Double Loop (Schwung's `CLAUDE.md` says so) and that was **not**
-  verified here; step 16 is unidentified.
-- **Shift + Step 4, 12, 13.** Their lamps were dark in every mode tested, but
-  steps 8 and 10 looked exactly like that until they were tried from a Drum Kit
-  track — so "dark" is evidence of context, not of absence. There is some
-  context in which these three may do something, and it was not found.
-- **Knob touch (notes 0–9).** Injecting a touch produced 120–137 LED events
-  including `3B 10` RGB writes to the track-button CCs with vivid colours. The
-  effect was never isolated from surrounding state and is not understood.
+- **Shift + Step 4, 12, 13 in a sixth context.** Dead in all five that were
+  tried (§8.1), including the Drum Kit track whose omission caused the original
+  step-8/10 miss. A context nobody has thought of cannot be ruled out.
+- **What CC 40's idle animation is.** Move re-colours that one button LED
+  continuously with no input (§8.5) — ~20 events per 1.2 s. No channel was found
+  that explains it.
+- **The upper bound of a per-step parameter's range.** 24 up-detents never hit a
+  clamp; the bottom clamps at 0.00 (§8.2). The range is device-defined anyway.
+- **What the Set Overview step row displays**, and whether a step press there
+  ever acts (§8.6). Every probe risks loading a set, so it was stopped.
 - **CC 87 (Sampling).** Nothing at all on injection, tapped or held. Either it is
   not the Sampling button or an injected CC 87 is filtered before Move sees it;
   not distinguished.
-- **The per-step automation parameters themselves.** `<track> K1`…`K8` were
-  observed as titles; which parameter each knob addresses, what range, and how
-  the value is stored were not measured — nor was the *red* step colour the
-  manual describes, which never appeared (the held step reads `d2 = 127`).
-- **Whether Set Overview's steps and pads address the same grid.** Both load
-  sets; the mapping between them was not established, and every probe costs a
-  set switch.
-- **Menu's behaviour on an overlay is inconsistent between two runs.** In one
-  batch the first Menu tap after an overlay emitted no CC 118 (dismiss only); in
-  the overlay sweep it dismissed *and* showed a mode card. The two runs differed
-  in which overlay was actually on screen at the moment of the press, and that
-  was not controlled.
+- **How a per-step value is STORED.** §8.2 enumerates the parameters and proves
+  per-step independence, but nothing was read back out of `Song.abl` to see the
+  on-disk representation.
+- **Whether the Set Overview pads have any structure worth naming** (banks,
+  scrolling, ordering). Only "a pad loads the set under it" is established, and
+  every further probe costs a set switch (§8.6).
+- **The one unexplained Menu observation.** §8.4 re-ran it 18 times under
+  control and Menu toggled every time; the single earlier "no CC 118" came from
+  an uncontrolled state after a random walk and **could not be reproduced**. It
+  is recorded rather than dismissed, and it is why "Menu twice" is still not
+  recommended as a probe.
 - **What the device carousel actually contains.** It held exactly two entries
   (`Dynamics`, `Saturator`) on the track tested, both audio effects — the track's
   instrument was *not* in it. Whether the instrument is a third entry elsewhere,
@@ -1131,6 +1357,34 @@ connection.
   "packets": "0BB0327F s1300 0BB03200",
   "observe": "CC118 flips on the press and back on the release; the surface repaints both ways",
   "note": "a real non-destructive preview, but BLIND to Set Overview (no CC118 there) - scored 4/6 against localise_cold's 6/6",
+  "state": "unchanged"
+ },
+ {
+  "action": "read_automation_mask",
+  "packets": "0BB0587F s1200 0BB05800",
+  "note": "hold Mute; CCs 71-78 answer with a per-track mask",
+  "observe": "127 = that knob's parameter has per-step automation somewhere in the clip, 0 = it does not. Proven by flipping one bit on demand (section 8.3). No SysEx decoding needed.",
+  "state": "unchanged"
+ },
+ {
+  "action": "double_loop",
+  "packets": "0BB0317F s80 09901E77 s120 09801E00 s80 0BB03100",
+  "observe": "OLED 'Loop doubled'; the step row grows",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "quantize_clip",
+  "packets": "0BB0317F s80 09901F77 s120 09801F00 s80 0BB03100",
+  "observe": "OLED 'Clip <n>% Quantized'",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "read_step_content",
+  "packets": "0BB0317F s350 0BB03100",
+  "note": "the Shift-release repaint doubles as an instant clip readback",
+  "observe": "step Note-On d2 == 122 means that step carries a note FOR THE SELECTED VOICE; any other value is empty (the empty value is a per-track colour index: 98, 112 and 124 all observed). Never test 122-vs-98.",
   "state": "unchanged"
  }
 ]
