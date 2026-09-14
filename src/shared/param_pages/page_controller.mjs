@@ -604,6 +604,11 @@ export function createController(io = {}) {
             return (typeof v === "number" && v >= 0) ? v : -1;
         } catch (e) { return -1; }
     };
+    /* The shim's p-lock counter, bumped ONLY when a lock is confirmed to have
+     * landed. Optional: a module binding this controller from its own
+     * ui_chain.js supplies getParam/setParam/announce and nothing else, and
+     * falls back to the deferred read below. */
+    const plockSeqOf = typeof io.plockSeq === "function" ? io.plockSeq : null;
     const heldStepOf = io.heldStep || (() => {
         try {
             return (typeof globalThis.shadow_get_held_step === "function")
@@ -716,6 +721,7 @@ export function createController(io = {}) {
         heldDecOwned: false,
         /* One refusal read per held-step gesture, not per detent. */
         stepRefusalChecked: false,
+        pendingRefusal: null,
         /* Which step a pending write was made under, by key -- see sendPending. */
         pendingStep: Object.create(null),
         /* The lock map: two 16-bit masks, fetched once per held-step gesture. */
@@ -2163,6 +2169,7 @@ export function createController(io = {}) {
     function tick() {
         s.tickCount++;
         flushDueWrites();
+        judgePendingRefusal();
         /* After flushDueWrites, which is itself a writer of condition keys, so
          * its changes fold into the same single plan. Before everything below,
          * which reads s.pages.
@@ -3481,25 +3488,34 @@ export function createController(io = {}) {
              * it cannot place the step (no bar, a full store, a step outside
              * the clip), so the user hears the sound change, concludes the
              * lock took, and has in fact edited the value that plays on every
-             * OTHER step. `lanes:plock_reason` and `lanes:plock_refused` have
-             * existed since the feature shipped and no surface read either.
+             * OTHER step.
              *
-             * One read per GESTURE, not per detent: `stepRefusalTick` is
-             * cleared when the step changes, so a spin costs one round trip
-             * and a refusal is reported once. */
+             * BUT NOT ON THIS TICK, AND NOT FROM THE REGISTERS ALONE.
+             *
+             * The check used to read `lanes:plock_reason` and
+             * `lanes:plock_refused` immediately after the write. The param
+             * channel is a request/response queue, not a function call: the
+             * read can be served BEFORE the write it is asking about has been
+             * applied, so what came back was the PREVIOUS gesture's outcome.
+             * One genuine refusal then got re-reported on every later
+             * gesture, forever -- reported from the device as "hank's tone
+             * knob says can't automate, that's wrong", on a parameter that
+             * locks perfectly well, and as the display being "inconsistent",
+             * which is exactly what a race looks like from outside.
+             *
+             * So the gesture RECORDS what it needs and a later tick judges it,
+             * with provenance rather than timing: `plock_seq` is bumped by the
+             * shim only when a lock is CONFIRMED to have landed, so a counter
+             * that moved is proof this write took, whatever the registers say.
+             * Only when it has not moved are the registers worth reading -- so
+             * a successful lock now costs no round trip at all, where it used
+             * to cost two. */
             if (!s.stepRefusalChecked) {
                 s.stepRefusalChecked = true;
-                const why = getParam("lanes:plock_reason");
-                const refused = getParam("lanes:plock_refused");
-                const bad = (why && !/^0 /.test(why)) ? why : null;
-                const bad2 = (refused && !/^0 /.test(refused)) ? refused : null;
-                const name = (t) => String(t).replace(/^-?\d+\s*/, "").replace(/_/g, " ");
-                if (bad || bad2) {
-                    const token = name(bad || bad2);
-                    const msg = plockRefusalText(token);
-                    notice("NOT LOCKED: " + msg.toUpperCase(), 4000);
-                    announce("not locked, " + msg);
-                }
+                let seq = null;
+                if (plockSeqOf) { try { seq = plockSeqOf(); } catch (e) { seq = null; } }
+                s.pendingRefusal = { key, step: s.heldStep, seq,
+                                     tick: s.tickCount };
             }
         } else {
             s.values[key] = wire;
@@ -4538,6 +4554,63 @@ export function createController(io = {}) {
     }
 
     /** A one-line floating notice, drawn over the page while it lasts. */
+    /* HOW LONG BEFORE A WRITE'S OUTCOME IS READABLE.
+     *
+     * The write crosses the param channel and is applied on the SPI callback;
+     * a frame is ~2.9 ms and a tick is ~23 ms, so one tick is already several
+     * frames. Three, because the cost of waiting is nothing (the user is still
+     * turning) and the cost of asking early is reading the PREVIOUS gesture's
+     * registers and calling a working parameter broken. */
+    const REFUSAL_JUDGE_TICKS = 3;
+    /* WITHOUT THE COUNTER THE DELAY IS ALL THERE IS, so it has to outlast the
+     * channel's own deadline. A param request gives up at 100 ms; a tick is
+     * ~23 ms, so three ticks (~70 ms) is INSIDE that window -- a write still
+     * in flight would be judged by the registers of the one before it, which
+     * is the bug this fixes, reappearing for exactly the consumers that
+     * cannot prove otherwise. A module binding this controller from its own
+     * ui_chain.js is in that position, so it waits longer instead. */
+    const REFUSAL_JUDGE_TICKS_NO_SEQ = 8;
+
+    /* Judge the refusal recorded by the last p-lock write. See the recording
+     * site in writeUserValue for why this is not done inline. */
+    function judgePendingRefusal() {
+        const pr = s.pendingRefusal;
+        if (!pr) return;
+        const wait = (pr.seq !== null && plockSeqOf)
+            ? REFUSAL_JUDGE_TICKS : REFUSAL_JUDGE_TICKS_NO_SEQ;
+        if (s.tickCount - pr.tick < wait) return;
+        s.pendingRefusal = null;
+
+        /* THE COUNTER IS THE ANSWER WHEN WE HAVE IT. `plock_seq` moves only
+         * when the shim confirms a lock landed, so a move is proof this write
+         * took -- and proof costs no round trip, where the old check spent two
+         * on every gesture including the ones that worked. */
+        if (pr.seq !== null && plockSeqOf) {
+            let now = null;
+            try { now = plockSeqOf(); } catch (e) { now = null; }
+            if (now !== null && now !== pr.seq) return;
+        }
+
+        const why = getParam("lanes:plock_reason");
+        const refused = getParam("lanes:plock_refused");
+        /* Tri-state: a read that did not complete says NOTHING about the
+         * lock, and turning it into a refusal is how a channel hiccup becomes
+         * an accusation. Only a served, non-zero code speaks. */
+        const bad = (why && !/^0 /.test(why)) ? why : null;
+        const bad2 = (refused && !/^0 /.test(refused)) ? refused : null;
+        if (!bad && !bad2) return;
+        const token = String(bad || bad2)
+            .replace(/^-?\d+\s*/, "").replace(/_/g, " ");
+        const msg = plockRefusalText(token);
+        notice("NOT LOCKED: " + msg.toUpperCase(), 4000);
+        announce("not locked, " + msg);
+        if (typeof console !== "undefined" && console.log) {
+            console.log("plock-refused key=" + pr.key + " step=" + pr.step +
+                        " reason=" + JSON.stringify(why) +
+                        " refused=" + JSON.stringify(refused));
+        }
+    }
+
     /* THE REASON IN THE USER'S WORDS, not the enum's.
      *
      * The refusal codes are named for the code path that raised them, and one
