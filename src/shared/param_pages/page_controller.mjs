@@ -1500,16 +1500,39 @@ export function createController(io = {}) {
     /* A write made under a held step goes out as a P-LOCK on THAT step,
      * whenever it finally goes and whatever the shim currently thinks is held.
      * See the stamp in the turn handler. */
-    function sendPending(key) {
-        const step = s.pendingStep[key];
-        if (step === undefined) { setParam(fullKey(key), s.pendingWrite[key]); return; }
-        delete s.pendingStep[key];
+    /*
+     * THE ONE WRITER FOR A VALUE THE USER JUST MADE, and both branches of the
+     * turn go through it.
+     *
+     * A write made under a held step NAMES that step. The alternative -- a
+     * plain component write, converted shim-side from whatever step is held
+     * when it ARRIVES -- is a race the UI always loses on the release: the
+     * shim clears `held_step` on the SPI frame carrying the note-off, while
+     * the UI reacts to the detent up to a tick later. Stamping only the
+     * DEBOUNCED path fixed the long gaps and left the short ones: measured,
+     * every gap of 6 frames or more came clean while 0-5 still leaked, 5/5,
+     * because those take the immediate branch below. The discriminating
+     * experiment was two detents one frame apart -- the base carried detent
+     * ONE's value and the lock carried detent TWO's, which is precisely an
+     * unstamped immediate write beside a stamped pended one.
+     */
+    function writeUserValue(key, wire, step) {
+        if (step === undefined || step === null || step < 0) {
+            setParam(fullKey(key), wire);
+            return;
+        }
         const fk = fullKey(key);
         const colon = fk.indexOf(":");
-        if (colon <= 0) { setParam(fk, s.pendingWrite[key]); return; }
+        if (colon <= 0) { setParam(fk, wire); return; }
         setParam("lanes:plock_step",
                  fk.substring(0, colon) + " " + fk.substring(colon + 1) +
-                 " " + step + " " + s.pendingWrite[key]);
+                 " " + step + " " + wire);
+    }
+
+    function sendPending(key) {
+        const step = s.pendingStep[key];
+        delete s.pendingStep[key];
+        writeUserValue(key, s.pendingWrite[key], step);
     }
 
     function flushDueWrites() {
@@ -3514,6 +3537,30 @@ export function createController(io = {}) {
                 || (t - last) >= TRIGGER_KNOB_GESTURE_GAP_MS;
             s.triggerKnobLastMs[key] = t;
             if (!startsGesture) return null;
+            /*
+             * A TRIGGER IS NOT LOCKED BY DEFAULT, and the default matters
+             * because arming one is a brush of a knob.
+             *
+             * Under a held step the write becomes a p-lock, so a momentary
+             * would re-fire at that step on EVERY pass -- measured on
+             * `palette`, whose Main page carries `rnd_macro` on a knob: one
+             * fire per loop, and twenty seconds later the patch had walked
+             * through four unrelated sounds with no undo and no base value to
+             * return to. Mechanically that is a per-step trig and it is right
+             * for a retrig or a sample re-fire; as the behaviour every
+             * write-only param gets for free, it is a trap, and the gesture
+             * that arms it is indistinguishable from the one that fires it.
+             *
+             * So it does NOTHING and says so. A module that wants the trig
+             * behaviour can ask for it later (`lockable: true`) -- opting in
+             * is the direction this codebase has repeatedly wished it had
+             * chosen.
+             */
+            if (s.heldStep >= 0 || liveHeldStep() >= 0) {
+                notice("TRIGGERS CANNOT BE LOCKED", 3000);
+                announce("triggers cannot be locked to a step");
+                return null;
+            }
             if (!s.touchOrder.length) { s.touched = slot; s.turnClaimMs = t; }
             else if (s.touchOrder.indexOf(slot) >= 0) s.touched = slot;
             fireTrigger(key, meta, t);
@@ -3679,7 +3726,10 @@ export function createController(io = {}) {
         if (t - lastWrite >= SETPARAM_THROTTLE_MS) {
             s.lastWriteMs[key] = t;
             delete s.pendingWrite[key];
-            setParam(fullKey(key), wire);
+            delete s.pendingStep[key];
+            /* Named, not plain: see writeUserValue. This branch is the one the
+             * leak survived in. */
+            writeUserValue(key, wire, s.heldStep >= 0 ? s.heldStep : -1);
         replanIfCondition(key);
         } else {
             s.pendingWrite[key] = wire;
@@ -3689,7 +3739,7 @@ export function createController(io = {}) {
         const lastAnnounce = s.lastAnnounceMs[key] || 0;
         if (t - lastAnnounce >= ANNOUNCE_THROTTLE_MS) {
             s.lastAnnounceMs[key] = t;
-            announce(announceTurn(meta, wire));
+            announce(announceTurn(meta, wire, s.heldStep));
         }
         return wire;
     }
@@ -4094,8 +4144,21 @@ export function createController(io = {}) {
         if (!key || !meta) return null;
 
         /* A TRIGGER fires — a click is the whole interaction, with no
-         * cooldown, because one press is one gesture. See fireTrigger. */
-        if (meta.writeOnly) { fireTrigger(key, meta, now()); return null; }
+         * cooldown, because one press is one gesture. See fireTrigger.
+         *
+         * Under a held step it refuses, for the reason the TURN does: the
+         * write would become a p-lock and the momentary would re-fire at that
+         * step on every pass. Both entry points need it -- guarding only the
+         * turn leaves the same trap one gesture away. */
+        if (meta.writeOnly) {
+            if (s.heldStep >= 0 || liveHeldStep() >= 0) {
+                notice("TRIGGERS CANNOT BE LOCKED", 3000);
+                announce("triggers cannot be locked to a step");
+                return null;
+            }
+            fireTrigger(key, meta, now());
+            return null;
+        }
 
         /*
          * A cell with no door of its own, drawn as part of a sample graphic,
