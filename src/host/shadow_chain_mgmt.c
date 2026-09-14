@@ -69,6 +69,7 @@ void (*shadow_chain_set_inject_audio)(void *instance, int16_t *buf, int frames) 
 void (*shadow_chain_set_external_fx_mode)(void *instance, int mode) = NULL;
 void (*shadow_chain_process_fx)(void *instance, int16_t *buf, int frames) = NULL;
 int (*shadow_chain_fx_requires_continuous)(void *instance) = NULL;
+int (*shadow_chain_synth_requires_continuous)(void *instance) = NULL;
 void (*shadow_chain_drain_sends)(void *instance, int16_t *const *accum,
                                  int n_sends, int frames,
                                  int slot_volume_0_127) = NULL;
@@ -2433,6 +2434,8 @@ int shadow_inprocess_load_chain(void) {
         dlsym(shadow_dsp_handle, "chain_process_fx");
     shadow_chain_fx_requires_continuous = (int (*)(void *))
         dlsym(shadow_dsp_handle, "chain_fx_requires_continuous");
+    shadow_chain_synth_requires_continuous = (int (*)(void *))
+        dlsym(shadow_dsp_handle, "chain_synth_requires_continuous");
     /* Optional, and NULL on any chain built before the send buses landed: the
      * shim null-checks it and the sends simply receive nothing. */
     shadow_chain_drain_sends = (void (*)(void *, int16_t *const *, int, int, int))
@@ -2450,6 +2453,8 @@ int shadow_inprocess_load_chain(void) {
             (shadow_chain_set_external_fx_mode && shadow_chain_process_fx) ? 1 : 0,
             (void*)shadow_chain_fx_requires_continuous,
             (void*)shadow_chain_take_midi_tick_wake);
+    unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: synth_keep_alive=%p",
+            (void*)shadow_chain_synth_requires_continuous);
     unified_log("shim", LOG_LEVEL_INFO, "chain dlsym: drain_sends=%p drain_main_send=%p",
             (void*)shadow_chain_drain_sends,
             (void*)shadow_chain_drain_main_send);

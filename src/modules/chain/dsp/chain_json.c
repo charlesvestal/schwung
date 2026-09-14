@@ -301,6 +301,27 @@ int json_get_bool_in_section(const char *json, const char *section_key,
 }
 
 /*
+ * A capability FLAG, spelled either way: `true` or `1`.
+ *
+ * module.json is hand-written and both spellings turn up for the same key.
+ * json_get_int alone mis-parses `true` (atoi("true") is 0) and json_get_bool
+ * alone mis-parses `1`, so a caller that picks one silently ignores half the
+ * modules that asked — a capability that reads as absent, with nothing logged.
+ * Bool is tried first because json_get_bool SUCCEEDS with 0 on `1`, so the int
+ * fallback has to be the second opinion rather than the first.
+ *
+ * 1 only for a present, true value; 0 for absent, false, or no such section.
+ */
+int json_get_flag_in_section(const char *json, const char *section_key,
+                             const char *key) {
+    int v = 0;
+    if (json_get_bool_in_section(json, section_key, key, &v) == 0 && v) return 1;
+    v = 0;
+    if (json_get_int_in_section(json, section_key, key, &v) == 0 && v) return 1;
+    return 0;
+}
+
+/*
  * Check if a JSON value is an object (starts with '{') vs string/primitive
  */
 static int json_value_is_object(const char *val) {

@@ -231,6 +231,7 @@ void v2_unload_synth(chain_instance_t *inst) {
     inst->synth_default_forward_channel = -1;
     inst->synth_last_note = -1;
     inst->synth_bypassed = 0;
+    inst->synth_requires_continuous = 0;
     memset(inst->synth_split_voice_ids, 0, sizeof(inst->synth_split_voice_ids));
     inst->synth_split_voice_count = 0;
     /* Cleared with the handle it was resolved against: keeping it would leave a
@@ -439,12 +440,9 @@ static int v2_load_audio_fx_slot(chain_instance_t *inst, int slot, const char *f
                 if (mj_buf) {
                     size_t nr = fread(mj_buf, 1, mj_size, mj);
                     mj_buf[nr] = '\0';
-                    int cap = 0;
-                    if (json_get_int_in_section(mj_buf, "capabilities",
-                                                "requires_continuous_processing", &cap) == 0
-                        && cap) {
+                    if (json_get_flag_in_section(mj_buf, "capabilities",
+                                                 "requires_continuous_processing"))
                         inst->fx_requires_continuous[slot] = 1;
-                    }
                     free(mj_buf);
                 }
             }
@@ -683,6 +681,7 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
     /* Parse default_forward_channel from capabilities in module.json */
     inst->synth_default_forward_channel = -1;  /* Default: no forwarding preference */
     inst->synth_consumes_line_input = 0;       /* Default: not a line-input consumer */
+    inst->synth_requires_continuous = 0;       /* Default: shim may park it on silence */
     /* Reset per synth load: a stale note from the previous module would name a
      * voice in a list that no longer exists. */
     inst->synth_last_note = -1;
@@ -768,20 +767,25 @@ int v2_load_synth(chain_instance_t *inst, const char *module_name) {
                             }
                             if (strcmp(ctype, "audio_fx") != 0 && strcmp(ctype, "midi_fx") != 0) {
                                 inst->synth_consumes_line_input = 1;
+                                /* And therefore keep-alive: nothing the shim
+                                 * can see would ever wake it. */
+                                inst->synth_requires_continuous = 1;
                                 v2_chain_log(inst, "Synth consumes line input (feedback risk on boot)");
                             }
                         }
                     }
+                    /* Declared opt-out from the shim's silence-skip, the same
+                     * capability the FX loader reads; chain_internal.h has the
+                     * why, and the implicit line-input case is set above. */
+                    if (json_get_flag_in_section(json, "capabilities",
+                                                 "requires_continuous_processing"))
+                        inst->synth_requires_continuous = 1;
+                    if (inst->synth_requires_continuous)
+                        v2_chain_log(inst, "Synth keep-alive: exempt from silence-skip");
                     /* Opt-in for raw SysEx, same both-spellings rule as
                      * the MIDI FX path in chain_midi.c. */
-                    {
-                        int wants = 0;
-                        if ((json_get_bool_in_section(json, "capabilities", "wants_sysex", &wants) == 0
-                             || json_get_int_in_section(json, "capabilities", "wants_sysex", &wants) == 0)
-                            && wants) {
-                            inst->synth_wants_sysex = 1;
-                        }
-                    }
+                    if (json_get_flag_in_section(json, "capabilities", "wants_sysex"))
+                        inst->synth_wants_sysex = 1;
                     free(json);
                 }
             }
@@ -2861,6 +2865,16 @@ int chain_fx_requires_continuous(void *instance) {
         if (inst->fx_requires_continuous[i]) return 1;
     }
     return 0;
+}
+
+/* Exported: 1 if the SOUND GENERATOR here must keep rendering through silence
+ * (see synth_requires_continuous in chain_internal.h). Separate from the FX
+ * answer: an FX needing continuous time does not imply the synth ahead of it
+ * does, and one flag for both would park neither. */
+__attribute__((visibility("default")))
+int chain_synth_requires_continuous(void *instance) {
+    chain_instance_t *inst = (chain_instance_t *)instance;
+    return inst ? (inst->synth_requires_continuous ? 1 : 0) : 0;
 }
 
 /* Called by the shim immediately after its silent-slot mod:tick. A true result
