@@ -616,6 +616,36 @@ export function createController(io = {}) {
         } catch (e) { return -1; }
     });
     /*
+     * MOVE'S DELETE BUTTON, and whether the held press has become a HOLD.
+     *
+     * ASKED OF THE DEVICE BY DEFAULT, for the reason stated twice above and
+     * learned a third time here: a module that binds this controller from its
+     * own ui_chain.js -- 9W9 -- supplies getParam/setParam/announce and
+     * NOTHING ELSE. I put both of these on the host's component io, so on 9W9
+     * `io.deleteHeld` was undefined and the gesture could not fire. Traced on
+     * hardware: `[dk] touch slot=1 haveIo=undefined`.
+     *
+     * That is the same layer split that once left 9W9 with no enum peek, no
+     * p-lock and no modulation marks, and the comment on `isModulated` says so
+     * in as many words. I read it earlier today and still reached for the io.
+     *
+     * Both are SHM bytes, so the default costs nothing -- unlike a param round
+     * trip at ~2.8 ms -- and `typeof`-guarded so the preview harness (node, no
+     * device, no bindings) simply sees them false.
+     */
+    const deleteHeldOf = io.deleteHeld || (() => {
+        try {
+            return (typeof globalThis.shadow_get_delete_held === "function")
+                ? globalThis.shadow_get_delete_held() === 1 : false;
+        } catch (e) { return false; }
+    });
+    const heldStepIsHoldOf = io.heldStepIsHold || (() => {
+        try {
+            return (typeof globalThis.shadow_get_held_step_is_hold === "function")
+                ? globalThis.shadow_get_held_step_is_hold() === 1 : true;
+        } catch (e) { return true; }
+    });
+    /*
      * Optional: how the HOST wants a value read on a given surface.
      *
      *   formatValue(fullKey, raw, surface) -> string | null
@@ -4000,7 +4030,7 @@ export function createController(io = {}) {
          *
          * The step branch below runs after, so the two can never both fire: a
          * held step always means "on this step". */
-        if (down && io.deleteHeld && io.deleteHeld() &&
+        if (down && deleteHeldOf() &&
             !(s.heldStep >= 0 || liveHeldStep() >= 0)) {
             if (clearParamLane(slot)) return;
         }
@@ -5575,7 +5605,7 @@ export function createController(io = {}) {
          * A host that cannot answer (a module binding this controller from
          * its own ui_chain.js supplies no such io) keeps the old behaviour
          * rather than losing the map entirely. */
-        if (io.heldStepIsHold && !io.heldStepIsHold()) return null;
+        if (!heldStepIsHoldOf()) return null;
         if (s.lockMapFor !== s.heldStep) {
             s.lockMapFor = s.heldStep;
             s.lockMap = null;
