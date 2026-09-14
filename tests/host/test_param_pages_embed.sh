@@ -271,10 +271,23 @@ Promise.all([
       fail("a decoration value did not replace the live value in the Movy layout");
     }
 
-    /* The viz stand-down is a real rule, so it gets its own assertion rather
-     * than being an invisible passenger in the two above. */
-    if (paint(null) === paint(unlocked)) {
-      fail("decorations did not stand the graphics down");
+    /* GRAPHICS NO LONGER STAND DOWN, and this assertion is the reverse of the
+     * one it replaces.
+     *
+     * The old rule removed every graphic while decorations were live, on the
+     * argument that a picture covering several cells could not say which of
+     * them was locked. It could not hide that either: `drawLabelCell` sits
+     * OUTSIDE render_page_movy `covered[col]` guard, so each column draws
+     * its own band -- inverted, carrying the locked value -- whether or not a
+     * graphic covers its knob area. What the stand-down did remove was the
+     * the modules own reading of the parameter, at the moment the user is editing
+     * that parameter.
+     *
+     * A bare decoration (no value, not locked) therefore changes NOTHING on
+     * screen, which is what this now asserts. The two assertions above cover
+     * the parts that must still show: the lock mark, and the value. */
+    if (paint(null) !== paint(unlocked)) {
+      fail("a decoration carrying neither a value nor a lock changed the frame -- graphics should be untouched by it");
     }
 
     /*

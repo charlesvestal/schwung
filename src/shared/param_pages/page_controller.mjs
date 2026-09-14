@@ -4740,7 +4740,7 @@ export function createController(io = {}) {
             const drawGrid = () => {
             if (knobsAsList()) { drawKnobsAsList(ctx, title, footer, pageChrome, footerBand); return; }
             renderPageMovy(ctx, {
-                page: page(), metaIndex: s.metaIndex, values: s.values,
+                page: page(), metaIndex: s.metaIndex, values: decoratedValues(),
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: s.hintLines ? -1 : s.touched,
                 /* A custom UI page's body drawer — inert for every ordinary
@@ -4772,7 +4772,7 @@ export function createController(io = {}) {
                  * four cells cannot show which of the four is locked. Without
                  * this the lock marks would land on cells whose widget had been
                  * absorbed into a graphic. */
-                viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
+                viz: vizEnabled ? vizGroupsForDecorations() : [],
                 /*
                  * The trigger button's press animation. Both of these have to
                  * come from here: the renderer is pure and reads the clock off
@@ -4937,7 +4937,7 @@ export function createController(io = {}) {
 
         if (s.hintLines) {
             renderPage(ctx, {
-                page: page(), metaIndex: s.metaIndex, values: s.values,
+                page: page(), metaIndex: s.metaIndex, values: decoratedValues(),
                 title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
                 touched: -1, layout: s.layout, rect,
                 drawCanvasPage: drawCanvasPageBody,
@@ -4950,7 +4950,7 @@ export function createController(io = {}) {
             return;
         }
         renderPage(ctx, {
-            page: page(), metaIndex: s.metaIndex, values: s.values,
+            page: page(), metaIndex: s.metaIndex, values: decoratedValues(),
             title: title || "", pageIndex: s.pageIndex, pageCount: s.pages.length,
             touched: s.touched, decorations: s.decorations,
             layout: s.layout, revealValues: s.revealValues, rect,
@@ -4965,7 +4965,7 @@ export function createController(io = {}) {
              * graphic replacing several slots with one picture would hide
              * which of them is locked, so graphics stand down while
              * decorations are active. */
-            viz: (vizEnabled && !s.decorations) ? vizGroups() : [],
+            viz: vizEnabled ? vizGroupsForDecorations() : [],
             /*
              * A CUSTOM UI PAGE's body drawer. Only a page carrying `canvas`
              * uses it, so this is inert for every ordinary page — and absent
@@ -5023,6 +5023,35 @@ export function createController(io = {}) {
      * base object untouched when nothing is live, so the common case allocates
      * nothing.
      */
+    /*
+     * THE VALUES A GRAPHIC DRAWS FROM WHILE A STEP IS HELD.
+     *
+     * Graphics no longer stand down (see vizGroupsForDecorations), and that is
+     * only right if they show the STEP's values: a picture covering four cells
+     * drawn from the track's values, under four bands reading the step's, is
+     * two answers to one question with the picture being the wrong one. It is
+     * also what the embed test caught -- a decoration stopped moving any pixel
+     * the moment the graphic it was covered by stayed on screen.
+     *
+     * Decorations only. The modulated values are handed to the renderers
+     * separately and have their own precedence there; folding those in here
+     * too let the live value beat the decoration in the Movy layout, which is
+     * the bug this comment exists to stop someone re-introducing.
+     */
+    function decoratedValues() {
+        if (!s.decorations) return s.values;
+        let out = null;
+        const p = page();
+        const keys = (p && p.keys) || [];
+        for (let i = 0; i < keys.length; i++) {
+            const d = s.decorations[i];
+            if (!d || d.value === undefined || d.value === null) continue;
+            if (!out) out = Object.assign({}, s.values);
+            out[keys[i]] = d.value;
+        }
+        return out || s.values;
+    }
+
     function liveValues() {
         for (const _k in s.modValues) return Object.assign({}, s.values, s.modValues);
         return s.values;
@@ -5116,6 +5145,31 @@ export function createController(io = {}) {
      * `ctx` is render()'s, plus `clearScreen`. Returns true when something was
      * drawn, so a caller that flushes conditionally can tell.
      */
+    /*
+     * GRAPHICS DO NOT STAND DOWN FOR A HELD STEP.
+     *
+     * They used to -- all of them -- on the argument written beside the old
+     * call site: "a graphic replacing several slots with one picture would
+     * hide which of them is locked". That reads plausibly and is not true.
+     * `drawLabelCell` is OUTSIDE render_page_movy's `covered[col]` guard, so
+     * every column draws its own label band whether or not a graphic covers
+     * its knob area -- and the band is exactly where a lock shows: inverted,
+     * carrying the locked value. A spanning graphic never hid the lock.
+     *
+     * What standing down DID hide was the module's own reading of the
+     * parameter -- a meter, a filter curve, a face -- at the moment the user
+     * is editing that parameter, replacing it with a generic dial. So the
+     * picture stays, the band says which cells are locked, and a one-cell
+     * widget draws the locked value itself (see liveValues).
+     *
+     * Kept as a named function rather than inlining `vizGroups()` at both call
+     * sites, so the next person to wonder about this finds the reasoning where
+     * the decision is, not in a commit message.
+     */
+    function vizGroupsForDecorations() {
+        return vizGroups();
+    }
+
     function renderOverlays(ctx, { clearScreen } = {}) {
         const peek = enumPeek();
         if (!peek) { const r = drawDeclaredCard(ctx); drawNotice(ctx); return r; }
