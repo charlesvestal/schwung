@@ -4,6 +4,11 @@ A map of **Ableton Move's firmware UI** — its views, its LED language, its
 buttons and its encoders — written so that a *program* can drive Move and know
 where it is.
 
+**Firmware: Move 2.1.0**, read on the device from **Setup → Update → Current
+Version** (Shift+Step 2 → Update → Current Version → `Move 2.1.0 / installed`).
+Every claim here is on that version, and everything was measured on **MIDI
+tracks** — audio tracks (added in 2.0.0) were never visited.
+
 Everything below was produced on 2026-09-14 by injecting USB-MIDI packets into
 Move and observing two channels that cost nothing: Move's native OLED
 (mirrored to `/dev/shm/schwung-display-live`) and Move's outbound LED stream
@@ -438,14 +443,15 @@ because each carries ~0.35 s of its own.
 | Track 1–4 | **43, 42, 41, 40** | select that track **and enter Note mode** | ≈1 s previews the track, reverts on release *(1 observation)* | no |
 | Play | 85 | start / stop. LED 124↔126 | not tested | no |
 | Record | 86 | toggle; the second tap **started the transport and recorded** | not tested | **yes — writes notes into the clip** |
-| Capture | 52 | ran a step animation across the 16 steps; effect not confirmed | not tested | **assume yes** |
+| Capture | 52 | **nothing at all** (§7.1). The step animation once attributed to it was the recording already running | not tested | no, on this evidence |
 | Undo | 56 | performs undo; screen changed to a `Notes` card | not tested | reverses the last edit |
 | Loop | 58 | not tested alone | opens **Loop Length**: all 16 steps light 124, the current length marked with a ch-9 message on its step | selecting a length changes the clip |
-| Copy | 60 | not tested alone | `Copy...` card; all knob rings go dark | pairs with steps/pages — see `docs/MOVE_COPY_GESTURES.md` |
-| Delete | 119 | **deletes the selected clip** *(measured previously, not re-run here)* | `Delete...` card; **Delete + step clears that step** (step LED 122 → 98) | **yes** |
-| Mute | 88 | not tested alone | `Mute...` card | not determined |
-| Up | 55 | Note view, melodic track: **octave up** (`Octave up` card) | not tested | no |
-| Down | 54 | **octave down** | not tested | no |
+| Copy | 60 | **duplicates the clip** (`Clip duplicated`, §7.1) | `Copy...` card; all knob rings go dark; **Copy + pad copies that pad's sample** | **yes** — and it arms a clipboard that persists, §7.5 |
+| Delete | 119 | **deletes the clip** — `Clip deleted`, measured directly in §7.1 | `Delete...` card; **Delete + step clears that step** (step LED 122 → 98) | **yes** |
+| Mute | 88 | **mutes the track**; **Shift+Mute solos** (§7.2) | `Mute...` card; **the eight knob rings go dark** — they do NOT report automation | no |
+| Up | 55 | Note view, **melodic** track: **octave up**. **Nothing on a Drum Kit, nothing in Session or Set Overview** (§7.1) | not tested | no |
+| Down | 54 | **octave down**, same conditions | not tested | no |
+| Sampling | **87** | **no response of any kind**, tap or hold (§7.1) | — | — |
 | Left | 62 | **previous clip page**; its own LED is **0 when there is no previous page**, 24 when there is | not tested | no |
 | Right | 63 | **next clip page**; same LED rule | not tested | no |
 | Jog click | 3 | opens the highlighted carousel item (device → its preset browser) | not tested | no |
@@ -518,42 +524,284 @@ and the note was gone.
 
 ## 6. Coverage
 
-What was determined for every control. "not tested" is an honest cell.
+What was determined for every control, per pad mode. "not tested" is an honest
+cell; a dash means *tested and nothing happened*. All on **MIDI tracks**,
+firmware 2.1.0.
 
-| Control | Session | Note | Menu/carousel | Settings screens |
+| Control | Note | Session | Set Overview | Under a settings overlay |
 |---|---|---|---|---|
-| Menu 50 | toggles to Note | toggles to Session | not tested | not tested |
-| Back 51 | not tested | no-op at top level | **no-op in carousel**; pops in preset browser | pops to Set Overview |
-| Shift 49 | lights 7 steps | lights 12 steps | not tested | not tested |
-| Track 40–43 | not tested | switches track + stays in Note; long press previews | not tested | not tested |
-| Play 85 | start/stop | start/stop | not tested | not tested |
-| Record 86 | not tested | toggle, starts transport + records | not tested | not tested |
-| Capture 52 | not tested | step animation, effect unconfirmed | not tested | not tested |
-| Undo 56 | not tested | performs undo | not tested | not tested |
-| Loop 58 | not tested | Loop Length chooser | not tested | not tested |
-| Copy 60 | not tested | `Copy...` card | not tested | not tested |
-| Delete 119 | deletes selected clip *(prior measurement)* | + step clears the step | not tested | not tested |
-| Mute 88 | not tested | `Mute...` card | not tested | not tested |
-| Up 55 / Down 54 | not tested | octave up/down | not tested | not tested |
-| Left 62 / Right 63 | not tested | clip page ±1, LED says if available | not tested | not tested |
-| Jog click 3 | not tested | opens carousel item | enters preset browser | not tested |
-| Jog turn 14 | moves carousel | moves carousel | moves selection, clamps | not tested |
-| Knobs 71–78 | not tested | parameter edit + overlay | not tested | not tested |
+| Menu 50 | → Session | → Note | leaves it → Session | dismisses |
+| Back 51 | – | – | card → tile screen | dismisses |
+| Shift 49 | 12 step lamps | 7 lamps | 7 lamps | not tested |
+| Track 40–43 | switch track | → Note on it | leaves it → Note | not tested |
+| Play 85 | start/stop | start/stop | start/stop | not tested |
+| Record 86 | transport + record | not tested | not tested | not tested |
+| Capture 52 | **–** | not tested | not tested | not tested |
+| **Sampling 87** | **–** | not tested | not tested | not tested |
+| Undo 56 | undo | undo | undo | not tested |
+| Loop 58 | Loop Length | – | – | not tested |
+| Copy 60 | duplicates clip | – | – | not tested |
+| Delete 119 | deletes clip | not tested | not tested | not tested |
+| Mute 88 | mutes track | – | – | not tested |
+| Up 55 / Down 54 | octave ± (melodic only; **– on a Drum Kit**) | **–** | **–** | not tested |
+| Left 62 / Right 63 | clip page ∓1 | **–** | **–** | not tested |
+| Jog click 3 | opens a screen | clip launch settings | – | not tested |
+| Jog turn 14 | device carousel | device carousel | not tested | **edits the overlay** |
+| Knobs 71–78 | device parameter | not tested | not tested | **unchanged — still the device parameter** |
 | Master 79 | volume overlay | volume overlay | not tested | not tested |
-| Knob touch 0–9 | not tested | no effect observed | not tested | not tested |
-| Steps 16–31 | no effect observed | toggle note | not tested | not tested |
-| Pads 68–99 | launch clip | play + select note | not tested | not tested |
+| Knob touch 0–9 | **large unexplained LED burst** | not tested | not tested | not tested |
+| Steps 16–31 | toggle note | – | **LOAD A SET** | not tested |
+| Pads 68–99 | play + select | launch clip | **LOAD A SET** | still play |
 
-**Set Overview is absent from the columns above** on purpose: apart from "a pad
-loads that set" and "Back stays inside it", nothing in that mode was mapped.
+Modifier combinations are in §7.4, the Shift+Step layer in §7.3, Shift+button in
+§7.2, and overlay semantics in §7.6.
 
-**Not covered at all:** every one of the 32 pads individually (only the
-layout-wide colour rule was measured, not the per-pad note mapping in Note view);
-the 8 knobs individually (only knob 1 was turned); Shift with any button other
-than Menu and the steps; any two-button combination other than Delete+step and
-Shift+step; anything on an audio or MIDI track that is not a Schwung slot; the
-sampling flow; Wi-Fi/Update; and the whole of Set Overview beyond its title
-screen.
+**Closed since the last draft:** Capture alone, Delete alone, Copy alone, Mute
+alone, Sampling (CC 87), the arrows in all three modes, Shift+every button,
+Shift+Step 8/10, the whole modifier×control matrix, steps in Set Overview, the
+overlay semantics for all four control classes, and Move's native per-step
+automation.
+
+**Still not tested, deliberately, with the reason:**
+
+| Untested | Why |
+|---|---|
+| Record / Capture / Delete in Session and Set Overview | each is destructive and the Note-mode result already establishes what they do; Set Overview additionally risks a set switch |
+| The 32 pads individually in Note mode | the pad→pitch map needs one clip write per pad and an 8–14 s file settle each, ~8 minutes of device time for a map that `Song.abl` would give directly |
+| Knobs 2–7 individually | knobs 1 and 8 behaved identically (a parameter overlay + a ring value); the class looks uniform and was sampled, not enumerated |
+| Audio tracks, and any MIDI track that is not a Schwung slot | none existed in the set under test |
+| The sampling flow, Wi-Fi, Update | Update was opened only as far as Current Version; running one would reflash the user's instrument |
+| Set Overview's jog, arrows and Back beyond the tile screen | every probe there can change the loaded set |
+
+---
+
+## 7. Breadth sweep — the control scheme
+
+Firmware **Move 2.1.0**, read from **Setup → Update → Current Version** (`Move
+2.1.0 / installed`). Every measurement in this document is on that version. The
+published manual describes ~1.5.x, so where the two disagree **the device wins**
+and nothing below has been adjusted to match documentation.
+
+**Track types matter.** Move 2.0.0 added audio tracks, so there are three kinds.
+Everything below was measured on **MIDI tracks** — track 1 a Drum Kit, track 2
+a melodic instrument — unless a row says otherwise. Audio tracks were not
+visited at all.
+
+### 7.1 Every named button, alone, in each pad mode
+
+Driven from the §1 reset, one button per trial, mode re-established each time.
+
+| Button | CC | Note mode | Session | Set Overview |
+|---|---|---|---|---|
+| Menu | 50 | → Session + mode card | → Note + mode card | **leaves Set Overview** → Session |
+| Back | 51 | nothing | nothing | Set Overview card → the set tile screen |
+| Jog click | 3 | opens a screen (`Back`/device row) | opens **clip launch settings** | nothing |
+| Undo | 56 | performs undo | performs undo | performs undo |
+| Loop | 58 | **Loop Length** chooser, 16 steps → 124 | nothing | nothing |
+| **Copy** | 60 | **duplicates the clip** (`Clip duplicated`) | nothing visible | nothing visible |
+| **Mute** | 88 | **mutes the track** (`<track> muted`) | nothing visible | nothing visible |
+| Play | 85 | start / stop | start / stop | start / stop |
+| Up / Down | 55 / 54 | **octave ±1 on a melodic track; nothing on a Drum Kit** | **nothing** | **nothing** |
+| Left / Right | 62 / 63 | clip page ∓1; LED 0 when unavailable | **nothing** | **nothing** |
+| Track 1–4 | 43,42,41,40 | switch track (no repaint if already selected) | → Note on that track | **leaves Set Overview** → Note |
+| Shift | 49 | lights 12 step lamps | lights 7 | lights 7 |
+| **Capture** | 52 | **nothing at all** | not tested | not tested |
+| **Record** | 86 | **starts transport AND records** | not tested | not tested |
+| **Delete** | 119 | **deletes the clip** (`Clip deleted`) | not tested | not tested |
+| **Sampling** | **87** | **no response of any kind**, tap or hold | not tested | not tested |
+
+Three cells that were guesses in the last draft and are now measured: **Capture
+alone does nothing** (the step animation previously attributed to it was the
+recording that was already running), **Delete alone deletes the clip** (measured
+here, not inherited), and **a lone Copy tap duplicates the clip** — which is the
+incident Schwung's own `CLAUDE.md` records as "an unclaimed Copy duplicated a
+clip mid-gesture", now reproduced deliberately.
+
+**CC 87 produced nothing** on injection — no LED, no OLED, tapped or held. Either
+Move's Sampling button is not CC 87, or an injected CC 87 is filtered somewhere.
+Not resolved.
+
+### 7.2 Shift + every button
+
+Driven as one gesture: Shift down, button down, button up, Shift up. Note mode.
+
+| Combination | Effect |
+|---|---|
+| Shift + Menu | same as Menu (toggles mode); Shift is ignored |
+| Shift + Loop | **Loop Length** — same as holding Loop |
+| Shift + Copy | **duplicates the clip** — same as Copy |
+| Shift + Delete | **deletes the clip** — same as Delete |
+| **Shift + Mute** | **SOLO** (`<track> soloed`) — Mute alone is mute, Shift+Mute is solo |
+| **Shift + Track N** | **a per-track menu: `MIDI Out Ch1` / `MIDI In Auto` / `Color`** |
+| **Shift + knob 1–8** | **a second parameter bank** — knob 1 became `Transpose`, knob 8 `Grain Size` |
+| Shift + Play | starts the transport |
+| Shift + Record | starts transport + recording |
+| Shift + master | `Volume` — same as master alone |
+| Shift + Back / Jog click / Capture / Undo / arrows / jog turn | **nothing** |
+
+**Shift + Track is the likeliest collision with Schwung**, which claims the track
+CCs for its own gestures: behind that claim sits Move's per-track MIDI routing
+menu.
+
+### 7.3 Shift + Step — the complete layer, and why two entries looked absent
+
+| Step | Note | Opens | Context |
+|---|---|---|---|
+| 1 | 16 | Set Overview | any |
+| 2 | 17 | System (Battery / Wi-Fi / Update / …) | any |
+| 3 | 18 | Clip settings — `Max Length` / `Quantize` / `Step Grid` | any |
+| 4 | 19 | *nothing — lamp dark in every mode tested* | — |
+| 5 | 20 | Tempo | any |
+| 6 | 21 | Metronome (`On` / `Off`) | any |
+| 7 | 22 | Groove | any |
+| **8** | **23** | **16 Pitches — a toggle, reports `On` / `Off`** | **Drum Kit track only** |
+| 9 | 24 | Scale — `C Chromatic` / `Major` | any |
+| **10** | **25** | **Full Velocity — a toggle, reports `On` / `Off`** | **Drum Kit track only** |
+| 11 | 26 | Note Repeat (rate) | Note mode |
+| 12, 13 | 27, 28 | *nothing — lamp dark* | — |
+| 14 | 29 | New clip — **creates a clip** | Note mode |
+| 15 | 30 | LED-only change, no screen (believed Double Loop; **still unverified**) | Note mode |
+| 16 | 31 | LED-only change, no screen — **still undetermined** | Note mode |
+
+**Steps 8 and 10 are context-dependent, not absent.** The last draft recorded
+them as unlit with no action; both were probed from Set Overview. Re-run from
+the reset (track 1, a Drum Kit) both fire and both are toggles that print their
+new state. That is the general lesson for this layer: **a dark Shift lamp means
+"not available *here*", never "does nothing".** Both were toggled twice during
+this survey and confirmed back at `Off`.
+
+### 7.4 Held modifiers × control classes
+
+Modifier held down, one control operated, modifier released. Note mode, track 1.
+
+| Combination | Effect |
+|---|---|
+| **Copy + pad** | **copies that drum pad's sample** (`Pad Sample copied`) |
+| Copy + step | arms that step as the copy **source** (see §7.5); on an already-armed clipboard it printed `Clipboard cleared` |
+| Copy + track button | nothing |
+| Copy + jog / knob / Play | nothing — the knob keeps its normal parameter |
+| **Delete + step** | **clears that step** (LED 122 → 98) |
+| **Delete alone** | deletes the clip |
+| **Mute held** | `Mute...` card; **all eight knob-ring LEDs go DARK** |
+| Loop held | Loop Length chooser; all 16 steps → 124, current length marked on channel 9 |
+| **Hold step + knob 1–8** | **per-step parameter automation — see §7.5** |
+| **Hold step + jog** | **Note Length** |
+
+**The Mute layer does not report automation on the rings.** Holding Mute sets
+CCs 71–78 to 0 — the rings go out. Measured directly from the CC stream; no
+`3B 10` ring colours are sent while Mute is held.
+
+### 7.5 The two gestures that matter most
+
+#### Move's native per-step automation is real
+
+**Hold a step that carries a note, then turn an encoder.** The held step lights
+`d2 = 127`, and each of knobs 1–8 addresses a *per-step* parameter — the OLED
+titles it `<track name> K1` … `K8`. **The jog, in the same gesture, edits `Note
+Length`.** Releasing the step leaves the step's content value unchanged (122);
+the p-lock is not visible in the step row.
+
+*Measured* on a MIDI track, holding a step with a note, turning knobs 1, 2, 3, 4
+and 8 and then the jog. A first attempt found nothing because the held step was
+**empty** — the gesture needs a note under it.
+
+**This is the collision the brief anticipated**: Schwung has built its own
+p-lock on the same physical gesture, and Move already owns it.
+
+#### The Copy contradiction, settled — the manual model wins on 2.1.0
+
+Three experiments, read back from the **step LED row** rather than `Song.abl`
+(`122` = has a note, `98` = empty, already verified against the file, and the
+LEDs update immediately instead of 8–14 s later):
+
+| Experiment | Gesture | Result |
+|---|---|---|
+| **M** | Copy↓, source step, **Copy↑**, destination step | destination went to **122** — it **pasted** |
+| **C** | Copy↓, source, Copy↑, **Copy↓ Copy↑**, destination | destination went to **122** — the second press did **NOT** cancel |
+| **R** | Copy↓, source **held**, second step tapped, release all | second step stayed **98** — **nothing was written** |
+
+So, on 2.1.0:
+
+- **You do NOT have to hold Copy for the paste.** The armed source survives the
+  release. This is the manual's model, and `docs/MOVE_COPY_GESTURES.md`'s "pairs
+  while held" model is *incomplete* rather than wrong — both describe the same
+  Copy-held sequences correctly, and only this case separates them.
+- **There is no cancel.** A second Copy press leaves the source armed. The
+  manual is wrong here on this firmware.
+- **Range copy does not write.** Holding the source and tapping a second step is
+  a *selection*, not a paste — which the pairs model would have got backwards,
+  exactly as the brief feared.
+
+**And the armed source persists indefinitely, across screens and across the
+reset.** It was still armed several minutes and dozens of presses later, when a
+`hold step 1` in an unrelated experiment printed `Notes pasted` and wrote a note
+nobody asked for. That is almost certainly the stuck `Paste...` screen this
+whole survey opened on. **A driver that arms Copy must clear it** — `Copy + an
+empty step` printed `Clipboard cleared`.
+
+### 7.6 Overlays: what changes meaning while one is up
+
+Tested on Tempo, Groove, Scale, Metronome and Clip settings by operating each
+control class with the overlay on screen.
+
+| Control | While a Shift+Step overlay is up |
+|---|---|
+| **Jog turn** | **CAPTURED** — edits the value, or moves the `<` cursor between rows. On the two-state Metronome screen a jog turn dismissed it |
+| **Knobs 1–8** | **NOT captured** — still the track's device parameters, and their own parameter overlay *replaces* the settings screen |
+| **Pads** | **NOT captured** — still play (the Metronome screen showed `Pad Sample` when a pad was struck) |
+| **Menu** | dismisses, and also shows a mode card |
+| **Back** | dismisses |
+
+So exactly one control class changes meaning under an overlay: **the jog**. That
+is a small, checkable rule, and it is the answer to "does a control silently mean
+something else here".
+
+Transient overlays that time out on their own: the mode card (~2 s), the volume
+overlay, the knob parameter overlay, and the `… copied` / `… deleted` /
+`… muted` toasts. Modifier hint cards (`Copy...`, `Delete...`, `Mute...`) and the
+Loop Length chooser last exactly as long as the button is held.
+
+### 7.7 Set Overview is a hazard surface
+
+Two ways to change the loaded set by accident, both measured:
+
+- **Any of the 32 pads loads the set under it.** Known from the last pass.
+- **The 16 STEP buttons also load sets.** New: steps 1, 5 and 16 each produced a
+  ~100-event repaint and the set name on screen changed (`Set 3` → `BNYX Demo
+  1`). Whether they address the same grid as the pads was not established.
+
+Everything else tested in Set Overview (Loop, Copy, Mute, Play, the four arrows,
+jog click) did nothing. Track buttons and Menu leave it.
+
+**For a driver: establish the pad mode before injecting a pad OR a step**, and
+if you have lost track, run the §1 reset first. Both of this survey's set
+switches came from "harmless" probes.
+
+### 7.8 The held-Menu mode preview — real, and a worse probe
+
+Holding Menu **does** flip the mode for the duration of the hold and flip it back
+on release: `CC 118 → 0` on the press and `→ 124` on the release, with a full
+surface repaint each way. So it is non-destructive in the sense that you end
+where you started — the documented "preview" exists.
+
+As a localisation probe it was scored head-to-head against §2.3 over six random
+walks:
+
+| Probe | Score |
+|---|---|
+| Held Menu | **4 / 6** |
+| Shift release repaint (§2.3) | **6 / 6** |
+
+Both its misses were **Set Overview**, where the press emits no CC 118 at all, so
+the probe is blind to exactly the mode where a wrong guess is dangerous. §2.3
+remains the recommended method.
+
+### 7.9 Knob touch (notes 0–9) — unresolved
+
+Injecting knob-touch note-on/note-off produced **large LED bursts (120–137
+events)** including `3B 10` RGB writes to the track-button CCs 41–43 with vivid
+colours. The effect was not isolated from the surrounding state and **is not
+understood**; it is in Not known rather than described here.
 
 ---
 
@@ -593,10 +841,31 @@ Untested. A driver must not assume any of it.
 - **Whether `3B 10` has siblings.** Every SysEx captured used sub-command `0x10`
   (button RGB). Pads and steps were always plain Note On, so a pad RGB path, if
   one exists, was never provoked.
-- **Capture (CC 52).** It made the steps animate and I did not establish what it
-  captured, or whether it is destructive. Treat as destructive.
-- **Mute (CC 88) alone**, and Mute + anything.
-- **Shift + Step 10, 15, 16.** All three produced LED traffic and no screen.
+- **Shift + Step 15 and 16.** Both produce LED traffic and no screen. Step 15 is
+  believed to be Double Loop (Schwung's `CLAUDE.md` says so) and that was **not**
+  verified here; step 16 is unidentified.
+- **Shift + Step 4, 12, 13.** Their lamps were dark in every mode tested, but
+  steps 8 and 10 looked exactly like that until they were tried from a Drum Kit
+  track — so "dark" is evidence of context, not of absence. There is some
+  context in which these three may do something, and it was not found.
+- **Knob touch (notes 0–9).** Injecting a touch produced 120–137 LED events
+  including `3B 10` RGB writes to the track-button CCs with vivid colours. The
+  effect was never isolated from surrounding state and is not understood.
+- **CC 87 (Sampling).** Nothing at all on injection, tapped or held. Either it is
+  not the Sampling button or an injected CC 87 is filtered before Move sees it;
+  not distinguished.
+- **The per-step automation parameters themselves.** `<track> K1`…`K8` were
+  observed as titles; which parameter each knob addresses, what range, and how
+  the value is stored were not measured — nor was the *red* step colour the
+  manual describes, which never appeared (the held step reads `d2 = 127`).
+- **Whether Set Overview's steps and pads address the same grid.** Both load
+  sets; the mapping between them was not established, and every probe costs a
+  set switch.
+- **Menu's behaviour on an overlay is inconsistent between two runs.** In one
+  batch the first Menu tap after an overlay emitted no CC 118 (dismiss only); in
+  the overlay sweep it dismissed *and* showed a mode card. The two runs differed
+  in which overlay was actually on screen at the moment of the press, and that
+  was not controlled.
 - **What the device carousel actually contains.** It held exactly two entries
   (`Dynamics`, `Saturator`) on the track tested, both audio effects — the track's
   instrument was *not* in it. Whether the instrument is a third entry elsewhere,
@@ -607,8 +876,14 @@ Untested. A driver must not assume any of it.
   measured (123 / 17 / 122 / 126); which pad plays which pitch under which scale
   was not.
 - **Long-press semantics generally.** Track hold previewing and reverting is a
-  **single observation**; no threshold was measured and no other button was held
-  long enough to distinguish tap from hold.
+  **single observation**; no threshold was measured. The held-Menu preview (§7.8)
+  is the one hold whose mechanism is now measured.
+- **Audio tracks.** Added in Move 2.0.0 and never visited — so every "in Note
+  mode the steps do X" claim in this document is implicitly *on a MIDI track*.
+- **Clip paste onto an audio track or a drum pad.** The user states this bounces
+  to audio in 2.1.0 rather than pasting instantly. **Recorded as the user's
+  statement, not as a measurement** — it was deliberately not tested, and nothing
+  in this document should be read as saying clip paste is generally a bounce.
 - **Anything in Session mode below the pad layer** — steps did nothing
   observable, but "nothing observable on the OLED and LED stream" is not the same
   as "nothing happened".
@@ -629,87 +904,235 @@ connection.
 
 ```json
 [
-  {"action":"reset",              "packets":"0BB0337F s90 0BB03300 s90 0BB0337F s90 0BB03300 s90 0BB0337F s90 0BB03300 s90 0BB0337F s90 0BB03300 s90 0BB02B7F s110 0BB02B00",
-   "observe":"OLED identical from any state; text band rows 33-44 = track-1 instrument name; LED 'B0 2B 7A'",
-   "state":"note_mode, track 1"},
-
-  {"action":"toggle_session_note","packets":"0BB0327F s110 0BB03200",
-   "observe":"LED 'B0 76 00' => NOT note (session OR set overview), 'B0 76 7C' => note; OLED card ~2s",
-   "state":"session_mode | note_mode",
-   "warning":"with an overlay screen up this tap DISMISSES the screen and emits no CC118 — it does not toggle. Never assume two taps are a no-op."},
-
-  {"action":"localise_cold",       "packets":"0BB0317F s350 0BB03100",
-   "note":"read the step row Move sends on the RELEASE; see docs section 2.3",
-   "observe":"step Note-Ons (90 1x ..) => NOTE mode; only note-offs (80 1x 00) => not note; neither => inconclusive, press Back and retry. To split session from set overview, check whether step CC 16 went to 127 while Shift was held: dark => set overview.",
-   "state":"unchanged (non-destructive)",
-   "measured":"16 of 17 scored trials; the miss was a self-reported inconclusive"},
-
-  {"action":"select_track",       "packets":"0BB0<2B|2A|29|28>7F s110 0BB0<..>00",
-   "note":"CC 43,42,41,40 = tracks 1,2,3,4 (REVERSED)",
-   "observe":"LED 'B0 <cc> 7A' on the new track, previous track drops; full note-mode repaint",
-   "state":"note_mode, that track"},
-
-  {"action":"open_device_carousel","packets":"0BB0327F s110 0BB03200 s400 0BB00E01",
-   "observe":"OLED text band = a device name, boxed icon centred",
-   "state":"device_carousel",
-   "warning":"the Menu tap here ALSO toggles session/note"},
-
-  {"action":"carousel_next",      "packets":"0BB00E01", "observe":"OLED device name changes; clamps at the end", "state":"device_carousel"},
-  {"action":"carousel_prev",      "packets":"0BB00E7F", "observe":"same, clamps at the start",                  "state":"device_carousel"},
-  {"action":"open_preset_browser","packets":"0BB0037F s110 0BB00300", "observe":"OLED shows three stacked preset rows", "state":"preset_browser"},
-  {"action":"back",               "packets":"0BB0337F s90 0BB03300",  "observe":"'B0 33 7F' then 'B0 33 18'; one screen level pops; NO-OP in device_carousel", "state":"one level up"},
-
-  {"action":"transport_toggle",   "packets":"0BB0557F s110 0BB05500",
-   "observe":"LED CC 85 -> 126 running, 124 stopped; 'pul=' advances only while 126", "state":"unchanged"},
-
-  {"action":"launch_clip",        "packets":"0990<pad>77 s110 0980<pad>00",
-   "note":"SESSION MODE ONLY; pad = 92 - 8*track + slot. The SAME packets in Set Overview LOAD A DIFFERENT SET — localise before you press a pad.",
-   "observe":"'90 <pad> 7E' + '9E <pad> 7A' (queued), then '90 <pad> <colour>' + '99 <pad> 7A' (playing); also starts the transport",
-   "state":"session_mode"},
-
-  {"action":"toggle_step_note",   "packets":"0990<step>77 s110 0980<step>00",
-   "note":"note mode only; step note = 0x10 + index; writes the currently selected pad note",
-   "observe":"step LED 98 -> 122; Song.abl gains the note after ~14 s",
-   "state":"note_mode", "destructive":true},
-
-  {"action":"clear_step",         "packets":"0BB0777F s150 0990<step>77 s110 0980<step>00 s150 0BB07700",
-   "observe":"OLED 'Delete...' while held; step LED 122 -> 98",
-   "state":"note_mode", "destructive":true},
-
-  {"action":"select_pad_note",    "packets":"0990<pad>77 s110 0980<pad>00",
-   "note":"note mode",
-   "observe":"pad flashes 126 then settles to 122; the previous 122 pads return to 123",
-   "state":"note_mode"},
-
-  {"action":"octave_up",          "packets":"0BB0377F s110 0BB03700", "observe":"OLED card 'Octave up'; the 122 pads move", "state":"note_mode"},
-  {"action":"octave_down",        "packets":"0BB0367F s110 0BB03600", "observe":"OLED card 'Octave down'",                  "state":"note_mode"},
-
-  {"action":"page_next",          "packets":"0BB03F7F s110 0BB03F00",
-   "observe":"steps repaint for the new page; 'B0 3E 18' appears (Left becomes available)", "state":"note_mode"},
-  {"action":"page_prev",          "packets":"0BB03E7F s110 0BB03E00",
-   "observe":"steps repaint; 'B0 3E 00' when there is no earlier page",                     "state":"note_mode"},
-
-  {"action":"shift_layer_peek",   "packets":"0BB0317F s400 0BB03100",
-   "observe":"steps 16,17,18,20,21,22,24 -> 127 in session; + 25,26,29,30,31 in note",
-   "state":"unchanged"},
-
-  {"action":"shift_step",         "packets":"0BB0317F s80 0990<nn>77 s120 0980<nn>00 s80 0BB03100",
-   "map":{"16":"Set Overview","17":"System","18":"Clip settings","20":"Tempo","21":"Metronome","22":"Groove","24":"Scale","26":"Note Repeat","29":"New clip (CREATES a clip)"},
-   "observe":"OLED text band matches the map entry",
-   "state":"that settings screen"},
-
-  {"action":"loop_length_peek",   "packets":"0BB03A7F s500 0BB03A00",
-   "observe":"OLED 'Loop Length'; all 16 steps -> 124, the current length also gets a ch-9 message",
-   "state":"unchanged on release"},
-
-  {"action":"knob_turn",          "packets":"0BB0<47..4E><01|7F>",
-   "observe":"parameter overlay on the OLED; 'F0 00 21 1D 01 01 3B 10 <cc> ...' re-reports the ring value",
-   "state":"unchanged"},
-
-  {"action":"read_knob_values",   "packets":"0BB0327F s110 0BB03200",
-   "note":"any view change reissues all eight ring colours",
-   "observe":"eight 'SYS 3B 10 n=71..78 rgb=(v,v,v)' messages; v is the parameter value 0-255",
-   "state":"toggled session/note — pick a cheaper refresh if that matters"}
+ {
+  "action": "reset",
+  "packets": "0BB0337F s90 0BB03300 s90 0BB0337F s90 0BB03300 s90 0BB0337F s90 0BB03300 s90 0BB0337F s90 0BB03300 s90 0BB02B7F s110 0BB02B00",
+  "observe": "OLED identical from any state; text band rows 33-44 = track-1 instrument name; LED 'B0 2B 7A'",
+  "state": "note_mode, track 1"
+ },
+ {
+  "action": "toggle_session_note",
+  "packets": "0BB0327F s110 0BB03200",
+  "observe": "LED 'B0 76 00' => NOT note (session OR set overview), 'B0 76 7C' => note; OLED card ~2s",
+  "state": "session_mode | note_mode",
+  "warning": "with an overlay screen up this tap DISMISSES the screen and emits no CC118 \u2014 it does not toggle. Never assume two taps are a no-op."
+ },
+ {
+  "action": "localise_cold",
+  "packets": "0BB0317F s350 0BB03100",
+  "note": "read the step row Move sends on the RELEASE; see docs section 2.3",
+  "observe": "step Note-Ons (90 1x ..) => NOTE mode; only note-offs (80 1x 00) => not note; neither => inconclusive, press Back and retry. To split session from set overview, check whether step CC 16 went to 127 while Shift was held: dark => set overview.",
+  "state": "unchanged (non-destructive)",
+  "measured": "16 of 17 scored trials; the miss was a self-reported inconclusive"
+ },
+ {
+  "action": "select_track",
+  "packets": "0BB0<2B|2A|29|28>7F s110 0BB0<..>00",
+  "note": "CC 43,42,41,40 = tracks 1,2,3,4 (REVERSED)",
+  "observe": "LED 'B0 <cc> 7A' on the new track, previous track drops; full note-mode repaint",
+  "state": "note_mode, that track"
+ },
+ {
+  "action": "open_device_carousel",
+  "packets": "0BB0327F s110 0BB03200 s400 0BB00E01",
+  "observe": "OLED text band = a device name, boxed icon centred",
+  "state": "device_carousel",
+  "warning": "the Menu tap here ALSO toggles session/note"
+ },
+ {
+  "action": "carousel_next",
+  "packets": "0BB00E01",
+  "observe": "OLED device name changes; clamps at the end",
+  "state": "device_carousel"
+ },
+ {
+  "action": "carousel_prev",
+  "packets": "0BB00E7F",
+  "observe": "same, clamps at the start",
+  "state": "device_carousel"
+ },
+ {
+  "action": "open_preset_browser",
+  "packets": "0BB0037F s110 0BB00300",
+  "observe": "OLED shows three stacked preset rows",
+  "state": "preset_browser"
+ },
+ {
+  "action": "back",
+  "packets": "0BB0337F s90 0BB03300",
+  "observe": "'B0 33 7F' then 'B0 33 18'; one screen level pops; NO-OP in device_carousel",
+  "state": "one level up"
+ },
+ {
+  "action": "transport_toggle",
+  "packets": "0BB0557F s110 0BB05500",
+  "observe": "LED CC 85 -> 126 running, 124 stopped; 'pul=' advances only while 126",
+  "state": "unchanged"
+ },
+ {
+  "action": "launch_clip",
+  "packets": "0990<pad>77 s110 0980<pad>00",
+  "note": "SESSION MODE ONLY; pad = 92 - 8*track + slot. The SAME packets in Set Overview LOAD A DIFFERENT SET \u2014 localise before you press a pad.",
+  "observe": "'90 <pad> 7E' + '9E <pad> 7A' (queued), then '90 <pad> <colour>' + '99 <pad> 7A' (playing); also starts the transport",
+  "state": "session_mode"
+ },
+ {
+  "action": "toggle_step_note",
+  "packets": "0990<step>77 s110 0980<step>00",
+  "note": "note mode only; step note = 0x10 + index; writes the currently selected pad note",
+  "observe": "step LED 98 -> 122; Song.abl gains the note after ~14 s",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "clear_step",
+  "packets": "0BB0777F s150 0990<step>77 s110 0980<step>00 s150 0BB07700",
+  "observe": "OLED 'Delete...' while held; step LED 122 -> 98",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "select_pad_note",
+  "packets": "0990<pad>77 s110 0980<pad>00",
+  "note": "note mode",
+  "observe": "pad flashes 126 then settles to 122; the previous 122 pads return to 123",
+  "state": "note_mode"
+ },
+ {
+  "action": "octave_up",
+  "packets": "0BB0377F s110 0BB03700",
+  "observe": "OLED card 'Octave up'; the 122 pads move",
+  "state": "note_mode"
+ },
+ {
+  "action": "octave_down",
+  "packets": "0BB0367F s110 0BB03600",
+  "observe": "OLED card 'Octave down'",
+  "state": "note_mode"
+ },
+ {
+  "action": "page_next",
+  "packets": "0BB03F7F s110 0BB03F00",
+  "observe": "steps repaint for the new page; 'B0 3E 18' appears (Left becomes available)",
+  "state": "note_mode"
+ },
+ {
+  "action": "page_prev",
+  "packets": "0BB03E7F s110 0BB03E00",
+  "observe": "steps repaint; 'B0 3E 00' when there is no earlier page",
+  "state": "note_mode"
+ },
+ {
+  "action": "shift_layer_peek",
+  "packets": "0BB0317F s400 0BB03100",
+  "observe": "steps 16,17,18,20,21,22,24 -> 127 in session; + 25,26,29,30,31 in note",
+  "state": "unchanged"
+ },
+ {
+  "action": "shift_step",
+  "packets": "0BB0317F s80 0990<nn>77 s120 0980<nn>00 s80 0BB03100",
+  "map": {
+   "16": "Set Overview",
+   "17": "System",
+   "18": "Clip settings",
+   "20": "Tempo",
+   "21": "Metronome",
+   "22": "Groove",
+   "24": "Scale",
+   "26": "Note Repeat",
+   "29": "New clip (CREATES a clip)"
+  },
+  "observe": "OLED text band matches the map entry",
+  "state": "that settings screen"
+ },
+ {
+  "action": "loop_length_peek",
+  "packets": "0BB03A7F s500 0BB03A00",
+  "observe": "OLED 'Loop Length'; all 16 steps -> 124, the current length also gets a ch-9 message",
+  "state": "unchanged on release"
+ },
+ {
+  "action": "knob_turn",
+  "packets": "0BB0<47..4E><01|7F>",
+  "observe": "parameter overlay on the OLED; 'F0 00 21 1D 01 01 3B 10 <cc> ...' re-reports the ring value",
+  "state": "unchanged"
+ },
+ {
+  "action": "read_knob_values",
+  "packets": "0BB0327F s110 0BB03200",
+  "note": "any view change reissues all eight ring colours",
+  "observe": "eight 'SYS 3B 10 n=71..78 rgb=(v,v,v)' messages; v is the parameter value 0-255",
+  "state": "toggled session/note \u2014 pick a cheaper refresh if that matters"
+ },
+ {
+  "action": "read_firmware_version",
+  "packets": "0BB0317F s80 09901177 s120 09801100 s80 0BB03100 s1200 0BB00E01 s500 0BB00E01 s600 0BB0037F s110 0BB00300 s1500 0BB00E01 s500 0BB00E01 s800 0BB0037F s110 0BB00300",
+  "note": "Shift+Step2 (System) -> jog to Update -> click -> jog to Current Version -> click",
+  "observe": "OLED reads 'Move <version> / installed'; measured 'Move 2.1.0'",
+  "state": "System > Update > Current Version"
+ },
+ {
+  "action": "copy_paste_step",
+  "packets": "0BB03C7F s250 0990<src>50 s110 0980<src>00 s350 0BB03C00 s450 0990<dst>50 s110 0980<dst>00",
+  "note": "Copy is RELEASED before the destination; the armed source survives it (firmware 2.1.0)",
+  "observe": "destination step LED 98 -> 122",
+  "state": "note_mode",
+  "destructive": true,
+  "warning": "the armed source PERSISTS indefinitely across screens and resets; the next step press anywhere pastes. Clear it with copy_clear."
+ },
+ {
+  "action": "copy_clear",
+  "packets": "0BB03C7F s250 0990<empty_step>50 s110 0980<empty_step>00 s350 0BB03C00",
+  "observe": "OLED 'Clipboard cleared'",
+  "state": "note_mode"
+ },
+ {
+  "action": "copy_range_select",
+  "packets": "0BB03C7F s250 0990<a>50 s300 0990<b>50 s110 0980<b>00 s300 0980<a>00 s250 0BB03C00",
+  "note": "source HELD while a second step is tapped",
+  "observe": "NOTHING is written - it is a selection, not a paste (measured: destination stayed 98)",
+  "state": "note_mode"
+ },
+ {
+  "action": "per_step_automation",
+  "packets": "0990<step>50 s400 0BB0<47..4E><01|7F> ... 0980<step>00",
+  "note": "Move's OWN p-lock. The held step MUST already carry a note. The jog in the same gesture edits Note Length.",
+  "observe": "held step LED -> 127; OLED titles '<track name> K1'..'K8'; the step's content value is unchanged on release",
+  "state": "note_mode",
+  "destructive": true
+ },
+ {
+  "action": "solo_track",
+  "packets": "0BB0317F s90 0BB0587F s130 0BB05800 s90 0BB03100",
+  "observe": "OLED '<track> soloed'",
+  "state": "unchanged",
+  "note": "Mute alone MUTES; Shift+Mute SOLOS"
+ },
+ {
+  "action": "track_midi_menu",
+  "packets": "0BB0317F s90 0BB0<2B|2A|29|28>7F s130 0BB0<..>00 s90 0BB03100",
+  "observe": "OLED rows 'MIDI Out Ch<n>' / 'MIDI In Auto' / 'Color'; jog moves the cursor",
+  "state": "per-track MIDI menu"
+ },
+ {
+  "action": "shift_knob_bank",
+  "packets": "0BB0317F s90 0BB0<47..4E><01|7F> s130 0BB03100",
+  "observe": "a DIFFERENT parameter from the same knob unshifted (measured: knob1 'Transpose', knob8 'Grain Size')",
+  "state": "unchanged"
+ },
+ {
+  "action": "copy_pad_sample",
+  "packets": "0BB03C7F s250 0990<pad>50 s110 0980<pad>00 s350 0BB03C00",
+  "observe": "OLED 'Pad Sample copied'",
+  "state": "note_mode, drum track"
+ },
+ {
+  "action": "held_menu_preview",
+  "packets": "0BB0327F s1300 0BB03200",
+  "observe": "CC118 flips on the press and back on the release; the surface repaints both ways",
+  "note": "a real non-destructive preview, but BLIND to Set Overview (no CC118 there) - scored 4/6 against localise_cold's 6/6",
+  "state": "unchanged"
+ }
 ]
 ```
 
@@ -725,7 +1148,8 @@ Tracks 1-4 = 43,42,41,40 = 0x2B,0x2A,0x29,0x28      (REVERSED)
 Up 55=0x37  Down 54=0x36  Left 62=0x3E  Right 63=0x3F
 Play 85=0x55  Record 86=0x56  Capture 52=0x34  Undo 56=0x38
 Loop 58=0x3A  Copy 60=0x3C  Delete 119=0x77  Mute 88=0x58
-Knobs 71-78 = 0x47..0x4E   Master 79=0x4F
+Knobs 71-78 = 0x47..0x4E   Master 79=0x4F   Knob touch = notes 0-9
+Sampling 87=0x57 (no observed effect)
 Steps 1-16 = notes 16-31 = 0x10..0x1F
 Pads = notes 68-99 = 0x44..0x63
 ```
