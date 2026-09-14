@@ -1834,6 +1834,13 @@ inline is how this file got to 151 KB.
   follows the selected drum voice. Holding **Mute** publishes a per-track
   automation mask on CCs 71-78 — the cheapest "does this parameter have
   per-step automation?" query on the device, straight off the CC stream.
+  **Two reading channels beat every probe and were found late**: Move Manager
+  ships a 6.4 MB SOURCE MAP with `sourcesContent` (Ableton's own TypeScript API
+  client, so endpoints are read rather than guessed), and `strings
+  /opt/move/MoveOriginal` yields **675 `ableton::move` RTTI class names** plus a
+  single mangled symbol carrying Move's whole VIEW TREE in construction order.
+  Both are read-only, cost the device nothing, and answer questions no amount of
+  button-pressing can. Reach for them FIRST.
 - `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
   being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
   the two disagree the DEVICE is the authority. Carries the reconciliation table.
