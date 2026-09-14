@@ -70,9 +70,24 @@ export function announceTouch(meta, value, slot, decoration) {
  * Turning a knob. Value only — the user is holding the control and already knows
  * which one; re-reading the name every detent makes the readout unusable.
  */
-export function announceTurn(meta, value) {
+export function announceTurn(meta, value, heldStep) {
     if (!meta) return "";
-    return spokenValue(meta, value);
+    const said = spokenValue(meta, value);
+    /*
+     * A LOCK AND A TRACK EDIT MUST NOT SOUND THE SAME.
+     *
+     * Turning a knob says "38%" either way, and the only thing separating
+     * "you changed this sound" from "you changed this STEP, forever, and the
+     * rest of the loop still plays the old value" was a 600 ms mark in a
+     * corner and an inverted band. For a screen-reader user there was nothing
+     * at all. The name comes back with it because the plain reading drops it
+     * and there is no screen to supply it.
+     */
+    if (typeof heldStep === "number" && heldStep >= 0) {
+        const name = meta.name || meta.label || meta.key || "";
+        return (name ? name + " " : "") + said + " on step " + (heldStep + 1);
+    }
+    return said;
 }
 
 /**
