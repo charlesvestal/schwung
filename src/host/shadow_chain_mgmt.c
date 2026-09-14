@@ -3191,6 +3191,7 @@ const char *shadow_lanes_plock_reason_name(int rc) {
         case STEP_PLOCK_BAD_INDEX:    return "bad_index";
         case STEP_PLOCK_MULTI_PAGE:   return "multi_page";
         case STEP_PLOCK_OUTSIDE_CLIP: return "outside_clip";
+        case STEP_PLOCK_CLIP_PENDING: return "clip_pending";
         default:                      return "unknown";
     }
 }
@@ -3229,6 +3230,12 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
      * live answer and never the file's older one. */
     if (cslot < 0)
         cslot = clip_regions_selected_slot(rg, (int)slot);
+    /* NEITHER SOURCE KNOWS THE SLOT, AND THE SCREEN DOES. See
+     * STEP_PLOCK_CLIP_PENDING: the strip naming this track means Move is
+     * step-editing a clip here, so one exists and is merely unnamed -- the
+     * 8-12 s before Move writes Song.abl. Reported as "no clip on this track",
+     * that read as the feature being broken; it is a wait. */
+    if (cslot < 0 && bar_strip_len_valid) return STEP_PLOCK_CLIP_PENDING;
     double res = (rg && rg->step_resolution > 0.0) ? rg->step_resolution : 0.25;
     double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
     double clip_len = 0.0;

@@ -82,8 +82,31 @@ enum {
     STEP_PLOCK_BAD_INDEX,     /* not one of the 16 step buttons */
     STEP_PLOCK_MULTI_PAGE,    /* the bar spans several pages and we cannot
                                * tell which one is displayed */
-    STEP_PLOCK_OUTSIDE_CLIP   /* the step is past the clip's own length */
+    STEP_PLOCK_OUTSIDE_CLIP,  /* the step is past the clip's own length */
+    STEP_PLOCK_CLIP_PENDING   /* Move is step-editing a clip on this track and
+                               * we cannot NAME it yet -- see below */
 };
+
+/*
+ * STEP_PLOCK_CLIP_PENDING, and why "no clip" was the wrong answer.
+ *
+ * A lane is keyed by (track, clip slot), and there are exactly two ways to
+ * learn the slot: `identity_valid`, set by a ch-9 ON in Move's LED stream, and
+ * `Song.abl`. A clip you have just made has neither -- it has never played, so
+ * no ch-9, and Move writes the file ~10 s late. MEASURED 2026-09-14: delete a
+ * clip, add a note in Note view, and the slot is unknown for 8-12 s, arriving
+ * in the same second the file is written.
+ *
+ * Both sources, one shared blind spot, and it lands exactly on "make a clip
+ * and lock its steps" -- the flow the feature is for. The refusal that reached
+ * the user was "no clip on this track" while they were plainly looking at one,
+ * which describes a PERMANENT state and reads as the feature being broken.
+ * The honest answer is "not yet".
+ *
+ * The two are distinguishable: if Move's bar strip names THIS track, Move is
+ * step-editing a clip here, so one exists and we simply cannot name it. If the
+ * strip names nothing, the track really is empty.
+ */
 
 /* All inputs in the units the rest of the lane code uses: quarters, and a
  * 1-based bar as the strip reports it.
