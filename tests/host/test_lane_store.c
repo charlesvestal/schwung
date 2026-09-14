@@ -628,8 +628,36 @@ int main(void) {
                   "a pass at 7.8 reads as live in the untouched middle of the "
                   "loop at phase 4.0");
 
+            /* ---- SILENCE AND LIFETIME ARE TWO QUESTIONS -----------------
+             *
+             * Measured on hardware 2026-09-14. `lane_pass_live_at` is also the
+             * erase span (asserted as an AGREEMENT above), so it must survive
+             * the wrap or a sweep carried across the loop point stops erasing
+             * what it passed over. The SILENCE must not survive it: past the
+             * wrap it mutes the take's own playback of the points just
+             * recorded. Two predicates over one pass; the difference is the
+             * wrap, which is the rule `punch_until_wrap` already lives by. */
+            CHECK(lane_pass_live_at(lp, 0.1, 0.0, 8.0) == 1,
+                  "premise: a pass at 7.8 is still alive at 0.1 for the erase");
+            CHECK(lane_pass_suppresses_at(lp, 0.1, 0.0, 8.0) == 0,
+                  "a pass whose last write was at 7.8 still SILENCES the lane "
+                  "at 0.1 -- the take's own playback is suppressed on the "
+                  "playthrough that was meant to carry it");
+            CHECK(lane_pass_suppresses_at(lp, 7.9, 0.0, 8.0) == 1,
+                  "a pass stopped suppressing BEFORE the wrap, where the hand "
+                  "may still be moving");
+
+            /* A SWEEP THAT REALLY DOES CROSS THE WRAP KEEPS ITS SILENCE: the
+             * next write carries the pass past the loop point. The only gap is
+             * the block between the wrap and that write. */
+            lane_record_point(lp, 0.1, 59.0f, 0.0, 8.0, 0);
+            CHECK(lane_pass_suppresses_at(lp, 0.2, 0.0, 8.0) == 1,
+                  "a sweep continuing past the wrap lost its suppression");
+
             /* The end of the pass is the end of the window, everywhere. */
             lane_record_end(lp);
+            CHECK(lane_pass_suppresses_at(lp, 0.1, 0.0, 8.0) == 0,
+                  "an ended pass still suppresses");
             CHECK(lane_pass_live_at(lp, 7.8, 0.0, 8.0) == 0,
                   "an ended pass still reads as live at its last write");
         }

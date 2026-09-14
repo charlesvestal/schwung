@@ -451,6 +451,18 @@ int lane_pass_live_at(const lane_t *ln, double phase,
     return (travel >= 0.0 && travel <= LANE_PASS_GAP_BEATS) ? 1 : 0;
 }
 
+int lane_pass_suppresses_at(const lane_t *ln, double phase,
+                            double loop_start, double loop_len) {
+    if (!lane_pass_live_at(ln, phase, loop_start, loop_len)) return 0;
+    /* WRAPPED SINCE THE LAST WRITE. Both phases are inside the window --
+     * lane_pass_travel refused anything else before we got here -- so a phase
+     * BELOW the pass's last write can only mean the transport came round. The
+     * same test `punch_until_wrap` expires on, written the same way on
+     * purpose: one rule, asked by both mechanisms. */
+    if (phase < ln->rec_last_phase) return 0;
+    return 1;
+}
+
 int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now) {
     if (!ln || !ln->used || !now) return 0;
     /* Only a lane that was never identified, and only one THIS SESSION
