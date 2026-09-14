@@ -1614,6 +1614,26 @@ volatile int shim_ext_midi_drops = 0;
 /* Packets the shadow_ui MIDI ring had no room for. Incremented on the SPI
  * callback by shadow_ui_midi_publish; reported by the worker (#358). */
 volatile int shim_ui_midi_drops = 0;
+volatile int shim_step_press_seen = 0;
+volatile int shim_step_release_seen = 0;
+volatile int shim_step_used_skip = 0;
+volatile int shim_step_nopress_skip = 0;
+volatile int shim_step_tap_queued = 0;
+volatile int shim_step_tap_emitted = 0;
+volatile int shim_step_tap_noroom = 0;
+volatile int shim_step_hold_ms_last = -1;
+char shim_step_plock_key[64] = {0};
+void shim_step_note_plock_key(const char *key)
+{
+    if (!key) return;
+    /* Last one wins, and it is only read by the worker's 1 Hz line -- a
+     * torn copy would misname a key, never crash, and the alternative is a
+     * lock on the SPI callback for a diagnostic. */
+    size_t n = strlen(key);
+    if (n >= sizeof(shim_step_plock_key)) n = sizeof(shim_step_plock_key) - 1;
+    memcpy(shim_step_plock_key, key, n);
+    shim_step_plock_key[n] = '\0';
+}
 
 /* Outbound counterpart: packets shadow_ui queued that the carry could not hold.
  * Before the carry existed this condition had no counter because it had no
@@ -7767,19 +7787,23 @@ static void step_note_withhold(uint8_t note, uint8_t vel)
         step_press_ms[i] = now_mono_ms();
         step_press_vel[i] = vel;
         step_used[i] = 0;
+        shim_step_press_seen++;
         return;
     }
     step_swallow_latch[i] = 0;
+    shim_step_release_seen++;
     /* A press that was consumed by the grid is never replayed, whatever the
      * stopwatch says. */
-    if (step_used[i]) { step_used[i] = 0; step_press_ms[i] = 0; return; }
+    if (step_used[i]) { step_used[i] = 0; step_press_ms[i] = 0;
+                        shim_step_used_skip++; return; }
     /* A press we never saw cannot have been a tap: `step_press_ms` of 0 means
      * the latch was set by an older build or a lost press, and replaying then
      * would put a note on a step nobody touched. */
-    if (step_press_ms[i] == 0) return;
+    if (step_press_ms[i] == 0) { shim_step_nopress_skip++; return; }
     const uint64_t held_ms = now_mono_ms() - step_press_ms[i];
     step_press_ms[i] = 0;
-    if (held_ms < STEP_TAP_MS) step_tap_replay[i] = 1;
+    shim_step_hold_ms_last = (int)held_ms;
+    if (held_ms < STEP_TAP_MS) { step_tap_replay[i] = 1; shim_step_tap_queued++; }
 }
 
 /* Controls the host owns and a module may NEVER claim: how you leave the
@@ -10073,13 +10097,14 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
             const int on = (step_tap_replay[i] == 1);
             for (; j < SHADOW_MIDI_IN_BYTES; j += SHADOW_MIDI_IN_STRIDE)
                 if (shadow_midi_in_slot_empty(&src[j])) break;
-            if (j >= SHADOW_MIDI_IN_BYTES) break;   /* no room: next frame */
+            if (j >= SHADOW_MIDI_IN_BYTES) { shim_step_tap_noroom++; break; }
             src[j]     = on ? 0x09 : 0x08;          /* CIN, cable 0 */
             src[j + 1] = on ? 0x90 : 0x80;
             src[j + 2] = (uint8_t)(16 + i);
             src[j + 3] = on ? step_press_vel[i] : 0;
             memset(&src[j + 4], 0, 4);              /* synthetic: no timestamp */
             j += SHADOW_MIDI_IN_STRIDE;
+            shim_step_tap_emitted++;
             step_tap_replay[i] = on ? 2 : 0;
         }
     }

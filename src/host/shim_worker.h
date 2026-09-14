@@ -75,6 +75,23 @@ extern volatile int shim_jack_persist;
  * but a burst of them means the mailbox is saturated and motors are lagging. */
 extern volatile int shim_ext_midi_drops;
 extern volatile int shim_ui_midi_drops;
+
+/* THE STEP TAP PATH, stage by stage.
+ *
+ * "I tap a step with the grid up and no note appears" has five places it can
+ * die, and from the outside they are one silence. Counters rather than a log
+ * line because every one of these sites is the SPI callback, where an
+ * increment is free and a printf is forbidden. Reported by the worker at
+ * 1 Hz, and only when something moved. */
+extern volatile int shim_step_press_seen;    /* a press was withheld */
+extern volatile int shim_step_release_seen;  /* its release was withheld */
+extern volatile int shim_step_used_skip;     /* release spent by a p-lock */
+extern volatile int shim_step_nopress_skip;  /* release with no press on record */
+extern volatile int shim_step_tap_queued;    /* release inside STEP_TAP_MS */
+extern volatile int shim_step_tap_emitted;   /* packets actually written */
+extern volatile int shim_step_tap_noroom;    /* MIDI_IN full, deferred */
+extern volatile int shim_step_hold_ms_last;  /* the last release's held time */
+extern char shim_step_plock_key[64];         /* the key that last spent a press */
 extern volatile int shim_ui_midi_out_drops;
 
 /* Last USB-C audio-out source seen by the RT path (0 = Mic, 1 = Main Out),

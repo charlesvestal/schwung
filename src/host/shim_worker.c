@@ -981,6 +981,28 @@ static void lane_trace_tick(void)
     }
 }
 
+/* THE STEP TAP PATH, reported. Always on and silent unless a step moved --
+ * same shape as param_slow_tick, and for the same reason: the condition is
+ * rare, the cost of missing it is a user telling us their step buttons are
+ * dead, and arming a flag after the fact means asking them to reproduce it. */
+static void step_tap_tick(void)
+{
+    static int last_press, last_rel;
+    const int press = shim_step_press_seen, rel = shim_step_release_seen;
+    if (press == last_press && rel == last_rel) return;
+    last_press = press; last_rel = rel;
+    char msg[240];
+    snprintf(msg, sizeof(msg),
+             "step-tap: press=%d release=%d used_skip=%d nopress_skip=%d "
+             "queued=%d emitted=%d noroom=%d last_hold=%dms (tap<%dms) "
+             "last_plock_key=%s",
+             press, rel, shim_step_used_skip, shim_step_nopress_skip,
+             shim_step_tap_queued, shim_step_tap_emitted,
+             shim_step_tap_noroom, shim_step_hold_ms_last, 500,
+             shim_step_plock_key[0] ? shim_step_plock_key : "(none)");
+    LOG_DEBUG("shim", msg);
+}
+
 static void clip_state_tick(void)
 {
     if (access("/data/UserData/schwung/clip_state_on", F_OK) != 0) return;
@@ -1672,6 +1694,7 @@ static void *worker_main(void *arg) {
             ui_midi_drop_tick();
             ui_midi_out_drop_tick();
             param_slow_tick();        /* always on; silent unless one overran */
+            step_tap_tick();          /* always on; silent unless a step moved */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;

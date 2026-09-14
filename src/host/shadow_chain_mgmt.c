@@ -3330,6 +3330,14 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
 void shim_step_mark_used(int step);
 __attribute__((weak)) void shim_step_mark_used(int step) { (void)step; }
 
+/* WHICH KEY SPENT THE PRESS. "I tap a step and no note appears" was traced to
+ * presses being marked used by a p-lock, which only asks whether a component
+ * write arrived while a step was held -- it never recorded WHICH. Without the
+ * key, "a write landed" and "the write I expected landed" are the same line.
+ * Weak for the same reason as the mark itself. */
+void shim_step_note_plock_key(const char *key);
+__attribute__((weak)) void shim_step_note_plock_key(const char *key) { (void)key; }
+
 static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
                                              char *out, int out_len) {
     char target[16] = {0}, param[32] = {0};
@@ -3355,6 +3363,11 @@ static int shadow_lanes_plock_step_translate(uint8_t slot, const char *value,
      * a fast lock through `plock_step` still took the clip from 34 notes to
      * 35, which is the defect this was supposed to fix, surviving in the paths
      * the fix did not cover. */
+    /* AND IT NAMES ITSELF. A press marked used by THIS path with no write-time
+     * key was what separated "a p-lock spent the press" from "something else
+     * did" -- see shim_step_note_plock_key. The value carries target, param
+     * and step, which is what says whether the lock belonged to this press. */
+    shim_step_note_plock_key(value);
     shim_step_mark_used(step);
     /* THE SPAN RIDES WITH THE PHASE. A p-lock is an edit to ONE STEP: it ends
      * where the step ends and the parameter goes back to whatever is
@@ -3727,6 +3740,7 @@ static int shadow_lanes_plock_from_write(uint8_t slot, const char *key,
     /* The press is SPENT: it wrote a lock, so its release must not also be
      * replayed to Move as a tap. A gesture under STEP_TAP_MS otherwise both
      * locked a value and toggled the note off. */
+    shim_step_note_plock_key(key);
     shim_step_mark_used(step);
     /* DID IT LAND? The caller suppresses the live write on a 1, so a refused
      * p-lock must never report one: an unknown parameter or a full store would

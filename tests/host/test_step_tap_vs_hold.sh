@@ -46,6 +46,13 @@ static uint8_t  step_tap_replay[16];
 static volatile uint32_t shadow_steps_held_mask;
 /* "The press already did something on the grid" -- see step_used. */
 static uint8_t step_used[16];
+/* The stage counters the worker reports (shim_worker.h). Stubs here: the
+ * lifted function increments them and this harness only has to let it, but
+ * they are ASSERTED on below -- a counter that stops being bumped is how the
+ * step-tap readout goes quiet without the behaviour changing. */
+static volatile int shim_step_press_seen, shim_step_release_seen,
+                    shim_step_used_skip, shim_step_nopress_skip,
+                    shim_step_tap_queued, shim_step_hold_ms_last;
 static uint64_t g_now = 1000;            /* never 0: 0 means "no press seen" */
 static uint64_t now_mono_ms(void) { return g_now; }
 
@@ -78,6 +85,23 @@ int main(void) {
     CHECK(shadow_steps_held_mask == 0, "the release must clear the mask, or the step stays held forever");
     CHECK(step_tap_replay[4] == 1, "a release inside STEP_TAP_MS is a TAP and must be replayed to Move");
     CHECK(step_swallow_latch[4] == 0, "the release retires the latch");
+
+    /* AND THE READOUT SAW IT. The worker's step-tap line is the only thing
+     * that can tell "the press never arrived" from "the replay never fired"
+     * -- from the outside they are one silence, and reading the code at them
+     * is what this counter set replaced. A counter that quietly stops being
+     * bumped puts that ambiguity back with the readout still printing. */
+    CHECK(shim_step_press_seen == 1 && shim_step_release_seen == 1,
+          "the press/release counters did not see this gesture (%d/%d)",
+          shim_step_press_seen, shim_step_release_seen);
+    CHECK(shim_step_tap_queued == 1, "a tap was not counted as queued (%d)",
+          shim_step_tap_queued);
+    CHECK(shim_step_hold_ms_last == STEP_TAP_MS - 1,
+          "the reported hold time was %d, not the %d actually held",
+          shim_step_hold_ms_last, STEP_TAP_MS - 1);
+    CHECK(shim_step_used_skip == 0 && shim_step_nopress_skip == 0,
+          "a clean tap reported a skip (used=%d nopress=%d)",
+          shim_step_used_skip, shim_step_nopress_skip);
 
     /* A PRESS THAT DID SOMETHING IS NEVER A TAP, however short it was.
      *
