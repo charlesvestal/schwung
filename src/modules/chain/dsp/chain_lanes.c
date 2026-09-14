@@ -134,8 +134,36 @@ void lane_release_all(chain_instance_t *inst) {
     }
 }
 
+/* THE ROW ARRIVED. A lane recorded before Song.abl named the clip carries
+ * LANE_SLOT_PENDING (see lane_store.h); re-key it to the row the file now
+ * names, if the clip's LENGTH matches what the take was recorded against.
+ *
+ * BEFORE THE PHASE GUARD, and that is the whole point of it being its own
+ * pass. Re-keying is bookkeeping -- it needs the track, the row and the two
+ * lengths, and no phase at all -- while lane_tick returns early whenever the
+ * phase is unknown, which is exactly the state a stopped transport is in.
+ * Step editing is mostly done STOPPED, so putting this inside the loop below
+ * meant a lock made in the blind window stayed pending until something played:
+ * measured on hardware, `lanes:phases` still did not list the lane a full
+ * 18 s after the file had landed.
+ *
+ * A refusal leaves the lane pending -- visible, silent, still waiting for a
+ * clip it fits, which is the direction every other choice in this file fails
+ * in. */
+static void lane_reconcile_pending_slots(chain_instance_t *inst) {
+    if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *ln = &inst->lanes.lanes[i];
+        if (!ln->used || !ln->slot_pending) continue;
+        lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
+                        ln->pending_len, inst->clip_loop_len);
+    }
+}
+
 void lane_tick(chain_instance_t *inst) {
     if (!inst) return;
+
+    lane_reconcile_pending_slots(inst);
 
     /* NO PHASE MEANS UNKNOWN, AND UNKNOWN IS NOT ZERO. Release anything we
      * are driving -- once -- so the parameter returns to the user's knob
@@ -163,20 +191,6 @@ void lane_tick(chain_instance_t *inst) {
          * would explain it. (Fingerprint matching -- the same clip position
          * holding different content -- is Task 6's, through ln->stale, which
          * lane_eval already refuses.) */
-        /* THE ROW ARRIVED. A lane recorded before Song.abl named the clip
-         * carries LANE_SLOT_PENDING, which the position check below would read
-         * as "a different clip" and silence forever. Re-key it here, first --
-         * and only against a clip whose LENGTH matches what the take was
-         * recorded against, so a clip deleted and remade inside the ~10 s
-         * window cannot inherit it. See lane_adopt_slot.
-         *
-         * A refusal leaves the lane pending: visible, silent, and still
-         * waiting for a clip it fits, which is the direction every other
-         * choice in this file fails in. */
-        if (ln->slot_pending && inst->lane_clip_slot >= 0)
-            lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
-                            ln->pending_len, inst->clip_loop_len);
-
         if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot) {
             if (ln->driving) lane_release_one(inst, ln);
             /* This lane's clip stopped being the one playing, so its pass is
@@ -1185,9 +1199,12 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
                                                inst->clip_loop_start,
                                                inst->clip_loop_len);
             off += snprintf(buf + off, buf_len - off,
-                            "\nL%d %s:%s n=%d drv=%d punch=%d pph=%.4f "
+                            "\nL%d %s:%s t=%d row=%d pend=%d plen=%.3f "
+                            "n=%d drv=%d punch=%d pph=%.4f "
                             "rec=%d rlp=%.4f live=%d stale=%d orph=%d",
-                            i, ln->target, ln->param, ln->n, ln->driving,
+                            i, ln->target, ln->param, ln->track, ln->slot,
+                            ln->slot_pending, ln->pending_len,
+                            ln->n, ln->driving,
                             ln->punch_until_wrap, ln->punch_phase,
                             ln->rec_active, ln->rec_last_phase, live,
                             ln->stale, ln->orphaned);
