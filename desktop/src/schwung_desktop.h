@@ -67,6 +67,21 @@ void schwung_desktop_midi(schwung_desktop_t *sd, const uint8_t *msg, int len);
 /* Render exactly SCHWUNG_BLOCK frames of interleaved stereo int16. */
 void schwung_desktop_render(schwung_desktop_t *sd, int16_t *out_lr);
 
+/*
+ * Publish one block of INPUT audio for the block that is about to render.
+ *
+ * A module that consumes line input does not receive it as an argument -- it
+ * reads it out of the SPI mailbox at host->audio_in_offset, because on the
+ * device that is where the codec puts it. So the desktop host has to fill the
+ * same region, in the same layout (SCHWUNG_BLOCK interleaved stereo int16),
+ * immediately before each render_block.
+ *
+ * in_lr may be NULL, which writes silence -- the correct answer for a plugin
+ * with nothing routed in, and the reason vocoder reads as "loads but is deaf"
+ * rather than crashing.
+ */
+void schwung_desktop_set_audio_in(schwung_desktop_t *sd, const int16_t *in_lr);
+
 /* Transport, read by the chain's LFOs and any sync-aware module through
  * get_bpm()/get_beat_position(). beat < 0 means "no transport running", which
  * is what makes an LFO free-run rather than snap to an invented grid. */

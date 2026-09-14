@@ -227,6 +227,14 @@ void schwung_desktop_render(schwung_desktop_t *sd, int16_t *out_lr) {
     SD_LEAVE();
 }
 
+void schwung_desktop_set_audio_in(schwung_desktop_t *sd, const int16_t *in_lr)
+{
+    if (!sd) return;
+    int16_t *dst = (int16_t *)(sd->mailbox + MOVE_AUDIO_IN_OFFSET);
+    if (in_lr) memcpy(dst, in_lr, sizeof(int16_t) * SCHWUNG_BLOCK * 2);
+    else       memset(dst, 0, sizeof(int16_t) * SCHWUNG_BLOCK * 2);
+}
+
 void schwung_desktop_set_transport(schwung_desktop_t *sd, double bpm,
                                    double beat_position, int running)
 {

@@ -117,16 +117,27 @@ private:
     juce::String fallbackName, displayName;
 };
 
-/* 44100 Hz -> the host's rate, and 128-frame blocks -> the host's block size.
+/* 44100 Hz <-> the host's rate, and 128-frame blocks <-> the host's block size.
  *
- * Output only. A synth chain has no input to convert, and when phase 1 feeds
- * line-input modules from the plugin's input bus that path gets its own
- * conversion rather than sharing this one. */
+ * BOTH DIRECTIONS, and they are not the same conversion run backwards: the
+ * output side is pulled (the host asks for N frames and we render as many
+ * Schwung blocks as that needs), while the input side is pushed (the host
+ * hands us N frames and the chain consumes them 128 at a time, later). They
+ * share a ratio and nothing else.
+ *
+ * The input exists because a line-input module does not receive audio as an
+ * argument -- it reads the SPI mailbox at host->audio_in_offset, because that
+ * is where the codec puts it on the device. */
 class RateBridge
 {
 public:
     void prepare (double hostSampleRate, int maxBlock);
     void reset();
+
+    /* Hand the bridge this block's input, at the host's rate, BEFORE pulling.
+     * Passing nullptr (or never calling it) means silence, which is the right
+     * answer for an instrument with nothing routed in. */
+    void pushInput (const float* inL, const float* inR, int numSamples);
 
     /* Pull `numSamples` frames at the host rate, rendering as many 128-frame
      * Schwung blocks as that needs. */
@@ -149,6 +160,16 @@ private:
 
     juce::LagrangeInterpolator interpL, interpR;
     std::array<int16_t, SCHWUNG_BLOCK * 2> blockBuf {};
+
+    /* Input side: host-rate samples in, 44100 out, one Schwung block at a
+     * time. `inPrimed` exists so the first few blocks of a stream read as
+     * silence rather than as whatever the buffer was initialised to. */
+    std::vector<float> inFifoL, inFifoR;
+    int inRead = 0, inWrite = 0;
+    bool inPrimed = false;
+    juce::LagrangeInterpolator inInterpL, inInterpR;
+    std::array<int16_t, SCHWUNG_BLOCK * 2> inBlock {};
+    std::array<float, SCHWUNG_BLOCK> inTmpL {}, inTmpR {};
 };
 
 /*
