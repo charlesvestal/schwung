@@ -5920,6 +5920,22 @@ void midi_monitor()
         int controlMessage = 0xb0;
         if (midi_0 == controlMessage)
         {
+            /* DELETE'S HELD STATE, published for the grid's "Delete + a knob
+             * clears this knob's whole lane" gesture.
+             *
+             * HERE, beside Shift, because this scan runs in EVERY mode. The
+             * first version sat further down beside the Mute tracker, which is
+             * inside a branch that does not run while the shadow display is
+             * up -- so it worked when tested with the grid DOWN (injected, 0 ->
+             * 1 -> 0) and was never once true in the only state the gesture can
+             * be used in. Measured on hardware: a real press with the grid up
+             * left the byte at 0.
+             *
+             * PASSIVE: nothing is withheld, so Move keeps Delete and whatever
+             * it does with it. See shadow_control_t.delete_held. */
+            if (midi_1 == CC_DELETE && shadow_control) {
+                shadow_control->delete_held = (midi_2 > 0) ? 1 : 0;
+            }
             if (midi_1 == 0x31)
             {
                 if (midi_2 == 0x7f)
@@ -9066,13 +9082,6 @@ static void shim_post_transfer(void *ctx, uint8_t *shadow, const uint8_t *hw, in
                     shadow_mute_held = (d2 > 0) ? 1 : 0;
                 }
 
-                /* Delete button (CC 119): publish the held state for the
-                 * grid's "Delete + knob clears this knob's lane" gesture.
-                 * PASSIVE -- nothing is withheld, so Move keeps Delete. See
-                 * shadow_control_t.delete_held for what that costs. */
-                if (d1 == CC_DELETE && shadow_control) {
-                    shadow_control->delete_held = (d2 > 0) ? 1 : 0;
-                }
 
                 /* Menu button long-press detection */
                 if (d1 == CC_MENU && LONG_PRESS_ACTIVE() && shadow_ui_enabled) {
