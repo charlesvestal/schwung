@@ -14,6 +14,7 @@
 
 #include "shadow_chain_mgmt.h"
 #include "lane_trace.h"
+#include "lane_store.h"   /* LANE_SLOT_PENDING */
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
 #include "step_plock.h"       /* a held step button -> a phase, in one place */
@@ -171,6 +172,34 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * "selected but never played" has no phase -- which is correct and is
      * what the tri-state below already reports. */
     if (cslot < 0) cslot = clip_regions_selected_slot(rg, (int)slot);
+    /* NEITHER SOURCE KNOWS THE ROW, AND THE SCREEN DOES.
+     *
+     * The clip row comes from a session pad LED (Session view only) or from
+     * Song.abl, and a clip just made has neither -- measured 8-12 s, ending
+     * the second the file lands. Refusing here is what reached the user as
+     * "no clip on this track" while they were looking straight at one, and it
+     * refused the RECORDING path too, since clip_phase_valid is derived from
+     * this answer.
+     *
+     * Move's bar strip names the track it is step-editing, so a clip exists;
+     * only its row is unreadable. Report it as PENDING and let the lane be
+     * keyed to that, to be re-keyed when the file names the real row
+     * (lane_adopt_slot). The length below comes off the same strip, and it is
+     * what stops a clip remade inside the window inheriting the take. */
+    if (cslot < 0 && step_strip_segments_for_track((int)slot) > 0) {
+        int segs = step_strip_segments_for_track((int)slot);
+        double qpb = clip_regions_quarters_per_bar(rg, (int)slot, -1);
+        double len = (double)segs * qpb;
+        if (len > 0.0) {
+            *clip_slot = LANE_SLOT_PENDING;
+            *loop_len = len;
+            /* Phase stays NaN and fp_valid 0: the row being unknown does not
+             * make the transport position known, and a p-lock does not need
+             * one -- its phase comes from the bar on the strip. A recorded
+             * sweep still waits for an anchor, which is honest. */
+            return 1;
+        }
+    }
     if (cslot < 0 || cslot >= CLIP_SLOTS) return 0;
     *clip_slot = cslot;
     if (!rg || !rg->valid) return 0;
@@ -3230,12 +3259,6 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
      * live answer and never the file's older one. */
     if (cslot < 0)
         cslot = clip_regions_selected_slot(rg, (int)slot);
-    /* NEITHER SOURCE KNOWS THE SLOT, AND THE SCREEN DOES. See
-     * STEP_PLOCK_CLIP_PENDING: the strip naming this track means Move is
-     * step-editing a clip here, so one exists and is merely unnamed -- the
-     * 8-12 s before Move writes Song.abl. Reported as "no clip on this track",
-     * that read as the feature being broken; it is a wait. */
-    if (cslot < 0 && bar_strip_len_valid) return STEP_PLOCK_CLIP_PENDING;
     double res = (rg && rg->step_resolution > 0.0) ? rg->step_resolution : 0.25;
     double qpb = clip_regions_quarters_per_bar(rg, (int)slot, cslot);
     double clip_len = 0.0;
@@ -3265,6 +3288,16 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
      * and says why. */
     clip_len = step_plock_clip_len(clip_len, bar_strip_len_valid,
                                    (double)ss.segments * qpb);
+    /* AND IF WE STILL CANNOT SIZE IT, SAY WHICH FACT IS MISSING.
+     *
+     * With no row from either source, the strip is the only thing that knows
+     * how long the clip is -- and a step's phase cannot be bounded without a
+     * length. This is NOT the ordinary blind window any more: the lane is
+     * keyed to LANE_SLOT_PENDING and the gesture lands (see
+     * shadow_slot_clip_phase). It is the narrower case where the strip is
+     * there but unreadable, and "no clip on this track" was the wrong thing to
+     * tell someone looking straight at one. */
+    if (cslot < 0 && !(clip_len > 0.0)) return STEP_PLOCK_CLIP_PENDING;
     /* The bar must come from a CURRENT reading of THIS track's editor -- a
      * stale bold segment, or one belonging to another track, would place the
      * p-lock on a bar the user is not looking at -- and a ONE-BAR loop names

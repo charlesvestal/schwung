@@ -1204,6 +1204,78 @@ int main(void) {
         }
     }
 
+    /* ============ THE CLIP ROW WE COULD NOT READ YET ==================
+     *
+     * A lane is keyed by (track, clip row). A brand-new clip has no row for
+     * 8-12 s -- measured on hardware -- because the row comes only from a
+     * session pad LED (Session view) or Song.abl, and it has neither. The
+     * gesture is recorded against LANE_SLOT_PENDING and re-keyed when the file
+     * names the real row.
+     *
+     * What must NOT happen is binding to the wrong clip. */
+    {
+        lane_store_t st;
+        lane_store_reset(&st);
+        lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+
+        lane_t *ln = lane_alloc(&st, "synth", "cutoff", 1, LANE_SLOT_PENDING, &absent);
+        CHECK(ln != NULL, "a lane could not be keyed to the pending row");
+        if (ln) {
+            ln->slot_pending = 1;
+            ln->pending_len = 8.0;          /* two bars, off the bar strip */
+
+            CHECK(lane_slot_is_pending(ln->slot), "premise: the row is pending");
+            CHECK(!lane_slot_usable(-1), "a plain -1 must still mean NO clip");
+            CHECK(lane_slot_usable(LANE_SLOT_PENDING),
+                  "the pending row must be able to key a lane, or the gesture "
+                  "is refused exactly as before");
+            CHECK(lane_slot_usable(0), "a real row must still key a lane");
+
+            /* THE WRONG TRACK NEVER BINDS. */
+            CHECK(lane_adopt_slot(ln, 2, 3, 8.0, 8.0) == 0,
+                  "a lane bound to a clip on a DIFFERENT track");
+
+            /* A DIFFERENT LENGTH IS A DIFFERENT CLIP. This is the delete-and-
+             * remake-inside-the-window case, and the whole reason the length
+             * is kept. */
+            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 4.0) == 0,
+                  "a lane bound to a clip of the wrong length -- a clip remade "
+                  "inside the save window would inherit the previous take");
+            CHECK(ln->slot_pending == 1 && lane_slot_is_pending(ln->slot),
+                  "a refused adoption must leave the lane PENDING, not keyed");
+
+            /* "Unknown" is not a match, in either direction. */
+            CHECK(lane_adopt_slot(ln, 1, 3, 0.0, 8.0) == 0,
+                  "a lane with no recorded length bound anyway");
+            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 0.0) == 0,
+                  "a lane bound to a clip of unknown length");
+
+            /* AND THE RIGHT ONE DOES, with the strip's pixel-derived length
+             * allowed to differ from the file's float by less than a bar. */
+            CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 8.0) == 1,
+                  "the matching clip was refused");
+            CHECK(ln->slot == 3 && ln->slot_pending == 0,
+                  "the lane was not re-keyed to row 3 (slot=%d pending=%d)",
+                  ln->slot, ln->slot_pending);
+            CHECK(lane_is_for_clip(ln, 1, 3),
+                  "the re-keyed lane does not answer for its clip");
+
+            /* ONCE KEYED, NEVER RE-KEYED. A second file write must not move a
+             * lane that is already bound. */
+            CHECK(lane_adopt_slot(ln, 1, 5, 8.0, 8.0) == 0,
+                  "an already-keyed lane was moved to another row");
+        }
+
+        /* A lane that was never blind is not adoptable, whatever arrives --
+         * the same rule origin_pending carries, and for the same reason: on
+         * disk the two are identical bytes. */
+        lane_t *plain = lane_alloc(&st, "synth", "res", 1, 0, &absent);
+        CHECK(plain != NULL, "a plain lane_alloc");
+        if (plain)
+            CHECK(lane_adopt_slot(plain, 1, 3, 8.0, 8.0) == 0,
+                  "a lane that never recorded blind was re-keyed");
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

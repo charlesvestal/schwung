@@ -91,7 +91,7 @@ CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
 CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
                                         const char *target, const char *param) {
     if (!inst || !target || !param) return 0;
-    if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return 0;
+    if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || ln->stale || ln->orphaned || ln->n <= 0) continue;
@@ -163,6 +163,20 @@ void lane_tick(chain_instance_t *inst) {
          * would explain it. (Fingerprint matching -- the same clip position
          * holding different content -- is Task 6's, through ln->stale, which
          * lane_eval already refuses.) */
+        /* THE ROW ARRIVED. A lane recorded before Song.abl named the clip
+         * carries LANE_SLOT_PENDING, which the position check below would read
+         * as "a different clip" and silence forever. Re-key it here, first --
+         * and only against a clip whose LENGTH matches what the take was
+         * recorded against, so a clip deleted and remade inside the ~10 s
+         * window cannot inherit it. See lane_adopt_slot.
+         *
+         * A refusal leaves the lane pending: visible, silent, and still
+         * waiting for a clip it fits, which is the direction every other
+         * choice in this file fails in. */
+        if (ln->slot_pending && inst->lane_clip_slot >= 0)
+            lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
+                            ln->pending_len, inst->clip_loop_len);
+
         if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot) {
             if (ln->driving) lane_release_one(inst, ln);
             /* This lane's clip stopped being the one playing, so its pass is
@@ -418,6 +432,18 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * window must not leave the first one's flag behind. */
         if (ln && !inst->clip_fp_valid && lane_fp_absent(&ln->fp))
             ln->origin_pending = 1;
+        /* A LANE BORN WITHOUT ITS CLIP ROW is marked so lane_tick can re-key it
+         * when Song.abl finally names one -- see LANE_SLOT_PENDING. The clip
+         * LENGTH is kept with it: it is what lane_adopt_slot checks the
+         * arriving clip against, so a clip deleted and remade inside the save
+         * window cannot inherit this take. Set on an existing lane too, for
+         * the reason the origin flag is: a second write in the same window
+         * must not leave the first one's state behind. */
+        if (ln && lane_slot_is_pending(inst->lane_clip_slot)) {
+            ln->slot_pending = 1;
+            ln->pending_len = inst->clip_loop_len;
+        }
+
         /* Store full, or a target/param too long for lane_t's fields, which
          * lane_alloc REFUSES rather than truncating -- a truncated key would
          * name a lane the user can neither see nor clear. Nothing is recorded
@@ -635,7 +661,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         const int got = sscanf(val, "%lf %15s %31s", &phase, target, param);
         if (got < 1 || !isfinite(phase) || phase < 0.0) return;
         const int one = (got == 3);
-        if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
@@ -703,7 +729,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
             len = inst->clip_loop_len;
         }
         if (!isfinite(phase) || phase < 0.0) return;
-        if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
         lane_t *ln = lane_find(&inst->lanes, target, param,
                                inst->lane_track, inst->lane_clip_slot);
         if (!ln) return;
@@ -771,7 +797,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         const char *value_str = val + consumed;
         if (!isfinite(phase) || phase < 0.0) return;
         inst->lanes_plock_refusal = LANE_PLOCK_NO_CLIP;
-        if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
 
         inst->lanes_plock_refusal = LANE_PLOCK_UNKNOWN_PARAM;
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
@@ -784,6 +810,19 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
                                 inst->lane_track, inst->lane_clip_slot, &fp);
         if (!ln) return;
+        /* A LOCK MADE BEFORE THE CLIP HAS A ROW, marked for re-keying exactly
+         * as a blind recording is -- see LANE_SLOT_PENDING. This is the whole
+         * "make a clip, lock its steps" flow: the row is 8-12 s away and the
+         * gesture must land now.
+         *
+         * `origin_pending` is deliberately NOT set here, for the reason the
+         * p-lock branch already gives: a lock's phase comes from the BAR on
+         * Move's own strip, so it is true clip time already and must not be
+         * re-origined later. Only the ROW is provisional. */
+        if (lane_slot_is_pending(inst->lane_clip_slot)) {
+            ln->slot_pending = 1;
+            ln->pending_len = inst->clip_loop_len;
+        }
         /* A FULL LANE REFUSES A LOCK RATHER THAN MOVING SOMEBODY ELSE'S.
          *
          * lane_write's overflow rule takes the NEAREST point and relocates it
@@ -908,7 +947,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     if (strcmp(sub, "clear_clip") == 0) {
         if (!val || atoi(val) == 0) return;
         inst->lanes_last_cleared = 0;
-        if (inst->lane_clip_slot < 0) return;
+        if (!lane_slot_usable(inst->lane_clip_slot)) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
@@ -930,7 +969,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         char target[16] = {0}, param[32] = {0};
         inst->lanes_last_cleared = 0;
         if (!val || sscanf(val, "%15s %31s", target, param) != 2) return;
-        if (inst->lane_clip_slot < 0) return;
+        if (!lane_slot_usable(inst->lane_clip_slot)) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
@@ -957,7 +996,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         char target[16] = {0};
         inst->lanes_last_cleared = 0;
         if (!val || sscanf(val, "%15s", target) != 1) return;
-        if (inst->lane_clip_slot < 0) return;
+        if (!lane_slot_usable(inst->lane_clip_slot)) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
@@ -1005,7 +1044,7 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * cannot see from the row, and an empty answer is what lets the row say
      * so instead of clearing something unexpected. */
     if (strcmp(sub, "clip") == 0) {
-        if (inst->lane_track < 0 || inst->lane_clip_slot < 0)
+        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot))
             return snprintf(buf, buf_len, "%s", "");
         return snprintf(buf, buf_len, "%d %d",
                         inst->lane_track, inst->lane_clip_slot);
@@ -1029,7 +1068,7 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * value per point would multiply the size of this for nothing. */
     if (strcmp(sub, "phases") == 0) {
         int off = 0;
-        if (inst->lane_track < 0 || inst->lane_clip_slot < 0)
+        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot))
             return snprintf(buf, buf_len, "%s", "");
         for (int i = 0; i < LANE_MAX; i++) {
             const lane_t *ln = &inst->lanes.lanes[i];

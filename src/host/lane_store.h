@@ -65,6 +65,32 @@ extern "C" {
  * lane_record_point below. */
 #define LANE_MIN_POINT_BEATS 0.01
 
+/* THE CLIP ROW WE CANNOT READ YET.
+ *
+ * A lane is keyed by (track 0..3, clip row 0..7) -- Move's session grid, one
+ * column per track. The row comes from a session pad LED (Session view only)
+ * or from Song.abl, and a clip you have just made has NEITHER: it has never
+ * played, so no LED, and Move writes the file ~10 s late. MEASURED on hardware
+ * 2026-09-14: 8-12 s, ending the second the file lands.
+ *
+ * The row is the ONLY missing fact in that window -- the track, the clip's
+ * length and the step's phase all come off Move's own bar strip -- and it is
+ * pure bookkeeping: it does not decide where the automation goes or what it
+ * plays, only which clip the lane sticks to afterwards. So a gesture made in
+ * the window is recorded against THIS row and re-keyed when the file names the
+ * real one, rather than refused. Refusing is what the user met as "no clip on
+ * this track" while looking straight at one.
+ *
+ * Out of range on purpose: nothing can collide with a real 0..7, and every
+ * `slot < 0` guard already in the code keeps treating it as "no clip". */
+#define LANE_SLOT_PENDING (-2)
+
+static inline int lane_slot_is_pending(int slot) { return slot == LANE_SLOT_PENDING; }
+/* A row that can key a lane: a real one, or the pending placeholder. */
+static inline int lane_slot_usable(int slot) {
+    return (slot >= 0) || lane_slot_is_pending(slot);
+}
+
 /* A recording pass erases the span it sweeps between consecutive writes, but
  * only while the writes keep coming. This bounds it: two writes further apart
  * in phase than this are not one gesture, so the lane between them is not the
@@ -200,6 +226,22 @@ typedef struct {
      * re-recorded. Silent and retained is the failure this design chooses
      * every other time it has to choose. */
     int    origin_pending;
+    /* THE CLIP ROW IS PROVISIONAL, and this is NOT serialized either, for the
+     * same reason origin_pending is not: on disk, "a lane I recorded blind
+     * thirty seconds ago" and "a lane whose clip was never identified" are the
+     * same bytes, and binding the second to whatever clip later turns up in
+     * its column is confidently wrong.
+     *
+     * Set when a lane is created while `slot` is LANE_SLOT_PENDING. Cleared by
+     * lane_adopt_slot when Song.abl finally names the row -- and only if the
+     * arriving clip's LENGTH matches what we recorded against, so a clip
+     * deleted and remade inside the window binds nothing rather than binding
+     * the wrong take. */
+    int    slot_pending;
+    /* The clip LENGTH the blind take was recorded against, read off Move's bar
+     * strip. Kept so lane_adopt_slot can refuse a clip that is not the one we
+     * were editing; 0 means "never recorded blind". Runtime only. */
+    double pending_len;
     int    punch_until_wrap;
     double punch_phase;
     /* The RECORDING PASS, which is also runtime and also never serialized.
@@ -404,6 +446,21 @@ int lane_double(lane_t *ln, double loop_start, double loop_len);
  *
  * RT: SPI callback. One pass over at most LANE_POINTS_MAX points. */
 int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now);
+
+/* THE ROW ARRIVED. Re-key a lane recorded against LANE_SLOT_PENDING to the row
+ * Song.abl now names, or refuse.
+ *
+ * `recorded_len` is the clip length the gesture was recorded against (read off
+ * Move's bar strip); `now_len` is the length of the clip that has just
+ * appeared. THE LENGTHS MUST MATCH, and that check is the whole difference
+ * between this and a guess: without it, deleting the clip and making another
+ * one inside the save window would hand the first take to the second clip --
+ * confidently wrong, which is the outcome this design refuses everywhere else.
+ * A mismatch leaves the lane pending, where it is visible and silent.
+ *
+ * Returns 1 if the lane was re-keyed. */
+int lane_adopt_slot(lane_t *ln, int track, int slot,
+                    double recorded_len, double now_len);
 
 #ifdef __cplusplus
 }

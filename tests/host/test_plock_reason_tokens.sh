@@ -42,7 +42,9 @@ done
 # 8-12 s, ending the second Move writes Song.abl.
 grep -q 'STEP_PLOCK_CLIP_PENDING' src/host/step_plock.h \
   || fail "the pending-clip reason is gone -- a new clip refuses as though it were absent"
-grep -q 'bar_strip_len_valid) return STEP_PLOCK_CLIP_PENDING' src/host/shadow_chain_mgmt.c \
-  || fail "pending is no longer gated on the strip naming this track -- an EMPTY track would claim a clip is coming"
+grep -q 'cslot < 0 && !(clip_len > 0.0)) return STEP_PLOCK_CLIP_PENDING' src/host/shadow_chain_mgmt.c \
+  || fail "pending is no longer gated on having no row AND no length -- either it claims a clip on an EMPTY track, or it refuses a gesture that LANE_SLOT_PENDING can now land"
+grep -q 'LANE_SLOT_PENDING' src/host/shadow_chain_mgmt.c \
+  || fail "the host no longer reports a pending row -- the blind window refuses again"
 
 echo "PASS: every plock refusal crosses all three tables ($(wc -w <<<"$enum") codes)"

@@ -451,6 +451,30 @@ int lane_pass_live_at(const lane_t *ln, double phase,
     return (travel >= 0.0 && travel <= LANE_PASS_GAP_BEATS) ? 1 : 0;
 }
 
+int lane_adopt_slot(lane_t *ln, int track, int slot,
+                    double recorded_len, double now_len) {
+    if (!ln || !ln->used || !ln->slot_pending) return 0;
+    if (!lane_slot_is_pending(ln->slot)) return 0;   /* already keyed */
+    if (ln->track != track) return 0;
+    if (slot < 0) return 0;
+    /* THE LENGTHS MUST AGREE, and this is the check that makes re-keying a
+     * measurement rather than a guess. A clip deleted and remade inside the
+     * ~10 s save window would otherwise hand the first take to the second
+     * clip. Both must be real numbers: "unknown" is not a match.
+     *
+     * Compared with a tolerance because one side came off a pixel strip
+     * (segments x quarters-per-bar) and the other out of a JSON float; a bar
+     * is at least 2 quarters, so half a quarter cannot confuse two lengths
+     * that differ by a bar. */
+    if (!isfinite(recorded_len) || recorded_len <= 0.0) return 0;
+    if (!isfinite(now_len) || now_len <= 0.0) return 0;
+    if (fabs(recorded_len - now_len) > 0.5) return 0;
+    ln->slot = slot;
+    ln->slot_pending = 0;
+    ln->pending_len = 0.0;
+    return 1;
+}
+
 int lane_adopt_fingerprint(lane_t *ln, const lane_fingerprint_t *now) {
     if (!ln || !ln->used || !now) return 0;
     /* Only a lane that was never identified, and only one THIS SESSION
