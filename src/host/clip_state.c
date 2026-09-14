@@ -204,8 +204,15 @@ void clip_state_on_led(clip_state_t *st, uint8_t status, uint8_t d1,
             tr->anchor_pulse = 0;
             tr->anchor_source = CLIP_ANCHOR_START;
         } else if (running && witnessed) {
+            /* Snapped back to the boundary the launch was quantised to, rather
+             * than anchored where the LED was noticed -- measured ~25 ms late,
+             * and late by a growing NUMBER OF PULSES as tempo rises. See
+             * CLIP_LAUNCH_SNAP_PULSES for the measurements and for why this is
+             * a snap to the BEAT rather than a fixed correction. */
+            uint32_t past = pulses % 24u;
             tr->anchor_valid = 1;
-            tr->anchor_pulse = pulses;
+            tr->anchor_pulse = (past <= CLIP_LAUNCH_SNAP_PULSES)
+                             ? pulses - past : pulses;
             tr->anchor_source = CLIP_ANCHOR_LAUNCH;
         } else if (slot_changed) {
             /* Identity is now right and the phase is not. Say so. */

@@ -87,6 +87,43 @@ extern "C" {
  * not. */
 #define CLIP_OFF_GRACE_PULSES 96   /* one bar at 4/4 */
 
+/* A WITNESSED LAUNCH IS SNAPPED BACK TO ITS QUANTIZE BOUNDARY, and this is
+ * how far back we are willing to look.
+ *
+ * MEASURED 2026-09-14, 15 launches at three tempos (the LED's arrival minus
+ * the bar boundary it belongs to, in pulses):
+ *
+ *     60 BPM   1 1 1 1 1            mean 1.00   = 41.7 ms
+ *    120 BPM   1 1 2 1              mean 1.25   = 26.0 ms
+ *    180 BPM   1 2 3 2 2 1          mean 1.83   = 25.5 ms
+ *
+ * THE LAG IS NOT A FIXED NUMBER OF PULSES -- it grows with tempo, which is
+ * what a roughly constant ~25 ms delay looks like when you count it in
+ * pulses. The design doc had one observation at one tempo and concluded "two
+ * pulses late, constant; correct for it as a fixed offset"; doing that would
+ * have put an 83 ms error at 60 BPM, worse than the defect. One tempo cannot
+ * separate a constant from a proportion.
+ *
+ * So nothing is corrected by a constant. A launch is QUANTISED -- there is no
+ * such thing as an unquantised one while the transport runs -- so the true
+ * anchor IS a grid boundary, and a boundary can be computed exactly rather
+ * than estimated. Snapping is tempo-independent, needs no fitted number, and
+ * does not go stale if Move's firmware timing changes.
+ *
+ * SNAPPED TO THE BEAT, not the bar, because we do not know the user's launch
+ * quantize and must not assume it. Every grid Move offers is a whole number
+ * of beats, so a beat boundary is a boundary of ALL of them: snapping down to
+ * the nearest beat lands exactly on the true anchor whether the setting is 1
+ * bar, 4 bars or one beat. Snapping to the BAR would be right for a bar grid
+ * and up to 72 pulses EARLY on a finer one -- an error far larger than the
+ * one being fixed.
+ *
+ * 6 is a quarter of a beat: comfortably past the 3 ever observed, and far
+ * short of anything that could swallow a real gap. Beyond it the LED is not
+ * attributable to a boundary and the anchor stays where we saw it, which is
+ * today's behaviour and the right direction to fail in. */
+#define CLIP_LAUNCH_SNAP_PULSES 6
+
 #define CLIP_ANCHOR_NONE    0
 #define CLIP_ANCHOR_START   1   /* MIDI Start: everything begins together   */
 #define CLIP_ANCHOR_LAUNCH  2   /* a launch we witnessed                    */

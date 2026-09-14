@@ -87,11 +87,17 @@ static void test_launch_sets_anchor(void)
     CHECK(st.tracks[2].identity_valid && st.tracks[2].clip_slot == 2,
           "track 3 should be playing clip 3, got slot=%d", st.tracks[2].clip_slot);
 
-    /* The measured anchor: queued at pulse 684, quantised boundary at 768,
-     * ch-9 ON observed at 770. */
+    /* The measured capture: queued at pulse 684, quantised boundary at 768,
+     * ch-9 ON observed at 770 -- two pulses late, as every launch is.
+     *
+     * THE ANCHOR IS THE BOUNDARY, 768, not the 770 we noticed. This assertion
+     * used to read 770, and the capture's own notes named 768 as the launch
+     * point on the same line: the test agreed with the code rather than with
+     * the clip. See CLIP_LAUNCH_SNAP_PULSES. */
     CHECK(st.tracks[2].anchor_valid, "track 3 must be anchored after a launch");
-    CHECK(st.tracks[2].anchor_pulse == 770,
-          "track 3 anchor should be pulse 770, got %u", st.tracks[2].anchor_pulse);
+    CHECK(st.tracks[2].anchor_pulse == 768,
+          "track 3 anchor should snap to the boundary 768, got %u",
+          st.tracks[2].anchor_pulse);
 }
 
 static void test_bare_ch9_is_a_refresh_not_an_anchor(void)
@@ -218,8 +224,10 @@ static void test_chosen_clip_on_a_stopped_track_anchors(void)
           st.tracks[0].clip_slot);
     CHECK(st.tracks[0].anchor_valid,
           "the clip the user chose must be ANCHORED -- we watched it start");
-    CHECK(st.tracks[0].anchor_pulse == 4,
-          "anchor should be the pulse we saw it start, got %u",
+    /* Pulse 4 is four pulses past the boundary at 0, so the anchor IS 0 --
+     * the launch was quantised to it. Snapping (CLIP_LAUNCH_SNAP_PULSES). */
+    CHECK(st.tracks[0].anchor_pulse == 0,
+          "anchor should snap to the boundary 0, got %u",
           st.tracks[0].anchor_pulse);
 }
 
@@ -584,8 +592,9 @@ static void test_a_queued_replacement_is_not_a_stop(void)
     clip_state_on_led(&st, 0x99, 78, 122, 770, 1, 1);
     CHECK(st.tracks[2].clip_slot == 2, "should now be clip 3, got %d",
           st.tracks[2].clip_slot);
-    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 770,
-          "anchored at the launch boundary 770, got valid=%d pulse=%u",
+    /* 770 is the LED; 768 is the boundary it was quantised to. */
+    CHECK(st.tracks[2].anchor_valid && st.tracks[2].anchor_pulse == 768,
+          "anchored at the launch boundary 768, got valid=%d pulse=%u",
           st.tracks[2].anchor_valid, st.tracks[2].anchor_pulse);
 }
 
@@ -607,7 +616,7 @@ static void test_off_then_queue_in_a_later_frame(void)
           st.tracks[2].clip_slot, st.tracks[2].anchor_pulse);
 
     clip_state_on_led(&st, 0x99, 78, 122, 770, 1, 1);
-    CHECK(st.tracks[2].clip_slot == 2 && st.tracks[2].anchor_pulse == 770,
+    CHECK(st.tracks[2].clip_slot == 2 && st.tracks[2].anchor_pulse == 768,
           "and the launch still lands, got slot=%d pulse=%u",
           st.tracks[2].clip_slot, st.tracks[2].anchor_pulse);
 }
@@ -664,6 +673,69 @@ static void test_a_later_event_expires_the_pending_off(void)
     CHECK(st.saw_stop[0], "and the witnessed silence must be recorded");
 }
 
+/* THE MEASURED LAGS, all fifteen of them, replayed as launches.
+ *
+ * Captured 2026-09-14 on hardware at three tempos (offset of the ch-9 ON past
+ * its bar boundary, in pulses):
+ *
+ *      60 BPM   1 1 1 1 1
+ *     120 BPM   1 1 2 1
+ *     180 BPM   1 2 3 2 2 1
+ *
+ * Every one of them must land on the boundary. The table is the evidence that
+ * the tolerance is not fitted to a single observation -- and that the lag is
+ * NOT a constant number of pulses, which is what the old "two pulses,
+ * constant" reading claimed from one sample at one tempo. */
+static void test_measured_launch_lags_all_snap(void)
+{
+    printf("every measured launch lag snaps to its boundary\n");
+    static const unsigned lags[] = { 1,1,1,1,1,  1,1,2,1,  1,2,3,2,2,1 };
+    for (unsigned i = 0; i < sizeof(lags) / sizeof(lags[0]); i++) {
+        clip_state_t st; clip_state_reset(&st);
+        /* A bar boundary a long way into the timeline, so nothing can be
+         * confused with the Start grace. */
+        const unsigned bar = 96u * (4u + i);
+        clip_state_on_led(&st, 0x9E, 93, 122, bar - 40, 1, 1);      /* QUEUED */
+        clip_state_on_led(&st, 0x99, 93, 122, bar + lags[i], 1, 1); /* ON */
+        CHECK(st.tracks[0].anchor_valid, "lag %u: no anchor", lags[i]);
+        CHECK(st.tracks[0].anchor_pulse == bar,
+              "lag %u: anchor %u should have snapped to %u",
+              lags[i], st.tracks[0].anchor_pulse, bar);
+    }
+}
+
+/* ...AND A LATE ONE IS LEFT ALONE. Past the window the LED cannot be
+ * attributed to a boundary, and inventing one would move the anchor further
+ * than the error being corrected. Anchoring where we saw it is today's
+ * behaviour and the right direction to fail in. */
+static void test_an_unattributable_launch_keeps_its_pulse(void)
+{
+    printf("a launch too far past a boundary is NOT snapped\n");
+    clip_state_t st; clip_state_reset(&st);
+    const unsigned bar = 96u * 5u;
+    clip_state_on_led(&st, 0x9E, 93, 122, bar - 40, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, bar + 11, 1, 1);
+    CHECK(st.tracks[0].anchor_pulse == bar + 11,
+          "an unattributable launch should keep its own pulse, got %u",
+          st.tracks[0].anchor_pulse);
+}
+
+/* THE SNAP IS TO THE BEAT, AND THAT IS NOT AN ARBITRARY CHOICE. We are not
+ * told the user's launch quantize. Every grid Move offers is a whole number of
+ * beats, so a beat boundary is a boundary of all of them; snapping to the BAR
+ * instead would be right on a bar grid and up to 72 pulses EARLY on a finer
+ * one -- an error far larger than the ~25 ms this fixes. */
+static void test_snap_lands_on_a_beat_not_only_a_bar(void)
+{
+    printf("a launch quantised to a BEAT snaps to that beat\n");
+    clip_state_t st; clip_state_reset(&st);
+    const unsigned beat = 96u * 5u + 24u * 3u;      /* beat 4 of a bar */
+    clip_state_on_led(&st, 0x9E, 93, 122, beat - 30, 1, 1);
+    clip_state_on_led(&st, 0x99, 93, 122, beat + 2, 1, 1);
+    CHECK(st.tracks[0].anchor_pulse == beat,
+          "expected the beat boundary %u, got %u", beat, st.tracks[0].anchor_pulse);
+}
+
 int main(void)
 {
     test_a_queued_replacement_is_not_a_stop();
@@ -683,6 +755,9 @@ int main(void)
     test_pad_decode();
     test_grid_refresh_matches_song_abl();
     test_launch_sets_anchor();
+    test_measured_launch_lags_all_snap();
+    test_an_unattributable_launch_keeps_its_pulse();
+    test_snap_lands_on_a_beat_not_only_a_bar();
     test_bare_ch9_is_a_refresh_not_an_anchor();
     test_coldstart_refresh_burst_anchors_nothing();
     test_restart_reanchors_to_zero();
