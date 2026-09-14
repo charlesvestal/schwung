@@ -3227,8 +3227,14 @@ static int shadow_lanes_step_phase(uint8_t slot, int step, double *out_phase,
      * which is the right end to bound with: a whole-bar clip (what Move
      * creates) makes it exact, and erring long refuses nothing legitimate,
      * where erring short would refuse real steps in the final bar. */
-    if (clip_len <= 0.0 && bar_strip_len_valid)
-        clip_len = (double)ss.segments * qpb;
+    /* ...AND THE SAME IS TRUE OF A CLIP THAT WAS JUST EXTENDED. This was
+     * gated on the file being ABSENT, which is the same staleness observed a
+     * few seconds earlier: with a stale entry present, the old length won and
+     * a step in the new bars was refused as past the end of a clip the user
+     * had already lengthened. step_plock_clip_len takes the longer of the two
+     * and says why. */
+    clip_len = step_plock_clip_len(clip_len, bar_strip_len_valid,
+                                   (double)ss.segments * qpb);
     /* The bar must come from a CURRENT reading of THIS track's editor -- a
      * stale bold segment, or one belonging to another track, would place the
      * p-lock on a bar the user is not looking at -- and a ONE-BAR loop names
