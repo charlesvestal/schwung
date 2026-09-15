@@ -1841,6 +1841,13 @@ inline is how this file got to 151 KB.
   single mangled symbol carrying Move's whole VIEW TREE in construction order.
   Both are read-only, cost the device nothing, and answer questions no amount of
   button-pressing can. Reach for them FIRST.
+  **`com.ableton.update` exposes `factoryReset` as a plain D-Bus method on the
+  SYSTEM bus.** Introspecting that tree is safe; anyone enumerating it is one
+  method call from wiping the instrument. (`…/auth`'s `setSecret` is the Manager
+  PIN flow seen from the other side -- the thing `pin_check_and_speak()` watches
+  for.) Move ships **no shared libraries at all** -- everything is statically
+  linked into the 29.7 MB `MoveOriginal`, so the DSP image and the UI image are
+  one file, and `/opt/move/Dsp/` is 194 wavetable WAVs with no code in it.
 - `docs/MOVE_CONTROL_SCHEME_OFFICIAL.md` — what ABLETON says, and where that stops
   being true: the manual describes ~**1.5.x** against a **2.1.0** device, so where
   the two disagree the DEVICE is the authority. Carries the reconciliation table.
