@@ -101,6 +101,9 @@ void unified_log(const char *source, int level, const char *fmt, ...) {
  * answer that makes the resolver return 0 = phase UNKNOWN. */
 int shadow_transport_pulses = 0;
 const void *clip_state_current(void) { return 0; }
+/* No playhead in a host unit test: the blind-window phase source asks for one
+ * and must get "never seen", which is the state every other stub here models. */
+int clip_playhead_last(unsigned char *i, unsigned int *p) { (void)i; (void)p; return 0; }
 const void *shadow_clip_regions(void) { return 0; }
 int clip_phase_beats(const void *t, unsigned int pulses, double loop_start,
                      double loop_len, double *out_beats) {

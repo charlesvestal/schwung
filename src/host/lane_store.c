@@ -487,7 +487,26 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * lane_adopt_fingerprint: a blind p-lock's phase came from the bar on
      * Move's own strip and is already true clip time, so moving it would take
      * the lock off the step that was pressed. */
-    if (now_fp && lane_fp_absent(&ln->fp) && !lane_fp_absent(now_fp)) {
+    /* BOTH HALVES, OR NEITHER. `slot_pending` is the only licence this lane
+     * has to take an identity, and clearing it while the fingerprint is still
+     * absent shuts the door behind it forever: lane_tick's adopt-on-edit
+     * branch requires a NON-absent fingerprint, and lane_adopt_fingerprint
+     * requires `origin_pending`, which a p-lock never sets. The lane then
+     * falls through to `stale = 1` on every tick and is retained and SILENT
+     * for good -- writes land, nothing plays.
+     *
+     * Observed on hardware 2026-09-15: `synth:cr_decay` re-keyed to row 0 with
+     * pend=0, stale=1, n growing as the user kept setting values that could
+     * never be heard, while every lane beside it on another slot was fine.
+     *
+     * So a row without an identity is NOT adopted -- we stay pending and try
+     * again next tick. In practice both come from the same parse and arrive
+     * together; when they skew, waiting costs one tick and closing the latch
+     * costs the lane. (A clip absent from Song.abl cannot supply a row either,
+     * so this cannot wait forever on a note-free clip: no file entry, no row,
+     * still pending, exactly as before.) */
+    if (lane_fp_absent(&ln->fp)) {
+        if (!now_fp || lane_fp_absent(now_fp)) return 0;
         ln->fp = *now_fp;
         ln->stale = 0;
         ln->adopted++;

@@ -15,6 +15,7 @@
 #include "shadow_chain_mgmt.h"
 #include "lane_trace.h"
 #include "lane_store.h"   /* LANE_SLOT_PENDING */
+#include "playhead_anchor.h"
 #include "shadow_fx_key.h"    /* shadow_key_is_fx_module — header-only so tests/host can run it */
 #include "step_strip.h"       /* the clip length Move draws, for the ~10 s before it saves */
 #include "step_plock.h"       /* a held step button -> a phase, in one place */
@@ -171,7 +172,37 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * Identity only. The PHASE still comes from a played clip's anchor, and
      * "selected but never played" has no phase -- which is correct and is
      * what the tri-state below already reports. */
-    if (cslot < 0) cslot = clip_regions_selected_slot(rg, (int)slot);
+    if (cslot < 0) {
+        /* THE FILE'S ANSWER IS ONLY USABLE WHEN IT CANNOT BE AMBIGUOUS.
+         *
+         * `clip_regions_selected_slot` returns Song.abl's `isPlaying`, a
+         * RESTORED SELECTION written up to ~10 s ago. It does not know the user
+         * has since moved to a different clip on the same track, and trusting
+         * it over Move's live "nothing is playing" is how clip A's automation
+         * ended up running on a brand-new clip B.
+         *
+         * Reproduced on hardware 2026-09-15: select an empty slot on a track
+         * that already has clips, add one note, and `lanes:clip` still read
+         * `0 1` while a 20-point lane keyed to row 1 played against the clip on
+         * screen. clip_state was telling the truth the whole time -- `T1 -`,
+         * identity valid, nothing playing -- and this line overrode it.
+         *
+         * With ONE clip on the track there is nothing to be wrong about: the
+         * file's answer and the clip on screen are the same clip, which is the
+         * case the fallback was written for ("step editing is mostly done
+         * stopped"). With several we cannot tell which is selected from
+         * anything we read -- Move emits no session pad LED in Note view -- so
+         * we say so rather than guess. A refused p-lock names its reason; a
+         * p-lock on the wrong clip is silent, wrong, and contaminates a clip
+         * the user never touched. */
+        int clips_on_track = 0;
+        if (rg && rg->valid) {
+            for (int cs2 = 0; cs2 < CLIP_SLOTS; cs2++)
+                if (rg->slots[slot][cs2].exists) clips_on_track++;
+        }
+        if (clips_on_track == 1)
+            cslot = clip_regions_selected_slot(rg, (int)slot);
+    }
     /* NEITHER SOURCE KNOWS THE ROW, AND THE SCREEN DOES.
      *
      * The clip row comes from a session pad LED (Session view only) or from
@@ -213,10 +244,44 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
         if (len > 0.0) {
             *clip_slot = LANE_SLOT_PENDING;
             *loop_len = len;
-            /* Phase stays NaN and fp_valid 0: the row being unknown does not
-             * make the transport position known, and a p-lock does not need
-             * one -- its phase comes from the bar on the strip. A recorded
-             * sweep still waits for an anchor, which is honest. */
+            /* AND MOVE IS ALREADY TELLING US WHERE IT IS.
+             *
+             * The row being unknown does not make the position unknown: Move
+             * lights the step playhead in Note view, which is exactly where a
+             * clip gets made. clip_state has been recording it all along as a
+             * CHECK on our phase; here it IS the phase. See playhead_anchor.h
+             * -- single page only, because the index is mod 16 and a longer
+             * clip cannot be placed honestly.
+             *
+             * Without this the whole blind window is silent: the lock lands
+             * and waits for Song.abl. Measured at 7.1 s on hardware.
+             *
+             * fp_valid stays 0 -- we still cannot identify the clip, and that
+             * is what marks the phase provisional across the dlsym'd seam. */
+            uint8_t ph_idx = 0; uint32_t ph_pulse = 0;
+            double ph_now = 0.0;
+            const int have_ph = clip_playhead_last(&ph_idx, &ph_pulse);
+            const double res = (rg && rg->step_resolution > 0.0)
+                             ? rg->step_resolution : 0.25;
+            const int got = have_ph &&
+                playhead_phase_now(ph_idx, ph_pulse,
+                                   (uint32_t)shadow_transport_pulses,
+                                   res, len, segs, &ph_now);
+            if (got) *phase_beats = ph_now;
+            /* WHY IT DID OR DID NOT ANCHOR. Recorded for the worker's 1 Hz
+             * readout: from outside, "no playhead", "playhead too old",
+             * "multi-page" and "the branch never ran" are one silence, and
+             * this window is exactly where the feature is judged. */
+            g_blind_seen        = 1;
+            g_blind_have_ph     = have_ph ? 1 : 0;
+            g_blind_idx         = ph_idx;
+            g_blind_age         = have_ph
+                                ? (int)((uint32_t)shadow_transport_pulses - ph_pulse)
+                                : -1;
+            g_blind_segs        = segs;
+            g_blind_len_x100    = (int)(len * 100.0);
+            g_blind_res_x100    = (int)(res * 100.0);
+            g_blind_got         = got ? 1 : 0;
             return 1;
         }
     }
@@ -3226,6 +3291,11 @@ static void mfx_lfo_update_base_from_set_param(int slot_idx,
  * the question this answers is "why did the one I just did not take", and a
  * stale reason surviving a success is how that gets answered wrongly. */
 static int g_plock_last_reason[SHADOW_CHAIN_INSTANCES];
+/* THE BLIND-WINDOW ANCHOR'S OWN REPORT. See the pending branch in
+ * shadow_slot_clip_phase; drained by shim_worker's 1 Hz line. */
+volatile int g_blind_seen, g_blind_have_ph, g_blind_idx, g_blind_age;
+volatile int g_blind_segs, g_blind_len_x100, g_blind_res_x100, g_blind_got;
+
 /* The lock map's pending query, per slot. See lanes:step_locks_query. */
 static char g_step_locks_query[SHADOW_CHAIN_INSTANCES][544];
 /* Must equal LANE_MIN_POINT_BEATS (lane_store.h): "a point ON this step" has

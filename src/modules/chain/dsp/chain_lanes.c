@@ -470,6 +470,28 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * LANE_MIN_POINT_BEATS. */
         /* hold = 0: a recorded knob sweep IS a slope. A step p-lock is the
          * gesture that writes a rectangle. */
+        /* AN ARMED TAKE OUTRANKS THE BOOKKEEPING, exactly as a p-lock does.
+         *
+         * A stale or orphaned lane is retained and SILENT, and recording into
+         * one writes points that can never be heard. Measured on hardware
+         * 2026-09-15: `synth:noise` recording cleanly -- rec=1, live=1, the
+         * pass advancing, n climbing 31 -> 52 -- with stale=1 orph=1 the whole
+         * time. Reported as "I tried to record live automation and that didn't
+         * work either", which is exactly what it sounds like.
+         *
+         * Record is lit and the user is turning the knob on the clip in front
+         * of them. That is the same statement a p-lock makes.
+         *
+         * THE ORPHAN RESTART HAPPENS ONCE PER TAKE, not per write: `rec_active`
+         * is false only on the first write of a pass, so the dead clip's points
+         * go at the start and the take then accumulates normally. Restarting on
+         * every write would erase the take as it was being made. */
+        if (inst->clip_fp_valid) {
+            if (ln->orphaned && !ln->rec_active) ln->n = 0;
+            ln->fp = inst->clip_fp;
+            ln->stale = 0;
+            ln->orphaned = 0;
+        }
         lane_record_point(ln, inst->clip_phase_beats, v,
                           inst->clip_loop_start, inst->clip_loop_len, 0);
         /* AND HAND THE PARAMETER BACK, for the same reason the unarmed branch
@@ -858,6 +880,53 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         }
         lane_write_span(ln, phase, v, 1, span);
         inst->lanes_last_plocked = 1;
+        /* AN EXPLICIT GESTURE OUTRANKS THE BOOKKEEPING.
+         *
+         * A stale or orphaned lane is retained and SILENT -- the guard that
+         * stops a lane playing against a clip it was not recorded against.
+         * That guard is right about PLAYBACK and wrong about a write: the user
+         * is holding a step on the clip in front of them and setting a value
+         * on it. That IS the statement "this lane belongs to this clip", and a
+         * fingerprint comparison has no standing to overrule it. Without this,
+         * the lock lands (`n` grows) and cannot be heard, which reads as the
+         * parameter refusing to be set -- reported from the device in exactly
+         * those words.
+         *
+         * Re-stamped from the clip that is here NOW, and clearing `orphaned`
+         * with it: a position whose clip was deleted and replaced is precisely
+         * where this matters, and the user pressing a step on the replacement
+         * has answered the question the orphan flag exists to hold open.
+         *
+         * Only with a fingerprint to take. With none -- the blind window --
+         * the lane keeps the absent one it already has and lane_adopt_slot
+         * binds it when the clip lands. */
+        if (inst->clip_fp_valid) {
+            /* AN ORPHAN DOES NOT COME BACK TO LIFE WITH ITS OLD POINTS.
+             *
+             * Deleting a clip ORPHANS its lanes rather than deleting them, so
+             * an undo can bring the automation back (chain_set_clip_deleted).
+             * That is right -- but the slot is then reusable, and a fresh clip
+             * made there is a DIFFERENT clip. Un-orphaning on a write would
+             * hand it the dead clip's whole lane, which is the one outcome
+             * this design has always refused: a stranger inheriting it.
+             *
+             * So the write still wins -- the user is setting a value on the
+             * clip in front of them -- but it starts the lane over. The old
+             * points go, this lock is the first point of a new lane, and undo
+             * of the DELETE still restores everything as long as nothing has
+             * been written since.
+             *
+             * A merely STALE lane keeps its points: that is the same clip,
+             * edited, which is exactly what the adopt-on-edit branch in
+             * lane_tick already decided. Only a deletion breaks continuity. */
+            if (ln->orphaned) {
+                ln->n = 0;                       /* the dead clip's points go */
+                lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
+            }
+            ln->fp = inst->clip_fp;
+            ln->stale = 0;
+            ln->orphaned = 0;
+        }
         inst->lanes_plock_refusal = LANE_PLOCK_OK;
         return;
     }
@@ -1089,6 +1158,24 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
             const lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used || ln->n <= 0) continue;
             if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            /* A DELETED CLIP'S LOCKS ARE NOT THIS CLIP'S LOCKS.
+             *
+             * Deleting a clip ORPHANS its lanes rather than deleting them, so
+             * that Move's own Undo -- which restores the clip -- also restores
+             * the automation: the fingerprint matches again and the lane
+             * un-orphans itself. Nothing else gives that for free.
+             *
+             * But the map was still drawing them, so after deleting a clip and
+             * entering fresh notes the step strip showed the dead clip's locks
+             * on a clip that had none. Reported from the device as the old
+             * automation still being there -- and it was, visibly, while being
+             * silent, which is the worst of both readings.
+             *
+             * Hidden, not deleted. Silent already (lane_eval refuses an orphan),
+             * invisible now, and the first write starts the lane over -- so it
+             * BEHAVES deleted from every angle the user has, while an undo can
+             * still bring it back. */
+            if (ln->orphaned) continue;
             int n = snprintf(buf + off, (size_t)(buf_len - off), "%s %s",
                              ln->target, ln->param);
             if (n <= 0 || off + n >= buf_len) return off;      /* truncated: stop clean */

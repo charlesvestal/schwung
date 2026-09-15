@@ -397,8 +397,28 @@ static clip_playhead_ev_t ph_ring[CLIP_PH_RING];
 static volatile unsigned  ph_head;   /* SPI callback */
 static unsigned           ph_tail;   /* worker        */
 
+/* The most recent observation, kept beside the ring rather than in it: the
+ * ring is drained by the worker and this is read on the callback, so sharing
+ * one cursor would make each consumer's read depend on the other's. */
+static volatile uint8_t  ph_last_idx;
+static volatile uint32_t ph_last_pulses;
+static volatile int      ph_last_valid;
+
+int clip_playhead_last(uint8_t *out_idx, uint32_t *out_pulses)
+{
+    if (!out_idx || !out_pulses) return 0;
+    if (!__atomic_load_n(&ph_last_valid, __ATOMIC_ACQUIRE)) return 0;
+    *out_idx    = ph_last_idx;
+    *out_pulses = ph_last_pulses;
+    return 1;
+}
+
 void clip_playhead_record(uint8_t idx, uint32_t pulses)
 {
+    ph_last_idx    = idx;
+    ph_last_pulses = pulses;
+    __atomic_store_n(&ph_last_valid, 1, __ATOMIC_RELEASE);
+
     unsigned h = ph_head;
     ph_ring[h % CLIP_PH_RING].idx = idx;
     ph_ring[h % CLIP_PH_RING].pulses = pulses;

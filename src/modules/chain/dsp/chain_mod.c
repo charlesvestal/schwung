@@ -784,7 +784,27 @@ void chain_set_clip_phase(void *instance, int valid, double phase_beats,
      * fingerprint BEFORE it checks the anchor -- so the window is never
      * unknown while the phase is known. NaN if it is, for the same reason the
      * phase is: a missed gate must not find a usable number. */
-    inst->clip_loop_start = (valid && fp_valid && fp) ? fp[0] : NAN;
+    /* AND A PROVISIONAL CLIP'S ORIGIN IS 0, not unknown.
+     *
+     * `valid && !fp_valid` is the PROVISIONAL state -- a phase we can compute
+     * against a clip Move has not written to Song.abl yet, so there is no
+     * loop.start to read. NaN there meant lane_tick's own guard
+     * (`!(clip_loop_start >= 0.0)`) refused, so a clip made in the step editor
+     * could be RECORDED into and never HEARD: measured on hardware 2026-09-15,
+     * a p-lock landed instantly and did not play for 7.1 seconds, all of it
+     * waiting for the file.
+     *
+     * Zero is not a guess. It is the same assumption `origin_pending` already
+     * makes when a take is recorded blind -- lane_adopt_fingerprint re-origins
+     * those points by the real loop.start when the clip appears -- so the
+     * write side has always believed it. Playback believing something else is
+     * what made a take inaudible; one of the two had to move, and the honest
+     * one to move is the side that was refusing on a technicality.
+     *
+     * Still NaN when the phase itself is unknown: an unknown origin under an
+     * unknown phase must not become a usable number. */
+    inst->clip_loop_start = (valid && fp_valid && fp) ? fp[0]
+                          : (valid ? 0.0 : NAN);
     inst->lane_track = track;
     inst->lane_clip_slot = clip_slot;
     inst->clip_fp_valid = (fp_valid && fp) ? 1 : 0;

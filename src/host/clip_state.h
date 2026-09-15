@@ -391,6 +391,18 @@ typedef struct {
 void clip_playhead_record(uint8_t idx, uint32_t pulses);
 int  clip_playhead_take(clip_playhead_ev_t *out, int max);
 
+/* THE LAST PLAYHEAD OBSERVATION, without consuming the ring.
+ *
+ * `clip_playhead_take` drains for the worker's phase CHECK; this is a separate
+ * read for the SPI callback, which needs the same fact as a phase SOURCE when
+ * a brand-new clip has no other. See playhead_anchor.h for why that is sound
+ * and why it is restricted to single-page clips.
+ *
+ * Returns 1 and writes both out-params if a playhead has ever been seen. The
+ * CALLER decides whether it is fresh enough -- staleness is a function of the
+ * current pulse count, which this has no business knowing. */
+int clip_playhead_last(uint8_t *out_idx, uint32_t *out_pulses);
+
 /* The live table, or NULL before the first cable-0 scan. Worker-thread read
  * of callback-written data: fields are independent ints, a torn read is
  * informational, and nothing here is used to gate audio. */

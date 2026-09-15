@@ -1006,6 +1006,21 @@ static void step_tap_tick(void)
     LOG_DEBUG("shim", msg);
 }
 
+/* THE BLIND WINDOW, once a second while it is open. Silent otherwise. */
+static void blind_anchor_tick(void)
+{
+    if (!g_blind_seen) return;
+    g_blind_seen = 0;
+    char msg[200];
+    snprintf(msg, sizeof(msg),
+             "lane-blind: have_ph=%d idx=%d age=%d segs=%d len=%.2f res=%.2f "
+             "-> phase=%s",
+             g_blind_have_ph, g_blind_idx, g_blind_age, g_blind_segs,
+             g_blind_len_x100 / 100.0, g_blind_res_x100 / 100.0,
+             g_blind_got ? "YES" : "no");
+    LOG_DEBUG("shim", msg);
+}
+
 static void clip_state_tick(void)
 {
     if (access("/data/UserData/schwung/clip_state_on", F_OK) != 0) return;
@@ -1721,6 +1736,7 @@ static void *worker_main(void *arg) {
             ui_midi_out_drop_tick();
             param_slow_tick();        /* always on; silent unless one overran */
             step_tap_tick();          /* always on; silent unless a step moved */
+            blind_anchor_tick();      /* 1 Hz while a clip has no row yet */
         }
         if (tick % 7 == 0) shadow_poll_current_set(); /* ~1.4 s FS scan */
         tick++;
