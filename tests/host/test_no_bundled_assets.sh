@@ -26,6 +26,10 @@ cd "$(dirname "$0")/../.."
 #   git rm --cached <path>
 # and if it has already been pushed, the history needs rewriting, because a
 # blob stays fetchable long after the commit that removed it.
+#
+# There is exactly ONE standing exception, below: small captured test input
+# under tests/fixtures/. It is scoped by path AND by size precisely so that it
+# cannot be stretched into a home for the assets this file exists to keep out.
 
 # Extensions that are asset payloads rather than source. Deliberately broad:
 # a false positive costs one conversation, a false negative ships a ROM.
@@ -33,14 +37,61 @@ ASSET_RE='\.(sf2|sfz|rom|syx|bin|wav|aiff?|ogg|flac|mp3|m4a|nam|pcm|dat|rx2|rex|
 
 fail=0
 
-tracked=$(git ls-files | grep -Ei "$ASSET_RE" || true)
-if [ -n "$tracked" ]; then
+# THE ONE CARVE-OUT: small captured TEST INPUT under tests/fixtures/.
+#
+# A captured OLED frame is 1 KB of our own data that the step-strip decoder
+# cannot be tested without. Ignoring it is not free: the capture stays on the
+# machine that took it, so the suite passes there and fails only in CI, where
+# "read 0 of 1024 bytes" reads as a broken test rather than a missing file.
+#
+# It is scoped BY PATH AND BY SIZE, because the thing this file exists to stop
+# is a ROM or a soundfont, and those are megabytes. A directory exception alone
+# would be a hole wide enough for exactly what the rule forbids; the cap means
+# the carve-out cannot widen without someone raising a number that says what it
+# is for. Anything bigger fails here even under tests/fixtures/.
+FIXTURE_MAX_BYTES=65536
+
+# Is this tracked asset-shaped path an allowed fixture? Takes the size rather
+# than stat-ing, so the predicate can be exercised below with sizes no file in
+# the tree has.
+is_allowed_fixture() {
+  case "$1" in
+    tests/fixtures/*) [ "$2" -le "$FIXTURE_MAX_BYTES" ] ;;
+    *) false ;;
+  esac
+}
+
+offenders=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  size=$(wc -c < "$f" | tr -d ' ')
+  if ! is_allowed_fixture "$f" "$size"; then
+    offenders="$offenders$f ($size bytes)
+"
+  fi
+done <<EOF
+$(git ls-files | grep -Ei "$ASSET_RE" || true)
+EOF
+
+if [ -n "$offenders" ]; then
   echo "FAIL: asset payload(s) are TRACKED BY GIT:"
-  echo "$tracked" | sed 's/^/    /'
+  printf '%s' "$offenders" | sed 's/^/    /'
   echo "  Remove with: git rm --cached <path>   (do not add an ignore rule)"
   fail=1
 else
-  echo "PASS: no asset payloads tracked by git"
+  echo "PASS: no asset payloads tracked by git outside small tests/fixtures/ input"
+fi
+
+# The carve-out has to be able to REFUSE, or it is an exception that reports
+# green whatever it is handed -- the whole point of the size half.
+if is_allowed_fixture "tests/fixtures/huge.sf2" $((FIXTURE_MAX_BYTES + 1)); then
+  echo "FAIL: an oversize file under tests/fixtures/ was allowed"
+  fail=1
+elif is_allowed_fixture "src/modules/sf2/banks/real.sf2" 1024; then
+  echo "FAIL: a small asset OUTSIDE tests/fixtures/ was allowed"
+  fail=1
+else
+  echo "PASS: the fixture carve-out refuses oversize files and anything outside tests/fixtures/"
 fi
 
 # The local asset map holds absolute paths into someone's music library. It is

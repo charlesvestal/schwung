@@ -1,0 +1,515 @@
+# Automation lanes — handoff
+
+**State:** PR #509, branch `feat/automation-lanes`, 28 commits, 326 host tests
+green, clean ARM64 cross-build. **The feature works on hardware** — Charles,
+playing it: *"yes, it did. it works."*
+
+Read `docs/plans/2026-09-12-automation-lanes-design.md` (design, with the
+hardware findings folded in) and `docs/CHAIN.md`'s lane contract before
+touching any of this. The plan doc
+(`docs/plans/2026-09-12-automation-lanes-plan.md`) is annotated as-built but is
+history now, not instruction.
+
+---
+
+## Confidence audit #4 — the gesture, and the thing that unlocked it
+
+**The blocker was my own assumption, twice.** First that recording needed a
+hand on a knob (it needs a *param write*, which `schwung-testd` makes), then
+that the step gesture could never be driven ("by construction"). The second was
+also wrong: the injector wrote only Move's mailbox, so
+**`inject_as_hardware`** now writes both, and an injected press arrives where a
+real one does. With it set, `selected_track` follows injected Track presses and
+an injected Shift+Vol+Track1 opens the shadow UI.
+
+Built and verified since audit #3:
+
+| | evidence |
+|---|---|
+| Hardware-path injection | Track 3 → `selected_track` 3 (was: invisible) |
+| `step_observe` forward | passive on hardware: a step press took the clip 3 → 4 notes and back |
+| Held-step tracking | unit-tested, and the mutation **fails** (it did not, at first — see below) |
+| `lanes:plock_step` | `P 1 0.81 1` under 4/4; refused under 11/8 (22 steps/bar) |
+| `lanes:plock` | writes a held point, drives the plugin, releases on clear |
+| Set change clears lanes | **a real bug**, found and fixed, verified via the real `SET_CHANGED` flag |
+
+**What is left is one integration**, not a mechanism: navigating to a
+component's knob grid and turning a knob with a step held. I could not drive
+that blind — jog clicks from the slot editor never reached a component page —
+and each piece on either side of it is verified. For you that is one gesture.
+
+**Two lessons worth keeping.** A mutation test that PASSED: `heldStepIndex()`
+scanned for any held step, duplicating the decision `onStepNote` already makes,
+so removing that decision left the test green. It is a read of one variable
+now. And the p-lock write had to be translated in **both** param paths — the
+first version sat only in the web UI's, so the key the real gesture uses fell
+through and was dropped with no log line at all.
+
+**A p-lock also toggles a note today.** The step forward is passive, because
+withholding a step needs a latched both-edge swallow in the MIDI filter, whose
+failure mode is a stuck button. Undo fixes a stray note; a stuck filter does
+not. That is the next change, and it now has a harness that can test it.
+
+---
+
+## Confidence audit #3, 2026-09-13 — where it actually stands
+
+Everything on the list is now verified on hardware **except one thing**, and
+that one thing is a finger on a step button.
+
+| | evidence |
+|---|---|
+| Playhead | 26/26, 100%, under 11/8 |
+| Page / displayed bar | the strip's `bold_segment`, agreeing with Move's own "Bar N" |
+| Clip length change | strip 3 → 4 segments instantly; file caught up ~12 s later |
+| Copy / Delete / Undo | all three, in the file; Undo walks back precisely |
+| **New sets** | a set change now CLEARS lanes the incoming set lacks — **a bug found and fixed tonight**, verified by raising the real `SET_CHANGED` flag |
+| Per-set lane state | written, autosaved, survived a reinstall, reloaded |
+| P-lock write | `lanes:plocked = 1` with the transport stopped; `P 9 0.9 1` |
+| P-lock reaches the synth | the plugin's own state read `{"pinch":0.9}`; `lanes:clear` put it back |
+| **P-lock by STEP** | `lanes:plock_step synth pinch 4 0.81` → `P 1 0.81 1` under 4/4; refused under 11/8 (22 steps/bar on 16 buttons) |
+| Recording | armed from Move's Record LED; five points in CLIP time; interpolated on playback |
+| `:modulated` mark | reads 1 for a lane-driven parameter |
+
+**The one thing left:** the MIDI half of the gesture — forwarding a held step
+to the UI and **swallowing it from Move**, or the same press edits the clip's
+notes. Injection cannot drive it: the drain writes Move's mailbox while the
+control scan reads the hardware one, so a press either reaches Move (injected)
+or Schwung (real), never both. Everything behind it is proven, including the
+step→phase translation in the same param path the UI will use.
+
+**Also unreachable, and not on the critical path:** creating a *new* set on the
+device, which needs the Set Overview and therefore the Note/Session toggle
+(~75 CCs scanned against a screen witness; a full LED refresh shows no
+unaccounted button, so it is unlit and possibly a note — I did not scan note
+ranges, which would play the instrument at night). The lane-relevant half of
+"new sets" — what happens to lane state when the set changes — is verified
+above.
+
+**Two corrections to things I claimed earlier in the night**, both caught by
+measuring: "a segment is a bar, rounded up" was a third coincidence (the count
+can exceed the loop by one), and the bar strip "vanishing" was not my CC scan
+but track 1 having lost its selected clip, which a Note view draws no strip
+for.
+
+**Device:** set byte-identical to baseline, all diagnostics disarmed, no lane
+files with content, `active_set.txt` correct, test daemon and helper scripts
+removed. `schwung_inject` and a `Song.abl.presel.bak` are left deliberately.
+
+---
+
+## Confidence audit #2, 2026-09-13 (after driving it end to end)
+
+**What unblocked the rest: a lane records from a PARAM WRITE**, and
+`schwung-testd` can make one over the param channel. Neither recording nor
+p-locks needed a hand on a knob — that was my own wrong assumption, and it
+cost a whole round of "this needs you".
+
+Proven on hardware tonight, against `bouba-kiki` in slot 0:
+
+| | evidence |
+|---|---|
+| **P-lock write** | `lanes:plocked = 1` with the transport STOPPED; document carries `P 9 0.9 1` |
+| **P-lock reaches the SYNTH** | the plugin's own state blob read `{"pinch":0.9}` while the base stayed 0.47 |
+| **Release** | `lanes:clear` returned base, effective, modulated **and the plugin** to 0.47 / 0 |
+| **Recording** | armed from Move's Record button (`lanes:armed` 0→1, LED SOLID); five points recorded |
+| **Recorded phases are CLIP time** | 9.54 … 17.58, not 1.54 — today's coordinate change, on the device |
+| **Playback** | interpolated 0.13 → 0.37 → 0.61 → 0.70, holding past the last point |
+| **`:modulated` mark** | reads 1 for a lane-driven parameter (was an open item) |
+| **Clip length change** | strip 3 → 4 segments immediately; file caught up ~12 s later |
+| **Copy / Delete / Undo** | all three, verified in the file; Undo walks back precisely |
+| **Arming is harmless** | the clip gained no notes: `[50, 50, 60]`, loop unchanged |
+
+**Still not proven, and now down to two:**
+
+- **New sets** — needs the Set Overview, which needs the Note/Session toggle.
+  Not a cable-0 CC (~75 scanned against a screen witness; a full LED refresh
+  shows no unaccounted button), so it is unlit and possibly a note. I did not
+  scan note ranges: that plays the instrument, at night.
+- **The p-lock GESTURE** (hold a step, turn a knob). The write path,
+  the document, the drive-to-plugin and the release are all verified; what is
+  missing is input plumbing — a held step must be swallowed from Move or the
+  same press edits notes, and the knob turn must arrive as a param write. The
+  second half is what `schwung-testd` stands in for tonight; the first half is
+  a shim change I will not ship unverified, because getting it wrong means
+  "my step buttons stopped editing notes".
+
+**One measured correction to my own earlier claim:** "a segment is a bar,
+rounded up" was a *third* coincidence. Lengthening a loop settled the file at
+exactly 16.5 quarters — three bars of 11/8 — while the strip drew **four**
+identical segments, persistently. The count can exceed the loop by one, so the
+implied length is a range inclusive at both ends and the file wins whenever it
+has the clip.
+
+**Device:** set verified byte-identical to baseline (clips, loops, notes,
+selections), diagnostics disarmed, transport stopped, `lanes_0.json` empty,
+`synth:pinch` back to 0.47. Two repairs were needed along the way and both are
+recorded below: T1 lost its selected-clip flag to an Undo, and its loop was
+lengthened by the length test — both restored through `Song.abl` with a backup
+at `/data/UserData/schwung/Song.abl.presel.bak`.
+
+---
+
+## Confidence audit, 2026-09-13 (what is proven, what is not)
+
+Asked for 100% confidence in clip playback/editing and then in p-locks. Here is
+the honest split. **Proven on hardware:**
+
+| | evidence |
+|---|---|
+| Playhead | **26/26, 100%** under 11/8, model fitted offline first |
+| Step→phase mapping | `(step_in_clip mod steps_per_bar) mod 16`, and its inverse round-trips |
+| Displayed bar / page | the strip's `bold_segment` agreed twice with Move's own "Bar N" |
+| Clip length (read) | 3 clips, all inside the strip's range; the 1-bar case too |
+| Copy | creates a clip; verified in `Song.abl`; does **not** become the playing clip |
+| Delete | a bare press removes the selected clip |
+| Undo | walks my edits back precisely; the set matches baseline byte for byte |
+| Save latency | 10 s, twice; `saveSongIfDirty` does not shorten it |
+| Time signature | per-clip and song-wide; changing to 11/8 moved **no** number in the file |
+
+**NOT proven, and each blocked on something specific:**
+
+- **Recording into a clip younger than 10 s** — needs a clip that is new *and
+  playing*, which means sequencing into an empty selected slot. Copy does not
+  do it (the copy is selected, never launched), and selecting an empty slot
+  needs **Session Mode**. The toggle is on no cable-0 CC: I scanned ~75
+  candidates with a screen witness and none moved the display, and the LED
+  inventory (taken from a full refresh on restart) contains no unaccounted
+  button, so it is probably unlit and possibly a note. I did not scan note
+  ranges — that plays the instrument, at night.
+- **Changing a clip's length on the device** — Loop Mode acts on the *selected*
+  clip, and the only selected clips are yours with legacy 4/4 loops that Loop
+  Mode would snap to 11/8 bars. Undo can walk it back, but I judged an
+  unattended edit to your music not worth it. The reader's *response* to a
+  length change is unit-tested.
+- **New sets** — Set Overview, same toggle problem.
+- **The p-lock gesture** — the format (`hold`) and the arithmetic
+  (`step_plock.h`) are done and tested. The gesture needs a held step
+  *swallowed from Move* (or the same press edits notes) and a knob turn
+  arriving as a Schwung param write, which injection cannot produce. Shipping
+  unverified swallow plumbing risks "my step buttons stopped editing notes", so
+  it waits for a session where it can be tested.
+
+**Device state:** set verified identical to baseline; all diagnostics
+disarmed; transport stopped. Move's *view* is somewhere my CC scan left it
+(the bar strip reads invalid, so not the step editor) — cosmetic, and any
+front-panel press will orient it.
+
+**The 30 seconds that unblocks most of the above:** make a clip in an empty
+slot, and tell me which button switches Note/Session.
+
+---
+
+## Status, 2026-09-13 (overnight session, 13 commits, NOT pushed)
+
+327 host tests green, clean ARM64 build, deployed. The device is left as found:
+transport stopped, every diagnostic disarmed, Set 1 byte-identical to how it
+started (a note was injected and removed). **Re-arm with**
+`touch /data/UserData/schwung/clip_state_on`.
+
+**All four handoff items are done, and two of my own answers were wrong before
+they were right.** What the night actually settled:
+
+- **`loop_start` out of the fingerprint**, then the bigger fix behind it: a
+  breakpoint is **CLIP TIME in quarters** and the loop is a **WINDOW** over it.
+  Loop-relative storage slid a sweep two bars when the loop was opened out, and
+  made a step p-lock unaddressable. Move's file proves the coordinate: a clip
+  whose loop is 8..20 carries a note at `startTime 0.0`, outside the loop.
+- **The phase check scored the wrong tracks**, and then its modulus was wrong
+  too. Move's lit step is `(step_in_clip mod steps_per_bar) mod 16` — bar, then
+  page. Under 11/8 the check went **0/16 → 26/26, 100%**.
+- **The strip reader works, and a segment is a BAR (rounded up)** — so it
+  answers a RANGE, never better than bar resolution. I called it a page first,
+  on the strength of a coincidence; only a clip whose bar and page counts differ
+  could tell them apart.
+- **Recording on a clip Move has not saved yet** now works by construction: the
+  length from the strip now, the identity and true origin from the file ~10 s
+  later, with the lane **adopted** (points re-origined, fingerprint stamped) in
+  one exact step.
+- **Move saves 10 s after an edit, not ~35**, and `saveSongIfDirty` does not
+  shorten it. Both measured, twice.
+- **`tools/inject/schwung_inject.c`** drives Move's own buttons over cable 0, so
+  most of this was measured without hands. It is ONE-SIDED: Move acts, Schwung's
+  own decoders never see it (`docs/DIAGNOSTICS.md`).
+
+**The one thing that needs you, and it is 30 seconds:** make a clip in an empty
+slot and record automation onto it while it is younger than 10 s. Everything
+above is unit-tested and the inputs are hardware-verified, but the end-to-end
+path needs Session Mode to create a clip — and the Note/Session toggle is on no
+CC in our constants, so I could not reach it (and would not blind-scan unknown
+CCs on your live device). With `clip_state_on` armed, `step_strip.segments_cache`
+and the `/clip-state` panel show whether the blind window resolved.
+
+Also unverified: grids coarser than 1/16 (a 4/4 bar is 8 steps at 1/8 — the
+model predicts an index in 0..7 and nothing has checked it), and whether the
+strip's `+` icons for bars *outside* the loop disturb the decoder.
+
+---
+
+## Status, 2026-09-12 (later the same day)
+
+Items 1 and 2 are **done**; item 3 is **built as a diagnostic and not yet
+validated on hardware**. 327 host tests green, clean ARM64 cross-build.
+
+- **1. `loop_start` out of the fingerprint** — done (`f420b8e8`). Only the
+  content half (note count, first note) is compared now; both loop fields
+  remain for diagnostics. The phase origin was left alone, for the reason
+  recorded below. The placeholder guard carries more weight than it did: with
+  no loop field compared, `{0, -1}` would match the *first* clip it met.
+- **2. The phase check** — done (`35408e25`). Both columns read one track, the
+  selected one, so there is no per-track loop left for the two halves to
+  disagree in, and the three redundant `t == clip_selected_track()` guards are
+  gone. **The next reading from this instrument is the first trustworthy one.**
+- **3. The OLED reader** — `src/host/step_strip.{c,h}` + 21 assertions
+  (`43341559`). Reports into `clip_state.json`'s `step_strip` block and a
+  `/clip-state` panel; **nothing depends on it.** What the hardware pass must
+  answer, in this order:
+  1. Does `seq` move at all? (If not, frames are not reaching the accumulator
+     — a different fault from a refusal.)
+  2. On the step editor: `valid`, with the `bars` you can count on the screen,
+     the right `bold_bar`, and a `playhead_col` that moves with the music.
+  3. On Move's **other** screens: a refusal, with the `reject` gate named. This
+     is the half that is reasoned rather than measured, and a false positive
+     is a wrong loop length.
+  Only after that does the loop-length fallback get wired in (cache the bars
+  per track, use it when `Song.abl` has no length for the live clip).
+- **4. The budgets** — untouched. Still as designed below.
+
+Two things worth knowing before reading further: the 28% quoted in item 2 was
+noise from the mis-attribution it describes, and the fixture renderer for the
+step-strip test was wrong before the decoder was — it drew a 1 px gap that the
+decoder correctly read as a playhead.
+
+---
+
+## The four things to do next, in this order
+
+### 1. `loop_start` out of the fingerprint — small, and it bites today
+
+`lane_fingerprint_matches` (`src/host/lane_store.c`) compares `loop_start`:
+
+```c
+if (ds > eps) return 0;
+```
+
+So **moving a clip's loop silently kills its automation** — a different
+`loop_start` reads as a different clip, the lane goes stale, and stale is
+silent. `loop_len` is already excluded for exactly this reason (a clip that grew
+is the same clip); a clip whose loop you moved is too.
+
+**Do NOT also change the phase origin.** Phases are stored relative to the
+**loop start** (`shadow_slot_clip_phase` does `ph - r->loop_start`) and that is
+correct. I recommended clip-relative storage during the session and it was
+wrong: `loop_start` is observable by **nothing** for a clip the user just made
+and whose loop area they edited — not `Song.abl` (unsaved for ~35 s), not the
+OLED (the bar strip does not show where the loop begins). Clip-relative would
+have to guess, and a guess puts every value a bar or two out while looking
+healthy. Loop-relative needs no such fact.
+
+### 2. The phase check is scoring the wrong tracks — fix the instrument first
+
+`clip_state.json`'s `phase_check` showed `seen 74, hit 21` (28%) on tracks 2 and
+4 while `selected_track` was 1. The step editor shows **one** track, so its
+playhead describes the selected track only — Project 1's own rule is that only
+the selected track may be scored, and the within-bar check is not honouring it.
+
+That number has been lying all session: I briefly offered the 28% as evidence
+about Start-anchored phase accuracy, and it is noise. Earlier, correctly
+attributed, it read **760/765 = 99.3%**.
+
+Fix this **before** validating anything below, because it is the only
+instrument that can tell you whether a derived phase is right.
+
+### 3. The OLED reader — closes the "record on a clip I just made" hole
+
+This is the substantial piece, and the session ended having just proved it
+possible.
+
+**What was broken:** make a clip in the step editor, press Play, try to record
+automation → refused. `T1 -` (nothing playing), `loop_len 0.00`,
+`has_phase false`. The clip is not in `Song.abl` yet (Move saves ~35 s after an
+edit), so we have no length; with no length there is no phase; with no phase
+recording correctly refuses.
+
+**What we measured (hardware, 2026-09-12).** Move's step editor screen carries
+both missing facts, and the shim can now read it while the shadow UI owns the
+display (commit `2df7c6e3`):
+
+```
+row 59            (1-23) (26-49) (52-74) (77-100) (103-126)   <- 5 segments = a 5-bar loop
+rows 58-60        thicker on one segment                       <- the bar being edited (bold)
+playhead          a 1px INTERRUPTION in the strip, plus a stub at rows 55-57 / 61-63
+                  x = 79 then 17 across two captures (wrapped) -- it MOVES
+```
+
+- **Bar count → loop length.** Segments of 23-24 px separated by 2 px gaps,
+  spanning x=1..126.
+- **Playhead x → loop-relative phase**, linear over 1..126. ~6.25 px/beat on a
+  20-beat loop, i.e. 0.16 beats/px (~80 ms at 120 BPM). Coarse as an absolute
+  readout; ample as an **anchor** that re-syncs while the pulse counter
+  interpolates between updates.
+- **It is page-independent**, which is what makes it better than the step LEDs:
+  measured with the playhead drawn at bars 3 and 4 while bar **5** was the bold
+  (displayed) bar. The step LED playhead is visible only while the displayed
+  page IS the playing page, so it goes silent for 15 bars in 16 on a long clip.
+- **The playhead is drawn as a gap, not a line**: `####.####` in the strip.
+  Inside the bold bar it is a gap in a 3px-tall strip. Detect "which column
+  interrupts the strip", which covers both.
+
+**What it does NOT give:** where the loop begins in the clip. Charles confirmed
+by eye — *"it does not however show you if it starts the loop on bar 1 or bar
+3."* Which is fine, because of item 1: phases are loop-relative and never need
+it.
+
+**Suggested shape.** Opportunistic capture, not a live clock: read the bar count
+when the step editor frame is available and **cache loop length per (track,
+slot)**. The length does not change while you record, so a value from ten
+seconds ago is as good as a live one, and the existing anchor machinery
+(Start / witnessed launch / derived) supplies phase. That keeps the new
+dependency to one read rather than a second position pipeline.
+
+**Do not build a model of Move's sequencer UI.** Charles's standing objection,
+and it is right: *"this is exactly what I wanted to avoid with all of this,
+having to track every state of every Move sequencer UI."* Read Move's own
+answer off the screen; do not maintain a parallel model of its loop points,
+pages or modes. Every time this session drifted that way it produced a bug.
+
+Precedent for the reading itself: `src/host/shadow_pin_scanner.c` already does
+digit OCR by polynomial hash for the PIN screen, and `shadow_master_volume` is
+scanned off the volume bar. Counting segments is easier than either.
+
+### 4. Scale the budgets — designed, deferred, and the numbers are worked out
+
+Current: `LANE_MAX` 32, `LANE_POINTS_MAX` 64 **per lane regardless of loop
+length**, so a 16-bar clip gets 1 point/beat. Charles asked for "all 32 clips,
+~8 things each, realistic granularity".
+
+Requirement: 32 clips = 4 tracks × 8 slots, so **64 lanes per track**
+(8 clips × 8 params), 256 device-wide.
+
+| | worst case per track |
+|---|---|
+| points at 8/beat, 64 lanes × 64 beats | **32,768** |
+| RAM at 16 B/point | 512 KB (2 MB device-wide) — fine against 1109 MB free |
+| serialized at ~14 B/point | **459 KB** |
+| current param value limit | **131,072** |
+
+So the transfer is the binding constraint, not memory or CPU. Three options, in
+increasing cost:
+
+1. **Compact the encoding** — free, ~3×. Points serialize as
+   `P %.17g %.9g` ≈ 48 bytes today, spending 20+ characters on a phase to
+   round-trip a double *bit-exactly*. A phase quantised to 1/960 beat is
+   accurate to 0.5 ms at 120 BPM, well under the 2.9 ms block at which the lane
+   is evaluated. `P 40 0.385` is ~14 bytes. Costs one assertion relaxed from
+   bit-exact to within-one-tick.
+2. **A per-clip transfer key** (`lanes:state:<clip>`) — 8 reads of ~57 KB
+   instead of one of 459 KB, no ABI change, and it makes the write path
+   per-clip so only the clip you touched is rewritten (a 459 KB file on every
+   autosave is real flash wear).
+3. **Raise `SHADOW_PARAM_VALUE_LEN`** — **not** as costly as I first said: every
+   value-sized buffer is already `static`, so the 1.2 MB-stack-frame problem
+   from the last raise is gone. But it makes *every* param 4× bigger (~3.5 MB
+   BSS) to serve one feature, needs an SHM resize with both ends shipped
+   together, and 512 KB leaves only 11% headroom over 459 KB.
+
+**Recommendation: 1 + 2.** And size the point budget as a **shared per-slot
+pool** rather than a fixed array per lane, with a per-lane cap of
+`clamp(loop_beats × 8, 64, 512)` — so short clips keep today's density, long
+clips stop degrading, and the pool spends itself where the music is. 8
+points/beat is set by what a hand can do (<10 Hz), not by a round number; 4/beat
+flattens a fast gesture.
+
+**Add a per-point `hold` flag while the format is open.** It is **free** —
+`lane_point_t` is `{double phase; float value;}`, 12 bytes padded to 16, so
+there are 4 spare bytes. A p-lock is a **rectangle**, not a point on a curve;
+under linear interpolation two neighbouring p-locks ramp into each other instead
+of stepping. `lane_eval` already takes a `stepped` argument (currently derived
+from the parameter type), so honouring a per-point flag is a small
+generalisation. Adding it later means migrating everyone's files.
+
+---
+
+## Step p-locks — the second gesture, still wanted
+
+Charles: *"we still need to do step p-locks too."* The design records why they
+are second: they ride Move's own step buttons (a held step is also Move editing
+notes) and they depend on the page oracle, the least certain part of Project 1.
+
+The good news is that a time-addressed lane makes a p-lock a **view**, not a
+second store: hold step 5, resolve it to a phase, write the same breakpoint.
+With the `hold` flag from item 4 it writes a rectangle and sounds like a p-lock
+rather than a ramp.
+
+---
+
+## Two open items nobody has verified
+
+- **The on-screen lane-driven mark.** Task 9 concluded it needed no new code,
+  because an override makes `<key>:modulated` answer `"1"` and the existing
+  mark reads that. A later agent went looking for something actually *drawing*
+  it and found nothing. Both may be true — but no one has seen it on a screen.
+- **`lanes:orphan` does not exist.** Orphaning arrives only via the dlsym'd
+  `chain_set_clip_deleted`, so a deleted clip's lane going quiet is observable
+  by ear alone. Decide whether it needs a surface.
+
+## Two values picked without evidence
+
+- **`LANE_PASS_GAP_BEATS = 1.0`** — how long a pause ends a recording pass.
+  Untested against a **slow deliberate sweep over a whole bar**, which is the
+  case that would exceed it and stop erasing mid-pass.
+- **`CLIP_OFF_GRACE_PULSES = 96`** (one bar) — how long a ch-9 OFF is held
+  pending before committing as a stop. Sized by the asymmetric cost, not fitted
+  to data.
+
+## CPU: still unmeasured, and my arithmetic is not an answer
+
+Readings taken were **not comparable** (5.8% / 154 µs with the transport
+stopped and no synth; 13.5% / 361 µs playing with a lane, which includes the
+synth's render, the clip and MIDI). The clean A/B is same-everything with and
+without the lane — `Clear Lanes` works, so it is one reading either side.
+`param-slow` logged **zero** serves over 1000 µs.
+
+Two inefficiencies left unfixed **on purpose**, so the measurement decides:
+`find_param_by_key` is a `strcmp` scan called **twice per lane per block** (once
+in `lane_tick`, again in `chain_mod_emit_override`), and `lane_eval` rescans
+from index 0 although phase only advances. Fixes: cache the
+`chain_param_info_t *` on the lane; remember the last segment index.
+
+Note a correction to something said mid-session: only one clip plays per
+**track**, but four tracks means **four** clips playing, so the per-block cost
+is (automated params on the playing clip) × 4 slots.
+
+## How to measure any of this
+
+`touch /data/UserData/schwung/clip_state_on` → `clip_state.log` carries
+`rec=SOLID|FLASH|off|?` and per-track identity and phase. That `rec=` field
+exists specifically so the next session can tell **"the arm never fired"** from
+**"the lane never recorded"** — by ear those are identical, and that ambiguity
+is what made Project 1's defects take a dozen device passes to find.
+`/clip-state` in schwung-manager is the live readout; `clip_state.json` has the
+regions grid and the phase check.
+
+**Disarm what you arm.** An armed diagnostic has itself caused the dropouts it
+was measuring.
+
+## Lessons this session actually paid for
+
+- **Five defects were in the plan, not the implementations**, and four were
+  caught by implementers *reading the enclosing code* rather than trusting line
+  numbers. The worst: the recording hook was specified inside
+  `if (chain_mod_is_target_active(...))`, true only for a key that already has a
+  mod source — so "a lane is created on the first armed write" was impossible in
+  the host while every unit test passed. **A unit test that calls a function
+  directly cannot see whether anything calls it in production.**
+- **Three of the most important defects were found by Charles in minutes**, by
+  playing it. None was found first by a test.
+- **A probe blind to its own hypothesis reports clean either way.** My
+  Record-LED capture filtered `cable == 0` and note/CC, so it could not see
+  SysEx or other cables, and its empty captures proved nothing. Later I read
+  **stale artifacts as evidence twice** — a peer session's committed file, and
+  two OLED dumps I had not deleted before re-triggering. Delete the artifact,
+  then measure.
+- **"We stopped looking" is indistinguishable from "it stopped happening."**
+  The OLED gate is the clean example: no frames accumulated with the shadow UI
+  up, which read as "Move stopped rendering". It had not.

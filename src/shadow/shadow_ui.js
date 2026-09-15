@@ -45,6 +45,7 @@ import {
 } from '/data/UserData/schwung/shared/chain_ui_views.mjs';
 
 import { decodeDelta } from '/data/UserData/schwung/shared/input_filter.mjs';
+import { isComponentParamKey } from '/data/UserData/schwung/shared/component_key.mjs';
 /* The knob-grid chrome's footer rule row, which the chain editor's slot
  * indicator column stops above. The header/footer/list DRAWING that used to be
  * imported here went to chain_editor_chrome.mjs, so both editors do it once. */
@@ -809,8 +810,20 @@ let autosaveJob = null;
  * thing the UI thread did). Cleared whenever the file set changes underneath
  * us, so the next pass rewrites unconditionally. */
 let lastWrittenSlotJson = [null, null, null, null];
+/* Has this slot's lane document been RESTORED (or confirmed absent) since the
+ * set was loaded? Until it has, the slot serving "" says nothing about what
+ * the user owns, so the autosave may not clear the file. See
+ * restoreSlotLanes, and persistSlotLanes for the one branch that consults it. */
+let laneRestoreConfirmed = [false, false, false, false];
+
+/* Same skip-if-unchanged, for lanes_N.json. A lane document only changes when
+ * something records into it, so on an ordinary set this makes the extra write
+ * free -- without it the autosave pass gained a second eMMC write every five
+ * seconds forever, which is the defect the slot cache above was added for. */
+let lastWrittenLaneJson = [null, null, null, null];
 function invalidateAutosaveWriteCache() {
     lastWrittenSlotJson = [null, null, null, null];
+    lastWrittenLaneJson = [null, null, null, null];
 }
 let autosaveSuppressUntil = 0;  /* suppress autosave after set change */
 let slotDirtyCache = [false, false, false, false];
@@ -2328,6 +2341,50 @@ function componentParamPagesIo(slotIndex, componentKey) {
             markComponentParamWrite(slotIndex, componentKey);
             return ok;
         },
+        /* THE P-LOCK GESTURE'S OTHER HALF: hold a step, turn a knob.
+         *
+         * Called by the controller AFTER a value is committed, with what was
+         * actually written -- which is the only moment that knows it, since a
+         * turn walks from a cached value through the parameter's own step and
+         * range. If a step button is held, that value is locked to the step.
+         *
+         * `<target> <param>` is split off the full key rather than rebuilt:
+         * the chain's lane store is keyed by exactly those two fields, and a
+         * second way of deriving them is a second thing to get wrong. The BAR
+         * is not passed at all -- the shim reads it off Move's own strip (see
+         * `lanes:plock_step`), so the UI never models the editor's paging. */
+        /* The shim's own verdict on whether the held press has become a
+         * HOLD -- see shadow_control_t.held_step_is_hold. The controller uses
+         * it to keep a TAP from asking the lock map anything. */
+        heldStepIsHold: () => shadow_get_held_step_is_hold() === 1,
+        /* Move's Delete button, for "Delete + a knob clears this knob's whole
+         * automation for this clip". A byte from the shim rather than the CC,
+         * which never reaches the grid unless a step is held. */
+        deleteHeld: () => shadow_get_delete_held() === 1,
+        onValueWritten: (fullKey, wire) => {
+            const step = heldStepIndex();
+            if (step < 0) return;
+            /* ONLY A COMPONENT PARAMETER. This hook sees EVERY write the
+             * controller makes, including its own control channel, and the
+             * old test -- "the key has a colon" -- was true of all of them.
+             * `lanes:step_locks_query` is the lock-map QUESTION the grid asks
+             * on a step press; converting it produced a `lanes:plock_step`
+             * naming target `lanes`, and the translate that receives one marks
+             * the press SPENT. A spent press is never replayed to Move, so the
+             * step never toggled its note -- reported as "I tap a step and no
+             * note appears, but after five or six taps it works", the
+             * intermittency being the map refreshing.
+             *
+             * The rule is the shim's own (component_key.mjs pins the two
+             * together), so the next `lanes:` key the grid needs cannot bring
+             * this back. */
+            if (!isComponentParamKey(fullKey)) return;
+            const colon = fullKey.indexOf(":");
+            const target = fullKey.substring(0, colon);
+            const param = fullKey.substring(colon + 1);
+            setSlotParam(slotIndex, "lanes:plock_step",
+                         target + " " + param + " " + step + " " + wire);
+        },
     };
 }
 
@@ -2465,7 +2522,7 @@ function moduleListsCountFor(moduleId) {
  * two rows under it are the destructive ones, and reading before swapping or
  * removing is the order the page is for.
  */
-function moduleMenuEntries(moduleId) {
+function moduleMenuEntries(moduleId, clipLabel) {
     const entries = [];
     if (getModuleHelpChildren(moduleId)) {
         entries.push({ label: "Module Help", action: "module_help" });
@@ -2478,6 +2535,20 @@ function moduleMenuEntries(moduleId) {
     const inLists = moduleListsCountFor(moduleId);
     entries.push({ label: "Add to List", value: inLists > 0 ? String(inLists) : "",
                    action: "module_lists" });
+    /* CLEAR THIS MODULE'S AUTOMATION, on the clip that is playing.
+     *
+     * Here rather than only under the slot because this is where the knobs
+     * you automated are: you record by turning one on this component's pages,
+     * so "undo what I just did to this module" belongs beside them. The slot's
+     * own Automation section keeps the wider scopes -- every module on this
+     * clip, and every clip -- and keeps UNDO, which is slot-wide by
+     * construction and cannot be honestly offered per module.
+     *
+     * The clip is named in the value for the same reason it is on the slot
+     * row: without it the row is a promise about a clip the page cannot
+     * show. */
+    entries.push({ label: "Clear Automation", value: clipLabel || "",
+                   action: "clear_component_lanes" });
     entries.push({ label: "Swap Module", action: "swap_module" });
     entries.push({ label: "Remove Module", action: "remove_module" });
     return entries;
@@ -2541,7 +2612,8 @@ function componentTrailingMenus(slotIndex, componentKey, prefix) {
          * already plan a page called that, so claimName would dedupe this to
          * "Presets - 2". "My Presets" (46px) collides with nothing. */
         { name: "My Presets", entries: presetEntries },
-        { name: "Module", entries: moduleMenuEntries(loaded.module) },
+        { name: "Module", entries: moduleMenuEntries(loaded.module,
+                                                      slotClipLabel(slotIndex)) },
     ];
 }
 
@@ -2698,6 +2770,12 @@ function runComponentActionFromGrid(slotIndex, componentKey, action) {
              * Back is the only exit from them, so the return is written at
              * that one site. */
             return true;
+        }
+
+        case "clear_component_lanes": {
+            clearComponentLanes(slotIndex, componentKey);
+            result = true;
+            break;
         }
 
         case "swap_module": {
@@ -5558,6 +5636,12 @@ const CHAIN_SETTINGS_ITEMS = [
     { key: "mpe_mode", label: "MPE Mode", type: "int", min: 0, max: 1, step: 1 },
     { key: "lfo1", label: "LFO 1", type: "action" },
     { key: "lfo2", label: "LFO 2", type: "action" },
+    /* Automation lanes: the only gesture that undoes a recorded knob move. No
+     * `showsValue` -- an action row draws no value by default, and asking for
+     * one here would spend a ~2.8 ms round trip per draw to print "-". */
+    { key: "clear_lanes", label: "Clear All Automation", type: "action" },
+    { key: "clear_clip_lanes", label: "Clear Clip Automation", type: "action" },
+    { key: "undo_lane_edit", label: "Undo Automation Edit", type: "action" },
     { key: "save", label: "[Save]", type: "action" },  // Save slot preset (overwrite for existing)
     { key: "save_as", label: "[Save As]", type: "action" },  // Save as new preset
     { key: "delete", label: "[Delete]", type: "action" }  // Delete slot preset
@@ -10029,6 +10113,314 @@ function buildSlotPatchJson(slotIndex, name, forAutosave, moduleChanged) {
  * single frame every five seconds. Body is unchanged apart from the
  * loop's `continue`s becoming `return`s.
  */
+/*
+ * Automation lanes ride with the SET, not with the slot's sound.
+ *
+ * A lane is keyed to a clip POSITION plus a fingerprint of what was in that
+ * clip, and a clip position means nothing in another set -- so the file lives
+ * beside the set's other state and is deleted with it. Same argument that put
+ * the recall snapshot in set_state/ rather than in a global dir.
+ *
+ * There is no second serializer here on purpose: the chain formats the whole
+ * document on the SPI callback and this side only ever moves an opaque string
+ * to a file. It rides in the autosave pass so it inherits the preview guard
+ * and the write cache rather than re-deriving them.
+ */
+function lanePathForSlot(i) {
+    return activeSlotStateDir + "/lanes_" + i + ".json";
+}
+
+function persistSlotLanes(i) {
+    /* THREE ANSWERS, not two. `null` is a read that did not complete and says
+     * nothing about the slot -- writing on it would truncate a good file with
+     * whatever a timeout produced. `""` is served-and-empty: this slot has no
+     * automation, so the file must GO rather than be left behind to reload
+     * lanes the user cleared. Only a non-empty document is written. */
+    const doc = getSlotStateWithRetry(i, "lanes:state");
+    const path = lanePathForSlot(i);
+    if (doc === null) return;
+    if (doc === "") {
+        /*
+         * A SLOT WHOSE RESTORE WAS NEVER CONFIRMED DOES NOT GET TO CLEAR ITS
+         * FILE. "Served-and-empty" is a fact about the DSP, and at boot the
+         * DSP is empty for a reason that has nothing to do with the user:
+         * `lanes:state` may not have landed yet. Deleting on that is how a
+         * set's automation disappears across a restart -- see
+         * restoreSlotLanes. An unconfirmed slot simply keeps its file until a
+         * restore succeeds or the user clears it explicitly.
+         */
+        if (!laneRestoreConfirmed[i]) return;
+        /* Removing it once, and only if there is something there: an
+         * unconditional remove every five seconds is the churn the write
+         * cache exists to avoid. */
+        if (lastWrittenLaneJson[i] !== "" && host_file_exists(path)) {
+            host_write_file(path, "");
+            debugLog("autosave: slot " + i + " has no lanes — cleared " + path);
+        }
+        lastWrittenLaneJson[i] = "";
+        return;
+    }
+    if (lastWrittenLaneJson[i] === doc) return;
+    if (host_write_file(path, doc)) {
+        lastWrittenLaneJson[i] = doc;
+    } else {
+        lastWrittenLaneJson[i] = null;   /* force a retry next pass */
+        debugLog("autosave: failed to write lanes_" + i + ".json — " +
+                 "will retry next autosave");
+    }
+}
+
+/* Empty a slot's lanes with no announcement and no file write -- the restore
+ * path's counterpart to the user-facing clearSlotLanes(). `lanes:clear`
+ * releases every override the store held, which is why this is not just a
+ * matter of forgetting the document: leaving them asserted would strand the
+ * parameters they were driving with no gesture that hands them back. */
+function clearSlotLanesQuietly(i) {
+    setSlotParam(i, "lanes:clear", "1");
+    lastWrittenLaneJson[i] = null;
+}
+
+/* Read lanes_<i>.json back into the slot. Called from both restore paths (boot
+ * and set change), after load_file, because load_file reinstantiates the
+ * chain and a lane names a target that must exist for lane_tick to find its
+ * parameter metadata.
+ *
+ * AN ABSENT FILE MUST CLEAR THE SLOT, NOT SKIP THE WRITE. It used to return
+ * early -- reasoning that an empty `lanes:state` would be a no-op anyway,
+ * which is true of the PARSER and false of the SLOT: switching from a set
+ * that has automation to one that has none left the outgoing set's lanes
+ * loaded in the chain. Measured on hardware 2026-09-13 by driving the set
+ * change: Set 1's p-lock was still in `lanes:state` while `clip_state` said
+ * Set 2.
+ *
+ * Two consequences, and the second is the worse one. The lane is silent --
+ * its fingerprint will not match the new set's clip, so staleness catches it
+ * -- but it is still THERE, and the autosave pass writes what the slot
+ * serves, so the outgoing set's automation gets written into the incoming
+ * set's `lanes_<i>.json`. `lanes:clear` is the right answer because it also
+ * releases the overrides those lanes held. */
+function restoreSlotLanes(i) {
+    const path = lanePathForSlot(i);
+    laneRestoreConfirmed[i] = false;
+    if (!host_file_exists(path)) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
+    const raw = host_read_file(path);
+    if (!raw || raw.length === 0) { clearSlotLanesQuietly(i); laneRestoreConfirmed[i] = true; return; }
+    setSlotParam(i, "lanes:state", raw);
+    /*
+     * AND READ IT BACK, because this write is how a user's automation is LOST.
+     *
+     * The write was issued and never checked, while `lastWrittenLaneJson` was
+     * set as though it had landed. A `lanes:state` push that does not complete
+     * -- the param channel is busiest exactly here, at boot, behind a chain
+     * that is still instantiating -- therefore left the DSP with no lanes and
+     * the cache saying "the file is already what the slot holds". Ten seconds
+     * later the autosave asked the slot, got "" (served-and-empty, a perfectly
+     * good answer), saw the cache disagree, and DELETED the file. Observed
+     * twice on this device: three lanes and 51 points gone across a restart,
+     * recoverable only because a copy had been taken by hand.
+     *
+     * The readback costs one IPC per slot per restore and turns a silent loss
+     * into a retry. `laneRestoreConfirmed` is what the autosave consults
+     * before it is allowed to clear anything -- an unconfirmed slot's file is
+     * never removed, whatever the slot says about itself.
+     */
+    const back = getSlotStateWithRetry(i, "lanes:state");
+    if (back && back.length > 0) {
+        laneRestoreConfirmed[i] = true;
+        lastWrittenLaneJson[i] = back;
+        debugLog("lanes: slot " + i + " restored from " + path);
+    } else {
+        /* Not confirmed: say nothing about the file, and leave the cache
+         * unset so the next autosave writes rather than skips if the slot
+         * turns out to hold something after all. */
+        lastWrittenLaneJson[i] = null;
+        debugLog("lanes: slot " + i + " restore NOT confirmed (" +
+                 (back === null ? "read did not complete" : "slot reports empty") +
+                 ") -- its file will not be cleared");
+    }
+}
+
+/*
+ * Throw this slot's automation away, and say HOW MUCH went.
+ *
+ * One implementation for all three forms of slot settings -- the knob grid's
+ * Actions menu, the slot list's settings screen, and the chain settings list.
+ * Three copies of the read-and-announce would be three chances for one of them
+ * to announce a count it never read.
+ *
+ * THREE ANSWERS, NOT TWO. `null` is a read that did not complete and says
+ * nothing at all about the slot; `""` is served-but-empty. Announcing "0
+ * cleared" for either is the confidently-wrong answer -- the user pressed a
+ * button and was told, with a number, that there was nothing to clear.
+ *
+ * No file is written here. The autosave pass already removes lanes_<i>.json
+ * when the slot serves an empty document, and an eMMC write (~120 ms measured)
+ * inside a click handler is the cost that cache exists to avoid.
+ */
+/* CLEAR ONLY THE CLIP IN FRONT OF YOU.
+ *
+ * `Clear Lanes` empties the whole SLOT -- every clip, every parameter -- which
+ * was the only grain there was, and is far blunter than the thing people
+ * actually want after one bad take. The chain resolves "this clip" from the
+ * clip the slot is bound to; with nothing playing and nothing selected there
+ * is no clip to name, and a count of 0 is what says so. */
+/* "T3C2" for the clip this slot is bound to, or "none".
+ *
+ * Move numbers tracks and clip slots from 1 on the surface while the chain
+ * counts from 0, so the conversion happens HERE, once, rather than in each
+ * caller -- an off-by-one in a label that names what an action will destroy
+ * is worse than no label.
+ *
+ * CACHED, because this feeds a row LABEL: an uncached read is ~2.8 ms against
+ * a 1.68 ms whole-page render, so paying it per draw would make the menu
+ * slower to paint than the grid it sits over. */
+function slotClipLabel(slot) {
+    const cfg = chainConfigs[slot];
+    const mid = cfg && cfg.synth && cfg.synth.module;
+    if (!mid) return "none";
+    const raw = getSlotParamCached(slot, "lanes:clip", mid);
+    /* A FAILED read is not "no clip". null means the channel did not answer,
+     * and printing "none" for it would say the slot is bound to nothing --
+     * which is a claim about the clip, from an answer that was never about
+     * the clip. Say nothing instead. */
+    if (raw === null) return "";
+    if (raw === "") return "none";
+    const parts = String(raw).trim().split(/\s+/);
+    const t = parseInt(parts[0], 10), c = parseInt(parts[1], 10);
+    /* The track is still PARSED and validated even though it is not shown:
+     * a malformed answer must not produce a confident-looking "C1". */
+    if (!Number.isFinite(t) || !Number.isFinite(c) || t < 0 || c < 0) return "";
+    return "C" + (c + 1);
+}
+
+/* Clear ONE component's automation on the clip that is playing.
+ *
+ * `componentKey` is the chain address ("synth", "fx3"), which is exactly what
+ * a lane stores as its target, so no translation is needed and none is done --
+ * a mapping here would be a second place for the two to drift apart. */
+function clearComponentLanes(slot, componentKey) {
+    if (!componentKey) return;
+    setSlotParam(slot, "lanes:clear_target", String(componentKey));
+    const raw = getSlotParam(slot, "lanes:cleared");
+    if (raw === null || raw === "") {
+        announce("Clear automation: no answer");
+        return;
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+        announce("Clear automation: no answer");
+        return;
+    }
+    if (n === 0) {
+        announce("No automation for this module on this clip");
+        return;
+    }
+    const where = slotClipLabel(slot);
+    announce("Cleared " + n + " parameter" + (n === 1 ? "" : "s") +
+             (where && where !== "none" ? " on " + where : ""));
+}
+
+function clearSlotClipLanes(slot) {
+    setSlotParam(slot, "lanes:clear_clip", "1");
+    const raw = getSlotParam(slot, "lanes:cleared");
+    if (raw === null || raw === "") {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    if (n === 0) {
+        announce("No automation on this clip");
+        return;
+    }
+    const where = slotClipLabel(slot);
+    announce("Cleared " + n + " lane" + (n === 1 ? "" : "s") +
+             (where && where !== "none" ? " on " + where : " on this clip"));
+}
+
+/* UNDO THE LAST AUTOMATION EDIT -- and press it again to redo, because the
+ * chain SWAPS its one buffer rather than copying back. That is the right shape
+ * for automation specifically: the mistake is HEARD rather than seen, so the
+ * real gesture is "put it back; no, the other one".
+ *
+ * One level deep, deliberately. It covers the case that actually happens (a
+ * take, a clear, a double, one p-lock) without a history to keep consistent
+ * with the clip underneath it. */
+function undoSlotLaneEdit(slot) {
+    const can = getSlotParam(slot, "lanes:undoable");
+    if (can === null) {
+        announce("Undo automation: no answer");
+        return;
+    }
+    if (can !== "1") {
+        announce("Nothing to undo");
+        return;
+    }
+    setSlotParam(slot, "lanes:undo", "1");
+    const done = getSlotParam(slot, "lanes:undone");
+    if (done === null) {
+        announce("Undo automation: no answer");
+        return;
+    }
+    announce(done === "1" ? "Automation edit undone" : "Nothing to undo");
+}
+
+function clearSlotLanes(slot) {
+    setSlotParam(slot, "lanes:clear", "1");
+    const raw = getSlotParam(slot, "lanes:cleared");
+    if (raw === null || raw === "") {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+        announce("Clear lanes: no answer");
+        return;
+    }
+    announce("Cleared " + n + " lane" + (n === 1 ? "" : "s"));
+}
+
+/*
+ * A knob turn while armed with the clip phase UNKNOWN records nothing. Say so.
+ *
+ * Silence here is indistinguishable from a broken feature: Record is lit, the
+ * knob moves, and no lane appears. The refusal is the only thing that
+ * distinguishes "we could not tell where in the clip you are" from "automation
+ * does not work".
+ *
+ * ONCE PER GESTURE, AND THE READ OBEYS THE SAME RULE. A parameter round trip is
+ * ~2.8 ms against a 1.68 ms whole-page render, so a read per detent would be
+ * slower than redrawing the screen on every one of them -- the grid would feel
+ * laggy exactly while the user is turning something. So the gesture gate is
+ * decided FIRST, from a timestamp we already have, and only the first write of
+ * a spin pays for a read: 0 per frame, 0 per detent, one per gesture (a second
+ * only while actually armed, which is Record held down).
+ *
+ * A gesture ends when the writes stop. Any continuing detent extends it, which
+ * is why `at` is stamped before the early return.
+ */
+const LANE_REFUSAL_GESTURE_MS = 700;
+let laneRefusalGesture = { key: null, at: 0 };
+function noteLaneWriteRefusal(slot, key) {
+    const now = Date.now();
+    const continuing = laneRefusalGesture.key === key &&
+                       (now - laneRefusalGesture.at) < LANE_REFUSAL_GESTURE_MS;
+    laneRefusalGesture.at = now;
+    laneRefusalGesture.key = key;
+    if (continuing) return;
+
+    /* Armed first, because it is the rarer of the two: an unarmed slot is the
+     * steady state and pays exactly one read per gesture, never two. A null
+     * read answers nothing about the arm, so it stays quiet rather than
+     * claiming a refusal that may not have happened. */
+    if (getSlotParam(slot, "lanes:armed") !== "1") return;
+    if (getSlotParam(slot, "lanes:phase_valid") !== "0") return;
+    announce("Armed, clip phase unknown");
+}
+
 function autosaveOneSlot(i) {
     /* Never persist an uncommitted preset audition. While the user scrolls
      * User Presets, the live <prefix>:state is the previewed sound, not a
@@ -10037,6 +10429,11 @@ function autosaveOneSlot(i) {
      * mid-audition). previewActive clears on Load (commit) or Back (revert),
      * after which autosave resumes normally. */
     if (isPresetPreviewActive()) return;
+    /* Ahead of the slot-state work below, which has several early returns
+     * (empty slot, shim-reports-empty, no patch JSON) — a lane survives its
+     * module being swapped out, so it must not be persisted only on the paths
+     * where the slot still has one. */
+    persistSlotLanes(i);
     /* Sync chainConfigs from DSP before checking - prevents clobbering
      * valid autosave files for slots we haven't navigated to yet.
      * Read ONCE and reused as `currentSig` below — it used to be read
@@ -10195,11 +10592,20 @@ const SNAPSHOT_SUBDIR = "/snapshot";
 
 function snapshotDir() { return activeSlotStateDir + SNAPSHOT_SUBDIR; }
 
-/* The twelve files a snapshot is: four slots and eight Master FX positions. */
+/* The files a snapshot is: four slots, eight Master FX positions, and each
+ * slot's AUTOMATION LANES.
+ *
+ * The lanes were missing, and their absence was not a decision anyone made:
+ * Shift+Copy restored a slot's sound while leaving whatever automation
+ * happened to be live, so half the state came back and half did not. A lane is
+ * slot state -- it is written by the same autosave pass, into the same
+ * directory -- and a snapshot that takes one and not the other is a snapshot
+ * of something the user cannot name. */
 function snapshotFileNames() {
     const names = [];
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/slot_" + i + ".json");
     for (let i = 0; i < MASTER_FX_SLOTS; i++) names.push("/master_fx_" + i + ".json");
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) names.push("/lanes_" + i + ".json");
     return names;
 }
 
@@ -10328,6 +10734,30 @@ function snapshotRecall() {
         debugLog("snapshot: skipped " + r.prefix + " (" + r.reason +
                  (r.was ? ", was " + r.was : "") + (r.now ? ", now " + r.now : "") + ")");
     }
+    /* THE LANES, per slot and independently of the component plan above.
+     *
+     * They are not part of `records` because a lane is not a component: the
+     * plan's business is "is the module at this position still the one the
+     * snapshot was taken from", and a lane is addressed by (track, slot) and
+     * carries its own fingerprint for exactly that question. Writing
+     * `lanes:state` is the same call the set-change restore makes.
+     *
+     * AN ABSENT FILE CLEARS, and that is the half that makes this an A/B
+     * rather than an accumulation: if the snapshot was taken before any
+     * automation existed, recalling it must take the automation away again.
+     * `lanes:clear` also releases the overrides, so no parameter is left
+     * stranded where a lane stopped driving it. */
+    for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+        let laneDoc = null;
+        try { laneDoc = host_read_file(dir + "/lanes_" + i + ".json"); } catch (e) {}
+        if (laneDoc && laneDoc.length > 0) {
+            setSlotParam(i, "lanes:state", laneDoc);
+            lastWrittenLaneJson[i] = laneDoc;
+        } else {
+            clearSlotLanesQuietly(i);
+        }
+    }
+
     debugLog("snapshot: restored " + plan.writes.length + ", skipped " + plan.skipped);
 
     /*
@@ -10408,6 +10838,85 @@ function shadowDisplayHidden() {
  * module name. It is the smallest thing that can be seen from playing
  * position, and it is gone the moment the recall lands.
  */
+/*
+ * A P-LOCK LANDED: the mod-dot plus, top right, for PLOCK_MARK_MS.
+ *
+ * WHY A MARK AT ALL. The gesture is silent by nature -- a p-lock changes
+ * nothing you can hear until the loop comes round to that step -- so there was
+ * no answer to "did that work?" on any screen. Eight p-locks landed correctly
+ * on hardware and were reported as the feature being broken, which is a worse
+ * outcome than a refusal: a refusal at least names itself in
+ * `lanes:plock_reason`.
+ *
+ * WHY HERE, beside the snapshot mark, rather than in the knob grid. A module
+ * that draws its own screen from `ui_chain.js` (9W9 does) is exactly the case
+ * that could not p-lock at all until the decision moved below the UI, and
+ * anything drawn from the param-pages layer would be invisible to it for the
+ * same reason. This runs after the view switch, over whatever drew -- the
+ * module's own frame included.
+ *
+ * THE SAME PLUS THE KNOB GRID USES for a driven value (drawModDot): five
+ * fill_rects, and an even-sized mark cannot centre on a pixel. It is drawn on
+ * a cleared square because the surface underneath belongs to a module and
+ * cannot be assumed dark -- a white plus on a white cell is no mark at all.
+ *
+ * The seq is read straight from SHM (~free) rather than asking the chain
+ * `lanes:plocked` per frame (~2.8 ms, more than a whole page render).
+ */
+const PLOCK_MARK_MS = 600;
+const PLOCK_MARK_SIZE = 7;   /* the cleared square; the plus is 5 inside it */
+let plockMarkSeq = null;     /* null = never sampled, so the first read arms nothing */
+let plockMarkUntil = 0;
+
+/*
+ * Is a lane driving a parameter in the slot on screen RIGHT NOW?
+ *
+ * THE PLAYBACK HALF, and the one actually asked for: a landed p-lock is
+ * invisible until the loop reaches it, and when it does, a module drawing its
+ * own screen still shows nothing -- automation running and nothing running
+ * look identical. The knob grid has the per-key form of this already (the mod
+ * dot riding the arc, off `<key>:modulated`); this is the same fact at slot
+ * altitude, for the surfaces that cannot draw a per-knob mark.
+ *
+ * Straight out of SHM (a bit per slot, republished by the shim every ~46 ms),
+ * so it costs nothing to ask every frame.
+ */
+function lanesDrivingHere() {
+    if (typeof shadow_get_lanes_driving_mask !== "function") return false;
+    try { return ((shadow_get_lanes_driving_mask() >> selectedSlot) & 1) !== 0; }
+    catch (e) { return false; }
+}
+
+function drawPlockMark() {
+    if (typeof shadow_get_plock_seq !== "function") return;
+    let seq = 0;
+    try { seq = shadow_get_plock_seq(); } catch (e) { return; }
+    /* The FIRST sample only establishes a baseline. Without this every entry
+     * to the UI would flash a mark for the last p-lock of the previous
+     * session, which is a lie about what just happened. */
+    if (plockMarkSeq === null) { plockMarkSeq = seq; return; }
+    if (seq !== plockMarkSeq) {
+        plockMarkSeq = seq;
+        plockMarkUntil = Date.now() + PLOCK_MARK_MS;
+    }
+    /* ONE GLYPH, TWO DURATIONS, one meaning -- "automation is here". Steady
+     * while a lane drives this slot, and forced on for PLOCK_MARK_MS when a
+     * p-lock lands, which is the case where nothing is driving yet (the
+     * transport may be stopped) and the user still needs an answer. A second
+     * glyph for the second duration would be two things to learn for one
+     * fact. */
+    if (Date.now() >= plockMarkUntil && !lanesDrivingHere()) return;
+    if (shadowDisplayHidden()) return;
+    const n = PLOCK_MARK_SIZE, x = 128 - n, y = 0;
+    fill_rect(x, y, n, n, 0);
+    const cx = x + 3, cy = y + 3;
+    fill_rect(cx, cy, 1, 1, 1);
+    fill_rect(cx - 1, cy, 1, 1, 1);
+    fill_rect(cx + 1, cy, 1, 1, 1);
+    fill_rect(cx, cy - 1, 1, 1, 1);
+    fill_rect(cx, cy + 1, 1, 1, 1);
+}
+
 function drawSnapshotPendingMark() {
     if (!snapshotQueuedPending || shadowDisplayHidden()) return;
     const w = 9, h = 9, x = 128 - w, y = 0;
@@ -13954,6 +14463,23 @@ function runChainSettingAction(slot, key) {
         return;
     }
 
+    /* Opens nothing: it acts and announces, so it needs no hand-off to the
+     * list the way Save/Delete do (gridActionOpenedSomething stays false). */
+    if (key === "clear_lanes") {
+        clearSlotLanes(slot);
+        return;
+    }
+
+    if (key === "clear_clip_lanes") {
+        clearSlotClipLanes(slot);
+        return;
+    }
+
+    if (key === "undo_lane_edit") {
+        undoSlotLaneEdit(slot);
+        return;
+    }
+
     if (key === "save") {
         /* Start save flow */
         const currentName = slots[slot] ? slots[slot].name : "";
@@ -14132,6 +14658,8 @@ function slotGridIoFor(slotIndex) {
         /* Gates the Buses action. Cached and conservative on a failed read —
          * see chainSynthSplits. */
         hasSplitVoices: () => chainSynthSplits(slotIndex),
+        /* Names the clip on the `Clear Clip Lanes` row -- see slotClipLabel. */
+        clipLabel: () => slotClipLabel(slotIndex),
         /* An LFO's target reads as a name, not as "fx1" — see
          * shared/lfo_target_label.mjs. Resolved through the same ctx the LFO
          * editor uses, so the grid and the list can never describe the same
@@ -19256,6 +19784,116 @@ function moduleClaimedCcs(moduleId) {
  * returns without writing or logging, which is also what lets this restate
  * rather than memoise — the shim drops the flag unilaterally on the
  * display-mode edge and at init, and a JS mirror of that would latch. */
+/* WHICH STEP BUTTON IS HELD, or -1.
+ *
+ * Fed by the shim's step_observe forward (notes 16-31) and used by the p-lock
+ * gesture. The LAST press wins: two fingers down is not a gesture anyone can
+ * mean, and taking the earlier one would make the second press feel dead.
+ *
+ * Held state is tracked as a SET rather than a single index so that releasing
+ * one of two held steps leaves the other held -- the same reason the shim
+ * latches a claimed button per note rather than keeping one "a button is
+ * down" flag.
+ */
+const stepHeld = [];       /* index 0..15 -> truthy while held */
+let stepHeldLast = -1;
+
+function noteStepIndex(note) {
+    return (note >= 16 && note <= 31) ? (note - 16) : -1;
+}
+
+function onStepNote(note, velocity) {
+    const idx = noteStepIndex(note);
+    if (idx < 0) return false;
+    if (velocity > 0) {
+        stepHeld[idx] = 1;
+        stepHeldLast = idx;
+    } else {
+        stepHeld[idx] = 0;
+        if (stepHeldLast === idx) {
+            stepHeldLast = -1;
+            for (let i = 0; i < 16; i++) if (stepHeld[i]) stepHeldLast = i;
+        }
+    }
+    return true;
+}
+
+/* A READ, not a second search. `onStepNote` already decides which step is the
+ * held one -- including falling back to another that is still down -- and a
+ * scan here duplicated that decision: mutating the fallback out of onStepNote
+ * left the test green, because this loop quietly did the same job. One fact,
+ * one place; the mutation fails now. */
+function heldStepIndex() {
+    return (stepHeldLast >= 0 && stepHeld[stepHeldLast]) ? stepHeldLast : -1;
+}
+
+/* Ask the shim to forward step notes while a chain component's knob grid is on
+ * screen -- the only place the p-lock gesture can be made.
+ *
+ * RESTATED EVERY FRAME, never memoised: the shim drops step_observe itself
+ * when the shadow display closes, so a mirror would latch and the gesture
+ * would die silently after the first dismiss. That is the mistake pad_observe
+ * already paid for, and the binding is idempotent against the SHM for exactly
+ * this reason. Held state is dropped with the flag, or a step released while
+ * the UI was not watching stays "held" forever. */
+let uiViewLogTick = 0;
+/*
+ * WHO IS WATCHING THE STEP BUTTONS -- the host's knob grid, OR a module
+ * drawing its own.
+ *
+ * This asked `view === VIEWS.PARAM_PAGES` alone, and that is the fourth time
+ * one facility has been gated on the host's own view and been invisible to a
+ * module that binds the controller from its own `ui_chain.js`. The enum peek,
+ * the p-lock write, the modulation marks -- and this, which is worse than the
+ * others because it fails SILENTLY IN BOTH DIRECTIONS: on 9W9 no step was
+ * forwarded to the UI (so no p-lock gesture) and no step was withheld from
+ * Move (so every press toggled a note). Measured on hardware through the test
+ * bus: holding a step for 1.5 s added a note to the clip and tapping it
+ * removed one, which is Move receiving every press exactly as if the grid were
+ * not there.
+ *
+ * A component editor drawing a module's own UI is armed too. The p-lock is a
+ * CHAIN gesture -- any component parameter can be locked -- so which UI is
+ * drawing the knobs does not change whether a held step means "lock this".
+ * The cost for a module that never uses steps is that a tap toggles its note
+ * STEP_TAP_MS late instead of instantly, because the press is deferred rather
+ * than swallowed.
+ */
+function reconcileStepObserve() {
+    if (typeof host_step_observe !== "function") return;
+    const hostGrid = (view === VIEWS.PARAM_PAGES) &&
+                     paramPagesComponent() !== null &&
+                     paramPagesComponent() !== undefined &&
+                     paramPagesSlot() >= 0;
+    /* The same test reconcilePadBlock uses for "a module owns this screen",
+     * so the two cannot disagree about whose UI is up. */
+    const moduleGrid = view === VIEWS.COMPONENT_EDIT &&
+                       loadedModuleUi && loadedModuleUi.tick &&
+                       !coRunUiActive();
+    /* AND THE SCREEN HAS TO BE OURS.
+     *
+     * `view` survives a dismiss -- Menu hides the display and leaves the grid
+     * as the view we would come back to -- so the two tests above stayed true
+     * with Move on screen, the flag stayed 1, and the shim went on WITHHOLDING
+     * every bare step press. Reported from the device as "I can no longer
+     * toggle steps at all, in the sequencer, to place notes": the tap replay
+     * covers a press under STEP_TAP_MS, so short taps still worked and
+     * anything deliberate did not, which is why it reads as the sequencer
+     * being broken rather than as a Schwung flag left on.
+     *
+     * Same test the feedback modal uses for "is our UI actually up", for the
+     * same reason: a view is what we would draw, not what the user is
+     * looking at. */
+    const onScreen = typeof shadow_get_display_mode !== "function" ||
+                     shadow_get_display_mode() === 1;
+    const want = (hostGrid || !!moduleGrid) && onScreen;
+    host_step_observe(want ? 1 : 0);
+    if (!want) {
+        for (let i = 0; i < 16; i++) stepHeld[i] = 0;
+        stepHeldLast = -1;
+    }
+}
+
 function reconcilePadBlock() {
     if (isTextEntryActive()) return;
     const moduleOwnsPads = view === VIEWS.COMPONENT_EDIT &&
@@ -23617,6 +24255,15 @@ function drawHelpDetail() {
     _ctx.enterBusList = (...args) => enterBusList(...args);
     _ctx.chainSynthSplits = (slot) => chainSynthSplits(slot);
     _ctx.slotBusCountLabel = (slot) => slotBusCountLabel(slot);
+    /* ...and the same slot list's `Clear Lanes` row. One implementation, three
+     * surfaces — see clearSlotLanes. */
+    _ctx.clearSlotLanes = (slot) => clearSlotLanes(slot);
+    _ctx.clearSlotClipLanes = (slot) => clearSlotClipLanes(slot);
+    _ctx.slotClipLabel = (slot) => slotClipLabel(slot);
+    _ctx.undoSlotLaneEdit = (slot) => undoSlotLaneEdit(slot);
+    /* The knob grid's write path asks this whether a refused recording needs
+     * announcing (shadow_ui_param_pages.mjs). */
+    _ctx.noteLaneWriteRefusal = (slot, key) => noteLaneWriteRefusal(slot, key);
 })();
 
 /* Delegate draw/enter functions to extracted modules */
@@ -24510,6 +25157,11 @@ globalThis.init = function() {
     for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
         const dirty = getSlotParam(i, "dirty");
         slotDirtyCache[i] = (dirty === "1");
+        /* The shim's boot restore ran load_file for this slot; lanes are not in
+         * that document, so they are read back here — after the chain exists,
+         * because a lane's target has to be there for lane_tick to find its
+         * parameter metadata. */
+        try { restoreSlotLanes(i); } catch (e) { debugLog("lanes restore: " + e); }
         /* Sync slot names + per-component bypass from autosave if present.
          * The shim's load_file restores synth/FX/MIDI-FX modules + params via
          * the chain_host parser, but bypass flags are not in the C parser path;
@@ -24766,6 +25418,23 @@ globalThis.tick = function() {
      * table above reconcileCcClaim(). */
     reconcileCcClaim();
     reconcilePadBlock();
+    reconcileStepObserve();
+    /* WHERE THE UI IS, once a second, when the debug log is armed.
+     *
+     * Every other instrument in this session could see Move (its screen, its
+     * file, its LEDs) and none could see the shadow UI's own view, which is
+     * why navigating it from a harness meant guessing. debugLog is a no-op
+     * unless /data/UserData/schwung/debug_log_on exists, and the throttle is
+     * the same 1 Hz the clip-state readout uses. */
+    uiViewLogTick = (uiViewLogTick + 1) % 60;
+    if (uiViewLogTick === 0) {
+        try {
+            debugLog("ui_view: " + view +
+                     " slot=" + paramPagesSlot() +
+                     " component=" + String(paramPagesComponent()) +
+                     " step_observe_want=" + (view === VIEWS.PARAM_PAGES));
+        } catch (e) { /* an observability line must never break the tick */ }
+    }
 
     /* Background tick for JS-suspended overtake modules.
      * Each parked module's tick() keeps firing so it can emit MIDI or advance
@@ -25309,6 +25978,14 @@ globalThis.tick = function() {
                     syncUserPresetRecordsFromChain(i, null);
                 }
             }
+            /* Pass 3: the incoming set's automation lanes. After pass 2, so
+             * every lane's target exists; its own loop, because pass 2 has
+             * three branches and a lane survives its module being swapped out
+             * — a slot with no state file can still own lanes. */
+            for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
+                try { restoreSlotLanes(i); } catch (e) { debugLog("lanes restore: " + e); }
+            }
+
             /* Refresh UI state immediately so display reflects new slot contents */
             for (let i = 0; i < SHADOW_UI_SLOTS; i++) {
                 lastSlotModuleSignatures[i] = "";  /* force refresh */
@@ -26320,6 +26997,10 @@ globalThis.tick = function() {
         /* ...and the armed-recall mark, after it: the toast is transient and
          * the mark outlives it, so the mark must not be painted under it. */
         drawSnapshotPendingMark();
+        /* ...and the p-lock mark, which outlives neither: it is its own
+         * 600 ms and belongs on top of both, since it reports something that
+         * happened just now. */
+        drawPlockMark();
     }
 
     } catch (e) {
@@ -26916,6 +27597,24 @@ globalThis.onMidiMessageInternal = function(data) {
             }
             return;
         }
+    }
+
+    /* STEP BUTTONS (notes 16-31), while the shim is forwarding them: remember
+     * which is held, for the p-lock gesture. Both edges, and BEFORE the
+     * handlers below, which return early for their own notes -- a release that
+     * never arrives leaves a step held forever, and the next knob turn on any
+     * page would p-lock it.
+     *
+     * Records only; the write happens on the knob's commit
+     * (componentParamPagesIo's onValueWritten), because that is the only point
+     * that knows the value the turn produced. Does NOT return: nothing else
+     * uses these notes, and swallowing them here would hide them from a tool
+     * that might. */
+    if (((status & 0xF0) === MidiNoteOn || (status & 0xF0) === MidiNoteOff) &&
+            noteStepIndex(d1) >= 0) {
+        onStepNote(d1, ((status & 0xF0) === MidiNoteOn) ? d2 : 0);
+        debugLog("plock: step note " + d1 + " v" + d2 +
+                 " held=" + heldStepIndex());
     }
 
     /* Handle Note On for knob touch - peek at current value without turning

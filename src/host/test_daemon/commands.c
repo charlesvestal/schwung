@@ -97,6 +97,33 @@ void commands_reset_client_state(void) {
     }
 }
 
+/* WHICH SLOT SET_PARAM / GET_PARAM ADDRESS, default 0.
+ *
+ * Every param request carried slot 0 hard-coded, which is fine for a harness
+ * that only ever drove the first chain -- and blocking the moment a test needs
+ * a slot whose MOVE TRACK is the one playing a clip. Lanes are bound to
+ * (track, slot), so "put a lane on the clip that is actually playing" is a
+ * normal thing to ask for and was unreachable.
+ *
+ * Sticky rather than a per-command prefix: a test reads and writes several
+ * keys on one slot, and repeating the slot on every line is how one of them
+ * ends up on a different chain. */
+static int g_param_slot = 0;
+
+static int cmd_slot(int fd, const char *args) {
+    if (!args || !*args) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "OK slot %d", g_param_slot);
+        return protocol_reply(fd, msg);
+    }
+    char *end = NULL;
+    long v = strtol(args, &end, 10);
+    if (end == args || v < 0 || v >= SHADOW_CHAIN_INSTANCES)
+        return protocol_reply_err(fd, "SLOT expects 0..3");
+    g_param_slot = (int)v;
+    return protocol_reply(fd, "OK");
+}
+
 /* ---- handlers ---------------------------------------------------------- */
 
 static int cmd_ping(int fd, const char *args) {
@@ -544,7 +571,7 @@ static int testd_param_do_set(int fd, const char *key, const char *value, size_t
     if (value_len < SHADOW_PARAM_VALUE_LEN) {
         g_shm.param->value[value_len] = '\0';
     }
-    g_shm.param->slot = 0;
+    g_shm.param->slot = (uint8_t)g_param_slot;
     g_shm.param->response_ready = 0;
     g_shm.param->error = 0;
     g_shm.param->response_id = 0;
@@ -621,7 +648,7 @@ static int cmd_get_param(int fd, const char *args) {
     g_shm.param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
     /* Clear value to avoid stale data appearing in the response. */
     memset(g_shm.param->value, 0, SHADOW_PARAM_VALUE_LEN);
-    g_shm.param->slot = 0;
+    g_shm.param->slot = (uint8_t)g_param_slot;
     g_shm.param->response_ready = 0;
     g_shm.param->error = 0;
     g_shm.param->response_id = 0;
@@ -743,7 +770,7 @@ static int cmd_dump_param_file(int fd, const char *args) {
     strncpy(g_shm.param->key, key, SHADOW_PARAM_KEY_LEN - 1);
     g_shm.param->key[SHADOW_PARAM_KEY_LEN - 1] = '\0';
     memset(g_shm.param->value, 0, SHADOW_PARAM_VALUE_LEN);
-    g_shm.param->slot = 0;
+    g_shm.param->slot = (uint8_t)g_param_slot;
     g_shm.param->response_ready = 0;
     g_shm.param->error = 0;
     g_shm.param->response_id = 0;
@@ -798,6 +825,7 @@ typedef struct {
 
 static const command_entry_t g_commands[] = {
     {"PING",              cmd_ping},
+    {"SLOT",              cmd_slot},
     {"INJECT_MIDI",       cmd_inject_midi},
     {"WAIT_FRAME",        cmd_wait_frame},
     {"SNAPSHOT_PAD_LEDS", cmd_snapshot_pad_leds},

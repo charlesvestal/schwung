@@ -6,6 +6,7 @@
 #include "shadow_led_queue.h"
 #include "unified_log.h"
 #include "clip_state.h"
+#include "rec_arm.h"
 
 /* Transport pulse counter (shadow_sampler.c). Read-only here, and only from
  * the SPI callback, which is also the only writer — no barrier needed. */
@@ -374,6 +375,16 @@ static void service_knob_led_restore(shadow_control_t *ctrl) {
     led_queue_restore_move_sysex_leds();
 }
 
+/* Move's Record button, decoded from its LED (rec_arm.h). Written on the SPI
+ * callback by the cable-0 scan below; read by the shim to arm the lanes and by
+ * the worker to log it. Independent ints, so a torn read is at worst one frame
+ * stale, and the recording window is beats long. */
+static rec_arm_t g_rec_arm;
+
+int shadow_rec_arm_recording(void) { return g_rec_arm.recording; }
+int shadow_rec_arm_flashing(void)  { return g_rec_arm.flashing; }
+int shadow_rec_arm_seen(void)      { return g_rec_arm.seen; }
+
 void shadow_clear_move_leds_if_overtake(void) {
     shadow_control_t *ctrl = host.shadow_control ? *host.shadow_control : NULL;
     int cur_overtake = (ctrl && ctrl->overtake_mode >= 2) ? 1 : 0;
@@ -407,6 +418,10 @@ void shadow_clear_move_leds_if_overtake(void) {
                                   (uint32_t)shadow_transport_pulses,
                                   sampler_transport_playing,
                                   ctrl ? ctrl->move_ui_mode : 0);
+                /* Move's Record button, read over its shoulder. Accumulates
+                 * only -- the decision is rec_arm_frame_end() after the loop,
+                 * because a burst holds `static 127` followed by `blink`. */
+                rec_arm_on_led(&g_rec_arm, midi_out[i+1], d1, d2);
                 if (type == 0x90 || type == 0x80) {
                     /* Move turns pad LEDs off via note-off (0x80); normalize
                      * to note-on with d2=0 so restore emits a uniform 0x90. */
@@ -428,6 +443,22 @@ void shadow_clear_move_leds_if_overtake(void) {
                 led_capture_record(cable, midi_out[i+1], midi_out[i+2], midi_out[i+3]);
             }
         }
+
+        /* ONE decision per frame, from the LAST CC 86 in it. Inside the same
+         * gate as the scan that feeds it: when the scan does not run (overtake
+         * without skip_led_clear) nothing was offered, and a frame that offered
+         * nothing must leave the state alone rather than clear it. */
+        rec_arm_frame_end(&g_rec_arm);
+
+        /* A deferred ch-9 OFF is resolved by TIME when nothing contradicts it,
+         * and no LED event announces that -- Move said all it was going to say
+         * at the OFF. Inside the same gate as the scan on purpose: while we are
+         * blind (overtake without skip_led_clear) nothing COULD have come along
+         * to call it a replacement, so expiring it there would be a verdict
+         * reached without evidence. See clip_state.h, pending_off_slot. */
+        clip_state_ensure();
+        clip_state_expire_pending_off(&g_clip_state,
+                                      (uint32_t)shadow_transport_pulses);
     }
 
     /* AFTER the scan, so the cache is this frame's, and only outside overtake,
@@ -1067,26 +1098,35 @@ static int find_contiguous_empty_block(const uint8_t *midi_out, int from, int co
  * Iterates both subcmd slots (0x00 then 0x10) for each pass.
  *
  * IMPORTANT: All 6 USB-MIDI packets for a sysex LED command must be
- * contiguous in the buffer. We clear existing cable-0 sysex first
- * to prevent interleaving with RNBO's live sysex on the same cable. */
+ * contiguous in the buffer, and must not interleave with any other cable-0
+ * sysex — the hardware's parser cannot tell two interleaved runs apart.
+ *
+ * This used to be achieved by CLEARING every cable-0 sysex packet in the
+ * buffer first, which is a different thing entirely: it made room by
+ * DESTROYING whatever was there. The comment reasoned only about RNBO's live
+ * sysex, but Move's own firmware shares that cable — its RGB LED commands AND
+ * its 37-family XMOS control messages, which are how the USB-C audio-out
+ * source is set. A destroyed 37 pair is silent: Move's screen still shows the
+ * new setting and the hardware never changed.
+ *
+ * So it defers instead. The restore is progressive (one LED per call, retried
+ * every frame over several passes), so the cost of waiting for a clear frame is
+ * a slower LED restore. The cost of the old behaviour was somebody else's
+ * message. Not a trade. */
 int led_queue_flush_jack_sysex_restore(int max_leds) {
     if (!sysex_restore_pending) return 0;
 
     uint8_t *midi_out = host.midi_out_buf;
     if (!midi_out) return 0;
 
-    /* Clear any cable-0 sysex packets already in the buffer. */
-    int cleared = 0;
+    /* Somebody else's cable-0 sysex is in flight this frame — defer rather than
+     * clear it. Returning 0 leaves sysex_restore_pending set, so the next frame
+     * tries again; nothing is lost but time. */
     for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
         uint8_t cin_type = midi_out[s] & 0x0F;
         uint8_t cable = (midi_out[s] >> 4) & 0x0F;
-        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
-            midi_out[s] = 0;
-            midi_out[s+1] = 0;
-            midi_out[s+2] = 0;
-            midi_out[s+3] = 0;
-            cleared++;
-        }
+        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07)
+            return 0;
     }
 
     int leds_sent = 0;
@@ -1270,6 +1310,9 @@ int led_queue_move_sysex_restore_pending(void) {
     return move_sysex_restore_pending;
 }
 
+/* Same contract as led_queue_flush_jack_sysex_restore above, and it had the
+ * same indiscriminate clear — with no comment at all, which is how the second
+ * copy outlived the reasoning of the first. Defer, never destroy. */
 int led_queue_flush_move_sysex_restore(int max_leds) {
     if (!move_sysex_restore_pending) return 0;
 
@@ -1279,12 +1322,8 @@ int led_queue_flush_move_sysex_restore(int max_leds) {
     for (int s = 0; s < HW_MIDI_OUT_SIZE; s += 4) {
         uint8_t cin_type = midi_out[s] & 0x0F;
         uint8_t cable = (midi_out[s] >> 4) & 0x0F;
-        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07) {
-            midi_out[s] = 0;
-            midi_out[s+1] = 0;
-            midi_out[s+2] = 0;
-            midi_out[s+3] = 0;
-        }
+        if (cable == 0 && cin_type >= 0x04 && cin_type <= 0x07)
+            return 0;
     }
 
     int leds_sent = 0;
