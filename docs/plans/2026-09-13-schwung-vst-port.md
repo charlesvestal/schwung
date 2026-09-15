@@ -68,9 +68,15 @@ it**. That is the largest surface area of the project and it comes free.
 2. **Fixed 44100/128 internally, converted at the boundary.** Costs a block of
    latency and a resampler; buys behaviour bit-identical to the device. Making
    139 modules sample-rate-aware is not a project anyone finishes.
-3. **Keep the two-process split.** The plugin plays the shim's role and spawns
-   `shadow_ui` as a child, exactly as the device does. The SHM protocol is
-   already the contract.
+3. ~~**Keep the two-process split.**~~ **SUPERSEDED.** The original plan was to
+   spawn `shadow_ui` as a child exactly as the device does. That cannot work
+   as written: the nineteen SHM segment names in `shadow_constants.h` are
+   compile-time constants, so two plugin instances — an ordinary Live set with
+   two Schwung tracks — attach to the same `/schwung-control` and drive one
+   screen between them. The replacement is to reimplement `shadow_shm_map()`
+   as a **per-instance allocator**, which makes the whole UI instance-safe
+   without editing `shadow_ui.c` at all and drops the child process with it.
+   See Open questions.
 4. **macOS first; Windows is a separate project.** Live hosts VST3 and AU but
    **not CLAP**, so the wrapper is JUCE. Windows has no `fork`, no POSIX shm and
    no `dlopen` — that is the bottom layer written a third time, not a build flag.
@@ -253,6 +259,14 @@ And two about instruments rather than code:
 
 ## Open questions
 
+- **The shadow UI's shared memory — allocator or namespaced segments?** This is
+  the one blocking phase 2. `shadow_ui.c` only ever reaches the audio side
+  through `shadow_shm_map()`, so reimplementing that one function as a
+  per-instance allocator makes the UI instance-safe with no edits to it and no
+  child process. The alternative — keeping real SHM but suffixing the names per
+  instance — preserves the process boundary (a crash in the UI would not take
+  the host down) at the cost of touching `shadow_constants.h`, which the device
+  shares. Nothing is decided; the allocator is the current preference.
 - Does a bundle carry samples by value (portable, large) or by reference
   (small, breaks when the project moves machines)?
 - Should the plugin read a set directly off a Move over the network, or is
