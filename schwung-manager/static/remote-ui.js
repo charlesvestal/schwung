@@ -6,6 +6,10 @@
     "use strict";
 
     var COMPONENT_KEYS = ["synth", "fx1", "fx2", "midi_fx1"];
+    // The order components are DRAWN in, which is signal flow and not the order
+    // they are enumerated in. Both render paths read this one list; when they
+    // each carried their own, the custom-synth path drew the MIDI FX last.
+    var COMPONENT_ORDER = ["midi_fx1", "synth", "fx1", "fx2"];
     var COMPONENT_LABELS = {
         synth: "Synth",
         fx1: "Audio FX 1",
@@ -33,8 +37,14 @@
                 fx2: makeComponent(),
                 midi_fx1: makeComponent()
             },
-            // Track which component sections are collapsed (true = collapsed).
-            collapsed: { synth: false, fx1: true, fx2: true, midi_fx1: true },
+            // Track which component sections the user has folded. A key is
+            // absent until the header is clicked -- see sectionCollapsed(),
+            // which derives the default from whether the component ships a
+            // panel. Storing `true` here for every non-synth component hid a
+            // MIDI FX's whole web_ui.html behind a one-line disclosure
+            // triangle, below a 3000px synth panel, with nothing to say a
+            // panel was there at all.
+            collapsed: {},
             // Custom web UI URLs, keyed by component ("synth", "fx1", …).
             // A component absent from this map uses the auto-generated UI.
             customUI: {},
@@ -55,7 +65,7 @@
             "master_fx:fx3": makeComponent(),
             "master_fx:fx4": makeComponent()
         },
-        collapsed: { "master_fx:fx1": false, "master_fx:fx2": true, "master_fx:fx3": true, "master_fx:fx4": true },
+        collapsed: {},
         // Keyed by component, exactly as a slot's is: two Master FX positions
         // can each ship a panel and must not collide.
         customUI: {},
@@ -1431,6 +1441,25 @@
         if (needsFullRender) renderSlot();
     }
 
+    /**
+     * Is this component's section folded?
+     *
+     * `state.collapsed[key]` records only what the USER chose -- a key is
+     * absent until the header is clicked. Everything else is DERIVED, because
+     * the right default depends on something that arrives after the state is
+     * built: a component that ships its own web_ui.html must open, or the
+     * panel is invisible and nothing on screen says one exists. That is
+     * exactly how a MIDI FX panel went missing -- the section rendered, folded,
+     * as a single line under a 3000px synth panel. The lead position opens too,
+     * so a slot is never a stack of closed triangles.
+     */
+    function sectionCollapsed(state, compKey, leadKey) {
+        var chosen = state.collapsed[compKey];
+        if (chosen === true || chosen === false) return chosen;
+        if (state.customUI && state.customUI[compKey]) return false;
+        return compKey !== leadKey;
+    }
+
     // ------------------------------------------------------------------
     // Render a single component section
     // ------------------------------------------------------------------
@@ -1454,7 +1483,8 @@
         header.appendChild(arrow);
         header.appendChild(title);
         header.onclick = function () {
-            slots[activeSlot].collapsed[compKey] = !slots[activeSlot].collapsed[compKey];
+            var st = slots[activeSlot];
+            st.collapsed[compKey] = !sectionCollapsed(st, compKey, "synth");
             renderSlot();
         };
         section.appendChild(header);
@@ -1639,14 +1669,14 @@
         if (knobSection) slotContentEl.appendChild(knobSection);
 
         // Render component sections in order: midi_fx, synth, fx1, fx2
-        var compOrder = ["midi_fx1", "synth", "fx1", "fx2"];
         var renderedCount = 0;
-        for (var k = 0; k < compOrder.length; k++) {
-            var compKey = compOrder[k];
+        for (var k = 0; k < COMPONENT_ORDER.length; k++) {
+            var compKey = COMPONENT_ORDER[k];
             var compState = s.components[compKey];
             if (!compState || !compState.module) continue;
 
-            var section = renderComponentSection(compKey, compState, s.collapsed[compKey]);
+            var section = renderComponentSection(
+                compKey, compState, sectionCollapsed(s, compKey, "synth"));
             slotContentEl.appendChild(section);
             renderedCount++;
         }
@@ -2199,18 +2229,24 @@
     }
 
     function renderCustomUI(s) {
-        slotContentEl.appendChild(
-            buildCustomUIFrame("synth", s.customUI.synth, "Custom Module UI"));
-
-        // The other components still render below the synth panel. Each one
-        // draws its own custom UI inside its section if it ships one.
-        for (var k = 0; k < COMPONENT_KEYS.length; k++) {
-            var compKey = COMPONENT_KEYS[k];
-            if (compKey === "synth") continue; // synth is replaced by iframe
+        // SIGNAL-FLOW order, the same one the generated path uses: a MIDI FX
+        // runs BEFORE the synth, so its section belongs above the synth panel.
+        // Rendering the synth iframe first and looping COMPONENT_KEYS after it
+        // put the MIDI FX dead last -- below a panel that measures itself at
+        // ~3000px, which is a long way past "not visible".
+        for (var k = 0; k < COMPONENT_ORDER.length; k++) {
+            var compKey = COMPONENT_ORDER[k];
             var compState = s.components[compKey];
+            if (compKey === "synth") {
+                // The synth's own panel replaces its section entirely.
+                slotContentEl.appendChild(
+                    buildCustomUIFrame("synth", s.customUI.synth, "Custom Module UI"));
+                continue;
+            }
             if (!compState.module) continue;
             slotContentEl.appendChild(
-                renderComponentSection(compKey, compState, s.collapsed[compKey]));
+                renderComponentSection(
+                    compKey, compState, sectionCollapsed(s, compKey, "synth")));
         }
 
         // Slot settings (volume, sends, channels, LFO, …) are module-independent
@@ -2480,7 +2516,9 @@
             var compState = masterFx.components[compKey];
             if (!compState.module) continue;
 
-            var section = renderMasterFxSection(compKey, compState, masterFx.collapsed[compKey]);
+            var section = renderMasterFxSection(
+                compKey, compState,
+                sectionCollapsed(masterFx, compKey, MASTER_FX_KEYS[0]));
             slotContentEl.appendChild(section);
             renderedCount++;
         }
@@ -2513,7 +2551,8 @@
         header.appendChild(arrow);
         header.appendChild(title);
         header.onclick = function () {
-            masterFx.collapsed[compKey] = !masterFx.collapsed[compKey];
+            masterFx.collapsed[compKey] =
+                !sectionCollapsed(masterFx, compKey, MASTER_FX_KEYS[0]);
             renderSlot();
         };
         section.appendChild(header);
