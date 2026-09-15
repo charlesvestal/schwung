@@ -1,6 +1,9 @@
 # Schwung as an Ableton Live plugin — Feasibility & Plan (2026-09-13)
 
-Status: **proposed**, nothing built. First target macOS, VST3 + AU.
+Status: **built and running** (2026-09-14). Phases 0 and 1 are done; the
+plugin loads in Live, makes sound, and automates. macOS, VST3 + AU.
+Implementation in `desktop/` — see `desktop/README.md` for how to build it and
+what will bite. This file is the plan and the record of what it cost.
 
 Goal: a plugin that loads Schwung modules inside a Live set, so a chain built on
 Move keeps working after a transfer — parameters, LFOs, buses and the 128x64
@@ -114,7 +117,27 @@ airplay, radiogarden, webstream, norns, pipewire, jack.
 Phase 0 exists to be killed cheaply. Everything after it is scope rather than
 risk — except the fleet lane, which never ends.
 
-### Phase 0 — Vertical slice (prove or kill)
+## What was built (0 and 1, done)
+
+- Chain host + 76 modules build natively on macOS arm64; **no module repo was
+  edited** — `desktop/port-module.sh` supplies shim compilers and each repo's
+  own `build.sh` does the rest.
+- VST3 / AU / Standalone. `auval` SUCCEEDS, including render at 11025–192000 Hz
+  and 64–4096 frame blocks.
+- 30 of 47 installed modules verified making sound; the rest are asset-limited
+  (`desktop/smoke-test.sh` reports it).
+- 512 auto-bound macros carrying module parameter names into Live.
+- All 16 chain positions; state persistence; MIDI realtime clock; line input.
+- Two plugin instances in one process, verified independent.
+
+Still open in phase 1: repeated module swaps in one session are untested, and
+the automation write happens once per host block (a fast envelope is stepped
+at block rate).
+
+**The next piece is the shadow UI**, and its blocking decision is recorded
+under Open questions below.
+
+### Phase 0 — Vertical slice (DONE)
 
 One chain, three modules, audio + screen + one automated macro, in Live on macOS.
 
@@ -140,7 +163,7 @@ from the on-screen OLED, automate one param from a clip envelope, hold a
 128-sample buffer with no dropouts. If any of that resists, stop — the cost of
 finding out was one slice, not one fleet.
 
-### Phase 1 — Host parity
+### Phase 1 — Host parity (DONE except 1.5, 1.6)
 
 - **1.1** **Serve params off the audio thread.** On Move every entry point *is*
   the SPI callback, and the 2026-08 audit found ~150 confirmed RT violations
@@ -184,6 +207,34 @@ finding out was one slice, not one fleet.
 
 Only once macOS is real. Win32 layer under `shadow_shm_util.c`, `LoadLibrary`
 for the loader, a thread where the device uses a child process.
+
+## What it actually cost
+
+Nine defects, and they cluster into two shapes — a value that looks guarded
+and is not, and a failure that produces no signal. Recorded because every one
+of them was found by USING the thing, not by reading it.
+
+| What happened | The rule |
+|---|---|
+| `mapped_memory` NULL → vocoder SIGSEGV | It is a pointer to *data*, not a callback, so the `if (host->fn)` convention never covered it. In a DAW that is the host going down with the set unsaved. |
+| Auto-binding slammed every parameter to its minimum | A new binding must **adopt** the module's value, never push its own default. |
+| …and the fix then ate a restored set's macro values | Restore and fresh-bind want opposite answers; one code path cannot serve both without being told which. |
+| Host callbacks answered per *process* | `get_bpm(void)` has no context. Thread-local, because a DAW renders tracks on several threads at once. |
+| `_GNU_SOURCE` placed beside the header it was for | glibc latches `__USE_GNU` at the first libc header. Three implicit declarations linked clean and would have failed at `dlopen` on the Move. |
+| `sem_init` returns ENOSYS on macOS | Not deprecated — unimplemented. The bus worker would never start and nothing would say so. |
+| Audio FX filed under `sound_generators/` | `component_type` lives in the catalog, not `module.json`. Installed, looks installed, cannot be picked. |
+| Built inside a module repo | Left a Mach-O at `dist/<id>/dsp.so` — the file that gets packaged and shipped to a Move. |
+| Setting the transport is not sending a clock | The chain answers `get_clock_status` from MIDI realtime bytes it received. Every synced module was dead. |
+
+And two about instruments rather than code:
+
+- **`auval` and `pluginval` both pass on a plugin that renders pure silence.**
+  Neither can tell a well-formed wrapper from a connected one.
+- **RMS over a fixed render is not reproducible**, so it cannot decide whether
+  a restored instance "sounds the same". The same processor rendered twice
+  gave −24.2 then −19.2 dBFS; braids' phase and freeverb's tail carry across.
+  The state blob is the reproducible instrument. A positive control is what
+  established that, and it is why the save/restore test compares what it does.
 
 ## Risks
 
