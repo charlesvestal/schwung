@@ -95,6 +95,19 @@ freely.
 box, and looks the hash up in `font.json` — that is how screen text is read in
 this document rather than guessed from shapes.
 
+A **second, independent reader** was added later and left beside it —
+`oled_text.py` + `oled_font.json` (`learn "<word>" <y0> <y1>` labels a band's
+glyphs; an unknown glyph prints as a placeholder rather than a guess). It
+duplicates `ocr.py`/`font.json`; either is fine, but **use one of them.** It
+exists because reading the framebuffer by eye produced a confident, wrong
+finding — a compressor transfer curve plus the descender of a *y* in
+`Dynamics` was reported as a speaker-with-slash mute icon.
+
+Note also that **Move's D-Bus screen reader is off by default**, so `debug.log`
+carries no `D-Bus text:` lines to read the UI from, and enabling it makes the
+device speak. It is lossy even when on — it does not utter everything on
+screen — so the framebuffer remains the more complete source.
+
 ---
 
 ## 1. The known-state reset
@@ -518,9 +531,9 @@ Hold Shift, tap the step, release Shift:
 | 5 | 20 | **Tempo** |
 | 6 | 21 | **Metronome** (showed `On`) |
 | 7 | 22 | **Groove** |
-| 8 | 23 | *unlit — no action* |
+| 8 | 23 | **16 Pitches** (Drum Kit track only) — §7.3 supersedes this row |
 | 9 | 24 | **Scale** — `C Chromatic` / `Major` |
-| 10 | 25 | no screen change observed from Set Overview — **not determined** |
+| 10 | 25 | **Full Velocity** (Drum Kit track only) — §7.3 supersedes this row |
 | 11 | 26 | **Note Repeat** — rate |
 | 12, 13 | 27, 28 | *unlit — no action* |
 | 14 | 29 | **New clip** — `New clip selected`. **Creates a clip** (an empty row 1 appeared in `Song.abl`) |
@@ -579,7 +592,7 @@ firmware 2.1.0.
 | Loop 58 | Loop Length | – | – | not tested |
 | Copy 60 | duplicates clip | – | – | not tested |
 | Delete 119 | deletes clip | not tested | not tested | not tested |
-| Mute 88 | mutes track | – | – | not tested |
+| Mute 88 | mutes track; **Mute + pad mutes a drum CELL** (§7.4) | – | – | not tested |
 | Up 55 / Down 54 | octave ± (melodic only; **– on a Drum Kit**) | **–** | **–** | not tested |
 | Left 62 / Right 63 | clip page ∓1 | **–** | **–** | not tested |
 | Jog click 3 | opens a screen | clip launch settings | – | not tested |
@@ -709,6 +722,19 @@ new state. That is the general lesson for this layer: **a dark Shift lamp means
 "not available *here*", never "does nothing".** Both were toggled twice during
 this survey and confirmed back at `Off`.
 
+**Re-measured 2026-09-15, independently, and the timing is why §4.3 got it
+wrong.** From the reset: on track 1 (Drum Kit) Shift+Step 8 raises a band
+reading `16 Pitches`; on track 3 (melodic) the frame is **byte-identical**
+before and after. The label is present at **+0.6 s and +3 s and gone by +8 s**,
+reverting to the instrument screen — so it is a *transient* report, and a probe
+that screenshots a second or two late sees no change at all and scores the step
+as dead. Sample within ~3 s of the release.
+
+**Still open:** whether the mode persists once the label goes, and what it does
+to the grid. `Mute + pad` still addressed the normal cells afterwards (pad 71 →
+cell 3), but that was measured after the label had already reverted, so it does
+not settle it.
+
 ### 7.4 Held modifiers × control classes
 
 Modifier held down, one control operated, modifier released. Note mode, track 1.
@@ -716,6 +742,7 @@ Modifier held down, one control operated, modifier released. Note mode, track 1.
 | Combination | Effect |
 |---|---|
 | **Copy + pad** | **copies that drum pad's sample** (`Pad Sample copied`) |
+| **Mute + pad** | **mutes that drum pad's CELL**, independently of the track (see below) |
 | Copy + step | arms that step as the copy **source** (see §7.5); on an already-armed clipboard it printed `Clipboard cleared` |
 | Copy + track button | nothing |
 | Copy + jog / knob / Play | nothing — the knob keeps its normal parameter |
@@ -731,6 +758,51 @@ originally said the rings go dark; that came from a broken filter in the capture
 script. Holding Mute drives CCs 71–78 to a binary mask where **127 means that
 parameter carries per-step automation somewhere in the clip**, proven by making
 one bit flip on demand. See §8.3.
+
+#### Mute + pad — a per-drum-pad mute, and it is not the track mute
+
+**Measured 2026-09-15**, driven. The matrix above carried `Copy + pad` but no
+`Mute + pad`, and the coverage table scored Mute as *"mutes track / not tested"*
+— which mattered, because Schwung passes CC 88 through to Move (`CLAUDE.md`)
+*specifically* so this gesture keeps working.
+
+Hold Mute, tap a drum pad, release: that pad's **drum cell** is muted. Tap again
+to unmute. Both directions confirmed.
+
+| | |
+|---|---|
+| **Pad LED** | `122` = unmuted, `123` = muted. `80` is a transient while Mute is held |
+| **Where it lands** | `tracks[t].devices[0].chains[0].devices[0].chains[N].mixer.speakerOn` |
+| **Write latency** | **8.0 s**, measured twice, both directions |
+
+**`speakerOn` CHANGES JSON SHAPE when muted.** Unmuted it is a bare `true`;
+muted it becomes `{"value": false, "presetValue": true}`. A reader that assumes
+a boolean sees a truthy dict and reports the cell as *unmuted*. Handle both.
+
+**Pad → cell, the whole grid** (six rounds of bit-plane muting rather than 32
+serial tests — mute a subset, read which cells fell silent, unmute to restore):
+
+```
+cells  0- 3  <- pads 68 69 70 71     the rack is the LEFT 4x4,
+cells  4- 7  <- pads 76 77 78 79     counting up from the bottom-left
+cells  8-11  <- pads 84 85 86 87
+cells 12-15  <- pads 92 93 94 95
+```
+
+The **right four columns of every row map to no cell at all** — pads 72–75,
+80–83, 88–91, 96–99 do nothing. That is not an inference: the `bit2` round,
+which mutes exactly the pads whose grid index has bit 2 set, came back empty.
+
+Two traps this cost:
+
+- **The LED stream is DELTA-only.** Move emits a control only when it changes,
+  so a "resting snapshot" is empty by construction and reads as a dead capture.
+  Capture *across* the gesture, or force a repaint first — but a Menu tap forces
+  a repaint by **changing view**, which is how three of my readings came back
+  `122` in all three states and nearly buried the result.
+- **The step row is not a mode signal here.** All 16 steps reading `112` on the
+  drum track against `124` on a melodic one is the per-track *empty-step colour*
+  (§8.8), not an effect of anything you just pressed.
 
 ### 7.5 The two gestures that matter most
 
