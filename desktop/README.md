@@ -15,8 +15,23 @@ side over shared memory alone. This directory is a **replacement for the shim**
 and nothing else: `chain/dsp.so` is dlopen'd here exactly as the shim dlopens
 it on the device.
 
-One plugin instance is **one chain** (MIDI FX → synth → 8 FX), not the whole
-four-slot device. Live's own tracks and returns do what slots and sends do.
+One plugin instance is **one chain** (8 MIDI FX → synth → 8 audio FX), not the
+whole four-slot device. Live's own tracks and returns do what slots and sends
+do.
+
+Working today:
+
+- All 16 chain positions, picked from the window.
+- **512 automatable macros**, auto-bound to the loaded module's own parameters
+  and carrying its names into the host's automation list. The bank is sized
+  for the largest module in the fleet (minijv, 433 parameters), not the median.
+- A Live set that reopens **sounding the same** — the module's own opaque
+  `state` blob is saved per position.
+- **MIDI realtime clock** synthesised from the playhead, without which every
+  tempo-synced module is silent.
+- **Line input** via a sidechain, for the modules that read the SPI mailbox.
+- Any host rate and block size; `auval` exercises 11025–192000 Hz at 64–4096
+  frames.
 
 ## Build
 
@@ -104,6 +119,10 @@ and a path with a space in it is a good way to get a silently ignored line.
     --synth breakbeat --play --bpm 120 \
     --set synth:A_sample_path=/path/to/loop.wav -o /tmp/beat.wav
 
+# A line-input module, fed a tone straight into the mailbox.
+./build/desktop/schwung-render --modules build/desktop/modules \
+    --synth linein --in-tone -o /tmp/thru.wav
+
 # Ask the chain a question. --get keeps the three answers apart.
 ./build/desktop/schwung-render --modules build/desktop/modules \
     --synth braids --get synth:chain_params --get synth:state
@@ -161,6 +180,27 @@ which is what `schwung-plugin-test` is for.
   needed the clock *and* a sample, and fixing only the first leaves it looking
   exactly as broken as before.
 
+- **With one input bus and one output bus, JUCE lays them over the SAME buffer
+  channels.** So `buffer.clear()` at the top of `processBlock` zeroes the
+  sidechain before it can be read, and a line-input module hears silence with
+  everything correctly routed. Only the output bus is cleared, and only after
+  the input has been taken.
+
+- **The input FIFO is primed with one block of silence on purpose.** `pull()`
+  keeps one Schwung block buffered ahead, so input consumption permanently
+  leads supply by that block — a deficit the steady state can never repay,
+  leaving every block short and reading as silence. Priming turns it into
+  ~2.9 ms of input latency.
+
+- **Input is published BEFORE `render_block`.** A module reads the mailbox
+  *during* the render, so filling it afterwards delivers every block one late:
+  a fixed lag that a signal-present check cannot see.
+
+- **A macro adopts the module's current value; it never pushes its own.**
+  Auto-binding that wrote macro defaults outward slammed a freshly loaded
+  module to its minimums. The exception is a state restore, where the saved
+  values win and are pushed in — the two directions want opposite answers.
+
 ## Not here yet
 
 - **The 128×64 shadow UI.** The plugin window picks modules and binds macros;
@@ -169,9 +209,13 @@ which is what `schwung-plugin-test` is for.
   compile-time constants — fine for one host per machine, wrong for one per
   track. Reimplementing `shadow_shm_map()` as a per-instance allocator makes
   the whole UI instance-safe without editing it.
-- **Line-input modules.** `mapped_memory` is a zeroed mailbox, so vocoder,
-  talkbox, breath, gate and ducker load and run but hear silence. Feeding the
-  plugin's input bus into `audio_in_offset` is what makes them work.
+- **Repeated module swaps in one session** are untested. `dlclose` is a no-op
+  for a C++ module carrying unique symbols, and the chain reinstantiates on
+  every `:module` write.
+- **Automation resolution.** Macros are written once per host block, so a fast
+  envelope is stepped at block rate rather than smoothed. That may be fine; it
+  should be a measured decision rather than an accident of where the write
+  happens.
 - **Set import.** No bundle format yet; the chain comes up empty and is built
   from the window.
 - **Windows.** No `fork`, no POSIX shared memory, no `dlopen`.
