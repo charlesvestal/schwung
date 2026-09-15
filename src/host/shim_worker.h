@@ -116,6 +116,12 @@ extern volatile int shim_usbc_out_replay;
  * Unlike shim_usbc_out_persist these are levels, not edges: the worker polls
  * them to notice Move's sampling page clearing monitoring behind our back with
  * a lone 37 12. See usbc_gate_tick_monitor. */
+/* XMOS control-message re-send counters (host/xmos_resend.h). Written by the
+ * SPI callback, read and LOGGED by the worker — the callback may not log. */
+extern volatile uint32_t shim_xmos_resend_lost;     /* absent from the mailbox */
+extern volatile uint32_t shim_xmos_resend_sent;     /* re-sends emitted */
+extern volatile uint32_t shim_xmos_resend_gave_up;  /* budget exhausted */
+
 extern volatile int shim_usbc_out_level;   /* 37 14: 0 = Mic, 1 = Main Out */
 extern volatile int shim_usbc_monitor;     /* 37 12 bit1: monitoring engaged */
 

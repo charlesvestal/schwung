@@ -1672,6 +1672,38 @@ IP and a QR of `http://<ip>:7700`. The old on-device store module is retired
 
 Catalog: `https://raw.githubusercontent.com/charlesvestal/schwung/main/module-catalog.json`.
 
+**The catalog is served from an UNTIMED disk cache when the fetch fails, and
+the host check was not a version comparison.** `manager-cache/catalog.json` is
+last-known-good with no TTL — deliberately, so a device with no network can
+still repair and remove modules — but `/modules` rendered it with nothing
+saying so. Meanwhile both host checks were `offered != installed`, so a device
+that had cached the catalog before 2026-08-31, when host `latest_version` was
+still **1.0.0**, showed *"1.0.0 available"* against an installed 1.4.0 with an
+Upgrade button pointing at the v1.0.0 tarball: an offered DOWNGRADE, on
+month-old data, one click away. Modules never had it — they resolve through
+`updateAvailable()`, which dates the releases and falls back to
+`versionNewer`; `hostOfferIsUpdate` is the host arriving at the same rule. A
+stale render now says **Offline** and how old the copy is, because the silence
+is what made it read as a real release rather than as a device that cannot
+reach GitHub. `"unknown"` installed still gets offered (nothing to compare,
+and refusing strands a device that cannot name what it runs).
+`schwung-manager/host_update_test.go` renders the page against a backdated
+cache — the comparison alone passes either way, since the defect was in what
+the handler COMPOSED.
+
+Two things found while reading that, fixed after: **`Check for Update` shared
+the 5-minute TTL**, so within five minutes of any page's fetch it reported the
+cached answer as though it had looked — including the "up to date" a user who
+had just fixed their network was pressing it to disprove (`Refresh()` forces
+past the TTL; `Fetch()` still honours it, since a page render must not hit the
+network every time). And **`CatalogService` had no lock** while every handler
+runs on its own goroutine — `mu` is held across the fetch, not just the
+assignment, so concurrent misses collapse into one request. `loadFromDisk`
+deliberately takes no lock (it runs before publication, and `fetch` holds `mu`
+across its whole body, so a reload from there would deadlock), and
+`GetReleaseMeta` hands out the map by reference, which is safe only while a
+refresh REPLACES it rather than writing into the copy a caller holds.
+
 **Shim mirror + stuck-shim repair (web update).** The manager runs as `ableton`
 and can't write `/usr/lib`, so a web update mirrors the new shim via the
 setuid-root `schwung-heal` helper (synchronously in `post-update.sh` + the
@@ -1868,7 +1900,19 @@ inline is how this file got to 151 KB.
 
 1. **Build**: `./scripts/build.sh` succeeds
 2. **Deploy + test**: `./scripts/install.sh local --skip-modules --skip-confirmation`, verify on hardware
-3. **Version**: bump `src/host/version.txt` and `module-catalog.json` (host `latest_version` + download URL)
+3. **Version**: bump **all three** in the release PR — `src/host/version.txt`,
+   `module-catalog.json` (host `latest_version` + download URL, and
+   `channels.stable` if present) and **`release.json`**. `release.yml`
+   deliberately commits none of them: `main` is branch-protected, so a
+   `github-actions[bot]` push is rejected (GH006) and would fail the workflow
+   *after* the release and its asset had published. That note delegated to
+   "the release PR" and this step did not name `release.json`, so it sat at
+   **0.12.1 from v1.0.0 through v1.4.0** — fourteen releases — undetected,
+   because nothing shipped reads it any more (the manager takes both the offer
+   and the download URL from the catalog's host block). The enforcement is
+   `tests/host/test_release_version_agreement.sh`, which also fails on a
+   bumped version beside a stale URL — that downloads the old tarball while
+   reporting the new number.
 4. **Docs**: update the subsystem file (`docs/PARAM_PAGES.md`, `docs/SHADOW_UI.md`,
    `docs/CHAIN.md`, `docs/DIAGNOSTICS.md`) and add a bullet to `CLAUDE.md`'s hook
    for it — **not** the prose itself. Then `docs/API.md`, `docs/MODULES.md`, `src/shared/help_content.json`, and `../schwung-catalog-site/manual.html` for new features / changed behavior. If a knob-grid widget changed, regenerate the sheet with `node tools/param-pages/widget_sheet.mjs --manual` — `tests/host/test_widget_sheet.sh` fails until the `docs/` half is current, and `--manual` also rewrites the manual's generated widget section and its images (skipped silently when the sibling repo is not checked out, so it is safe on any machine).
@@ -1880,3 +1924,49 @@ inline is how this file got to 151 KB.
 ## Dependencies
 
 QuickJS (`libs/quickjs/`), stb_image.h (`src/lib/`), curl (`libs/curl/`, download backend for catalog detection + manual refresh).
+
+### Schwung's SOURCE is MIT; `schwung-shim.so` is conveyed as GPL-3.0
+
+Two different relationships, and collapsing them is the trap — the first draft
+of `THIRD_PARTY_LICENSES.md` asserted "nothing copyleft is linked into
+`schwung` or `schwung-shim.so`" and was **wrong about the shim**.
+
+**Aggregated** (imposes nothing): `link-subscriber` (Ableton Link, GPL-2.0+)
+and `lib/jack/jack_shadow.so` (jack2 + Cycling '74's JackMoveDriver, GPL-2.0+)
+are separate programs reached over `/dev/shm`, sockets and `exec`.
+
+**Linked** (makes a combined work): `SHIM_LIBS` carries **`-lespeak-ng`** under
+`SCREEN_READER_ENABLED=1`, which is the DEFAULT and what ships —
+`libespeak-ng.so.1` is a `NEEDED` entry of the built `schwung-shim.so`. eSpeak
+NG is GPL-3.0-or-later, so that BINARY is conveyed under GPL-3.0-or-later. MIT
+is GPL-compatible so this is permitted, and the source stays MIT; what changes
+is the licence recipients get over the binary. `SCREEN_READER_ENABLED=0` swaps
+in `tts_engine_stub.c` and drops `SHIM_LIBS` to `-ldl -lrt -lpthread -lm`,
+giving an MIT shim. The HOST binary (`schwung`) links no TTS either way.
+
+Flite is BSD and is linked alongside eSpeak; it is not the copyleft one. Check
+the real binary (`NEEDED` entries), not the intent — the build flag is what
+decides this, and it is easy to reason about the wrong configuration.
+
+The trap is that **one file's header can silently claim otherwise.**
+`JackShadowDriver.cpp` read `License: MIT` three lines above its own "Based on
+JackMoveDriver by Cycling '74 (GPL-2.0)", while its `.h` carried the correct
+GPL block the whole time — which is exactly what made the `.cpp` read as a typo
+rather than as a claim about somebody else's code. It is built with
+`-DSERVER_SIDE` against jack2's GPL-only server headers (39 of the 138 vendored
+headers are GPL-2.0+, the other 96 LGPL-2.1+), so MIT was never available to it.
+
+`THIRD_PARTY_LICENSES.md` is the single third-party document — an extensionless
+second copy diverged for months — and it **must ship**: it was absent from
+`package.sh`'s `ITEMS` entirely, so the tarball carried GPL-2.0 and GPL-3.0
+binaries with no licence text and no attribution. `build.sh` stages it,
+`LICENSE`, and `licenses/GPL-{2,3}.0.txt` **unconditionally** (a `|| true` here
+is the link-subscriber silent-skip shape: a non-compliant release that looks
+identical to a good one), and `package.sh` HARD-FAILS on a missing one.
+`tests/host/test_license_consistency.sh` pins all of it, including that no
+CC BY-NC-SA claim returns — `LICENSE` went MIT in 2026-03 and the third-party
+doc went on asserting CC BY-NC-SA 4.0, a licence that is not a software licence
+and whose NC clause is incompatible with every GPL component above.
+
+**`lib/libpcaudio.so.0` is ours** (`src/host/pcaudio_stub.c`), not pcaudiolib —
+a stub so eSpeak NG resolves without dragging in libpulse/libX11.

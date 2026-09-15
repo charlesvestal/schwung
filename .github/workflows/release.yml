@@ -85,3 +85,9 @@ jobs:
       # that bumps module-catalog.json `host.latest_version` (which is what
       # schwung-manager actually reads to offer the update) also updates
       # release.json to the same version. See the release checklist in CLAUDE.md.
+      #
+      # That delegation is only as good as the checklist, and for fourteen
+      # releases it was not in it: release.json sat at 0.12.1 from v1.0.0 to
+      # v1.4.0. `tests/host/test_release_version_agreement.sh` gates the three
+      # files against each other now, so the next drift fails a PR instead of
+      # shipping.
