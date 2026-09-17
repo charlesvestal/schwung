@@ -20224,7 +20224,11 @@ function resolveCardScriptPath(slot, component, scriptRef) {
  * header and footer. A module cannot take the shadow UI down by shipping a bad
  * page.
  */
-const canvasPageDrawers = {};      /* "moduleDir|script|overlay" -> fn | null */
+const canvasPageDrawers = {};   /* "moduleDir|script|overlay" -> fn | null */
+/* The overlay OBJECT and the page's own state, keyed exactly as the drawer is
+ * so all three are filled and invalidated by one load. */
+const canvasPageOverlays = {};
+const canvasPageStates = {};
 const canvasPageDisabled = {};
 
 function canvasPageDrawer(slot, component, canvas) {
@@ -20246,7 +20250,54 @@ function canvasPageDrawer(slot, component, canvas) {
         debugLog(`canvas page: ${path} exposes no drawPage${loaded && loaded.error ? ` (${loaded.error})` : ""}`);
     }
     canvasPageDrawers[cacheKey] = fn;
+    /* ⭑ The OBJECT, not just its drawPage. An enterable canvas page also
+     * receives onMidi and handleBack, and resolving it a second time would
+     * evaluate the module's script twice and hand the two halves different
+     * closures — so the page's state would depend on which hook you asked. */
+    canvasPageOverlays[cacheKey] = ov || null;
     return fn;
+}
+
+/*
+ * One hook on a canvas PAGE's overlay, with its return value.
+ *
+ * The fullscreen dive has canvasOverlayHookResult; this is its counterpart for
+ * a page, and the two are deliberately the same contract from the module's side
+ * — same hook names, same meanings, same one-strike rule — because a module
+ * should not have to know which route the user took to reach its screen.
+ *
+ * The ctx is the page's own: no drawing (a hook is not a draw), the param
+ * accessors scoped to this slot and component, and a `state` object that lives
+ * as long as the loaded overlay does.
+ */
+function canvasPageHook(slot, component, canvas, hook, payload) {
+    if (!canvas || !hook) return undefined;
+    canvasPageDrawer(slot, component, canvas);      /* ensure loaded + cached */
+    const path = resolveCardScriptPath(slot, component, canvas.script);
+    if (!path) return undefined;
+    const cacheKey = `${path}|${canvas.overlay || ""}`;
+    if (canvasPageDisabled[cacheKey]) return undefined;
+    const ov = canvasPageOverlays[cacheKey];
+    if (!ov || typeof ov[hook] !== "function") return undefined;
+
+    if (!canvasPageStates[cacheKey]) canvasPageStates[cacheKey] = {};
+    const prefix = getComponentParamPrefix(component);
+    const full = (k) => (String(k).includes(":") ? String(k)
+                        : (prefix ? `${prefix}:${k}` : String(k)));
+    const ctx = {
+        width: SCREEN_WIDTH, height: SCREEN_HEIGHT,
+        state: canvasPageStates[cacheKey],
+        getParam: (k) => getSlotParam(slot, full(k)),
+        setParam: (k, v) => setSlotParam(slot, full(k), String(v)),
+        now: () => Date.now(),
+    };
+    try {
+        return ov[hook](ctx, payload || {});
+    } catch (e) {
+        canvasPageDisabled[cacheKey] = true;
+        debugLog(`canvas page ${cacheKey} disabled after throw in ${hook}: ${e}`);
+        return undefined;
+    }
 }
 
 function drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload) {
@@ -20401,30 +20452,67 @@ function canvasHookCtx(hookName) {
     return canvasRuntime.drawCtx;
 }
 
-function invokeCanvasOverlayHook(hookName, payload) {
-    if (!canvasRuntime || !canvasRuntime.overlay) return false;
-    /* ONE STRIKE.
-     *
-     * This used to record canvasRuntime.error, log, and carry on -- so a
-     * throwing overlay threw on EVERY FRAME, forever, at 60Hz. The error was
-     * visible in the log and the flood was not.
-     *
-     * And it then returned TRUE, so a hook that threw reported success to its
-     * caller. Same defect class as move_midi_internal_send returning true on a
-     * discarded write: the failure is erased at the boundary, and nothing
-     * upstream can react to something it is never told about. */
-    if (canvasRuntime.hookDisabled) return false;
+/* "The hook did not run" -- told apart from a hook that ran and returned
+ * undefined, which Back has to distinguish and `draw` does not. */
+const CANVAS_HOOK_ABSENT = {};
+
+/*
+ * Call one overlay hook and hand back WHAT IT RETURNED.
+ *
+ * ONE STRIKE.
+ *
+ * This used to record canvasRuntime.error, log, and carry on -- so a
+ * throwing overlay threw on EVERY FRAME, forever, at 60Hz. The error was
+ * visible in the log and the flood was not.
+ *
+ * And it then returned TRUE, so a hook that threw reported success to its
+ * caller. Same defect class as move_midi_internal_send returning true on a
+ * discarded write: the failure is erased at the boundary, and nothing
+ * upstream can react to something it is never told about.
+ *
+ * ⚠ A throw answers CANVAS_HOOK_ABSENT, never a value. Back reads this, and a
+ * hook that died must not be able to consume the press -- being stuck on a
+ * screen whose script just threw is the one outcome this must not produce.
+ */
+function canvasOverlayHookResult(hookName, payload) {
+    if (!canvasRuntime || !canvasRuntime.overlay) return CANVAS_HOOK_ABSENT;
+    if (canvasRuntime.hookDisabled) return CANVAS_HOOK_ABSENT;
     const fn = canvasRuntime.overlay[hookName];
-    if (typeof fn !== "function") return false;
+    if (typeof fn !== "function") return CANVAS_HOOK_ABSENT;
     try {
-        fn(canvasHookCtx(hookName), payload || {});
+        return fn(canvasHookCtx(hookName), payload || {});
     } catch (e) {
         canvasRuntime.error = `${hookName} error: ${e}`;
         canvasRuntime.hookDisabled = true;
         debugLog(`canvas overlay disabled after throw in ${hookName}: ${e}`);
-        return false;
+        return CANVAS_HOOK_ABSENT;
     }
-    return true;
+}
+
+/* Did the hook run at all? The older question, and still the right one for
+ * `draw`, whose return value means nothing. */
+function invokeCanvasOverlayHook(hookName, payload) {
+    return canvasOverlayHookResult(hookName, payload) !== CANVAS_HOOK_ABSENT;
+}
+/*
+ * ⭐ IS THIS CANVAS A PAGE YOU ENTER, or a picture you look at?
+ *
+ * A canvas gets the jog WHEEL and the knobs, and the host keeps the jog CLICK
+ * and Back as the close gesture. For a visualiser -- a scope, a meter, a
+ * waveform -- that is right: there is nothing to enter, and two ways out is
+ * generous. For anything NESTED it is fatal, because the one gesture that means
+ * "enter" is the one spent on "leave", so a file browser or a settings menu
+ * cannot be built as a canvas at all.
+ *
+ * `enterable: true` says the module has navigation inside it. The click becomes
+ * the module's, and Back goes to the module first (see the Back branch below).
+ * Everything else about the canvas is unchanged, and a canvas that does not
+ * declare it behaves exactly as before.
+ *
+ * See docs/CANVAS_PAGES.md for the full model.
+ */
+function canvasIsEnterable() {
+    return !!getMetaOption(canvasParamMeta, "enterable", false);
 }
 
 function dispatchCanvasMidi(data, source) {
@@ -20519,7 +20607,10 @@ function drawCanvasPreview() {
         const message = canvasRuntime && canvasRuntime.error ? canvasRuntime.error : "No module canvas overlay";
         print(Math.max(0, Math.floor((SCREEN_WIDTH - title.length * 5) / 2)), 10, truncateText(title, 24), 1);
         print(3, 29, truncateText(message, 24), 1);
-        print(3, 50, "Click/Back: return", 1);
+        /* ⚠ An enterable canvas keeps the click, so only Back returns -- and a
+         * broken overlay is exactly when the footer must not lie about the way
+         * out. */
+        print(3, 50, canvasIsEnterable() ? "Back: return" : "Click/Back: return", 1);
     }
 
     const showCanvasValue = !canvasParamMeta || canvasParamMeta.show_value !== false;
@@ -22308,6 +22399,12 @@ function handleSelect() {
             }
             break;
         case VIEWS.CANVAS:
+            /* ⚠ An enterable canvas owns the click, so "select" must not close
+             * it from here either. The MIDI path never reaches this case for
+             * one (the steal above declines and dispatchCanvasMidi consumes),
+             * but this is also the screen reader's and the remote UI's select,
+             * and those would otherwise close a browser mid-navigation. */
+            if (canvasIsEnterable()) break;
             closeCanvasPreview(false);
             announce("Hierarchy Editor");
             break;
@@ -24196,6 +24293,8 @@ function drawHelpDetail() {
     };
     _ctx.drawCanvasPageBody = (slot, component, drawCtx, band, canvas, payload) =>
         drawCanvasPageBody(slot, component, drawCtx, band, canvas, payload);
+    _ctx.canvasPageHook = (slot, component, canvas, hook, payload) =>
+        canvasPageHook(slot, component, canvas, hook, payload);
     _ctx.isMuteHeld = () => hostMuteHeld;
 
     /* Overtake session state (for tools menu "Resume" indicator) */
@@ -27128,8 +27227,12 @@ globalThis.onMidiMessageInternal = function(data) {
      * (wrapped so coRunView returns to the hierarchy editor), mirroring the
      * non-co-run steal below. */
     var canvasInCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
+    var canvasEnterable = (view === VIEWS.CANVAS || canvasInCorun) && canvasIsEnterable();
     if ((view === VIEWS.CANVAS || canvasInCorun) && (status & 0xF0) === 0xB0) {
-        if (d1 === MoveMainButton && d2 > 0) {
+        /* ⭐ AN ENTERABLE CANVAS KEEPS THE CLICK. Declining to steal is all that
+         * is needed -- the press falls through to dispatchCanvasMidi below like
+         * every other CC, and the module's onMidi sees it. */
+        if (d1 === MoveMainButton && d2 > 0 && !canvasEnterable) {
             if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(false); });
             else closeCanvasPreview(false);
             announce("Hierarchy Editor");
@@ -27137,6 +27240,25 @@ globalThis.onMidiMessageInternal = function(data) {
             return;
         }
         if (d1 === MoveBack && d2 > 0) {
+            /* ⭐ BACK IS THE EXIT CONTRACT, and it is the reason the click is
+             * safe to hand over.
+             *
+             *   handleBack() === true   "I went up a level" -- stay inside
+             *   anything else           "I am at my top level" -- un-enter
+             *
+             * So the module never has to implement a way OUT, only a way UP, and
+             * the host does what it would have done anyway the moment the module
+             * runs out of levels. A module that wrongly claims Back forever holds
+             * it on its own screen only: changing track, swapping the module and
+             * leaving the editor all take the user out without asking the canvas.
+             *
+             * Offered ONLY to an enterable canvas. A visualiser has no levels to
+             * climb, and asking it would make Back's meaning depend on a hook
+             * nobody declared. */
+            if (canvasEnterable && canvasOverlayHookResult("handleBack") === true) {
+                needsRedraw = true;
+                return;
+            }
             if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
             else closeCanvasPreview(true);
             announce("Hierarchy Editor");

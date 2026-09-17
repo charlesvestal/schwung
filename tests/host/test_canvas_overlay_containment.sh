@@ -44,23 +44,36 @@ const ok = (c, m) => { console.log((c ? "PASS" : "FAIL") + ": " + m); if (!c) fa
 const src = readFileSync("./src/shadow/shadow_ui.js", "utf8");
 
 /* Isolate the hook invoker so a match cannot come from elsewhere in a
- * 20k-line file. */
-const hookStart = src.indexOf("function invokeCanvasOverlayHook");
-ok(hookStart > 0, "invokeCanvasOverlayHook exists");
+ * 20k-line file.
+ *
+ * ⚠ THE INVOKER IS canvasOverlayHookResult NOW, not invokeCanvasOverlayHook.
+ * Back needs a hooks RETURN VALUE and draw needs only did-it-run, and for one
+ * commit those were two functions with two copies of the one-strike handling
+ * below -- which is precisely the drift this file exists to catch, so they were
+ * folded into one primitive with a thin boolean wrapper. The behaviour pinned
+ * here is unchanged; it simply lives one function along. */
+const hookStart = src.indexOf("function canvasOverlayHookResult");
+ok(hookStart > 0, "canvasOverlayHookResult exists");
 const hookBody = src.slice(hookStart, src.indexOf("\nfunction ", hookStart + 1));
+
+/* ...and the boolean form must be a WRAPPER over it, never a second copy. */
+const wrapStart = src.indexOf("function invokeCanvasOverlayHook");
+const wrapBody = wrapStart > 0 ? src.slice(wrapStart, src.indexOf("\n}", wrapStart) + 2) : "";
+ok(/canvasOverlayHookResult\(/.test(wrapBody) && !/try\s*{/.test(wrapBody),
+   "invokeCanvasOverlayHook delegates rather than repeating the try/catch");
 
 /* 1. ONE STRIKE -- both halves: it must SET the flag, and it must CHECK it. */
 ok(/hookDisabled\s*=\s*true/.test(hookBody),
    "a throwing hook sets canvasRuntime.hookDisabled");
-ok(/if\s*\(\s*canvasRuntime\.hookDisabled\s*\)\s*return\s+false/.test(hookBody),
+ok(/if\s*\(\s*canvasRuntime\.hookDisabled\s*\)\s*return\s+CANVAS_HOOK_ABSENT/.test(hookBody),
    "a disabled runtime refuses further hook invocations");
 
 /* 2. A hook that threw must report failure. The catch block has to end in
  *    return false -- checked inside the catch, because a bare "return false"
  *    anywhere in the function would pass a laxer test. */
 const catchBlock = hookBody.slice(hookBody.indexOf("catch"));
-ok(/return\s+false/.test(catchBlock.slice(0, catchBlock.indexOf("}\n") + 2)),
-   "the catch block returns false rather than reporting success");
+ok(/return\s+CANVAS_HOOK_ABSENT/.test(catchBlock.slice(0, catchBlock.indexOf("}\n") + 2)),
+   "the catch block reports absence rather than a value -- so a hook that threw can neither claim success nor consume a button");
 
 /* 3. The draw path gets a ctx with no reads. */
 const ctxStart = src.indexOf("function createCanvasRuntimeContext");
