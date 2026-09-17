@@ -1045,7 +1045,19 @@ static void clip_state_tick(void)
     const char *rec = !shadow_rec_arm_seen()  ? "?"     :
                       shadow_rec_arm_recording() ? "SOLID" :
                       shadow_rec_arm_flashing()  ? "FLASH" : "off";
-    fprintf(fp, "pul=%-7u rec=%-5s", pul, rec);
+    fprintf(fp, "pul=%-7u rec=%-5s ui=%d", pul, rec, cs->last_ui_mode);
+    /* THE DECODED SELECTION, per track, beside the playing clip — the two are
+     * different questions and the whole class of new-clip bugs came from
+     * answering one with the other. `sel=-1` is "not known" and `sel=E` is
+     * "an EMPTY slot is selected", which is how a new clip is made. */
+    fprintf(fp, " sel[");
+    for (int t = 0; t < CLIP_TRACKS; t++) {
+        const int sv = cs->tracks[t].selected_slot;
+        if (sv == CLIP_SEL_EMPTY)  fprintf(fp, "E");
+        else if (sv < 0)           fprintf(fp, "?");
+        else                       fprintf(fp, "%d", sv + 1);
+    }
+    fprintf(fp, "]");
     for (int t = 0; t < CLIP_TRACKS; t++) {
         const clip_track_state_t *tr = &cs->tracks[t];
         if (!tr->identity_valid)      fprintf(fp, " | T%d ?        ", t + 1);

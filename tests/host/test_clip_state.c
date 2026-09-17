@@ -736,6 +736,84 @@ static void test_snap_lands_on_a_beat_not_only_a_bar(void)
           "expected the beat boundary %u, got %u", beat, st.tracks[0].anchor_pulse);
 }
 
+
+/* THE SELECTED CLIP IS DECODED FROM THE BASE COLOUR, RELATIVELY.
+ *
+ * Measured on hardware 2026-09-17: selecting a clip repaints its track's row,
+ * the selected pad taking a value no other pad has. The VALUES are per-track
+ * colour indices (track 0 used idle 17 / selected 98; track 1 used 24 / 112),
+ * so the rule is "the odd one out", never a constant — a decoder keyed on 98
+ * reads track 1 wrong on every press, which is the trap this codebase already
+ * recorded for the "empty step" value.
+ *
+ * This is the SELECTED clip, not the playing one. Conflating them is what sent
+ * a p-lock to a clip the user was not editing.
+ */
+static void test_selection_is_decoded_relatively(void)
+{
+    clip_state_t cs; clip_state_reset(&cs);
+    CHECK(clip_state_selected_slot(&cs, 0) == -1,
+          "a fresh state claimed to know the selection");
+
+    clip_state_on_led(&cs, 0x90, 92, 17, 100, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 93, 17, 100, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 94, 98, 100, 1, CLIP_UI_MODE_SESSION);
+    CHECK(clip_state_selected_slot(&cs, 0) == 2,
+          "selected slot decoded as %d, wanted 2",
+          clip_state_selected_slot(&cs, 0));
+
+    clip_state_on_led(&cs, 0x90, 92, 17, 400, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 94, 17, 400, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 93, 98, 400, 1, CLIP_UI_MODE_SESSION);
+    CHECK(clip_state_selected_slot(&cs, 0) == 1,
+          "the selection did not follow, got %d",
+          clip_state_selected_slot(&cs, 0));
+
+    /* A different track with entirely different colours. */
+    clip_state_on_led(&cs, 0x90, 84, 24, 800, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 85, 24, 800, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 86, 112, 800, 1, CLIP_UI_MODE_SESSION);
+    CHECK(clip_state_selected_slot(&cs, 1) == 2,
+          "track 1 (24/112) decoded as %d, wanted 2 — the rule is keyed to a "
+          "constant", clip_state_selected_slot(&cs, 1));
+
+    /* Ambiguity LEAVES IT ALONE. Being confidently wrong here writes
+     * automation onto a clip the user never touched. */
+    const int before = clip_state_selected_slot(&cs, 0);
+    clip_state_on_led(&cs, 0x90, 92, 55, 1200, 1, CLIP_UI_MODE_SESSION);
+    clip_state_on_led(&cs, 0x90, 94, 66, 1200, 1, CLIP_UI_MODE_SESSION);
+    CHECK(clip_state_selected_slot(&cs, 0) == before,
+          "an ambiguous row changed the selection to %d",
+          clip_state_selected_slot(&cs, 0));
+
+    /* Note view paints no session pads, so nothing there may move it. */
+    const int keep = clip_state_selected_slot(&cs, 0);
+    clip_state_on_led(&cs, 0x90, 93, 3, 1600, 1, 0 /* not Session */);
+    CHECK(clip_state_selected_slot(&cs, 0) == keep,
+          "a non-Session event moved the selection");
+
+    /* COLOURS FROM AN OLD REPAINT MUST NOT VOTE.
+     *
+     * A row is repainted as a burst; values remembered from minutes ago are a
+     * DIFFERENT picture. Mixing them made the decode answer with a selection
+     * two clips stale — which on hardware put a p-lock on the previously
+     * selected clip. Here slots 0 and 2 are ancient and only slot 1 is
+     * freshly painted, so there is no majority among fresh pads and the
+     * answer must stand still rather than be invented from one pad. */
+    {
+        clip_state_t st2; clip_state_reset(&st2);
+        clip_state_on_led(&st2, 0x90, 92, 17, 100, 1, CLIP_UI_MODE_SESSION);
+        clip_state_on_led(&st2, 0x90, 94, 17, 100, 1, CLIP_UI_MODE_SESSION);
+        clip_state_on_led(&st2, 0x90, 93, 98, 100, 1, CLIP_UI_MODE_SESSION);
+        CHECK(clip_state_selected_slot(&st2, 0) == 1, "setup: slot 1 not selected");
+        /* Much later, ONE pad is repainted. Not a row, not a decision. */
+        clip_state_on_led(&st2, 0x90, 95, 77, 100000, 1, CLIP_UI_MODE_SESSION);
+        CHECK(clip_state_selected_slot(&st2, 0) == 1,
+              "a single stale-context repaint changed the selection to %d",
+              clip_state_selected_slot(&st2, 0));
+    }
+}
+
 int main(void)
 {
     test_a_queued_replacement_is_not_a_stop();
@@ -762,6 +840,7 @@ int main(void)
     test_coldstart_refresh_burst_anchors_nothing();
     test_restart_reanchors_to_zero();
     test_phase_is_never_guessed();
+    test_selection_is_decoded_relatively();
 
     if (failures) { printf("\n%d CHECK(s) failed\n", failures); return 1; }
     printf("\nall clip_state checks passed\n");
