@@ -132,12 +132,6 @@ static int shadow_chain_slot_recv_channel(void *instance) {
  *
  * RT: SPI callback. Table reads only -- clip_state and clip_regions are both
  * plain structs, and a torn read costs one block of phase. */
-/* Set by shadow_slot_clip_phase for the slot it was last asked about. A plain
- * static rather than an out-parameter so the signature — and every caller and
- * fixture of it — is left alone. */
-static int g_edit_unconfirmed;
-int shadow_slot_edit_unconfirmed(void) { return g_edit_unconfirmed; }
-
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp /* [4] */) {
     if (slot < 0 || slot >= CLIP_TRACKS || !phase_beats || !loop_len ||
@@ -192,11 +186,24 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      *
      * Playback is untouched: it still gets the playing row, which is the
      * question it is asking. */
-    g_edit_unconfirmed = 0;
-    if (cslot >= 0 && step_strip_segments_for_track((int)slot) > 0) {
-        const int selnow = clip_state_selected_slot(cs, (int)slot);
-        if (selnow != cslot) g_edit_unconfirmed = 1;
-    }
+    /* NO `edit_unconfirmed`, and it is removed rather than tuned.
+     *
+     * It withheld the row from a WRITE when the screen said a different clip
+     * was being edited, to stop a p-lock landing on the playing clip. The
+     * signal cannot support it: clip_state decodes the selection from SESSION
+     * pad LEDs, and Move paints none in NOTE view — which is the only view a
+     * p-lock happens in. So the answer is always a LATCH from whenever the
+     * user was last in Session view, and acting on it withheld the row from
+     * gestures aimed squarely at the playing clip. Measured: `write_row=-2
+     * unconf=1` with the lane plainly on row 0, and `clear_param` reporting
+     * success having removed nothing.
+     *
+     * A rule that can only ever fire on stale data is not a rule. The
+     * new-clip case it was meant to serve is covered where it belongs: when
+     * the clip is not in the file the resolver answers with the PENDING
+     * placeholder and the write keys to that, with no guess about selection
+     * involved. */
+
     if (cslot < 0) {
         /* THE FILE'S ANSWER IS ONLY USABLE WHEN IT CANNOT BE AMBIGUOUS.
          *

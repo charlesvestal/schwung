@@ -594,42 +594,6 @@ int main(void) {
         step_strip_reset();
     }
 
-    printf("\nthe WRITE row is withheld when the edited clip is unconfirmed\n");
-    {
-        /* This is the load-bearing use of the selection decode, and the only
-         * one: `shadow_slot_clip_phase` reports the PLAYING clip, which is
-         * what playback wants, and a p-lock wants the clip on SCREEN. With one
-         * clip playing while the user edits another, the write took the
-         * playing row — measured on hardware as locks landing on row 7 while
-         * a brand-new clip was being edited. */
-        reset_world();
-        set_region(2, 1, 0.0, 4.0);  set_region_notes(2, 1, 4, 36);
-        set_track(2, 1, 1, 1, 0);            /* clip 1 is PLAYING */
-        paint_strip(2, 1);                   /* and a clip is being edited */
-
-        /* The screen agrees it is the playing clip: a write may use the row. */
-        fake_state.tracks[2].selected_slot = 1;
-        (void)call(2, &ph, &len, &cs, &fpv, fp);
-        CHECK(shadow_slot_edit_unconfirmed() == 0,
-              "the write row was withheld while the screen agreed");
-
-        /* The screen says something else is selected: it must NOT. */
-        fake_state.tracks[2].selected_slot = CLIP_SEL_EMPTY;
-        (void)call(2, &ph, &len, &cs, &fpv, fp);
-        CHECK(shadow_slot_edit_unconfirmed() == 1,
-              "a write would take the PLAYING row while another clip is "
-              "being edited");
-        CHECK(cs == 1,
-              "playback lost the playing row (cs=%d) — only the WRITE row is "
-              "withheld", cs);
-
-        /* No strip: nothing is being edited, so there is nothing to doubt. */
-        step_strip_reset();
-        (void)call(2, &ph, &len, &cs, &fpv, fp);
-        CHECK(shadow_slot_edit_unconfirmed() == 0,
-              "the write row was withheld with no clip being edited");
-    }
-
     if (failures == 0) {
         printf("PASS: shadow_slot_clip_phase (%d checks)\n", checks);
         return 0;

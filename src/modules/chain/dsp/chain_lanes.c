@@ -40,7 +40,6 @@
  * currently driving, so it is a fact about playback — and the `clip`
  * diagnostic, which exists to report the playing row. */
 static inline int lane_write_slot(const chain_instance_t *inst) {
-    if (inst->lane_edit_unconfirmed) return LANE_SLOT_PENDING;
     return inst->lane_clip_slot;
 }
 
@@ -808,11 +807,6 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         return;
     }
 
-    if (strcmp(sub, "edit_unconfirmed") == 0) {
-        inst->lane_edit_unconfirmed = (val && atoi(val) != 0) ? 1 : 0;
-        return;
-    }
-
     /* Move's Record button, pushed by the shim on CHANGE only. */
     if (strcmp(sub, "armed") == 0) {
         lane_set_armed(inst, val && atoi(val) != 0);
@@ -1487,6 +1481,14 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
     /* Provisional takes the last `lanes:state` replaced — see lane_apply_state.
      * A snapshot cannot hold them, so a recall inside Move's save window drops
      * the take just made, and this is the number the UI can say out loud. */
+    /* Whether a WRITE may use the row `clip` reports. Readable because the
+     * difference between "the clear did nothing" and "the clear went to the
+     * placeholder" is invisible otherwise, and both look like a dead gesture
+     * from outside. */
+    /* The row a WRITE is keyed to, which is NOT always the row `clip` names. */
+    if (strcmp(sub, "write_row") == 0)
+        return snprintf(buf, buf_len, "%d", lane_write_slot(inst));
+
     if (strcmp(sub, "discarded") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_discarded);
 

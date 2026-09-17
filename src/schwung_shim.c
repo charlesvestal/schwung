@@ -2177,17 +2177,6 @@ static void shadow_inprocess_render_to_buffer(void) {
                                                     "lanes:new_row", v);
                     }
                 }
-
-                if (shadow_plugin_v2 && shadow_plugin_v2->set_param) {
-                    static int8_t last_unconf[SHADOW_CHAIN_INSTANCES];
-                    const int unconf = shadow_slot_edit_unconfirmed() ? 1 : 0;
-                    if (s < SHADOW_CHAIN_INSTANCES && last_unconf[s] != unconf) {
-                        last_unconf[s] = (int8_t)unconf;
-                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                    "lanes:edit_unconfirmed",
-                                                    unconf ? "1" : "0");
-                    }
-                }
             }
 
             /* Move's Record button, decoded from its LED (rec_arm.h). ON

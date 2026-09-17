@@ -135,6 +135,63 @@ SCORED rather than FAIL.
   `/com/ableton/move/{screenreader,settings}` shows only that signal and
   `isMoveRunning`.
 
+## Fifteen scenario paths, run on the device
+
+Beyond the five new-clip permutations, fifteen scenarios over the gesture,
+target, lifetime and concurrency axes. **14 PASS, 0 FAIL, 1 not set up.**
+
+```
+plock-lands         PASS   a lock creates a lane on the playing row
+plock-replaces      PASS   a second lock on the same step replaces it (n stays 1)
+two-params          PASS   two params on one clip are two independent lanes
+clear-param         PASS   clears that param, leaves the other
+clear-clip          PASS   clears every lane on the clip
+undo-restores       PASS   lanes:undo puts back what the clear took
+probe-exact         PASS   reports the locked value AT the step, and says exact
+double-loop         PASS   copies the clip's points one loop later
+double-one-track    PASS   and does NOT touch another track's lanes
+fx-target           ----   not set up: no FX would load on the slot (channel
+                           starved during the load); the code path exists —
+                           chain_host.c calls lane_on_set_param from the fx
+                           branch — but it is UNTESTED on hardware
+unsaved-counter     PASS   0 on an identified clip
+state-roundtrip     PASS   lanes:state serves a document with the lane in it
+discarded-counter   PASS   lanes:discarded is served
+no-stray-rows       PASS   no lane is left keyed to another row
+refusal-named       PASS   a bad param is refused as "unknown_param", not silently
+```
+
+**Three of those started as failures and two were the harness, which is worth
+recording separately.** `probe` answers `"<value> <exact>"` and an empty answer
+means "nothing to say at that phase" — asserting with a substring scored a
+correct `55 1` as a failure. And `probe` and `double` both take the clip's
+geometry from the instance, which is NaN with the transport stopped, so a
+scenario that neither starts the transport nor passes an explicit loop scores
+"the verb did nothing".
+
+**The third was real, and it was a regression from this branch** — see below.
+
+## `edit_unconfirmed` was removed, not tuned
+
+Making the clears agree with the writes (so Delete + step could not delete the
+playing clip's lock) exposed that the rule underneath them could not work.
+`g_edit_unconfirmed` withheld the row from a write when the screen said a
+different clip was being edited — and `clip_state` decodes the selection from
+SESSION pad LEDs, while Move paints none in NOTE view, which is the only view
+a p-lock happens in. So the answer is always a LATCH from whenever the user
+was last in Session view.
+
+Measured: `write_row=-2 unconf=1` with the lane plainly on row 0, and
+`clear_param` reporting success having removed nothing. It had also read
+`selnow != cslot`, so an UNKNOWN selection (-1) counted as "a different clip" —
+the null-vs-false mistake again, one level up.
+
+A rule that can only ever fire on stale data is not a rule. The new-clip case
+it was meant to serve is covered where it belongs: when the clip is not in the
+file the resolver answers with the PENDING placeholder and the write keys to
+that, with no guess about selection involved. The decode itself is kept and
+tested; nothing in the resolver reads it.
+
 ## Still open
 
 - A **non-multiple loop resize** leaves a blind take provisional and silent.

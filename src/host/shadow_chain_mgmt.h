@@ -263,15 +263,7 @@ int shadow_clip_copy_dst(void);
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp);
 
-/* Is the clip being EDITED the same one this answer names?
- *
- * `shadow_slot_clip_phase` answers "which clip is PLAYING", which is what
- * playback needs. A WRITE wants the clip on screen, and when a clip is
- * playing while the user edits a different (new) one those are not the same
- * row — p-locks landed on the playing clip, silently. 1 = we cannot confirm
- * they are the same, so a write must not use the row. Valid for the slot most
- * recently passed to shadow_slot_clip_phase. */
-int shadow_slot_edit_unconfirmed(void);
+
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 
