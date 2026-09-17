@@ -54,9 +54,25 @@
  * nothing. 96 entries is ~1.2 s of slack, six drain periods, for ~500 KB of
  * BSS in the shim. */
 #define LANE_TRACE_ENTRIES    96
-/* Sample every N SPI frames. 344 Hz / 17 = ~20 Hz: ~36 samples per 4-beat loop
- * at 132 BPM, against a question ("one playthrough or three") that is coarse. */
-#define LANE_TRACE_EVERY_FRAMES 17
+/* Sample every N CALLS, not every N frames -- and that distinction cost a
+ * measurement.
+ *
+ * This was `#define LANE_TRACE_EVERY_FRAMES 17` gated as `frame % 17 == 0`,
+ * chosen as "344 Hz / 17 = ~20 Hz". But the only caller is
+ * shadow_lanes_publish_driving(), which the shim itself runs every 16th frame
+ * (LANES_DRIVING_PUBLISH_FRAMES). So BOTH gates had to hold, and 16 and 17 are
+ * COPRIME: the sampler fired on multiples of 272 instead -- 1.26 Hz, exactly
+ * 16x slower than documented, with 0.79 s between samples.
+ *
+ * That is not a cosmetic error. The question this trace exists to answer is
+ * whether a lane goes silent for one BEAT (~0.45 s at 133 BPM) or one LOOP
+ * (~1.8 s), and an instrument whose resolution is 0.79 s cannot separate them
+ * -- while its own header promised 36 samples per loop.
+ *
+ * Counting calls instead makes the rate independent of the caller's cadence,
+ * so a change to LANES_DRIVING_PUBLISH_FRAMES cannot silently re-introduce
+ * this. 1 = every call = the caller's own 21.5 Hz. */
+#define LANE_TRACE_EVERY_CALLS 1
 
 typedef struct {
     uint32_t frame;
@@ -110,8 +126,12 @@ static inline int lane_trace_pop(lane_trace_t *t, lane_trace_entry_t *out) {
     return 1;
 }
 
+/* The `frame` argument is kept for the log's sake (it stamps each entry) but
+ * is deliberately NOT what the rate is derived from -- see above. */
 static inline int lane_trace_should_sample(uint32_t frame) {
-    return (frame % LANE_TRACE_EVERY_FRAMES) == 0;
+    (void)frame;
+    static uint32_t calls;
+    return (calls++ % LANE_TRACE_EVERY_CALLS) == 0;
 }
 
 /* THE RING AND ITS ARM LIVE IN THE SHIM, and the callback reads the arm as a

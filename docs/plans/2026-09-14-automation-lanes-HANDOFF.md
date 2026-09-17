@@ -11,6 +11,46 @@ accurate about the feature's shape. This one is about a day of USING it.
 
 ## THE ONE THAT MATTERS: automation needs an extra loop after recording
 
+> **MEASURED 2026-09-17 — BOTH NAMED SUSPECTS ARE INNOCENT, and the bug does
+> not reproduce on the current build.** Read this before acting on the
+> hypothesis below; it is left in place because the reasoning is still worth
+> having, not because it was right.
+>
+> **First, the instrument was lying.** `lane_trace` samples inside
+> `shadow_lanes_publish_driving()`, which the shim calls every **16th** frame,
+> and then gated on `frame % 17 == 0`. 16 and 17 are coprime, so it fired every
+> 272 frames — **1.26 Hz against a documented 20 Hz**, 0.79 s between samples.
+> The question here is whether a lane goes silent for one BEAT (~0.45 s) or one
+> LOOP (~1.8 s), so the instrument could not resolve its own question. Fixed to
+> count CALLS rather than frames; resolution measured afterwards at **0.023 s**.
+> The old unit test asserted `frame % 17` in isolation and passed the entire
+> time.
+>
+> With that fixed, driving takes through `v2_set_param` (the same entry a knob
+> detent uses):
+>
+> - **`punch_until_wrap` does not outlive the take.** An unarmed turn armed it
+>   (`punch=1`, `pph=2.875`); the very next wrap cleared it, *mid-take*, exactly
+>   as the unconditional expiry intends.
+> - **The recording pass releases in about a beat.** Last write at t=2.74,
+>   `drv=1` at t=3.12 — **0.38 s**, which is `LANE_PASS_GAP_BEATS` at that
+>   tempo, not a loop.
+> - **A brand-new lane, recorded from nothing, played in the SAME loop**: writes
+>   t=0.00–0.79 (n 1→20), `drv=1` at t=1.12, phase 3.75, before the wrap.
+>   `stale=0 orph=0` throughout.
+>
+> So the extra loop was almost certainly the **file-sync trio** fixed in
+> `85cefb78` on 2026-09-15 — one of which measured a p-lock inaudible for
+> **7.1 s**, which at ~1.8 s a loop is about four playthroughs, and which is
+> what "more than one playback loop" actually looks like. That fix postdates
+> this handoff.
+>
+> **Not yet reproduced:** a take inside the blind window on a clip Move has not
+> written yet. Launching an empty slot STOPS the track, and Play then toggles
+> the global transport, so the scripted route kept ending with `ph=nan` — the
+> gesture sequence needs a hand, or a better route to a playing new clip.
+
+
 Reported, and not yet diagnosed:
 
 > "still taking more than one playback loop to actually play recorded

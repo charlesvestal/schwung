@@ -69,10 +69,29 @@ int main(void) {
     CHECK(strlen(e.line) == LANE_TRACE_LINE_MAX - 1,
           "an over-long line stored %zu chars", strlen(e.line));
 
-    CHECK(lane_trace_should_sample(0) == 1, "frame 0 is not a sample point");
-    CHECK(lane_trace_should_sample(LANE_TRACE_EVERY_FRAMES) == 1,
-          "the period does not land on a sample point");
-    CHECK(lane_trace_should_sample(1) == 0, "every frame is a sample point");
+    /* THE RATE MUST NOT DEPEND ON THE CALLER'S CADENCE.
+     *
+     * The old assertions here checked `frame % 17` in isolation and passed
+     * while the instrument ran 16x slower than its own header claimed. The
+     * only caller is shadow_lanes_publish_driving(), which the shim runs every
+     * 16th frame; with a 17-frame period the two gates are coprime, so the
+     * sampler fired every 272 frames -- 1.26 Hz against a documented 20 Hz,
+     * 0.79 s between samples, and the question the trace exists to answer
+     * (one beat of silence, or one loop?) is finer than that.
+     *
+     * So drive it the way the shim does -- frames 16 apart, never 1 apart --
+     * and demand the call count, not the frame numbers, set the rate. */
+    {
+        const int calls = 1000;
+        int got = 0;
+        for (int i = 0; i < calls; i++)
+            if (lane_trace_should_sample((uint32_t)i * 16u)) got++;
+        const int want = calls / LANE_TRACE_EVERY_CALLS;
+        CHECK(got >= want - 1 && got <= want + 1,
+              "a 16-frame caller got %d samples in %d calls, wanted ~%d "
+              "(rate is following the frame number, not the call)",
+              got, calls, want);
+    }
 
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_trace\n");
