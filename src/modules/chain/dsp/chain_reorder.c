@@ -123,6 +123,38 @@ static void chain_perm_retarget_all(chain_instance_t *inst, const char *prefix,
             k->param[0] = '\0';
         }
     }
+
+    /* AND THE AUTOMATION LANES, which were the FOURTH table and were missed.
+     *
+     * A lane names its position by the same string ("fx3"), so this is exactly
+     * the failure chain_perm_retarget's own comment describes: a permutation
+     * that moves the arrays and not the routings "would silently re-aim every
+     * routing at whatever slid into the position it named". Insert a module at
+     * fx1 and a lane recorded against fx3's `mix` drove the module now sitting
+     * at fx3 — and `mix`, `level` and `feedback` are ubiquitous, so it usually
+     * FOUND a parameter to drive. The clip fingerprint cannot catch it: it
+     * checks which CLIP the lane belongs to, never which module.
+     *
+     * A lane whose module LEFT is marked `orphaned` rather than emptied.
+     * chain_perm_retarget clears the id on -1, which is right for a routing —
+     * there is nowhere to point — but a lane holds the user's recorded
+     * automation, and an empty target is one the lock map cannot show and the
+     * clear verbs cannot name. `orphaned` already means exactly what is wanted
+     * here: retained, SILENT (lane_eval refuses it), and restarted rather than
+     * resurrected by the next write, because a different module at that
+     * position is a different thing. So the target is put back and the flag
+     * set instead. */
+    for (int i = 0; i < LANE_MAX; i++) {
+        lane_t *ln = &inst->lanes.lanes[i];
+        if (!ln->used) continue;
+        char keep[sizeof(ln->target)];
+        snprintf(keep, sizeof(keep), "%s", ln->target);
+        if (chain_perm_retarget(ln->target, sizeof(ln->target),
+                                prefix, max, map, count) < 0) {
+            snprintf(ln->target, sizeof(ln->target), "%s", keep);
+            ln->orphaned = 1;
+        }
+    }
 }
 
 /* Which section a request names, resolved once so the three verbs below cannot

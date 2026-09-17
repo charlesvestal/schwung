@@ -103,13 +103,19 @@ EOF
 # --------------------------------------------------------------------------
 hdr=src/modules/chain/dsp/chain_internal.h
 lfo=src/host/lfo_common.h
+# lane_t is position-keyed too and lives HERE, which is half of why it was
+# missed: the derivation only scanned the two headers above, and
+# chain_instance_t holds lanes as a nested lane_store_t rather than as an
+# array of lane_t, so the member scan below could not see it either. A lane
+# recorded against fx3 therefore kept driving whatever slid into fx3.
+lanes_hdr=src/host/lane_store.h
 src=src/modules/chain/dsp/chain_reorder.c
 
 keyed=$(awk '
   /^typedef struct/ { buf=""; keyed=0 }
   { buf = buf $0 "\n"; if ($0 ~ /char[ \t]+target\[/) keyed=1 }
   /^\} [a-z_0-9]+_t;/ { if (keyed) { name=$2; sub(";","",name); print name } keyed=0 }
-' "$hdr" "$lfo" | sort -u)
+' "$hdr" "$lfo" "$lanes_hdr" | sort -u)
 
 [ -n "$keyed" ] || fail "could not derive the set of position-keyed types from $hdr"
 
@@ -121,9 +127,26 @@ struct_body=$(awk '/^typedef struct chain_instance \{/,/^\} chain_instance_t;/' 
 checked=0
 
 for type in $keyed; do
+  # `|| true` because a type with NO direct array member is the interesting
+  # case, not an error — and under `set -e` the failing grep in this
+  # assignment killed the script before the branch below could run, which
+  # made it exit 1 with NO message in every state. A test that dies for the
+  # wrong reason looks exactly like one that caught something.
   members=$(printf '%s\n' "$struct_body" | command grep "^ *$type " \
-    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/")
-  [ -n "$members" ] || fail "found the position-keyed type $type but no chain_instance_t member of it"
+    | sed -E "s/^ *$type +([a-z_0-9]+)\[.*/\1/") || true
+  if [ -z "$members" ]; then
+    # NESTED CONTAINERS COUNT. chain_instance_t holds lanes as a lane_store_t,
+    # not as a lane_t[], so requiring a direct array member let the one type
+    # that mattered slip through as "not a member at all". Walking such a type
+    # looks like declaring a pointer to it, so require that instead of
+    # declaring the type absent.
+    checked=$((checked + 1))
+    command grep -q "$type \*" "$src" || fail \
+"$type names a chain position by string, but chain_reorder.c never walks a \
+$type. A shape edit will leave every routing of that type pointing at \
+whatever module slides into the index it names."
+    continue
+  fi
   for m in $members; do
     checked=$((checked + 1))
     command grep -q "inst->$m\[" "$src" || fail \
