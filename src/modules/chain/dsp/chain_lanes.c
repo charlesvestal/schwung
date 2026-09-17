@@ -1045,6 +1045,22 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * previous call's count in place makes a refusal read as a success --
          * which is the exact ambiguity these counters exist to remove. */
         inst->lanes_last_copied = 0;
+
+        /* RE-KEY BEFORE COPYING, or a blind take is never duplicated.
+         *
+         * The duplicate is recognised FROM THE FILE, so by the time this
+         * fires the file names both clips -- which is also the moment a
+         * pending lane can finally be given its real row. But the shim
+         * consumes the copy generation in its per-slot loop BEFORE
+         * render_block runs lane_tick (schwung_shim.c, "lanes:copy_clip"),
+         * so the reconcile that would have adopted the source had not run
+         * yet: the source was still PENDING with an absent fingerprint, the
+         * skip below dropped it, and the generation was already marked seen,
+         * so it was never retried. The duplicate arrived silent, permanently.
+         *
+         * Reported as "i had the same thing with losing my p locks on a new
+         * clip, and then copied that clip and they didn't come". */
+        lane_reconcile_pending_slots(inst);
         int src = -1, dst = -1;
         if (!val || sscanf(val, "%d %d", &src, &dst) != 2) return;
         if (src < 0 || dst < 0 || src == dst) return;

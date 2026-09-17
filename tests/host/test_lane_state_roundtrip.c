@@ -417,6 +417,53 @@ int main(void) {
         }
     }
 
+    /* A PROVISIONAL LANE MUST NOT ROUND-TRIP.
+     *
+     * `slot` can be LANE_SLOT_PENDING (-2) during Move's ~10 s save window.
+     * Writing it produced a lane that reloaded keyed to -2 with its
+     * runtime-only `slot_pending` latch clear and its fingerprint absent —
+     * nothing could re-key it and nothing marks it stale (stale is only set
+     * where the fingerprint is valid, which the blind window is not). The
+     * next blind window on that track resolves to -2, the key matches, and
+     * last session's automation plays on a stranger's clip. Silent, and the
+     * one outcome this design forbids. */
+    {
+        lane_store_t ps; memset(&ps, 0, sizeof(ps));
+        lane_fingerprint_t pfp = { 0 }; pfp.first_note = -1;   /* absent */
+        lane_t *pl = lane_alloc(&ps, "synth", "ht_c_tune", 0,
+                                LANE_SLOT_PENDING, &pfp);
+        CHECK(pl != NULL, "pending lane_alloc refused");
+        lane_write(pl, 1.5, 0.5f, 0);
+
+        /* ...alongside an ordinary lane, so this proves the pending one is
+         * SKIPPED rather than that serialization simply failed. */
+        lane_fingerprint_t ok = { 0 }; ok.first_note = 36; ok.note_count = 4;
+        ok.loop_len = 4.0;
+        lane_t *keep = lane_alloc(&ps, "synth", "sd_c_tune", 0, 3, &ok);
+        CHECK(keep != NULL, "ordinary lane_alloc refused");
+        lane_write(keep, 0.5, 0.25f, 0);
+
+        char pbuf[4096];
+        int pn = lane_store_serialize(&ps, pbuf, sizeof(pbuf));
+        CHECK(pn > 0, "serializing a store with a pending lane failed");
+
+        lane_store_t back; memset(&back, 0, sizeof(back));
+        CHECK(lane_store_deserialize(&back, pbuf) >= 0, "parse of that document failed");
+
+        int pending_back = 0, ordinary_back = 0;
+        for (int i2 = 0; i2 < LANE_MAX; i2++) {
+            if (!back.lanes[i2].used) continue;
+            if (lane_slot_is_pending(back.lanes[i2].slot)) pending_back++;
+            else ordinary_back++;
+        }
+        CHECK(pending_back == 0,
+              "a PENDING lane round-tripped (%d came back) — it will match the "
+              "next blind window and play on a stranger's clip", pending_back);
+        CHECK(ordinary_back == 1,
+              "the ordinary lane did not survive (%d back) — the skip is too "
+              "wide", ordinary_back);
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane state round-trip\n");
     return 0;

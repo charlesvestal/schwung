@@ -53,6 +53,29 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &st->lanes[i];
         if (!ln->used) continue;
+        /* A PROVISIONAL LANE IS NEVER WRITTEN.
+         *
+         * `ln->slot` can be LANE_SLOT_PENDING (-2) — a placeholder meaning
+         * "a clip exists here and Move has not named its row yet" — and this
+         * wrote it verbatim while the reader assigns it straight back with no
+         * range check. `slot_pending` is runtime-only by design, so the lane
+         * came back keyed to -2 with that latch CLEAR and its fingerprint
+         * absent: a zombie that nothing can re-key and nothing marks stale
+         * (stale is only ever set where the fingerprint is valid, which is
+         * exactly what the blind window is not).
+         *
+         * The next blind window on that track then RESOLVES TO -2 and the
+         * zombie's key matches, so last session's automation plays on a
+         * stranger's clip. That is the one outcome this design forbids, and
+         * it is silent.
+         *
+         * A pending lane is THIS session's blind take by its own definition,
+         * so refusing to write it is not a loss of anything durable — its row
+         * is not knowable yet, and a take that cannot be keyed cannot be
+         * restored honestly. Skipped at the WRITER rather than filtered at the
+         * reader, because the loader is all-or-nothing and a per-lane silent
+         * drop there would be a different lie. */
+        if (lane_slot_is_pending(ln->slot)) continue;
         /* stale / orphaned / driving / punch_* are deliberately absent: they
          * are recomputed from the live clip every block, and only a
          * fingerprint MATCH clears `stale`. Writing one down strands the lane
