@@ -2468,6 +2468,13 @@ With `enterable: true`:
 - **Shift+jog closes the canvas** and keeps paging — the guaranteed way out, not
   yours to intercept, and not something to design around. It is there for when
   your navigation goes wrong, or when someone four levels in wants out.
+- **`ctx.shiftHeld()`** tells you whether Shift is down. Ask it rather than
+  watching CC 49: the host reads Shift from shared memory and the CC does not
+  reliably reach a canvas. Available on the draw path, so a module drawing its
+  own footer can advertise the escape hatch only while it is live.
+
+If you draw your own chrome, set **`show_footer: false`** on the param and the
+host draws nothing at all — the screen is yours, including the bottom rows.
 - **Back asks you first**, through a `handleBack(ctx)` hook:
 
 ```javascript

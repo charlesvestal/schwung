@@ -184,6 +184,24 @@ if (selAt < 0 || !/case VIEWS\.CANVAS:[\s\S]{0,600}?if \(canvasIsEnterable\(\)\)
   bad("handleSelect closes an enterable canvas");
 else ok("select does not close an enterable canvas");
 
+/* ⭐ SHIFT IS EXPOSED AS STATE, and survives the draw-path strip.
+   A module draws its own hints, so it needs to know a modifier is held -- and
+   it cannot learn that from MIDI, because the host reads Shift from the shim
+   shared memory and the CC does not reliably reach a canvas. A module watching
+   CC 49 worked under dAVEBOx, which forwards the byte, and silently did nothing
+   on stock. */
+const ctxFn = src.slice(src.indexOf("function createCanvasRuntimeContext"));
+const ctxBody = ctxFn.slice(0, ctxFn.indexOf("\nfunction "));
+if (!/shiftHeld\(\)\s*\{\s*return isShiftHeld\(\);/.test(ctxBody))
+  bad("the canvas ctx does not expose shiftHeld");
+else ok("the canvas ctx exposes shiftHeld as state");
+
+const strip = src.slice(src.indexOf("const { getParam, setParam, getValue, setValue"));
+const stripLine = strip.slice(0, strip.indexOf("\n"));
+if (/shiftHeld/.test(stripLine))
+  bad("shiftHeld is stripped from the draw path -- drawing is exactly where it is wanted");
+else ok("...and keeps it on the draw path, unlike the param accessors");
+
 /* The footer must not promise a click that the module now owns. */
 if (!/canvasIsEnterable\(\) \? "Back: return" : "Click\/Back: return"/.test(src))
   bad("the fallback footer still says Click/Back for an enterable canvas");

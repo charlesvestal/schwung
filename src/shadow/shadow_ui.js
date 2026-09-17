@@ -20435,6 +20435,22 @@ function createCanvasRuntimeContext() {
         now() { return Date.now(); },
         random() { return Math.random(); },
         /*
+         * ⭐ IS SHIFT DOWN? State, not chrome.
+         *
+         * A module owns its screen and draws its own hints, so it is the one
+         * that needs to know when a modifier is held -- to say the Shift+jog
+         * escape hatch is live, or to offer a fine-adjust. It cannot learn this
+         * from MIDI: the host reads Shift from the shim's shared memory
+         * (shadow_get_shift_held), and the CC does not reliably reach a canvas.
+         * A module that watched CC 49 worked under dAVEBOx, which forwards the
+         * byte, and silently did nothing here.
+         *
+         * ⚠ NOT stripped on the draw path, unlike the param accessors: this is
+         * a shared-memory read, not an SPI round trip, and drawing is exactly
+         * where it is wanted.
+         */
+        shiftHeld() { return isShiftHeld(); },
+        /*
          * ⭐ THE MODULE SAYS IT IS DONE.
          *
          * An enterable canvas owns the click, which means it also owns the
