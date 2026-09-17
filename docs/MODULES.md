@@ -2489,6 +2489,30 @@ that wrongly claims Back forever holds it on its own screen only — changing
 track, swapping the module and leaving the editor all take the user out without
 consulting it.
 
+##### Leaving, and hearing the pads
+
+Two more things an enterable canvas can do.
+
+**`ctx.close()`** dismisses the screen from inside a gesture. Use it when the
+job is finished — picking the sample *is* leaving a sample browser, and making
+the user press Back afterwards is one gesture too many on the commonest path.
+It is not available from `draw` or `tick` (a screen must not tear itself down
+mid-render), and a host that predates it simply leaves the canvas up, so guard
+with `typeof ctx.close === "function"` if you care about older hosts.
+
+**`wantsPads: true`** on the overlay asks for hardware pad notes (68–99):
+
+```javascript
+globalThis.canvas_overlay = { wantsPads: true, onMidi(ctx, msg) { /* ... */ } };
+```
+
+Opening a canvas leaves the knob grid, and the grid is what normally reconciles
+pad observation — so without this a canvas hears knob touches but not pads.
+It is **passive**: the pad still plays, and your screen is told as well. That
+matters for an audition, where the point of hitting the pad is to hear what you
+just loaded at the velocity you hit it with. The note is the raw pad number,
+which a sequencer cannot produce, so it means "a finger hit this pad".
+
 ##### `enterable` on an `as_page` canvas: your page becomes a door
 
 The same flag on a page (`as_page: true`) makes that page a **door** — the host

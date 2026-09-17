@@ -20616,6 +20616,9 @@ function openCanvasPreview(paramKey, meta) {
 }
 
 function closeCanvasPreview(cancelled) {
+    /* Give the pads back. The tick that would have restated this is the very
+     * thing that stops here, so leaving it raised strands the flag. */
+    if (typeof host_pad_observe === "function") host_pad_observe(0);
     invokeCanvasOverlayHook("onClose", { cancelled: !!cancelled });
     invokeCanvasOverlayHook("onExit", { cancelled: !!cancelled });
     resetCanvasState();
@@ -20625,6 +20628,30 @@ function closeCanvasPreview(cancelled) {
 
 function tickCanvasPreview() {
     if (view !== VIEWS.CANVAS) return;
+    /*
+     * ⭐ A CANVAS THAT ASKS FOR PADS HEARS THEM, passively.
+     *
+     * The knob grid already reconciles `pad_observe` from the module's
+     * contract, and opening a canvas LEAVES the grid — so a module-drawn
+     * browser could not tell which pad you pressed, on the one screen where
+     * filling a pad is the entire job. Measured on the device: knob-touch notes
+     * reach a canvas and pad notes do not, because nothing raises the flag here.
+     *
+     * OBSERVE, NEVER BLOCK. The shim adds a publish and does not `continue`, so
+     * the pad still plays the kit — which is exactly what you want while
+     * auditioning, since the point of hitting it is to hear what you just
+     * loaded, at the velocity you hit it with.
+     *
+     * ⚠ RESTATED EVERY TICK rather than raised on open: the shim drops the flag
+     * on its own authority when the shadow display closes, so a JS mirror of it
+     * goes stale and the feature dies silently for the rest of the session.
+     * host_pad_observe compares against the SHM and logs only on a transition,
+     * so reconciling it every tick costs nothing.
+     */
+    if (typeof host_pad_observe === "function") {
+        const ov = canvasRuntime && canvasRuntime.overlay;
+        host_pad_observe(ov && ov.wantsPads ? 1 : 0);
+    }
     invokeCanvasOverlayHook("tick", {});
 }
 
