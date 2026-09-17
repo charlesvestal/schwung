@@ -17,6 +17,18 @@
 
 #include "host/lane_lookahead.h"
 
+/* WHICH ROW A WRITE IS KEYED TO.
+ *
+ * Playback uses `lane_clip_slot` — the clip that is PLAYING. A write wants
+ * the clip on SCREEN, and when they cannot be confirmed to be the same the
+ * only honest answer is the placeholder: keying a p-lock to the playing row
+ * puts it on a clip the user is not editing, silently and permanently.
+ * PENDING plays through the window and adopts when the file names a row. */
+static inline int lane_write_slot(const chain_instance_t *inst) {
+    if (inst->lane_edit_unconfirmed) return LANE_SLOT_PENDING;
+    return inst->lane_clip_slot;
+}
+
 /* One source id per lane, so the mod bus can tell two lanes apart and clear
  * one without disturbing the other -- and so a lane's own release names only
  * itself. target is 16 bytes and param 32 (lane_store.h), both of which
@@ -160,7 +172,16 @@ void lane_release_all(chain_instance_t *inst) {
  * clip it fits, which is the direction every other choice in this file fails
  * in. */
 static void lane_reconcile_pending_slots(chain_instance_t *inst) {
-    if (inst->lane_track < 0 || inst->lane_clip_slot < 0) return;
+    /* ADOPT ONTO THE CLIP THAT WAS MADE, not onto whatever is playing.
+     *
+     * This used `lane_clip_slot` — the PLAYING row — so a take recorded blind
+     * while another clip played was re-keyed onto that other clip. The row
+     * published as newly-appeared is the clip the gesture belongs to; it is
+     * preferred when we have one, and the playing row remains the fallback
+     * for the ordinary case where the new clip IS the one playing. */
+    const int adopt_row = (inst->lane_new_row >= 0) ? inst->lane_new_row
+                                                    : inst->lane_clip_slot;
+    if (inst->lane_track < 0 || adopt_row < 0) return;
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || !ln->slot_pending) continue;
@@ -201,15 +222,16 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
          * newest thing the user did, which is the complaint this whole area
          * exists to answer. */
         lane_t *twin = lane_find(&inst->lanes, ln->target, ln->param,
-                                 inst->lane_track, inst->lane_clip_slot);
+                                 inst->lane_track, adopt_row);
         if (twin && twin != ln) {
             twin->used = 0;                 /* exactly one lane on the key */
             inst->lanes_adopt_displaced++;
         }
 
-        lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
-                        ln->pending_len, inst->clip_loop_len,
-                        inst->clip_fp_valid ? &inst->clip_fp : NULL);
+        if (lane_adopt_slot(ln, inst->lane_track, adopt_row,
+                            ln->pending_len, inst->clip_loop_len,
+                            inst->clip_fp_valid ? &inst->clip_fp : NULL))
+            inst->lane_new_row = -1;   /* consumed: one clip, one adoption */
     }
 }
 
@@ -548,7 +570,7 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
         lane_fingerprint_t fp;
         lane_current_fingerprint(inst, &fp);
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
-                                inst->lane_track, inst->lane_clip_slot, &fp);
+                                inst->lane_track, lane_write_slot(inst), &fp);
         /* A TAKE RECORDED IN THE BLIND WINDOW IS MARKED AS SUCH. No
          * fingerprint while the phase is valid means Move has not written
          * this clip to Song.abl yet (~10 s), so the geometry we are recording
@@ -568,7 +590,7 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * window cannot inherit this take. Set on an existing lane too, for
          * the reason the origin flag is: a second write in the same window
          * must not leave the first one's state behind. */
-        if (ln && lane_slot_is_pending(inst->lane_clip_slot)) {
+        if (ln && lane_slot_is_pending(lane_write_slot(inst))) {
             ln->slot_pending = 1;
             ln->pending_len = inst->clip_loop_len;
         }
@@ -737,6 +759,29 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     /* The whole store as one opaque document. */
     if (strcmp(sub, "state") == 0) {
         lane_apply_state(inst, val ? val : "");
+        return;
+    }
+
+    /* CAN A WRITE TRUST THE CLIP ROW? Pushed by the shim on CHANGE only.
+     *
+     * The row the shim reports is the PLAYING clip, which is what playback
+     * wants. A p-lock wants the clip on SCREEN, and when one clip plays while
+     * the user edits a different (new) one those are not the same row — the
+     * lock landed on the playing clip, silently, which is the last of the
+     * new-clip defects. 1 = the two cannot be confirmed equal, so a write
+     * keys to the PENDING placeholder and adopts when Song.abl names a row. */
+    /* The row that newly appeared in Song.abl on this track — the clip the
+     * user just made. A blind take adopts onto THIS rather than onto the
+     * playing row, which belongs to a different clip whenever something else
+     * is playing. Pushed by the shim on change only. */
+    if (strcmp(sub, "new_row") == 0) {
+        const int r = val ? atoi(val) : -1;
+        inst->lane_new_row = (r >= 0 && r < 8) ? r : -1;
+        return;
+    }
+
+    if (strcmp(sub, "edit_unconfirmed") == 0) {
+        inst->lane_edit_unconfirmed = (val && atoi(val) != 0) ? 1 : 0;
         return;
     }
 
@@ -959,7 +1004,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         const char *value_str = val + consumed;
         if (!isfinite(phase) || phase < 0.0) return;
         inst->lanes_plock_refusal = LANE_PLOCK_NO_CLIP;
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst))) return;
 
         inst->lanes_plock_refusal = LANE_PLOCK_UNKNOWN_PARAM;
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
@@ -970,7 +1015,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         lane_current_fingerprint(inst, &fp);
         inst->lanes_plock_refusal = LANE_PLOCK_STORE_FULL;
         lane_t *ln = lane_alloc(&inst->lanes, target, param,
-                                inst->lane_track, inst->lane_clip_slot, &fp);
+                                inst->lane_track, lane_write_slot(inst), &fp);
         if (!ln) return;
         /* A LOCK MADE BEFORE THE CLIP HAS A ROW, marked for re-keying exactly
          * as a blind recording is -- see LANE_SLOT_PENDING. This is the whole
@@ -981,7 +1026,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * p-lock branch already gives: a lock's phase comes from the BAR on
          * Move's own strip, so it is true clip time already and must not be
          * re-origined later. Only the ROW is provisional. */
-        if (lane_slot_is_pending(inst->lane_clip_slot)) {
+        if (lane_slot_is_pending(lane_write_slot(inst))) {
             ln->slot_pending = 1;
             ln->pending_len = inst->clip_loop_len;
         }

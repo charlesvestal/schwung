@@ -469,7 +469,27 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * that differ by a bar. */
     if (!isfinite(recorded_len) || recorded_len <= 0.0) return 0;
     if (!isfinite(now_len) || now_len <= 0.0) return 0;
-    if (fabs(recorded_len - now_len) > 0.5) return 0;
+    /* A LENGTHENED CLIP IS STILL THE SAME CLIP.
+     *
+     * Equality alone refused Double Loop outright: the gesture doubles the
+     * clip, so a take recorded against 4 quarters met a clip of 8 and the
+     * lane stayed PENDING for good -- measured, `adopt=0 slot=-2`, and on the
+     * device it presented as the locks on a just-doubled new clip never
+     * playing.
+     *
+     * An integer MULTIPLE is accepted because that is what the lengthening
+     * gestures produce (Double Loop doubles; adding bars repeats), and
+     * because it barely widens the gate this check exists for: it stops a
+     * clip deleted and REMADE inside the save window inheriting the take, and
+     * a remade clip takes the DEFAULT length, which the old rule already
+     * accepted as equal. The take's points sit in the first repeat either
+     * way.
+     *
+     * Only LONGER. A clip shorter than the take is not this take's clip. */
+    const double mult = now_len / recorded_len;
+    const double near = mult - (double)(long)(mult + 0.5);
+    if (now_len + 0.5 < recorded_len) return 0;
+    if (fabs(recorded_len - now_len) > 0.5 && fabs(near) > 0.01) return 0;
     /* THE IDENTITY COMES WITH THE ROW, and only once the length has agreed.
      *
      * A gesture made blind has an ABSENT fingerprint -- there were no notes to

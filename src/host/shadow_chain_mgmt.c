@@ -132,6 +132,12 @@ static int shadow_chain_slot_recv_channel(void *instance) {
  *
  * RT: SPI callback. Table reads only -- clip_state and clip_regions are both
  * plain structs, and a torn read costs one block of phase. */
+/* Set by shadow_slot_clip_phase for the slot it was last asked about. A plain
+ * static rather than an out-parameter so the signature — and every caller and
+ * fixture of it — is left alone. */
+static int g_edit_unconfirmed;
+int shadow_slot_edit_unconfirmed(void) { return g_edit_unconfirmed; }
+
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp /* [4] */) {
     if (slot < 0 || slot >= CLIP_TRACKS || !phase_beats || !loop_len ||
@@ -176,6 +182,21 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
      * made in the last few seconds. Raised below and consumed by the blind
      * branch, which is the one honest answer for it. */
     int screen_says_new_clip = 0;
+
+    /* A CLIP IS PLAYING AND A DIFFERENT ONE MAY BE UNDER EDIT.
+     *
+     * `cslot` at this point is the PLAYING clip. Move's bar strip says a clip
+     * is being edited, and the pad decode cannot confirm the two are the same
+     * — so a WRITE must not take this row. Measured: with a clip playing on
+     * row 7, p-locks aimed at a brand-new clip were keyed to row 7.
+     *
+     * Playback is untouched: it still gets the playing row, which is the
+     * question it is asking. */
+    g_edit_unconfirmed = 0;
+    if (cslot >= 0 && step_strip_segments_for_track((int)slot) > 0) {
+        const int selnow = clip_state_selected_slot(cs, (int)slot);
+        if (selnow != cslot) g_edit_unconfirmed = 1;
+    }
     if (cslot < 0) {
         /* THE FILE'S ANSWER IS ONLY USABLE WHEN IT CANNOT BE AMBIGUOUS.
          *
@@ -225,9 +246,21 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
              * p-locks onto a clip the user had left. */
             screen_says_new_clip = 1;
         } else if (sel >= 0 && sel < CLIP_SLOTS) {
-            if (rg && rg->valid && rg->slots[slot][sel].exists) {
-                cslot = sel;                    /* a real clip, real row */
-            } else if (step_strip_segments_for_track((int)slot) > 0) {
+            /* THE DECODE IS USED NEGATIVELY, NEVER TO NAME A ROW.
+             *
+             * It was naming one -- `cslot = sel` when the file had a clip
+             * there -- and that put the contamination back through a
+             * different door: measured, the decode answered "slot 2" while
+             * the user was on another slot, the file HAD a clip at 2, and the
+             * p-lock landed on it. Move paints 122 on more than one pad, so
+             * "which pad is selected" is not always answerable; "no existing
+             * clip is selected" still is, and that is the half this feature
+             * needs.
+             *
+             * So a positively-named row is treated as UNCONFIRMED: if the
+             * strip says a clip is being edited we take the placeholder,
+             * which is honest and adopts when Song.abl names a row. */
+            if (step_strip_segments_for_track((int)slot) > 0) {
                 /* A selected row the file does not have, AND Move's bar strip
                  * says a clip is being edited: a clip made seconds ago. Only
                  * then is the blind branch below reachable, so only then is

@@ -1348,6 +1348,39 @@ int main(void) {
         }
     }
 
+    /* A LENGTHENED CLIP IS STILL THE SAME CLIP — lane_adopt_slot.
+     *
+     * The length check stops a clip deleted and REMADE inside Move's save
+     * window inheriting a take. Equality alone also refused DOUBLE LOOP,
+     * which doubles the clip: a take recorded against 4 quarters met a clip
+     * of 8 and the lane stayed PENDING for good — silent, permanent, and
+     * measured as the `double-loop` permutation failing. */
+    {
+        struct { const char *what; double rec, now; int want; } cs[] = {
+            { "same length",              4.0, 4.0, 1 },
+            { "Double Loop, 4 -> 8",      4.0, 8.0, 1 },
+            { "extended to three bars",   4.0, 12.0, 1 },
+            { "SHORTER than the take",    8.0, 4.0, 0 },
+            { "longer but not a multiple",4.0, 6.0, 0 },
+        };
+        for (unsigned i2 = 0; i2 < sizeof(cs)/sizeof(cs[0]); i2++) {
+            lane_store_t as; memset(&as, 0, sizeof(as));
+            lane_fingerprint_t absent = { 0 }; absent.first_note = -1;
+            lane_t *al = lane_alloc(&as, "synth", "ht_c_tune", 0,
+                                    LANE_SLOT_PENDING, &absent);
+            al->slot_pending = 1; al->pending_len = cs[i2].rec;
+            lane_write(al, 1.5, 0.5f, 0);
+            lane_fingerprint_t now = { 0 };
+            now.first_note = 36; now.note_count = 2; now.loop_len = cs[i2].now;
+            const int got = lane_adopt_slot(al, 0, 3, al->pending_len,
+                                            cs[i2].now, &now);
+            CHECK(got == cs[i2].want,
+                  "%s: adopt=%d wanted %d (rec %.1f, now %.1f) — a refusal "
+                  "leaves the lane PENDING for good",
+                  cs[i2].what, got, cs[i2].want, cs[i2].rec, cs[i2].now);
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

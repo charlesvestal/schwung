@@ -2144,6 +2144,49 @@ static void shadow_inprocess_render_to_buffer(void) {
                 shadow_chain_set_clip_phase(shadow_chain_slots[s].instance,
                                             lane_ok, lane_phase, lane_loop,
                                             s, lane_clip, lane_fp_ok, lane_fp);
+
+                /* AND WHETHER A WRITE MAY USE THAT ROW.
+                 *
+                 * The row above is the PLAYING clip; a p-lock wants the clip
+                 * on screen. When a clip plays while the user edits a new
+                 * one, those differ and the lock landed on the playing clip.
+                 * Carried as a param rather than a new argument, because this
+                 * hand-off crosses the dlsym'd seam and appending to it is
+                 * what boot-looped a device once already.
+                 *
+                 * ON CHANGE ONLY: a per-block write would serve a param
+                 * request on every frame, which is the cost this file avoids
+                 * everywhere else. */
+                /* THE ROW A BLIND TAKE SHOULD ADOPT ONTO. Published by the
+                 * worker as the row that newly appeared in Song.abl, which is
+                 * the clip the user just made — as against the PLAYING row,
+                 * which is what adoption used and which belongs to a
+                 * different clip whenever something else is playing. */
+                if (shadow_plugin_v2 && shadow_plugin_v2->set_param) {
+                    static uint32_t last_new_gen[SHADOW_CHAIN_INSTANCES];
+                    const uint32_t g = shadow_clip_new_generation();
+                    if (s < SHADOW_CHAIN_INSTANCES && last_new_gen[s] != g) {
+                        last_new_gen[s] = g;
+                        const int nr = shadow_clip_new_slot(s);
+                        if (nr >= 0) {
+                            char v[8];
+                            snprintf(v, sizeof(v), "%d", nr);
+                            shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                        "lanes:new_row", v);
+                        }
+                    }
+                }
+
+                if (shadow_plugin_v2 && shadow_plugin_v2->set_param) {
+                    static int8_t last_unconf[SHADOW_CHAIN_INSTANCES];
+                    const int unconf = shadow_slot_edit_unconfirmed() ? 1 : 0;
+                    if (s < SHADOW_CHAIN_INSTANCES && last_unconf[s] != unconf) {
+                        last_unconf[s] = (int8_t)unconf;
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:edit_unconfirmed",
+                                                    unconf ? "1" : "0");
+                    }
+                }
             }
 
             /* Move's Record button, decoded from its LED (rec_arm.h). ON

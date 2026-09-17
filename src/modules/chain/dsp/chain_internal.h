@@ -872,6 +872,14 @@ typedef struct chain_instance {
      * can hold lanes for several rows — matching anything would drive all of
      * them at once and they would fight over the same parameter. */
     int    lane_last_known_slot;  /* 0..7, or -1 before anything is known */
+    /* The shim cannot confirm that the clip being EDITED is the one it
+     * reported as playing. Writes then key to the placeholder rather than to
+     * somebody else's row; playback is unaffected. See lane_write_slot. */
+    int    lane_edit_unconfirmed;
+    /* The row that newly appeared in Song.abl on this track, or -1. A blind
+     * take adopts onto it rather than onto the playing row. Consumed by the
+     * adoption that uses it. */
+    int    lane_new_row;
     double clip_loop_start;       /* the window's start, same coordinate */
     double clip_loop_len;         /* quarters */
     /* Which clip the phase belongs to, and what it looks like right now. All

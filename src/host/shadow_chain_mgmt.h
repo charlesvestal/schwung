@@ -244,6 +244,15 @@ uint32_t shadow_clip_deleted_mask(void);
  * one way (Move 2.1.0 added copy/paste between slots) and a button press is a
  * moment that can be missed, while the file states the result. */
 uint32_t shadow_clip_copy_generation(void);
+
+/* The row that NEWLY APPEARED on `track` at the last re-parse, or -1.
+ *
+ * A take recorded before Move wrote the clip carries the PENDING placeholder
+ * and must be re-keyed. Handing it the PLAYING row adopted it onto the wrong
+ * clip whenever something else was playing; the row that just appeared is the
+ * clip the user made. */
+int      shadow_clip_new_slot(int track);
+uint32_t shadow_clip_new_generation(void);
 int shadow_clip_copy_track(void);
 int shadow_clip_copy_src(void);
 int shadow_clip_copy_dst(void);
@@ -253,6 +262,16 @@ int shadow_clip_copy_dst(void);
  * identity and are filled either way; see the definition. */
 int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
                            int *clip_slot, int *fp_valid, double *fp);
+
+/* Is the clip being EDITED the same one this answer names?
+ *
+ * `shadow_slot_clip_phase` answers "which clip is PLAYING", which is what
+ * playback needs. A WRITE wants the clip on screen, and when a clip is
+ * playing while the user edits a different (new) one those are not the same
+ * row — p-locks landed on the playing clip, silently. 1 = we cannot confirm
+ * they are the same, so a write must not use the row. Valid for the slot most
+ * recently passed to shadow_slot_clip_phase. */
+int shadow_slot_edit_unconfirmed(void);
 extern host_api_v1_t shadow_host_api;
 extern int shadow_inprocess_ready;
 

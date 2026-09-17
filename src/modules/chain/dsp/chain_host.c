@@ -70,6 +70,7 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
 
     /* 0 is a VALID row; this must mean "none known yet" (chain_internal.h). */
     inst->lane_last_known_slot = -1;
+    inst->lane_new_row = -1;
 
     /*
      * Per-position metadata storage, allocated EAGERLY for every position.
