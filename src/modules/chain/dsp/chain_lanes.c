@@ -1337,11 +1337,11 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * `lanes:driving`, which is one count of both. This reports them per lane
      * beside the transport phase they are compared against, so the extra-loop
      * report can be attributed rather than guessed at. Read-only; no state. */
-    /* TEMPORARY DIAGNOSTIC, paired with the note stamp in shadow_midi.c.
-     * The p-lock race is a question about ONE number: what is our estimated
-     * clip phase at the instant Move's note for that step is handed to the
-     * synth? `diag` answers it too, but it formats every lane, and this is
-     * read once per note-on on the SPI callback. */
+    /* The clip phase alone, for callers that want it without formatting every
+     * lane the way `diag` does. It is what established that Move's notes
+     * arrive EXACTLY on the step boundaries (ph=0.000000, 1.000000, 1.500000,
+     * 3.000000) -- the measurement behind lane_lookahead.h being one block of
+     * lead rather than a tuned constant. */
     if (strcmp(sub, "phase") == 0)
         return snprintf(buf, buf_len, "%.6f",
                         inst->clip_phase_valid ? inst->clip_phase_beats : -1.0);

@@ -370,21 +370,33 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
             host_slot_fx_silence_frames[i] = 0;
         }
 
-        /* TEMPORARY: stamp the phase Move's note arrives at.
+        /* THE LANE STATE AT THE INSTANT A NOTE IS HANDED TO THE SYNTH.
          *
-         * The p-lock race cannot be read from the lane trace's periodic
-         * samples -- they land wherever the 21.5 Hz tick falls, and the
-         * question is what the phase was at THIS note. Pushed into the
-         * existing ring (RT-safe: a bounded getter plus a memcpy, the same
-         * pair shadow_lanes_publish_driving already does) and only when
-         * armed. */
+         * Kept, because it is the only thing that can answer the question
+         * this whole class of bug turns on: a drum voice latches its
+         * parameters at note-on, so "was the p-lock applied YET" is a
+         * question about this exact moment and nothing else. The lane trace's
+         * periodic samples cannot answer it -- they land wherever the 21.5 Hz
+         * tick falls, and a lock is up for ~60 ms a loop.
+         *
+         * It is what proved the fix: `drv=1` on the locked step's note and
+         * `drv=0` on the others, where before the lock arrived a block late.
+         *
+         * RT-safe and armed-only: a bounded getter plus a memcpy into the
+         * preallocated ring, the same pair shadow_lanes_publish_driving
+         * already does on this thread, and nothing at all when disarmed. */
         if (lane_trace_armed() && pv2 && pv2->get_param &&
             (type == 0x90) && pkt[3] > 0 && host_chain_slots[i].instance) {
-            char ph[32] = {0};
-            if (pv2->get_param(host_chain_slots[i].instance, "lanes:phase",
-                               ph, sizeof(ph)) > 0) {
+            /* The full diag, not just the phase: the question is whether the
+             * lock is ALREADY APPLIED at the instant the note is handed to the
+             * synth, and only `drv` answers that. */
+            char d[LANE_TRACE_LINE_MAX];
+            d[0] = '\0';
+            if (pv2->get_param(host_chain_slots[i].instance, "lanes:diag",
+                               d, sizeof(d)) > 0) {
+                d[sizeof(d) - 1] = '\0';
                 char line[LANE_TRACE_LINE_MAX];
-                snprintf(line, sizeof(line), "NOTE d1=%d ph=%s\n", (int)note, ph);
+                snprintf(line, sizeof(line), "NOTEDIAG d1=%d %s", (int)note, d);
                 lane_trace_push(lane_trace_ring(), 0, (uint32_t)i, line);
             }
         }
