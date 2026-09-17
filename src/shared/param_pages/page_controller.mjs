@@ -3217,10 +3217,22 @@ export function createController(io = {}) {
         return !!(p && p.canvas && p.canvas.enterable);
     }
 
-    /** Send one decoded gesture to a canvas door's module, as the CC it was. */
+    /*
+     * Send one decoded gesture to a canvas door's module, as the CC it was.
+     *
+     * ⭑ A module may answer "I am done" rather than a value -- picking the
+     * sample IS leaving the browser, and the consumer marks that on the result.
+     * Leaving the door here rather than making the module ask twice is the same
+     * courtesy the preset browser's click already pays.
+     */
     function canvasPageMidi(p, data) {
         if (!canvasDoor(p) || typeof io.canvasPageHook !== "function") return undefined;
-        return io.canvasPageHook(p.canvas, "onMidi", { source: "internal", data });
+        const r = io.canvasPageHook(p.canvas, "onMidi", { source: "internal", data });
+        if (r && typeof r === "object" && r.close === true) {
+            s.menuEntered = null;
+            announcePageChange();
+        }
+        return r;
     }
 
     function isDoor(p) {

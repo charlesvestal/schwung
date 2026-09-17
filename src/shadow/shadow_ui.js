@@ -20229,6 +20229,9 @@ const canvasPageDrawers = {};   /* "moduleDir|script|overlay" -> fn | null */
  * so all three are filled and invalidated by one load. */
 const canvasPageOverlays = {};
 const canvasPageStates = {};
+/* "the module asked to leave the door" — a sentinel rather than a boolean so it
+ * cannot be confused with a hook that merely returned true. */
+const CANVAS_PAGE_CLOSE = { close: true };
 const canvasPageDisabled = {};
 
 function canvasPageDrawer(slot, component, canvas) {
@@ -20281,6 +20284,7 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
     if (!ov || typeof ov[hook] !== "function") return undefined;
 
     if (!canvasPageStates[cacheKey]) canvasPageStates[cacheKey] = {};
+    const closed = { wanted: false };
     const prefix = getComponentParamPrefix(component);
     const full = (k) => (String(k).includes(":") ? String(k)
                         : (prefix ? `${prefix}:${k}` : String(k)));
@@ -20290,9 +20294,17 @@ function canvasPageHook(slot, component, canvas, hook, payload) {
         getParam: (k) => getSlotParam(slot, full(k)),
         setParam: (k, v) => setSlotParam(slot, full(k), String(v)),
         now: () => Date.now(),
+        /* "I am done" — the page's counterpart to the dive's ctx.close(). The
+         * controller owns the door, so this only records the wish; the caller
+         * reads it back and leaves the door on the module's behalf. */
+        close: () => { closed.wanted = true; return true; },
     };
     try {
-        return ov[hook](ctx, payload || {});
+        const r = ov[hook](ctx, payload || {});
+        /* CANVAS_PAGE_CLOSE outranks whatever the hook returned: a module that
+         * asked to leave has finished, and the controller must not also act on
+         * a stale answer from the same call. */
+        return closed.wanted ? CANVAS_PAGE_CLOSE : r;
     } catch (e) {
         canvasPageDisabled[cacheKey] = true;
         debugLog(`canvas page ${cacheKey} disabled after throw in ${hook}: ${e}`);
@@ -20422,6 +20434,20 @@ function createCanvasRuntimeContext() {
         print(x, y, text, color = 1) { print(Math.round(x), Math.round(y), String(text), color ? 1 : 0); },
         now() { return Date.now(); },
         random() { return Math.random(); },
+        /*
+         * ⭐ THE MODULE SAYS IT IS DONE.
+         *
+         * An enterable canvas owns the click, which means it also owns the
+         * moment its job is finished -- picking the sample IS leaving the
+         * browser, and making the user press Back afterwards is one gesture too
+         * many on the commonest path through the screen. `handleBack` cannot
+         * express it: that answers a press, and this is not one.
+         *
+         * ⚠ STRIPPED FROM THE DRAW PATH along with the param accessors: a
+         * screen that closed itself mid-render would be tearing down the very
+         * thing being drawn. It is an action, and actions arrive at onMidi.
+         */
+        close() { closeCanvasPreview(false); return true; },
         getValue() {
             if (!fullCanvasKey) return "";
             return getSlotParam(hierEditorSlot, fullCanvasKey) || "";
@@ -20452,7 +20478,7 @@ function canvasHookCtx(hookName) {
     const base = canvasRuntime.ctx;
     if (!DRAW_PATH_HOOKS.has(hookName)) return base;
     if (!canvasRuntime.drawCtx) {
-        const { getParam, setParam, getValue, setValue, ...rest } = base;
+        const { getParam, setParam, getValue, setValue, close, ...rest } = base;
         canvasRuntime.drawCtx = rest;
     }
     return canvasRuntime.drawCtx;

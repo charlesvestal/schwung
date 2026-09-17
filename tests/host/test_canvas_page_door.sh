@@ -169,6 +169,30 @@ Promise.all([
     ok(ctl.menuEntered() === false, "a consumer that cannot deliver hooks still lets you out");
   }
 
+  /* ---- 6b. the module can say IT is done ------------------------------- */
+  {
+    /* Picking a sample IS leaving the browser. A module answers a gesture with
+       the close sentinel and the door lets it go, without a second press. */
+    const ctl = build({ enterable: true },
+                      (canvas, hook) => (hook === "onMidi" ? { close: true } : undefined));
+    ctl.load({ slot: 0, component: "synth" });
+    goToCanvas(ctl);
+    ctl.onClick(-1);
+    ok(ctl.menuEntered() === true, "entered");
+    ctl.onClick(-1);
+    ok(ctl.menuEntered() === false, "a module that answers close leaves the door");
+  }
+
+  /* A PLAIN true must not close it -- that is an ordinary consumed gesture. */
+  {
+    const ctl = build({ enterable: true }, () => true);
+    ctl.load({ slot: 0, component: "synth" });
+    goToCanvas(ctl);
+    ctl.onClick(-1);
+    ctl.onClick(-1);
+    ok(ctl.menuEntered() === true, "a hook returning plain true does NOT close the door");
+  }
+
   /* ---- 7. preset_browser + enterable is refused, not resolved ---------- */
   {
     const { ctl } = setup({ enterable: true, preset_browser: true });
