@@ -20432,6 +20432,23 @@ function createCanvasRuntimeContext() {
             draw_line(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
         },
         print(x, y, text, color = 1) { print(Math.round(x), Math.round(y), String(text), color ? 1 : 0); },
+        /*
+         * ⭐ HOW WIDE IS THAT TEXT? Needed by any module laying out its own
+         * chrome -- a right-aligned label, a hint pill, a column.
+         *
+         * Its absence here was a silent asymmetry: davebox's canvas ctx has
+         * offered `measureText` since it was written, as the hosted-canvas ctx
+         * does, so a module that measured worked there and had to guess a fixed
+         * advance on stock. Guessing is how a pill ends up a pixel wide of its
+         * text on one host and not the other.
+         *
+         * ⚠ On the draw path deliberately: a local glyph-table sum, not an SPI
+         * round trip, and layout is exactly where it is wanted.
+         */
+        measureText(text) {
+            const t = String(text == null ? "" : text);
+            return typeof text_width === "function" ? text_width(t) : t.length * 6;
+        },
         now() { return Date.now(); },
         random() { return Math.random(); },
         /*

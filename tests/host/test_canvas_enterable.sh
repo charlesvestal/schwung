@@ -196,11 +196,20 @@ if (!/shiftHeld\(\)\s*\{\s*return isShiftHeld\(\);/.test(ctxBody))
   bad("the canvas ctx does not expose shiftHeld");
 else ok("the canvas ctx exposes shiftHeld as state");
 
+/* ⭐ measureText: a module laying out its own chrome has to measure it, and its
+   absence here was a silent asymmetry -- davebox has always offered one, so a
+   module that measured was correct there and guessing on stock. */
+if (!/measureText\(text\)\s*\{/.test(ctxBody)) bad("the canvas ctx does not expose measureText");
+else ok("the canvas ctx exposes measureText");
+
 const strip = src.slice(src.indexOf("const { getParam, setParam, getValue, setValue"));
 const stripLine = strip.slice(0, strip.indexOf("\n"));
 if (/shiftHeld/.test(stripLine))
   bad("shiftHeld is stripped from the draw path -- drawing is exactly where it is wanted");
 else ok("...and keeps it on the draw path, unlike the param accessors");
+if (/measureText/.test(stripLine))
+  bad("measureText is stripped from the draw path -- LAYOUT is exactly where it is wanted");
+else ok("...as it keeps measureText, for the same reason");
 
 /* The footer must not promise a click that the module now owns. */
 if (!/canvasIsEnterable\(\) \? "Back: return" : "Click\/Back: return"/.test(src))
