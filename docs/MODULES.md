@@ -2468,9 +2468,15 @@ With `enterable: true`:
 - **Shift+jog closes the canvas** and keeps paging — the guaranteed way out, not
   yours to intercept, and not something to design around. It is there for when
   your navigation goes wrong, or when someone four levels in wants out.
-- **`ctx.measureText(text)`** returns the drawn width, for laying out your own
-  chrome — a right-aligned label, a hint pill, a column. Available on the draw
-  path; it is a glyph-table sum, not a round trip.
+- **`ctx.print(x, y, text, color, "small")`** draws in the device's own 4×5 font
+  — the one every hint row, header and knob label is drawn in. Draw your chrome
+  in it and your screen reads as the same machine; draw it in the default 5×7
+  and it is legible but visibly foreign.
+- **`ctx.measureText(text, font)`** returns the drawn width, and
+  **`ctx.fontHeight(font)`** the line height, for laying out your own chrome —
+  a right-aligned label, a hint pill, a column. Both take the same optional
+  `"small"`. Available on the draw path; they are glyph-table sums, not round
+  trips.
 - **`ctx.shiftHeld()`** tells you whether Shift is down. Ask it rather than
   watching CC 49: the host reads Shift from shared memory and the CC does not
   reliably reach a canvas. Available on the draw path, so a module drawing its

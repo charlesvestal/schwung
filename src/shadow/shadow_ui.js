@@ -3,6 +3,11 @@ import * as std from 'std';
 
 /* Import unified logger */
 import { log as unifiedLog, installConsoleOverride } from '/data/UserData/schwung/shared/logger.mjs';
+/* The device's own small font -- the one every hint row, header and knob label
+ * on this machine is drawn in. Published to canvas modules below, because a
+ * module drawing its own chrome should be able to draw it in the SAME TYPE as
+ * the chrome beside it; without this its footer is legible but visibly foreign. */
+import { fontPrint4x5, fontWidth4x5, FONT4_HEIGHT } from '/data/UserData/schwung/shared/param_pages/font4x5.mjs';
 
 /* Install console.log override to route to unified debug.log */
 installConsoleOverride('shadow');
@@ -20412,7 +20417,7 @@ function createCanvasRuntimeContext() {
         return prefix ? `${prefix}:${key}` : key;
     };
 
-    return {
+    const canvasCtx = {
         width: SCREEN_WIDTH,
         height: SCREEN_HEIGHT,
         state: canvasRuntime ? canvasRuntime.state : {},
@@ -20431,7 +20436,28 @@ function createCanvasRuntimeContext() {
         drawLine(x1, y1, x2, y2, value) {
             draw_line(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
         },
-        print(x, y, text, color = 1) { print(Math.round(x), Math.round(y), String(text), color ? 1 : 0); },
+        /*
+         * ⭐ TWO FONTS, and the second one is the point.
+         *
+         * Default is the device's 5x7 -- what `print` has always meant. Pass
+         * "small" for the 4x5 the host draws its OWN chrome in: every hint row,
+         * header and knob label on this machine. A module drawing its own footer
+         * could previously only approximate one, which reads as a different
+         * device rather than as the same one.
+         */
+        print(x, y, text, color = 1, font) {
+            if (font === "small") {
+                fontPrint4x5(canvasCtx, Math.round(x), Math.round(y), String(text), color ? 1 : 0);
+                return;
+            }
+            print(Math.round(x), Math.round(y), String(text), color ? 1 : 0);
+        },
+        /** The height of a line in that font, so a module can size a box round it. */
+        fontHeight(font) {
+            if (font === "small") return FONT4_HEIGHT;
+            return typeof js_display_get_font_height === "function"
+                ? js_display_get_font_height() : 7;
+        },
         /*
          * ⭐ HOW WIDE IS THAT TEXT? Needed by any module laying out its own
          * chrome -- a right-aligned label, a hint pill, a column.
@@ -20445,8 +20471,9 @@ function createCanvasRuntimeContext() {
          * ⚠ On the draw path deliberately: a local glyph-table sum, not an SPI
          * round trip, and layout is exactly where it is wanted.
          */
-        measureText(text) {
+        measureText(text, font) {
             const t = String(text == null ? "" : text);
+            if (font === "small") return fontWidth4x5(t);
             return typeof text_width === "function" ? text_width(t) : t.length * 6;
         },
         now() { return Date.now(); },
@@ -20503,6 +20530,7 @@ function createCanvasRuntimeContext() {
             return canvasRuntime ? (canvasRuntime.scriptPath || "") : "";
         }
     };
+    return canvasCtx;
 }
 
 /* The ctx a given hook is allowed to see. Built once and cached on the

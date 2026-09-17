@@ -199,8 +199,17 @@ else ok("the canvas ctx exposes shiftHeld as state");
 /* ⭐ measureText: a module laying out its own chrome has to measure it, and its
    absence here was a silent asymmetry -- davebox has always offered one, so a
    module that measured was correct there and guessing on stock. */
-if (!/measureText\(text\)\s*\{/.test(ctxBody)) bad("the canvas ctx does not expose measureText");
+if (!/measureText\(text, font\)\s*\{/.test(ctxBody)) bad("the canvas ctx does not expose measureText");
 else ok("the canvas ctx exposes measureText");
+
+/* ⭐ AND THE DEVICE FONT ITSELF. A module drawing its own chrome in the 5x7
+   default is legible and visibly foreign -- the right shape in the wrong type.
+   Josh: "if it cannot reach the font, then give it the font. it is tiny." */
+if (!/fontPrint4x5\(canvasCtx,/.test(ctxBody))
+  bad("print does not offer the small font a module needs to match the host chrome");
+else ok("print offers the device small font");
+if (!/fontHeight\(font\)\s*\{/.test(ctxBody)) bad("no fontHeight, so a module cannot size a box round a line");
+else ok("...and fontHeight, so a module can size a box round it");
 
 const strip = src.slice(src.indexOf("const { getParam, setParam, getValue, setValue"));
 const stripLine = strip.slice(0, strip.indexOf("\n"));
