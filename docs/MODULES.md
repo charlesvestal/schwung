@@ -2468,15 +2468,17 @@ With `enterable: true`:
 - **Shift+jog closes the canvas** and keeps paging — the guaranteed way out, not
   yours to intercept, and not something to design around. It is there for when
   your navigation goes wrong, or when someone four levels in wants out.
-- **`ctx.print(x, y, text, color, "small")`** draws in the device's own 4×5 font
-  — the one every hint row, header and knob label is drawn in. Draw your chrome
-  in it and your screen reads as the same machine; draw it in the default 5×7
-  and it is legible but visibly foreign.
-- **`ctx.measureText(text, font)`** returns the drawn width, and
-  **`ctx.fontHeight(font)`** the line height, for laying out your own chrome —
-  a right-aligned label, a hint pill, a column. Both take the same optional
-  `"small"`. Available on the draw path; they are glyph-table sums, not round
-  trips.
+- **`ctx.measureText(text)`** returns the drawn width of a string in the device
+  font, for laying out your own chrome. Available on the draw path; it is a
+  glyph-table sum, not a round trip.
+
+**On fonts:** `ctx.print` draws in the device's 5×7. The host's own chrome — hint
+rows, headers, knob labels — is drawn in a 4×5 the canvas does not expose, so a
+footer you draw in the default font is legible but visibly foreign. If you want
+your chrome to match, **carry the font**: the table is data and the blitter needs
+only `fillRect`, which you already have. `schwung-dr32`'s `browser.js` does
+exactly this in about a hundred lines. That keeps a screen you own drawable by
+you alone, rather than pending a host release.
 - **`ctx.shiftHeld()`** tells you whether Shift is down. Ask it rather than
   watching CC 49: the host reads Shift from shared memory and the CC does not
   reliably reach a canvas. Available on the draw path, so a module drawing its
