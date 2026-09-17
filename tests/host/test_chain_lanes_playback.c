@@ -903,15 +903,33 @@ int main(void) {
                       "a p-lock must be a RECTANGLE (hold=%d)", pl->pts[0].hold);
                 CHECK(fabsf(pl->pts[0].value - 77.0f) < 1e-6f,
                       "value %f, want 77", pl->pts[0].value);
-                /* AND ITS PHASE IS NOT PROVISIONAL. The clip is unidentified
-                 * here, so a RECORDED point would be marked origin_pending and
-                 * later shifted by the real loop_start -- which would move a
-                 * p-lock off the step the user pressed. A p-lock's phase comes
-                 * from the bar number on Move's own strip: it is already true
-                 * clip time. */
-                CHECK(pl->origin_pending == 0,
-                      "a p-lock was marked origin_pending -- adoption would "
-                      "later shift it off its step");
+                /* AND ITS PHASE IS PROVISIONAL, which REVERSES what this
+                 * asserted.
+                 *
+                 * It used to require origin_pending == 0 here, on the grounds
+                 * that "a p-lock's phase comes from the bar number on Move's
+                 * own strip: it is already true clip time". That is true only
+                 * when the clip's origin is 0 — and the clip is UNIDENTIFIED
+                 * in this case, which is exactly when the origin cannot be
+                 * read, so chain_set_clip_phase hands the write side 0 and
+                 * the lock lands in 0-space.
+                 *
+                 * Measured 2026-09-17: a lock written at 1.5 on a clip whose
+                 * window starts at 4 evaluates to NOTHING — lane_eval plays
+                 * only points inside the window. So the lock must be shifted
+                 * when the real loop_start arrives, and a lane with a real row
+                 * but no fingerprint (a clip seen playing before Move saved
+                 * it) could not be adopted at all without this flag: it fell
+                 * to stale on every tick, retained and silent, while writes
+                 * kept landing.
+                 *
+                 * A p-lock on an IDENTIFIED clip is still not marked — the
+                 * flag is set only where the fingerprint is absent — so the
+                 * concern this assertion was protecting still holds where it
+                 * applies. */
+                CHECK(pl->origin_pending == 1,
+                      "a blind p-lock was NOT marked origin_pending -- it can "
+                      "never be adopted and goes stale ~10 s later");
             }
 
             /* A SECOND P-LOCK ON THE SAME STEP REPLACES IT rather than

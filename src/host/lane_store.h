@@ -292,6 +292,27 @@ typedef struct {
 
 typedef struct { lane_t lanes[LANE_MAX]; } lane_store_t;
 
+/* How many lanes a snapshot CANNOT hold — the ones lane_serial.c refuses to
+ * write because their clip cannot yet be identified (a pending row, or a real
+ * row with no fingerprint).
+ *
+ * It exists so the loss can be COUNTED. Take a snapshot inside Move's save
+ * window and it cannot contain the take just made; put that snapshot back and
+ * the live take is replaced by a document that never held it. Both halves were
+ * silent, and every other partial restore in this codebase reports a number —
+ * a restore that says nothing is indistinguishable from one that worked. */
+static inline int lane_store_provisional_count(const lane_store_t *st) {
+    if (!st) return 0;
+    int n = 0;
+    for (int i = 0; i < LANE_MAX; i++) {
+        const lane_t *ln = &st->lanes[i];
+        if (!ln->used) continue;
+        if (lane_slot_is_pending(ln->slot) || lane_fp_absent(&ln->fp)) n++;
+    }
+    return n;
+}
+
+
 void   lane_store_reset(lane_store_t *st);
 
 /* Does this lane belong to that clip? The key is (track, slot, target,

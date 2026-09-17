@@ -944,6 +944,11 @@ typedef struct chain_instance {
      * automation vanished" needs a better answer than a shrug. Usually an
      * orphan from a deleted clip whose row Move reused. */
     int    lanes_adopt_displaced;
+    /* Provisional takes the last `lanes:state` replaced — ones no snapshot
+     * could have held. Counted for the reason lanes_last_cleared is: a
+     * restore that reports nothing is indistinguishable from one that
+     * worked. */
+    int    lanes_last_discarded;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];

@@ -2223,7 +2223,22 @@ static void shadow_inprocess_render_to_buffer(void) {
              * indistinguishable from one that simply failed. The flag is
              * consumed here, once per slot, because the gesture is a moment
              * and this loop is where a slot's instance is in hand. */
-            if (shadow_plugin_v2->set_param && lane_double_now)
+            /* ...AND ONLY ON THE TRACK MOVE ACTUALLY DOUBLED.
+             *
+             * This pushed to every slot in the loop, so one Shift+Step 15
+             * doubled the lanes of all FOUR tracks. The three that were not
+             * doubled got duplicate points one loop-length past their own
+             * window — dormant, and therefore invisible, until that clip is
+             * lengthened for its own reasons, at which point automation
+             * nobody recorded plays in the new bars.
+             *
+             * Move's gesture acts on the SELECTED track, which the shim
+             * already decodes for the strip observer (clip_selected_track).
+             * A track it cannot name doubles nothing, which is the right
+             * direction to fail in: a missed double is a gesture to repeat,
+             * a spurious one is automation that appears weeks later. */
+            if (shadow_plugin_v2->set_param && lane_double_now &&
+                clip_selected_track() == (int)s)
                 shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
                                             "lanes:double", "1");
 

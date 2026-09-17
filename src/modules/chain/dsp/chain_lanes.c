@@ -751,6 +751,19 @@ int lane_serve_state(chain_instance_t *inst, char *buf, int buf_len) {
  * all-or-nothing), so a corrupt file loses nothing that is already loaded. */
 void lane_apply_state(chain_instance_t *inst, const char *doc) {
     if (!inst || !doc) return;
+    /* COUNT WHAT THIS DESTROYS THAT NO DOCUMENT COULD HOLD.
+     *
+     * A take whose clip cannot yet be identified is not written by
+     * lane_serial.c, so a snapshot taken inside Move's save window does not
+     * contain it — and putting that snapshot back replaces the live take with
+     * a document that never held it. Silent on both sides: the snapshot said
+     * nothing when it could not capture it, and the recall said nothing when
+     * it dropped it.
+     *
+     * Every other partial restore in this codebase reports a number, for the
+     * reason stated at `lanes_last_cleared`: a restore that reports nothing is
+     * indistinguishable from one that worked. */
+    inst->lanes_last_discarded = lane_store_provisional_count(&inst->lanes);
     lane_release_all(inst);
     lane_store_deserialize(&inst->lanes, doc);
 }
@@ -1035,16 +1048,32 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         /* A LOCK MADE BEFORE THE CLIP HAS A ROW, marked for re-keying exactly
          * as a blind recording is -- see LANE_SLOT_PENDING. This is the whole
          * "make a clip, lock its steps" flow: the row is 8-12 s away and the
-         * gesture must land now.
-         *
-         * `origin_pending` is deliberately NOT set here, for the reason the
-         * p-lock branch already gives: a lock's phase comes from the BAR on
-         * Move's own strip, so it is true clip time already and must not be
-         * re-origined later. Only the ROW is provisional. */
+         * gesture must land now. */
         if (lane_slot_is_pending(lane_write_slot(inst))) {
             ln->slot_pending = 1;
             ln->pending_len = inst->clip_loop_len;
         }
+
+        /* AND ITS ORIGIN IS PROVISIONAL TOO. This used to say `origin_pending`
+         * was "deliberately NOT set here", because a lock's phase comes off
+         * Move's own bar strip and "is true clip time already". That holds
+         * only when the clip's origin is 0 — which is precisely what a clip
+         * Move has not written cannot tell us, so chain_set_clip_phase hands
+         * the write side 0 and the lock lands in 0-space.
+         *
+         * Without the flag, the lane that has a REAL ROW but no fingerprint
+         * — a clip seen PLAYING before Move saved it, which is what live
+         * recording produces — could never be adopted: lane_adopt_fingerprint
+         * refuses without it, the adopt-on-edit branch excludes an absent
+         * fingerprint, and the lane fell to `stale = 1` on every tick.
+         * Retained, SILENT, forever, while writes kept landing. The user's
+         * report for that is "the locks on my freshly recorded clip died after
+         * about ten seconds".
+         *
+         * It cannot double-shift: lane_adopt_slot re-origins and STAMPS the
+         * fingerprint, after which lane_adopt_fingerprint's own
+         * `lane_fp_absent` guard refuses. Exactly one of the two ever runs. */
+        if (!inst->clip_fp_valid) ln->origin_pending = 1;
         /* A FULL LANE REFUSES A LOCK RATHER THAN MOVING SOMEBODY ELSE'S.
          *
          * lane_write's overflow rule takes the NEAREST point and relocates it
@@ -1454,6 +1483,18 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
         if (r < 0 || r > LANE_PLOCK_STORE_FULL) r = LANE_PLOCK_BAD_REQUEST;
         return snprintf(buf, buf_len, "%d %s", r, names[r]);
     }
+
+    /* Provisional takes the last `lanes:state` replaced — see lane_apply_state.
+     * A snapshot cannot hold them, so a recall inside Move's save window drops
+     * the take just made, and this is the number the UI can say out loud. */
+    if (strcmp(sub, "discarded") == 0)
+        return snprintf(buf, buf_len, "%d", inst->lanes_last_discarded);
+
+    /* How many lanes the store holds that a snapshot could not capture, asked
+     * BEFORE taking one so the snapshot itself can report it. */
+    if (strcmp(sub, "unsaved") == 0)
+        return snprintf(buf, buf_len, "%d",
+                        lane_store_provisional_count(&inst->lanes));
 
     if (strcmp(sub, "undone") == 0)
         return snprintf(buf, buf_len, "%d", inst->lanes_last_undone);

@@ -1421,6 +1421,42 @@ int main(void) {
         }
     }
 
+    /* A LANE WITH A REAL ROW BUT NO FINGERPRINT MUST STILL BE ADOPTABLE.
+     *
+     * The row and the identity arrive by different routes: a clip seen PLAYING
+     * before Move saved it yields a real row with fp_valid 0 — which is what
+     * live-recording a new clip produces. Such a lane is adopted through
+     * lane_adopt_fingerprint, which refuses unless `origin_pending` is set;
+     * the p-lock path deliberately did not set it, on the belief that a lock's
+     * phase is "already true clip time". It is not: blind, the origin is
+     * assumed 0. So the lane fell to stale on every tick — retained, silent,
+     * forever, while writes kept landing. */
+    {
+        lane_store_t fs; memset(&fs, 0, sizeof(fs));
+        lane_fingerprint_t absent4 = { 0 }; absent4.first_note = -1;
+        lane_t *fl = lane_alloc(&fs, "synth", "p", 0, 4, &absent4);  /* REAL row */
+        CHECK(fl != NULL, "alloc refused");
+        fl->origin_pending = 1;                 /* what the write path now sets */
+        lane_write_span(fl, 1.5, 0.75f, 1, 0.25);
+
+        lane_fingerprint_t now4 = { 0 };
+        now4.first_note = 36; now4.note_count = 2;
+        now4.loop_start = 4.0; now4.loop_len = 4.0;
+        CHECK(lane_adopt_fingerprint(fl, &now4) == 1,
+              "a real-row blind lane was refused adoption — it goes stale and "
+              "silent for good");
+        float v = 0.0f;
+        CHECK(lane_eval(fl, 4.0 + 1.5, 4.0, 4.0, 0, &v) == 1 &&
+              fabs(v - 0.75f) < 1e-6,
+              "the adopted lock is not where the step was pressed (v=%.3f)", v);
+        CHECK(fl->origin_pending == 0, "the pending flag outlived its adoption");
+
+        /* AND NEVER TWICE. lane_adopt_slot stamps the fingerprint, after which
+         * this must refuse — a second shift would move the lock off its step. */
+        CHECK(lane_adopt_fingerprint(fl, &now4) == 0,
+              "an identified lane was re-origined a second time");
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;
