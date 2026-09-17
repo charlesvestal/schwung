@@ -550,8 +550,19 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * is false only on the first write of a pass, so the dead clip's points
          * go at the start and the take then accumulates normally. Restarting on
          * every write would erase the take as it was being made. */
+        /* THE ORPHAN IS CLEARED WITHOUT A FINGERPRINT, for the reason spelled
+         * out on the p-lock path: `orphaned` says the clip at this position
+         * was DELETED, and a user recording onto the clip in front of them
+         * has answered that — which needs no fingerprint, only stamping one
+         * does. Gated on fp_valid, a take recorded into an orphaned lane
+         * during Move's save window stayed orphaned, so lane_eval refused it
+         * and the take was silent forever. */
+        if (ln->orphaned && !ln->rec_active) {
+            ln->n = 0;                    /* the dead clip's points go, once */
+            ln->orphaned = 0;
+            if (!inst->clip_fp_valid) ln->origin_pending = 1;
+        }
         if (inst->clip_fp_valid) {
-            if (ln->orphaned && !ln->rec_active) ln->n = 0;
             ln->fp = inst->clip_fp;
             ln->stale = 0;
             ln->orphaned = 0;
@@ -964,6 +975,43 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * Only with a fingerprint to take. With none -- the blind window --
          * the lane keeps the absent one it already has and lane_adopt_slot
          * binds it when the clip lands. */
+        /* THE ORPHAN IS CLEARED WITH OR WITHOUT A FINGERPRINT.
+         *
+         * This whole block used to sit inside `if (inst->clip_fp_valid)`, on
+         * the reasoning that with no fingerprint "the lane keeps the absent
+         * one it already has and lane_adopt_slot binds it when the clip
+         * lands". That is right about the FINGERPRINT and wrong about the
+         * ORPHAN, and the difference is the entire blind-window case:
+         *
+         *   make a clip where a deleted one used to be, p-lock it, and the
+         *   lane stays orphaned -- so lane_eval refuses it and the lock is
+         *   SILENT FOREVER. Adoption re-keys the row; it does not resurrect
+         *   an orphan.
+         *
+         * Observed on the device in exactly that state: one lane, row 0,
+         * n=1, orph=1, drv=0, with the clip plainly on screen. Reported as
+         * "i JUST added p locks on a new clip ... and the p locks aren't
+         * playing".
+         *
+         * `orphaned` means "the clip at this position was deleted". A user
+         * holding a step on a clip that is THERE has answered that question,
+         * and answering it needs no fingerprint -- only STAMPING one does.
+         * This is the same "an explicit gesture outranks the bookkeeping"
+         * rule the block above states; it was simply gated behind a fact it
+         * does not depend on.
+         *
+         * The restart rule is unchanged and still applies: an orphan does not
+         * come back to life with the dead clip's points. */
+        if (ln->orphaned) {
+            ln->n = 0;                       /* the dead clip's points go */
+            lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
+            ln->orphaned = 0;
+            /* With no fingerprint to take, this take is a blind one: mark it
+             * so lane_tick can re-origin and identify it when the clip
+             * lands, exactly as a first blind write on a fresh lane is. */
+            if (!inst->clip_fp_valid) ln->origin_pending = 1;
+        }
+
         if (inst->clip_fp_valid) {
             /* AN ORPHAN DOES NOT COME BACK TO LIFE WITH ITS OLD POINTS.
              *
@@ -983,13 +1031,9 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
              * A merely STALE lane keeps its points: that is the same clip,
              * edited, which is exactly what the adopt-on-edit branch in
              * lane_tick already decided. Only a deletion breaks continuity. */
-            if (ln->orphaned) {
-                ln->n = 0;                       /* the dead clip's points go */
-                lane_write_span(ln, phase, v, 1, span);   /* this lock is #1 */
-            }
             ln->fp = inst->clip_fp;
             ln->stale = 0;
-            ln->orphaned = 0;
+            ln->orphaned = 0;   /* already cleared above; kept explicit */
         }
         inst->lanes_plock_refusal = LANE_PLOCK_OK;
         return;
