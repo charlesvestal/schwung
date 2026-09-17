@@ -2197,6 +2197,23 @@
       "default_branch": "master",
       "asset_name": "acid-module.tar.gz",
       "min_host_version": "1.2.0"
+    },
+    {
+      "id": "loopex",
+      "name": "Loopex",
+      "description": "16-track live stereo tape looper. Per-track sampling of any Move or Schwung mixer track over Link Audio, four drifting playheads per loop, punch-in FX, an FX sequencer, and a COSMOS-style Drift memory.",
+      "author": "Filliformes",
+      "component_type": "overtake",
+      "subcategory": "sampler-looper",
+      "tags": [
+        "lo-fi",
+        "sample-based",
+        "tape"
+      ],
+      "github_repo": "filliformes/loopex-move",
+      "default_branch": "main",
+      "asset_name": "loopex-module.tar.gz",
+      "min_host_version": "1.3.0"
     }
   ]
 }
