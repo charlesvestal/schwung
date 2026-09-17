@@ -76,6 +76,28 @@ int lane_store_serialize(const lane_store_t *st, char *buf, int buf_len) {
          * reader, because the loader is all-or-nothing and a per-lane silent
          * drop there would be a different lie. */
         if (lane_slot_is_pending(ln->slot)) continue;
+        /* ...AND NEITHER IS A BLIND TAKE THAT HAPPENS TO KNOW ITS ROW.
+         *
+         * The row and the identity arrive by different routes: a clip seen in
+         * Session view gives a REAL row while Move has still not written the
+         * clip, so a take recorded there has `slot >= 0` and an ABSENT
+         * fingerprint. Autosave runs well inside that window, so it was
+         * written — and on reload `origin_pending` and `slot_pending` are gone
+         * (runtime-only), the fingerprint is still absent, and lane_tick's
+         * ladder has nowhere to put it: adoption wants `origin_pending`, the
+         * adopt-on-edit branch excludes an absent fingerprint, so it lands on
+         * `stale = 1` on every tick. Retained, silent, forever.
+         *
+         * Worse, it squats on the key: a later take on the same parameter
+         * finds it through lane_find, records into it, and the armed path's
+         * fingerprint stamp revives it WITH THE OLD POINTS — a new take
+         * interleaved with a curve from a previous session.
+         *
+         * The rule is the same one the pending skip states: a take whose clip
+         * cannot yet be identified cannot be restored honestly, so it is not
+         * written. Both halves of "blind" are covered now, not just the one
+         * that shows up as -2. */
+        if (lane_fp_absent(&ln->fp)) continue;
         /* stale / orphaned / driving / punch_* are deliberately absent: they
          * are recomputed from the live clip every block, and only a
          * fingerprint MATCH clears `stale`. Writing one down strands the lane

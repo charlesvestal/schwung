@@ -464,6 +464,47 @@ int main(void) {
               "wide", ordinary_back);
     }
 
+    /* A BLIND TAKE THAT KNOWS ITS ROW MUST ALSO NOT BE WRITTEN.
+     *
+     * The row and the identity arrive by different routes: a clip seen in
+     * Session view gives a REAL row while Move still has not written the clip,
+     * so the take has slot >= 0 with an ABSENT fingerprint. Written, it
+     * reloads with its runtime latches gone and lands on stale = 1 on every
+     * tick — retained, silent, forever — and squats on the key, so a later
+     * take records into it and the fingerprint stamp revives it WITH the old
+     * points. */
+    {
+        lane_store_t bs; memset(&bs, 0, sizeof(bs));
+        lane_fingerprint_t absent = { 0 }; absent.first_note = -1;
+        lane_t *bl = lane_alloc(&bs, "synth", "cr_decay", 1, 4, &absent);
+        CHECK(bl != NULL, "blind-but-rowed lane_alloc refused");
+        lane_write(bl, 2.0, 0.4f, 0);
+
+        lane_fingerprint_t ok2 = { 0 }; ok2.first_note = 38; ok2.note_count = 3;
+        ok2.loop_len = 4.0;
+        lane_t *keep2 = lane_alloc(&bs, "synth", "hh_decay", 1, 4, &ok2);
+        CHECK(keep2 != NULL, "identified lane_alloc refused");
+        lane_write(keep2, 1.0, 0.6f, 0);
+
+        char bbuf[4096];
+        CHECK(lane_store_serialize(&bs, bbuf, sizeof(bbuf)) > 0,
+              "serializing the blind-but-rowed store failed");
+        lane_store_t back2; memset(&back2, 0, sizeof(back2));
+        CHECK(lane_store_deserialize(&back2, bbuf) >= 0, "parse failed");
+
+        int absent_back = 0, ident_back = 0;
+        for (int i3 = 0; i3 < LANE_MAX; i3++) {
+            if (!back2.lanes[i3].used) continue;
+            if (lane_fp_absent(&back2.lanes[i3].fp)) absent_back++;
+            else ident_back++;
+        }
+        CHECK(absent_back == 0,
+              "a lane with an ABSENT fingerprint round-tripped (%d back) — it "
+              "reloads permanently stale and squats on its key", absent_back);
+        CHECK(ident_back == 1,
+              "the identified lane did not survive (%d back)", ident_back);
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane state round-trip\n");
     return 0;

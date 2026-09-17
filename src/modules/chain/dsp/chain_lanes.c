@@ -93,12 +93,19 @@ CHAIN_INTERNAL void lane_record_end_all(chain_instance_t *inst) {
 CHAIN_INTERNAL int lane_automates_param(chain_instance_t *inst,
                                         const char *target, const char *param) {
     if (!inst || !target || !param) return 0;
-    if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return 0;
+    /* THE SAME ROW PLAYBACK USES. lane_tick matches on lane_effective_slot --
+     * an unknown row falls back to the last one we had an answer for -- while
+     * this asked with the RAW row, so during those windows the lane kept
+     * driving and the grid's `:modulated` answer dropped to 0. That split
+     * (the ear says automated, the screen says not) has already been reported
+     * once in this feature, as "I hear it but I don't see it". */
+    const int row = lane_effective_slot(inst->lane_clip_slot,
+                                        inst->lane_last_known_slot);
+    if (inst->lane_track < 0 || !lane_slot_usable(row)) return 0;
     for (int i = 0; i < LANE_MAX; i++) {
         const lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || ln->stale || ln->orphaned || ln->n <= 0) continue;
-        if (lane_is_for_param(ln, inst->lane_track, inst->lane_clip_slot,
-                              target, param))
+        if (lane_is_for_param(ln, inst->lane_track, row, target, param))
             return 1;
     }
     return 0;
