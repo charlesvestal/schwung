@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <math.h>   /* isfinite, for the p-lock phase */
 
+#include "host/lane_lookahead.h"
+
 /* One source id per lane, so the mod bus can tell two lanes apart and clear
  * one without disturbing the other -- and so a lane's own release names only
  * itself. target is 16 bytes and param 32 (lane_store.h), both of which
@@ -179,8 +181,53 @@ void lane_tick(chain_instance_t *inst) {
          * write rather than a sweep from a phase measured before the gap. */
         lane_record_end_all(inst);
         lane_punch_end_all(inst);
+        inst->lane_prev_phase_valid = 0;   /* the next tick has no delta */
         return;
     }
+
+    /* ONE BLOCK OF LOOKAHEAD, because playback is a block AHEAD of where the
+     * value has to be standing.
+     *
+     * Inside one frame the shim renders first and delivers Move's MIDI second
+     * (shadow_mix_audio then shadow_inprocess_process_midi, both in
+     * shim_pre_transfer). `clip_phase_beats` has not advanced to the step when
+     * the render runs, so a p-lock whose rectangle starts exactly on a step
+     * was applied one block AFTER the note for that step reached the synth.
+     * A drum voice latches its pitch at note-on, so it read the value the lock
+     * was meant to replace and the lock appeared on the NEXT hit -- reported
+     * as "my tune isn't taking effect on my med tom", with "if I place the
+     * lock BEFORE the step I hear it" as the giveaway.
+     *
+     * Measured 2026-09-17 rather than assumed: Move's notes are stamped
+     * arriving at ph=0.000000, 1.000000, 1.500000, 3.000000 -- exactly on the
+     * boundaries. There is no timing lag to compensate, so this wants one
+     * block of lead and NOT a tuned constant.
+     *
+     * The lead is the phase travelled since the last tick, REMEMBERED rather
+     * than computed from tempo: the lane code does not own a BPM, and a
+     * derived one would be wrong the moment the clock changed. A wrap gives a
+     * negative delta and a re-anchor can give a large one, so both are
+     * refused and the lead is simply 0 for that tick -- one late block, the
+     * behaviour we had everywhere before. */
+    const double eval_phase =
+        lane_lookahead_phase(inst->clip_phase_beats, inst->lane_prev_phase,
+                             inst->lane_prev_phase_valid,
+                             inst->clip_loop_start, inst->clip_loop_len);
+    inst->lane_prev_phase = inst->clip_phase_beats;
+    inst->lane_prev_phase_valid = 1;
+
+    /* Remember whatever we last had an ANSWER for -- a real row, or PENDING.
+     *
+     * PENDING must be held too, and leaving it out was a real hole: a clip
+     * Move has not written yet has no row at all, so its lane is keyed to the
+     * placeholder. Leave that track and the placeholder evaporates (the step
+     * strip now names a different track), the row drops to -1, and the lane
+     * is released -- while the clip is plainly still playing, because Move
+     * owns the notes and only our automation stops. Reported exactly so:
+     * "i have a new clip at track 1 clip 2 ... i switch to track 2 while it's
+     * playing, it should continue to play track 1 clip 2's locks". */
+    if (lane_slot_usable(inst->lane_clip_slot))
+        inst->lane_last_known_slot = inst->lane_clip_slot;
 
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
@@ -191,8 +238,25 @@ void lane_tick(chain_instance_t *inst) {
          * automation is worse than no lane at all, and nothing on screen
          * would explain it. (Fingerprint matching -- the same clip position
          * holding different content -- is Task 6's, through ln->stale, which
-         * lane_eval already refuses.) */
-        if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot) {
+         * lane_eval already refuses.)
+         *
+         * BUT "WE CANNOT NAME THE ROW" IS NOT "A DIFFERENT CLIP IS PLAYING",
+         * and this compared against `lane_clip_slot` raw, so the two were one
+         * answer. The row goes unknown (-1) routinely -- a clip Move has not
+         * written to Song.abl yet, or a track whose row we cannot currently
+         * read -- and every lane on the slot was released mid-playback with
+         * nothing else launched and the clip still audible.
+         *
+         * `effective_slot` holds the LAST ROW WE KNEW while the answer is
+         * missing. Not "match anything": one slot can hold lanes for several
+         * rows, and matching anything drives all of them into the same
+         * parameter at once. A positively-known DIFFERENT row still releases,
+         * which is the case the paragraph above is about, and a stopped
+         * transport still releases everything through the phase guard. */
+        const int effective_slot =
+            lane_effective_slot(inst->lane_clip_slot, inst->lane_last_known_slot);
+
+        if (ln->track != inst->lane_track || ln->slot != effective_slot) {
             if (ln->driving) lane_release_one(inst, ln);
             /* This lane's clip stopped being the one playing, so its pass is
              * over whatever Record is doing. Otherwise coming back to the clip
@@ -344,7 +408,7 @@ void lane_tick(chain_instance_t *inst) {
                              pinfo->type == KNOB_TYPE_ENUM);
 
         float v = 0.0f;
-        if (!lane_eval(ln, inst->clip_phase_beats, inst->clip_loop_start,
+        if (!lane_eval(ln, eval_phase, inst->clip_loop_start,
                        inst->clip_loop_len,
                        stepped, &v)) {
             /* "Nothing to say" -- empty, stale or orphaned. That is NOT the
@@ -1273,6 +1337,15 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * `lanes:driving`, which is one count of both. This reports them per lane
      * beside the transport phase they are compared against, so the extra-loop
      * report can be attributed rather than guessed at. Read-only; no state. */
+    /* TEMPORARY DIAGNOSTIC, paired with the note stamp in shadow_midi.c.
+     * The p-lock race is a question about ONE number: what is our estimated
+     * clip phase at the instant Move's note for that step is handed to the
+     * synth? `diag` answers it too, but it formats every lane, and this is
+     * read once per note-on on the SPI callback. */
+    if (strcmp(sub, "phase") == 0)
+        return snprintf(buf, buf_len, "%.6f",
+                        inst->clip_phase_valid ? inst->clip_phase_beats : -1.0);
+
     if (strcmp(sub, "diag") == 0) {
         int off = snprintf(buf, buf_len,
                            "ph=%.4f val=%d lo=%.3f len=%.3f armed=%d rec=%d",

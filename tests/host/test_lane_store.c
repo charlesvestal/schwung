@@ -1293,6 +1293,26 @@ int main(void) {
                   "a lane that never recorded blind was re-keyed");
     }
 
+    /* WHICH ROW A LANE IS MATCHED AGAINST — lane_effective_slot.
+     *
+     * The defect: an unknown row (-1) was compared as if it were a row, so
+     * "we cannot name the clip" silenced lanes exactly like "a different clip
+     * is playing". */
+    CHECK(lane_effective_slot(3, 5) == 3,
+          "a known row did not win over the remembered one");
+    CHECK(lane_effective_slot(-1, 5) == 5,
+          "an unknown row did not fall back to the last known one");
+    /* PENDING is the row of a clip Move has not written yet. It must be held
+     * like any other answer, or leaving that track stops its automation. */
+    CHECK(lane_effective_slot(-1, LANE_SLOT_PENDING) == LANE_SLOT_PENDING,
+          "a pending row was not held when the row went unknown");
+    CHECK(lane_effective_slot(LANE_SLOT_PENDING, 4) == LANE_SLOT_PENDING,
+          "a live pending row was overridden by the remembered one");
+    /* Nothing ever known: stay unknown rather than inventing row 0, which is
+     * a real row and would play its automation unasked. */
+    CHECK(lane_effective_slot(-1, -1) == -1,
+          "an unknown row with nothing remembered invented a row");
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

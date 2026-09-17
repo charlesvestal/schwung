@@ -91,6 +91,30 @@ static inline int lane_slot_usable(int slot) {
     return (slot >= 0) || lane_slot_is_pending(slot);
 }
 
+/*
+ * WHICH ROW A LANE IS MATCHED AGAINST THIS TICK.
+ *
+ * `current` goes to -1 for "we cannot name the row", which is NOT the fact
+ * "a different clip is playing" — and reading the two as one silenced lanes
+ * mid-playback with nothing else launched and the clip still audible. Losing
+ * the ANSWER is not a negative answer; the same rule the param channel's
+ * null-vs-"" tri-state exists for.
+ *
+ * So an unknown row falls back to the last one we had an answer for — which
+ * may be the PENDING placeholder, and that case is not an edge: a clip Move
+ * has not written to Song.abl yet HAS no row, so its lane is keyed to the
+ * placeholder, and leaving that track evaporates it.
+ *
+ * It is the LAST KNOWN row rather than "match anything": one slot can hold
+ * lanes for several rows, and matching anything would drive them all into the
+ * same parameter at once. A positively-known DIFFERENT row still releases,
+ * and a stopped transport still releases everything through the phase guard.
+ */
+static inline int lane_effective_slot(int current, int last_known) {
+    if (lane_slot_usable(current)) return current;
+    return lane_slot_usable(last_known) ? last_known : current;
+}
+
 /* A recording pass erases the span it sweeps between consecutive writes, but
  * only while the writes keep coming. This bounds it: two writes further apart
  * in phase than this are not one gesture, so the lane between them is not the
@@ -106,6 +130,12 @@ static inline int lane_slot_usable(int slot) {
  * with the replace rule is what shipped the interleaving defect. */
 #define LANE_PASS_GAP_BEATS 1.0
 
+
+/* The largest per-tick phase delta accepted as a LOOKAHEAD (see lane_tick).
+ * A block is ~0.006 quarters at 133 BPM; anything approaching a sixteenth is
+ * a wrap or a re-anchor, not a block, and is refused rather than used as a
+ * lead -- a bad lead would play the NEXT step's lock on this one. */
+#define LANE_LOOKAHEAD_MAX_BEATS 0.05
 /* A POINT'S PHASE IS BEATS FROM THE CLIP'S START, NOT FROM ITS LOOP.
  *
  * The loop is a WINDOW over the lane -- [loop_start, loop_start + loop_len) --

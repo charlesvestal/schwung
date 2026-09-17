@@ -835,6 +835,43 @@ typedef struct chain_instance {
      * time signature -- only converting BARS does, which is the strip reader's
      * problem alone (quarters per bar = upper * 4 / lower). */
     double clip_phase_beats;      /* quarters from the clip's start */
+    /* The phase lane playback LOOKS AHEAD to, and why it must.
+     *
+     * Within one frame the shim renders first (shadow_mix_audio, which runs
+     * lane_tick) and delivers Move's MIDI second (shadow_inprocess_process_midi)
+     * -- both inside shim_pre_transfer, in that order. But `clip_phase_beats`
+     * has not yet advanced to the step when the render runs, so a p-lock whose
+     * rectangle starts exactly on a step is applied ONE BLOCK AFTER the note
+     * for that step is handed to the synth. A drum voice latches its pitch at
+     * note-on, so it reads the value the lock was meant to replace, and the
+     * lock appears to take effect on the NEXT hit.
+     *
+     * Measured 2026-09-17: Move's notes arrive at ph=0.000000, 1.000000,
+     * 1.500000, 3.000000 -- EXACTLY on the boundaries, no lag -- so this is a
+     * one-block ordering race and not a timing estimate that needs a constant.
+     *
+     * The lead is therefore the phase travelled per tick, remembered rather
+     * than computed: deriving it from tempo would need a BPM the lane code
+     * does not own, and would be wrong the moment the clock changed. */
+    double lane_prev_phase;       /* quarters, previous lane_tick */
+    int    lane_prev_phase_valid;
+    /* The last clip row we actually KNEW on this slot, held so that losing
+     * the row does not stop automation that is plainly still playing.
+     *
+     * `lane_clip_slot` goes to -1 for "we cannot currently name the row",
+     * which is NOT the same fact as "a different clip is playing" — and
+     * treating the two alike silenced a lane mid-playback with nothing else
+     * launched and the clip still audible. Reported exactly that way: "it's
+     * still playing, there has been no other clip — shouldn't we just leave
+     * it playing?"
+     *
+     * Same rule as the param channel's three answers (docs: null vs ""): an
+     * absent ANSWER must never be read as a negative answer.
+     *
+     * It is the LAST KNOWN row rather than "match anything", because one slot
+     * can hold lanes for several rows — matching anything would drive all of
+     * them at once and they would fight over the same parameter. */
+    int    lane_last_known_slot;  /* 0..7, or -1 before anything is known */
     double clip_loop_start;       /* the window's start, same coordinate */
     double clip_loop_len;         /* quarters */
     /* Which clip the phase belongs to, and what it looks like right now. All

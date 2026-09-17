@@ -68,6 +68,9 @@ static void* v2_create_instance(const char *module_dir, const char *config_json)
     chain_instance_t *inst = calloc(1, sizeof(chain_instance_t));
     if (!inst) return NULL;
 
+    /* 0 is a VALID row; this must mean "none known yet" (chain_internal.h). */
+    inst->lane_last_known_slot = -1;
+
     /*
      * Per-position metadata storage, allocated EAGERLY for every position.
      *

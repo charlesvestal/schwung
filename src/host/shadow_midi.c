@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "shadow_midi.h"
+#include "lane_trace.h"
 #include "shadow_midi_filter.h"   /* SHADOW_MIDI_IN_* geometry */
 #include "shadow_midi_inject_writer.h"
 #include "shadow_overtake_midi.h"
@@ -367,6 +368,25 @@ void shadow_chain_dispatch_midi_to_slots(const uint8_t *pkt, int log_on, int *mi
             host_slot_silence_frames[i] = 0;
             host_slot_fx_idle[i] = 0;
             host_slot_fx_silence_frames[i] = 0;
+        }
+
+        /* TEMPORARY: stamp the phase Move's note arrives at.
+         *
+         * The p-lock race cannot be read from the lane trace's periodic
+         * samples -- they land wherever the 21.5 Hz tick falls, and the
+         * question is what the phase was at THIS note. Pushed into the
+         * existing ring (RT-safe: a bounded getter plus a memcpy, the same
+         * pair shadow_lanes_publish_driving already does) and only when
+         * armed. */
+        if (lane_trace_armed() && pv2 && pv2->get_param &&
+            (type == 0x90) && pkt[3] > 0 && host_chain_slots[i].instance) {
+            char ph[32] = {0};
+            if (pv2->get_param(host_chain_slots[i].instance, "lanes:phase",
+                               ph, sizeof(ph)) > 0) {
+                char line[LANE_TRACE_LINE_MAX];
+                snprintf(line, sizeof(line), "NOTE d1=%d ph=%s\n", (int)note, ph);
+                lane_trace_push(lane_trace_ring(), 0, (uint32_t)i, line);
+            }
         }
 
         /* Send MIDI to this slot */
