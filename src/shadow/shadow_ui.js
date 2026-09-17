@@ -20408,10 +20408,16 @@ function createCanvasRuntimeContext() {
         setPixel(x, y, value) { set_pixel(Math.round(x), Math.round(y), value ? 1 : 0); },
         drawRect(x, y, w, h, value) { draw_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0); },
         fillRect(x, y, w, h, value) { fill_rect(Math.round(x), Math.round(y), Math.round(w), Math.round(h), value ? 1 : 0); },
+        /* `draw_line`, not `display.drawLine`. There is no `display` object in
+         * the SHADOW context: shadow_ui.c calls js_display_register_bindings,
+         * which registers the bare snake_case globals only — the `display`
+         * wrapper is built in schwung_host.c, a different JSContext. So the
+         * old guard `if (display && ...)` did not read as falsy, it THREW a
+         * ReferenceError on an undeclared identifier, which disabled the
+         * overlay for the session and left a canvas page drawing its chrome
+         * around an empty body. Every sibling here calls the bare global. */
         drawLine(x1, y1, x2, y2, value) {
-            if (display && typeof display.drawLine === "function") {
-                display.drawLine(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
-            }
+            draw_line(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), value ? 1 : 0);
         },
         print(x, y, text, color = 1) { print(Math.round(x), Math.round(y), String(text), color ? 1 : 0); },
         now() { return Date.now(); },
