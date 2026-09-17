@@ -2465,6 +2465,9 @@ With `enterable: true`:
 
 - **the jog click is yours.** It arrives at `onMidi` as an ordinary CC like the
   wheel does. Nothing else changes about input.
+- **Shift+jog closes the canvas** and keeps paging — the guaranteed way out, not
+  yours to intercept, and not something to design around. It is there for when
+  your navigation goes wrong, or when someone four levels in wants out.
 - **Back asks you first**, through a `handleBack(ctx)` hook:
 
 ```javascript
@@ -2538,6 +2541,8 @@ Two limits worth knowing before you declare it:
   silently choosing a winner.
 - **Shift+click still opens the section picker** from inside a door, so a page
   is never somewhere a user can be stuck.
+- **Shift+jog pages out**, of a door and of a fullscreen dive alike, and is
+  never offered to your module.
 
 See `CANVAS_PAGES.md` for the model this belongs to.
 

@@ -20689,6 +20689,7 @@ function drawCanvasPreview() {
     }
 }
 
+
 /* Draw filepath browser for filepath chain params */
 function drawFilepathBrowser() {
     clear_screen();
@@ -27288,6 +27289,38 @@ globalThis.onMidiMessageInternal = function(data) {
     var canvasInCorun = coRunUiActive() && coRunView === VIEWS.CANVAS;
     var canvasEnterable = (view === VIEWS.CANVAS || canvasInCorun) && canvasIsEnterable();
     if ((view === VIEWS.CANVAS || canvasInCorun) && (status & 0xF0) === 0xB0) {
+        /*
+         * ⭐⭐ SHIFT+JOG IS THE ESCAPE HATCH, and it is never the module's.
+         *
+         * An enterable canvas owns the jog, the click and (until it declines)
+         * Back, so a module whose own navigation is broken -- or simply deeper
+         * than the user expected -- can make leaving feel like work: Back,
+         * Back, Back, however far in you are. Charles, reviewing this:
+         * "I worry about getting stuck in a page tho if you're more than one
+         * level in ... I'd just let it exit a dive and go to the next page or
+         * something."
+         *
+         * So Shift+jog closes the canvas and DOES NOT CONSUME THE TURN: the
+         * event falls through to the screen underneath, which pages. Exit and
+         * move on, in one gesture.
+         *
+         * ⭑ This is not new grammar. Shift+jog already pages out of every
+         * entered door -- a menu, a preset browser, an items list, and a canvas
+         * page here -- and Shift+click already reaches the section picker from
+         * anywhere. A dive was the one screen with no such way out, because it
+         * is the one screen a module owns entirely.
+         *
+         * ⚠ NEVER OFFERED TO THE MODULE, deliberately, and not gated on
+         * `enterable` either. An escape hatch a module can decline is not an
+         * escape hatch, and a canvas that does not take the click has no reason
+         * to want Shift+jog.
+         */
+        if (d1 === 14 && isShiftHeld() && d2 !== 0) {
+            if (canvasInCorun) runCoRunChainEdit(function() { closeCanvasPreview(true); });
+            else closeCanvasPreview(true);
+            needsRedraw = true;
+            /* NO return: the turn belongs to whatever is underneath now. */
+        } else
         /* ⭐ AN ENTERABLE CANVAS KEEPS THE CLICK. Declining to steal is all that
          * is needed -- the press falls through to dispatchCanvasMidi below like
          * every other CC, and the module's onMidi sees it. */

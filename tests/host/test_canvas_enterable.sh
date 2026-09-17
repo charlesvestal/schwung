@@ -128,12 +128,45 @@ if (!/d1 === MoveMainButton && d2 > 0 && !canvasEnterable/.test(src))
 else ok("the jog-click steal declines for an enterable canvas");
 
 /* Back must reach handleBack BEFORE the close, and only when enterable. */
-const backAt  = src.indexOf("canvasEnterable && canvasOverlayHookResult(\"handleBack\")");
-const closeAt = src.indexOf("runCoRunChainEdit(function() { closeCanvasPreview(true); })");
+/* ⚠ SCOPED TO THE BACK BRANCH. This compared against the first
+   closeCanvasPreview(true) anywhere in the file -- and the Shift+jog escape
+   hatch below later added one ABOVE this branch, so a correct ordering read as
+   broken. An assertion a nearby edit can flip is worse than none. */
+const backBranch = src.slice(src.indexOf("if (d1 === MoveBack && d2 > 0) {",
+                                         src.indexOf("SHIFT+JOG IS THE ESCAPE HATCH")));
+const backAt  = backBranch.indexOf("canvasOverlayHookResult(\"handleBack\")");
+const closeAt = backBranch.indexOf("closeCanvasPreview(true)");
 if (backAt < 0)               bad("Back is not offered to handleBack at all");
 else if (closeAt < 0)         bad("the Back close path moved -- re-check the ordering");
 else if (backAt > closeAt)    bad("handleBack is offered AFTER the close, so it can never run");
 else ok("Back is offered to the module before the canvas closes");
+
+/* ⭐⭐ SHIFT+JOG IS THE ESCAPE HATCH: unconditional, not the modules, and NOT
+   CONSUMED -- so the turn that gets you out also moves you on. Charles,
+   reviewing the PR: "I worry about getting stuck in a page tho if you are more
+   than one level in." */
+const steal = src.slice(src.indexOf("SHIFT+JOG IS THE ESCAPE HATCH"),
+                        src.indexOf("if (d1 === MoveBack && d2 > 0)",
+                                    src.indexOf("SHIFT+JOG IS THE ESCAPE HATCH")));
+if (!/if \(d1 === 14 && isShiftHeld\(\) && d2 !== 0\) \{/.test(steal))
+  bad("Shift+jog is not handled in the canvas steal block");
+else ok("Shift+jog is handled while a canvas is up");
+if (!/closeCanvasPreview\(true\)/.test(steal)) bad("Shift+jog does not close the canvas");
+else ok("...and closes it");
+
+const shiftBranch = steal.slice(steal.indexOf("if (d1 === 14 && isShiftHeld"));
+const braceEnd = shiftBranch.indexOf("} else");
+/* ⚠ CODE ONLY: the comment inside that branch says "NO return", so matching the
+   word anywhere failed on the very text documenting the behaviour. */
+const shiftCode = shiftBranch.slice(0, braceEnd < 0 ? 0 : braceEnd)
+                             .replace(/\/\*[\s\S]*?\*\//g, "");
+if (braceEnd < 0 || /\breturn\b/.test(shiftCode))
+  bad("the Shift+jog branch RETURNS -- the turn is swallowed, so exiting costs a second gesture");
+else ok("...without consuming the turn, so it pages on the way out");
+
+if (/isShiftHeld\(\)[\s\S]{0,60}canvasEnterable/.test(steal))
+  bad("the escape hatch is gated on enterable -- one a module can decline is not one");
+else ok("...and is not gated on enterable");
 
 /* Shift is NOT part of this contract. An earlier fork version made Shift+Back
    a failsafe; it is deliberately absent, because a module cannot trap anyone --
