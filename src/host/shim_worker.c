@@ -670,11 +670,19 @@ static void clip_regions_tick(void)
              * playing while the user made another, the take adopted onto the
              * playing clip. The row that just APPEARED is the clip the user
              * made, and this loop already knows it. */
-            if (dst >= 0 && t < CLIP_TRACKS) {
-                g_clip_new_slot[t] = dst;
-                g_clip_new_gen++;
+            /* CLEARED WHEN NOTHING NEW APPEARED, not only set when something
+             * did. Left standing, it went on naming a row from a parse long
+             * past, and the next blind take adopted onto THAT row instead of
+             * onto the clip just made — which is the same class of mistake as
+             * the stale `isPlaying` this whole area exists to stop trusting.
+             * A stale answer is worse than none, because none falls back to
+             * the playing row and a stale one is confidently wrong. */
+            if (t < CLIP_TRACKS) {
+                const int prev = g_clip_new_slot[t];
+                g_clip_new_slot[t] = dst;      /* dst is -1 when none appeared */
+                if (prev != dst) g_clip_new_gen++;
             }
-            if (dst < 0) continue;
+            if (dst < 0) continue;   /* nothing new here: duplicate check skipped */
             const clip_region_t *d = &g_regions.slots[t][dst];
             for (int src = 0; src < CLIP_SLOTS; src++) {
                 if (src == dst || !before.slots[t][src].exists) continue;

@@ -292,7 +292,14 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
              * The file's answer is still used when there is nothing on screen
              * to contradict it -- no strip, so no clip being edited -- and
              * only when it cannot be ambiguous. */
-            if (step_strip_segments_for_track((int)slot) > 0) {
+            /* THE BLIND STATE HAS TO END. Once Song.abl names the clip that
+             * was made, that row is the answer — reporting the placeholder
+             * forever is how every permutation on an empty track failed: the
+             * row never became real, so the pending lane never adopted. */
+            const int made = shadow_clip_new_slot((int)slot);
+            if (made >= 0 && rg && rg->valid && rg->slots[slot][made].exists) {
+                cslot = made;
+            } else if (step_strip_segments_for_track((int)slot) > 0) {
                 screen_says_new_clip = 1;
             } else {
                 int clips_on_track = 0;

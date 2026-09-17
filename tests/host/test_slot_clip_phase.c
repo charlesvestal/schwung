@@ -37,6 +37,11 @@
 #include "shadow_chain_mgmt.c"
 #include "step_strip.h"
 
+/* No worker in this fixture, so nothing ever "newly appeared" and nothing is
+ * selected: both answer "not known", which keeps shadow_slot_clip_phase on the
+ * path it took before those signals existed. */
+int shadow_clip_new_slot(int track) { (void)track; return -1; }
+
 static int failures = 0;
 static int checks = 0;
 

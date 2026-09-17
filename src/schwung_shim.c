@@ -2167,13 +2167,14 @@ static void shadow_inprocess_render_to_buffer(void) {
                     const uint32_t g = shadow_clip_new_generation();
                     if (s < SHADOW_CHAIN_INSTANCES && last_new_gen[s] != g) {
                         last_new_gen[s] = g;
-                        const int nr = shadow_clip_new_slot(s);
-                        if (nr >= 0) {
-                            char v[8];
-                            snprintf(v, sizeof(v), "%d", nr);
-                            shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
-                                                        "lanes:new_row", v);
-                        }
+                        /* -1 IS FORWARDED TOO. The clear is the half that
+                         * matters: a row left standing from an old parse is
+                         * confidently wrong, and adoption would take it over
+                         * the clip the user just made. */
+                        char v[8];
+                        snprintf(v, sizeof(v), "%d", shadow_clip_new_slot(s));
+                        shadow_plugin_v2->set_param(shadow_chain_slots[s].instance,
+                                                    "lanes:new_row", v);
                     }
                 }
 

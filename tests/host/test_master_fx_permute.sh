@@ -285,6 +285,9 @@ const void *clip_state_current(void) { return 0; }
  * is the answer that makes shadow_slot_clip_phase fall through to the file
  * exactly as it did before the selection decode existed. */
 int clip_state_selected_slot(const void *st, int track) { (void)st; (void)track; return -1; }
+/* No worker in this fixture, so no clip ever "newly appeared": -1 keeps
+ * shadow_slot_clip_phase on the path it took before that signal existed. */
+int shadow_clip_new_slot(int track) { (void)track; return -1; }
 /* No playhead in a host unit test: the blind-window phase source asks for one
  * and must get "never seen", which is the state every other stub here models. */
 int clip_playhead_last(unsigned char *i, unsigned int *p) { (void)i; (void)p; return 0; }
