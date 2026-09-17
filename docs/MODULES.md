@@ -2437,12 +2437,85 @@ Use `type: "canvas"` to open a module-defined fullscreen canvas UI from the hier
 - `canvas_overlay` (optional): Named overlay object selector (aliases: `canvas_target`, `overlay`).
 - `show_footer` (optional): Show/hide footer in canvas view (default `true`; alias `showfooter`).
 - `show_value` (optional): Show/hide parameter value in hierarchy and canvas footer (default `true`; alias `showvalue`).
+- `enterable` (optional): The canvas has navigation inside it — see below (default `false`).
 
 Behavior notes:
 
 - Clicking the parameter enters a dedicated fullscreen canvas view.
 - Set `show_value: false` for button-style canvas entries that should not show a value.
 - The loaded script should expose `globalThis.canvas_overlay` (or `globalThis.canvas_overlays`) with hooks such as `onOpen`, `onMidi`, `tick`, `draw`, `onClose`, `onExit`.
+
+##### `enterable`: a canvas you navigate, not just look at
+
+By default a canvas gets the jog **wheel** and the knobs, while the host keeps
+the jog **click** and **Back** as the two ways out. That suits a visualiser you
+glance at and leave — a scope, a meter, a waveform.
+
+It does not suit anything **nested**. A file browser needs "enter this folder"; a
+settings menu needs "open this submenu"; and the only gesture that means enter
+is the one the host spends on leave. So a canvas cannot express a hierarchy
+unless it says it has one:
+
+```json
+{ "key": "browse", "name": "Browse", "type": "canvas",
+  "canvas_script": "browser.js", "enterable": true }
+```
+
+With `enterable: true`:
+
+- **the jog click is yours.** It arrives at `onMidi` as an ordinary CC like the
+  wheel does. Nothing else changes about input.
+- **Back asks you first**, through a `handleBack(ctx)` hook:
+
+```javascript
+globalThis.canvas_overlay = {
+    handleBack(ctx) {
+        if (atTopLevel()) return false;   // "I'm at my top" -> the host closes
+        goUpOneLevel();
+        return true;                      // "I handled it"  -> you stay inside
+    },
+    onMidi(ctx, msg) { /* the click is in here now */ },
+    draw(ctx) { /* ... */ },
+};
+```
+
+So you implement a way **up**, never a way **out**: return `false` (or omit the
+hook) once you have run out of levels and the host does what it would have done
+anyway. A hook that throws disables the overlay and cannot consume the press, so
+a script that dies mid-navigation still leaves on the next Back.
+
+Holding Back is not required, and there is no special escape gesture. A canvas
+that wrongly claims Back forever holds it on its own screen only — changing
+track, swapping the module and leaving the editor all take the user out without
+consulting it.
+
+##### `enterable` on an `as_page` canvas: your page becomes a door
+
+The same flag on a page (`as_page: true`) makes that page a **door** — the host
+concept menus, preset browsers and items lists already use. It is not entered on
+arrival: you page onto it normally, the bracket frame shows it can be entered,
+and a click goes in.
+
+While entered, the jog and the click are delivered to your `onMidi` as **CC 14**
+and **CC 3** — the bytes the hardware actually sends — so one script serves a
+page and a fullscreen dive without knowing which it is on. Back takes the same
+`handleBack` contract, so one hook means one thing on both routes.
+
+The eight knobs **stay with the level**, entered or not, exactly as they do
+inside every other door. A page that wants them will need a future
+`claims_knobs`; nothing has needed it yet.
+
+Two limits worth knowing before you declare it:
+
+- **`enterable` + `preset_browser` is refused.** A preset page is already a door
+  with every control spoken for — the wheel browses, the knobs stay on the level
+  so the sound is still editable while you browse, and click and Back are its own
+  enter and exit. Declaring both leaves the page not enterable rather than
+  silently choosing a winner.
+- **Shift+click still opens the section picker** from inside a door, so a page
+  is never somewhere a user can be stuck.
+
+See `CANVAS_PAGES.md` for the model this belongs to.
 
 #### Custom widgets (`drawCell`)
 
