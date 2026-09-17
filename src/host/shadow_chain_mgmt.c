@@ -237,40 +237,33 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
          * A selected row the file does not know is a NEW clip, which is
          * precisely what the PENDING placeholder is for -- so say so, instead
          * of naming somebody else's row. */
-        const int sel = clip_state_selected_slot(cs, (int)slot);
-        if (sel == CLIP_SEL_EMPTY && step_strip_segments_for_track((int)slot) > 0) {
-            /* Move says no clip on this track is selected, and the bar strip
-             * says one is being edited: the user is on an EMPTY slot making a
-             * clip. The file cannot name it, so the placeholder is the only
-             * honest answer — and naming any EXISTING row here is what wrote
-             * p-locks onto a clip the user had left. */
-            screen_says_new_clip = 1;
-        } else if (sel >= 0 && sel < CLIP_SLOTS) {
-            /* THE DECODE IS USED NEGATIVELY, NEVER TO NAME A ROW.
-             *
-             * It was naming one -- `cslot = sel` when the file had a clip
-             * there -- and that put the contamination back through a
-             * different door: measured, the decode answered "slot 2" while
-             * the user was on another slot, the file HAD a clip at 2, and the
-             * p-lock landed on it. Move paints 122 on more than one pad, so
-             * "which pad is selected" is not always answerable; "no existing
-             * clip is selected" still is, and that is the half this feature
-             * needs.
-             *
-             * So a positively-named row is treated as UNCONFIRMED: if the
-             * strip says a clip is being edited we take the placeholder,
-             * which is honest and adopts when Song.abl names a row. */
-            if (step_strip_segments_for_track((int)slot) > 0) {
-                /* A selected row the file does not have, AND Move's bar strip
-                 * says a clip is being edited: a clip made seconds ago. Only
-                 * then is the blind branch below reachable, so only then is
-                 * it right to withhold the file's answer — without the strip
-                 * there is nothing to fall through TO, and refusing would
-                 * lose a case the file could have answered. */
-                screen_says_new_clip = 1;
-            }
-        }
+        /* THE FILE CAUGHT UP — ASKED FIRST, and the order is the bug this
+         * replaces. This test used to sit AFTER the selection branch, which
+         * had already raised `screen_says_new_clip`, so the exit never ran:
+         * the row stayed the placeholder for good and the pending lane never
+         * adopted. Caught by tests/host, not on the device.
+         *
+         * Once the worker says a row newly appeared and the file has it, that
+         * row IS the answer — there is nothing blind left to be honest about. */
+        const int made = shadow_clip_new_slot((int)slot);
+        if (made >= 0 && rg && rg->valid && rg->slots[slot][made].exists)
+            cslot = made;
 
+        /* NO SELECTION DECODE HERE, and it was removed rather than left
+         * looking load-bearing.
+         *
+         * A decode of the pads' base colour sat here — first NAMING a row,
+         * then (after that put the contamination back through another door)
+         * used only negatively, then special-casing an empty slot. Every one
+         * of those reduced to the SAME answer as the rule below: if Move's
+         * strip says a clip is being edited and the file cannot identify it,
+         * the honest row is the placeholder. Proven by removing the whole
+         * block with every test still green.
+         *
+         * The decode is kept (clip_state_selected_slot, tested in
+         * test_clip_state.c) because `g_edit_unconfirmed` above genuinely
+         * needs it: that is what stops a WRITE taking the playing row while
+         * a different clip is being edited. Here it decided nothing. */
         if (cslot < 0 && !screen_says_new_clip) {
             /* NO POSITIVE IDENTIFICATION. Two ways out, and the order matters.
              *
@@ -292,14 +285,7 @@ int shadow_slot_clip_phase(int slot, double *phase_beats, double *loop_len,
              * The file's answer is still used when there is nothing on screen
              * to contradict it -- no strip, so no clip being edited -- and
              * only when it cannot be ambiguous. */
-            /* THE BLIND STATE HAS TO END. Once Song.abl names the clip that
-             * was made, that row is the answer — reporting the placeholder
-             * forever is how every permutation on an empty track failed: the
-             * row never became real, so the pending lane never adopted. */
-            const int made = shadow_clip_new_slot((int)slot);
-            if (made >= 0 && rg && rg->valid && rg->slots[slot][made].exists) {
-                cslot = made;
-            } else if (step_strip_segments_for_track((int)slot) > 0) {
+            if (step_strip_segments_for_track((int)slot) > 0) {
                 screen_says_new_clip = 1;
             } else {
                 int clips_on_track = 0;

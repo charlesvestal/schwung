@@ -24,6 +24,21 @@
  * only honest answer is the placeholder: keying a p-lock to the playing row
  * puts it on a clip the user is not editing, silently and permanently.
  * PENDING plays through the window and adopts when the file names a row. */
+/* EVERY SURFACE THE USER'S HAND DRIVES USES THIS, not just the writes.
+ *
+ * Fixing only the write paths made the feature asymmetric in the worst
+ * direction: while a clip played and the user edited a new one, a lock landed
+ * under the placeholder but `clear_point` still keyed to the PLAYING row — so
+ * Delete + step aimed at the new clip DELETED the playing clip's lock, and
+ * the lock map showed no mark on the clip in front of them. A destructive
+ * edit to a clip the user is not looking at is worse than the bug the write
+ * fix closed.
+ *
+ * So the clears, the probe, the lock map and Double Loop all ask this. What
+ * stays on `lane_clip_slot` is PLAYBACK (lane_tick, through
+ * lane_effective_slot), the unarmed PUNCH — which suppresses the lane that is
+ * currently driving, so it is a fact about playback — and the `clip`
+ * diagnostic, which exists to report the playing row. */
 static inline int lane_write_slot(const chain_instance_t *inst) {
     if (inst->lane_edit_unconfirmed) return LANE_SLOT_PENDING;
     return inst->lane_clip_slot;
@@ -868,13 +883,13 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         const int got = sscanf(val, "%lf %15s %31s", &phase, target, param);
         if (got < 1 || !isfinite(phase) || phase < 0.0) return;
         const int one = (got == 3);
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used) continue;
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst))) continue;
             if (one && (strcmp(ln->target, target) != 0 ||
                         strcmp(ln->param, param) != 0)) continue;
             int w = 0;
@@ -936,9 +951,9 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
             len = inst->clip_loop_len;
         }
         if (!isfinite(phase) || phase < 0.0) return;
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot)) return;
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst))) return;
         lane_t *ln = lane_find(&inst->lanes, target, param,
-                               inst->lane_track, inst->lane_clip_slot);
+                               inst->lane_track, lane_write_slot(inst));
         if (!ln) return;
         chain_param_info_t *pinfo = find_param_by_key(inst, target, param);
         if (!pinfo) return;
@@ -1157,7 +1172,7 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used || ln->stale || ln->orphaned) continue;
-            if (ln->track != inst->lane_track || ln->slot != inst->lane_clip_slot)
+            if (ln->track != inst->lane_track || ln->slot != lane_write_slot(inst))
                 continue;
             total += lane_double(ln, inst->clip_loop_start, inst->clip_loop_len);
         }
@@ -1256,12 +1271,12 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
     if (strcmp(sub, "clear_clip") == 0) {
         if (!val || atoi(val) == 0) return;
         inst->lanes_last_cleared = 0;
-        if (!lane_slot_usable(inst->lane_clip_slot)) return;
+        if (!lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot))
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst)))
                 continue;
             if (ln->driving) lane_release_one(inst, ln);
             lane_clear_one(ln);
@@ -1278,12 +1293,12 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         char target[16] = {0}, param[32] = {0};
         inst->lanes_last_cleared = 0;
         if (!val || sscanf(val, "%15s %31s", target, param) != 2) return;
-        if (!lane_slot_usable(inst->lane_clip_slot)) return;
+        if (!lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!lane_is_for_param(ln, inst->lane_track, inst->lane_clip_slot,
+            if (!lane_is_for_param(ln, inst->lane_track, lane_write_slot(inst),
                                    target, param))
                 continue;
             if (ln->driving) lane_release_one(inst, ln);
@@ -1305,12 +1320,12 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
         char target[16] = {0};
         inst->lanes_last_cleared = 0;
         if (!val || sscanf(val, "%15s", target) != 1) return;
-        if (!lane_slot_usable(inst->lane_clip_slot)) return;
+        if (!lane_slot_usable(lane_write_slot(inst))) return;
         lane_undo_take(inst);
         int n = 0;
         for (int i = 0; i < LANE_MAX; i++) {
             lane_t *ln = &inst->lanes.lanes[i];
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot))
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst)))
                 continue;
             if (strcmp(ln->target, target) != 0) continue;
             if (ln->driving) lane_release_one(inst, ln);
@@ -1377,12 +1392,12 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
      * value per point would multiply the size of this for nothing. */
     if (strcmp(sub, "phases") == 0) {
         int off = 0;
-        if (inst->lane_track < 0 || !lane_slot_usable(inst->lane_clip_slot))
+        if (inst->lane_track < 0 || !lane_slot_usable(lane_write_slot(inst)))
             return snprintf(buf, buf_len, "%s", "");
         for (int i = 0; i < LANE_MAX; i++) {
             const lane_t *ln = &inst->lanes.lanes[i];
             if (!ln->used || ln->n <= 0) continue;
-            if (!lane_is_for_clip(ln, inst->lane_track, inst->lane_clip_slot)) continue;
+            if (!lane_is_for_clip(ln, inst->lane_track, lane_write_slot(inst))) continue;
             /* A DELETED CLIP'S LOCKS ARE NOT THIS CLIP'S LOCKS.
              *
              * Deleting a clip ORPHANS its lanes rather than deleting them, so
