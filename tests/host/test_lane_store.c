@@ -1381,6 +1381,46 @@ int main(void) {
         }
     }
 
+    /* A BLIND TAKE MUST BE RE-ORIGINED ONTO THE CLIP'S REAL WINDOW.
+     *
+     * A clip Move has not written has no `loop.start` to read, so the write
+     * side is handed 0 and every point is laid down in 0-space. If the real
+     * window does not start at bar 1 those phases fall OUTSIDE it, and
+     * lane_eval only plays points inside — so the take was silent for good.
+     * Measured: a lock written at 1.5 on a clip whose window starts at 4
+     * evaluated to nothing. The comment on lane_adopt_slot asserted the
+     * opposite ("already true clip time"), which holds only when the origin
+     * is 0 — the one thing a blind clip cannot tell us. */
+    {
+        const double starts[] = { 0.0, 4.0, 8.0 };
+        for (unsigned i2 = 0; i2 < 3; i2++) {
+            const double st0 = starts[i2], len = 4.0;
+            lane_store_t rs; memset(&rs, 0, sizeof(rs));
+            lane_fingerprint_t absent3 = { 0 }; absent3.first_note = -1;
+            lane_t *rl = lane_alloc(&rs, "synth", "p", 0,
+                                    LANE_SLOT_PENDING, &absent3);
+            rl->slot_pending = 1; rl->pending_len = len;
+            lane_write_span(rl, 1.5, 0.75f, 1, 0.25);   /* stored in 0-space */
+
+            lane_fingerprint_t now3 = { 0 };
+            now3.first_note = 36; now3.note_count = 2;
+            now3.loop_start = st0; now3.loop_len = len;
+            CHECK(lane_adopt_slot(rl, 0, 3, rl->pending_len, len, &now3) == 1,
+                  "window at %.0f: adoption refused", st0);
+
+            float v = 0.0f;
+            CHECK(lane_eval(rl, st0 + 1.5, st0, len, 0, &v) == 1,
+                  "window at %.0f: the lock is outside the window — never "
+                  "heard", st0);
+            CHECK(fabs(v - 0.75f) < 1e-6,
+                  "window at %.0f: value %.3f, wanted 0.75", st0, v);
+            /* Exactly once, and not at all when the origin really is 0 — a
+             * second shift would move the lock off the step pressed. */
+            CHECK(rl->reorigined == (st0 != 0.0 ? 1 : 0),
+                  "window at %.0f: reorigined=%d", st0, rl->reorigined);
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

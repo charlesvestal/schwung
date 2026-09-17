@@ -227,6 +227,12 @@ typedef struct {
      * something, and "my automation for a deleted clip disappeared" needs an
      * answer better than a shrug. */
     int  evicted_orphan;
+    /* How many times this lane's points were SHIFTED by a real loop start on
+     * adoption. Counted, not flagged: a take stored against an assumed origin
+     * of 0 that is never shifted is silent for good, and "my locks on that
+     * clip do nothing" needs an answer better than a shrug. 0 or 1 in
+     * practice. */
+    int  reorigined;
     /* How many times this lane has had a real fingerprint stamped on it (0 or
      * 1 in practice). Counted rather than flagged because "a take recorded
      * blind was re-origined" is the kind of thing that must be reportable: by

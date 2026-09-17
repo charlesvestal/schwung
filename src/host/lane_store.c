@@ -503,10 +503,11 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * no longer absent and the real clip could never bind. One gate, one
      * decision.
      *
-     * NO RE-ORIGIN, which is what makes this different from
-     * lane_adopt_fingerprint: a blind p-lock's phase came from the bar on
-     * Move's own strip and is already true clip time, so moving it would take
-     * the lock off the step that was pressed. */
+     * IT DOES RE-ORIGIN, and the comment that used to sit here said the
+     * opposite: "a blind p-lock's phase came from the bar on Move's own strip
+     * and is already true clip time". That is true only when the origin is 0,
+     * which is precisely what a blind clip cannot tell us — see the shift
+     * below. */
     /* BOTH HALVES, OR NEITHER. `slot_pending` is the only licence this lane
      * has to take an identity, and clearing it while the fingerprint is still
      * absent shuts the door behind it forever: lane_tick's adopt-on-edit
@@ -527,6 +528,33 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * still pending, exactly as before.) */
     if (lane_fp_absent(&ln->fp)) {
         if (!now_fp || lane_fp_absent(now_fp)) return 0;
+
+        /* RE-ORIGIN, because the take was stored against an ASSUMED origin.
+         *
+         * A blind clip has no `loop.start` to read, so chain_set_clip_phase
+         * hands the write side 0 and every point is laid down in 0-space. If
+         * the clip's real window does not start at bar 1, those phases are
+         * outside it — and lane_eval only plays points INSIDE the window, so
+         * the take is silent for good. Measured: a lock written at 1.5 on a
+         * clip whose window starts at 4 evaluates to nothing.
+         *
+         * The old comment here said a blind p-lock's phase "came from the bar
+         * on Move's own strip and is already true clip time". That holds only
+         * while the origin is 0, which is the very thing we could not read.
+         *
+         * Shifted once, on the single transition from "no identity" to "this
+         * clip", so it cannot be applied twice: `lane_fp_absent` is false
+         * afterwards and this branch is the only caller. A zero start leaves
+         * every phase untouched, which is the common case and stays exact. */
+        const double origin = now_fp->loop_start;
+        if (isfinite(origin) && origin != 0.0) {
+            for (int i = 0; i < ln->n; i++) {
+                if (!isfinite(ln->pts[i].phase)) continue;
+                ln->pts[i].phase += origin;
+            }
+            ln->reorigined++;
+        }
+
         ln->fp = *now_fp;
         ln->stale = 0;
         ln->adopted++;
