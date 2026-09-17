@@ -1313,6 +1313,41 @@ int main(void) {
     CHECK(lane_effective_slot(-1, -1) == -1,
           "an unknown row with nothing remembered invented a row");
 
+    /* DOUBLE LOOP MUST CARRY THE SPAN.
+     *
+     * `lane_write`'s 4-argument form leaves span 0, and span 0 MEANS "hold
+     * until the next point" — the legacy behaviour the span field was added
+     * to replace. So the doubled half's p-locks widened from one step to the
+     * rest of the bar while the original half stayed correct, and the two
+     * halves of a doubled loop stopped sounding the same, which is the entire
+     * promise of the gesture. */
+    {
+        lane_store_t ds; memset(&ds, 0, sizeof(ds));
+        lane_fingerprint_t dfp = { 0 }; dfp.first_note = 36; dfp.note_count = 2;
+        lane_t *dl = lane_alloc(&ds, "synth", "ht_c_tune", 0, 0, &dfp);
+        CHECK(dl != NULL, "lane_alloc refused for the double test");
+        /* a p-lock: a held point with a SPAN of one sixteenth */
+        lane_write_span(dl, 1.5, 0.75f, 1, 0.25);
+        const int before = dl->n;
+        const int made = lane_double(dl, 0.0, 4.0);
+        CHECK(made == 1, "lane_double copied %d points, wanted 1", made);
+        CHECK(dl->n == before + 1, "lane_double did not append one point");
+
+        /* find the copy — one loop later */
+        int found = -1;
+        for (int i2 = 0; i2 < dl->n; i2++)
+            if (fabs(dl->pts[i2].phase - 5.5) < 1e-9) { found = i2; break; }
+        CHECK(found >= 0, "the doubled point is not at phase 5.5");
+        if (found >= 0) {
+            CHECK(dl->pts[found].hold == 1,
+                  "the doubled point lost its hold flag");
+            CHECK(fabs(dl->pts[found].span - 0.25) < 1e-9,
+                  "the doubled point's span is %.4f, wanted 0.25 — span 0 means "
+                  "'hold to the next point', so this lock smears across the bar",
+                  dl->pts[found].span);
+        }
+    }
+
     if (fails) { printf("%d failure(s)\n", fails); return 1; }
     printf("PASS: lane_store\n");
     return 0;

@@ -577,7 +577,13 @@ int lane_double(lane_t *ln, double loop_start, double loop_len) {
     int copied = 0;
     for (int i = 0; i < n; i++) {
         if (ln->n >= LANE_POINTS_MAX) break;   /* as much as fits, in order */
-        lane_write(ln, src[i].phase + loop_len, src[i].value, src[i].hold);
+        /* SPAN CARRIED. The 4-argument form leaves `span` 0, which MEANS
+         * "hold until the next point" -- so the doubled half's p-locks
+         * widened from one step to the rest of the bar while the original
+         * half stayed correct, and the two halves of a doubled loop stopped
+         * sounding the same. That is the whole promise of Double Loop. */
+        lane_write_span(ln, src[i].phase + loop_len, src[i].value,
+                        src[i].hold, src[i].span);
         copied++;
     }
     return copied;

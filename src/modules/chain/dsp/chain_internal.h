@@ -930,6 +930,12 @@ typedef struct chain_instance {
     int    lanes_last_doubled;
     /* Lanes carried onto a duplicated clip by the last `lanes:copy_clip`. */
     int    lanes_last_copied;
+    /* How many times an adopting lane DISPLACED a lane already holding its
+     * key. Counted rather than done silently, for the reason every other
+     * destructive step here is counted: it drops somebody's points, and "my
+     * automation vanished" needs a better answer than a shrug. Usually an
+     * orphan from a deleted clip whose row Move reused. */
+    int    lanes_adopt_displaced;
 
     /* Per-slot LFO state */
     lfo_state_t lfos[LFO_COUNT];

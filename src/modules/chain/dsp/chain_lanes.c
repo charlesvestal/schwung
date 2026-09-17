@@ -157,6 +157,49 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
         if (!ln->used || !ln->slot_pending) continue;
+
+        /* THE ROW MAY ALREADY BE TAKEN, AND TWO LANES ON ONE KEY IS A
+         * DOCUMENT THAT CAN NEVER LOAD AGAIN.
+         *
+         * `lane_adopt_slot` re-keys one lane and cannot see the store, so
+         * nothing checked whether (track, row, target, param) was already
+         * held. The orphan design guarantees it often is: deleting a clip
+         * RETAINS its lanes as orphans at that row, and Move reuses the row
+         * for the next clip. Adopting on top produced two lanes with one key
+         * -- and then:
+         *
+         *   - `lane_find` returns the FIRST hit, so later writes land in one
+         *     twin while the other also plays: two lanes driving one
+         *     parameter, flapping;
+         *   - the serializer writes BOTH, and the loader REFUSES A DOCUMENT
+         *     with a duplicate key outright (lane_serial.c) -- it is
+         *     all-or-nothing, so at the next set change or reboot EVERY lane
+         *     on this chain slot is silent, on every load, for good.
+         *
+         * So the key is resolved before adopting, and it always ends with
+         * exactly one lane on it.
+         *
+         * AN ORPHANED TWIN LOSES. Its points belong to a clip that was
+         * deleted, and the clip now at that row is a different one -- the
+         * same rule the write paths already apply ("an orphan does not come
+         * back to life with its old points"). Freeing it is what that rule
+         * means here.
+         *
+         * A LIVE TWIN IS REPLACED BY THE ARRIVING TAKE, not refused. The
+         * pending lane is by definition the gesture the user just made on the
+         * clip in front of them, which is the same statement that lets an
+         * explicit write outrank the bookkeeping elsewhere in this file.
+         * Refusing instead would leave the take keyed to PENDING, which stops
+         * matching the moment the file names a row -- a silent loss of the
+         * newest thing the user did, which is the complaint this whole area
+         * exists to answer. */
+        lane_t *twin = lane_find(&inst->lanes, ln->target, ln->param,
+                                 inst->lane_track, inst->lane_clip_slot);
+        if (twin && twin != ln) {
+            twin->used = 0;                 /* exactly one lane on the key */
+            inst->lanes_adopt_displaced++;
+        }
+
         lane_adopt_slot(ln, inst->lane_track, inst->lane_clip_slot,
                         ln->pending_len, inst->clip_loop_len,
                         inst->clip_fp_valid ? &inst->clip_fp : NULL);
@@ -1125,9 +1168,15 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
              * recording pass. Those describe THIS block on the source lane,
              * and lane_alloc has already zeroed them on a fresh slot. */
             to->n = 0;
+            /* SPAN AND ALL. `lane_write`'s 4-argument form leaves `span`
+             * at 0, which is the LEGACY meaning -- "hold until the next
+             * point" -- so every copied p-lock silently widened from one step
+             * to the rest of the bar, which is the exact behaviour the span
+             * field was added to kill. A duplicate whose locks smear is a
+             * wrong copy that reads as a design choice. */
             for (int k = 0; k < from->n; k++)
-                lane_write(to, from->pts[k].phase, from->pts[k].value,
-                           from->pts[k].hold);
+                lane_write_span(to, from->pts[k].phase, from->pts[k].value,
+                                from->pts[k].hold, from->pts[k].span);
             copied++;
         }
         inst->lanes_last_copied = copied;
