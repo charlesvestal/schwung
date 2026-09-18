@@ -245,3 +245,84 @@ None of the 2026-09-18 work has run on the device. Lanes are off by default
 (`lanes_on`), and the take-selection change alters behaviour inside a live
 blind window specifically — arm the switch and try two new clips in one window
 before trusting it.
+
+## 2026-09-18: can Move be asked to write the song? No.
+
+The whole clip-identity apparatus exists because Move writes a new clip to
+`Song.abl` 8-12 s late. If the firmware could be told to flush, the blind
+window would close and the placeholder, the take range, the adoption ladder,
+the length gate and the stall report could all be deleted rather than
+maintained. So it was worth an afternoon to find out.
+
+`com.ableton.move.Browser.saveSongIfDirty` looked like exactly that lever. It
+is not. The measurement:
+
+| trial | flush calls | edit -> Song.abl written |
+|-------|-------------|--------------------------|
+| B     | every 2 s   | ~20 s                    |
+| control | none      | ~23 s                    |
+
+During trial B the song was PROVABLY dirty -- a write did eventually arrive --
+and the method was called about ten times before it did. A working on-demand
+flush produces the write on the FIRST call. No acceleration, so this is a
+clean negative rather than an absent measurement.
+
+**We were calling it correctly.** A no-arg call is refused with
+`InvalidArgs: expecting 's'`, so sd-bus validated our call against a real
+registered vtable entry: the method exists, has a signature, and accepts our
+string with no error. What it is NOT is a hook into the live sequencer.
+`Browser` is Move's CONTENT-LIBRARY interface -- `importSongBundleFile`,
+`refreshCache`, `replaceFileReferences`, `saveSongIfDirty` -- and
+MoveWebService calls it immediately before serving a `.ablbundle`. Read that
+way every observation fits: "if this library entry has unsaved metadata, write
+it", a no-op when the library copy is already consistent. Its sibling
+`refreshCache` is equally inert, while a `Settings` property read returns real
+data, so the service itself is fine.
+
+Static analysis agrees in an odd way and is recorded so nobody repeats it: the
+method name is in MoveOriginal's `.rodata`, and NOTHING references it -- not
+one of 5.68M instructions, no relocation addend, no data pointer. Consistent
+with names held as pool offsets rather than pointers. An implementation
+detail, not the answer; the empirical test above is what settles it.
+
+**So the blind window is structural.** Move's own save is ~20 s for a note
+edit, there is no observable way to hurry it, and even a working flush at 20 s
+is far too slow for a gesture. The design consequence: KEEP THE DEFERRAL. A
+lock on a brand-new clip records and plays immediately and binds to a row a
+few seconds later; that is the honest answer and the only one available.
+
+### What else the afternoon bought
+
+- **The Move HTTP API is usable.** With the Manager's
+  `Ableton-Challenge-Response-Token` cookie: `/api/v1/data/Sets` enumerates
+  every set (uuid, name, size, cloud state) and `/api/v1/data/Sets/<uuid>`
+  returns a full `.ablbundle`. Its `Song.abl` matched disk exactly, which is
+  itself a finding -- the export does not flush either.
+- **`com.ableton.move` carries no clip or selection state at all**:
+  `SongRenderer`, `Browser`, `Settings`, `ScreenReader`, `auth`, `cloudauth`,
+  `perf`, `sshkeys`. That closes off "ask Move directly" as a design avenue
+  rather than leaving it an open maybe.
+
+### Three instrument failures, which cost most of the session
+
+Recorded because each one produced a confident wrong conclusion, and all three
+are things this repo already knew.
+
+1. **Injected gestures were not reaching Move's firmware.** Proved by
+   injecting Menu and watching the pad mode not change. Three runs had
+   therefore "created clips" that were never created, so `saveSongIfDirty` was
+   being tested against a song that was never dirty -- and a no-op is
+   indistinguishable from a broken lever when there is nothing to save. AN
+   INSTRUMENT NEEDS A POSITIVE CONTROL; this one had none for either the
+   gesture or the dirtiness.
+2. **`pkill -f <pattern>` kills its own ssh shell** when the shell's command
+   line contains the pattern. It silently killed two watchers before they
+   started and later killed a background flush loop. Do not use `pkill -f` on
+   this device; kill by pid.
+3. **Device-side logging to a file produced nothing** twice for reasons not
+   worth chasing. Polling from the host over ssh, printing to stdout, worked
+   first time. Prefer it.
+
+The lasting fix for (1) is that the harness must verify its own gestures --
+every scenario needs a witness that the gesture LANDED before anything it
+causes is scored. Until that exists, on-device conclusions are not evidence.
