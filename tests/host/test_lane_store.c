@@ -1222,7 +1222,6 @@ int main(void) {
         lane_t *ln = lane_alloc(&st, "synth", "cutoff", 1, LANE_SLOT_PENDING, &absent);
         CHECK(ln != NULL, "a lane could not be keyed to the pending row");
         if (ln) {
-            ln->slot_pending = 1;
             ln->pending_len = 8.0;          /* two bars, off the bar strip */
 
             CHECK(lane_slot_is_pending(ln->slot), "premise: the row is pending");
@@ -1242,7 +1241,7 @@ int main(void) {
             CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 4.0, &real) == 0,
                   "a lane bound to a clip of the wrong length -- a clip remade "
                   "inside the save window would inherit the previous take");
-            CHECK(ln->slot_pending == 1 && lane_slot_is_pending(ln->slot),
+            CHECK(lane_slot_is_pending(ln->slot),
                   "a refused adoption must leave the lane PENDING, not keyed");
 
             /* "Unknown" is not a match, in either direction. */
@@ -1255,9 +1254,8 @@ int main(void) {
              * allowed to differ from the file's float by less than a bar. */
             CHECK(lane_adopt_slot(ln, 1, 3, 8.0, 8.0, &real) == 1,
                   "the matching clip was refused");
-            CHECK(ln->slot == 3 && ln->slot_pending == 0,
-                  "the lane was not re-keyed to row 3 (slot=%d pending=%d)",
-                  ln->slot, ln->slot_pending);
+            CHECK(ln->slot == 3,
+                  "the lane was not re-keyed to row 3 (slot=%d)", ln->slot);
             CHECK(lane_is_for_clip(ln, 1, 3),
                   "the re-keyed lane does not answer for its clip");
 
@@ -1368,7 +1366,7 @@ int main(void) {
             lane_fingerprint_t absent = { 0 }; absent.first_note = -1;
             lane_t *al = lane_alloc(&as, "synth", "ht_c_tune", 0,
                                     LANE_SLOT_PENDING, &absent);
-            al->slot_pending = 1; al->pending_len = cs[i2].rec;
+            al->pending_len = cs[i2].rec;
             lane_write(al, 1.5, 0.5f, 0);
             lane_fingerprint_t now = { 0 };
             now.first_note = 36; now.note_count = 2; now.loop_len = cs[i2].now;
@@ -1399,7 +1397,7 @@ int main(void) {
             lane_fingerprint_t absent3 = { 0 }; absent3.first_note = -1;
             lane_t *rl = lane_alloc(&rs, "synth", "p", 0,
                                     LANE_SLOT_PENDING, &absent3);
-            rl->slot_pending = 1; rl->pending_len = len;
+            rl->pending_len = len;
             lane_write_span(rl, 1.5, 0.75f, 1, 0.25);   /* stored in 0-space */
 
             lane_fingerprint_t now3 = { 0 };
@@ -1474,7 +1472,6 @@ int main(void) {
         lane_t *rl = lane_alloc(&st2, "synth", "cutoff", 0, LANE_SLOT_PENDING, &absent);
         CHECK(rl != NULL, "pending lane_alloc refused");
         if (rl) {
-            rl->slot_pending = 1;
             rl->pending_len = 8.0;
             lane_write(rl, 1.0, 0.5f, 0);
             rl->rec_active = 1;
@@ -1507,7 +1504,6 @@ int main(void) {
         lane_t *nl = lane_alloc(&st3, "synth", "cutoff", 0, LANE_SLOT_PENDING, &absent);
         CHECK(nl != NULL, "pending lane_alloc refused");
         if (nl) {
-            nl->slot_pending = 1;
             nl->pending_len = 8.0;
             lane_write(nl, 2.0, 0.5f, 0);
 
@@ -1517,7 +1513,7 @@ int main(void) {
             CHECK(nl->pts[0].phase == 2.0,
                   "the point was shifted to %f by a refused adoption",
                   nl->pts[0].phase);
-            CHECK(nl->slot_pending == 1 && lane_slot_is_pending(nl->slot),
+            CHECK(lane_slot_is_pending(nl->slot),
                   "a refused adoption spent the lane's pending licence — it can "
                   "never be re-keyed now");
 
@@ -1528,6 +1524,38 @@ int main(void) {
                   "proves nothing if this lane was never adoptable");
             CHECK(nl->pts[0].phase == 6.0,
                   "re-origined to %f, expected 6.0", nl->pts[0].phase);
+        }
+    }
+
+    /* THE PENDING ROW IS LICENCE ENOUGH, with no second flag beside it.
+     *
+     * `slot_pending` used to be that flag, and lane_adopt_slot required BOTH
+     * it and the placeholder row. The two could only disagree one way -- a
+     * lane loaded from a file carried the row and could not carry a
+     * runtime-only flag -- and that combination was unadoptable forever AND
+     * never went stale, which is the zombie the whole design forbids. The
+     * reader refuses such a key now, so the field is gone; this pins that a
+     * lane wearing only the row still adopts. */
+    {
+        lane_store_t st4; memset(&st4, 0, sizeof(st4));
+        lane_fingerprint_t absent = { 0.0, 0.0, 0, -1 };
+        lane_t *pl = lane_alloc(&st4, "synth", "cutoff", 0, LANE_SLOT_PENDING, &absent);
+        CHECK(pl != NULL, "pending lane_alloc refused");
+        if (pl) {
+            pl->pending_len = 8.0;          /* the length, and nothing else */
+            lane_write(pl, 1.0, 0.5f, 0);
+            lane_fingerprint_t real = { 0.0, 8.0, 3, 60 };
+            CHECK(lane_adopt_slot(pl, 0, 5, 8.0, 8.0, &real) == 1,
+                  "a lane whose row is PENDING was refused adoption — the row "
+                  "is the licence now, and without it such a lane is a zombie: "
+                  "un-re-keyable and never stale");
+            CHECK(pl->slot == 5, "re-keyed to %d, expected 5", pl->slot);
+            CHECK(!lane_slot_is_pending(pl->slot),
+                  "the lane still reads as pending after adoption");
+            /* And an adopted lane refuses a second adoption, or the row could
+             * be reassigned by any later clip that happened to match. */
+            CHECK(lane_adopt_slot(pl, 0, 6, 8.0, 8.0, &real) == 0,
+                  "an adopted lane was re-keyed again, to row 6");
         }
     }
 

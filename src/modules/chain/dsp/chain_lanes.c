@@ -206,7 +206,7 @@ static void lane_reconcile_pending_slots(chain_instance_t *inst) {
     if (inst->lane_track < 0 || adopt_row < 0) return;
     for (int i = 0; i < LANE_MAX; i++) {
         lane_t *ln = &inst->lanes.lanes[i];
-        if (!ln->used || !ln->slot_pending) continue;
+        if (!ln->used || !lane_slot_is_pending(ln->slot)) continue;
 
         /* THE ROW MAY ALREADY BE TAKEN, AND TWO LANES ON ONE KEY IS A
          * DOCUMENT THAT CAN NEVER LOAD AGAIN.
@@ -632,7 +632,9 @@ void lane_on_set_param(chain_instance_t *inst, const char *target,
          * the reason the origin flag is: a second write in the same window
          * must not leave the first one's state behind. */
         if (ln && lane_slot_is_pending(lane_write_slot(inst))) {
-            ln->slot_pending = 1;
+            /* The row already says provisional -- lane_alloc was handed
+             * the placeholder. Only the LENGTH has to be remembered;
+             * see lane_store.h for why there is no second flag. */
             ln->pending_len = inst->clip_loop_len;
         }
 
@@ -1118,7 +1120,9 @@ void lane_param_set(chain_instance_t *inst, const char *sub, const char *val) {
          * "make a clip, lock its steps" flow: the row is 8-12 s away and the
          * gesture must land now. */
         if (lane_slot_is_pending(lane_write_slot(inst))) {
-            ln->slot_pending = 1;
+            /* The row already says provisional -- lane_alloc was handed
+             * the placeholder. Only the LENGTH has to be remembered;
+             * see lane_store.h for why there is no second flag. */
             ln->pending_len = inst->clip_loop_len;
         }
 
@@ -1680,7 +1684,7 @@ int lane_param_get(chain_instance_t *inst, const char *sub,
                             "rec=%d rlp=%.4f live=%d stale=%d orph=%d "
                             "opend=%d adopt=%d reorig=%d evict=%d full=%d",
                             i, ln->target, ln->param, ln->track, ln->slot,
-                            ln->slot_pending, ln->pending_len,
+                            lane_slot_is_pending(ln->slot), ln->pending_len,
                             ln->n, ln->driving,
                             ln->punch_until_wrap, ln->punch_phase,
                             ln->rec_active, ln->rec_last_phase, live,

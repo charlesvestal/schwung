@@ -535,7 +535,7 @@ static int lane_take_identity(lane_t *ln, const lane_fingerprint_t *now) {
 int lane_adopt_slot(lane_t *ln, int track, int slot,
                     double recorded_len, double now_len,
                     const lane_fingerprint_t *now_fp) {
-    if (!ln || !ln->used || !ln->slot_pending) return 0;
+    if (!ln || !ln->used || !lane_slot_is_pending(ln->slot)) return 0;
     if (!lane_slot_is_pending(ln->slot)) return 0;   /* already keyed */
     if (ln->track != track) return 0;
     if (slot < 0) return 0;
@@ -589,8 +589,8 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
      * and is already true clip time". That is true only when the origin is 0,
      * which is precisely what a blind clip cannot tell us — see the shift
      * below. */
-    /* BOTH HALVES, OR NEITHER. `slot_pending` is the only licence this lane
-     * has to take an identity, and clearing it while the fingerprint is still
+    /* BOTH HALVES, OR NEITHER. The PENDING row is the only licence this lane
+     * has to take an identity, and replacing it while the fingerprint is still
      * absent shuts the door behind it forever: lane_tick's adopt-on-edit
      * branch requires a NON-absent fingerprint, and lane_adopt_fingerprint
      * requires `origin_pending`, which a p-lock never sets. The lane then
@@ -613,8 +613,9 @@ int lane_adopt_slot(lane_t *ln, int track, int slot,
          * moves the recording pass's anchor with the points. */
         if (!lane_take_identity(ln, now_fp)) return 0;
     }
+    /* Assigning the real row IS clearing the pending state -- see
+     * lane_store.h for why there is no longer a second flag saying so. */
     ln->slot = slot;
-    ln->slot_pending = 0;
     ln->pending_len = 0.0;
     return 1;
 }

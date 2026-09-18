@@ -278,18 +278,20 @@ typedef struct {
      * re-recorded. Silent and retained is the failure this design chooses
      * every other time it has to choose. */
     int    origin_pending;
-    /* THE CLIP ROW IS PROVISIONAL, and this is NOT serialized either, for the
-     * same reason origin_pending is not: on disk, "a lane I recorded blind
-     * thirty seconds ago" and "a lane whose clip was never identified" are the
-     * same bytes, and binding the second to whatever clip later turns up in
-     * its column is confidently wrong.
+    /* THERE IS NO `slot_pending` FIELD. "The clip row is provisional" is
+     * `slot == LANE_SLOT_PENDING` -- ask lane_slot_is_pending().
      *
-     * Set when a lane is created while `slot` is LANE_SLOT_PENDING. Cleared by
-     * lane_adopt_slot when Song.abl finally names the row -- and only if the
-     * arriving clip's LENGTH matches what we recorded against, so a clip
-     * deleted and remade inside the window binds nothing rather than binding
-     * the wrong take. */
-    int    slot_pending;
+     * It existed as a second latch beside the row, set and cleared at three
+     * sites, and the two could only ever disagree one way: a DESERIALIZED
+     * lane, which carried the row from the file and could not carry a
+     * runtime-only flag. That combination -- row PENDING, latch clear -- was
+     * the un-re-keyable zombie, and lane_adopt_slot's guard required both, so
+     * such a lane could never be re-keyed and never went stale either.
+     *
+     * The reader refuses an out-of-range key now (lane_key_in_range), so the
+     * one state that made two fields necessary cannot arrive, and keeping
+     * them was keeping a "cleared one, forgot the other" bug available for
+     * free. `pending_len` stays: it is DATA, not a restatement of the row. */
     /* The clip LENGTH the blind take was recorded against, read off Move's bar
      * strip. Kept so lane_adopt_slot can refuse a clip that is not the one we
      * were editing; 0 means "never recorded blind". Runtime only. */
